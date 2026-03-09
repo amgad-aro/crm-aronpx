@@ -31,7 +31,7 @@ var TR = {
     tasks: "المهام", reports: "التقارير", team: "فريق المبيعات", users: "المستخدمين",
     units: "الوحدات", settings: "الإعدادات", channels: "القنوات", dailyReq: "الطلبات اليومية",
     archive: "الأرشيف",
-    search: "بحث بالاسم أو موبايل أو آخر 4 أرقام...",
+    search: "بحث...",
     all: "الكل", totalLeads: "إجمالي العملاء", newLeads: "جدد",
     activeDeals: "صفقات نشطة", doneDeals: "تم البيع",
     addLead: "إضافة عميل", addUser: "إضافة مستخدم", addTask: "إضافة مهمة", addRequest: "إضافة طلب",
@@ -87,7 +87,7 @@ var TR = {
     tasks: "Tasks", reports: "Reports", team: "Sales Team", users: "Users",
     units: "Units", settings: "Settings", channels: "Channels", dailyReq: "Daily Requests",
     archive: "Archive",
-    search: "Search by name, phone or last 4 digits...",
+    search: "Search...",
     all: "All", totalLeads: "Total Leads", newLeads: "New",
     activeDeals: "Active Deals", doneDeals: "Done Deals",
     addLead: "Add Lead", addUser: "Add User", addTask: "Add Task", addRequest: "Add Request",
@@ -271,12 +271,12 @@ var LoginPage = function(p) {
       {err && <div style={{ background:"#FEE2E2", color:"#B91C1C", padding:"10px 16px", borderRadius:10, fontSize:13, marginBottom:18, textAlign:"center" }}>{err}</div>}
       <div style={{ marginBottom:14 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:6, color:C.text }}>{t.username}</label>
-        <input value={user} onChange={function(e){setUser(e.target.value);}} placeholder="amgad" style={{ width:"100%", padding:"12px 16px", borderRadius:12, border:"1px solid #E2E8F0", fontSize:15, outline:"none", boxSizing:"border-box" }} onKeyDown={function(e){if(e.key==="Enter")go();}}/>
+        <input value={user} onChange={function(e){setUser(e.target.value);}} placeholder="" style={{ width:"100%", padding:"12px 16px", borderRadius:12, border:"1px solid #E2E8F0", fontSize:15, outline:"none", boxSizing:"border-box" }} onKeyDown={function(e){if(e.key==="Enter")go();}}/>
       </div>
       <div style={{ marginBottom:26 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:6, color:C.text }}>{t.password}</label>
         <div style={{ position:"relative" }}>
-          <input type={showPass?"text":"password"} value={pass} onChange={function(e){setPass(e.target.value);}} placeholder="••••••••" style={{ width:"100%", padding:"12px 44px 12px 16px", borderRadius:12, border:"1px solid #E2E8F0", fontSize:15, outline:"none", boxSizing:"border-box" }} onKeyDown={function(e){if(e.key==="Enter")go();}}/>
+          <input type={showPass?"text":"password"} value={pass} onChange={function(e){setPass(e.target.value);}} placeholder="" style={{ width:"100%", padding:"12px 44px 12px 16px", borderRadius:12, border:"1px solid #E2E8F0", fontSize:15, outline:"none", boxSizing:"border-box" }} onKeyDown={function(e){if(e.key==="Enter")go();}}/>
           <button onClick={function(){setShowPass(!showPass);}} style={{ position:"absolute", top:"50%", right:14, transform:"translateY(-50%)", background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}>{showPass?<EyeOff size={18}/>:<Eye size={18}/>}</button>
         </div>
       </div>
@@ -294,7 +294,6 @@ var Sidebar = function(p) {
     {id:"leads",icon:Users,label:t.leads},
     {id:"dailyReq",icon:ClipboardList,label:t.dailyReq},
     {id:"deals",icon:Briefcase,label:t.deals},
-    {id:"projects",icon:Building,label:t.projects},
     {id:"tasks",icon:CheckCircle,label:t.tasks},
     isAdmin&&{id:"reports",icon:BarChart3,label:t.reports},
     isAdmin&&{id:"team",icon:UserPlus,label:t.team},
@@ -589,9 +588,30 @@ var LeadsPage = function(p) {
                     </div>
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{lead.project}</td>
-                  <td style={{ padding:"10px 12px" }}><Badge bg={so.bg} color={so.color} dashed onClick={function(e){e.stopPropagation();setSelected(lead);setShowStatusPicker(true);}}>{so.label} ▼</Badge></td>
+                  <td style={{ padding:"10px 12px", position:"relative" }} onClick={function(e){e.stopPropagation();}}>
+                    <div style={{ position:"relative", display:"inline-block" }}>
+                      <span style={{ background:so.bg, color:so.color, padding:"4px 10px", borderRadius:20, fontSize:12, fontWeight:600, whiteSpace:"nowrap", border:"1px dashed "+so.color, display:"inline-flex", alignItems:"center", gap:4, cursor:"pointer" }}
+                        onClick={function(e){e.stopPropagation();setStatusDrop(statusDrop===lid?null:lid);}}>
+                        {so.label} ▼
+                      </span>
+                      {statusDrop===lid&&<div style={{ position:"absolute", top:"110%", right:0, zIndex:200, background:"#fff", borderRadius:12, padding:6, minWidth:160, boxShadow:"0 8px 32px rgba(0,0,0,0.18)", border:"1px solid #E8ECF1" }}>
+                        {sc.map(function(s){return <div key={s.value} onClick={function(e){e.stopPropagation();setSelected(lead);reqStatus(lid,s.value);setStatusDrop(null);}} style={{ padding:"8px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:8, background:lead.status===s.value?s.bg:"transparent", fontSize:13 }}
+                          onMouseEnter={function(e){if(lead.status!==s.value)e.currentTarget.style.background="#F8FAFC";}}
+                          onMouseLeave={function(e){if(lead.status!==s.value)e.currentTarget.style.background="transparent";}}>
+                          <span style={{ width:10, height:10, borderRadius:"50%", background:s.color, flexShrink:0 }}/>{s.label}
+                        </div>;})}
+                      </div>}
+                    </div>
+                  </td>
                   {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{lead.source}</td>}
-                  {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{getAgentName(lead)}</td>}
+                  {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
+                    <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
+                      var newAgent=e.target.value;
+                      try{var upd=await apiFetch("/api/leads/"+gid(lead),"PUT",{agentId:newAgent},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?upd:l;});});if(selected&&gid(selected)===gid(lead))setSelected(upd);}catch(ex){}
+                    }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
+                      {salesUsers.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
+                    </select>
+                  </td>}
                   <td style={{ padding:"10px 12px", fontSize:11, color:C.accent, whiteSpace:"nowrap" }}>{timeAgo(lead.lastActivityTime,t)}</td>
                   {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:lead.callbackTime?C.warning:C.textLight, whiteSpace:"nowrap" }}>{lead.callbackTime?lead.callbackTime.slice(0,16).replace("T"," "):"-"}</td>}
                 </tr>;
@@ -797,11 +817,22 @@ var DealsPage = function(p) {
   var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var total=deals.reduce(function(s,d){return s+(parseFloat((d.budget||"0").replace(/,/g,""))||0);},0);
+  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+  var [showAdd,setShowAdd]=useState(false);
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
-      <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.deals} ({deals.length})</h2>
-      {total>0&&<div style={{ fontSize:13, fontWeight:700, color:C.success, background:"#DCFCE7", padding:"5px 14px", borderRadius:20 }}>إجمالي: {total.toLocaleString()} EGP</div>}
+      <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+        <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.deals} ({deals.length})</h2>
+        {total>0&&<div style={{ fontSize:13, fontWeight:700, color:C.success, background:"#DCFCE7", padding:"5px 14px", borderRadius:20 }}>إجمالي: {total.toLocaleString()} EGP</div>}
+      </div>
+      {isAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {t.addLead}</Btn>}
     </div>
+    <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
+      <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
+        initial={{name:"",phone:"",phone2:"",email:"",budget:"",project:PROJECTS[0],source:"Referral",agentId:"",callbackTime:"",notes:"",status:"DoneDeal"}}
+        onClose={function(){setShowAdd(false);}}
+        onSave={function(lead){p.setLeads(function(prev){return [lead].concat(prev);});setShowAdd(false);}}/>
+    </Modal>
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:480 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,t.phone,t.project,t.budget,isAdmin&&t.agent,t.source].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
@@ -887,47 +918,66 @@ var ArchivePage = function(p) {
 
 // ===== DAILY REQUESTS =====
 var DailyRequestsPage = function(p) {
-  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
+  var t=p.t; var sc=STATUSES(t);
+  var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var [requests,setRequests]=useState([]);
   var [loading,setLoading]=useState(true);
   var [showAdd,setShowAdd]=useState(false);
   var [saving,setSaving]=useState(false);
   var [selected,setSelected]=useState(null);
-  var [showStatusPicker,setShowStatusPicker]=useState(false);
+  var [statusDrop,setStatusDrop]=useState(null);
   var [showStatusComment,setShowStatusComment]=useState(false);
   var [pendingStatus,setPendingStatus]=useState(null);
-  var sc=STATUSES(t);
+  var [actNote,setActNote]=useState(""); var [actType,setActType]=useState("call"); var [showActForm,setShowActForm]=useState(false);
+  var [filterStatus,setFilterStatus]=useState("all");
   var [form,setForm]=useState({name:"",phone:"",phone2:"",email:"",budget:"",propertyType:"",area:"",notes:"",agentId:"",callbackTime:""});
 
   useEffect(function(){
     apiFetch("/api/daily-requests","GET",null,p.token).then(function(data){setRequests(data);setLoading(false);}).catch(function(){setLoading(false);});
   },[]);
 
-  var filtered=requests.filter(function(r){return matchSearch(r,p.search);});
+  var filtered=requests.filter(function(r){
+    if(filterStatus!=="all"&&r.status!==filterStatus)return false;
+    return matchSearch(r,p.search);
+  });
 
   var reqStatus=function(rid,st){setPendingStatus({leadId:rid,newStatus:st});setShowStatusComment(true);};
   var confirmStatus=async function(comment){
     if(!pendingStatus)return;
-    try{var upd=await apiFetch("/api/daily-requests/"+pendingStatus.leadId,"PUT",{status:pendingStatus.newStatus},p.token);setRequests(function(prev){return prev.map(function(r){return gid(r)===pendingStatus.leadId?upd:r;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(upd);}catch(e){alert(e.message);}
-    setShowStatusComment(false);setPendingStatus(null);setShowStatusPicker(false);
+    try{
+      var upd=await apiFetch("/api/daily-requests/"+pendingStatus.leadId,"PUT",{status:pendingStatus.newStatus},p.token);
+      setRequests(function(prev){return prev.map(function(r){return gid(r)===pendingStatus.leadId?upd:r;});});
+      if(selected&&gid(selected)===pendingStatus.leadId)setSelected(upd);
+    }catch(e){alert(e.message);}
+    setShowStatusComment(false);setPendingStatus(null);setStatusDrop(null);
+  };
+
+  var logActivity=async function(){
+    if(!actNote.trim()||!selected)return;
+    try{
+      await apiFetch("/api/daily-requests/"+gid(selected),"PUT",{lastActivityTime:new Date()},p.token);
+      setRequests(function(prev){return prev.map(function(r){return gid(r)===gid(selected)?Object.assign({},r,{lastActivityTime:new Date().toISOString()}):r;});});
+      setActNote(""); setShowActForm(false);
+    }catch(e){}
   };
 
   var addReq=async function(){
     if(!form.name||!form.phone)return;setSaving(true);
-    try{var r=await apiFetch("/api/daily-requests","POST",Object.assign({},form,{agentId:form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id)}),p.token);setRequests(function(prev){return [r].concat(prev);});setShowAdd(false);setForm({name:"",phone:"",phone2:"",email:"",budget:"",propertyType:"",area:"",notes:"",agentId:"",callbackTime:""});}catch(e){alert(e.message);}setSaving(false);
+    try{
+      var r=await apiFetch("/api/daily-requests","POST",Object.assign({},form,{agentId:form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id)}),p.token);
+      setRequests(function(prev){return [r].concat(prev);});
+      setShowAdd(false);setForm({name:"",phone:"",phone2:"",email:"",budget:"",propertyType:"",area:"",notes:"",agentId:"",callbackTime:""});
+    }catch(e){alert(e.message);}setSaving(false);
   };
 
   var getAgentName=function(r){if(!r.agentId)return"-";if(r.agentId.name)return r.agentId.name;var u=p.users.find(function(x){return gid(x)===r.agentId;});return u?u.name:"-";};
 
   return <div style={{ padding:"18px 16px 40px" }}>
-    {showStatusPicker&&selected&&!showStatusComment&&<Modal show={true} onClose={function(){setShowStatusPicker(false);}} title={t.changeStatus}>
-      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:16 }}>{sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"8px 14px", borderRadius:9, border:"1px solid "+s.color, background:selected.status===s.value?s.bg:"#fff", color:s.color, fontSize:13, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}</div>
-      <Btn outline onClick={function(){setShowStatusPicker(false);}} style={{ width:"100%" }}>{t.cancel}</Btn>
-    </Modal>}
     <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
 
-    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+    {/* Stats + Add */}
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
       <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
         <StatCard icon={ClipboardList} label={t.totalRequests} value={requests.length+""} c={C.info}/>
         <StatCard icon={DollarSign} label={t.doneDeals} value={requests.filter(function(r){return r.status==="DoneDeal";}).length+""} c={C.success}/>
@@ -935,32 +985,121 @@ var DailyRequestsPage = function(p) {
       {isAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13, flexShrink:0 }}><Plus size={14}/> {t.addRequest}</Btn>}
     </div>
 
-    {loading?<Loader/>:<Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:560 }}>
-      <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.phone,t.propertyType,t.area,t.status,isAdmin&&t.agent,t.lastActivity].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
-      </tr></thead>
-      <tbody>
-        {filtered.length===0&&<tr><td colSpan={7} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد طلبات</td></tr>}
-        {filtered.map(function(r){var rid=gid(r);var so=sc.find(function(s){return s.value===r.status;})||sc[0];var isSel=selected&&gid(selected)===rid;
-          return <tr key={rid} onClick={function(){setSelected(r);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent" }}>
-            <td style={{ padding:"10px 12px" }}><div style={{ fontSize:13, fontWeight:600 }}>{r.name}</div><div style={{ fontSize:10, color:C.textLight }}>{r.email}</div></td>
-            <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr" }}>
-              {r.phone}
-              <div style={{ display:"flex", gap:4, marginTop:2 }}>
-                <a href={"tel:"+r.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/></a>
-                <a href={"https://wa.me/2"+r.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none" }}>💬</a>
-              </div>
-            </td>
-            <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight }}>{r.propertyType}</td>
-            <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight }}>{r.area}</td>
-            <td style={{ padding:"10px 12px" }}><Badge bg={so.bg} color={so.color} dashed onClick={function(e){e.stopPropagation();setSelected(r);setShowStatusPicker(true);}}>{so.label} ▼</Badge></td>
-            {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight }}>{getAgentName(r)}</td>}
-            <td style={{ padding:"10px 12px", fontSize:11, color:C.accent }}>{timeAgo(r.lastActivityTime,t)}</td>
-          </tr>;
-        })}
-      </tbody>
-    </table></div></Card>}
+    {/* Status filter */}
+    <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:14 }}>
+      {[{v:"all",l:t.all}].concat(sc.map(function(s){return{v:s.value,l:s.label};})).map(function(s){
+        var cnt=s.v==="all"?requests.length:requests.filter(function(r){return r.status===s.v;}).length;
+        return <button key={s.v} onClick={function(){setFilterStatus(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:filterStatus===s.v?C.accent:"#E8ECF1", background:filterStatus===s.v?C.accent+"12":"#fff", color:filterStatus===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
+      })}
+    </div>
 
+    <div style={{ display:"flex", gap:14 }}>
+      {/* Table */}
+      <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
+        {loading?<Loader/>:<div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?500:640 }}>
+            <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+              {[t.name,t.phone,t.propertyType,t.area,t.budget,t.status,isAdmin&&t.agent,t.lastActivity,!p.isMobile&&t.callbackTime].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+            </tr></thead>
+            <tbody>
+              {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد طلبات</td></tr>}
+              {filtered.map(function(r){
+                var rid=gid(r); var so=sc.find(function(s){return s.value===r.status;})||sc[0]; var isSel=selected&&gid(selected)===rid;
+                return <tr key={rid} onClick={function(){setSelected(r);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent" }}>
+                  <td style={{ padding:"10px 12px" }}>
+                    <div style={{ fontSize:13, fontWeight:600 }}>{r.name}</div>
+                    <div style={{ fontSize:10, color:C.textLight }}>{r.email}</div>
+                  </td>
+                  <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr" }}>
+                    {r.phone}
+                    {r.phone2&&<div style={{ fontSize:10, color:C.textLight }}>{r.phone2}</div>}
+                    <div style={{ display:"flex", gap:4, marginTop:2 }}>
+                      <a href={"tel:"+r.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/></a>
+                      <a href={"https://wa.me/2"+r.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none" }}>💬</a>
+                    </div>
+                  </td>
+                  <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight }}>{r.propertyType||"-"}</td>
+                  <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight }}>{r.area||"-"}</td>
+                  <td style={{ padding:"10px 12px", fontSize:12, fontWeight:600, color:C.success }}>{r.budget||"-"}</td>
+                  <td style={{ padding:"10px 12px", position:"relative" }} onClick={function(e){e.stopPropagation();}}>
+                    <div style={{ position:"relative", display:"inline-block" }}>
+                      <span style={{ background:so.bg, color:so.color, padding:"4px 10px", borderRadius:20, fontSize:12, fontWeight:600, whiteSpace:"nowrap", border:"1px dashed "+so.color, display:"inline-flex", alignItems:"center", gap:4, cursor:"pointer" }}
+                        onClick={function(e){e.stopPropagation();setStatusDrop(statusDrop===rid?null:rid);}}>
+                        {so.label} ▼
+                      </span>
+                      {statusDrop===rid&&<div style={{ position:"absolute", top:"110%", right:0, zIndex:200, background:"#fff", borderRadius:12, padding:6, minWidth:160, boxShadow:"0 8px 32px rgba(0,0,0,0.18)", border:"1px solid #E8ECF1" }}>
+                        {sc.map(function(s){return <div key={s.value} onClick={function(e){e.stopPropagation();setSelected(r);reqStatus(rid,s.value);setStatusDrop(null);}} style={{ padding:"8px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:8, background:r.status===s.value?s.bg:"transparent", fontSize:13 }}
+                          onMouseEnter={function(e){if(r.status!==s.value)e.currentTarget.style.background="#F8FAFC";}}
+                          onMouseLeave={function(e){if(r.status!==s.value)e.currentTarget.style.background="transparent";}}>
+                          <span style={{ width:10, height:10, borderRadius:"50%", background:s.color, flexShrink:0 }}/>{s.label}
+                        </div>;})}
+                      </div>}
+                    </div>
+                  </td>
+                  {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11 }} onClick={function(e){e.stopPropagation();}}>
+                    <select value={r.agentId&&r.agentId._id?r.agentId._id:(r.agentId||"")} onChange={async function(e){
+                      var newAgent=e.target.value;
+                      try{var upd=await apiFetch("/api/daily-requests/"+rid,"PUT",{agentId:newAgent},p.token);setRequests(function(prev){return prev.map(function(x){return gid(x)===rid?upd:x;});});if(selected&&gid(selected)===rid)setSelected(upd);}catch(ex){}
+                    }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
+                      {salesUsers.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
+                    </select>
+                  </td>}
+                  <td style={{ padding:"10px 12px", fontSize:11, color:C.accent, whiteSpace:"nowrap" }}>{timeAgo(r.lastActivityTime,t)}</td>
+                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:r.callbackTime?C.warning:C.textLight, whiteSpace:"nowrap" }}>{r.callbackTime?r.callbackTime.slice(0,16).replace("T"," "):"-"}</td>}
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>}
+      </Card>
+
+      {/* Side Panel */}
+      {selected&&<Card style={{ flex:"0 0 280px", maxHeight:"calc(100vh - 120px)", overflowY:"auto", padding:0 }}>
+        <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+            <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
+          </div>
+          <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selected.name}</div>
+          <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}>{selected.phone}{selected.phone2?" / "+selected.phone2:""}</div>
+          <div style={{ display:"flex", gap:6, marginTop:10 }}>
+            <a href={"tel:"+selected.phone} style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(34,197,94,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> {t.call}</a>
+            <a href={"https://wa.me/2"+selected.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(37,211,102,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>💬 {t.whatsapp}</a>
+          </div>
+        </div>
+        <div style={{ padding:"12px 14px" }}>
+          {/* Status */}
+          <div style={{ marginBottom:12, padding:10, background:"#F8FAFC", borderRadius:10 }}>
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:7, fontWeight:600 }}>{t.changeStatus}</div>
+            <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
+              {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid", borderColor:selected.status===s.value?s.color:"#E2E8F0", background:selected.status===s.value?s.bg:"#fff", color:selected.status===s.value?s.color:C.textLight, fontSize:10, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
+            </div>
+          </div>
+          {/* Details */}
+          {[{l:t.propertyType,v:selected.propertyType},{l:t.area,v:selected.area},{l:t.budget,v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:t.notes,v:selected.notes}].map(function(f){
+            return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span></div>:null;
+          })}
+          {/* Log Activity */}
+          <div style={{ marginTop:12 }}>
+            <button onClick={function(){setShowActForm(!showActForm);}} style={{ width:"100%", padding:"8px", borderRadius:9, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><MessageSquare size={12}/> {t.logActivity}</button>
+            {showActForm&&<div style={{ marginTop:9, padding:10, background:"#F8FAFC", borderRadius:10 }}>
+              <select value={actType} onChange={function(e){setActType(e.target.value);}} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:7, background:"#fff" }}>
+                <option value="call">📞 مكالمة</option>
+                <option value="meeting">🤝 اجتماع</option>
+                <option value="followup">🔔 متابعة</option>
+                <option value="note">📝 ملاحظة</option>
+              </select>
+              <textarea rows={2} placeholder="ملاحظة..." value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
+              <div style={{ display:"flex", gap:6, marginTop:6 }}>
+                <Btn onClick={logActivity} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.save}</Btn>
+                <Btn outline onClick={function(){setShowActForm(false);setActNote("");}} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.cancel}</Btn>
+              </div>
+            </div>}
+          </div>
+        </div>
+      </Card>}
+    </div>
+
+    {/* Add Modal */}
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addRequest}>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.name} req value={form.name} onChange={function(e){setForm(function(f){return Object.assign({},f,{name:e.target.value});});}}/></div>
