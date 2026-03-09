@@ -393,6 +393,7 @@ app.post("/api/push/subscribe", auth, async function(req, res) {
   if (!exists) pushSubscriptions.push(Object.assign({ userId: req.user.id }, sub));
   res.json({ ok: true });
 });
+
 // ===== FACEBOOK WEBHOOK =====
 app.get("/api/fb-webhook", function(req, res) {
   var mode = req.query["hub.mode"];
