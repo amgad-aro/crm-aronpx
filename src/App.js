@@ -29,12 +29,12 @@ var TR = {
     username: "اسم الدخول", password: "كلمة المرور", logout: "تسجيل خروج",
     dashboard: "الرئيسية", leads: "العملاء", deals: "الصفقات", projects: "المشاريع",
     tasks: "المهام", reports: "التقارير", team: "فريق المبيعات", users: "المستخدمين",
-    units: "الوحدات", settings: "الإعدادات", channels: "القنوات", dailyReq: "الطلبات اليومية",
+    units: "الوحدات", settings: "الإعدادات", channels: "القنوات", dailyReq: "Daily Request",
     archive: "الأرشيف",
     search: "بحث...",
     all: "الكل", totalLeads: "إجمالي العملاء", newLeads: "جدد",
     activeDeals: "صفقات نشطة", doneDeals: "تم البيع",
-    addLead: "إضافة عميل", addUser: "إضافة مستخدم", addTask: "إضافة مهمة", addRequest: "إضافة طلب",
+    addLead: "إضافة عميل", addUser: "إضافة مستخدم", addTask: "إضافة مهمة", addRequest: "إضافة رقم",
     name: "الاسم", phone: "الهاتف", phone2: "هاتف إضافي", email: "الإيميل", budget: "الميزانية",
     project: "المشروع", source: "المصدر", agent: "الموظف",
     status: "الحالة", cancel: "إلغاء", save: "حفظ", add: "إضافة", edit: "تعديل",
@@ -67,7 +67,7 @@ var TR = {
     bulkReassign: "تحويل جماعي", selectAll: "تحديد الكل", reassignTo: "تحويل لـ",
     whatsapp: "واتساب", call: "اتصال",
     propertyType: "نوع العقار", area: "المنطقة",
-    totalRequests: "إجمالي الطلبات",
+    totalRequests: "إجمالي الأرقام",
     restore: "استعادة",
     overdue: "متأخرون",
     noActivity: "بدون نشاط +3 أيام",
@@ -85,12 +85,12 @@ var TR = {
     username: "Username", password: "Password", logout: "Logout",
     dashboard: "Dashboard", leads: "Leads", deals: "Deals", projects: "Projects",
     tasks: "Tasks", reports: "Reports", team: "Sales Team", users: "Users",
-    units: "Units", settings: "Settings", channels: "Channels", dailyReq: "Daily Requests",
+    units: "Units", settings: "Settings", channels: "Channels", dailyReq: "Daily Request",
     archive: "Archive",
     search: "Search...",
     all: "All", totalLeads: "Total Leads", newLeads: "New",
     activeDeals: "Active Deals", doneDeals: "Done Deals",
-    addLead: "Add Lead", addUser: "Add User", addTask: "Add Task", addRequest: "Add Request",
+    addLead: "Add Lead", addUser: "Add User", addTask: "Add Task", addRequest: "Add Number",
     name: "Name", phone: "Phone", phone2: "Alt. Phone", email: "Email", budget: "Budget",
     project: "Project", source: "Source", agent: "Agent",
     status: "Status", cancel: "Cancel", save: "Save", add: "Add", edit: "Edit",
@@ -123,7 +123,7 @@ var TR = {
     bulkReassign: "Bulk Reassign", selectAll: "Select All", reassignTo: "Reassign To",
     whatsapp: "WhatsApp", call: "Call",
     propertyType: "Property Type", area: "Area",
-    totalRequests: "Total Requests",
+    totalRequests: "Total Numbers",
     restore: "Restore",
     overdue: "Overdue",
     noActivity: "No activity +3 days",
@@ -309,8 +309,13 @@ var Sidebar = function(p) {
     {p.isMobile&&p.open&&<div onClick={p.onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.48)", zIndex:140 }}/>}
     <div style={st}>
       <div style={{ padding:"18px", display:"flex", alignItems:"center", gap:10, borderBottom:"1px solid rgba(255,255,255,0.08)", minHeight:68 }}>
-        <div style={{ width:36, height:36, borderRadius:10, background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:14, color:"#fff" }}>ARO</div>
-        <div style={{ flex:1 }}><div style={{ color:"#fff", fontWeight:700, fontSize:15 }}>CRM ARO</div><div style={{ color:"rgba(255,255,255,0.4)", fontSize:10 }}>Real Estate CRM</div></div>
+        <div style={{ width:38, height:38, borderRadius:10, background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:13, color:"#fff", flexShrink:0, letterSpacing:"-0.5px" }}>ARO</div>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ color:"#fff", fontWeight:700, fontSize:14, display:"flex", alignItems:"center", gap:6 }}>
+            <span>CRM ARO</span>
+          </div>
+          <div style={{ color:"rgba(255,255,255,0.4)", fontSize:9 }}>Real Estate Platform</div>
+        </div>
         {p.isMobile&&<button onClick={p.onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"rgba(255,255,255,0.6)", display:"flex" }}><X size={18}/></button>}
       </div>
       <div style={{ flex:1, padding:"8px 6px", overflowY:"auto" }}>
@@ -561,7 +566,9 @@ var LeadsPage = function(p) {
     {importMsg&&<div style={{ marginBottom:10, padding:"9px 14px", background:importMsg.startsWith("✅")?"#DCFCE7":"#FEE2E2", color:importMsg.startsWith("✅")?"#15803D":"#B91C1C", borderRadius:9, fontSize:13 }}>{importMsg}</div>}
 
     <div style={{ display:"flex", gap:14 }}>
-      {/* Table */}
+      {/* Status dropdown overlay */}
+      {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
+    {/* Table */}
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?500:620 }}>
@@ -595,12 +602,14 @@ var LeadsPage = function(p) {
                         onClick={function(e){e.stopPropagation();setStatusDrop(statusDrop===lid?null:lid);}}>
                         {so.label} ▼
                       </span>
-                      {statusDrop===lid&&<div style={{ position:"absolute", top:"110%", right:0, zIndex:200, background:"#fff", borderRadius:12, padding:6, minWidth:160, boxShadow:"0 8px 32px rgba(0,0,0,0.18)", border:"1px solid #E8ECF1" }}>
-                        {sc.map(function(s){return <div key={s.value} onClick={function(e){e.stopPropagation();setSelected(lead);reqStatus(lid,s.value);setStatusDrop(null);}} style={{ padding:"8px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:8, background:lead.status===s.value?s.bg:"transparent", fontSize:13 }}
+                      {statusDrop===lid&&<div style={{ position:"fixed", top:"50%", left:"50%", transform:"translate(-50%,-50%)", zIndex:500, background:"#fff", borderRadius:14, padding:8, minWidth:180, boxShadow:"0 16px 48px rgba(0,0,0,0.22)", border:"1px solid #E8ECF1" }} onClick={function(e){e.stopPropagation();}}>
+                        <div style={{ fontSize:12, fontWeight:600, color:C.textLight, padding:"6px 10px 10px", borderBottom:"1px solid #F1F5F9", marginBottom:4 }}>{t.changeStatus}</div>
+                        {sc.map(function(s){return <div key={s.value} onClick={function(e){e.stopPropagation();setSelected(lead);reqStatus(lid,s.value);setStatusDrop(null);}} style={{ padding:"9px 12px", borderRadius:9, cursor:"pointer", display:"flex", alignItems:"center", gap:10, background:lead.status===s.value?s.bg:"transparent", fontSize:13, fontWeight:lead.status===s.value?600:400 }}
                           onMouseEnter={function(e){if(lead.status!==s.value)e.currentTarget.style.background="#F8FAFC";}}
-                          onMouseLeave={function(e){if(lead.status!==s.value)e.currentTarget.style.background="transparent";}}>
-                          <span style={{ width:10, height:10, borderRadius:"50%", background:s.color, flexShrink:0 }}/>{s.label}
+                          onMouseLeave={function(e){if(lead.status!==s.value)e.currentTarget.style.background=lead.status===s.value?s.bg:"transparent";}}>
+                          <span style={{ width:10, height:10, borderRadius:"50%", background:s.color, flexShrink:0 }}/><span style={{ color:s.color }}>{s.label}</span>
                         </div>;})}
+                        <div style={{ borderTop:"1px solid #F1F5F9", marginTop:4, paddingTop:4 }}><button onClick={function(e){e.stopPropagation();setStatusDrop(null);}} style={{ width:"100%", padding:"7px", borderRadius:8, border:"none", background:"#F1F5F9", cursor:"pointer", fontSize:12, color:C.textLight }}>{t.cancel}</button></div>
                       </div>}
                     </div>
                   </td>
@@ -935,7 +944,9 @@ var DailyRequestsPage = function(p) {
   var [form,setForm]=useState({name:"",phone:"",phone2:"",email:"",budget:"",propertyType:"",area:"",notes:"",agentId:"",callbackTime:""});
 
   useEffect(function(){
-    apiFetch("/api/daily-requests","GET",null,p.token).then(function(data){setRequests(data);setLoading(false);}).catch(function(){setLoading(false);});
+    apiFetch("/api/daily-requests","GET",null,p.token)
+      .then(function(data){ if(Array.isArray(data)){setRequests(data);}else{setRequests([]);} setLoading(false); })
+      .catch(function(e){ console.error("Daily requests error:",e); setRequests([]); setLoading(false); });
   },[]);
 
   var filtered=requests.filter(function(r){
@@ -977,6 +988,7 @@ var DailyRequestsPage = function(p) {
   return <div style={{ padding:"18px 16px 40px" }}>
     <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
 
+    {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
     {/* Stats + Add */}
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
       <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
@@ -1028,12 +1040,14 @@ var DailyRequestsPage = function(p) {
                         onClick={function(e){e.stopPropagation();setStatusDrop(statusDrop===rid?null:rid);}}>
                         {so.label} ▼
                       </span>
-                      {statusDrop===rid&&<div style={{ position:"absolute", top:"110%", right:0, zIndex:200, background:"#fff", borderRadius:12, padding:6, minWidth:160, boxShadow:"0 8px 32px rgba(0,0,0,0.18)", border:"1px solid #E8ECF1" }}>
-                        {sc.map(function(s){return <div key={s.value} onClick={function(e){e.stopPropagation();setSelected(r);reqStatus(rid,s.value);setStatusDrop(null);}} style={{ padding:"8px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:8, background:r.status===s.value?s.bg:"transparent", fontSize:13 }}
+                      {statusDrop===rid&&<div style={{ position:"fixed", top:"50%", left:"50%", transform:"translate(-50%,-50%)", zIndex:500, background:"#fff", borderRadius:14, padding:8, minWidth:180, boxShadow:"0 16px 48px rgba(0,0,0,0.22)", border:"1px solid #E8ECF1" }} onClick={function(e){e.stopPropagation();}}>
+                        <div style={{ fontSize:12, fontWeight:600, color:C.textLight, padding:"6px 10px 10px", borderBottom:"1px solid #F1F5F9", marginBottom:4 }}>{t.changeStatus}</div>
+                        {sc.map(function(s){return <div key={s.value} onClick={function(e){e.stopPropagation();setSelected(r);reqStatus(rid,s.value);setStatusDrop(null);}} style={{ padding:"9px 12px", borderRadius:9, cursor:"pointer", display:"flex", alignItems:"center", gap:10, background:r.status===s.value?s.bg:"transparent", fontSize:13 }}
                           onMouseEnter={function(e){if(r.status!==s.value)e.currentTarget.style.background="#F8FAFC";}}
                           onMouseLeave={function(e){if(r.status!==s.value)e.currentTarget.style.background="transparent";}}>
-                          <span style={{ width:10, height:10, borderRadius:"50%", background:s.color, flexShrink:0 }}/>{s.label}
+                          <span style={{ width:10, height:10, borderRadius:"50%", background:s.color, flexShrink:0 }}/><span style={{ color:s.color }}>{s.label}</span>
                         </div>;})}
+                        <div style={{ borderTop:"1px solid #F1F5F9", marginTop:4, paddingTop:4 }}><button onClick={function(e){e.stopPropagation();setStatusDrop(null);}} style={{ width:"100%", padding:"7px", borderRadius:8, border:"none", background:"#F1F5F9", cursor:"pointer", fontSize:12 }}>{t.cancel}</button></div>
                       </div>}
                     </div>
                   </td>
@@ -1296,7 +1310,16 @@ var ProjectsPage = function(p) {
 };
 
 var SettingsPage = function(p) {
-  var t=p.t; var [company,setCompany]=useState("شركة ARO العقارية"); var [em,setEm]=useState("admin@aro.com"); var [ph,setPh]=useState("01012345678");
+  var t=p.t;
+  var getSaved = function(k,def){ try{ return localStorage.getItem('crm_set_'+k)||def; }catch(e){return def;} };
+  var [company,setCompany]=useState(function(){return getSaved('company','شركة ARO العقارية');});
+  var [em,setEm]=useState(function(){return getSaved('email','admin@aro.com');});
+  var [ph,setPh]=useState(function(){return getSaved('phone','01012345678');});
+  var [saved,setSaved]=useState(false);
+  var doSave=function(){
+    try{ localStorage.setItem('crm_set_company',company); localStorage.setItem('crm_set_email',em); localStorage.setItem('crm_set_phone',ph); }catch(e){}
+    setSaved(true); setTimeout(function(){setSaved(false);},2500);
+  };
   return <div style={{ padding:"18px 16px 40px" }}>
     <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.settings}</h2>
     <Card style={{ maxWidth:520 }}>
@@ -1304,7 +1327,8 @@ var SettingsPage = function(p) {
       <Inp label={t.email} value={em} onChange={function(e){setEm(e.target.value);}}/>
       <Inp label={t.phone} value={ph} onChange={function(e){setPh(e.target.value);}}/>
       <Inp label={t.language} type="select" value={p.lang} onChange={function(e){p.setLang(e.target.value);}} options={[{value:"ar",label:"عربي"},{value:"en",label:"English"}]}/>
-      <Btn>{t.save}</Btn>
+      {saved&&<div style={{marginBottom:12,padding:"10px 14px",background:"#DCFCE7",borderRadius:10,color:"#15803D",fontSize:13,fontWeight:600}}>✅ تم الحفظ بنجاح</div>}
+      <Btn onClick={doSave}>{t.save}</Btn>
     </Card>
   </div>;
 };
@@ -1340,8 +1364,22 @@ export default function CRMApp() {
     setLoading(false);
   },[]);
 
-  var handleLogin=function(user,tok){setCurrentUser(user);setToken(tok);loadData(tok);};
-  var handleLogout=function(){setCurrentUser(null);setToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);};
+  // Load saved session on startup
+  useEffect(function(){
+    try {
+      var saved = localStorage.getItem('crm_aro_session');
+      if (saved) {
+        var s = JSON.parse(saved);
+        if (s.user && s.token) { setCurrentUser(s.user); setToken(s.token); loadData(s.token); }
+      }
+    } catch(e) {}
+  }, []);
+
+  var handleLogin=function(user,tok){
+    setCurrentUser(user); setToken(tok); loadData(tok);
+    try { localStorage.setItem('crm_aro_session', JSON.stringify({user:user,token:tok})); } catch(e){}
+  };
+  var handleLogout=function(){setCurrentUser(null);setToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg){setPage(pg);setInitSelected(null);};
 
   if(!currentUser) return <LoginPage t={t} onLogin={handleLogin}/>;
