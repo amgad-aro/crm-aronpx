@@ -393,6 +393,71 @@ app.post("/api/push/subscribe", auth, async function(req, res) {
   if (!exists) pushSubscriptions.push(Object.assign({ userId: req.user.id }, sub));
   res.json({ ok: true });
 });
+// ===== FACEBOOK WEBHOOK =====
+app.get("/api/fb-webhook", function(req, res) {
+  var mode = req.query["hub.mode"];
+  var token = req.query["hub.verify_token"];
+  var challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === process.env.FB_VERIFY_TOKEN) {
+    res.status(200).send(challenge);
+  } else {
+    res.status(403).json({ error: "Forbidden" });
+  }
+});
+
+app.post("/api/fb-webhook", async function(req, res) {
+  try {
+    var body = req.body;
+    if (body.object === "page") {
+      for (var entry of body.entry) {
+        for (var change of (entry.changes || [])) {
+          if (change.field === "leadgen") {
+            var leadgenId = change.value.leadgen_id;
+            var formId = change.value.form_id;
+            var fbRes = await fetch("https://graph.facebook.com/v19.0/" + leadgenId + "?fields=field_data&access_token=" + process.env.FB_PAGE_TOKEN);
+            var fbData = await fbRes.json();
+            if (fbData.field_data) {
+              var leadData = {};
+              fbData.field_data.forEach(function(field) {
+                var val = field.values && field.values[0] ? field.values[0] : "";
+                var key = field.name.toLowerCase();
+                if (key.includes("name")) leadData.name = val;
+                else if (key.includes("phone") || key.includes("mobile")) leadData.phone = val;
+                else if (key.includes("email")) leadData.email = val;
+              });
+              if (leadData.name || leadData.phone) {
+                var agents = await User.find({ role: { $in: ["sales","manager"] }, active: true });
+                var agentId = null;
+                if (agents.length > 0) {
+                  var counts = await Promise.all(agents.map(function(a) { return Lead.countDocuments({ agentId: a._id }); }));
+                  agentId = agents[counts.indexOf(Math.min(...counts))]._id;
+                }
+                var newLead = await Lead.create({ name: leadData.name || "Facebook Lead", phone: leadData.phone || "", email: leadData.email || "", source: "Facebook", status: "Potential", agentId: agentId, lastActivityTime: new Date(), notes: "من Facebook Lead Ads تلقائياً" });
+                await Activity.create({ userId: agentId, leadId: newLead._id, type: "note", note: "📘 عميل جديد من Facebook Lead Ads" });
+                console.log("✅ FB lead saved:", newLead.name);
+              }
+            }
+          }
+        }
+      }
+    }
+    res.status(200).json({ status: "ok" });
+  } catch(e) {
+    console.error("FB Webhook error:", e.message);
+    res.status(200).json({ status: "ok" });
+  }
+});
+
+// ===== EMAIL NOTIFICATIONS =====
+var nodemailer = require("nodemailer");
+var emailTransporter = nodemailer.createTransport({ service: "gmail", auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD } });
+var sendDealEmail = async function(lead, agentName) {
+  if (!process.env.GMAIL_USER || !process.env.ADMIN_EMAIL) return;
+  try {
+    await emailTransporter.sendMail({ from: process.env.GMAIL_USER, to: process.env.ADMIN_EMAIL, subject: "🎉 صفقة جديدة — " + lead.name, html: "<div style='font-family:Arial;direction:rtl;padding:20px'><h2 style='color:#1B3A5C'>🎉 تم إغلاق صفقة جديدة!</h2><p><b>العميل:</b> " + lead.name + "</p><p><b>الهاتف:</b> " + lead.phone + "</p><p><b>المشروع:</b> " + lead.project + "</p><p><b>الميزانية:</b> " + lead.budget + "</p><p><b>الموظف:</b> " + agentName + "</p></div>" });
+    console.log("✅ Email sent:", lead.name);
+  } catch(e) { console.error("Email error:", e.message); }
+};
 app.listen(PORT, function() {
   console.log("CRM ARO Server running on port " + PORT);
 });
