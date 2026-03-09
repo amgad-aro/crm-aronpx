@@ -444,6 +444,7 @@ var LeadsPage = function(p) {
   filtered = filtered.filter(function(l){return matchSearch(l,p.search);});
 
   var [selected, setSelected] = useState(null);
+  var [statusDrop, setStatusDrop] = useState(null);
   var [showAdd, setShowAdd] = useState(false);
   var [editLead, setEditLead] = useState(null);
   var [showStatusPicker, setShowStatusPicker] = useState(false);
