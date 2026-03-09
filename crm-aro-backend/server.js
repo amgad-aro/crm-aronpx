@@ -14,6 +14,12 @@ var app = express();
 app.use(cors());
 app.use(express.json());
 
+// TEST ROUTE - DELETE AFTER VERIFY
+app.get("/api/test-webhook", function(req, res) {
+  res.json({ status: "ok", token: process.env.FB_VERIFY_TOKEN ? "SET" : "NOT SET" });
+});
+
+
 // ===== CONNECT TO MONGODB =====
 mongoose.connect(process.env.MONGODB_URI).then(function() {
   console.log("Connected to MongoDB");
@@ -462,3 +468,6 @@ var sendDealEmail = async function(lead, agentName) {
 app.listen(PORT, function() {
   console.log("CRM ARO Server running on port " + PORT);
 });
+  
+ 
+ 
