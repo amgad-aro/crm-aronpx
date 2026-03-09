@@ -462,5 +462,3 @@ var sendDealEmail = async function(lead, agentName) {
 app.listen(PORT, function() {
   console.log("CRM ARO Server running on port " + PORT);
 });
-   
- 
