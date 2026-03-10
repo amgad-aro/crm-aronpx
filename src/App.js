@@ -1483,7 +1483,7 @@ var DailyRequestsPage = function(p) {
 // ===== USERS =====
 var UsersPage = function(p) {
   var t=p.t; var [showAdd,setShowAdd]=useState(false); var [saving,setSaving]=useState(false);
-  var [nU,setNU]=useState({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15});
+  var [nU,setNU]=useState({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15,teamId:"",teamName:""});
   var [pwModal,setPwModal]=useState(null); // {userId, userName}
   var [pwForm,setPwForm]=useState({newPass:"",confirmPass:""});
   var [pwMsg,setPwMsg]=useState(""); var [pwSaving,setPwSaving]=useState(false);
@@ -1531,6 +1531,10 @@ var UsersPage = function(p) {
         <Inp label={t.email} value={nU.email} onChange={function(e){setNU(Object.assign({},nU,{email:e.target.value}));}}/>
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.phone} value={nU.phone} onChange={function(e){setNU(Object.assign({},nU,{phone:e.target.value}));}}/></div>
         <Inp label={t.monthlyTarget} type="number" value={nU.monthlyTarget} onChange={function(e){setNU(Object.assign({},nU,{monthlyTarget:Number(e.target.value)}));}}/>
+      {(nU.role==="sales"||nU.role==="manager")&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
+        <Inp label={"اسم الفريق"} value={nU.teamName||""} onChange={function(e){setNU(Object.assign({},nU,{teamName:e.target.value}));}} placeholder="مثال: فريق أ"/>
+        <Inp label={"كود الفريق"} value={nU.teamId||""} onChange={function(e){setNU(Object.assign({},nU,{teamId:e.target.value}));}} placeholder="team-a"/>
+      </div>}
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.role} type="select" value={nU.role} onChange={function(e){setNU(Object.assign({},nU,{role:e.target.value}));}} options={[{value:"admin",label:t.admin},{value:"manager",label:t.salesManager},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/></div>
       </div>
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={add} loading={saving} style={{ flex:1 }}>{t.add}</Btn></div>
