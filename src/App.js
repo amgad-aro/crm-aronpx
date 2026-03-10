@@ -1,12 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-// Load Cairo font
-if (!document.getElementById('cairo-font')) {
-  var link = document.createElement('link');
-  link.id = 'cairo-font';
-  link.rel = 'stylesheet';
-  link.href = 'https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap';
-  document.head.appendChild(link);
-}
+
 import {
   Search, Bell, Plus, Phone, Calendar, Building, Users, BarChart3,
   Settings, Home, Briefcase, Target, TrendingUp, UserPlus, CheckCircle,
@@ -1009,7 +1002,7 @@ var DashboardPage = function(p) {
       <StatCard icon={Target} label={t.newLeads} value={myLeads.filter(function(l){return l.status==="Potential";}).length+""} c={C.success} onClick={function(){p.nav("leads");p.setFilter("Potential");}}/>
       <StatCard icon={Briefcase} label={t.activeDeals} value={myLeads.filter(function(l){return["HotCase","CallBack","MeetingDone"].includes(l.status);}).length+""} c={C.accent} onClick={function(){p.nav("leads");p.setFilter("HotCase");}}/>
       <StatCard icon={DollarSign} label={t.doneDeals} value={myLeads.filter(function(l){return l.status==="DoneDeal";}).length+""} c={C.primary} onClick={function(){p.nav("deals");}}/>
-      <StatCard icon={Activity} label={"جدد اليوم"} value={todayLeads.length+""} c={"#8B5CF6"}/>
+      <StatCard icon={Activity} label={"جدد اليوم"} value={(function(){ return myLeads.filter(function(l){ return l.createdAt && (Date.now()-new Date(l.createdAt).getTime())<86400000; }).length+""; })()} c={"#8B5CF6"}/>
     </div>
     <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
       <Card style={{ flex:2, minWidth:250 }}>
@@ -1593,6 +1586,13 @@ export default function CRMApp() {
   var [initSelected,setInitSelected]=useState(null);
   var [search,setSearch]=useState("");
   var [isOnline,setIsOnline]=useState(navigator.onLine);
+  useEffect(function(){
+    if (!document.getElementById('cairo-font')) {
+      var link=document.createElement('link'); link.id='cairo-font'; link.rel='stylesheet';
+      link.href='https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap';
+      document.head.appendChild(link);
+    }
+  },[]);
   
   useEffect(function(){
     var goOnline=function(){setIsOnline(true);};
@@ -1672,7 +1672,7 @@ export default function CRMApp() {
             note: "🔄 تحويل تلقائي من " + fromName + " إلى " + targetAgent.name + " (فات موعد المكالمة)"
           }, token);
           setLeads(function(prev){ return prev.map(function(l){ return gid(l)===gid(lead)?updated:l; }); });
-          showBrowserNotif("🔄 تحويل تلقائي", lead.name+" تم تحويله لـ "+nextAgent.name);
+          showBrowserNotif("🔄 تحويل تلقائي", lead.name+" تم تحويله لـ "+(targetAgent?targetAgent.name:""));
         } catch(e) { console.error("Auto reassign error:", e); }
       }
     };
