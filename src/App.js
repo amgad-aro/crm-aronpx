@@ -272,17 +272,18 @@ var StatusModal = function(p) {
   var needsCb = p.newStatus==="CallBack" || p.newStatus==="NoAnswer";
   var isReject = p.newStatus==="NotInterested";
   useEffect(function(){setComment("");setCbTime("");setErr(false);},[p.show]);
+  var isNewLead = p.newStatus==="NewLead";
   var submit = async function() {
     if (needsCb && !cbTime) { alert("اختار موعد المكالمة"); return; }
-    if (!needsCb && !isReject && !comment.trim()) { setErr(true); return; }
+    if (!needsCb && !isReject && !isNewLead && !comment.trim()) { setErr(true); return; }
     setSaving(true); await p.onConfirm(comment.trim(), cbTime); setSaving(false); setComment(""); setCbTime(""); setErr(false);
   };
   return <Modal show={p.show} onClose={p.onClose} title={p.t.changeStatus}>
     {ns && <div style={{ marginBottom:14, padding:"10px 14px", background:ns.bg, borderRadius:10, display:"flex", alignItems:"center", gap:8 }}><span style={{ width:10, height:10, borderRadius:"50%", background:ns.color }}/><span style={{ fontSize:14, fontWeight:600, color:ns.color }}>{ns.label}</span></div>}
-    {needsCb && <div style={{ marginBottom:12 }}>
-      <Inp label={"📅 موعد المكالمة القادمة"} type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);}} req/>
-      <div style={{ fontSize:11, color:"#6366F1", marginTop:-8, marginBottom:10 }}>🔔 سيتم تذكيرك قبل الموعد بـ 15 دقيقة</div>
-    </div>}
+    <div style={{ marginBottom:12 }}>
+      <Inp label={"📅 موعد المكالمة القادمة "+(needsCb?"(مطلوب)":"(اختياري)")} type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);}} req={needsCb}/>
+      {cbTime&&<div style={{ fontSize:11, color:"#6366F1", marginTop:-8, marginBottom:10 }}>🔔 سيتم تذكيرك قبل الموعد بـ 15 دقيقة</div>}
+    </div>
     {isReject && <div style={{ marginBottom:12 }}>
       <div style={{ fontSize:12, fontWeight:600, marginBottom:8, color:"#EF4444" }}>سبب الرفض:</div>
       <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:10 }}>
@@ -291,7 +292,7 @@ var StatusModal = function(p) {
         })}
       </div>
     </div>}
-    {!needsCb && <Inp label={isReject?"ملاحظة إضافية (اختياري)":p.t.statusComment} type="textarea" placeholder={p.t.statusCommentPH} value={comment} onChange={function(e){setComment(e.target.value);setErr(false);}} req={!isReject}/>}
+    {!needsCb && !isNewLead && <Inp label={isReject?"ملاحظة إضافية (اختياري)":p.t.statusComment} type="textarea" placeholder={p.t.statusCommentPH} value={comment} onChange={function(e){setComment(e.target.value);setErr(false);}} req={!isReject}/>}
     {needsCb && <Inp label={"ملاحظة (اختياري)"} type="textarea" value={comment} onChange={function(e){setComment(e.target.value);}}/>}
     {err && <div style={{ color:C.danger, fontSize:12, marginBottom:12, padding:"8px 12px", background:"#FEF2F2", borderRadius:8 }}>{p.t.commentRequired}</div>}
     <div style={{ display:"flex", gap:10 }}><Btn outline onClick={p.onClose} style={{ flex:1 }}>{p.t.cancel}</Btn><Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.t.save}</Btn></div>
@@ -468,7 +469,7 @@ var LeadForm = function(p) {
       <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder="01xxxxxxxxx"/>
       <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder="اختياري"/>
       <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
-      <Inp label={t.budget+" (بالمليون)"} value={form.budget} onChange={function(e){upd("budget",e.target.value);}}/>
+      <Inp label={t.budget} value={form.budget} onChange={function(e){upd("budget",e.target.value);}}/>
     </div>
     <Inp label={t.project} type="select" value={form.project} onChange={function(e){upd("project",e.target.value);}} options={PROJECTS.map(function(x){return{value:x,label:x};})}/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
@@ -799,7 +800,7 @@ var LeadsPage = function(p) {
                     {lead.phone2&&<div style={{ fontSize:10, color:C.textLight, direction:"ltr" }}>{lead.phone2}</div>}
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap" }}>
-                    {lead.phone}
+                    {lead.phone}{lead.phone2&&<div style={{ fontSize:10, color:C.textLight }}>{lead.phone2}</div>}
                     <div style={{ display:"flex", gap:4, marginTop:3 }}>
                       <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/> {t.call}</a>
                       <a href={"https://wa.me/2"+lead.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}>💬 {t.whatsapp}</a>
@@ -1110,7 +1111,7 @@ var DealsPage = function(p) {
     </div>
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
-        initial={{name:"",phone:"",phone2:"",email:"",budget:"",project:PROJECTS[0],source:"Referral",agentId:"",callbackTime:"",notes:"",status:"DoneDeal"}}
+        initial={{name:"",phone:"",phone2:"",email:"",budget:"",project:"",source:"Referral",agentId:"",callbackTime:"",notes:"",status:"DoneDeal"}}
         onClose={function(){setShowAdd(false);}}
         onSave={function(lead){p.setLeads(function(prev){return [lead].concat(prev);});setShowAdd(false);}}/>
     </Modal>
@@ -1135,43 +1136,91 @@ var DealsPage = function(p) {
 
 // ===== TASKS =====
 var TasksPage = function(p) {
-  var t=p.t; var [showAdd,setShowAdd]=useState(false); var [newT,setNewT]=useState({title:"",type:"call",time:"",leadId:""}); var [saving,setSaving]=useState(false);
-  var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
-  var myTasks=isAdmin?p.tasks:p.tasks.filter(function(tk){var uid=tk.userId&&tk.userId._id?tk.userId._id:tk.userId;return uid===p.cu.id;});
-  var add=async function(){if(!newT.title)return;setSaving(true);try{var task=await apiFetch("/api/tasks","POST",Object.assign({userId:p.cu.id},newT),p.token);p.setTasks(function(prev){return [task].concat(prev);});setShowAdd(false);setNewT({title:"",type:"call",time:"",leadId:""});}catch(e){alert(e.message);}setSaving(false);};
-  var toggle=async function(task){var tid=gid(task);try{var upd=await apiFetch("/api/tasks/"+tid,"PUT",{done:!task.done},p.token);p.setTasks(function(prev){return prev.map(function(x){return gid(x)===tid?upd:x;});});}catch(e){}};
-  var del=async function(tid){try{await apiFetch("/api/tasks/"+tid,"DELETE",null,p.token);p.setTasks(function(prev){return prev.filter(function(x){return gid(x)!==tid;});});}catch(e){}};
-  return <div style={{ padding:"18px 16px 40px" }}>
-    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:18 }}>
-      <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.tasks} <span style={{ fontWeight:400, fontSize:14, color:C.textLight }}>({myTasks.filter(function(tk){return !tk.done;}).length} {t.pending})</span></h2>
-      <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {t.addTask}</Btn>
+  var t=p.t;
+  var [showAdd,setShowAdd]=useState(false);
+  var [saving,setSaving]=useState(false);
+  var [nT,setNT]=useState({title:"",type:"call",time:"",notes:""});
+  var now=Date.now();
+  var today=new Date().toDateString();
+
+  var myLeads=p.leads.filter(function(l){
+    if(l.archived)return false;
+    var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
+    return p.cu.role==="admin"||p.cu.role==="manager"||aid===p.cu.id;
+  });
+
+  var callbacksToday=myLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).toDateString()===today;}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
+  var overdue=myLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime)<new Date()&&new Date(l.callbackTime).toDateString()!==today;});
+  var noActivity=myLeads.filter(function(l){return (!l.lastActivityTime||(now-new Date(l.lastActivityTime).getTime())>3*24*60*60*1000)&&l.status!=="DoneDeal"&&l.status!=="NotInterested";});
+
+  var myTasks=p.tasks.filter(function(tk){return !tk.done&&(p.cu.role==="admin"||p.cu.role==="manager"||tk.userId===p.cu.id);});
+  var overdueTasks=myTasks.filter(function(tk){return tk.time&&new Date(tk.time)<new Date();});
+  var todayTasks=myTasks.filter(function(tk){return tk.time&&new Date(tk.time).toDateString()===today&&new Date(tk.time)>=new Date();});
+  var upcoming=myTasks.filter(function(tk){return !tk.time||(new Date(tk.time)>new Date()&&new Date(tk.time).toDateString()!==today);});
+
+  var addTask=async function(){if(!nT.title)return;setSaving(true);try{var tk=await apiFetch("/api/tasks","POST",Object.assign({},nT,{userId:p.cu.id}),p.token);p.setTasks(function(prev){return [tk].concat(prev);});setShowAdd(false);setNT({title:"",type:"call",time:"",notes:""});}catch(e){}setSaving(false);};
+  var doneTask=async function(tid){try{await apiFetch("/api/tasks/"+tid,"PUT",{done:true},p.token);p.setTasks(function(prev){return prev.map(function(tk){return tk._id===tid?Object.assign({},tk,{done:true}):tk;});});}catch(e){}};
+
+  var Sec=function(sp){return <div style={{ marginBottom:16 }}>
+    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
+      <span style={{ fontSize:18 }}>{sp.icon}</span>
+      <span style={{ fontWeight:700, fontSize:14 }}>{sp.title}</span>
+      <span style={{ background:sp.color+"18", color:sp.color, padding:"1px 8px", borderRadius:20, fontSize:11, fontWeight:700 }}>{sp.count}</span>
     </div>
-    {myTasks.length===0&&<div style={{ textAlign:"center", padding:50, color:C.textLight }}>لا يوجد مهام</div>}
-    {myTasks.map(function(tk){var tid=gid(tk);var lName=tk.leadId&&tk.leadId.name?tk.leadId.name:"";var lId=tk.leadId?gid(tk.leadId):null;var ml=lId?p.leads.find(function(l){return gid(l)===lId;}):null;
-      return <div key={tid} style={{ background:"#fff", borderRadius:10, padding:"11px 14px", marginBottom:6, border:"1px solid #E8ECF1", display:"flex", alignItems:"center", gap:11, opacity:tk.done?0.5:1 }}>
-        <div onClick={function(){toggle(tk);}} style={{ width:22, height:22, borderRadius:6, border:tk.done?"none":"2px solid #CBD5E1", background:tk.done?C.success:"transparent", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}>{tk.done&&<CheckCircle size={12} color="#fff"/>}</div>
-        <div style={{ flex:1 }}>
-          <div style={{ fontSize:13, fontWeight:600, textDecoration:tk.done?"line-through":"none" }}>{tk.title}</div>
-          <div style={{ fontSize:11, color:C.textLight, marginTop:2, display:"flex", gap:8 }}>
-            {lName&&<span onClick={function(){if(ml){p.setInitSelected(ml);p.nav("leads");}}} style={{ color:ml?C.info:C.textLight, cursor:ml?"pointer":"default", textDecoration:ml?"underline":"none" }}>{lName}</span>}
-            {tk.time&&<span>{tk.time}</span>}
-          </div>
-        </div>
-        <Badge bg={tk.type==="call"?"#DCFCE7":tk.type==="meeting"?"#DBEAFE":"#FEF3C7"} color={tk.type==="call"?"#15803D":tk.type==="meeting"?"#1D4ED8":"#B45309"}>{tk.type}</Badge>
-        <button onClick={function(){del(tid);}} style={{ width:26, height:26, borderRadius:6, border:"none", background:"transparent", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Trash2 size={13} color="#CBD5E1"/></button>
-      </div>;
-    })}
-    <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addTask}>
-      <Inp label={t.taskTitle} req value={newT.title} onChange={function(e){setNewT(Object.assign({},newT,{title:e.target.value}));}}/>
-      <Inp label={t.taskType} type="select" value={newT.type} onChange={function(e){setNewT(Object.assign({},newT,{type:e.target.value}));}} options={["call","meeting","email","followup"]}/>
-      <Inp label={t.taskTime} value={newT.time} onChange={function(e){setNewT(Object.assign({},newT,{time:e.target.value}));}} placeholder="10:00 AM"/>
-      <Inp label={t.relatedLead} type="select" value={newT.leadId} onChange={function(e){setNewT(Object.assign({},newT,{leadId:e.target.value}));}} options={[{value:"",label:"-"}].concat(p.leads.filter(function(l){return!l.archived&&l.source!=="Daily Request";}).map(function(l){return{value:gid(l),label:l.name};}))}/>
-      <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={add} loading={saving} style={{ flex:1 }}>{t.add}</Btn></div>
+    {sp.children}
+  </div>;};
+
+  var LRow=function(lp){var l=lp.lead;var ci=callbackColor(l.callbackTime);return <div onClick={function(){p.nav("leads");p.setInitSelected(l);}} style={{ padding:"10px 14px", borderRadius:10, background:"#FAFBFC", border:"1px solid #E8ECF1", marginBottom:8, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+    <div><div style={{ fontWeight:600, fontSize:13 }}>{l.name}</div><div style={{ fontSize:11, color:"#64748B", direction:"ltr" }}>{l.phone}</div></div>
+    <div style={{ textAlign:"left" }}>{l.callbackTime&&<div style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:ci?ci.bg:"#F1F5F9", color:ci?ci.color:"#64748B", fontWeight:600 }}>{l.callbackTime.slice(11,16)}</div>}</div>
+  </div>;};
+
+  var TRow=function(tp){var tk=tp.task;return <div style={{ padding:"10px 14px", borderRadius:10, background:tp.bg||"#F8FAFC", border:"1px solid "+tp.border, marginBottom:8, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+    <div><div style={{ fontWeight:600, fontSize:13 }}>{tk.title}</div><div style={{ fontSize:11, color:tp.tc||"#64748B" }}>{tk.time?tk.time.slice(0,16).replace("T"," "):"بدون موعد"}</div></div>
+    <button onClick={function(){doneTask(tk._id);}} style={{ padding:"4px 12px", borderRadius:7, border:"none", background:C.success, color:"#fff", fontSize:11, fontWeight:600, cursor:"pointer" }}>✓ تم</button>
+  </div>;};
+
+  return <div style={{ padding:"18px 16px 40px" }}>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
+      <div>
+        <h2 style={{ margin:"0 0 2px", fontSize:18, fontWeight:800 }}>☀️ يومي والمهام</h2>
+        <div style={{ fontSize:12, color:C.textLight }}>{new Date().toLocaleDateString("ar-EG",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
+      </div>
+      <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> مهمة جديدة</Btn>
+    </div>
+
+    <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
+      <StatCard icon={Phone} label={"مكالمات اليوم"} value={callbacksToday.length+""} c={C.info}/>
+      <StatCard icon={AlertCircle} label={"متأخرة"} value={(overdue.length+overdueTasks.length)+""} c={C.danger}/>
+      <StatCard icon={Activity} label={"بدون نشاط"} value={noActivity.length+""} c={C.warning}/>
+      <StatCard icon={CheckCircle} label={"مهام اليوم"} value={todayTasks.length+""} c={"#8B5CF6"}/>
+    </div>
+
+    {overdue.length>0&&<Sec icon="⚠️" title="مكالمات متأخرة" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
+    {overdueTasks.length>0&&<Sec icon="🔴" title="مهام متأخرة" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
+    {callbacksToday.length>0&&<Sec icon="📞" title="مكالمات اليوم" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
+    {todayTasks.length>0&&<Sec icon="📋" title="مهام اليوم" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec>}
+    {noActivity.length>0&&<Sec icon="😴" title="بدون نشاط +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
+    {upcoming.length>0&&<Sec icon="📅" title="مهام قادمة" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
+
+    {callbacksToday.length===0&&overdue.length===0&&noActivity.length===0&&myTasks.length===0&&
+      <div style={{ textAlign:"center", padding:"60px 20px" }}>
+        <div style={{ fontSize:48, marginBottom:12 }}>🎉</div>
+        <div style={{ fontSize:16, fontWeight:700, marginBottom:8 }}>يومك نضيف!</div>
+        <div style={{ fontSize:13, color:C.textLight }}>مفيش مهام معلقة دلوقتي</div>
+      </div>}
+
+    <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ مهمة جديدة"}>
+      <Inp label={"عنوان المهمة"} req value={nT.title} onChange={function(e){setNT(function(f){return Object.assign({},f,{title:e.target.value});});}}/>
+      <Inp label={"النوع"} type="select" value={nT.type} onChange={function(e){setNT(function(f){return Object.assign({},f,{type:e.target.value});});}} options={[{value:"call",label:"📞 مكالمة"},{value:"meeting",label:"🤝 اجتماع"},{value:"followup",label:"🔔 متابعة"},{value:"email",label:"📧 إيميل"}]}/>
+      <Inp label={"الموعد"} type="datetime-local" value={nT.time} onChange={function(e){setNT(function(f){return Object.assign({},f,{time:e.target.value});});}}/>
+      <Inp label={"ملاحظات (اختياري)"} type="textarea" value={nT.notes} onChange={function(e){setNT(function(f){return Object.assign({},f,{notes:e.target.value});});}}/>
+      <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addTask} loading={saving} style={{ flex:1 }}>إضافة</Btn></div>
     </Modal>
   </div>;
 };
 
-// ===== ARCHIVE PAGE =====
+
 var ArchivePage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
   var archived=p.leads.filter(function(l){return l.archived;});
@@ -1264,7 +1313,20 @@ var DailyRequestsPage = function(p) {
     if(!form.name||!form.phone)return;setSaving(true);
     try{
       var agentId=form.agentId||(p.cu.role==="sales"?p.cu.id:(salesUsers[0]?gid(salesUsers[0]):p.cu.id));
-      var r=await apiFetch("/api/daily-requests","POST",Object.assign({},form,{agentId:agentId,source:"Daily Request"}),p.token);
+      var submitData={
+        name:form.name,
+        phone:form.phone,
+        phone2:form.phone2||"",
+        propertyType:form.propertyType||"",
+        area:form.area||"",
+        budget:form.budget||"",
+        notes:form.notes||"",
+        callbackTime:form.callbackTime||"",
+        agentId:agentId,
+        source:"Daily Request",
+        status:"NewLead"
+      };
+      var r=await apiFetch("/api/daily-requests","POST",submitData,p.token);
       setRequests(function(prev){return [r].concat(prev);});
       setShowAdd(false);setForm({name:"",phone:"",phone2:"",propertyType:"",area:"",budget:"",notes:"",agentId:"",callbackTime:""});
     }catch(e){alert(e.message);}setSaving(false);
@@ -1734,7 +1796,18 @@ export default function CRMApp() {
 
 
   var getVisibleLeads = function(allLeads, user) {
-    if (!user || user.role === "admin" || user.role === "manager") return allLeads;
+    if (!user || user.role === "admin") return allLeads;
+    if (user.role === "manager") {
+      // Manager sees their team only
+      return allLeads.filter(function(l) {
+        var agent = l.agentId;
+        if (!agent) return false;
+        // If agentId is populated object
+        if (agent.teamId) return agent.teamId === user.teamId;
+        return true; // fallback
+      });
+    }
+    // Sales sees only their leads
     return allLeads.filter(function(l) {
       var aid = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
       return aid === user.id;
@@ -1765,7 +1838,7 @@ export default function CRMApp() {
     setCurrentUser(user); setToken(tok); loadData(tok);
     var defaultPage = (user.role==="sales") ? "myday" : "dashboard";
     setPage(defaultPage);
-    try { localStorage.setItem('crm_aro_session', JSON.stringify({user:user,token:tok})); } catch(e){}
+    try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok})); } catch(e){}
   };
   // ===== AUTO REASSIGN: CallBack leads past callback time -> specific agent from settings =====
   useEffect(function(){
