@@ -153,15 +153,35 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
 });
 
 // ===== LEAD ROUTES =====
+app.get("/api/users", auth, async function(req, res) {
+  try {
+    var query = { active: true };
+    if (req.user.role === "manager") {
+      query.teamId = req.user.teamId;
+    }
+    var users = await User.find(query).select("-password");
+    res.json(users);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/leads", auth, async function(req, res) {
   try {
-    var query = {};
+    var query = { archived: { $ne: true } };
     if (req.user.role === "sales") {
       query.agentId = req.user.id;
+    } else if (req.user.role === "manager") {
+      var teamMembers = await User.find({ teamId: req.user.teamId }).select("_id");
+      var teamIds = teamMembers.map(function(u) { return u._id; });
+      query.agentId = { $in: teamIds };
     }
-    var leads = await Lead.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
+    var leads = await Lead.find(query)
+      .populate("agentId", "name role teamId teamName")
+      .sort({ lastActivityTime: -1 })
+      .limit(2000);
     res.json(leads);
-  } catch (e) {
+  } catch(e) {
     res.status(500).json({ error: e.message });
   }
 });
@@ -468,6 +488,6 @@ var sendDealEmail = async function(lead, agentName) {
 app.listen(PORT, function() {
   console.log("CRM ARO Server running on port " + PORT);
 });
-  
- 
- 
+  
+ 
+ 
