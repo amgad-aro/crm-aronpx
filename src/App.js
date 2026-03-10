@@ -1,10 +1,18 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+// Load Cairo font
+if (!document.getElementById('cairo-font')) {
+  var link = document.createElement('link');
+  link.id = 'cairo-font';
+  link.rel = 'stylesheet';
+  link.href = 'https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap';
+  document.head.appendChild(link);
+}
 import {
   Search, Bell, Plus, Phone, Calendar, Building, Users, BarChart3,
   Settings, Home, Briefcase, Target, TrendingUp, UserPlus, CheckCircle,
   Activity, Layers, DollarSign, X, Lock, Globe, LogOut, Eye, EyeOff,
   Trash2, AlertCircle, Menu, Upload, MessageSquare, ChevronRight,
-  ClipboardList, Edit, Archive, Award, Zap, RotateCcw, ExternalLink, KeyRound
+  ClipboardList, Edit, Archive, Award, Zap, RotateCcw, ExternalLink, KeyRound, FileSpreadsheet
 } from "lucide-react";
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
@@ -71,6 +79,19 @@ var TR = {
     restore: "استعادة",
     overdue: "متأخرون",
     noActivity: "بدون نشاط +3 أيام",
+    exportExcel: "تصدير Excel",
+    vip: "VIP",
+    markVip: "تمييز كـ VIP",
+    removeVip: "إلغاء VIP",
+    quickAdd: "إضافة سريعة",
+    bulkWhatsApp: "واتساب جماعي",
+    waTemplates: "رسائل جاهزة",
+    sendWa: "إرسال واتساب",
+    enableNotif: "تفعيل الإشعارات",
+    notifEnabled: "✅ الإشعارات مفعلة",
+    selectAll: "تحديد الكل",
+    selected: "محدد",
+    msgCopied: "✅ تم نسخ الرسالة",
     changePassword: "تغيير كلمة المرور",
     currentPassword: "كلمة المرور الحالية",
     newPassword: "كلمة المرور الجديدة",
@@ -127,6 +148,19 @@ var TR = {
     restore: "Restore",
     overdue: "Overdue",
     noActivity: "No activity +3 days",
+    exportExcel: "Export Excel",
+    vip: "VIP",
+    markVip: "Mark as VIP",
+    removeVip: "Remove VIP",
+    quickAdd: "Quick Add",
+    bulkWhatsApp: "Bulk WhatsApp",
+    waTemplates: "Message Templates",
+    sendWa: "Send WhatsApp",
+    enableNotif: "Enable Notifications",
+    notifEnabled: "✅ Notifications Enabled",
+    selectAll: "Select All",
+    selected: "Selected",
+    msgCopied: "✅ Message Copied",
     changePassword: "Change Password",
     currentPassword: "Current Password",
     newPassword: "New Password",
@@ -138,7 +172,7 @@ var TR = {
 };
 
 var C = {
-  primary: "#1B3A5C", primaryLight: "#2A5A8C", primaryDark: "#0F2440",
+  primary: "#1a2942", primaryLight: "#243752", primaryDark: "#0d1f33",
   accent: "#E8A838", accentLight: "#F5C563",
   success: "#22C55E", danger: "#EF4444", warning: "#F59E0B", info: "#3B82F6",
   bg: "#F0F2F5", text: "#1E293B", textLight: "#64748B", border: "#E2E8F0"
@@ -261,7 +295,7 @@ var LoginPage = function(p) {
     try { var data = await apiFetch("/api/login","POST",{username:user,password:pass}); p.onLogin(data.user,data.token); }
     catch(e) { setErr(t.loginError); } setLoading(false);
   };
-  return <div style={{ minHeight:"100vh", background:"linear-gradient(135deg,"+C.primaryDark+" 0%,"+C.primary+" 55%,"+C.primaryLight+" 100%)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Segoe UI','Cairo',sans-serif", padding:16 }}>
+  return <div style={{ minHeight:"100vh", background:"linear-gradient(135deg,"+C.primaryDark+" 0%,"+C.primary+" 55%,"+C.primaryLight+" 100%)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Cairo','Segoe UI',sans-serif", padding:16 }}>
     <div style={{ background:"#fff", borderRadius:24, padding:"40px 36px", width:"100%", maxWidth:420, boxShadow:"0 24px 64px rgba(0,0,0,0.28)" }}>
       <div style={{ textAlign:"center", marginBottom:34 }}>
         <div style={{ width:68, height:68, borderRadius:18, background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", display:"inline-flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:22, color:"#fff", boxShadow:"0 8px 24px rgba(232,168,56,0.45)", marginBottom:16 }}>ARO</div>
@@ -437,6 +471,87 @@ var LeadForm = function(p) {
   </div>;
 };
 
+
+
+// ===== BROWSER NOTIFICATIONS =====
+var requestNotifPermission = async function() {
+  if (!("Notification" in window)) return false;
+  if (Notification.permission === "granted") return true;
+  var perm = await Notification.requestPermission();
+  return perm === "granted";
+};
+var showBrowserNotif = function(title, body, onClick) {
+  if (Notification.permission !== "granted") return;
+  var n = new Notification(title, { body: body, icon: "/favicon.ico", badge: "/favicon.ico" });
+  if (onClick) n.onclick = onClick;
+  setTimeout(function() { n.close(); }, 8000);
+};
+
+
+// ===== WHATSAPP TEMPLATES =====
+var WA_TEMPLATES_AR = [
+  { id:1, label:"ترحيب", text:"أهلاً {name} 👋\nأنا {agent} من شركة ARO العقارية\nشكراً لاهتمامك بمشروع {project}\nمتى يناسبك نتكلم؟" },
+  { id:2, label:"متابعة", text:"أهلاً {name}\nبتواصل معاكم بخصوص عرضنا على {project}\nهل عندك وقت نتكلم اليوم؟ 🏠" },
+  { id:3, label:"عرض خاص", text:"🎯 عرض خاص لـ {name}\nلدينا وحدات محدودة في {project}\nبسعر مميز - تواصل معنا الآن! 📞" },
+  { id:4, label:"تأكيد موعد", text:"أهلاً {name} 😊\nبتذكيرك بموعدنا غداً\nنتطلع لنراك! ✅" },
+  { id:5, label:"بعد الاجتماع", text:"شكراً {name} على وقتك الكريم 🙏\nيسعدني خدمتك دائماً\nلو عندك أي استفسار أنا دايماً موجود" },
+];
+
+var fillTemplate = function(template, lead, agentName) {
+  return template
+    .replace(/{name}/g, lead.name || "")
+    .replace(/{agent}/g, agentName || "")
+    .replace(/{project}/g, lead.project || "");
+};
+
+// ===== EXPORT EXCEL =====
+var exportLeadsToExcel = async function(leads, users, filename) {
+  var XLSX = await new Promise(function(resolve) {
+    if (window.XLSX) { resolve(window.XLSX); return; }
+    var s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = function() { resolve(window.XLSX); };
+    document.head.appendChild(s);
+  });
+  var getAgentName = function(lead) {
+    if (!lead.agentId) return "";
+    if (lead.agentId.name) return lead.agentId.name;
+    var u = users.find(function(x) { return gid(x) === lead.agentId; });
+    return u ? u.name : "";
+  };
+  var rows = leads.map(function(l) { return {
+    "الاسم": l.name,
+    "الهاتف": l.phone,
+    "هاتف إضافي": l.phone2 || "",
+    "الإيميل": l.email || "",
+    "المشروع": l.project || "",
+    "الحالة": l.status || "",
+    "المصدر": l.source || "",
+    "الميزانية": l.budget || "",
+    "الموظف": getAgentName(l),
+    "VIP": l.isVIP ? "نعم" : "",
+    "ملاحظات": l.notes || "",
+    "موعد المكالمة": l.callbackTime ? l.callbackTime.slice(0,16).replace("T"," ") : "",
+    "آخر نشاط": l.lastActivityTime ? new Date(l.lastActivityTime).toLocaleDateString("ar-EG") : "",
+    "تاريخ الإضافة": l.createdAt ? new Date(l.createdAt).toLocaleDateString("ar-EG") : "",
+  };});
+  var ws = XLSX.utils.json_to_sheet(rows);
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "العملاء");
+  XLSX.writeFile(wb, (filename || "leads") + "_" + new Date().toISOString().slice(0,10) + ".xlsx");
+};
+
+
+var callbackColor = function(cbTime) {
+  if (!cbTime) return null;
+  var diff = new Date(cbTime).getTime() - Date.now();
+  var mins = diff / 60000;
+  if (mins < 0) return { bg:"#FEE2E2", color:"#DC2626", label:"⚠️ فات الموعد" };
+  if (mins < 60) return { bg:"#FEF3C7", color:"#D97706", label:"🔔 خلال ساعة" };
+  if (mins < 1440) return { bg:"#DCFCE7", color:"#15803D", label:"✅ اليوم" };
+  return null;
+};
+
 // ===== LEADS PAGE =====
 var LeadsPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
@@ -447,6 +562,15 @@ var LeadsPage = function(p) {
   var allVisible = p.leads.filter(function(l){ return !l.archived && (isReq?l.source==="Daily Request":l.source!=="Daily Request"); });
   var filtered = p.leadFilter==="all"?allVisible:allVisible.filter(function(l){return l.status===p.leadFilter;});
   filtered = filtered.filter(function(l){return matchSearch(l,p.search);});
+  if (vipFilter) filtered = filtered.filter(function(l){return l.isVIP;});
+  if (agentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return aid===agentFilter; });
+  filtered = filtered.slice().sort(function(a,b){
+    if (sortBy==="lastActivity") return new Date(b.lastActivityTime||0)-new Date(a.lastActivityTime||0);
+    if (sortBy==="newest") return new Date(b.createdAt||0)-new Date(a.createdAt||0);
+    if (sortBy==="oldest") return new Date(a.createdAt||0)-new Date(b.createdAt||0);
+    if (sortBy==="name") return a.name.localeCompare(b.name,"ar");
+    return 0;
+  });
 
   var [selected, setSelected] = useState(null);
   var [statusDrop, setStatusDrop] = useState(null);
@@ -460,13 +584,27 @@ var LeadsPage = function(p) {
   var [importing, setImporting] = useState(false); var [importMsg, setImportMsg] = useState("");
   var [selected2, setSelected2] = useState([]); // bulk select
   var [showBulk, setShowBulk] = useState(false); var [bulkAgent, setBulkAgent] = useState("");
+  var [showWaTemplates, setShowWaTemplates] = useState(false);
+  var [waLead, setWaLead] = useState(null);
+  var [showQuickAdd, setShowQuickAdd] = useState(false);
+  var [quickForm, setQuickForm] = useState({name:"",phone:"",project:PROJECTS[0],source:"Facebook"});
+  var [quickSaving, setQuickSaving] = useState(false);
+  var [notifGranted, setNotifGranted] = useState(typeof Notification!=="undefined"&&Notification.permission==="granted");
+  var [vipFilter, setVipFilter] = useState(false);
+  var [agentFilter, setAgentFilter] = useState("");
+  var [sortBy, setSortBy] = useState("lastActivity");
   var fileRef = useRef(null);
 
   useEffect(function(){ if(p.initSelected){setSelected(p.initSelected);} },[p.initSelected]);
 
   var getAgentName = function(l){ if(!l.agentId)return"-"; if(l.agentId.name)return l.agentId.name; var u=p.users.find(function(x){return gid(x)===l.agentId;}); return u?u.name:"-"; };
 
-  var reqStatus = function(lid, st) { setPendingStatus({leadId:lid,newStatus:st}); setShowStatusComment(true); };
+  var reqStatus = function(lid, st) {
+    if (st === "DoneDeal") {
+      if (!window.confirm("⚠️ هل أنت متأكد إن الصفقة اتعملت؟ مش هتقدر ترجع!")) return;
+    }
+    setPendingStatus({leadId:lid,newStatus:st}); setShowStatusComment(true);
+  };
 
   var confirmStatus = async function(comment) {
     if(!pendingStatus) return;
@@ -557,12 +695,33 @@ var LeadsPage = function(p) {
       </div>
       <div style={{ display:"flex", gap:7, flexShrink:0, flexWrap:"wrap" }}>
         {selected2.length>0&&isAdmin&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> {t.bulkReassign} ({selected2.length})</Btn>}
+        {selected2.length>0&&<Btn outline onClick={function(){
+          var selectedLeads=filtered.filter(function(l){return selected2.includes(gid(l));});
+          var msg=encodeURIComponent("أهلاً، نحن من شركة ARO العقارية\nلدينا عروض مميزة على مشاريعنا\nتواصل معنا للمزيد 🏠");
+          selectedLeads.forEach(function(l){window.open("https://wa.me/2"+l.phone.replace(/^0/,"")+"?text="+msg,"_blank");});
+        }} style={{ padding:"7px 11px", fontSize:12, color:"#25D366", borderColor:"#25D366" }}>💬 {t.bulkWhatsApp} ({selected2.length})</Btn>}
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
         {isAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
+        {isAdmin&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
+        {!notifGranted&&<Btn outline onClick={async function(){var ok=await requestNotifPermission();setNotifGranted(ok);}} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Bell size={13}/> {t.enableNotif}</Btn>}
+        <Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>
         {isAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
       </div>
     </div>
 
+    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
+      <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+        <option value="lastActivity">⏱ آخر نشاط</option>
+        <option value="newest">🆕 الأحدث</option>
+        <option value="oldest">📅 الأقدم</option>
+        <option value="name">🔤 الاسم</option>
+      </select>
+      {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+        <option value="">👤 كل الموظفين</option>
+        {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
+      </select>}
+      <button onClick={function(){setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP فقط {vipFilter?"✓":""}</button>
+    </div>
     {importMsg&&<div style={{ marginBottom:10, padding:"9px 14px", background:importMsg.startsWith("✅")?"#DCFCE7":"#FEE2E2", color:importMsg.startsWith("✅")?"#15803D":"#B91C1C", borderRadius:9, fontSize:13 }}>{importMsg}</div>}
 
     <div style={{ display:"flex", gap:14 }}>
@@ -580,11 +739,14 @@ var LeadsPage = function(p) {
               {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد بيانات</td></tr>}
               {filtered.map(function(lead){
                 var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0];
-                var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid);
-                return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isChk?"#FFFBEB":"transparent", transition:"background 0.12s" }}>
+                var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
+                return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
                   {isAdmin&&<td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();setSelected2(function(prev){return prev.includes(lid)?prev.filter(function(x){return x!==lid;}):[...prev,lid];});}}><input type="checkbox" checked={isChk} readOnly/></td>}
                   <td style={{ padding:"10px 12px" }}>
-                    <div style={{ fontSize:13, fontWeight:600, color:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
+                    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                      {lead.isVIP&&<span style={{ fontSize:14 }} title="VIP">⭐</span>}
+                      <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
+                    </div>
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
                     {lead.phone2&&<div style={{ fontSize:10, color:C.textLight, direction:"ltr" }}>{lead.phone2}</div>}
                   </td>
@@ -623,7 +785,14 @@ var LeadsPage = function(p) {
                     </select>
                   </td>}
                   <td style={{ padding:"10px 12px", fontSize:11, color:C.accent, whiteSpace:"nowrap" }}>{timeAgo(lead.lastActivityTime,t)}</td>
-                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:lead.callbackTime?C.warning:C.textLight, whiteSpace:"nowrap" }}>{lead.callbackTime?lead.callbackTime.slice(0,16).replace("T"," "):"-"}</td>}
+                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }}>
+                    {lead.callbackTime ? (function(){
+                      var ci = callbackColor(lead.callbackTime);
+                      return <span style={{ padding:"2px 8px", borderRadius:12, background:ci?ci.bg:"transparent", color:ci?ci.color:C.textLight, fontSize:10, fontWeight:ci?600:400 }}>
+                        {lead.callbackTime.slice(0,16).replace("T"," ")}
+                      </span>;
+                    })() : <span style={{ color:C.textLight }}>-</span>}
+                  </td>}
                 </tr>;
               })}
             </tbody>
@@ -670,11 +839,18 @@ var LeadsPage = function(p) {
             </select>
           </div>}
           {/* Details */}
-          {[{l:t.budget,v:selected.budget},{l:t.source,v:selected.source},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:t.budget,v:selected.budget},{l:t.source,v:selected.source},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"تاريخ الإضافة",v:selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-"},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span></div>:null;
           })}
+          {/* WhatsApp Templates */}
+          <div style={{ marginTop:10, display:"flex", gap:6 }}>
+            <button onClick={function(){setWaLead(selected);setShowWaTemplates(true);}} style={{ flex:1, padding:"7px 8px", borderRadius:9, border:"1px solid #25D366", background:"#25D36610", color:"#25D366", fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>💬 {t.waTemplates}</button>
+            <button onClick={async function(){
+              try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{isVIP:!selected.isVIP},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(e){}
+            }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(selected.isVIP?"#F59E0B":"#E2E8F0"), background:selected.isVIP?"#FEF3C7":"#fff", fontSize:13, cursor:"pointer" }} title={selected.isVIP?t.removeVip:t.markVip}>⭐</button>
+          </div>
           {/* Log Activity */}
-          <div style={{ marginTop:12 }}>
+          <div style={{ marginTop:10 }}>
             <button onClick={function(){setShowActForm(!showActForm);}} style={{ width:"100%", padding:"8px", borderRadius:9, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><MessageSquare size={12}/> {t.logActivity}</button>
             {showActForm&&<div style={{ marginTop:9, padding:10, background:"#F8FAFC", borderRadius:10 }}>
               <select value={actType} onChange={function(e){setActType(e.target.value);}} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:7, background:"#fff" }}>
@@ -702,6 +878,52 @@ var LeadsPage = function(p) {
         </div>
       </Card>}
     </div>
+
+    {/* WhatsApp Templates Modal */}
+    {showWaTemplates&&waLead&&<Modal show={true} onClose={function(){setShowWaTemplates(false);setWaLead(null);}} title={"💬 رسائل واتساب — "+waLead.name}>
+      <div style={{ marginBottom:14, padding:"10px 14px", background:"#F0FDF4", borderRadius:10, fontSize:12, color:"#15803D", display:"flex", alignItems:"center", gap:8 }}>
+        <Phone size={14}/> {waLead.phone}{waLead.phone2?" / "+waLead.phone2:""}
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {WA_TEMPLATES_AR.map(function(tmpl){
+          var agentName=p.cu.name;
+          var msg=fillTemplate(tmpl.text,waLead,agentName);
+          var waUrl="https://wa.me/2"+waLead.phone.replace(/^0/,"")+"?text="+encodeURIComponent(msg);
+          return <div key={tmpl.id} style={{ border:"1px solid #E8ECF1", borderRadius:12, padding:14 }}>
+            <div style={{ fontSize:12, fontWeight:700, marginBottom:6, color:C.text }}>{tmpl.label}</div>
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:10, lineHeight:1.6, whiteSpace:"pre-line" }}>{msg}</div>
+            <div style={{ display:"flex", gap:8 }}>
+              <a href={waUrl} target="_blank" rel="noreferrer" style={{ flex:1, padding:"8px", borderRadius:8, background:"#25D366", color:"#fff", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>💬 إرسال</a>
+              <button onClick={function(){navigator.clipboard.writeText(msg);}} style={{ padding:"8px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.textLight }}>📋 نسخ</button>
+            </div>
+          </div>;
+        })}
+      </div>
+    </Modal>}
+
+    {/* Quick Add Modal */}
+    <Modal show={showQuickAdd} onClose={function(){setShowQuickAdd(false);}} title={"⚡ "+t.quickAdd} w={360}>
+      <Inp label={t.name} req value={quickForm.name} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{name:e.target.value});});}}/>
+      <Inp label={t.phone} req value={quickForm.phone} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{phone:e.target.value});});}} placeholder="01xxxxxxxxx"/>
+      <Inp label={t.project} type="select" value={quickForm.project} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{project:e.target.value});});}} options={PROJECTS.map(function(x){return{value:x,label:x};})}/>
+      <Inp label={t.source} type="select" value={quickForm.source} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{source:e.target.value});});}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>
+      <div style={{ display:"flex", gap:10 }}>
+        <Btn outline onClick={function(){setShowQuickAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn>
+        <Btn loading={quickSaving} onClick={async function(){
+          if(!quickForm.name||!quickForm.phone)return;
+          setQuickSaving(true);
+          try{
+            var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+            var lead=await apiFetch("/api/leads","POST",Object.assign({agentId:salesUsers[0]?gid(salesUsers[0]):p.cu.id},quickForm),p.token);
+            p.setLeads(function(prev){return [lead].concat(prev);});
+            setShowQuickAdd(false);
+            setQuickForm({name:"",phone:"",project:PROJECTS[0],source:"Facebook"});
+            showBrowserNotif("✅ تم إضافة عميل",lead.name+" — "+lead.phone);
+          }catch(e){alert(e.message);}
+          setQuickSaving(false);
+        }} style={{ flex:2 }}>⚡ {t.quickAdd}</Btn>
+      </div>
+    </Modal>
 
     {/* Add Modal */}
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={isReq?t.addRequest:t.addLead}>
@@ -787,6 +1009,7 @@ var DashboardPage = function(p) {
       <StatCard icon={Target} label={t.newLeads} value={myLeads.filter(function(l){return l.status==="Potential";}).length+""} c={C.success} onClick={function(){p.nav("leads");p.setFilter("Potential");}}/>
       <StatCard icon={Briefcase} label={t.activeDeals} value={myLeads.filter(function(l){return["HotCase","CallBack","MeetingDone"].includes(l.status);}).length+""} c={C.accent} onClick={function(){p.nav("leads");p.setFilter("HotCase");}}/>
       <StatCard icon={DollarSign} label={t.doneDeals} value={myLeads.filter(function(l){return l.status==="DoneDeal";}).length+""} c={C.primary} onClick={function(){p.nav("deals");}}/>
+      <StatCard icon={Activity} label={"جدد اليوم"} value={todayLeads.length+""} c={"#8B5CF6"}/>
     </div>
     <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
       <Card style={{ flex:2, minWidth:250 }}>
@@ -940,21 +1163,32 @@ var DailyRequestsPage = function(p) {
   var [showStatusComment,setShowStatusComment]=useState(false);
   var [pendingStatus,setPendingStatus]=useState(null);
   var [actNote,setActNote]=useState(""); var [actType,setActType]=useState("call"); var [showActForm,setShowActForm]=useState(false);
+  var [actSaving,setActSaving]=useState(false);
   var [filterStatus,setFilterStatus]=useState("all");
-  var [form,setForm]=useState({name:"",phone:"",phone2:"",email:"",budget:"",propertyType:"",area:"",notes:"",agentId:"",callbackTime:""});
+  var [sortBy,setSortBy]=useState("lastActivity");
+  var [agentFilter,setAgentFilter]=useState("");
+  var [form,setForm]=useState({name:"",phone:"",phone2:"",propertyType:"",area:"",budget:"",notes:"",agentId:"",callbackTime:""});
 
   useEffect(function(){
     apiFetch("/api/daily-requests","GET",null,p.token)
-      .then(function(data){ if(Array.isArray(data)){setRequests(data);}else{setRequests([]);} setLoading(false); })
-      .catch(function(e){ console.error("Daily requests error:",e); setRequests([]); setLoading(false); });
+      .then(function(data){setRequests(Array.isArray(data)?data:[]);setLoading(false);})
+      .catch(function(){setRequests([]);setLoading(false);});
   },[]);
 
   var filtered=requests.filter(function(r){
     if(filterStatus!=="all"&&r.status!==filterStatus)return false;
+    if(agentFilter){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;if(aid!==agentFilter)return false;}
     return matchSearch(r,p.search);
+  }).sort(function(a,b){
+    if(sortBy==="lastActivity")return new Date(b.lastActivityTime||0)-new Date(a.lastActivityTime||0);
+    if(sortBy==="newest")return new Date(b.createdAt||0)-new Date(a.createdAt||0);
+    return 0;
   });
 
-  var reqStatus=function(rid,st){setPendingStatus({leadId:rid,newStatus:st});setShowStatusComment(true);};
+  var reqStatus=function(rid,st){
+    if(st==="DoneDeal"&&!window.confirm("⚠️ هل أنت متأكد؟"))return;
+    setPendingStatus({leadId:rid,newStatus:st});setShowStatusComment(true);
+  };
   var confirmStatus=async function(comment){
     if(!pendingStatus)return;
     try{
@@ -967,19 +1201,22 @@ var DailyRequestsPage = function(p) {
 
   var logActivity=async function(){
     if(!actNote.trim()||!selected)return;
+    setActSaving(true);
     try{
       await apiFetch("/api/daily-requests/"+gid(selected),"PUT",{lastActivityTime:new Date()},p.token);
       setRequests(function(prev){return prev.map(function(r){return gid(r)===gid(selected)?Object.assign({},r,{lastActivityTime:new Date().toISOString()}):r;});});
       setActNote(""); setShowActForm(false);
     }catch(e){}
+    setActSaving(false);
   };
 
   var addReq=async function(){
     if(!form.name||!form.phone)return;setSaving(true);
     try{
-      var r=await apiFetch("/api/daily-requests","POST",Object.assign({},form,{agentId:form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id)}),p.token);
+      var agentId=form.agentId||(p.cu.role==="sales"?p.cu.id:(salesUsers[0]?gid(salesUsers[0]):p.cu.id));
+      var r=await apiFetch("/api/daily-requests","POST",Object.assign({},form,{agentId:agentId,source:"Daily Request"}),p.token);
       setRequests(function(prev){return [r].concat(prev);});
-      setShowAdd(false);setForm({name:"",phone:"",phone2:"",email:"",budget:"",propertyType:"",area:"",notes:"",agentId:"",callbackTime:""});
+      setShowAdd(false);setForm({name:"",phone:"",phone2:"",propertyType:"",area:"",budget:"",notes:"",agentId:"",callbackTime:""});
     }catch(e){alert(e.message);}setSaving(false);
   };
 
@@ -987,45 +1224,50 @@ var DailyRequestsPage = function(p) {
 
   return <div style={{ padding:"18px 16px 40px" }}>
     <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
-
     {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
-    {/* Stats + Add */}
-    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
-      <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
-        <StatCard icon={ClipboardList} label={t.totalRequests} value={requests.length+""} c={C.info}/>
-        <StatCard icon={DollarSign} label={t.doneDeals} value={requests.filter(function(r){return r.status==="DoneDeal";}).length+""} c={C.success}/>
-      </div>
-      {isAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13, flexShrink:0 }}><Plus size={14}/> {t.addRequest}</Btn>}
+
+    {/* Stats */}
+    <div style={{ display:"flex", gap:10, marginBottom:16, flexWrap:"wrap" }}>
+      <StatCard icon={ClipboardList} label={"إجمالي الأرقام"} value={requests.length+""} c={C.info}/>
+      <StatCard icon={Target} label={"Potential"} value={requests.filter(function(r){return r.status==="Potential";}).length+""} c={"#1D4ED8"}/>
+      <StatCard icon={DollarSign} label={t.doneDeals} value={requests.filter(function(r){return r.status==="DoneDeal";}).length+""} c={C.success}/>
+      <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13, alignSelf:"center", marginRight:"auto" }}><Plus size={14}/> إضافة رقم</Btn>
     </div>
 
-    {/* Status filter */}
-    <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:14 }}>
+    {/* Filters */}
+    <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
       {[{v:"all",l:t.all}].concat(sc.map(function(s){return{v:s.value,l:s.label};})).map(function(s){
         var cnt=s.v==="all"?requests.length:requests.filter(function(r){return r.status===s.v;}).length;
         return <button key={s.v} onClick={function(){setFilterStatus(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:filterStatus===s.v?C.accent:"#E8ECF1", background:filterStatus===s.v?C.accent+"12":"#fff", color:filterStatus===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
       })}
     </div>
+    <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
+      {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
+        <option value="">👤 كل الموظفين</option>
+        {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
+      </select>}
+      <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
+        <option value="lastActivity">⏱ آخر نشاط</option>
+        <option value="newest">🆕 الأحدث</option>
+      </select>
+    </div>
 
     <div style={{ display:"flex", gap:14 }}>
-      {/* Table */}
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         {loading?<Loader/>:<div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?500:640 }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-              {[t.name,t.phone,t.propertyType,t.area,t.budget,t.status,isAdmin&&t.agent,t.lastActivity,!p.isMobile&&t.callbackTime].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+              {["الاسم","الهاتف","نوع العقار","المنطقة","الميزانية","الحالة",isAdmin&&"الموظف","آخر نشاط","موعد المكالمة"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
             </tr></thead>
             <tbody>
-              {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد طلبات</td></tr>}
+              {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد أرقام</td></tr>}
               {filtered.map(function(r){
                 var rid=gid(r); var so=sc.find(function(s){return s.value===r.status;})||sc[0]; var isSel=selected&&gid(selected)===rid;
-                return <tr key={rid} onClick={function(){setSelected(r);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent" }}>
-                  <td style={{ padding:"10px 12px" }}>
-                    <div style={{ fontSize:13, fontWeight:600 }}>{r.name}</div>
-                    <div style={{ fontSize:10, color:C.textLight }}>{r.email}</div>
-                  </td>
+                var ci=callbackColor(r.callbackTime);
+                return <tr key={rid} onClick={function(){setSelected(r);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent", borderRight:"3px solid "+(isSel?C.accent:"transparent") }}>
+                  <td style={{ padding:"10px 12px" }}><div style={{ fontSize:13, fontWeight:600 }}>{r.name}</div><div style={{ fontSize:10, color:C.textLight }}>{r.email}</div></td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr" }}>
-                    {r.phone}
-                    {r.phone2&&<div style={{ fontSize:10, color:C.textLight }}>{r.phone2}</div>}
+                    {r.phone}{r.phone2&&<div style={{ fontSize:10, color:C.textLight }}>{r.phone2}</div>}
                     <div style={{ display:"flex", gap:4, marginTop:2 }}>
                       <a href={"tel:"+r.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/></a>
                       <a href={"https://wa.me/2"+r.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none" }}>💬</a>
@@ -1035,32 +1277,32 @@ var DailyRequestsPage = function(p) {
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight }}>{r.area||"-"}</td>
                   <td style={{ padding:"10px 12px", fontSize:12, fontWeight:600, color:C.success }}>{r.budget||"-"}</td>
                   <td style={{ padding:"10px 12px", position:"relative" }} onClick={function(e){e.stopPropagation();}}>
-                    <div style={{ position:"relative", display:"inline-block" }}>
-                      <span style={{ background:so.bg, color:so.color, padding:"4px 10px", borderRadius:20, fontSize:12, fontWeight:600, whiteSpace:"nowrap", border:"1px dashed "+so.color, display:"inline-flex", alignItems:"center", gap:4, cursor:"pointer" }}
-                        onClick={function(e){e.stopPropagation();setStatusDrop(statusDrop===rid?null:rid);}}>
-                        {so.label} ▼
-                      </span>
-                      {statusDrop===rid&&<div style={{ position:"fixed", top:"50%", left:"50%", transform:"translate(-50%,-50%)", zIndex:500, background:"#fff", borderRadius:14, padding:8, minWidth:180, boxShadow:"0 16px 48px rgba(0,0,0,0.22)", border:"1px solid #E8ECF1" }} onClick={function(e){e.stopPropagation();}}>
-                        <div style={{ fontSize:12, fontWeight:600, color:C.textLight, padding:"6px 10px 10px", borderBottom:"1px solid #F1F5F9", marginBottom:4 }}>{t.changeStatus}</div>
-                        {sc.map(function(s){return <div key={s.value} onClick={function(e){e.stopPropagation();setSelected(r);reqStatus(rid,s.value);setStatusDrop(null);}} style={{ padding:"9px 12px", borderRadius:9, cursor:"pointer", display:"flex", alignItems:"center", gap:10, background:r.status===s.value?s.bg:"transparent", fontSize:13 }}
-                          onMouseEnter={function(e){if(r.status!==s.value)e.currentTarget.style.background="#F8FAFC";}}
-                          onMouseLeave={function(e){if(r.status!==s.value)e.currentTarget.style.background="transparent";}}>
-                          <span style={{ width:10, height:10, borderRadius:"50%", background:s.color, flexShrink:0 }}/><span style={{ color:s.color }}>{s.label}</span>
-                        </div>;})}
-                        <div style={{ borderTop:"1px solid #F1F5F9", marginTop:4, paddingTop:4 }}><button onClick={function(e){e.stopPropagation();setStatusDrop(null);}} style={{ width:"100%", padding:"7px", borderRadius:8, border:"none", background:"#F1F5F9", cursor:"pointer", fontSize:12 }}>{t.cancel}</button></div>
-                      </div>}
-                    </div>
+                    <span style={{ background:so.bg, color:so.color, padding:"4px 10px", borderRadius:20, fontSize:11, fontWeight:600, border:"1px dashed "+so.color, cursor:"pointer", display:"inline-flex", alignItems:"center", gap:4 }}
+                      onClick={function(e){e.stopPropagation();setStatusDrop(statusDrop===rid?null:rid);}}>
+                      {so.label} ▼
+                    </span>
+                    {statusDrop===rid&&<div style={{ position:"fixed", top:"50%", left:"50%", transform:"translate(-50%,-50%)", zIndex:500, background:"#fff", borderRadius:14, padding:8, minWidth:180, boxShadow:"0 16px 48px rgba(0,0,0,0.22)", border:"1px solid #E8ECF1" }} onClick={function(e){e.stopPropagation();}}>
+                      <div style={{ fontSize:12, fontWeight:600, color:C.textLight, padding:"6px 10px 10px", borderBottom:"1px solid #F1F5F9", marginBottom:4 }}>{t.changeStatus}</div>
+                      {sc.map(function(s){return <div key={s.value} onClick={function(e){e.stopPropagation();setSelected(r);reqStatus(rid,s.value);}} style={{ padding:"9px 12px", borderRadius:9, cursor:"pointer", display:"flex", alignItems:"center", gap:10, background:r.status===s.value?s.bg:"transparent", fontSize:13 }}
+                        onMouseEnter={function(e){if(r.status!==s.value)e.currentTarget.style.background="#F8FAFC";}}
+                        onMouseLeave={function(e){if(r.status!==s.value)e.currentTarget.style.background=r.status===s.value?s.bg:"transparent";}}>
+                        <span style={{ width:10, height:10, borderRadius:"50%", background:s.color, flexShrink:0 }}/><span style={{ color:s.color, fontWeight:600 }}>{s.label}</span>
+                      </div>;})}
+                      <div style={{ borderTop:"1px solid #F1F5F9", marginTop:4, paddingTop:4 }}><button onClick={function(){setStatusDrop(null);}} style={{ width:"100%", padding:"7px", borderRadius:8, border:"none", background:"#F1F5F9", cursor:"pointer", fontSize:12 }}>{t.cancel}</button></div>
+                    </div>}
                   </td>
-                  {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11 }} onClick={function(e){e.stopPropagation();}}>
+                  {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight }} onClick={function(e){e.stopPropagation();}}>
                     <select value={r.agentId&&r.agentId._id?r.agentId._id:(r.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
                       try{var upd=await apiFetch("/api/daily-requests/"+rid,"PUT",{agentId:newAgent},p.token);setRequests(function(prev){return prev.map(function(x){return gid(x)===rid?upd:x;});});if(selected&&gid(selected)===rid)setSelected(upd);}catch(ex){}
-                    }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
+                    }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", maxWidth:110 }}>
                       {salesUsers.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
                     </select>
                   </td>}
-                  <td style={{ padding:"10px 12px", fontSize:11, color:C.accent, whiteSpace:"nowrap" }}>{timeAgo(r.lastActivityTime,t)}</td>
-                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:r.callbackTime?C.warning:C.textLight, whiteSpace:"nowrap" }}>{r.callbackTime?r.callbackTime.slice(0,16).replace("T"," "):"-"}</td>}
+                  <td style={{ padding:"10px 12px", fontSize:11, color:C.accent }}>{timeAgo(r.lastActivityTime,t)}</td>
+                  <td style={{ padding:"10px 12px", fontSize:11 }}>
+                    {r.callbackTime?<span style={{ padding:"2px 8px", borderRadius:12, background:ci?ci.bg:"transparent", color:ci?ci.color:C.textLight, fontSize:10, fontWeight:ci?600:400 }}>{r.callbackTime.slice(0,16).replace("T"," ")}</span>:<span style={{ color:C.textLight }}>-</span>}
+                  </td>
                 </tr>;
               })}
             </tbody>
@@ -1071,31 +1313,26 @@ var DailyRequestsPage = function(p) {
       {/* Side Panel */}
       {selected&&<Card style={{ flex:"0 0 280px", maxHeight:"calc(100vh - 120px)", overflowY:"auto", padding:0 }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
-            <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
-          </div>
+          <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", marginBottom:8 }}><X size={11}/></button>
           <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selected.name}</div>
           <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}>{selected.phone}{selected.phone2?" / "+selected.phone2:""}</div>
           <div style={{ display:"flex", gap:6, marginTop:10 }}>
-            <a href={"tel:"+selected.phone} style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(34,197,94,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> {t.call}</a>
-            <a href={"https://wa.me/2"+selected.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(37,211,102,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>💬 {t.whatsapp}</a>
+            <a href={"tel:"+selected.phone} style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(34,197,94,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> اتصال</a>
+            <a href={"https://wa.me/2"+selected.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(37,211,102,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>💬 واتساب</a>
           </div>
         </div>
         <div style={{ padding:"12px 14px" }}>
-          {/* Status */}
           <div style={{ marginBottom:12, padding:10, background:"#F8FAFC", borderRadius:10 }}>
             <div style={{ fontSize:11, color:C.textLight, marginBottom:7, fontWeight:600 }}>{t.changeStatus}</div>
             <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
               {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid", borderColor:selected.status===s.value?s.color:"#E2E8F0", background:selected.status===s.value?s.bg:"#fff", color:selected.status===s.value?s.color:C.textLight, fontSize:10, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
             </div>
           </div>
-          {/* Details */}
-          {[{l:t.propertyType,v:selected.propertyType},{l:t.area,v:selected.area},{l:t.budget,v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:"نوع العقار",v:selected.propertyType},{l:"المنطقة",v:selected.area},{l:"الميزانية",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"تاريخ الإضافة",v:selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-"},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span></div>:null;
           })}
-          {/* Log Activity */}
           <div style={{ marginTop:12 }}>
-            <button onClick={function(){setShowActForm(!showActForm);}} style={{ width:"100%", padding:"8px", borderRadius:9, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><MessageSquare size={12}/> {t.logActivity}</button>
+            <button onClick={function(){setShowActForm(!showActForm);}} style={{ width:"100%", padding:"8px", borderRadius:9, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><MessageSquare size={12}/> تسجيل نشاط</button>
             {showActForm&&<div style={{ marginTop:9, padding:10, background:"#F8FAFC", borderRadius:10 }}>
               <select value={actType} onChange={function(e){setActType(e.target.value);}} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:7, background:"#fff" }}>
                 <option value="call">📞 مكالمة</option>
@@ -1105,7 +1342,7 @@ var DailyRequestsPage = function(p) {
               </select>
               <textarea rows={2} placeholder="ملاحظة..." value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
               <div style={{ display:"flex", gap:6, marginTop:6 }}>
-                <Btn onClick={logActivity} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.save}</Btn>
+                <Btn onClick={logActivity} loading={actSaving} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.save}</Btn>
                 <Btn outline onClick={function(){setShowActForm(false);setActNote("");}} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.cancel}</Btn>
               </div>
             </div>}
@@ -1114,21 +1351,19 @@ var DailyRequestsPage = function(p) {
       </Card>}
     </div>
 
-    {/* Add Modal */}
-    <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addRequest}>
+    <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ إضافة رقم جديد"}>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
-        <div style={{ gridColumn:"1/-1" }}><Inp label={t.name} req value={form.name} onChange={function(e){setForm(function(f){return Object.assign({},f,{name:e.target.value});});}}/></div>
-        <Inp label={t.phone} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});});}} placeholder="01xxxxxxxxx"/>
-        <Inp label={t.phone2} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});});}} placeholder="اختياري"/>
-        <Inp label={t.budget} value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:e.target.value});});}}/>
-        <Inp label={t.email} value={form.email} onChange={function(e){setForm(function(f){return Object.assign({},f,{email:e.target.value});});}}/>
-        <Inp label={t.propertyType} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});});}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- اختر -"};})}/>
-        <Inp label={t.area} value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});});}} placeholder="مثال: التجمع الخامس"/>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={"الاسم"} req value={form.name} onChange={function(e){setForm(function(f){return Object.assign({},f,{name:e.target.value});})}}/></div>
+        <Inp label={"الهاتف"} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});})}} placeholder="01xxxxxxxxx"/>
+        <Inp label={"هاتف إضافي"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder="اختياري"/>
+        <Inp label={"نوع العقار"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- اختر -"};})}/>
+        <Inp label={"المنطقة"} value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder="مثال: التجمع الخامس"/>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={"الميزانية"} value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:e.target.value});})}}/></div>
       </div>
-      {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});});}} options={[{value:"",label:"- اختر -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
-      <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});});}}/>
-      <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});});}}/>
-      <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addReq} loading={saving} style={{ flex:1 }}>{t.add}</Btn></div>
+      {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- اختر -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
+      <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/> 
+      <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/> 
+      <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addReq} loading={saving} style={{ flex:1 }}>إضافة رقم</Btn></div>
     </Modal>
   </div>;
 };
@@ -1312,12 +1547,14 @@ var ProjectsPage = function(p) {
 var SettingsPage = function(p) {
   var t=p.t;
   var getSaved = function(k,def){ try{ return localStorage.getItem('crm_set_'+k)||def; }catch(e){return def;} };
+  var salesAgentsForSetting = p.users ? p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;}) : [];
   var [company,setCompany]=useState(function(){return getSaved('company','شركة ARO العقارية');});
   var [em,setEm]=useState(function(){return getSaved('email','admin@aro.com');});
   var [ph,setPh]=useState(function(){return getSaved('phone','01012345678');});
+  var [reassignAgent,setReassignAgent]=useState(function(){return getSaved('reassign_agent','');});
   var [saved,setSaved]=useState(false);
   var doSave=function(){
-    try{ localStorage.setItem('crm_set_company',company); localStorage.setItem('crm_set_email',em); localStorage.setItem('crm_set_phone',ph); }catch(e){}
+    try{ localStorage.setItem('crm_set_company',company); localStorage.setItem('crm_set_email',em); localStorage.setItem('crm_set_phone',ph); localStorage.setItem('crm_set_reassign_agent',reassignAgent); }catch(e){}
     setSaved(true); setTimeout(function(){setSaved(false);},2500);
   };
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -1326,6 +1563,14 @@ var SettingsPage = function(p) {
       <Inp label={t.companyName} value={company} onChange={function(e){setCompany(e.target.value);}}/>
       <Inp label={t.email} value={em} onChange={function(e){setEm(e.target.value);}}/>
       <Inp label={t.phone} value={ph} onChange={function(e){setPh(e.target.value);}}/>
+      <div style={{marginBottom:13}}>
+        <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>موظف الإعادة التلقائية (CallBack)</label>
+        <select value={reassignAgent} onChange={function(e){setReassignAgent(e.target.value);}} style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:14,background:"#fff",boxSizing:"border-box"}}>
+          <option value="">- اختر موظف -</option>
+          {salesAgentsForSetting.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name} — {u.title}</option>;})}
+        </select>
+        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>لما يفوت موعد CallBack هيتحول تلقائياً لهذا الموظف</div>
+      </div>
       <Inp label={t.language} type="select" value={p.lang} onChange={function(e){p.setLang(e.target.value);}} options={[{value:"ar",label:"عربي"},{value:"en",label:"English"}]}/>
       {saved&&<div style={{marginBottom:12,padding:"10px 14px",background:"#DCFCE7",borderRadius:10,color:"#15803D",fontSize:13,fontWeight:600}}>✅ تم الحفظ بنجاح</div>}
       <Btn onClick={doSave}>{t.save}</Btn>
@@ -1337,7 +1582,7 @@ var SettingsPage = function(p) {
 export default function CRMApp() {
   var [lang,setLang]=useState("ar");
   var [currentUser,setCurrentUser]=useState(null); var [token,setToken]=useState(null);
-  var [page,setPage]=useState("dashboard");
+  var [page,setPage]=useState(null); // will be set after login
   var [leads,setLeads]=useState([]); var [users,setUsers]=useState([]);
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
@@ -1347,6 +1592,15 @@ export default function CRMApp() {
   var [sidebarOpen,setSidebarOpen]=useState(false);
   var [initSelected,setInitSelected]=useState(null);
   var [search,setSearch]=useState("");
+  var [isOnline,setIsOnline]=useState(navigator.onLine);
+  
+  useEffect(function(){
+    var goOnline=function(){setIsOnline(true);};
+    var goOffline=function(){setIsOnline(false);};
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    return function(){ window.removeEventListener('online',goOnline); window.removeEventListener('offline',goOffline); };
+  },[]);
 
   useEffect(function(){
     var fn=function(){setIsMobile(window.innerWidth<768);if(window.innerWidth>=768)setSidebarOpen(false);};
@@ -1377,21 +1631,71 @@ export default function CRMApp() {
 
   var handleLogin=function(user,tok){
     setCurrentUser(user); setToken(tok); loadData(tok);
+    var defaultPage = (user.role==="sales") ? "myday" : "dashboard";
+    setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:user,token:tok})); } catch(e){}
   };
+  // ===== AUTO REASSIGN: CallBack leads past callback time -> specific agent from settings =====
+  useEffect(function(){
+    if (!token || !leads.length || !users.length) return;
+
+    var check = async function() {
+      // Get target agent from settings
+      var targetAgentId = "";
+      try { targetAgentId = localStorage.getItem('crm_set_reassign_agent') || ""; } catch(e){}
+      if (!targetAgentId) return; // No agent configured, skip
+
+      var targetAgent = users.find(function(u){ return gid(u) === targetAgentId; });
+      if (!targetAgent) return;
+
+      var now = new Date();
+      var toReassign = leads.filter(function(l){
+        var currentAgentId = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
+        return l.status === "CallBack" &&
+               l.callbackTime &&
+               new Date(l.callbackTime) < now &&
+               !l.archived &&
+               currentAgentId !== targetAgentId; // don't reassign if already assigned to target
+      });
+
+      for (var i = 0; i < toReassign.length; i++) {
+        var lead = toReassign[i];
+        var fromName = lead.agentId && lead.agentId.name ? lead.agentId.name : "موظف";
+        try {
+          var updated = await apiFetch("/api/leads/" + gid(lead), "PUT", {
+            agentId: targetAgentId,
+            status: "CallBack"
+          }, token);
+          await apiFetch("/api/activities", "POST", {
+            leadId: gid(lead),
+            type: "reassign",
+            note: "🔄 تحويل تلقائي من " + fromName + " إلى " + targetAgent.name + " (فات موعد المكالمة)"
+          }, token);
+          setLeads(function(prev){ return prev.map(function(l){ return gid(l)===gid(lead)?updated:l; }); });
+          showBrowserNotif("🔄 تحويل تلقائي", lead.name+" تم تحويله لـ "+nextAgent.name);
+        } catch(e) { console.error("Auto reassign error:", e); }
+      }
+    };
+
+    check();
+    var interval = setInterval(check, 60000); // check every minute
+    return function(){ clearInterval(interval); };
+  }, [token, leads.length, users.length]);
+
   var handleLogout=function(){setCurrentUser(null);setToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
-  var nav=function(pg){setPage(pg);setInitSelected(null);};
+  var nav=function(pg){setPage(pg||"dashboard");setInitSelected(null);};
 
   if(!currentUser) return <LoginPage t={t} onLogin={handleLogin}/>;
   if(loading) return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"#F0F2F5", fontFamily:"Cairo,sans-serif" }}><div style={{ textAlign:"center" }}><div style={{ width:40, height:40, borderRadius:"50%", border:"3px solid #E8ECF1", borderTopColor:C.accent, animation:"spin 0.8s linear infinite", margin:"0 auto 16px" }}/><div style={{ color:C.textLight, fontSize:14 }}>{t.loading}</div></div></div>;
   if(dataError) return <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", minHeight:"100vh", gap:16, fontFamily:"Cairo,sans-serif" }}><AlertCircle size={48} color={C.danger}/><div style={{ fontSize:16, color:C.danger, fontWeight:700 }}>{t.error}</div><div style={{ color:C.textLight }}>{dataError}</div><button onClick={function(){loadData(token);}} style={{ padding:"10px 24px", borderRadius:10, background:C.accent, border:"none", color:"#fff", fontWeight:700, cursor:"pointer" }}>{t.retry}</button></div>;
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager";
+  var currentPage=page||"dashboard";
   var titles={dashboard:t.dashboard,myday:t.myDay,leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
   var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected};
 
   var renderPage=function(){
-    switch(page){
+    switch(currentPage){
       case "dashboard": return <DashboardPage {...sp}/>;
       case "myday": return <MyDayPage {...sp}/>;
       case "leads": return <LeadsPage {...sp} isRequest={false}/>;
@@ -1403,16 +1707,19 @@ export default function CRMApp() {
       case "team": return <TeamPage {...sp}/>;
       case "users": return <UsersPage {...sp}/>;
       case "archive": return <ArchivePage {...sp}/>;
-      case "settings": return <SettingsPage {...sp}/>;
+      case "settings": return <SettingsPage {...sp} users={users}/>;
       default: return <DashboardPage {...sp}/>;
     }
   };
 
-  return <div style={{ display:"flex", minHeight:"100vh", background:C.bg, fontFamily:"'Segoe UI','Cairo',Tahoma,sans-serif", direction:t.dir }}>
+  return <div style={{ display:"flex", minHeight:"100vh", background:C.bg, fontFamily:"'Cairo','Segoe UI',Tahoma,sans-serif", direction:t.dir }}>
     <style>{"* { box-sizing: border-box; margin: 0; padding: 0; } ::-webkit-scrollbar { width: 4px; height: 4px; } ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; } input::placeholder, textarea::placeholder { color: #94A3B8; } @keyframes spin { to { transform: rotate(360deg); } }"}</style>
-    <Sidebar active={page} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}}/>
+    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
-      <Header title={titles[page]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);nav("leads");}}/>
+      {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+        ⚠️ أنت غير متصل بالإنترنت — البيانات لن تُحفظ حتى يعود الاتصال
+      </div>}
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);nav("leads");}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
