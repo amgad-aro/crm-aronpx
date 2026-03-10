@@ -172,6 +172,7 @@ var C = {
 };
 
 var STATUSES = function(t) { return [
+  { value: "NewLead", label: t.lang==="ar"?"عميل جديد":"New Lead", bg: "#EEF2FF", color: "#6366F1" },
   { value: "Potential", label: t.potential, bg: "#DBEAFE", color: "#1D4ED8" },
   { value: "HotCase", label: t.hotCase, bg: "#FEE2E2", color: "#DC2626" },
   { value: "CallBack", label: t.callBack, bg: "#FEF3C7", color: "#B45309" },
@@ -264,16 +265,34 @@ var Loader = function() { return <div style={{ display:"flex", alignItems:"cente
 // Status change requires mandatory comment
 var StatusModal = function(p) {
   var [comment, setComment] = useState("");
+  var [cbTime, setCbTime] = useState("");
   var [err, setErr] = useState(false);
   var [saving, setSaving] = useState(false);
   var sc = STATUSES(p.t); var ns = sc.find(function(s){return s.value===p.newStatus;});
+  var needsCb = p.newStatus==="CallBack" || p.newStatus==="NoAnswer";
+  var isReject = p.newStatus==="NotInterested";
+  useEffect(function(){setComment("");setCbTime("");setErr(false);},[p.show]);
   var submit = async function() {
-    if (!comment.trim()) { setErr(true); return; }
-    setSaving(true); await p.onConfirm(comment.trim()); setSaving(false); setComment(""); setErr(false);
+    if (needsCb && !cbTime) { alert("اختار موعد المكالمة"); return; }
+    if (!needsCb && !isReject && !comment.trim()) { setErr(true); return; }
+    setSaving(true); await p.onConfirm(comment.trim(), cbTime); setSaving(false); setComment(""); setCbTime(""); setErr(false);
   };
   return <Modal show={p.show} onClose={p.onClose} title={p.t.changeStatus}>
     {ns && <div style={{ marginBottom:14, padding:"10px 14px", background:ns.bg, borderRadius:10, display:"flex", alignItems:"center", gap:8 }}><span style={{ width:10, height:10, borderRadius:"50%", background:ns.color }}/><span style={{ fontSize:14, fontWeight:600, color:ns.color }}>{ns.label}</span></div>}
-    <Inp label={p.t.statusComment} req type="textarea" placeholder={p.t.statusCommentPH} value={comment} onChange={function(e){setComment(e.target.value);setErr(false);}}/>
+    {needsCb && <div style={{ marginBottom:12 }}>
+      <Inp label={"📅 موعد المكالمة القادمة"} type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);}} req/>
+      <div style={{ fontSize:11, color:"#6366F1", marginTop:-8, marginBottom:10 }}>🔔 سيتم تذكيرك قبل الموعد بـ 15 دقيقة</div>
+    </div>}
+    {isReject && <div style={{ marginBottom:12 }}>
+      <div style={{ fontSize:12, fontWeight:600, marginBottom:8, color:"#EF4444" }}>سبب الرفض:</div>
+      <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:10 }}>
+        {["السعر مرتفع","المنطقة مش مناسبة","اشترى من مكان تاني","مش جاهز دلوقتي","مش مهتم خالص","سبب تاني"].map(function(reason){
+          return <button key={reason} onClick={function(){setComment(reason);}} style={{ padding:"8px 12px", borderRadius:8, border:"1px solid", borderColor:comment===reason?"#EF4444":"#E2E8F0", background:comment===reason?"#FEF2F2":"#fff", color:comment===reason?"#EF4444":"#64748B", fontSize:12, cursor:"pointer", textAlign:"right" }}>{reason}</button>;
+        })}
+      </div>
+    </div>}
+    {!needsCb && <Inp label={isReject?"ملاحظة إضافية (اختياري)":p.t.statusComment} type="textarea" placeholder={p.t.statusCommentPH} value={comment} onChange={function(e){setComment(e.target.value);setErr(false);}} req={!isReject}/>}
+    {needsCb && <Inp label={"ملاحظة (اختياري)"} type="textarea" value={comment} onChange={function(e){setComment(e.target.value);}}/>}
     {err && <div style={{ color:C.danger, fontSize:12, marginBottom:12, padding:"8px 12px", background:"#FEF2F2", borderRadius:8 }}>{p.t.commentRequired}</div>}
     <div style={{ display:"flex", gap:10 }}><Btn outline onClick={p.onClose} style={{ flex:1 }}>{p.t.cancel}</Btn><Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.t.save}</Btn></div>
   </Modal>;
@@ -292,7 +311,7 @@ var LoginPage = function(p) {
     <div style={{ background:"#fff", borderRadius:24, padding:"40px 36px", width:"100%", maxWidth:420, boxShadow:"0 24px 64px rgba(0,0,0,0.28)" }}>
       <div style={{ textAlign:"center", marginBottom:34 }}>
         <div style={{ width:68, height:68, borderRadius:18, background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", display:"inline-flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:22, color:"#fff", boxShadow:"0 8px 24px rgba(232,168,56,0.45)", marginBottom:16 }}>ARO</div>
-        <h1 style={{ margin:0, fontSize:26, fontWeight:800, color:C.text }}>CRM ARO</h1>
+        <h1 style={{ margin:0, fontSize:26, fontWeight:800, color:C.text }}>ARO CRM</h1>
         <p style={{ margin:"6px 0 0", fontSize:13, color:C.textLight }}>Real Estate CRM</p>
       </div>
       {err && <div style={{ background:"#FEE2E2", color:"#B91C1C", padding:"10px 16px", borderRadius:10, fontSize:13, marginBottom:18, textAlign:"center" }}>{err}</div>}
@@ -317,7 +336,6 @@ var Sidebar = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
   var items = [
     {id:"dashboard",icon:Home,label:t.dashboard},
-    {id:"myday",icon:Zap,label:t.myDay},
     {id:"leads",icon:Users,label:t.leads},
     {id:"dailyReq",icon:ClipboardList,label:t.dailyReq},
     {id:"deals",icon:Briefcase,label:t.deals},
@@ -339,7 +357,7 @@ var Sidebar = function(p) {
         <div style={{ width:38, height:38, borderRadius:10, background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:13, color:"#fff", flexShrink:0, letterSpacing:"-0.5px" }}>ARO</div>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ color:"#fff", fontWeight:700, fontSize:14, display:"flex", alignItems:"center", gap:6 }}>
-            <span>CRM ARO</span>
+            <span>ARO CRM</span>
           </div>
           <div style={{ color:"rgba(255,255,255,0.4)", fontSize:9 }}>Real Estate Platform</div>
         </div>
@@ -450,7 +468,7 @@ var LeadForm = function(p) {
       <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder="01xxxxxxxxx"/>
       <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder="اختياري"/>
       <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
-      <Inp label={t.budget} value={form.budget} onChange={function(e){upd("budget",e.target.value);}}/>
+      <Inp label={t.budget+" (بالمليون)"} value={form.budget} onChange={function(e){upd("budget",e.target.value);}}/>
     </div>
     <Inp label={t.project} type="select" value={form.project} onChange={function(e){upd("project",e.target.value);}} options={PROJECTS.map(function(x){return{value:x,label:x};})}/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
@@ -543,6 +561,43 @@ var callbackColor = function(cbTime) {
   if (mins < 60) return { bg:"#FEF3C7", color:"#D97706", label:"🔔 خلال ساعة" };
   if (mins < 1440) return { bg:"#DCFCE7", color:"#15803D", label:"✅ اليوم" };
   return null;
+};
+
+
+// ===== QUICK PHONE SEARCH =====
+var QuickPhoneSearch = function(p) {
+  var [show,setShow]=useState(false);
+  var [q,setQ]=useState("");
+  var results=q.length>=4?p.leads.filter(function(l){
+    return l.phone&&(l.phone.includes(q)||l.phone.endsWith(q));
+  }):[];
+  var sc=STATUSES(p.t);
+  if(!show)return <button onClick={function(){setShow(true);}} style={{ position:"fixed", bottom:24, left:24, zIndex:300, width:52, height:52, borderRadius:"50%", background:"#25D366", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 4px 20px rgba(37,211,102,0.5)", fontSize:22 }} title="بحث سريع بالموبايل">📞</button>;
+  return <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center" }} onClick={function(){setShow(false);setQ("");}}>
+    <div style={{ background:"#fff", borderRadius:18, padding:20, width:340, maxWidth:"90vw", maxHeight:"80vh", overflow:"auto" }} onClick={function(e){e.stopPropagation();}}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+        <div style={{ fontSize:15, fontWeight:700 }}>📞 بحث سريع بالموبايل</div>
+        <button onClick={function(){setShow(false);setQ("");}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:18, color:"#94A3B8" }}>✕</button>
+      </div>
+      <input autoFocus value={q} onChange={function(e){setQ(e.target.value);}} placeholder="اكتب آخر 4 أرقام أو الرقم كامل..." style={{ width:"100%", padding:"10px 14px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr", marginBottom:12 }}/>
+      {q.length>0&&q.length<4&&<div style={{ fontSize:12, color:"#94A3B8", textAlign:"center", marginBottom:10 }}>اكتب على الأقل 4 أرقام</div>}
+      {results.length===0&&q.length>=4&&<div style={{ fontSize:13, color:"#94A3B8", textAlign:"center", padding:20 }}>مفيش نتائج</div>}
+      {results.map(function(l){
+        var so=sc.find(function(s){return s.value===l.status;})||sc[0];
+        return <div key={gid(l)} onClick={function(){p.onSelect(l);setShow(false);setQ("");}} style={{ padding:"12px 14px", borderRadius:12, border:"1px solid #E8ECF1", marginBottom:8, cursor:"pointer", background:"#FAFBFC" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <div style={{ fontWeight:700, fontSize:14 }}>{l.name}</div>
+            <span style={{ background:so.bg, color:so.color, padding:"2px 8px", borderRadius:12, fontSize:11, fontWeight:600 }}>{so.label}</span>
+          </div>
+          <div style={{ fontSize:12, color:"#64748B", marginTop:4, direction:"ltr" }}>{l.phone}</div>
+          <div style={{ display:"flex", gap:8, marginTop:8 }}>
+            <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#DCFCE7", color:"#15803D", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>📞 اتصال</a>
+            <a href={"https://wa.me/2"+l.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#DCFCE7", color:"#25D366", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>💬 واتساب</a>
+          </div>
+        </div>;
+      })}
+    </div>
+  </div>;
 };
 
 // ===== LEADS PAGE =====
@@ -832,14 +887,14 @@ var LeadsPage = function(p) {
             </select>
           </div>}
           {/* Details */}
-          {[{l:t.budget,v:selected.budget},{l:t.source,v:selected.source},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"تاريخ الإضافة",v:selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-"},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:t.budget,v:selected.budget},{l:t.source,v:selected.source},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"آخر تواصل",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("ar-EG")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"تاريخ الإضافة",v:selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-"},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span></div>:null;
           })}
           {/* WhatsApp Templates */}
           <div style={{ marginTop:10, display:"flex", gap:6 }}>
             <button onClick={function(){setWaLead(selected);setShowWaTemplates(true);}} style={{ flex:1, padding:"7px 8px", borderRadius:9, border:"1px solid #25D366", background:"#25D36610", color:"#25D366", fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>💬 {t.waTemplates}</button>
             <button onClick={async function(){
-              try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{isVIP:!selected.isVIP},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(e){}
+              try{var newVip=!selected.isVIP;var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{isVIP:newVip},p.token);var merged=Object.assign({},selected,{isVIP:newVip});p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?Object.assign({},l,{isVIP:newVip}):l;});});setSelected(merged);}catch(e){console.error("VIP error",e);}
             }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(selected.isVIP?"#F59E0B":"#E2E8F0"), background:selected.isVIP?"#FEF3C7":"#fff", fontSize:13, cursor:"pointer" }} title={selected.isVIP?t.removeVip:t.markVip}>⭐</button>
           </div>
           {/* Log Activity */}
@@ -898,7 +953,7 @@ var LeadsPage = function(p) {
     <Modal show={showQuickAdd} onClose={function(){setShowQuickAdd(false);}} title={"⚡ "+t.quickAdd} w={360}>
       <Inp label={t.name} req value={quickForm.name} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{name:e.target.value});});}}/>
       <Inp label={t.phone} req value={quickForm.phone} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{phone:e.target.value});});}} placeholder="01xxxxxxxxx"/>
-      <Inp label={t.project} type="select" value={quickForm.project} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{project:e.target.value});});}} options={PROJECTS.map(function(x){return{value:x,label:x};})}/>
+      <Inp label={t.project} value={quickForm.project||""} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{project:e.target.value});});}} placeholder="اسم المشروع"/>
       <Inp label={t.source} type="select" value={quickForm.source} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{source:e.target.value});});}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>
       <div style={{ display:"flex", gap:10 }}>
         <Btn outline onClick={function(){setShowQuickAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn>
@@ -1182,10 +1237,12 @@ var DailyRequestsPage = function(p) {
     if(st==="DoneDeal"&&!window.confirm("⚠️ هل أنت متأكد؟"))return;
     setPendingStatus({leadId:rid,newStatus:st});setShowStatusComment(true);
   };
-  var confirmStatus=async function(comment){
+  var confirmStatus=async function(comment,cbTime){
     if(!pendingStatus)return;
     try{
-      var upd=await apiFetch("/api/daily-requests/"+pendingStatus.leadId,"PUT",{status:pendingStatus.newStatus},p.token);
+      var updateData={status:pendingStatus.newStatus};
+      if(cbTime)updateData.callbackTime=cbTime;
+      var upd=await apiFetch("/api/daily-requests/"+pendingStatus.leadId,"PUT",updateData,p.token);
       setRequests(function(prev){return prev.map(function(r){return gid(r)===pendingStatus.leadId?upd:r;});});
       if(selected&&gid(selected)===pendingStatus.leadId)setSelected(upd);
     }catch(e){alert(e.message);}
@@ -1420,6 +1477,72 @@ var UsersPage = function(p) {
 };
 
 // ===== TEAM =====
+// ===== REPORTS PAGE =====
+var ReportsPage = function(p) {
+  var t=p.t; var sc=STATUSES(t);
+  var [period,setPeriod]=useState("monthly");
+  var [exporting,setExporting]=useState(false);
+  var pLabel={daily:"اليوم",weekly:"الأسبوع",monthly:"الشهر"};
+  var ms={daily:86400000,weekly:604800000,monthly:2592000000}[period];
+  var now=Date.now();
+  var allLeads=p.leads.filter(function(l){return !l.archived;});
+  var periodLeads=allLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<ms;});
+  var periodDeals=allLeads.filter(function(l){return l.status==="DoneDeal"&&l.updatedAt&&(now-new Date(l.updatedAt).getTime())<ms;});
+  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+  var agentStats=salesUsers.map(function(u){
+    var uid=gid(u);
+    var uNew=periodLeads.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return a===uid;});
+    var uDeals=periodDeals.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return a===uid;});
+    var target=u.monthlyTarget||15; var prog=Math.min(100,Math.round((uDeals.length/target)*100));
+    return{user:u,newL:uNew.length,deals:uDeals.length,target:target,prog:prog};
+  }).sort(function(a,b){return b.deals-a.deals;});
+  var exportReport=async function(){
+    setExporting(true);
+    var XLSX=await new Promise(function(res){if(window.XLSX){res(window.XLSX);return;}var s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=function(){res(window.XLSX);};document.head.appendChild(s);});
+    var rows=agentStats.map(function(a){return{"الموظف":a.user.name,"جدد":a.newL,"صفقات":a.deals,"الهدف":a.target,"نسبة":a.prog+"%"};});
+    var ws=XLSX.utils.json_to_sheet(rows);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"تقرير");
+    XLSX.writeFile(wb,"تقرير_ARO_"+new Date().toISOString().slice(0,10)+".xlsx");setExporting(false);
+  };
+  return <div style={{ padding:"18px 16px 40px" }}>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18, flexWrap:"wrap", gap:10 }}>
+      <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>📊 التقارير</h2>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+        {["daily","weekly","monthly"].map(function(p2){return <button key={p2} onClick={function(){setPeriod(p2);}} style={{ padding:"6px 14px", borderRadius:8, border:"1px solid", borderColor:period===p2?C.accent:"#E2E8F0", background:period===p2?C.accent+"12":"#fff", color:period===p2?C.accent:C.textLight, fontSize:12, fontWeight:600, cursor:"pointer" }}>{pLabel[p2]}</button>;})}
+        <Btn outline onClick={exportReport} loading={exporting} style={{ padding:"6px 12px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> Excel</Btn>
+      </div>
+    </div>
+    <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
+      <StatCard icon={Users} label={"جدد — "+pLabel[period]} value={periodLeads.length+""} c={C.info}/>
+      <StatCard icon={DollarSign} label={"صفقات — "+pLabel[period]} value={periodDeals.length+""} c={C.success}/>
+      <StatCard icon={Target} label={"إجمالي"} value={allLeads.length+""} c={C.accent}/>
+      <StatCard icon={Activity} label={"معدل التحويل"} value={allLeads.length?Math.round((allLeads.filter(function(l){return l.status==="DoneDeal";}).length/allLeads.length)*100)+"%":"0%"} c={"#8B5CF6"}/>
+    </div>
+    <Card style={{ marginBottom:20 }}>
+      <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 أداء الفريق — {pLabel[period]}</h3>
+      <div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse" }}>
+        <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+          {["#","الموظف","جدد","صفقات","الهدف","نسبة الإنجاز"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
+        </tr></thead>
+        <tbody>{agentStats.map(function(a,i){return <tr key={gid(a.user)} style={{ borderBottom:"1px solid #F1F5F9", background:i===0?"#FFFBEB":"transparent" }}>
+          <td style={{ padding:"12px", fontSize:16 }}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":i+1}</td>
+          <td style={{ padding:"12px", fontWeight:700 }}>{a.user.name}</td>
+          <td style={{ padding:"12px", color:C.info, fontWeight:600 }}>{a.newL}</td>
+          <td style={{ padding:"12px", color:C.success, fontWeight:700 }}>{a.deals}</td>
+          <td style={{ padding:"12px", color:C.textLight }}>{a.target}</td>
+          <td style={{ padding:"12px", minWidth:120 }}><div style={{ display:"flex", alignItems:"center", gap:8 }}><div style={{ flex:1, height:6, background:"#F1F5F9", borderRadius:3 }}><div style={{ height:"100%", width:a.prog+"%", borderRadius:3, background:a.prog>=100?C.success:a.prog>=50?C.accent:C.warning }}/></div><span style={{ fontSize:11, fontWeight:700, minWidth:32 }}>{a.prog}%</span></div></td>
+        </tr>;})}
+        </tbody>
+      </table></div>
+    </Card>
+    <Card>
+      <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>📈 توزيع العملاء</h3>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))", gap:10 }}>
+        {sc.map(function(s){var cnt=allLeads.filter(function(l){return l.status===s.value;}).length;var pct=allLeads.length?Math.round((cnt/allLeads.length)*100):0;return cnt>0?<div key={s.value} style={{ padding:"14px", borderRadius:12, background:s.bg, border:"1px solid "+s.color+"30" }}><div style={{ fontSize:22, fontWeight:800, color:s.color }}>{cnt}</div><div style={{ fontSize:12, color:s.color, fontWeight:600, marginTop:2 }}>{s.label}</div><div style={{ fontSize:11, color:s.color+"99", marginTop:4 }}>{pct}%</div></div>:null;})}
+      </div>
+    </Card>
+  </div>;
+};
+
 var TeamPage = function(p) {
   var t=p.t;
   var sales=p.users.filter(function(u){return u.role==="sales"||u.role==="manager";});
@@ -1609,6 +1732,15 @@ export default function CRMApp() {
 
   var t=TR[lang];
 
+
+  var getVisibleLeads = function(allLeads, user) {
+    if (!user || user.role === "admin" || user.role === "manager") return allLeads;
+    return allLeads.filter(function(l) {
+      var aid = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
+      return aid === user.id;
+    });
+  };
+
   var loadData=useCallback(async function(tok){
     setLoading(true); setDataError(null);
     try {
@@ -1697,7 +1829,7 @@ export default function CRMApp() {
   var renderPage=function(){
     switch(currentPage){
       case "dashboard": return <DashboardPage {...sp}/>;
-      case "myday": return <MyDayPage {...sp}/>;
+      case "myday_disabled": return <MyDayPage {...sp}/>;
       case "leads": return <LeadsPage {...sp} isRequest={false}/>;
       case "dailyReq": return <DailyRequestsPage {...sp}/>;
       case "deals": return <DealsPage {...sp}/>;
@@ -1716,6 +1848,7 @@ export default function CRMApp() {
     <style>{"* { box-sizing: border-box; margin: 0; padding: 0; } ::-webkit-scrollbar { width: 4px; height: 4px; } ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; } input::placeholder, textarea::placeholder { color: #94A3B8; } @keyframes spin { to { transform: rotate(360deg); } }"}</style>
     <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
+      <QuickPhoneSearch leads={leads} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ أنت غير متصل بالإنترنت — البيانات لن تُحفظ حتى يعود الاتصال
       </div>}
