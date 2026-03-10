@@ -11,6 +11,8 @@ var userSchema = new mongoose.Schema({
   title: { type: String, default: "" },
   active: { type: Boolean, default: true },
 monthlyTarget: { type: Number, default: 15 },
+teamId: { type: String, default: "" },
+teamName: { type: String, default: "" },
 }, { timestamps: true });
 
 // ===== LEAD MODEL =====
