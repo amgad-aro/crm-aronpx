@@ -485,6 +485,20 @@ var sendDealEmail = async function(lead, agentName) {
     console.log("✅ Email sent:", lead.name);
   } catch(e) { console.error("Email error:", e.message); }
 };
+
+app.get("/api/leads/archived", auth, async function(req, res) {
+  try {
+    var query = { archived: true };
+    if (req.user.role === "sales") query.agentId = req.user.id;
+    else if (req.user.role === "manager") {
+      var members = await User.find({ teamId: req.user.teamId }).select("_id");
+      query.agentId = { $in: members.map(function(u){ return u._id; }) };
+    }
+    var leads = await Lead.find(query).populate("agentId","name role teamId").sort({updatedAt:-1});
+    res.json(leads);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.listen(PORT, function() {
   console.log("CRM ARO Server running on port " + PORT);
 });
