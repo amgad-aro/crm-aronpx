@@ -274,6 +274,7 @@ var StatusModal = function(p) {
   useEffect(function(){setComment("");setCbTime("");setErr(false);},[p.show]);
   var isNewLead = p.newStatus==="NewLead";
   var submit = async function() {
+    if (isNewLead) { p.onConfirm("", ""); return; }
     if (needsCb && !cbTime) { alert("اختار موعد المكالمة"); return; }
     if (!needsCb && !isReject && !isNewLead && !comment.trim()) { setErr(true); return; }
     setSaving(true); await p.onConfirm(comment.trim(), cbTime); setSaving(false); setComment(""); setCbTime(""); setErr(false);
@@ -1223,8 +1224,21 @@ var TasksPage = function(p) {
 
 var ArchivePage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
-  var archived=p.leads.filter(function(l){return l.archived;});
-  var restore=async function(lid){try{var upd=await apiFetch("/api/leads/"+lid,"PUT",{archived:false},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?upd:l;});});}catch(e){alert(e.message);}};
+  var [archivedLeads, setArchivedLeads] = useState([]);
+  var [archLoading, setArchLoading] = useState(true);
+  useEffect(function(){
+    apiFetch("/api/leads/archived", "GET", null, p.token)
+      .then(function(data){ setArchivedLeads(Array.isArray(data)?data:[]); setArchLoading(false); })
+      .catch(function(){ setArchivedLeads([]); setArchLoading(false); });
+  },[]);
+  var archived = archivedLeads;
+  var restore=async function(lid){
+    try{
+      var upd=await apiFetch("/api/leads/"+lid,"PUT",{archived:false},p.token);
+      setArchivedLeads(function(prev){return prev.filter(function(l){return gid(l)!==lid;});});
+      p.setLeads(function(prev){return [upd].concat(prev);});
+    }catch(e){alert(e.message);}
+  };
   return <div style={{ padding:"18px 16px 40px" }}>
     <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.archive} ({archived.length})</h2>
     {archived.length===0&&<div style={{ textAlign:"center", padding:50, color:C.textLight }}>الأرشيف فاضي</div>}
@@ -1312,17 +1326,17 @@ var DailyRequestsPage = function(p) {
   var addReq=async function(){
     if(!form.name||!form.phone)return;setSaving(true);
     try{
-      var agentId=form.agentId||(p.cu.role==="sales"?p.cu.id:(salesUsers[0]?gid(salesUsers[0]):p.cu.id));
+      var drAgentId=form.agentId||(p.cu.role==="sales"?p.cu.id:(salesUsers.length>0?gid(salesUsers[0]):p.cu.id));
       var submitData={
-        name:form.name,
-        phone:form.phone,
+        name:form.name||"",
+        phone:form.phone||"",
         phone2:form.phone2||"",
         propertyType:form.propertyType||"",
         area:form.area||"",
         budget:form.budget||"",
         notes:form.notes||"",
         callbackTime:form.callbackTime||"",
-        agentId:agentId,
+        agentId:drAgentId,
         source:"Daily Request",
         status:"NewLead"
       };
@@ -1802,16 +1816,15 @@ export default function CRMApp() {
   var getVisibleLeads = function(allLeads, user) {
     if (!user || user.role === "admin") return allLeads;
     if (user.role === "manager") {
-      // Manager sees their team only
+      if (!user.teamId) return allLeads;
       return allLeads.filter(function(l) {
         var agent = l.agentId;
         if (!agent) return false;
-        // If agentId is populated object
-        if (agent.teamId) return agent.teamId === user.teamId;
-        return true; // fallback
+        if (typeof agent === "object" && agent.teamId) return agent.teamId === user.teamId;
+        return false;
       });
     }
-    // Sales sees only their leads
+    // Sales sees only their own leads (including archived)
     return allLeads.filter(function(l) {
       var aid = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
       return aid === user.id;
@@ -1849,13 +1862,9 @@ export default function CRMApp() {
     if (!token || !leads.length || !users.length) return;
 
     var check = async function() {
-      // Get target agent from settings
-      var targetAgentId = "";
-      try { targetAgentId = localStorage.getItem('crm_set_reassign_agent') || ""; } catch(e){}
-      if (!targetAgentId) return; // No agent configured, skip
-
-      var targetAgent = users.find(function(u){ return gid(u) === targetAgentId; });
-      if (!targetAgent) return;
+      // Smart reassign - pick agent with least leads (most available)
+      var salesAgents = users.filter(function(u){ return (u.role==="sales"||u.role==="manager") && u.active; });
+      if (!salesAgents.length) return;
 
       var now = new Date();
       var toReassign = leads.filter(function(l){
@@ -1869,11 +1878,22 @@ export default function CRMApp() {
 
       for (var i = 0; i < toReassign.length; i++) {
         var lead = toReassign[i];
+        var currentAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
         var fromName = lead.agentId && lead.agentId.name ? lead.agentId.name : "موظف";
+        // Pick agent with least leads (excluding current agent)
+        var others = salesAgents.filter(function(u){ return gid(u) !== currentAgentId; });
+        if (!others.length) others = salesAgents;
+        var agentLoads = others.map(function(u){
+          return { agent:u, cnt:leads.filter(function(l){ var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return a===gid(u)&&!l.archived; }).length };
+        });
+        agentLoads.sort(function(a,b){ return a.cnt-b.cnt; });
+        var targetAgent = agentLoads[0].agent;
+        var targetAgentId = gid(targetAgent);
         try {
           var updated = await apiFetch("/api/leads/" + gid(lead), "PUT", {
             agentId: targetAgentId,
-            status: "CallBack"
+            status: "Potential",
+            callbackTime: ""
           }, token);
           await apiFetch("/api/activities", "POST", {
             leadId: gid(lead),
@@ -1881,7 +1901,7 @@ export default function CRMApp() {
             note: "🔄 تحويل تلقائي من " + fromName + " إلى " + targetAgent.name + " (فات موعد المكالمة)"
           }, token);
           setLeads(function(prev){ return prev.map(function(l){ return gid(l)===gid(lead)?updated:l; }); });
-          showBrowserNotif("🔄 تحويل تلقائي", lead.name+" تم تحويله لـ "+(targetAgent?targetAgent.name:""));
+          showBrowserNotif("🔄 تحويل تلقائي", lead.name+" تم تحويله لـ "+targetAgent.name);
         } catch(e) { console.error("Auto reassign error:", e); }
       }
     };
