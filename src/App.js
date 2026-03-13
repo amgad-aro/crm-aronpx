@@ -172,8 +172,7 @@ var C = {
 };
 
 var STATUSES = function(t) { return [
-  { value: "NewLead", label: t.lang==="ar"?"عميل جديد":"New Lead", bg: "#EEF2FF", color: "#6366F1" },
-  { value: "Potential", label: t.lang==="ar"?"محتمل":"Potential", bg: "#DBEAFE", color: "#1D4ED8" },
+  { value: "Potential", label: t.lang==="ar"?"عميل جديد":"New Lead", bg: "#EEF2FF", color: "#6366F1" },
   { value: "HotCase", label: t.hotCase, bg: "#FEE2E2", color: "#DC2626" },
   { value: "CallBack", label: t.callBack, bg: "#FEF3C7", color: "#B45309" },
   { value: "MeetingDone", label: t.meetingDone, bg: "#F3E8FF", color: "#7C3AED" },
@@ -272,9 +271,9 @@ var StatusModal = function(p) {
   var needsCb = p.newStatus==="CallBack" || p.newStatus==="NoAnswer";
   var isReject = p.newStatus==="NotInterested";
   useEffect(function(){setComment("");setCbTime("");setErr(false);},[p.show]);
-  var isNewLead = p.newStatus==="NewLead";
+  var isNewLead = false;
   var submit = async function() {
-    if (isNewLead) { p.onConfirm("", ""); return; }
+    
     if (needsCb && !cbTime) { alert("اختار موعد المكالمة"); return; }
     if (!needsCb && !isReject && !isNewLead && !comment.trim()) { setErr(true); return; }
     setSaving(true); await p.onConfirm(comment.trim(), cbTime); setSaving(false); setComment(""); setCbTime(""); setErr(false);
@@ -432,7 +431,7 @@ var Header = function(p) {
 var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
-  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"NewLead" });
+  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential" });
   var [dupWarning, setDupWarning] = useState(null);
   var [saving, setSaving] = useState(false);
   var isReq = p.isReq||false;
@@ -452,7 +451,8 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId?form.status:(form.status||"NewLead") });
+      var sendStatus = (form.status||"Potential") === "NewLead" ? "Potential" : form.status;
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId?form.status:sendStatus });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
@@ -1338,7 +1338,7 @@ var DailyRequestsPage = function(p) {
         callbackTime:form.callbackTime||"",
         agentId:drAgentId,
         source:"Daily Request",
-        status:"NewLead"
+        status:"Potential"
       };
       var r=await apiFetch("/api/daily-requests","POST",submitData,p.token);
       setRequests(function(prev){return [r].concat(prev);});
