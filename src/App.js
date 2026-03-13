@@ -1836,8 +1836,7 @@ export default function CRMApp() {
     try {
       var results=await Promise.all([apiFetch("/api/leads","GET",null,tok),apiFetch("/api/users","GET",null,tok),apiFetch("/api/activities","GET",null,tok),apiFetch("/api/tasks","GET",null,tok)]);
       var loadedUser=results[1]?results[1].find(function(u){return u._id===tok||true;}):null;
-      var activeUser=userOverride||currentUser;
-      setLeads(getVisibleLeads(results[0]||[], activeUser)); setUsers(results[1]); setActivities(results[2]); setTasks(results[3]);
+      setLeads(getVisibleLeads(results[0]||[], currentUser)); setUsers(results[1]); setActivities(results[2]); setTasks(results[3]);
     } catch(e){setDataError(e.message);}
     setLoading(false);
   },[]);
@@ -1848,13 +1847,13 @@ export default function CRMApp() {
       var saved = localStorage.getItem('crm_aro_session');
       if (saved) {
         var s = JSON.parse(saved);
-        if (s.user && s.token) { setCurrentUser(s.user); setToken(s.token); loadData(s.token, s.user); }
+        if (s.user && s.token) { setCurrentUser(s.user); setToken(s.token); loadData(s.token); }
       }
     } catch(e) {}
   }, []);
 
   var handleLogin=function(user,tok){
-    setCurrentUser(user); setToken(tok); loadData(tok, user);
+    setCurrentUser(user); setToken(tok); loadData(tok);
     var defaultPage = (user.role==="sales") ? "myday" : "dashboard";
     setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok})); } catch(e){}
