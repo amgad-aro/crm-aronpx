@@ -195,7 +195,7 @@ app.post("/api/leads", auth, async function(req, res) {
       name: req.body.name,
       phone: req.body.phone,
       email: req.body.email || "",
-      status: req.body.status || "Potential",
+      status: req.body.status || "NewLead",
       source: req.body.source || "Facebook",
       project: req.body.project || "",
       agentId: req.body.agentId || req.user.id,
