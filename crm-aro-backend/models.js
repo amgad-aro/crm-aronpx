@@ -20,7 +20,7 @@ var leadSchema = new mongoose.Schema({
   name: { type: String, required: true },
   phone: { type: String, required: true },
   email: { type: String, default: "" },
-  status: { type: String, enum: ["Potential", "HotCase", "CallBack", "MeetingDone", "NotInterested", "NoAnswer", "DoneDeal"], default: "Potential" },
+status: { type: String, enum: ["NewLead", "Potential", "HotCase", "CallBack", "MeetingDone", "NotInterested", "NoAnswer", "DoneDeal"], default: "NewLead" },
   source: { type: String, default: "Facebook" },
   project: { type: String, default: "" },
   agentId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
