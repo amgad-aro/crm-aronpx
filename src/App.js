@@ -452,9 +452,7 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var rawStatus = p.editId ? form.status : (form.status||"NewLead");
-      var beStatus = rawStatus === "NewLead" ? "Potential" : rawStatus;
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: beStatus, displayStatus: rawStatus });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId?form.status:(form.status||"NewLead") });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
@@ -1340,7 +1338,7 @@ var DailyRequestsPage = function(p) {
         callbackTime:form.callbackTime||"",
         agentId:drAgentId,
         source:"Daily Request",
-        status:"Potential"
+        status:"NewLead"
       };
       var r=await apiFetch("/api/daily-requests","POST",submitData,p.token);
       setRequests(function(prev){return [r].concat(prev);});
