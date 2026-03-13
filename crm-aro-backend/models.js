@@ -10,26 +10,27 @@ var userSchema = new mongoose.Schema({
   role: { type: String, enum: ["admin", "manager", "sales", "viewer"], default: "sales" },
   title: { type: String, default: "" },
   active: { type: Boolean, default: true },
-monthlyTarget: { type: Number, default: 15 },
-teamId: { type: String, default: "" },
-teamName: { type: String, default: "" },
+  monthlyTarget: { type: Number, default: 15 },
+  teamId: { type: String, default: "" },
+  teamName: { type: String, default: "" },
 }, { timestamps: true });
 
 // ===== LEAD MODEL =====
 var leadSchema = new mongoose.Schema({
   name: { type: String, required: true },
   phone: { type: String, required: true },
+  phone2: { type: String, default: "" },
   email: { type: String, default: "" },
-status: { type: String, enum: ["NewLead","Potential","HotCase","CallBack","MeetingDone","NotInterested","NoAnswer","DoneDeal"], default: "NewLead" },
+  status: { type: String, enum: ["NewLead","Potential","HotCase","CallBack","MeetingDone","NotInterested","NoAnswer","DoneDeal"], default: "NewLead" },
   source: { type: String, default: "Facebook" },
   project: { type: String, default: "" },
   agentId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   budget: { type: String, default: "" },
   notes: { type: String, default: "" },
   callbackTime: { type: String, default: "" },
-phone2: { type: String, default: "" },
-archived: { type: Boolean, default: false },
   lastActivityTime: { type: Date, default: Date.now },
+  archived: { type: Boolean, default: false },
+  isVIP: { type: Boolean, default: false },
 }, { timestamps: true });
 
 // ===== ACTIVITY MODEL =====
@@ -50,11 +51,7 @@ var taskSchema = new mongoose.Schema({
   done: { type: Boolean, default: false },
 }, { timestamps: true });
 
-var User = mongoose.model("User", userSchema);
-var Lead = mongoose.model("Lead", leadSchema);
-var Activity = mongoose.model("Activity", activitySchema);
-var Task = mongoose.model("Task", taskSchema);
-
+// ===== DAILY REQUEST MODEL =====
 var dailyRequestSchema = new mongoose.Schema({
   name: { type: String, required: true },
   phone: { type: String, required: true },
@@ -64,13 +61,17 @@ var dailyRequestSchema = new mongoose.Schema({
   propertyType: { type: String, default: "" },
   area: { type: String, default: "" },
   notes: { type: String, default: "" },
- status: { type: String, enum: ["NewLead","Potential","HotCase","CallBack","MeetingDone","NotInterested","NoAnswer","DoneDeal"], default: "NewLead" },
+  status: { type: String, enum: ["NewLead","Potential","HotCase","CallBack","MeetingDone","NotInterested","NoAnswer","DoneDeal"], default: "NewLead" },
   agentId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   callbackTime: { type: String, default: "" },
   lastActivityTime: { type: Date, default: Date.now },
   source: { type: String, default: "Daily Request" },
 }, { timestamps: true });
 
+var User = mongoose.model("User", userSchema);
+var Lead = mongoose.model("Lead", leadSchema);
+var Activity = mongoose.model("Activity", activitySchema);
+var Task = mongoose.model("Task", taskSchema);
 var DailyRequest = mongoose.model("DailyRequest", dailyRequestSchema);
-module.exports = { User, Lead, Activity, Task, DailyRequest };
 
+module.exports = { User, Lead, Activity, Task, DailyRequest };
