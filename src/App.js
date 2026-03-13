@@ -10,18 +10,13 @@ import {
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
-const API = "https://crm-aro-backend-production.up.railway.app";
+const API = "https://crm-aro-api-production.up.railway.app";
 
 async function apiFetch(path, method, body, token) {
   var opts = { method: method || "GET", headers: { "Content-Type": "application/json" } };
   if (token) opts.headers["Authorization"] = "Bearer " + token;
   if (body) opts.body = JSON.stringify(body);
   var res = await fetch(API + path, opts);
-  var contentType = res.headers.get("content-type");
-  if (!contentType || !contentType.includes("application/json")) {
-    var text = await res.text();
-    throw new Error("Server error " + res.status + ": " + text.substring(0, 150));
-  }
   var data = await res.json();
   if (!res.ok) throw new Error(data.error || "API Error");
   return data;
@@ -339,7 +334,7 @@ var LoginPage = function(p) {
 
 // ===== SIDEBAR =====
 var Sidebar = function(p) {
-  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
+  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin";
   var items = [
     {id:"dashboard",icon:Home,label:t.dashboard},
     {id:"leads",icon:Users,label:t.leads},
@@ -348,7 +343,7 @@ var Sidebar = function(p) {
     {id:"tasks",icon:CheckCircle,label:t.tasks},
     isAdmin&&{id:"reports",icon:BarChart3,label:t.reports},
     isAdmin&&{id:"team",icon:UserPlus,label:t.team},
-    isAdmin&&{id:"users",icon:Lock,label:t.users},
+    isOnlyAdmin&&{id:"users",icon:Lock,label:t.users},
     isAdmin&&{id:"archive",icon:Archive,label:t.archive},
     isAdmin&&{id:"settings",icon:Settings,label:t.settings},
   ].filter(Boolean);
@@ -611,6 +606,7 @@ var QuickPhoneSearch = function(p) {
 var LeadsPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
   var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
+  var isOnlyAdmin = p.cu.role==="admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var isReq = !!p.isRequest;
 
@@ -756,11 +752,11 @@ var LeadsPage = function(p) {
           selectedLeads.forEach(function(l){window.open("https://wa.me/2"+l.phone.replace(/^0/,"")+"?text="+msg,"_blank");});
         }} style={{ padding:"7px 11px", fontSize:12, color:"#25D366", borderColor:"#25D366" }}>💬 {t.bulkWhatsApp} ({selected2.length})</Btn>}
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
-        {isAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
-        {isAdmin&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
+        {isOnlyAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
+        {isOnlyAdmin&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
         {!notifGranted&&<Btn outline onClick={async function(){var ok=await requestNotifPermission();setNotifGranted(ok);}} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Bell size={13}/> {t.enableNotif}</Btn>}
-        <Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>
-        {isAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
+        {isOnlyAdmin&&<Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>}
+        {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
       </div>
     </div>
 
@@ -788,7 +784,7 @@ var LeadsPage = function(p) {
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?500:620 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
               {isAdmin&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(l){return gid(l);}):[])}}/></th>}
-              {[t.name,t.phone,t.project,t.status,!p.isMobile&&t.source,isAdmin&&t.agent,t.lastActivity,!p.isMobile&&t.callbackTime].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+              {[t.name,t.phone,t.project,t.status,(!p.isMobile&&isOnlyAdmin)&&t.source,isAdmin&&t.agent,t.lastActivity,!p.isMobile&&t.callbackTime].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
             </tr></thead>
             <tbody>
               {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد بيانات</td></tr>}
@@ -830,7 +826,7 @@ var LeadsPage = function(p) {
                       </div>}
                     </div>
                   </td>
-                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{lead.source}</td>}
+                  {!p.isMobile&&isOnlyAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
@@ -861,8 +857,8 @@ var LeadsPage = function(p) {
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
             <div style={{ display:"flex", gap:5 }}>
-              {isAdmin&&<button onClick={function(){setEditLead(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.edit}><Edit size={11}/></button>}
-              {isAdmin&&<button onClick={function(){archiveLead(gid(selected));}} style={{ background:"rgba(255,165,0,0.3)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.archive}><Archive size={11}/></button>}
+              {isOnlyAdmin&&<button onClick={function(){setEditLead(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.edit}><Edit size={11}/></button>}
+              {isOnlyAdmin&&<button onClick={function(){archiveLead(gid(selected));}} style={{ background:"rgba(255,165,0,0.3)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.archive}><Archive size={11}/></button>}
             </div>
           </div>
           <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selected.name}</div>
