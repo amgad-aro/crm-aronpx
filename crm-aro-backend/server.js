@@ -66,8 +66,15 @@ function auth(req, res, next) {
 }
 
 function adminOnly(req, res, next) {
-  if (req.user.role !== "admin" && req.user.role !== "manager") {
+  if (req.user.role !== "admin") {
     return res.status(403).json({ error: "Admin only" });
+  }
+  next();
+}
+
+function adminOrManager(req, res, next) {
+  if (req.user.role !== "admin" && req.user.role !== "manager") {
+    return res.status(403).json({ error: "Admin or Manager only" });
   }
   next();
 }
@@ -79,8 +86,8 @@ app.post("/api/login", async function(req, res) {
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
     var valid = await bcrypt.compare(req.body.password, user.password);
     if (!valid) return res.status(401).json({ error: "Invalid credentials" });
-    var token = jwt.sign({ id: user._id, role: user.role, name: user.name }, process.env.JWT_SECRET, { expiresIn: "7d" });
-    res.json({ token: token, user: { id: user._id, name: user.name, username: user.username, role: user.role, title: user.title, email: user.email, phone: user.phone } });
+    var token = jwt.sign({ id: user._id, role: user.role, name: user.name, teamId: user.teamId || "", teamName: user.teamName || "" }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    res.json({ token: token, user: { id: user._id, name: user.name, username: user.username, role: user.role, title: user.title, email: user.email, phone: user.phone, teamId: user.teamId || "", teamName: user.teamName || "" } });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -98,7 +105,16 @@ app.get("/api/me", auth, async function(req, res) {
 // ===== USER ROUTES =====
 app.get("/api/users", auth, async function(req, res) {
   try {
-    var users = await User.find().select("-password").sort({ createdAt: -1 });
+    var query = {};
+    if (req.user.role === "manager") {
+      // Manager sees only their team members
+      query.teamId = req.user.teamId;
+    } else if (req.user.role === "sales") {
+      // Sales sees only themselves
+      query._id = req.user.id;
+    }
+    // Admin sees everyone
+    var users = await User.find(query).select("-password").sort({ createdAt: -1 });
     res.json(users);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -153,19 +169,6 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
 });
 
 // ===== LEAD ROUTES =====
-app.get("/api/users", auth, async function(req, res) {
-  try {
-    var query = { active: true };
-    if (req.user.role === "manager") {
-      query.teamId = req.user.teamId;
-    }
-    var users = await User.find(query).select("-password");
-    res.json(users);
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 app.get("/api/leads", auth, async function(req, res) {
   try {
     var query = { archived: { $ne: true } };
@@ -240,8 +243,12 @@ app.get("/api/activities", auth, async function(req, res) {
     var query = {};
     if (req.user.role === "sales") {
       query.userId = req.user.id;
+    } else if (req.user.role === "manager") {
+      var teamMembers = await User.find({ teamId: req.user.teamId, active: true }).select("_id");
+      var teamIds = teamMembers.map(function(u) { return u._id; });
+      query.userId = { $in: teamIds };
     }
-    var activities = await Activity.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 }).limit(50);
+    var activities = await Activity.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 }).limit(100);
     res.json(activities);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -273,6 +280,10 @@ app.get("/api/tasks", auth, async function(req, res) {
     var query = {};
     if (req.user.role === "sales") {
       query.userId = req.user.id;
+    } else if (req.user.role === "manager") {
+      var teamMembers = await User.find({ teamId: req.user.teamId, active: true }).select("_id");
+      var teamIds = teamMembers.map(function(u) { return u._id; });
+      query.userId = { $in: teamIds };
     }
     var tasks = await Task.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 });
     res.json(tasks);
@@ -324,6 +335,11 @@ app.get("/api/stats", auth, async function(req, res) {
     if (req.user.role === "sales") {
       leadQuery.agentId = req.user.id;
       actQuery.userId = req.user.id;
+    } else if (req.user.role === "manager") {
+      var teamMembers = await User.find({ teamId: req.user.teamId, active: true }).select("_id");
+      var teamIds = teamMembers.map(function(u) { return u._id; });
+      leadQuery.agentId = { $in: teamIds };
+      actQuery.userId = { $in: teamIds };
     }
     var totalLeads = await Lead.countDocuments(leadQuery);
     var potential = await Lead.countDocuments(Object.assign({ status: "Potential" }, leadQuery));
@@ -358,7 +374,14 @@ var PORT = process.env.PORT || 5000;
 app.get("/api/daily-requests", auth, async function(req, res) {
   try {
     var query = {};
-    if (req.user.role === "sales") query.agentId = req.user.id;
+    if (req.user.role === "sales") {
+      query.agentId = req.user.id;
+    } else if (req.user.role === "manager") {
+      var teamMembers = await User.find({ teamId: req.user.teamId, active: true }).select("_id");
+      var teamIds = teamMembers.map(function(u) { return u._id; });
+      query.agentId = { $in: teamIds };
+    }
+    // admin sees everything - no filter
     var requests = await DailyRequest.find(query)
       .populate("agentId", "name title")
       .sort({ createdAt: -1 });
@@ -377,6 +400,7 @@ app.post("/api/daily-requests", auth, async function(req, res) {
       agentId: req.body.agentId || req.user.id,
       callbackTime: req.body.callbackTime || "",
       lastActivityTime: new Date(),
+status: req.body.status || "Potential",
 status: req.body.status || "NewLead",
     });
     r = await DailyRequest.findById(r._id).populate("agentId","name title");
@@ -492,11 +516,30 @@ app.get("/api/leads/archived", auth, async function(req, res) {
     var query = { archived: true };
     if (req.user.role === "sales") query.agentId = req.user.id;
     else if (req.user.role === "manager") {
-      var members = await User.find({ teamId: req.user.teamId }).select("_id");
+      var members = await User.find({ teamId: req.user.teamId, active: true }).select("_id");
       query.agentId = { $in: members.map(function(u){ return u._id; }) };
     }
     var leads = await Lead.find(query).populate("agentId","name role teamId").sort({updatedAt:-1});
     res.json(leads);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== UPDATE MONTHLY TARGET =====
+app.put("/api/users/:id/target", auth, adminOnly, async function(req, res) {
+  try {
+    var user = await User.findByIdAndUpdate(req.params.id, { monthlyTarget: req.body.monthlyTarget }, { new: true }).select("-password");
+    res.json(user);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== TEAMS ROUTE (admin only) =====
+app.get("/api/teams", auth, adminOnly, async function(req, res) {
+  try {
+    var teams = await User.aggregate([
+      { $match: { teamId: { $ne: "" }, active: true } },
+      { $group: { _id: "$teamId", teamName: { $first: "$teamName" }, count: { $sum: 1 } } }
+    ]);
+    res.json(teams);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
