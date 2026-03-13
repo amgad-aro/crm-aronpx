@@ -10,13 +10,18 @@ import {
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
-const API = "https://crm-aro-api-production.up.railway.app";
+const API = "https://crm-aro-backend-production.up.railway.app";
 
 async function apiFetch(path, method, body, token) {
   var opts = { method: method || "GET", headers: { "Content-Type": "application/json" } };
   if (token) opts.headers["Authorization"] = "Bearer " + token;
   if (body) opts.body = JSON.stringify(body);
   var res = await fetch(API + path, opts);
+  var contentType = res.headers.get("content-type");
+  if (!contentType || !contentType.includes("application/json")) {
+    var text = await res.text();
+    throw new Error("Server error " + res.status + ": " + text.substring(0, 150));
+  }
   var data = await res.json();
   if (!res.ok) throw new Error(data.error || "API Error");
   return data;
