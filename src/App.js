@@ -450,7 +450,7 @@ var Header = function(p) {
 var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
-  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential" });
+  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"NewLead" });
   var [dupWarning, setDupWarning] = useState(null);
   var [saving, setSaving] = useState(false);
   var isReq = p.isReq||false;
@@ -477,7 +477,7 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var sendStatus = (form.status||"Potential") === "NewLead" ? "Potential" : form.status;
+      var sendStatus = form.status || "NewLead";
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId?form.status:sendStatus });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
@@ -632,14 +632,28 @@ var QuickPhoneSearch = function(p) {
 var PhoneCell = function(p) {
   var [revealed, setRevealed] = useState(false);
   var t = p.t;
-  return <div onMouseEnter={function(){setRevealed(true);}} onMouseLeave={function(){setRevealed(false);}}>
-    <div style={{ fontWeight:600, color:C.text, letterSpacing: revealed?0:1 }}>{revealed?p.phone:maskPhone(p.phone)}</div>
-    {p.phone2&&<div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{revealed?p.phone2:maskPhone(p.phone2)}</div>}
-    <div style={{ display:"flex", gap:4, marginTop:3 }}>
+  return <div
+    onMouseEnter={function(){setRevealed(true);}}
+    onMouseLeave={function(){setRevealed(false);}}
+    style={{ cursor:"default", userSelect: revealed?"text":"none" }}>
+    {/* الهاتف الأساسي */}
+    <div style={{ display:"flex", alignItems:"center", gap:4, direction:"ltr", marginBottom:p.phone2?3:0 }}>
+      <span style={{ fontWeight:600, color: revealed?C.text:"#94A3B8", fontSize:12, letterSpacing: revealed?0:2, filter: revealed?"none":"blur(3px)", transition:"all 0.2s" }}>
+        {revealed ? p.phone : maskPhone(p.phone)}
+      </span>
+      {!revealed && <span style={{ fontSize:9, color:C.textLight }}>🔒</span>}
+    </div>
+    {/* الهاتف الإضافي */}
+    {p.phone2 && <div style={{ display:"flex", alignItems:"center", gap:4, direction:"ltr", marginBottom:3 }}>
+      <span style={{ fontWeight:500, color: revealed?C.textLight:"#94A3B8", fontSize:11, letterSpacing: revealed?0:2, filter: revealed?"none":"blur(3px)", transition:"all 0.2s" }}>
+        {revealed ? p.phone2 : maskPhone(p.phone2)}
+      </span>
+    </div>}
+    {/* أزرار الاتصال */}
+    <div style={{ display:"flex", gap:4, marginTop:2 }}>
       <a href={"tel:"+p.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/> {t.call}</a>
       <a href={"https://wa.me/2"+p.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}>💬 {t.whatsapp}</a>
     </div>
-    {!revealed&&<div style={{ fontSize:9, color:C.textLight, marginTop:1 }}>🔒 مرّر للإظهار</div>}
   </div>;
 };
 
@@ -839,9 +853,8 @@ var LeadsPage = function(p) {
                       <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
                     </div>
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
-                    {lead.phone2&&<div style={{ fontSize:10, color:C.textLight, direction:"ltr" }}>{lead.phone2}</div>}
                   </td>
-                  <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap" }}>
+                  <td style={{ padding:"10px 12px", fontSize:12, whiteSpace:"nowrap", textAlign: t.dir==="rtl"?"right":"left" }}>
                     <PhoneCell phone={lead.phone} phone2={lead.phone2} t={t}/>
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{lead.project}</td>
