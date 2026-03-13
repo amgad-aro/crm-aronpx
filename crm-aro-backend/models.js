@@ -64,7 +64,7 @@ var dailyRequestSchema = new mongoose.Schema({
   propertyType: { type: String, default: "" },
   area: { type: String, default: "" },
   notes: { type: String, default: "" },
-  status: { type: String, enum: ["NewLead","Potential","HotCase","CallBack","MeetingDone","NotInterested","NoAnswer","DoneDeal"], default: "NewLead" },
+ status: { type: String, enum: ["NewLead","Potential","HotCase","CallBack","MeetingDone","NotInterested","NoAnswer","DoneDeal"], default: "NewLead" },
   agentId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   callbackTime: { type: String, default: "" },
   lastActivityTime: { type: Date, default: Date.now },
