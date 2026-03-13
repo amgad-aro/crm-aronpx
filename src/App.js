@@ -172,13 +172,14 @@ var C = {
 };
 
 var STATUSES = function(t) { return [
-  { value: "Potential", label: t.lang==="ar"?"عميل جديد":"New Lead", bg: "#EEF2FF", color: "#6366F1" },
-  { value: "HotCase", label: t.hotCase, bg: "#FEE2E2", color: "#DC2626" },
-  { value: "CallBack", label: t.callBack, bg: "#FEF3C7", color: "#B45309" },
-  { value: "MeetingDone", label: t.meetingDone, bg: "#F3E8FF", color: "#7C3AED" },
-  { value: "NotInterested", label: t.notInterested, bg: "#F1F5F9", color: "#64748B" },
-  { value: "NoAnswer", label: t.noAnswer, bg: "#E0E7FF", color: "#4338CA" },
-  { value: "DoneDeal", label: t.doneDeal, bg: "#DCFCE7", color: "#15803D" },
+  { value: "NewLead",      label: t.lang==="ar"?"وارد جديد":"New Lead",   bg: "#F0FDF4", color: "#16A34A" },
+  { value: "Potential",    label: t.lang==="ar"?"Potential":"Potential",  bg: "#EEF2FF", color: "#6366F1" },
+  { value: "HotCase",      label: t.hotCase,                               bg: "#FEE2E2", color: "#DC2626" },
+  { value: "CallBack",     label: t.callBack,                              bg: "#FEF3C7", color: "#B45309" },
+  { value: "MeetingDone",  label: t.meetingDone,                           bg: "#F3E8FF", color: "#7C3AED" },
+  { value: "NotInterested",label: t.notInterested,                         bg: "#F1F5F9", color: "#64748B" },
+  { value: "NoAnswer",     label: t.noAnswer,                              bg: "#E0E7FF", color: "#4338CA" },
+  { value: "DoneDeal",     label: t.doneDeal,                              bg: "#DCFCE7", color: "#15803D" },
 ]; };
 
 var PROJECTS = [
@@ -189,6 +190,24 @@ var SOURCES = ["Facebook", "Instagram", "TikTok", "WhatsApp", "Google Ads", "Ref
 var PROP_TYPES = ["شقة", "دوبلكس", "تاون هاوس", "فيلا", "محل تجاري", "مكتب"];
 
 var gid = function(o) { return o && (o._id || o.id); };
+
+// Mask phone: show first 4 + last 2, rest as *
+var maskPhone = function(phone) {
+  if (!phone) return "";
+  if (phone.length <= 6) return phone;
+  var shown = phone.slice(0,4);
+  var end = phone.slice(-2);
+  var masked = "*".repeat(phone.length - 6);
+  return shown + masked + end;
+};
+
+// Format budget with commas
+var fmtMoney = function(v) {
+  if (!v) return "";
+  var num = v.toString().replace(/[^0-9]/g,"");
+  if (!num) return v;
+  return Number(num).toLocaleString("en-US");
+};
 var timeAgo = function(d, t) {
   if (!d) return "-";
   var diff = (Date.now() - new Date(d).getTime()) / 60000;
@@ -268,22 +287,23 @@ var StatusModal = function(p) {
   var [err, setErr] = useState(false);
   var [saving, setSaving] = useState(false);
   var sc = STATUSES(p.t); var ns = sc.find(function(s){return s.value===p.newStatus;});
-  var needsCb = p.newStatus==="CallBack" || p.newStatus==="NoAnswer";
+  // Callback mandatory for: CallBack, NoAnswer, HotCase, MeetingDone, Potential
+  var needsCb = ["CallBack","NoAnswer","HotCase","MeetingDone","Potential"].includes(p.newStatus);
   var isReject = p.newStatus==="NotInterested";
+  var isNewLead = p.newStatus==="NewLead";
   useEffect(function(){setComment("");setCbTime("");setErr(false);},[p.show]);
-  var isNewLead = false;
   var submit = async function() {
-    
-    if (needsCb && !cbTime) { alert("اختار موعد المكالمة"); return; }
-    if (!needsCb && !isReject && !isNewLead && !comment.trim()) { setErr(true); return; }
+    if (needsCb && !cbTime) { alert("اختار موعد المكالمة القادمة (مطلوب)"); return; }
+    if (!isNewLead && !isReject && needsCb && !comment.trim()) { setErr(true); return; }
+    if (!isNewLead && !isReject && !needsCb && !comment.trim()) { setErr(true); return; }
     setSaving(true); await p.onConfirm(comment.trim(), cbTime); setSaving(false); setComment(""); setCbTime(""); setErr(false);
   };
   return <Modal show={p.show} onClose={p.onClose} title={p.t.changeStatus}>
     {ns && <div style={{ marginBottom:14, padding:"10px 14px", background:ns.bg, borderRadius:10, display:"flex", alignItems:"center", gap:8 }}><span style={{ width:10, height:10, borderRadius:"50%", background:ns.color }}/><span style={{ fontSize:14, fontWeight:600, color:ns.color }}>{ns.label}</span></div>}
-    <div style={{ marginBottom:12 }}>
+    {!isNewLead && <div style={{ marginBottom:12 }}>
       <Inp label={"📅 موعد المكالمة القادمة "+(needsCb?"(مطلوب)":"(اختياري)")} type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);}} req={needsCb}/>
       {cbTime&&<div style={{ fontSize:11, color:"#6366F1", marginTop:-8, marginBottom:10 }}>🔔 سيتم تذكيرك قبل الموعد بـ 15 دقيقة</div>}
-    </div>
+    </div>}
     {isReject && <div style={{ marginBottom:12 }}>
       <div style={{ fontSize:12, fontWeight:600, marginBottom:8, color:"#EF4444" }}>سبب الرفض:</div>
       <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:10 }}>
@@ -292,8 +312,7 @@ var StatusModal = function(p) {
         })}
       </div>
     </div>}
-    {!needsCb && !isNewLead && <Inp label={isReject?"ملاحظة إضافية (اختياري)":p.t.statusComment} type="textarea" placeholder={p.t.statusCommentPH} value={comment} onChange={function(e){setComment(e.target.value);setErr(false);}} req={!isReject}/>}
-    {needsCb && <Inp label={"ملاحظة (اختياري)"} type="textarea" value={comment} onChange={function(e){setComment(e.target.value);}}/>}
+    {!isNewLead && <Inp label={isReject?"ملاحظة إضافية (اختياري)":p.t.statusComment} type="textarea" placeholder={p.t.statusCommentPH} value={comment} onChange={function(e){setComment(e.target.value);setErr(false);}} req={!isReject}/>}
     {err && <div style={{ color:C.danger, fontSize:12, marginBottom:12, padding:"8px 12px", background:"#FEF2F2", borderRadius:8 }}>{p.t.commentRequired}</div>}
     <div style={{ display:"flex", gap:10 }}><Btn outline onClick={p.onClose} style={{ flex:1 }}>{p.t.cancel}</Btn><Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.t.save}</Btn></div>
   </Modal>;
@@ -334,7 +353,7 @@ var LoginPage = function(p) {
 
 // ===== SIDEBAR =====
 var Sidebar = function(p) {
-  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin";
+  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
   var items = [
     {id:"dashboard",icon:Home,label:t.dashboard},
     {id:"leads",icon:Users,label:t.leads},
@@ -343,7 +362,7 @@ var Sidebar = function(p) {
     {id:"tasks",icon:CheckCircle,label:t.tasks},
     isAdmin&&{id:"reports",icon:BarChart3,label:t.reports},
     isAdmin&&{id:"team",icon:UserPlus,label:t.team},
-    isOnlyAdmin&&{id:"users",icon:Lock,label:t.users},
+    isAdmin&&{id:"users",icon:Lock,label:t.users},
     isAdmin&&{id:"archive",icon:Archive,label:t.archive},
     isAdmin&&{id:"settings",icon:Settings,label:t.settings},
   ].filter(Boolean);
@@ -447,6 +466,13 @@ var LeadForm = function(p) {
 
   var upd = function(k, v) { setForm(function(f){return Object.assign({},f,{[k]:v});}); };
 
+  // Format budget with commas
+  var fmtBudget = function(v) {
+    var digits = v.replace(/[^0-9]/g,"");
+    if (!digits) return "";
+    return Number(digits).toLocaleString("en-US");
+  };
+
   var submit = async function() {
     if (!form.name||!form.phone) return;
     setSaving(true);
@@ -470,9 +496,9 @@ var LeadForm = function(p) {
       <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder="01xxxxxxxxx"/>
       <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder="اختياري"/>
       <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
-      <Inp label={t.budget} value={form.budget} onChange={function(e){upd("budget",e.target.value);}}/>
+      <Inp label={t.budget+" (مثال: 1,000,000)"} value={form.budget} onChange={function(e){upd("budget",fmtBudget(e.target.value));}} placeholder="0"/>
     </div>
-    <Inp label={t.project} type="select" value={form.project} onChange={function(e){upd("project",e.target.value);}} options={PROJECTS.map(function(x){return{value:x,label:x};})}/>
+    <Inp label={t.project} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="اكتب اسم المشروع"/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- اختر -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
@@ -606,7 +632,6 @@ var QuickPhoneSearch = function(p) {
 var LeadsPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
   var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
-  var isOnlyAdmin = p.cu.role==="admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var isReq = !!p.isRequest;
 
@@ -752,11 +777,11 @@ var LeadsPage = function(p) {
           selectedLeads.forEach(function(l){window.open("https://wa.me/2"+l.phone.replace(/^0/,"")+"?text="+msg,"_blank");});
         }} style={{ padding:"7px 11px", fontSize:12, color:"#25D366", borderColor:"#25D366" }}>💬 {t.bulkWhatsApp} ({selected2.length})</Btn>}
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
-        {isOnlyAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
-        {isOnlyAdmin&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
+        {isAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
+        {isAdmin&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
         {!notifGranted&&<Btn outline onClick={async function(){var ok=await requestNotifPermission();setNotifGranted(ok);}} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Bell size={13}/> {t.enableNotif}</Btn>}
-        {isOnlyAdmin&&<Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>}
-        {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
+        <Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>
+        {isAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
       </div>
     </div>
 
@@ -784,7 +809,7 @@ var LeadsPage = function(p) {
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?500:620 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
               {isAdmin&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(l){return gid(l);}):[])}}/></th>}
-              {[t.name,t.phone,t.project,t.status,(!p.isMobile&&isOnlyAdmin)&&t.source,isAdmin&&t.agent,t.lastActivity,!p.isMobile&&t.callbackTime].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+              {[t.name,t.phone,t.project,t.status,!p.isMobile&&t.source,isAdmin&&t.agent,t.lastActivity,!p.isMobile&&t.callbackTime].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
             </tr></thead>
             <tbody>
               {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد بيانات</td></tr>}
@@ -802,11 +827,18 @@ var LeadsPage = function(p) {
                     {lead.phone2&&<div style={{ fontSize:10, color:C.textLight, direction:"ltr" }}>{lead.phone2}</div>}
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap" }}>
-                    {lead.phone}{lead.phone2&&<div style={{ fontSize:10, color:C.textLight }}>{lead.phone2}</div>}
-                    <div style={{ display:"flex", gap:4, marginTop:3 }}>
-                      <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/> {t.call}</a>
-                      <a href={"https://wa.me/2"+lead.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}>💬 {t.whatsapp}</a>
-                    </div>
+                    {(function(){
+                      var [revealed, setRevealed] = useState(false);
+                      return <div onMouseEnter={function(){setRevealed(true);}} onMouseLeave={function(){setRevealed(false);}}>
+                        <div style={{ fontWeight:600, color:C.text, letterSpacing: revealed?0:1 }}>{revealed?lead.phone:maskPhone(lead.phone)}</div>
+                        {lead.phone2&&<div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{revealed?lead.phone2:maskPhone(lead.phone2)}</div>}
+                        <div style={{ display:"flex", gap:4, marginTop:3 }}>
+                          <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/> {t.call}</a>
+                          <a href={"https://wa.me/2"+lead.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}>💬 {t.whatsapp}</a>
+                        </div>
+                        {!revealed&&<div style={{ fontSize:9, color:C.textLight, marginTop:1 }}>🔒 مرّر للإظهار</div>}
+                      </div>;
+                    })()}
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{lead.project}</td>
                   <td style={{ padding:"10px 12px", position:"relative" }} onClick={function(e){e.stopPropagation();}}>
@@ -826,7 +858,7 @@ var LeadsPage = function(p) {
                       </div>}
                     </div>
                   </td>
-                  {!p.isMobile&&isOnlyAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{lead.source}</td>}
+                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
@@ -857,8 +889,8 @@ var LeadsPage = function(p) {
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
             <div style={{ display:"flex", gap:5 }}>
-              {isOnlyAdmin&&<button onClick={function(){setEditLead(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.edit}><Edit size={11}/></button>}
-              {isOnlyAdmin&&<button onClick={function(){archiveLead(gid(selected));}} style={{ background:"rgba(255,165,0,0.3)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.archive}><Archive size={11}/></button>}
+              {isAdmin&&<button onClick={function(){setEditLead(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.edit}><Edit size={11}/></button>}
+              {isAdmin&&<button onClick={function(){archiveLead(gid(selected));}} style={{ background:"rgba(255,165,0,0.3)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.archive}><Archive size={11}/></button>}
             </div>
           </div>
           <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selected.name}</div>
@@ -890,7 +922,7 @@ var LeadsPage = function(p) {
             </select>
           </div>}
           {/* Details */}
-          {[{l:t.budget,v:selected.budget},{l:t.source,v:selected.source},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"آخر تواصل",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("ar-EG")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"تاريخ الإضافة",v:selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-"},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:t.budget,v:fmtMoney(selected.budget)},{l:t.source,v:selected.source},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"آخر تواصل",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("ar-EG")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"تاريخ الإضافة",v:selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-"},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span></div>:null;
           })}
           {/* WhatsApp Templates */}
