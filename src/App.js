@@ -173,7 +173,7 @@ var C = {
 
 var STATUSES = function(t) { return [
   { value: "NewLead", label: t.lang==="ar"?"عميل جديد":"New Lead", bg: "#EEF2FF", color: "#6366F1" },
-  { value: "Potential", label: t.potential, bg: "#DBEAFE", color: "#1D4ED8" },
+  { value: "Potential", label: t.lang==="ar"?"محتمل":"Potential", bg: "#DBEAFE", color: "#1D4ED8" },
   { value: "HotCase", label: t.hotCase, bg: "#FEE2E2", color: "#DC2626" },
   { value: "CallBack", label: t.callBack, bg: "#FEF3C7", color: "#B45309" },
   { value: "MeetingDone", label: t.meetingDone, bg: "#F3E8FF", color: "#7C3AED" },
@@ -452,7 +452,9 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId?form.status:(form.status||"NewLead") });
+      var rawStatus = p.editId ? form.status : (form.status||"NewLead");
+      var beStatus = rawStatus === "NewLead" ? "Potential" : rawStatus;
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: beStatus, displayStatus: rawStatus });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
@@ -1338,7 +1340,7 @@ var DailyRequestsPage = function(p) {
         callbackTime:form.callbackTime||"",
         agentId:drAgentId,
         source:"Daily Request",
-        status:"NewLead"
+        status:"Potential"
       };
       var r=await apiFetch("/api/daily-requests","POST",submitData,p.token);
       setRequests(function(prev){return [r].concat(prev);});
