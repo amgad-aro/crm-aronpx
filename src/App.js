@@ -172,14 +172,13 @@ var C = {
 };
 
 var STATUSES = function(t) { return [
-  { value: "NewLead",      label: t.lang==="ar"?"وارد جديد":"New Lead",   bg: "#F0FDF4", color: "#16A34A" },
-  { value: "Potential",    label: t.lang==="ar"?"Potential":"Potential",  bg: "#EEF2FF", color: "#6366F1" },
-  { value: "HotCase",      label: t.hotCase,                               bg: "#FEE2E2", color: "#DC2626" },
-  { value: "CallBack",     label: t.callBack,                              bg: "#FEF3C7", color: "#B45309" },
-  { value: "MeetingDone",  label: t.meetingDone,                           bg: "#F3E8FF", color: "#7C3AED" },
-  { value: "NotInterested",label: t.notInterested,                         bg: "#F1F5F9", color: "#64748B" },
-  { value: "NoAnswer",     label: t.noAnswer,                              bg: "#E0E7FF", color: "#4338CA" },
-  { value: "DoneDeal",     label: t.doneDeal,                              bg: "#DCFCE7", color: "#15803D" },
+  { value: "Potential",    label: t.lang==="ar"?"وارد جديد":"New Lead",    bg: "#F0FDF4", color: "#16A34A" },
+  { value: "HotCase",      label: t.hotCase,                                bg: "#FEE2E2", color: "#DC2626" },
+  { value: "CallBack",     label: t.callBack,                               bg: "#FEF3C7", color: "#B45309" },
+  { value: "MeetingDone",  label: t.meetingDone,                            bg: "#F3E8FF", color: "#7C3AED" },
+  { value: "NotInterested",label: t.notInterested,                          bg: "#F1F5F9", color: "#64748B" },
+  { value: "NoAnswer",     label: t.noAnswer,                               bg: "#E0E7FF", color: "#4338CA" },
+  { value: "DoneDeal",     label: t.doneDeal,                               bg: "#DCFCE7", color: "#15803D" },
 ]; };
 
 var PROJECTS = [
