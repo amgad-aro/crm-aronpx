@@ -377,7 +377,6 @@ app.post("/api/daily-requests", auth, async function(req, res) {
       agentId: req.body.agentId || req.user.id,
       callbackTime: req.body.callbackTime || "",
       lastActivityTime: new Date(),
-status: req.body.status || "Potential",
 status: req.body.status || "NewLead",
     });
     r = await DailyRequest.findById(r._id).populate("agentId","name title");
