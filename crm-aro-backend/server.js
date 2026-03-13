@@ -191,11 +191,14 @@ app.get("/api/leads", auth, async function(req, res) {
 
 app.post("/api/leads", auth, async function(req, res) {
   try {
+    var validStatuses = ["NewLead","Potential","HotCase","CallBack","MeetingDone","NotInterested","NoAnswer","DoneDeal"];
+    var incomingStatus = req.body.status || "Potential";
+    var safeStatus = validStatuses.includes(incomingStatus) ? incomingStatus : "Potential";
     var lead = await Lead.create({
       name: req.body.name,
       phone: req.body.phone,
       email: req.body.email || "",
-      status: req.body.status || "NewLead",
+      status: safeStatus,
       source: req.body.source || "Facebook",
       project: req.body.project || "",
       agentId: req.body.agentId || req.user.id,
