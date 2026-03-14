@@ -194,11 +194,9 @@ var gid = function(o) { return o && (o._id || o.id); };
 // Mask phone: show first 4 + last 2, rest as *
 var maskPhone = function(phone) {
   if (!phone) return "";
-  if (phone.length <= 6) return phone;
-  var shown = phone.slice(0,4);
-  var end = phone.slice(-2);
-  var masked = "*".repeat(phone.length - 6);
-  return shown + masked + end;
+  if (phone.length <= 4) return phone;
+  var shown = phone.slice(0, phone.length - 4);
+  return shown + "****";
 };
 
 // Format budget with commas
@@ -287,15 +285,13 @@ var StatusModal = function(p) {
   var [err, setErr] = useState(false);
   var [saving, setSaving] = useState(false);
   var sc = STATUSES(p.t); var ns = sc.find(function(s){return s.value===p.newStatus;});
-  // Callback mandatory for: CallBack, NoAnswer, HotCase, MeetingDone, Potential
-  var needsCb = ["CallBack","NoAnswer","HotCase","MeetingDone","Potential"].includes(p.newStatus);
+  var needsCb = ["CallBack","NoAnswer","HotCase","MeetingDone","Interested"].includes(p.newStatus);
   var isReject = p.newStatus==="NotInterested";
-  var isNewLead = false;
+  var isNewLead = p.newStatus==="Potential";
   useEffect(function(){setComment("");setCbTime("");setErr(false);},[p.show]);
   var submit = async function() {
     if (needsCb && !cbTime) { alert("اختار موعد المكالمة القادمة (مطلوب)"); return; }
-    if (!isNewLead && !isReject && needsCb && !comment.trim()) { setErr(true); return; }
-    if (!isNewLead && !isReject && !needsCb && !comment.trim()) { setErr(true); return; }
+    if (!isNewLead && !isReject && !comment.trim()) { setErr(true); return; }
     setSaving(true); await p.onConfirm(comment.trim(), cbTime); setSaving(false); setComment(""); setCbTime(""); setErr(false);
   };
   return <Modal show={p.show} onClose={p.onClose} title={p.t.changeStatus}>
@@ -634,24 +630,27 @@ var QuickPhoneSearch = function(p) {
 var PhoneCell = function(p) {
   var [revealed, setRevealed] = useState(false);
   var t = p.t;
+  // Show first digits + blur last 4
+  var renderPhone = function(phone) {
+    if (!phone) return null;
+    if (phone.length <= 4) return <span style={{ fontWeight:600, fontSize:12 }}>{phone}</span>;
+    var visible = phone.slice(0, phone.length - 4);
+    var hidden = phone.slice(-4);
+    return <span style={{ fontWeight:600, fontSize:12, direction:"ltr" }}>
+      {visible}
+      <span style={{ filter: revealed?"none":"blur(4px)", transition:"filter 0.2s", display:"inline-block" }}>{hidden}</span>
+    </span>;
+  };
   return <div
     onMouseEnter={function(){setRevealed(true);}}
     onMouseLeave={function(){setRevealed(false);}}
-    style={{ cursor:"default", userSelect: revealed?"text":"none" }}>
-    {/* الهاتف الأساسي */}
-    <div style={{ display:"flex", alignItems:"center", gap:4, direction:"ltr", marginBottom:p.phone2?3:0 }}>
-      <span style={{ fontWeight:600, color: revealed?C.text:"#94A3B8", fontSize:12, letterSpacing: revealed?0:2, filter: revealed?"none":"blur(3px)", transition:"all 0.2s" }}>
-        {revealed ? p.phone : maskPhone(p.phone)}
-      </span>
-      {!revealed && <span style={{ fontSize:9, color:C.textLight }}>🔒</span>}
+    style={{ cursor:"default" }}>
+    <div style={{ direction:"ltr", marginBottom:p.phone2?2:0 }}>
+      {renderPhone(p.phone)}
     </div>
-    {/* الهاتف الإضافي */}
-    {p.phone2 && <div style={{ display:"flex", alignItems:"center", gap:4, direction:"ltr", marginBottom:3 }}>
-      <span style={{ fontWeight:500, color: revealed?C.textLight:"#94A3B8", fontSize:11, letterSpacing: revealed?0:2, filter: revealed?"none":"blur(3px)", transition:"all 0.2s" }}>
-        {revealed ? p.phone2 : maskPhone(p.phone2)}
-      </span>
+    {p.phone2 && <div style={{ direction:"ltr", marginBottom:2 }}>
+      {renderPhone(p.phone2)}
     </div>}
-    {/* أزرار الاتصال */}
     <div style={{ display:"flex", gap:4, marginTop:2 }}>
       <a href={"tel:"+p.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/> {t.call}</a>
       <a href={"https://wa.me/2"+p.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}>💬 {t.whatsapp}</a>
