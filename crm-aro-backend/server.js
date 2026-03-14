@@ -71,11 +71,22 @@ var dailyRequestSchema = new mongoose.Schema({
   source: { type: String, default: "Daily Request" },
 }, { timestamps: true });
 
-var User = mongoose.models.User || mongoose.model("User", userSchema);
-var Lead = mongoose.models.Lead || mongoose.model("Lead", leadSchema);
-var Activity = mongoose.models.Activity || mongoose.model("Activity", activitySchema);
-var Task = mongoose.models.Task || mongoose.model("Task", taskSchema);
-var DailyRequest = mongoose.models.DailyRequest || mongoose.model("DailyRequest", dailyRequestSchema);
+delete mongoose.connection.models["User"];
+delete mongoose.connection.models["Lead"];
+delete mongoose.connection.models["Activity"];
+delete mongoose.connection.models["Task"];
+delete mongoose.connection.models["DailyRequest"];
+if (mongoose.models.User) delete mongoose.models.User;
+if (mongoose.models.Lead) delete mongoose.models.Lead;
+if (mongoose.models.Activity) delete mongoose.models.Activity;
+if (mongoose.models.Task) delete mongoose.models.Task;
+if (mongoose.models.DailyRequest) delete mongoose.models.DailyRequest;
+
+var User = mongoose.model("User", userSchema);
+var Lead = mongoose.model("Lead", leadSchema);
+var Activity = mongoose.model("Activity", activitySchema);
+var Task = mongoose.model("Task", taskSchema);
+var DailyRequest = mongoose.model("DailyRequest", dailyRequestSchema);
 // ===== END MODELS =====
 
 var app = express();
