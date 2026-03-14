@@ -173,6 +173,7 @@ var C = {
 
 var STATUSES = function(t) { return [
   { value: "Potential",    label: t.lang==="ar"?"وارد جديد":"New Lead",    bg: "#F0FDF4", color: "#16A34A" },
+  { value: "Interested",   label: t.lang==="ar"?"Potential":"Potential",   bg: "#EEF2FF", color: "#6366F1" },
   { value: "HotCase",      label: t.hotCase,                                bg: "#FEE2E2", color: "#DC2626" },
   { value: "CallBack",     label: t.callBack,                               bg: "#FEF3C7", color: "#B45309" },
   { value: "MeetingDone",  label: t.meetingDone,                            bg: "#F3E8FF", color: "#7C3AED" },
