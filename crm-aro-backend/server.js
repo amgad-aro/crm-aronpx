@@ -4,12 +4,80 @@ var mongoose = require("mongoose");
 var cors = require("cors");
 var bcrypt = require("bcryptjs");
 var jwt = require("jsonwebtoken");
-var models = require("./models");
-var User = models.User;
-var Lead = models.Lead;
-var Activity = models.Activity;
-var Task = models.Task;
-var DailyRequest = models.DailyRequest;
+
+// ===== MODELS INLINE =====
+var STATUSES_ENUM = ["NewLead","Potential","HotCase","CallBack","MeetingDone","NotInterested","NoAnswer","DoneDeal"];
+
+var userSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  username: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  email: { type: String, default: "" },
+  phone: { type: String, default: "" },
+  role: { type: String, enum: ["admin","manager","sales","viewer"], default: "sales" },
+  title: { type: String, default: "" },
+  active: { type: Boolean, default: true },
+  monthlyTarget: { type: Number, default: 15 },
+  teamId: { type: String, default: "" },
+  teamName: { type: String, default: "" },
+}, { timestamps: true });
+
+var leadSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  phone: { type: String, required: true },
+  phone2: { type: String, default: "" },
+  email: { type: String, default: "" },
+  status: { type: String, enum: STATUSES_ENUM, default: "NewLead" },
+  source: { type: String, default: "Facebook" },
+  project: { type: String, default: "" },
+  agentId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  budget: { type: String, default: "" },
+  notes: { type: String, default: "" },
+  callbackTime: { type: String, default: "" },
+  lastActivityTime: { type: Date, default: Date.now },
+  archived: { type: Boolean, default: false },
+  isVIP: { type: Boolean, default: false },
+}, { timestamps: true });
+
+var activitySchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  leadId: { type: mongoose.Schema.Types.ObjectId, ref: "Lead" },
+  type: { type: String, enum: ["call","meeting","followup","email","status_change","reassign","note"], default: "call" },
+  note: { type: String, default: "" },
+}, { timestamps: true });
+
+var taskSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  type: { type: String, enum: ["call","meeting","email","followup"], default: "call" },
+  time: { type: String, default: "" },
+  leadId: { type: mongoose.Schema.Types.ObjectId, ref: "Lead" },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  done: { type: Boolean, default: false },
+}, { timestamps: true });
+
+var dailyRequestSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  phone: { type: String, required: true },
+  phone2: { type: String, default: "" },
+  email: { type: String, default: "" },
+  budget: { type: String, default: "" },
+  propertyType: { type: String, default: "" },
+  area: { type: String, default: "" },
+  notes: { type: String, default: "" },
+  status: { type: String, enum: STATUSES_ENUM, default: "NewLead" },
+  agentId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  callbackTime: { type: String, default: "" },
+  lastActivityTime: { type: Date, default: Date.now },
+  source: { type: String, default: "Daily Request" },
+}, { timestamps: true });
+
+var User = mongoose.model("User", userSchema);
+var Lead = mongoose.model("Lead", leadSchema);
+var Activity = mongoose.model("Activity", activitySchema);
+var Task = mongoose.model("Task", taskSchema);
+var DailyRequest = mongoose.model("DailyRequest", dailyRequestSchema);
+// ===== END MODELS =====
+
 var app = express();
 app.use(cors());
 app.use(express.json());
