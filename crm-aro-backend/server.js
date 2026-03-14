@@ -27,7 +27,7 @@ var leadSchema = new mongoose.Schema({
   phone: { type: String, required: true },
   phone2: { type: String, default: "" },
   email: { type: String, default: "" },
-  status: { type: String, enum: STATUSES_ENUM, default: "NewLead" },
+  status: { type: String, default: "NewLead" },
   source: { type: String, default: "Facebook" },
   project: { type: String, default: "" },
   agentId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -64,18 +64,18 @@ var dailyRequestSchema = new mongoose.Schema({
   propertyType: { type: String, default: "" },
   area: { type: String, default: "" },
   notes: { type: String, default: "" },
-  status: { type: String, enum: STATUSES_ENUM, default: "NewLead" },
+  status: { type: String, default: "NewLead" },
   agentId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   callbackTime: { type: String, default: "" },
   lastActivityTime: { type: Date, default: Date.now },
   source: { type: String, default: "Daily Request" },
 }, { timestamps: true });
 
-var User = mongoose.model("User", userSchema);
-var Lead = mongoose.model("Lead", leadSchema);
-var Activity = mongoose.model("Activity", activitySchema);
-var Task = mongoose.model("Task", taskSchema);
-var DailyRequest = mongoose.model("DailyRequest", dailyRequestSchema);
+var User = mongoose.models.User || mongoose.model("User", userSchema);
+var Lead = mongoose.models.Lead || mongoose.model("Lead", leadSchema);
+var Activity = mongoose.models.Activity || mongoose.model("Activity", activitySchema);
+var Task = mongoose.models.Task || mongoose.model("Task", taskSchema);
+var DailyRequest = mongoose.models.DailyRequest || mongoose.model("DailyRequest", dailyRequestSchema);
 // ===== END MODELS =====
 
 var app = express();
