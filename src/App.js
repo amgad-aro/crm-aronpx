@@ -289,7 +289,7 @@ var StatusModal = function(p) {
   // Callback mandatory for: CallBack, NoAnswer, HotCase, MeetingDone, Potential
   var needsCb = ["CallBack","NoAnswer","HotCase","MeetingDone","Potential"].includes(p.newStatus);
   var isReject = p.newStatus==="NotInterested";
-  var isNewLead = p.newStatus==="NewLead";
+  var isNewLead = false;
   useEffect(function(){setComment("");setCbTime("");setErr(false);},[p.show]);
   var submit = async function() {
     if (needsCb && !cbTime) { alert("اختار موعد المكالمة القادمة (مطلوب)"); return; }
@@ -449,7 +449,7 @@ var Header = function(p) {
 var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
-  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"NewLead" });
+  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential" });
   var [dupWarning, setDupWarning] = useState(null);
   var [saving, setSaving] = useState(false);
   var isReq = p.isReq||false;
@@ -476,7 +476,7 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var sendStatus = form.status || "NewLead";
+      var sendStatus = form.status || "Potential";
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId?form.status:sendStatus });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
