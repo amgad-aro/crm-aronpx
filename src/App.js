@@ -172,8 +172,7 @@ var C = {
 };
 
 var STATUSES = function(t) { return [
-  { value: "NewLead",      label: t.lang==="ar"?"وارد جديد":"New Lead",    bg: "#F0FDF4", color: "#16A34A" },
-  { value: "Potential",    label: t.lang==="ar"?"مهتم":"Potential",        bg: "#EEF2FF", color: "#6366F1" },
+  { value: "Potential",    label: t.lang==="ar"?"وارد جديد":"New Lead",    bg: "#F0FDF4", color: "#16A34A" },
   { value: "HotCase",      label: t.hotCase,                                bg: "#FEE2E2", color: "#DC2626" },
   { value: "CallBack",     label: t.callBack,                               bg: "#FEF3C7", color: "#B45309" },
   { value: "MeetingDone",  label: t.meetingDone,                            bg: "#F3E8FF", color: "#7C3AED" },
@@ -478,7 +477,9 @@ var LeadForm = function(p) {
     setSaving(true);
     try {
       var sendStatus = form.status || "NewLead";
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId?form.status:sendStatus });
+      // Map UI status to DB status (DB doesn't have NewLead enum yet)
+      var dbStatus = sendStatus === "NewLead" ? "Potential" : sendStatus;
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId?form.status:dbStatus });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
