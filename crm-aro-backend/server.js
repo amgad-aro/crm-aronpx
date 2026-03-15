@@ -170,6 +170,7 @@ app.post("/api/leads", auth, async function(req, res) {
     var lead = await Lead.create({
       name: req.body.name,
       phone: req.body.phone,
+      phone2: req.body.phone2 || "",
       email: req.body.email || "",
       status: req.body.status || "Potential",
       source: req.body.source || "Facebook",
