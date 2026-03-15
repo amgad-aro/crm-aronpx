@@ -48,9 +48,7 @@ async function seedAdmin() {
 // ===== AUTH MIDDLEWARE =====
 function auth(req, res, next) {
   var apiKey = req.headers["x-api-key"] || req.query.api_key;
-  var authHeader = req.headers.authorization || "";
-  if ((apiKey && apiKey === process.env.INTEGRATION_API_KEY) ||
-      (authHeader === "ApiKey " + process.env.INTEGRATION_API_KEY)) {
+  if (apiKey && apiKey === process.env.INTEGRATION_API_KEY) {
     req.user = { id: "integration", role: "admin", name: "Integration" };
     return next();
   }
