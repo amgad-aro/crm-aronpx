@@ -472,7 +472,7 @@ var LeadForm = function(p) {
       <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
       <Inp label={t.budget} value={form.budget} onChange={function(e){upd("budget",e.target.value);}}/>
     </div>
-    <Inp label={t.project} type="select" value={form.project} onChange={function(e){upd("project",e.target.value);}} options={PROJECTS.map(function(x){return{value:x,label:x};})}/>
+    <Inp label={t.project} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="اكتب اسم المشروع..."/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- اختر -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
@@ -971,7 +971,7 @@ var LeadsPage = function(p) {
     <Modal show={showQuickAdd} onClose={function(){setShowQuickAdd(false);}} title={"⚡ "+t.quickAdd} w={360}>
       <Inp label={t.name} req value={quickForm.name} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{name:e.target.value});});}}/>
       <Inp label={t.phone} req value={quickForm.phone} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{phone:e.target.value});});}} placeholder="01xxxxxxxxx"/>
-      <Inp label={t.project} value={quickForm.project||""} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{project:e.target.value});});}} placeholder="اسم المشروع"/>
+      <Inp label={t.project} value={quickForm.project||""} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{project:e.target.value});});}} placeholder="اكتب اسم المشروع..."/>
       <Inp label={t.source} type="select" value={quickForm.source} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{source:e.target.value});});}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>
       <div style={{ display:"flex", gap:10 }}>
         <Btn outline onClick={function(){setShowQuickAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn>
