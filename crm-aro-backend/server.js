@@ -10,6 +10,13 @@ var Lead = models.Lead;
 var Activity = models.Activity;
 var Task = models.Task;
 var DailyRequest = models.DailyRequest;
+// Patch: ensure NewLead is valid regardless of cached schema
+try {
+  var statusPath = Lead.schema.path("status");
+  if (statusPath && statusPath.enumValues && !statusPath.enumValues.includes("NewLead")) {
+    statusPath.enumValues.push("NewLead");
+  }
+} catch(e) {}
 var app = express();
 app.use(cors());
 app.use(express.json());
@@ -167,12 +174,15 @@ app.get("/api/leads", auth, async function(req, res) {
 
 app.post("/api/leads", auth, async function(req, res) {
   try {
+    var allowedStatus = ["NewLead","Potential","HotCase","CallBack","MeetingDone","NotInterested","NoAnswer","DoneDeal"];
+    var incomingStatus = req.body.status || "Potential";
+    var finalStatus = allowedStatus.includes(incomingStatus) ? incomingStatus : "Potential";
     var lead = await Lead.create({
       name: req.body.name,
       phone: req.body.phone,
       phone2: req.body.phone2 || "",
       email: req.body.email || "",
-      status: req.body.status || "Potential",
+      status: finalStatus,
       source: req.body.source || "Facebook",
       project: req.body.project || "",
       agentId: req.body.agentId || req.user.id,
