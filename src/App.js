@@ -452,7 +452,7 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId ? (form.status||"Potential") : "NewLead" });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId ? (form.status||"Potential") : "Potential" });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
