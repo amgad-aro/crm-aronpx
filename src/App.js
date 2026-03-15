@@ -452,7 +452,7 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId ? (form.status||"Potential") : "Potential" });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId ? (form.status||"Potential") : "NewLead" });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
@@ -814,14 +814,14 @@ var LeadsPage = function(p) {
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap" }}>
-                    <PhoneCell phone={lead.phone}/>
-                    <div style={{ display:"flex", gap:4, marginTop:3 }}>
+                    <div><PhoneCell phone={lead.phone}/></div>
+                    <div style={{ display:"flex", gap:4, marginTop:2 }}>
                       <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/> {t.call}</a>
                       <a href={"https://wa.me/2"+lead.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}>💬 {t.whatsapp}</a>
                     </div>
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap", color:C.textLight }}>
-                    <PhoneCell phone={lead.phone2}/>
+                    {lead.phone2 ? <PhoneCell phone={lead.phone2}/> : <span style={{color:"#CBD5E1"}}>-</span>}
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{lead.project}</td>
                   <td style={{ padding:"10px 12px", position:"relative" }} onClick={function(e){e.stopPropagation();}}>
