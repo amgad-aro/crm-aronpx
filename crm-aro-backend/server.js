@@ -45,11 +45,22 @@ var dailyRequestSchema = new mongoose.Schema({
   lastActivityTime:{type:Date,default:Date.now},source:{type:String,default:"Daily Request"}
 },{timestamps:true});
 
-var User = mongoose.models.User || mongoose.model("User", userSchema);
-var Lead = mongoose.models.Lead || mongoose.model("Lead", leadSchema);
-var Activity = mongoose.models.Activity || mongoose.model("Activity", activitySchema);
-var Task = mongoose.models.Task || mongoose.model("Task", taskSchema);
-var DailyRequest = mongoose.models.DailyRequest || mongoose.model("DailyRequest", dailyRequestSchema);
+// Force delete cached models to avoid old enum issues
+delete mongoose.connection.models["User"];
+delete mongoose.connection.models["Lead"];
+delete mongoose.connection.models["Activity"];
+delete mongoose.connection.models["Task"];
+delete mongoose.connection.models["DailyRequest"];
+delete mongoose.models["User"];
+delete mongoose.models["Lead"];
+delete mongoose.models["Activity"];
+delete mongoose.models["Task"];
+delete mongoose.models["DailyRequest"];
+var User = mongoose.model("User", userSchema);
+var Lead = mongoose.model("Lead", leadSchema);
+var Activity = mongoose.model("Activity", activitySchema);
+var Task = mongoose.model("Task", taskSchema);
+var DailyRequest = mongoose.model("DailyRequest", dailyRequestSchema);
 var app = express();
 app.use(cors());
 app.use(express.json());
