@@ -172,8 +172,8 @@ var C = {
 };
 
 var STATUSES = function(t) { return [
+  { value: "Potential", label: "Potential", bg: "#EEF2FF", color: "#6366F1" },
   { value: "NewLead", label: "New Lead", bg: "#E0F2FE", color: "#0284C7" },
-  { value: "Potential", label: "New Lead", bg: "#EEF2FF", color: "#6366F1" },
   { value: "HotCase", label: t.hotCase, bg: "#FEE2E2", color: "#DC2626" },
   { value: "CallBack", label: t.callBack, bg: "#FEF3C7", color: "#B45309" },
   { value: "MeetingDone", label: t.meetingDone, bg: "#F3E8FF", color: "#7C3AED" },
