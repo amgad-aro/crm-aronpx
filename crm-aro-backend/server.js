@@ -47,7 +47,6 @@ async function seedAdmin() {
 
 // ===== AUTH MIDDLEWARE =====
 function auth(req, res, next) {
-  // Support API Key for integrations (Google Sheets, etc.)
   var apiKey = req.headers["x-api-key"] || req.query.api_key;
   if (apiKey && apiKey === process.env.INTEGRATION_API_KEY) {
     req.user = { id: "integration", role: "admin", name: "Integration" };
@@ -327,15 +326,6 @@ app.get("/api/stats", auth, async function(req, res) {
 });
 
 // ===== HEALTH CHECK =====
-// Integration endpoint - returns API info
-app.get("/api/integration-info", function(req, res) {
-  res.json({ 
-    status: "ok", 
-    message: "Use x-api-key header with your INTEGRATION_API_KEY",
-    leads_endpoint: "/api/leads"
-  });
-});
-
 app.get("/", function(req, res) {
   res.json({ status: "CRM ARO API is running", version: "1.0.0" });
 });
@@ -477,3 +467,4 @@ var sendDealEmail = async function(lead, agentName) {
 app.listen(PORT, function() {
   console.log("CRM ARO Server running on port " + PORT);
 });
+ 
