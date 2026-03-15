@@ -271,8 +271,9 @@ var StatusModal = function(p) {
   var sc = STATUSES(p.t); var ns = sc.find(function(s){return s.value===p.newStatus;});
   var needsCb = p.newStatus==="CallBack" || p.newStatus==="NoAnswer";
   var isReject = p.newStatus==="NotInterested";
+  var isNewLead = p.newStatus==="NewLead" || p.newStatus==="Potential";
   useEffect(function(){setComment("");setCbTime("");setErr(false);},[p.show]);
-  var isNewLead = false;
+
   var submit = async function() {
     
     if (needsCb && !cbTime) { alert("اختار موعد المكالمة"); return; }
