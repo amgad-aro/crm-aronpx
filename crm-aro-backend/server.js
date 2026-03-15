@@ -10,6 +10,14 @@ var Lead = models.Lead;
 var Activity = models.Activity;
 var Task = models.Task;
 var DailyRequest = models.DailyRequest;
+// Add NewLead to enum if missing
+var leadStatusPath = Lead.schema.path("status");
+if (leadStatusPath && leadStatusPath.enumValues && !leadStatusPath.enumValues.includes("NewLead")) {
+  leadStatusPath.enumValues.push("NewLead");
+}
+if (leadStatusPath && leadStatusPath.enumValues && !leadStatusPath.enumValues.includes("Potential")) {
+  leadStatusPath.enumValues.push("Potential");
+}
 var app = express();
 app.use(cors());
 app.use(express.json());
