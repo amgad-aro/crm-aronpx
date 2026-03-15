@@ -602,6 +602,20 @@ var QuickPhoneSearch = function(p) {
   </div>;
 };
 
+
+// Phone cell with hover reveal
+var PhoneCell = function(p) {
+  var [show, setShow] = useState(false);
+  if (!p.phone) return <span style={{ color:"#CBD5E1" }}>-</span>;
+  var masked = p.phone.slice(0,-4) + "****";
+  return <span
+    onMouseEnter={function(){setShow(true);}}
+    onMouseLeave={function(){setShow(false);}}
+    style={{ cursor:"pointer", direction:"ltr", letterSpacing:1, userSelect:show?"text":"none" }}
+    title="اضغط للإظهار"
+  >{show ? p.phone : masked}</span>;
+};
+
 // ===== LEADS PAGE =====
 var LeadsPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
@@ -801,10 +815,10 @@ var LeadsPage = function(p) {
                     {lead.phone2&&<div style={{ fontSize:10, color:C.textLight, direction:"ltr" }}>{lead.phone2}</div>}
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap" }}>
-                    {lead.phone?lead.phone.slice(0,-3).replace(/\d/g,"*")+lead.phone.slice(-3):"-"}
+                    <PhoneCell phone={lead.phone}/>
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap", color:C.textLight }}>
-                    {lead.phone2?lead.phone2.slice(0,-3).replace(/\d/g,"*")+lead.phone2.slice(-3):"-"}
+                    <PhoneCell phone={lead.phone2}/>
                     <div style={{ display:"flex", gap:4, marginTop:3 }}>
                       <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/> {t.call}</a>
                       <a href={"https://wa.me/2"+lead.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}>💬 {t.whatsapp}</a>
@@ -1121,7 +1135,7 @@ var DealsPage = function(p) {
     </Modal>
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:480 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,isAdmin&&t.agent,t.source].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,isAdmin&&t.agent,isAdmin&&t.source].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {deals.length===0&&<tr><td colSpan={6} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
