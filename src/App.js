@@ -801,7 +801,10 @@ var LeadsPage = function(p) {
                     {lead.phone2&&<div style={{ fontSize:10, color:C.textLight, direction:"ltr" }}>{lead.phone2}</div>}
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap" }}>
-                    {lead.phone}{lead.phone2&&<div style={{ fontSize:10, color:C.textLight }}>{lead.phone2}</div>}
+                    {lead.phone?lead.phone.slice(0,-3).replace(/\d/g,"*")+lead.phone.slice(-3):"-"}
+                  </td>
+                  <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap", color:C.textLight }}>
+                    {lead.phone2?lead.phone2.slice(0,-3).replace(/\d/g,"*")+lead.phone2.slice(-3):"-"}
                     <div style={{ display:"flex", gap:4, marginTop:3 }}>
                       <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/> {t.call}</a>
                       <a href={"https://wa.me/2"+lead.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}>💬 {t.whatsapp}</a>
