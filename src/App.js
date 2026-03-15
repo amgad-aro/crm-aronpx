@@ -172,7 +172,8 @@ var C = {
 };
 
 var STATUSES = function(t) { return [
-  { value: "Potential", label: t.potential, bg: "#EEF2FF", color: "#6366F1" },
+  { value: "NewLead", label: "New Lead", bg: "#E0F2FE", color: "#0284C7" },
+  { value: "Potential", label: "Potential", bg: "#EEF2FF", color: "#6366F1" },
   { value: "HotCase", label: t.hotCase, bg: "#FEE2E2", color: "#DC2626" },
   { value: "CallBack", label: t.callBack, bg: "#FEF3C7", color: "#B45309" },
   { value: "MeetingDone", label: t.meetingDone, bg: "#F3E8FF", color: "#7C3AED" },
@@ -431,7 +432,7 @@ var Header = function(p) {
 var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
-  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential" });
+  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"NewLead" });
   var [dupWarning, setDupWarning] = useState(null);
   var [saving, setSaving] = useState(false);
   var isReq = p.isReq||false;
@@ -451,8 +452,7 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var sendStatus = (form.status||"Potential") === "NewLead" ? "Potential" : form.status;
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId?form.status:sendStatus });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: form.status||"NewLead" });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
