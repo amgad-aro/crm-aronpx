@@ -797,7 +797,7 @@ var LeadsPage = function(p) {
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?500:620 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
               {isAdmin&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(l){return gid(l);}):[])}}/></th>}
-              {[t.name,t.phone,t.project,t.status,!p.isMobile&&t.source,isAdmin&&t.agent,t.lastActivity,!p.isMobile&&t.callbackTime].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+              {[t.name,t.phone,t.phone2,t.project,t.status,!p.isMobile&&t.source,isAdmin&&t.agent,t.lastActivity,!p.isMobile&&t.callbackTime].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
             </tr></thead>
             <tbody>
               {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد بيانات</td></tr>}
@@ -812,17 +812,16 @@ var LeadsPage = function(p) {
                       <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
                     </div>
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
-                    {lead.phone2&&<div style={{ fontSize:10, color:C.textLight, direction:"ltr" }}>{lead.phone2}</div>}
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap" }}>
                     <PhoneCell phone={lead.phone}/>
-                  </td>
-                  <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap", color:C.textLight }}>
-                    <PhoneCell phone={lead.phone2}/>
                     <div style={{ display:"flex", gap:4, marginTop:3 }}>
                       <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/> {t.call}</a>
                       <a href={"https://wa.me/2"+lead.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}>💬 {t.whatsapp}</a>
                     </div>
+                  </td>
+                  <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap", color:C.textLight }}>
+                    <PhoneCell phone={lead.phone2}/>
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{lead.project}</td>
                   <td style={{ padding:"10px 12px", position:"relative" }} onClick={function(e){e.stopPropagation();}}>
