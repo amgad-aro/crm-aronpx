@@ -172,7 +172,8 @@ var C = {
 };
 
 var STATUSES = function(t) { return [
-  { value: "Potential", label: "New Lead", bg: "#EEF2FF", color: "#6366F1" },
+  { value: "NewLead", label: "New Lead", bg: "#EEF2FF", color: "#6366F1" },
+  { value: "Potential", label: "Potential", bg: "#E0F2FE", color: "#0284C7" },
   { value: "HotCase", label: t.hotCase, bg: "#FEE2E2", color: "#DC2626" },
   { value: "CallBack", label: t.callBack, bg: "#FEF3C7", color: "#B45309" },
   { value: "MeetingDone", label: t.meetingDone, bg: "#F3E8FF", color: "#7C3AED" },
@@ -452,7 +453,7 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId ? (form.status||"Potential") : "Potential" });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId ? (form.status||"Potential") : "NewLead" });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
