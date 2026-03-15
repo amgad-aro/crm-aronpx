@@ -4,100 +4,15 @@ var mongoose = require("mongoose");
 var cors = require("cors");
 var bcrypt = require("bcryptjs");
 var jwt = require("jsonwebtoken");
-
-// ===== MODELS INLINE =====
-var STATUSES_ENUM = ["NewLead","Potential","HotCase","CallBack","MeetingDone","NotInterested","NoAnswer","DoneDeal"];
-
-var userSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  username: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  email: { type: String, default: "" },
-  phone: { type: String, default: "" },
-  role: { type: String, enum: ["admin","manager","sales","viewer"], default: "sales" },
-  title: { type: String, default: "" },
-  active: { type: Boolean, default: true },
-  monthlyTarget: { type: Number, default: 15 },
-  teamId: { type: String, default: "" },
-  teamName: { type: String, default: "" },
-}, { timestamps: true });
-
-var leadSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  phone: { type: String, required: true },
-  phone2: { type: String, default: "" },
-  email: { type: String, default: "" },
-  status: { type: String, default: "NewLead" },
-  source: { type: String, default: "Facebook" },
-  project: { type: String, default: "" },
-  agentId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  budget: { type: String, default: "" },
-  notes: { type: String, default: "" },
-  callbackTime: { type: String, default: "" },
-  lastActivityTime: { type: Date, default: Date.now },
-  archived: { type: Boolean, default: false },
-  isVIP: { type: Boolean, default: false },
-}, { timestamps: true });
-
-var activitySchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  leadId: { type: mongoose.Schema.Types.ObjectId, ref: "Lead" },
-  type: { type: String, enum: ["call","meeting","followup","email","status_change","reassign","note"], default: "call" },
-  note: { type: String, default: "" },
-}, { timestamps: true });
-
-var taskSchema = new mongoose.Schema({
-  title: { type: String, required: true },
-  type: { type: String, enum: ["call","meeting","email","followup"], default: "call" },
-  time: { type: String, default: "" },
-  leadId: { type: mongoose.Schema.Types.ObjectId, ref: "Lead" },
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  done: { type: Boolean, default: false },
-}, { timestamps: true });
-
-var dailyRequestSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  phone: { type: String, required: true },
-  phone2: { type: String, default: "" },
-  email: { type: String, default: "" },
-  budget: { type: String, default: "" },
-  propertyType: { type: String, default: "" },
-  area: { type: String, default: "" },
-  notes: { type: String, default: "" },
-  status: { type: String, default: "NewLead" },
-  agentId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  callbackTime: { type: String, default: "" },
-  lastActivityTime: { type: Date, default: Date.now },
-  source: { type: String, default: "Daily Request" },
-}, { timestamps: true });
-
-delete mongoose.connection.models["User"];
-delete mongoose.connection.models["Lead"];
-delete mongoose.connection.models["Activity"];
-delete mongoose.connection.models["Task"];
-delete mongoose.connection.models["DailyRequest"];
-if (mongoose.models.User) delete mongoose.models.User;
-if (mongoose.models.Lead) delete mongoose.models.Lead;
-if (mongoose.models.Activity) delete mongoose.models.Activity;
-if (mongoose.models.Task) delete mongoose.models.Task;
-if (mongoose.models.DailyRequest) delete mongoose.models.DailyRequest;
-
-var User = mongoose.model("User", userSchema);
-var Lead = mongoose.model("Lead", leadSchema);
-var Activity = mongoose.model("Activity", activitySchema);
-var Task = mongoose.model("Task", taskSchema);
-var DailyRequest = mongoose.model("DailyRequest", dailyRequestSchema);
-// ===== END MODELS =====
-
+var models = require("./models");
+var User = models.User;
+var Lead = models.Lead;
+var Activity = models.Activity;
+var Task = models.Task;
+var DailyRequest = models.DailyRequest;
 var app = express();
 app.use(cors());
 app.use(express.json());
-
-// TEST ROUTE - DELETE AFTER VERIFY
-app.get("/api/test-webhook", function(req, res) {
-  res.json({ status: "ok", token: process.env.FB_VERIFY_TOKEN ? "SET" : "NOT SET" });
-});
-
 
 // ===== CONNECT TO MONGODB =====
 mongoose.connect(process.env.MONGODB_URI).then(function() {
@@ -132,6 +47,12 @@ async function seedAdmin() {
 
 // ===== AUTH MIDDLEWARE =====
 function auth(req, res, next) {
+  // Support API Key for integrations (Google Sheets, etc.)
+  var apiKey = req.headers["x-api-key"] || req.query.api_key;
+  if (apiKey && apiKey === process.env.INTEGRATION_API_KEY) {
+    req.user = { id: "integration", role: "admin", name: "Integration" };
+    return next();
+  }
   var token = req.headers.authorization;
   if (!token) return res.status(401).json({ error: "No token" });
   token = token.replace("Bearer ", "");
@@ -145,15 +66,8 @@ function auth(req, res, next) {
 }
 
 function adminOnly(req, res, next) {
-  if (req.user.role !== "admin") {
-    return res.status(403).json({ error: "Admin only" });
-  }
-  next();
-}
-
-function adminOrManager(req, res, next) {
   if (req.user.role !== "admin" && req.user.role !== "manager") {
-    return res.status(403).json({ error: "Admin or Manager only" });
+    return res.status(403).json({ error: "Admin only" });
   }
   next();
 }
@@ -165,8 +79,8 @@ app.post("/api/login", async function(req, res) {
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
     var valid = await bcrypt.compare(req.body.password, user.password);
     if (!valid) return res.status(401).json({ error: "Invalid credentials" });
-    var token = jwt.sign({ id: user._id, role: user.role, name: user.name, teamId: user.teamId || "", teamName: user.teamName || "" }, process.env.JWT_SECRET, { expiresIn: "7d" });
-    res.json({ token: token, user: { id: user._id, name: user.name, username: user.username, role: user.role, title: user.title, email: user.email, phone: user.phone, teamId: user.teamId || "", teamName: user.teamName || "" } });
+    var token = jwt.sign({ id: user._id, role: user.role, name: user.name }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    res.json({ token: token, user: { id: user._id, name: user.name, username: user.username, role: user.role, title: user.title, email: user.email, phone: user.phone } });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -184,16 +98,7 @@ app.get("/api/me", auth, async function(req, res) {
 // ===== USER ROUTES =====
 app.get("/api/users", auth, async function(req, res) {
   try {
-    var query = {};
-    if (req.user.role === "manager") {
-      // Manager sees only their team members
-      query.teamId = req.user.teamId;
-    } else if (req.user.role === "sales") {
-      // Sales sees only themselves
-      query._id = req.user.id;
-    }
-    // Admin sees everyone
-    var users = await User.find(query).select("-password").sort({ createdAt: -1 });
+    var users = await User.find().select("-password").sort({ createdAt: -1 });
     res.json(users);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -250,33 +155,24 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
 // ===== LEAD ROUTES =====
 app.get("/api/leads", auth, async function(req, res) {
   try {
-    var query = { archived: { $ne: true } };
+    var query = {};
     if (req.user.role === "sales") {
       query.agentId = req.user.id;
-    } else if (req.user.role === "manager") {
-      var teamMembers = await User.find({ teamId: req.user.teamId }).select("_id");
-      var teamIds = teamMembers.map(function(u) { return u._id; });
-      query.agentId = { $in: teamIds };
     }
-    var leads = await Lead.find(query)
-      .populate("agentId", "name role teamId teamName")
-      .sort({ lastActivityTime: -1 })
-      .limit(2000);
+    var leads = await Lead.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
     res.json(leads);
-  } catch(e) {
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
 app.post("/api/leads", auth, async function(req, res) {
   try {
-    var st = req.body.status || "Potential";
-    if (st === "NewLead") st = "Potential";
     var lead = await Lead.create({
       name: req.body.name,
       phone: req.body.phone,
       email: req.body.email || "",
-      status: st,
+      status: req.body.status || "Potential",
       source: req.body.source || "Facebook",
       project: req.body.project || "",
       agentId: req.body.agentId || req.user.id,
@@ -295,8 +191,8 @@ app.post("/api/leads", auth, async function(req, res) {
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
-    if (update.status === "NewLead") update.status = "Potential";
     var lead = await Lead.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
+    // Log activity
     await Activity.create({
       userId: req.user.id,
       leadId: req.params.id,
@@ -324,12 +220,8 @@ app.get("/api/activities", auth, async function(req, res) {
     var query = {};
     if (req.user.role === "sales") {
       query.userId = req.user.id;
-    } else if (req.user.role === "manager") {
-      var teamMembers = await User.find({ teamId: req.user.teamId, active: true }).select("_id");
-      var teamIds = teamMembers.map(function(u) { return u._id; });
-      query.userId = { $in: teamIds };
     }
-    var activities = await Activity.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 }).limit(100);
+    var activities = await Activity.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 }).limit(50);
     res.json(activities);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -361,10 +253,6 @@ app.get("/api/tasks", auth, async function(req, res) {
     var query = {};
     if (req.user.role === "sales") {
       query.userId = req.user.id;
-    } else if (req.user.role === "manager") {
-      var teamMembers = await User.find({ teamId: req.user.teamId, active: true }).select("_id");
-      var teamIds = teamMembers.map(function(u) { return u._id; });
-      query.userId = { $in: teamIds };
     }
     var tasks = await Task.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 });
     res.json(tasks);
@@ -416,11 +304,6 @@ app.get("/api/stats", auth, async function(req, res) {
     if (req.user.role === "sales") {
       leadQuery.agentId = req.user.id;
       actQuery.userId = req.user.id;
-    } else if (req.user.role === "manager") {
-      var teamMembers = await User.find({ teamId: req.user.teamId, active: true }).select("_id");
-      var teamIds = teamMembers.map(function(u) { return u._id; });
-      leadQuery.agentId = { $in: teamIds };
-      actQuery.userId = { $in: teamIds };
     }
     var totalLeads = await Lead.countDocuments(leadQuery);
     var potential = await Lead.countDocuments(Object.assign({ status: "Potential" }, leadQuery));
@@ -444,6 +327,15 @@ app.get("/api/stats", auth, async function(req, res) {
 });
 
 // ===== HEALTH CHECK =====
+// Integration endpoint - returns API info
+app.get("/api/integration-info", function(req, res) {
+  res.json({ 
+    status: "ok", 
+    message: "Use x-api-key header with your INTEGRATION_API_KEY",
+    leads_endpoint: "/api/leads"
+  });
+});
+
 app.get("/", function(req, res) {
   res.json({ status: "CRM ARO API is running", version: "1.0.0" });
 });
@@ -455,14 +347,7 @@ var PORT = process.env.PORT || 5000;
 app.get("/api/daily-requests", auth, async function(req, res) {
   try {
     var query = {};
-    if (req.user.role === "sales") {
-      query.agentId = req.user.id;
-    } else if (req.user.role === "manager") {
-      var teamMembers = await User.find({ teamId: req.user.teamId, active: true }).select("_id");
-      var teamIds = teamMembers.map(function(u) { return u._id; });
-      query.agentId = { $in: teamIds };
-    }
-    // admin sees everything - no filter
+    if (req.user.role === "sales") query.agentId = req.user.id;
     var requests = await DailyRequest.find(query)
       .populate("agentId", "name title")
       .sort({ createdAt: -1 });
@@ -481,7 +366,6 @@ app.post("/api/daily-requests", auth, async function(req, res) {
       agentId: req.body.agentId || req.user.id,
       callbackTime: req.body.callbackTime || "",
       lastActivityTime: new Date(),
-      status: req.body.status || "Potential",
     });
     r = await DailyRequest.findById(r._id).populate("agentId","name title");
     res.json(r);
@@ -590,42 +474,8 @@ var sendDealEmail = async function(lead, agentName) {
     console.log("✅ Email sent:", lead.name);
   } catch(e) { console.error("Email error:", e.message); }
 };
-
-app.get("/api/leads/archived", auth, async function(req, res) {
-  try {
-    var query = { archived: true };
-    if (req.user.role === "sales") query.agentId = req.user.id;
-    else if (req.user.role === "manager") {
-      var members = await User.find({ teamId: req.user.teamId, active: true }).select("_id");
-      query.agentId = { $in: members.map(function(u){ return u._id; }) };
-    }
-    var leads = await Lead.find(query).populate("agentId","name role teamId").sort({updatedAt:-1});
-    res.json(leads);
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// ===== UPDATE MONTHLY TARGET =====
-app.put("/api/users/:id/target", auth, adminOnly, async function(req, res) {
-  try {
-    var user = await User.findByIdAndUpdate(req.params.id, { monthlyTarget: req.body.monthlyTarget }, { new: true }).select("-password");
-    res.json(user);
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// ===== TEAMS ROUTE (admin only) =====
-app.get("/api/teams", auth, adminOnly, async function(req, res) {
-  try {
-    var teams = await User.aggregate([
-      { $match: { teamId: { $ne: "" }, active: true } },
-      { $group: { _id: "$teamId", teamName: { $first: "$teamName" }, count: { $sum: 1 } } }
-    ]);
-    res.json(teams);
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
 app.listen(PORT, function() {
   console.log("CRM ARO Server running on port " + PORT);
 });
-  
- 
- 
+   
+ 
