@@ -190,16 +190,9 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
 // ===== LEAD ROUTES =====
 app.get("/api/leads", auth, async function(req, res) {
   try {
-    var mongoose = require("mongoose");
     var query = {};
-    if (req.user.role === "sales") {
-      query.agentId = new mongoose.Types.ObjectId(req.user.id);
-    }
-    var leads = await Lead.collection.find(query).sort({ createdAt: -1 }).toArray();
-    var agents = await User.find({}).select("name title").lean();
-    var agentMap = {};
-    agents.forEach(function(a){ agentMap[String(a._id)] = { _id: a._id, name: a.name, title: a.title }; });
-    leads = leads.map(function(l){ return Object.assign({}, l, { agentId: agentMap[String(l.agentId)] || l.agentId }); });
+    if (req.user.role === "sales") { query.agentId = req.user.id; }
+    var leads = await Lead.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
     res.json(leads);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -208,9 +201,7 @@ app.get("/api/leads", auth, async function(req, res) {
 
 app.post("/api/leads", auth, async function(req, res) {
   try {
-    var mongoose = require("mongoose");
-    var doc = {
-      _id: new mongoose.Types.ObjectId(),
+    var lead = await Lead.create({
       name: req.body.name,
       phone: req.body.phone,
       phone2: req.body.phone2 || "",
@@ -218,20 +209,14 @@ app.post("/api/leads", auth, async function(req, res) {
       status: req.body.status || "NewLead",
       source: req.body.source || "Facebook",
       project: req.body.project || "",
-      agentId: req.body.agentId ? new mongoose.Types.ObjectId(req.body.agentId) : new mongoose.Types.ObjectId(req.user.id),
+      agentId: req.body.agentId || req.user.id,
       budget: req.body.budget || "",
       notes: req.body.notes || "",
       callbackTime: req.body.callbackTime || "",
       lastActivityTime: new Date(),
-      archived: false,
-      isVIP: false,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    await Lead.collection.insertOne(doc);
-    var agent = doc.agentId ? await User.findById(doc.agentId).select("name title") : null;
-    var result = Object.assign({}, doc, { agentId: agent || doc.agentId });
-    res.json(result);
+    });
+    lead = await Lead.findById(lead._id).populate("agentId", "name title");
+    res.json(lead);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -239,12 +224,8 @@ app.post("/api/leads", auth, async function(req, res) {
 
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
-    var mongoose = require("mongoose");
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
-    await Lead.collection.updateOne({ _id: new mongoose.Types.ObjectId(req.params.id) }, { $set: update });
-    var lead = await Lead.collection.findOne({ _id: new mongoose.Types.ObjectId(req.params.id) });
-    var agent = lead && lead.agentId ? await User.findById(lead.agentId).select("name title") : null;
-    if (lead) lead = Object.assign({}, lead, { agentId: agent || lead.agentId });
+    var lead = await Lead.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
     // Log activity
     await Activity.create({
       userId: req.user.id,
