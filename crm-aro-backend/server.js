@@ -203,23 +203,28 @@ app.get("/api/leads", auth, async function(req, res) {
 
 app.post("/api/leads", auth, async function(req, res) {
   try {
-    var leadDoc = new Lead({
+    var mongoose = require("mongoose");
+    var doc = {
+      _id: new mongoose.Types.ObjectId(),
       name: req.body.name,
       phone: req.body.phone,
       phone2: req.body.phone2 || "",
       email: req.body.email || "",
+      status: req.body.status || "NewLead",
       source: req.body.source || "Facebook",
       project: req.body.project || "",
-      agentId: req.body.agentId || req.user.id,
+      agentId: req.body.agentId ? new mongoose.Types.ObjectId(req.body.agentId) : new mongoose.Types.ObjectId(req.user.id),
       budget: req.body.budget || "",
       notes: req.body.notes || "",
       callbackTime: req.body.callbackTime || "",
       lastActivityTime: new Date(),
-    });
-    leadDoc.status = req.body.status || "NewLead";
-    var lead = await leadDoc.save({ validateModifiedOnly: false });
-    await Lead.collection.updateOne({ _id: lead._id }, { $set: { status: req.body.status || "NewLead" } });
-    lead = await Lead.findById(lead._id).populate("agentId", "name title");
+      archived: false,
+      isVIP: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    await Lead.collection.insertOne(doc);
+    var lead = await Lead.findById(doc._id).populate("agentId", "name title");
     res.json(lead);
   } catch (e) {
     res.status(500).json({ error: e.message });
