@@ -190,15 +190,21 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
 // ===== LEAD ROUTES =====
 app.get("/api/leads", auth, async function(req, res) {
   try {
+    var mongoose = require("mongoose");
     var query = {};
-    if (req.user.role === "sales") { query.agentId = req.user.id; }
-    var leads = await Lead.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
+    if (req.user.role === "sales") {
+      query.agentId = new mongoose.Types.ObjectId(req.user.id);
+    }
+    var leads = await Lead.collection.find(query).sort({ createdAt: -1 }).toArray();
+    var agents = await User.find({}).select("name title").lean();
+    var agentMap = {};
+    agents.forEach(function(a){ agentMap[String(a._id)] = {_id:a._id, name:a.name, title:a.title}; });
+    leads = leads.map(function(l){ return Object.assign({}, l, { agentId: agentMap[String(l.agentId)] || l.agentId }); });
     res.json(leads);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
-
 app.post("/api/leads", auth, async function(req, res) {
   try {
     var lead = await Lead.create({
