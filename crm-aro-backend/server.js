@@ -205,9 +205,12 @@ app.get("/api/leads", auth, async function(req, res) {
     res.status(500).json({ error: e.message });
   }
 });
+
 app.post("/api/leads", auth, async function(req, res) {
   try {
-    var lead = await Lead.create({
+    var mongoose = require("mongoose");
+    var doc = {
+      _id: new mongoose.Types.ObjectId(),
       name: req.body.name,
       phone: req.body.phone,
       phone2: req.body.phone2 || "",
@@ -215,14 +218,17 @@ app.post("/api/leads", auth, async function(req, res) {
       status: req.body.status || "NewLead",
       source: req.body.source || "Facebook",
       project: req.body.project || "",
-      agentId: req.body.agentId || req.user.id,
+      agentId: req.body.agentId ? new mongoose.Types.ObjectId(req.body.agentId) : new mongoose.Types.ObjectId(req.user.id),
       budget: req.body.budget || "",
       notes: req.body.notes || "",
       callbackTime: req.body.callbackTime || "",
       lastActivityTime: new Date(),
-    });
-    lead = await Lead.findById(lead._id).populate("agentId", "name title");
-    res.json(lead);
+      archived: false, isVIP: false,
+      createdAt: new Date(), updatedAt: new Date(),
+    };
+    await Lead.collection.insertOne(doc);
+    var agent = doc.agentId ? await User.findById(doc.agentId).select("name title") : null;
+    res.json(Object.assign({}, doc, { agentId: agent || doc.agentId }));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
