@@ -4,8 +4,13 @@ var mongoose = require("mongoose");
 var cors = require("cors");
 var bcrypt = require("bcryptjs");
 var jwt = require("jsonwebtoken");
-// ===== MODELS (embedded to avoid version issues) =====
-var User = mongoose.models["User"] || mongoose.model("User", new mongoose.Schema({
+// ===== MODELS =====
+delete mongoose.models["User"];
+delete mongoose.models["Lead"];
+delete mongoose.models["Activity"];
+delete mongoose.models["Task"];
+delete mongoose.models["DailyRequest"];
+var User = mongoose.model("User", new mongoose.Schema({
   name:{type:String,required:true}, username:{type:String,required:true,unique:true},
   password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
   role:{type:String,enum:["admin","manager","sales","viewer"],default:"sales"},
@@ -13,7 +18,7 @@ var User = mongoose.models["User"] || mongoose.model("User", new mongoose.Schema
   monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}
 },{timestamps:true}));
 
-var Lead = mongoose.models["Lead"] || mongoose.model("Lead", new mongoose.Schema({
+var Lead = mongoose.model("Lead", new mongoose.Schema({
   name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
   email:{type:String,default:""}, status:{type:String,default:"NewLead"},
   source:{type:String,default:"Facebook"}, project:{type:String,default:""},
@@ -22,19 +27,19 @@ var Lead = mongoose.models["Lead"] || mongoose.model("Lead", new mongoose.Schema
   lastActivityTime:{type:Date,default:Date.now}, archived:{type:Boolean,default:false}, isVIP:{type:Boolean,default:false}
 },{timestamps:true}));
 
-var Activity = mongoose.models["Activity"] || mongoose.model("Activity", new mongoose.Schema({
+var Activity = mongoose.model("Activity", new mongoose.Schema({
   userId:{type:mongoose.Schema.Types.ObjectId,ref:"User",required:true},
   leadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead"},
   type:{type:String,default:"call"}, note:{type:String,default:""}
 },{timestamps:true}));
 
-var Task = mongoose.models["Task"] || mongoose.model("Task", new mongoose.Schema({
+var Task = mongoose.model("Task", new mongoose.Schema({
   title:{type:String,required:true}, type:{type:String,default:"call"},
   time:{type:String,default:""}, leadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead"},
   userId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, done:{type:Boolean,default:false}
 },{timestamps:true}));
 
-var DailyRequest = mongoose.models["DailyRequest"] || mongoose.model("DailyRequest", new mongoose.Schema({
+var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
   email:{type:String,default:""}, budget:{type:String,default:""}, propertyType:{type:String,default:""},
   area:{type:String,default:""}, notes:{type:String,default:""}, status:{type:String,default:"NewLead"},
