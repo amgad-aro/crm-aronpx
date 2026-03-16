@@ -296,7 +296,7 @@ var StatusModal = function(p) {
       </div>
     </div>}
     {(isPotential || (!needsCb && !isNewLead && !isReject)) && <Inp label={isPotential?"سبب التحويل لـ Potential (مطلوب)":p.t.statusComment} type="textarea" placeholder={p.t.statusCommentPH} value={comment} onChange={function(e){setComment(e.target.value);setErr(false);}} req={true}/>}
-    {needsCb && <Inp label={"ملاحظة (اختياري)"} type="textarea" value={comment} onChange={function(e){setComment(e.target.value);}}/>}
+    {needsCb && !isPotential && <Inp label={"ملاحظة (اختياري)"} type="textarea" value={comment} onChange={function(e){setComment(e.target.value);}}/>}
     {err && <div style={{ color:C.danger, fontSize:12, marginBottom:12, padding:"8px 12px", background:"#FEF2F2", borderRadius:8 }}>{p.t.commentRequired}</div>}
     <div style={{ display:"flex", gap:10 }}><Btn outline onClick={p.onClose} style={{ flex:1 }}>{p.t.cancel}</Btn><Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.t.save}</Btn></div>
   </Modal>;
@@ -798,7 +798,7 @@ var LeadsPage = function(p) {
     {/* Table */}
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?500:620 }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?600:900 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
               {isAdmin&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(l){return gid(l);}):[])}}/></th>}
               {[t.name,t.phone,t.phone2,t.project,t.status,!p.isMobile&&t.source,isAdmin&&t.agent,t.lastActivity,!p.isMobile&&t.callbackTime].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
