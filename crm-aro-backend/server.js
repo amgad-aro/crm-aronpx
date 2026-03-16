@@ -190,16 +190,16 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
 // ===== LEAD ROUTES =====
 app.get("/api/leads", auth, async function(req, res) {
   try {
+    var mongoose = require("mongoose");
     var query = {};
     if (req.user.role === "sales") {
-      query.agentId = req.user.id;
+      query.agentId = new mongoose.Types.ObjectId(req.user.id);
     }
     var leads = await Lead.collection.find(query).sort({ createdAt: -1 }).toArray();
-var agentIds = [...new Set(leads.map(function(l){return l.agentId;}).filter(Boolean).map(String))];
-var agents = await User.find({ _id: { $in: agentIds } }).select("name title");
-var agentMap = {};
-agents.forEach(function(a){ agentMap[String(a._id)] = a; });
-leads = leads.map(function(l){ return Object.assign({}, l, { agentId: agentMap[String(l.agentId)] || l.agentId }); });
+    var agents = await User.find({}).select("name title").lean();
+    var agentMap = {};
+    agents.forEach(function(a){ agentMap[String(a._id)] = { _id: a._id, name: a.name, title: a.title }; });
+    leads = leads.map(function(l){ return Object.assign({}, l, { agentId: agentMap[String(l.agentId)] || l.agentId }); });
     res.json(leads);
   } catch (e) {
     res.status(500).json({ error: e.message });
