@@ -798,7 +798,7 @@ var LeadsPage = function(p) {
     {/* Table */}
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?600:900, direction:t.dir }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?600:900 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
               {isAdmin&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(l){return gid(l);}):[])}}/></th>}
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.name}</th>
@@ -818,7 +818,7 @@ var LeadsPage = function(p) {
                 var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
                 return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
                   {isAdmin&&<td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();setSelected2(function(prev){return prev.includes(lid)?prev.filter(function(x){return x!==lid;}):[...prev,lid];});}}><input type="checkbox" checked={isChk} readOnly/></td>}
-                  <td style={{ padding:"10px 12px" }}>
+                  <td style={{ padding:"10px 12px", textAlign:"right" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                       {lead.isVIP&&<span style={{ fontSize:14 }} title="VIP">⭐</span>}
                       <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
@@ -835,7 +835,7 @@ var LeadsPage = function(p) {
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap", color:C.textLight, textAlign:"left" }}>
                     {lead.phone2 ? <PhoneCell phone={lead.phone2}/> : <span style={{color:"#CBD5E1"}}>-</span>}
                   </td>
-                  <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{lead.project}</td>
+                  <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, textAlign:"right", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{lead.project}</td>
                   <td style={{ padding:"10px 12px", position:"relative" }} onClick={function(e){e.stopPropagation();}}>
                     <div style={{ position:"relative", display:"inline-block" }}>
                       <span style={{ background:so.bg, color:so.color, padding:"4px 10px", borderRadius:20, fontSize:12, fontWeight:600, whiteSpace:"nowrap", border:"1px dashed "+so.color, display:"inline-flex", alignItems:"center", gap:4, cursor:"pointer" }}
@@ -853,7 +853,7 @@ var LeadsPage = function(p) {
                       </div>}
                     </div>
                   </td>
-                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{lead.source}</td>}
+                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"right", whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
@@ -862,7 +862,7 @@ var LeadsPage = function(p) {
                       {salesUsers.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
                     </select>
                   </td>}
-                  <td style={{ padding:"10px 12px", fontSize:11, color:C.accent, whiteSpace:"nowrap" }}>{timeAgo(lead.lastActivityTime,t)}</td>
+                  <td style={{ padding:"10px 12px", fontSize:11, color:C.accent, textAlign:"right", whiteSpace:"nowrap" }}>{timeAgo(lead.lastActivityTime,t)}</td>
                   {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }}>
                     {lead.callbackTime ? (function(){
                       var ci = callbackColor(lead.callbackTime);
