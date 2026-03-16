@@ -269,7 +269,7 @@ var StatusModal = function(p) {
   var [err, setErr] = useState(false);
   var [saving, setSaving] = useState(false);
   var sc = STATUSES(p.t); var ns = sc.find(function(s){return s.value===p.newStatus;});
-  var needsCb = p.newStatus==="CallBack" || p.newStatus==="NoAnswer";
+  var needsCb = p.newStatus==="CallBack" || p.newStatus==="NoAnswer" || p.newStatus==="Potential" || p.newStatus==="HotCase" || p.newStatus==="MeetingDone";
   var isReject = p.newStatus==="NotInterested";
   var isNewLead = p.newStatus==="NewLead";
   var isPotential = p.newStatus==="Potential";
@@ -278,8 +278,7 @@ var StatusModal = function(p) {
   var submit = async function() {
     
     if (needsCb && !cbTime) { alert("اختار موعد المكالمة"); return; }
-    if (isPotential && !comment.trim()) { setErr(true); return; }
-    if (!needsCb && !isReject && !isNewLead && !isPotential && !comment.trim()) { setErr(true); return; }
+    if (!needsCb && !isReject && !isNewLead && !comment.trim()) { setErr(true); return; }
     setSaving(true); await p.onConfirm(comment.trim(), cbTime); setSaving(false); setComment(""); setCbTime(""); setErr(false);
   };
   return <Modal show={p.show} onClose={p.onClose} title={p.t.changeStatus}>
@@ -455,7 +454,7 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId ? (form.status||"Potential") : "NewLead" });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId ? (form.status||"Potential") : "NewLead", phone2: form.phone2||"" });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
