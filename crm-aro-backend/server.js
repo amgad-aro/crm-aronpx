@@ -223,10 +223,10 @@ app.post("/api/leads", auth, async function(req, res) {
       createdAt: new Date(),
       updatedAt: new Date(),
     };
-await Lead.collection.insertOne(doc);
-var agent = doc.agentId ? await User.findById(doc.agentId).select("name title") : null;
-doc.agentId = agent || doc.agentId;
-res.json(doc);
+    await Lead.collection.insertOne(doc);
+    var agent = doc.agentId ? await User.findById(doc.agentId).select("name title") : null;
+    var result = Object.assign({}, doc, { agentId: agent || doc.agentId });
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
