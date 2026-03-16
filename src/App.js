@@ -458,11 +458,7 @@ var LeadForm = function(p) {
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
-      // Save phone2 via PUT to ensure it's stored in database
-      if (!p.editId && payload.phone2 && result._id) {
-        try { result = await apiFetch("/api/leads/"+result._id, "PUT", { phone2: payload.phone2 }, p.token); } catch(e) {}
-        if (!result.phone2) result.phone2 = payload.phone2;
-      }
+      if (!result.phone2 && payload.phone2) result.phone2 = payload.phone2;
       p.onSave(result);
     } catch(e) { alert(e.message); }
     setSaving(false);
