@@ -271,21 +271,23 @@ var StatusModal = function(p) {
   var sc = STATUSES(p.t); var ns = sc.find(function(s){return s.value===p.newStatus;});
   var needsCb = p.newStatus==="CallBack" || p.newStatus==="NoAnswer";
   var isReject = p.newStatus==="NotInterested";
-  var isNewLead = p.newStatus==="NewLead" || p.newStatus==="Potential";
+  var isNewLead = p.newStatus==="NewLead";
+  var isPotential = p.newStatus==="Potential";
   useEffect(function(){setComment("");setCbTime("");setErr(false);},[p.show]);
 
   var submit = async function() {
     
     if (needsCb && !cbTime) { alert("اختار موعد المكالمة"); return; }
-    if (!needsCb && !isReject && !isNewLead && !comment.trim()) { setErr(true); return; }
+    if (isPotential && !comment.trim()) { setErr(true); return; }
+    if (!needsCb && !isReject && !isNewLead && !isPotential && !comment.trim()) { setErr(true); return; }
     setSaving(true); await p.onConfirm(comment.trim(), cbTime); setSaving(false); setComment(""); setCbTime(""); setErr(false);
   };
   return <Modal show={p.show} onClose={p.onClose} title={p.t.changeStatus}>
     {ns && <div style={{ marginBottom:14, padding:"10px 14px", background:ns.bg, borderRadius:10, display:"flex", alignItems:"center", gap:8 }}><span style={{ width:10, height:10, borderRadius:"50%", background:ns.color }}/><span style={{ fontSize:14, fontWeight:600, color:ns.color }}>{ns.label}</span></div>}
-    <div style={{ marginBottom:12 }}>
+    {!isNewLead && <div style={{ marginBottom:12 }}>
       <Inp label={"📅 موعد المكالمة القادمة "+(needsCb?"(مطلوب)":"(اختياري)")} type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);}} req={needsCb}/>
       {cbTime&&<div style={{ fontSize:11, color:"#6366F1", marginTop:-8, marginBottom:10 }}>🔔 سيتم تذكيرك قبل الموعد بـ 15 دقيقة</div>}
-    </div>
+    </div>}
     {isReject && <div style={{ marginBottom:12 }}>
       <div style={{ fontSize:12, fontWeight:600, marginBottom:8, color:"#EF4444" }}>سبب الرفض:</div>
       <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:10 }}>
@@ -294,7 +296,7 @@ var StatusModal = function(p) {
         })}
       </div>
     </div>}
-    {!needsCb && !isNewLead && <Inp label={isReject?"ملاحظة إضافية (اختياري)":p.t.statusComment} type="textarea" placeholder={p.t.statusCommentPH} value={comment} onChange={function(e){setComment(e.target.value);setErr(false);}} req={!isReject}/>}
+    {(isPotential || (!needsCb && !isNewLead && !isReject)) && <Inp label={isPotential?"سبب التحويل لـ Potential (مطلوب)":p.t.statusComment} type="textarea" placeholder={p.t.statusCommentPH} value={comment} onChange={function(e){setComment(e.target.value);setErr(false);}} req={true}/>}
     {needsCb && <Inp label={"ملاحظة (اختياري)"} type="textarea" value={comment} onChange={function(e){setComment(e.target.value);}}/>}
     {err && <div style={{ color:C.danger, fontSize:12, marginBottom:12, padding:"8px 12px", background:"#FEF2F2", borderRadius:8 }}>{p.t.commentRequired}</div>}
     <div style={{ display:"flex", gap:10 }}><Btn outline onClick={p.onClose} style={{ flex:1 }}>{p.t.cancel}</Btn><Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.t.save}</Btn></div>
