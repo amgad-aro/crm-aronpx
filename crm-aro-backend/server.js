@@ -4,20 +4,43 @@ var mongoose = require("mongoose");
 var cors = require("cors");
 var bcrypt = require("bcryptjs");
 var jwt = require("jsonwebtoken");
-var models = require("./models");
-var User = models.User;
-var Lead = models.Lead;
-var Activity = models.Activity;
-var Task = models.Task;
-var DailyRequest = models.DailyRequest;
-// Add NewLead to enum if missing
-var leadStatusPath = Lead.schema.path("status");
-if (leadStatusPath && leadStatusPath.enumValues && !leadStatusPath.enumValues.includes("NewLead")) {
-  leadStatusPath.enumValues.push("NewLead");
-}
-if (leadStatusPath && leadStatusPath.enumValues && !leadStatusPath.enumValues.includes("Potential")) {
-  leadStatusPath.enumValues.push("Potential");
-}
+// ===== MODELS (embedded to avoid version issues) =====
+var User = mongoose.models["User"] || mongoose.model("User", new mongoose.Schema({
+  name:{type:String,required:true}, username:{type:String,required:true,unique:true},
+  password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
+  role:{type:String,enum:["admin","manager","sales","viewer"],default:"sales"},
+  title:{type:String,default:""}, active:{type:Boolean,default:true},
+  monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}
+},{timestamps:true}));
+
+var Lead = mongoose.models["Lead"] || mongoose.model("Lead", new mongoose.Schema({
+  name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
+  email:{type:String,default:""}, status:{type:String,default:"NewLead"},
+  source:{type:String,default:"Facebook"}, project:{type:String,default:""},
+  agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, budget:{type:String,default:""},
+  notes:{type:String,default:""}, callbackTime:{type:String,default:""},
+  lastActivityTime:{type:Date,default:Date.now}, archived:{type:Boolean,default:false}, isVIP:{type:Boolean,default:false}
+},{timestamps:true}));
+
+var Activity = mongoose.models["Activity"] || mongoose.model("Activity", new mongoose.Schema({
+  userId:{type:mongoose.Schema.Types.ObjectId,ref:"User",required:true},
+  leadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead"},
+  type:{type:String,default:"call"}, note:{type:String,default:""}
+},{timestamps:true}));
+
+var Task = mongoose.models["Task"] || mongoose.model("Task", new mongoose.Schema({
+  title:{type:String,required:true}, type:{type:String,default:"call"},
+  time:{type:String,default:""}, leadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead"},
+  userId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, done:{type:Boolean,default:false}
+},{timestamps:true}));
+
+var DailyRequest = mongoose.models["DailyRequest"] || mongoose.model("DailyRequest", new mongoose.Schema({
+  name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
+  email:{type:String,default:""}, budget:{type:String,default:""}, propertyType:{type:String,default:""},
+  area:{type:String,default:""}, notes:{type:String,default:""}, status:{type:String,default:"NewLead"},
+  agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, callbackTime:{type:String,default:""},
+  lastActivityTime:{type:Date,default:Date.now}, source:{type:String,default:"Daily Request"}
+},{timestamps:true}));
 var app = express();
 app.use(cors());
 app.use(express.json());
@@ -175,12 +198,11 @@ app.get("/api/leads", auth, async function(req, res) {
 
 app.post("/api/leads", auth, async function(req, res) {
   try {
-    var lead = await Lead.create({
+    var leadDoc = new Lead({
       name: req.body.name,
       phone: req.body.phone,
       phone2: req.body.phone2 || "",
       email: req.body.email || "",
-      status: req.body.status || "Potential",
       source: req.body.source || "Facebook",
       project: req.body.project || "",
       agentId: req.body.agentId || req.user.id,
@@ -189,6 +211,9 @@ app.post("/api/leads", auth, async function(req, res) {
       callbackTime: req.body.callbackTime || "",
       lastActivityTime: new Date(),
     });
+    leadDoc.status = req.body.status || "NewLead";
+    var lead = await leadDoc.save({ validateModifiedOnly: false });
+    await Lead.collection.updateOne({ _id: lead._id }, { $set: { status: req.body.status || "NewLead" } });
     lead = await Lead.findById(lead._id).populate("agentId", "name title");
     res.json(lead);
   } catch (e) {
