@@ -825,15 +825,15 @@ var LeadsPage = function(p) {
                     </div>
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
                   </td>
-                  <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap", textAlign:"left" }}>
-                    <div><PhoneCell phone={lead.phone}/></div>
-                    <div style={{ display:"flex", gap:4, marginTop:2 }}>
+                  <td style={{ padding:"10px 12px", whiteSpace:"nowrap", textAlign:"right" }}>
+                    <div style={{ fontSize:12, direction:"ltr", display:"inline-block" }}><PhoneCell phone={lead.phone}/></div>
+                    <div style={{ display:"flex", gap:4, marginTop:2, justifyContent:"flex-end" }}>
                       <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/> {t.call}</a>
                       <a href={"https://wa.me/2"+lead.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}>💬 {t.whatsapp}</a>
                     </div>
                   </td>
-                  <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr", whiteSpace:"nowrap", color:C.textLight, textAlign:"left" }}>
-                    {lead.phone2 ? <PhoneCell phone={lead.phone2}/> : <span style={{color:"#CBD5E1"}}>-</span>}
+                  <td style={{ padding:"10px 12px", whiteSpace:"nowrap", textAlign:"right" }}>
+                    <span style={{ fontSize:12, direction:"ltr", display:"inline-block" }}>{lead.phone2 ? <PhoneCell phone={lead.phone2}/> : <span style={{color:"#CBD5E1"}}>-</span>}</span>
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, textAlign:"right", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{lead.project}</td>
                   <td style={{ padding:"10px 12px", position:"relative" }} onClick={function(e){e.stopPropagation();}}>
