@@ -194,7 +194,12 @@ app.get("/api/leads", auth, async function(req, res) {
     if (req.user.role === "sales") {
       query.agentId = req.user.id;
     }
-    var leads = await Lead.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
+    var leads = await Lead.collection.find(query).sort({ createdAt: -1 }).toArray();
+var agentIds = [...new Set(leads.map(function(l){return l.agentId;}).filter(Boolean).map(String))];
+var agents = await User.find({ _id: { $in: agentIds } }).select("name title");
+var agentMap = {};
+agents.forEach(function(a){ agentMap[String(a._id)] = a; });
+leads = leads.map(function(l){ return Object.assign({}, l, { agentId: agentMap[String(l.agentId)] || l.agentId }); });
     res.json(leads);
   } catch (e) {
     res.status(500).json({ error: e.message });
