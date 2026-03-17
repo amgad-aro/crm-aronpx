@@ -238,7 +238,10 @@ app.put("/api/leads/:id", auth, async function(req, res) {
   try {
     var mongoose = require("mongoose");
 var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
-await Lead.collection.updateOne({ _id: new mongoose.Types.ObjectId(req.params.id) }, { $set: update });
+await Lead.collection.updateOne(
+  { $or: [{ _id: req.params.id }, { _id: new mongoose.Types.ObjectId(req.params.id) }] },
+  { $set: update }
+);
 var lead = await Lead.collection.findOne({ _id: new mongoose.Types.ObjectId(req.params.id) });
 var agent = lead && lead.agentId ? await User.findById(lead.agentId).select("name title") : null;
 if (lead) lead = Object.assign({}, lead, { agentId: agent || lead.agentId });
