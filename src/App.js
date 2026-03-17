@@ -458,7 +458,15 @@ var LeadForm = function(p) {
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
-      if (!result.phone2 && payload.phone2) result.phone2 = payload.phone2;
+      if (payload.phone2) {
+        result.phone2 = payload.phone2;
+        // Cache phone2 in localStorage
+        try {
+          var cache = JSON.parse(localStorage.getItem('phone2_cache')||'{}');
+          if (result._id) cache[String(result._id)] = payload.phone2;
+          localStorage.setItem('phone2_cache', JSON.stringify(cache));
+        } catch(e) {}
+      }
       p.onSave(result);
     } catch(e) { alert(e.message); }
     setSaving(false);
@@ -1863,7 +1871,17 @@ export default function CRMApp() {
     try {
       var results=await Promise.all([apiFetch("/api/leads","GET",null,tok),apiFetch("/api/users","GET",null,tok),apiFetch("/api/activities","GET",null,tok),apiFetch("/api/tasks","GET",null,tok)]);
       var loadedUser=results[1]?results[1].find(function(u){return u._id===tok||true;}):null;
-      setLeads(getVisibleLeads(results[0]||[], currentUser)); setUsers(results[1]); setActivities(results[2]); setTasks(results[3]);
+      // Restore phone2 from cache for leads that are missing it
+      var leadsData = results[0]||[];
+      try {
+        var cache = JSON.parse(localStorage.getItem('phone2_cache')||'{}');
+        leadsData = leadsData.map(function(l){
+          var id = l._id ? String(l._id) : null;
+          if (id && cache[id] && !l.phone2) return Object.assign({}, l, {phone2: cache[id]});
+          return l;
+        });
+      } catch(e) {}
+      setLeads(getVisibleLeads(leadsData, currentUser)); setUsers(results[1]); setActivities(results[2]); setTasks(results[3]);
     } catch(e){setDataError(e.message);}
     setLoading(false);
   },[]);
