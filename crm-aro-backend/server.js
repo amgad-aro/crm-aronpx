@@ -208,31 +208,32 @@ app.get("/api/leads", auth, async function(req, res) {
 
 app.post("/api/leads", auth, async function(req, res) {
   try {
-    console.log("POST /api/leads body:", JSON.stringify(req.body));
     var mongoose = require("mongoose");
+    console.log("=== NEW LEAD body ===", JSON.stringify(req.body));
     var agentId = req.body.agentId
       ? new mongoose.Types.ObjectId(req.body.agentId)
       : new mongoose.Types.ObjectId(req.user.id);
     var lead = await Lead.create({
-      name: req.body.name,
-      phone: req.body.phone,
-      phone2: req.body.phone2 || "",
-      email: req.body.email || "",
-      status: req.body.status || "NewLead",
-      source: req.body.source || "Facebook",
-      project: req.body.project || "",
-      agentId: agentId,
-      budget: req.body.budget || "",
-      notes: req.body.notes || "",
-      callbackTime: req.body.callbackTime || "",
+      name:             req.body.name,
+      phone:            req.body.phone,
+      phone2:           req.body.phone2 || "",
+      email:            req.body.email || "",
+      status:           req.body.status || "NewLead",
+      source:           req.body.source || "Facebook",
+      project:          req.body.project || "",
+      agentId:          agentId,
+      budget:           req.body.budget || "",
+      notes:            req.body.notes || "",
+      callbackTime:     req.body.callbackTime || "",
       lastActivityTime: new Date(),
-      archived: false,
-      isVIP: false,
+      archived:         false,
+      isVIP:            false,
     });
-    console.log("Saved lead phone2:", lead.phone2);
+    console.log("=== SAVED phone2 ===", lead.phone2);
     lead = await Lead.findById(lead._id).populate("agentId", "name title");
     res.json(lead);
   } catch (e) {
+    console.error("POST /api/leads error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -242,19 +243,21 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
   try {
     var phone = decodeURIComponent(req.params.phone);
     var lead = await Lead.findOne({ phone: phone, archived: false }).populate("agentId", "name title");
-    if (lead) {
-      res.json({ exists: true, lead: lead });
-    } else {
-      res.json({ exists: false });
-    }
+    if (lead) res.json({ exists: true, lead: lead });
+    else res.json({ exists: false });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
-    var lead = await Lead.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
-    // Log activity
+    // ضمان حفظ phone2 صراحةً
+    if (req.body.phone2 !== undefined) update.phone2 = req.body.phone2;
+    var lead = await Lead.findByIdAndUpdate(
+      req.params.id,
+      { $set: update },
+      { new: true, runValidators: false }
+    ).populate("agentId", "name title");
     await Activity.create({
       userId: req.user.id,
       leadId: req.params.id,
