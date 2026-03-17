@@ -725,7 +725,7 @@ var LeadsPage = function(p) {
       var toImport=rows.map(rowToLead).filter(function(l){return l.name&&l.phone;});
       if(!toImport.length){setImportMsg(t.importErr);setImporting(false);return;}
       var agId=salesUsers[0]?gid(salesUsers[0]):p.cu.id;
-      var created=[]; for(var i=0;i<toImport.length;i++){try{var lead=await apiFetch("/api/leads","POST",Object.assign({agentId:agId,source:isReq?"Daily Request":toImport[i].source},toImport[i]),p.token);created.push(lead);}catch(ex){}}
+      var created=[]; for(var i=0;i<toImport.length;i++){try{var lead=await apiFetch("/api/leads","POST",Object.assign({agentId:agId,source:isReq?"Daily Request":toImport[i].source,status:"NewLead"},toImport[i]),p.token);if(toImport[i].phone2){try{var cache=JSON.parse(localStorage.getItem("phone2_cache")||"{}");if(lead._id)cache[String(lead._id)]=toImport[i].phone2;localStorage.setItem("phone2_cache",JSON.stringify(cache));}catch(e){}}created.push(lead);}catch(ex){}}
       p.setLeads(function(prev){return created.concat(prev);});
       setImportMsg("✅ "+t.importDone+": "+created.length);
     } catch(ex){setImportMsg(t.importErr+": "+ex.message);}
