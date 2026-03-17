@@ -1,15 +1,17 @@
-﻿require("dotenv").config();
+require("dotenv").config();
 var express = require("express");
 var mongoose = require("mongoose");
 var cors = require("cors");
 var bcrypt = require("bcryptjs");
 var jwt = require("jsonwebtoken");
+
 // ===== MODELS =====
 delete mongoose.models["User"];
 delete mongoose.models["Lead"];
 delete mongoose.models["Activity"];
 delete mongoose.models["Task"];
 delete mongoose.models["DailyRequest"];
+
 var User = mongoose.model("User", new mongoose.Schema({
   name:{type:String,required:true}, username:{type:String,required:true,unique:true},
   password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
@@ -46,6 +48,7 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, callbackTime:{type:String,default:""},
   lastActivityTime:{type:Date,default:Date.now}, source:{type:String,default:"Daily Request"}
 },{timestamps:true}));
+
 var app = express();
 app.use(cors());
 app.use(express.json());
@@ -190,26 +193,31 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
 // ===== LEAD ROUTES =====
 app.get("/api/leads", auth, async function(req, res) {
   try {
-    var mongoose = require("mongoose");
     var query = {};
     if (req.user.role === "sales") {
       query.agentId = new mongoose.Types.ObjectId(req.user.id);
     }
-    var leads = await Lead.collection.find(query).sort({ createdAt: -1 }).toArray();
-    var agents = await User.find({}).select("name title").lean();
-    var agentMap = {};
-    agents.forEach(function(a){ agentMap[String(a._id)] = {_id:a._id, name:a.name, title:a.title}; });
-    leads = leads.map(function(l){ return Object.assign({}, l, { agentId: agentMap[String(l.agentId)] || l.agentId }); });
+    var leads = await Lead.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
     res.json(leads);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// ===== CHECK DUPLICATE PHONE =====
+app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
+  try {
+    var phone = decodeURIComponent(req.params.phone);
+    var lead = await Lead.findOne({ phone: phone, archived: false }).populate("agentId", "name title");
+    if (lead) res.json({ exists: true, lead: lead });
+    else res.json({ exists: false });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== ADD LEAD =====
 app.post("/api/leads", auth, async function(req, res) {
   try {
-    var mongoose = require("mongoose");
-    console.log("=== NEW LEAD body ===", JSON.stringify(req.body));
+    console.log("NEW LEAD body:", JSON.stringify(req.body));
     var agentId = req.body.agentId
       ? new mongoose.Types.ObjectId(req.body.agentId)
       : new mongoose.Types.ObjectId(req.user.id);
@@ -229,7 +237,7 @@ app.post("/api/leads", auth, async function(req, res) {
       archived:         false,
       isVIP:            false,
     });
-    console.log("=== SAVED phone2 ===", lead.phone2);
+    console.log("SAVED phone2:", lead.phone2);
     lead = await Lead.findById(lead._id).populate("agentId", "name title");
     res.json(lead);
   } catch (e) {
@@ -238,26 +246,11 @@ app.post("/api/leads", auth, async function(req, res) {
   }
 });
 
-// ===== CHECK DUPLICATE PHONE =====
-app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
-  try {
-    var phone = decodeURIComponent(req.params.phone);
-    var lead = await Lead.findOne({ phone: phone, archived: false }).populate("agentId", "name title");
-    if (lead) res.json({ exists: true, lead: lead });
-    else res.json({ exists: false });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
+// ===== UPDATE LEAD =====
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
-    // ضمان حفظ phone2 صراحةً
-    if (req.body.phone2 !== undefined) update.phone2 = req.body.phone2;
-    var lead = await Lead.findByIdAndUpdate(
-      req.params.id,
-      { $set: update },
-      { new: true, runValidators: false }
-    ).populate("agentId", "name title");
+    var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
     await Activity.create({
       userId: req.user.id,
       leadId: req.params.id,
@@ -283,9 +276,7 @@ app.delete("/api/leads/:id", auth, adminOnly, async function(req, res) {
 app.get("/api/activities", auth, async function(req, res) {
   try {
     var query = {};
-    if (req.user.role === "sales") {
-      query.userId = req.user.id;
-    }
+    if (req.user.role === "sales") { query.userId = req.user.id; }
     var activities = await Activity.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 }).limit(50);
     res.json(activities);
   } catch (e) {
@@ -301,7 +292,6 @@ app.post("/api/activities", auth, async function(req, res) {
       type: req.body.type || "call",
       note: req.body.note || "",
     });
-    // Update lead lastActivityTime
     if (req.body.leadId) {
       await Lead.findByIdAndUpdate(req.body.leadId, { lastActivityTime: new Date() });
     }
@@ -316,9 +306,7 @@ app.post("/api/activities", auth, async function(req, res) {
 app.get("/api/tasks", auth, async function(req, res) {
   try {
     var query = {};
-    if (req.user.role === "sales") {
-      query.userId = req.user.id;
-    }
+    if (req.user.role === "sales") { query.userId = req.user.id; }
     var tasks = await Task.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 });
     res.json(tasks);
   } catch (e) {
@@ -366,10 +354,7 @@ app.get("/api/stats", auth, async function(req, res) {
   try {
     var leadQuery = {};
     var actQuery = {};
-    if (req.user.role === "sales") {
-      leadQuery.agentId = req.user.id;
-      actQuery.userId = req.user.id;
-    }
+    if (req.user.role === "sales") { leadQuery.agentId = req.user.id; actQuery.userId = req.user.id; }
     var totalLeads = await Lead.countDocuments(leadQuery);
     var potential = await Lead.countDocuments(Object.assign({ status: "Potential" }, leadQuery));
     var hotCase = await Lead.countDocuments(Object.assign({ status: "HotCase" }, leadQuery));
@@ -380,12 +365,7 @@ app.get("/api/stats", auth, async function(req, res) {
     var doneDeal = await Lead.countDocuments(Object.assign({ status: "DoneDeal" }, leadQuery));
     var totalActivities = await Activity.countDocuments(actQuery);
     var totalCalls = await Activity.countDocuments(Object.assign({ type: "call" }, actQuery));
-
-    res.json({
-      totalLeads: totalLeads, potential: potential, hotCase: hotCase, callBack: callBack,
-      meetingDone: meetingDone, notInterested: notInterested, noAnswer: noAnswer,
-      doneDeal: doneDeal, totalActivities: totalActivities, totalCalls: totalCalls,
-    });
+    res.json({ totalLeads: totalLeads, potential: potential, hotCase: hotCase, callBack: callBack, meetingDone: meetingDone, notInterested: notInterested, noAnswer: noAnswer, doneDeal: doneDeal, totalActivities: totalActivities, totalCalls: totalCalls });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -393,20 +373,15 @@ app.get("/api/stats", auth, async function(req, res) {
 
 // ===== HEALTH CHECK =====
 app.get("/", function(req, res) {
-  res.json({ status: "CRM ARO API is running", version: "1.0.0" });
+  res.json({ status: "CRM ARO API is running", version: "2.0.0" });
 });
 
-// ===== START SERVER =====
-var PORT = process.env.PORT || 5000;
 // ===== DAILY REQUEST ROUTES =====
-
 app.get("/api/daily-requests", auth, async function(req, res) {
   try {
     var query = {};
     if (req.user.role === "sales") query.agentId = req.user.id;
-    var requests = await DailyRequest.find(query)
-      .populate("agentId", "name title")
-      .sort({ createdAt: -1 });
+    var requests = await DailyRequest.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
     res.json(requests);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -423,7 +398,7 @@ app.post("/api/daily-requests", auth, async function(req, res) {
       callbackTime: req.body.callbackTime || "",
       lastActivityTime: new Date(),
     });
-    r = await DailyRequest.findById(r._id).populate("agentId","name title");
+    r = await DailyRequest.findById(r._id).populate("agentId", "name title");
     res.json(r);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -431,8 +406,7 @@ app.post("/api/daily-requests", auth, async function(req, res) {
 app.put("/api/daily-requests/:id", auth, async function(req, res) {
   try {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
-    var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true })
-      .populate("agentId","name title");
+    var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
     if (req.body.status) {
       await Activity.create({ userId: req.user.id, type: "status_change", note: "DailyReq: " + req.body.status });
     }
@@ -457,7 +431,6 @@ app.put("/api/leads/:id/archive", auth, adminOnly, async function(req, res) {
 
 // ===== PUSH NOTIFICATIONS =====
 var pushSubscriptions = [];
-
 app.post("/api/push/subscribe", auth, async function(req, res) {
   var sub = req.body;
   var exists = pushSubscriptions.find(function(s) { return s.endpoint === sub.endpoint; });
@@ -485,7 +458,6 @@ app.post("/api/fb-webhook", async function(req, res) {
         for (var change of (entry.changes || [])) {
           if (change.field === "leadgen") {
             var leadgenId = change.value.leadgen_id;
-            var formId = change.value.form_id;
             var fbRes = await fetch("https://graph.facebook.com/v19.0/" + leadgenId + "?fields=field_data&access_token=" + process.env.FB_PAGE_TOKEN);
             var fbData = await fbRes.json();
             if (fbData.field_data) {
@@ -504,9 +476,9 @@ app.post("/api/fb-webhook", async function(req, res) {
                   var counts = await Promise.all(agents.map(function(a) { return Lead.countDocuments({ agentId: a._id }); }));
                   agentId = agents[counts.indexOf(Math.min(...counts))]._id;
                 }
-                var newLead = await Lead.create({ name: leadData.name || "Facebook Lead", phone: leadData.phone || "", email: leadData.email || "", source: "Facebook", status: "Potential", agentId: agentId, lastActivityTime: new Date(), notes: "من Facebook Lead Ads تلقائياً" });
-                await Activity.create({ userId: agentId, leadId: newLead._id, type: "note", note: "📘 عميل جديد من Facebook Lead Ads" });
-                console.log("✅ FB lead saved:", newLead.name);
+                var newLead = await Lead.create({ name: leadData.name || "Facebook Lead", phone: leadData.phone || "", email: leadData.email || "", source: "Facebook", status: "Potential", agentId: agentId, lastActivityTime: new Date(), notes: "Facebook Lead Ads" });
+                await Activity.create({ userId: agentId, leadId: newLead._id, type: "note", note: "Facebook Lead Ads" });
+                console.log("FB lead saved:", newLead.name);
               }
             }
           }
@@ -526,14 +498,12 @@ var emailTransporter = nodemailer.createTransport({ service: "gmail", auth: { us
 var sendDealEmail = async function(lead, agentName) {
   if (!process.env.GMAIL_USER || !process.env.ADMIN_EMAIL) return;
   try {
-    await emailTransporter.sendMail({ from: process.env.GMAIL_USER, to: process.env.ADMIN_EMAIL, subject: "🎉 صفقة جديدة — " + lead.name, html: "<div style='font-family:Arial;direction:rtl;padding:20px'><h2 style='color:#1B3A5C'>🎉 تم إغلاق صفقة جديدة!</h2><p><b>العميل:</b> " + lead.name + "</p><p><b>الهاتف:</b> " + lead.phone + "</p><p><b>المشروع:</b> " + lead.project + "</p><p><b>الميزانية:</b> " + lead.budget + "</p><p><b>الموظف:</b> " + agentName + "</p></div>" });
-    console.log("✅ Email sent:", lead.name);
+    await emailTransporter.sendMail({ from: process.env.GMAIL_USER, to: process.env.ADMIN_EMAIL, subject: "Deal: " + lead.name, html: "<p>" + lead.name + "</p>" });
   } catch(e) { console.error("Email error:", e.message); }
 };
+
+// ===== START SERVER =====
+var PORT = process.env.PORT || 5000;
 app.listen(PORT, function() {
   console.log("CRM ARO Server running on port " + PORT);
 });
- 
-
-/ /   r e d e p l o y 
- 
