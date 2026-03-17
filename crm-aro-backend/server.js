@@ -227,6 +227,7 @@ app.post("/api/leads", auth, async function(req, res) {
       createdAt: new Date(), updatedAt: new Date(),
     };
     await Lead.collection.insertOne(doc);
+    await Lead.collection.updateOne({ _id: doc._id }, { $set: { phone2: doc.phone2 } });
     var agent = doc.agentId ? await User.findById(doc.agentId).select("name title") : null;
     res.json(Object.assign({}, doc, { agentId: agent || doc.agentId }));
   } catch (e) {
