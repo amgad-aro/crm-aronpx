@@ -235,6 +235,20 @@ app.post("/api/leads", auth, async function(req, res) {
   }
 });
 
+// ===== CHECK DUPLICATE PHONE =====
+app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
+  try {
+    var phone = decodeURIComponent(req.params.phone);
+    var lead = await Lead.findOne({ phone: phone, archived: false });
+    if (lead) {
+      var agentData = lead.agentId ? await User.findById(lead.agentId).select("name title") : null;
+      res.json({ exists: true, lead: Object.assign(lead.toObject(), { agentId: agentData || lead.agentId }) });
+    } else {
+      res.json({ exists: false });
+    }
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
     var mongoose = require("mongoose");
