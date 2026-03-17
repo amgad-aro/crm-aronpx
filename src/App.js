@@ -222,7 +222,7 @@ var loadXLSX = function() {
 };
 var rowToLead = function(row) {
   var g = function() { for (var i = 0; i < arguments.length; i++) { var v = row[arguments[i]]; if (v) return String(v).trim(); } return ""; };
-  return { name: g("name","الاسم","اسم العميل"), phone: g("phone","phone number","الهاتف","موبايل","رقم"), phone2: g("phone2","هاتف إضافي","هاتف2","رقم2","موبايل2"), email: g("email","الإيميل"), budget: g("budget","الميزانية"), project: g("project","campaign","المشروع","الكامبين") || "", source: g("source","المصدر") || "Facebook", notes: g("notes","ملاحظات") };
+  return { name: g("name","الاسم","اسم العميل"), phone: g("phone","phone number","الهاتف","موبايل","رقم"), phone2: g("phone2","phone2 ","phone 2","هاتف إضافي","هاتف2","رقم2","موبايل2"), email: g("email","الإيميل"), budget: g("budget","الميزانية"), project: g("project","campaign","المشروع","الكامبين") || "", source: g("source","المصدر") || "Facebook", notes: g("notes","ملاحظات") };
 };
 
 // ===== UI COMPONENTS =====
