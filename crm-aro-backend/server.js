@@ -208,9 +208,12 @@ app.get("/api/leads", auth, async function(req, res) {
 
 app.post("/api/leads", auth, async function(req, res) {
   try {
+    console.log("POST /api/leads body:", JSON.stringify(req.body));
     var mongoose = require("mongoose");
-    var doc = {
-      _id: new mongoose.Types.ObjectId(),
+    var agentId = req.body.agentId
+      ? new mongoose.Types.ObjectId(req.body.agentId)
+      : new mongoose.Types.ObjectId(req.user.id);
+    var lead = await Lead.create({
       name: req.body.name,
       phone: req.body.phone,
       phone2: req.body.phone2 || "",
@@ -218,18 +221,17 @@ app.post("/api/leads", auth, async function(req, res) {
       status: req.body.status || "NewLead",
       source: req.body.source || "Facebook",
       project: req.body.project || "",
-      agentId: req.body.agentId ? new mongoose.Types.ObjectId(req.body.agentId) : new mongoose.Types.ObjectId(req.user.id),
+      agentId: agentId,
       budget: req.body.budget || "",
       notes: req.body.notes || "",
       callbackTime: req.body.callbackTime || "",
       lastActivityTime: new Date(),
-      archived: false, isVIP: false,
-      createdAt: new Date(), updatedAt: new Date(),
-    };
-    await Lead.collection.insertOne(doc);
-    await Lead.collection.updateOne({ _id: doc._id }, { $set: { phone2: doc.phone2 } });
-    var agent = doc.agentId ? await User.findById(doc.agentId).select("name title") : null;
-    res.json(Object.assign({}, doc, { agentId: agent || doc.agentId }));
+      archived: false,
+      isVIP: false,
+    });
+    console.log("Saved lead phone2:", lead.phone2);
+    lead = await Lead.findById(lead._id).populate("agentId", "name title");
+    res.json(lead);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -239,10 +241,9 @@ app.post("/api/leads", auth, async function(req, res) {
 app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
   try {
     var phone = decodeURIComponent(req.params.phone);
-    var lead = await Lead.findOne({ phone: phone, archived: false });
+    var lead = await Lead.findOne({ phone: phone, archived: false }).populate("agentId", "name title");
     if (lead) {
-      var agentData = lead.agentId ? await User.findById(lead.agentId).select("name title") : null;
-      res.json({ exists: true, lead: Object.assign(lead.toObject(), { agentId: agentData || lead.agentId }) });
+      res.json({ exists: true, lead: lead });
     } else {
       res.json({ exists: false });
     }
@@ -251,15 +252,8 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
 
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
-    var mongoose = require("mongoose");
-var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
-await Lead.collection.updateOne(
-  { $or: [{ _id: req.params.id }, { _id: new mongoose.Types.ObjectId(req.params.id) }] },
-  { $set: update }
-);
-var lead = await Lead.collection.findOne({ _id: new mongoose.Types.ObjectId(req.params.id) });
-var agent = lead && lead.agentId ? await User.findById(lead.agentId).select("name title") : null;
-if (lead) lead = Object.assign({}, lead, { agentId: agent || lead.agentId });
+    var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
+    var lead = await Lead.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
     // Log activity
     await Activity.create({
       userId: req.user.id,
