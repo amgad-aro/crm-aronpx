@@ -373,7 +373,7 @@ app.get("/api/stats", auth, async function(req, res) {
 
 // ===== HEALTH CHECK =====
 app.get("/", function(req, res) {
-  res.json({ status: "CRM ARO API is running", version: "2.0.0" });
+  res.json({ status: "CRM ARO API is running", version: "3.0.0" });
 });
 
 // ===== DAILY REQUEST ROUTES =====
