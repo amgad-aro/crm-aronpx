@@ -266,106 +266,39 @@ var Loader = function() { return <div style={{ display:"flex", alignItems:"cente
 var StatusModal = function(p) {
   var [comment, setComment] = useState("");
   var [cbTime, setCbTime] = useState("");
-  var [dealProject, setDealProject] = useState("");
-  var [dealType, setDealType] = useState("");
-  var [dealBudget, setDealBudget] = useState("");
-  var [err, setErr] = useState("");
+  var [err, setErr] = useState(false);
   var [saving, setSaving] = useState(false);
   var sc = STATUSES(p.t); var ns = sc.find(function(s){return s.value===p.newStatus;});
-
-  // Rules per status
-  var st = p.newStatus;
-  var isNewLead = st==="NewLead";
-  var isDoneDeal = st==="DoneDeal";
-  var isReject = st==="NotInterested";
-  // date+comment both required
-  var needsBoth = st==="Potential"||st==="HotCase"||st==="MeetingDone";
-  // date required, comment optional
-  var needsCbOnly = st==="CallBack"||st==="NoAnswer";
-
-  useEffect(function(){setComment("");setCbTime("");setDealProject("");setDealType("");setDealBudget("");setErr("");},[p.show]);
+  var needsCb = p.newStatus==="CallBack" || p.newStatus==="NoAnswer" || p.newStatus==="Potential" || p.newStatus==="HotCase" || p.newStatus==="MeetingDone";
+  var isReject = p.newStatus==="NotInterested";
+  var isNewLead = p.newStatus==="NewLead";
+  var isPotential = p.newStatus==="Potential";
+  useEffect(function(){setComment("");setCbTime("");setErr(false);},[p.show]);
 
   var submit = async function() {
-    if (needsBoth) {
-      if (!cbTime) { setErr("اختار موعد المكالمة"); return; }
-      if (!comment.trim()) { setErr("اكتب كومنت"); return; }
-    }
-    if (needsCbOnly && !cbTime) { setErr("اختار موعد المكالمة"); return; }
-    if (isReject && !comment.trim()) { setErr("اختار سبب الرفض"); return; }
-    if (isDoneDeal && !dealBudget.trim()) { setErr("اكتب المبلغ"); return; }
-    setSaving(true);
-    var extra = isDoneDeal ? { project: dealProject, notes: dealType, budget: dealBudget } : {};
-    await p.onConfirm(comment.trim(), cbTime, extra);
-    setSaving(false); setComment(""); setCbTime(""); setErr("");
+    
+    if (needsCb && !cbTime) { alert("اختار موعد المكالمة"); return; }
+    if (!needsCb && !isReject && !isNewLead && !comment.trim()) { setErr(true); return; }
+    setSaving(true); await p.onConfirm(comment.trim(), cbTime); setSaving(false); setComment(""); setCbTime(""); setErr(false);
   };
-
   return <Modal show={p.show} onClose={p.onClose} title={p.t.changeStatus}>
-    {ns && <div style={{ marginBottom:14, padding:"10px 14px", background:ns.bg, borderRadius:10, display:"flex", alignItems:"center", gap:8 }}>
-      <span style={{ width:10, height:10, borderRadius:"50%", background:ns.color }}/>
-      <span style={{ fontSize:14, fontWeight:600, color:ns.color }}>{ns.label}</span>
+    {ns && <div style={{ marginBottom:14, padding:"10px 14px", background:ns.bg, borderRadius:10, display:"flex", alignItems:"center", gap:8 }}><span style={{ width:10, height:10, borderRadius:"50%", background:ns.color }}/><span style={{ fontSize:14, fontWeight:600, color:ns.color }}>{ns.label}</span></div>}
+    {!isNewLead && <div style={{ marginBottom:12 }}>
+      <Inp label={"📅 موعد المكالمة القادمة "+(needsCb?"(مطلوب)":"(اختياري)")} type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);}} req={needsCb}/>
+      {cbTime&&<div style={{ fontSize:11, color:"#6366F1", marginTop:-8, marginBottom:10 }}>🔔 سيتم تذكيرك قبل الموعد بـ 15 دقيقة</div>}
     </div>}
-
-    {/* Date picker — for statuses that need it */}
-    {(needsBoth||needsCbOnly) && <div style={{ marginBottom:12 }}>
-      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>
-        📅 موعد المكالمة القادمة <span style={{ color:C.danger }}>*</span>
-      </label>
-      <input type="datetime-local" value={cbTime}
-        onChange={function(e){ setCbTime(e.target.value); }}
-        onBlur={function(){ /* auto-close handled by browser */ }}
-        style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
-      {cbTime&&<div style={{ fontSize:11, color:"#6366F1", marginTop:5 }}>🔔 سيتم تذكيرك قبل الموعد بـ 15 دقيقة</div>}
-    </div>}
-
-    {/* Comment — required for Potential/HotCase/MeetingDone */}
-    {needsBoth && <div style={{ marginBottom:12 }}>
-      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>
-        💬 كومنت <span style={{ color:C.danger }}>*</span>
-      </label>
-      <textarea rows={3} placeholder="اكتب ملاحظة..." value={comment} onChange={function(e){setComment(e.target.value);setErr("");}}
-        style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
-    </div>}
-
-    {/* Comment optional for CallBack/NoAnswer */}
-    {needsCbOnly && <div style={{ marginBottom:12 }}>
-      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 ملاحظة (اختياري)</label>
-      <textarea rows={2} placeholder="اختياري..." value={comment} onChange={function(e){setComment(e.target.value);}}
-        style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
-    </div>}
-
-    {/* NotInterested — reason required */}
     {isReject && <div style={{ marginBottom:12 }}>
-      <div style={{ fontSize:12, fontWeight:600, marginBottom:8, color:"#EF4444" }}>سبب الرفض: <span style={{ color:C.danger }}>*</span></div>
-      <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+      <div style={{ fontSize:12, fontWeight:600, marginBottom:8, color:"#EF4444" }}>سبب الرفض:</div>
+      <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:10 }}>
         {["السعر مرتفع","المنطقة مش مناسبة","اشترى من مكان تاني","مش جاهز دلوقتي","مش مهتم خالص","سبب تاني"].map(function(reason){
-          return <button key={reason} onClick={function(){setComment(reason);setErr("");}} style={{ padding:"8px 12px", borderRadius:8, border:"1px solid", borderColor:comment===reason?"#EF4444":"#E2E8F0", background:comment===reason?"#FEF2F2":"#fff", color:comment===reason?"#EF4444":"#64748B", fontSize:12, cursor:"pointer", textAlign:"right" }}>{reason}</button>;
+          return <button key={reason} onClick={function(){setComment(reason);}} style={{ padding:"8px 12px", borderRadius:8, border:"1px solid", borderColor:comment===reason?"#EF4444":"#E2E8F0", background:comment===reason?"#FEF2F2":"#fff", color:comment===reason?"#EF4444":"#64748B", fontSize:12, cursor:"pointer", textAlign:"right" }}>{reason}</button>;
         })}
       </div>
     </div>}
-
-    {/* DoneDeal — project, type, budget */}
-    {isDoneDeal && <div>
-      <Inp label={"المشروع"} value={dealProject} onChange={function(e){setDealProject(e.target.value);}} placeholder="اسم المشروع"/>
-      <Inp label={"النوع"} type="select" value={dealType} onChange={function(e){setDealType(e.target.value);}} options={["","شقة","دوبلكس","تاون هاوس","فيلا","محل تجاري","مكتب"].map(function(x){return{value:x,label:x||"- اختر نوع -"};})}/>
-      <div style={{ marginBottom:13 }}>
-        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>
-          💰 المبلغ (EGP) <span style={{ color:C.danger }}>*</span>
-        </label>
-        <input type="text" placeholder="مثال: 1,500,000" value={dealBudget}
-          onChange={function(e){
-            var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");
-            var formatted=raw?Number(raw).toLocaleString():"";
-            setDealBudget(formatted);setErr("");
-          }}
-          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
-      </div>
-    </div>}
-
-    {err && <div style={{ color:C.danger, fontSize:12, marginBottom:12, padding:"8px 12px", background:"#FEF2F2", borderRadius:8 }}>⚠️ {err}</div>}
-    <div style={{ display:"flex", gap:10 }}>
-      <Btn outline onClick={p.onClose} style={{ flex:1 }}>{p.t.cancel}</Btn>
-      <Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.t.save}</Btn>
-    </div>
+    {(isPotential || (!needsCb && !isNewLead && !isReject)) && <Inp label={isPotential?"سبب التحويل لـ Potential (مطلوب)":p.t.statusComment} type="textarea" placeholder={p.t.statusCommentPH} value={comment} onChange={function(e){setComment(e.target.value);setErr(false);}} req={true}/>}
+    {needsCb && !isPotential && <Inp label={"ملاحظة (اختياري)"} type="textarea" value={comment} onChange={function(e){setComment(e.target.value);}}/>}
+    {err && <div style={{ color:C.danger, fontSize:12, marginBottom:12, padding:"8px 12px", background:"#FEF2F2", borderRadius:8 }}>{p.t.commentRequired}</div>}
+    <div style={{ display:"flex", gap:10 }}><Btn outline onClick={p.onClose} style={{ flex:1 }}>{p.t.cancel}</Btn><Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.t.save}</Btn></div>
   </Modal>;
 };
 
@@ -455,10 +388,8 @@ var Header = function(p) {
   var t = p.t;
   var upcoming = p.leads.filter(function(l){return l.callbackTime&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&!l.archived;});
   var notifRef = useRef(null);
-  var [notifSeen, setNotifSeen] = useState(false);
   useEffect(function(){
     if (!p.showNotif) return;
-    setNotifSeen(true);
     var fn=function(e){if(notifRef.current&&!notifRef.current.contains(e.target))p.setShowNotif(false);};
     document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
   },[p.showNotif]);
@@ -476,7 +407,7 @@ var Header = function(p) {
       <div style={{ position:"relative" }} ref={notifRef}>
         <button onClick={function(){p.setShowNotif(!p.showNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <Bell size={16} color={C.textLight}/>
-          {upcoming.length>0&&!notifSeen&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.danger, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{upcoming.length}</span>}
+          {upcoming.length>0&&!p.showNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.danger, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{upcoming.length}</span>}
         </button>
         {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:360, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -523,7 +454,7 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : "NewLead", phone2: form.phone2||"" });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId ? (form.status||"Potential") : "NewLead", phone2: form.phone2||"" });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
@@ -550,7 +481,7 @@ var LeadForm = function(p) {
       <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder="01xxxxxxxxx"/>
       <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder="اختياري"/>
       <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
-      <Inp label={t.budget} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
+      <Inp label={t.budget} value={form.budget} onChange={function(e){upd("budget",e.target.value);}}/>
     </div>
     <Inp label={t.project} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="اكتب اسم المشروع..."/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
@@ -750,17 +681,10 @@ var LeadsPage = function(p) {
     setPendingStatus({leadId:lid,newStatus:st}); setShowStatusComment(true);
   };
 
-  var confirmStatus = async function(comment, cbTime, extra) {
+  var confirmStatus = async function(comment) {
     if(!pendingStatus) return;
     try {
-      var updateData = { status: pendingStatus.newStatus };
-      if (cbTime) updateData.callbackTime = cbTime;
-      if (extra) {
-        if (extra.project) updateData.project = extra.project;
-        if (extra.notes) updateData.notes = extra.notes;
-        if (extra.budget) updateData.budget = extra.budget;
-      }
-      var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",updateData,p.token);
+      var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",{status:pendingStatus.newStatus},p.token);
       await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment},p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?updated:l;});});
       if(selected&&gid(selected)===pendingStatus.leadId) setSelected(updated);
@@ -1232,14 +1156,15 @@ var DealsPage = function(p) {
         {[t.name,t.phone,"رقم إضافي",t.project,t.budget,isAdmin&&t.agent,isAdmin&&t.source].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
-        {deals.length===0&&<tr><td colSpan={6} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
+        {deals.length===0&&<tr><td colSpan={7} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
         {deals.map(function(d){return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
           <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
           <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>
+          <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight }}>{d.phone2||"-"}</td>
           <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project}</td>
           <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>{d.budget}</td>
           {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>{getAg(d)}</td>}
-          <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.source}</td>
+          {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.source}</td>}
         </tr>;})}
       </tbody>
     </table></div></Card>
@@ -1302,17 +1227,17 @@ var TasksPage = function(p) {
     </div>
 
     <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
-      <StatCard icon={Phone} label={"مكالمات اليوم"} value={callbacksToday.length+""} c={C.info}/>
-      <StatCard icon={AlertCircle} label={"متأخرة"} value={(overdue.length+overdueTasks.length)+""} c={C.danger}/>
-      <StatCard icon={Activity} label={"بدون نشاط"} value={noActivity.length+""} c={C.warning}/>
-      <StatCard icon={CheckCircle} label={"مهام اليوم"} value={todayTasks.length+""} c={"#8B5CF6"}/>
+      <StatCard icon={Phone} label={"مكالمات اليوم"} value={callbacksToday.length+""} c={C.info} onClick={function(){var el=document.getElementById("sec-callbacks");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
+      <StatCard icon={AlertCircle} label={"متأخرة"} value={(overdue.length+overdueTasks.length)+""} c={C.danger} onClick={function(){var el=document.getElementById("sec-overdue");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
+      <StatCard icon={Activity} label={"بدون نشاط"} value={noActivity.length+""} c={C.warning} onClick={function(){var el=document.getElementById("sec-noactivity");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
+      <StatCard icon={CheckCircle} label={"مهام اليوم"} value={todayTasks.length+""} c={"#8B5CF6"} onClick={function(){var el=document.getElementById("sec-todaytasks");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
     </div>
 
-    {overdue.length>0&&<Sec icon="⚠️" title="مكالمات متأخرة" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
+    {overdue.length>0&&<div id="sec-overdue"><Sec icon="⚠️" title="مكالمات متأخرة" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {overdueTasks.length>0&&<Sec icon="🔴" title="مهام متأخرة" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
-    {callbacksToday.length>0&&<Sec icon="📞" title="مكالمات اليوم" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
-    {todayTasks.length>0&&<Sec icon="📋" title="مهام اليوم" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec>}
-    {noActivity.length>0&&<Sec icon="😴" title="بدون نشاط +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
+    {callbacksToday.length>0&&<div id="sec-callbacks"><Sec icon="📞" title="مكالمات اليوم" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
+    {todayTasks.length>0&&<div id="sec-todaytasks"><Sec icon="📋" title="مهام اليوم" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec></div>}
+    {noActivity.length>0&&<div id="sec-noactivity"><Sec icon="😴" title="بدون نشاط +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {upcoming.length>0&&<Sec icon="📅" title="مهام قادمة" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
 
     {callbacksToday.length===0&&overdue.length===0&&noActivity.length===0&&myTasks.length===0&&
@@ -1411,12 +1336,11 @@ var DailyRequestsPage = function(p) {
     if(st==="DoneDeal"&&!window.confirm("⚠️ هل أنت متأكد؟"))return;
     setPendingStatus({leadId:rid,newStatus:st});setShowStatusComment(true);
   };
-  var confirmStatus=async function(comment,cbTime,extra){
+  var confirmStatus=async function(comment,cbTime){
     if(!pendingStatus)return;
     try{
       var updateData={status:pendingStatus.newStatus};
       if(cbTime)updateData.callbackTime=cbTime;
-      if(extra){if(extra.project)updateData.project=extra.project;if(extra.notes)updateData.notes=extra.notes;if(extra.budget)updateData.budget=extra.budget;}
       var upd=await apiFetch("/api/daily-requests/"+pendingStatus.leadId,"PUT",updateData,p.token);
       setRequests(function(prev){return prev.map(function(r){return gid(r)===pendingStatus.leadId?upd:r;});});
       if(selected&&gid(selected)===pendingStatus.leadId)setSelected(upd);
@@ -1596,7 +1520,7 @@ var DailyRequestsPage = function(p) {
         <Inp label={"هاتف إضافي"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder="اختياري"/>
         <Inp label={"نوع العقار"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- اختر -"};})}/>
         <Inp label={"المنطقة"} value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder="مثال: التجمع الخامس"/>
-        <div style={{ gridColumn:"1/-1" }}><Inp label={"الميزانية"} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setForm(function(f){return Object.assign({},f,{budget:raw?Number(raw).toLocaleString():""});});}}/></div>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={"الميزانية"} value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:e.target.value});})}}/></div>
       </div>
       {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- اختر -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
       <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/> 
@@ -1619,7 +1543,7 @@ var UsersPage = function(p) {
   var add=async function(){if(!nU.name||!nU.username)return;setSaving(true);try{var user=await apiFetch("/api/users","POST",nU,p.token);p.setUsers(function(prev){return prev.concat([user]);});setShowAdd(false);setNU({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15});}catch(e){alert(e.message);}setSaving(false);};
   var toggleActive=async function(u){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid,"PUT",{active:!u.active},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?upd:x;});});}catch(e){}};
   var del=async function(uid){if(!window.confirm(t.deleteConfirm))return;try{await apiFetch("/api/users/"+uid,"DELETE",null,p.token);p.setUsers(function(prev){return prev.filter(function(x){return gid(x)!==uid;});});}catch(e){alert(e.message);}};
-  var updateTarget=async function(u,val){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid,"PUT",{monthlyTarget:Number(val)},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?Object.assign({},x,{monthlyTarget:Number(val)}):x;});});}catch(e){}};
+  var updateTarget=async function(u,val){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid+"/target","PUT",{monthlyTarget:Number(val)},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?upd:x;});});}catch(e){}};
 
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", marginBottom:18 }}>
@@ -1980,39 +1904,38 @@ export default function CRMApp() {
     setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok})); } catch(e){}
   };
-  // ===== AUTO REASSIGN: CallBack leads past callback time -> agents from settings =====
+  // ===== AUTO REASSIGN: CallBack leads past callback time -> specific agent from settings =====
   useEffect(function(){
     if (!token || !leads.length || !users.length) return;
 
     var check = async function() {
-      var savedAgents = [];
-      try { savedAgents = JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]'); } catch(e){}
-      if (!savedAgents.length) return; // no agents selected = no auto reassign
-
-      var salesAgents = users.filter(function(u){
-        return savedAgents.includes(gid(u)) && (u.role==="sales"||u.role==="manager") && u.active;
-      });
+      // Smart reassign - pick agent with least leads (most available)
+      var salesAgents = users.filter(function(u){ return (u.role==="sales"||u.role==="manager") && u.active; });
       if (!salesAgents.length) return;
 
       var now = new Date();
       var toReassign = leads.filter(function(l){
+        var currentAgentId = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
         return l.status === "CallBack" &&
                l.callbackTime &&
                new Date(l.callbackTime) < now &&
-               !l.archived;
+               !l.archived &&
+               currentAgentId !== targetAgentId; // don't reassign if already assigned to target
       });
 
       for (var i = 0; i < toReassign.length; i++) {
         var lead = toReassign[i];
         var currentAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
         var fromName = lead.agentId && lead.agentId.name ? lead.agentId.name : "موظف";
-        var agentLoads = salesAgents.map(function(u){
+        // Pick agent with least leads (excluding current agent)
+        var others = salesAgents.filter(function(u){ return gid(u) !== currentAgentId; });
+        if (!others.length) others = salesAgents;
+        var agentLoads = others.map(function(u){
           return { agent:u, cnt:leads.filter(function(l){ var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return a===gid(u)&&!l.archived; }).length };
         });
         agentLoads.sort(function(a,b){ return a.cnt-b.cnt; });
         var targetAgent = agentLoads[0].agent;
         var targetAgentId = gid(targetAgent);
-        if (targetAgentId === currentAgentId) continue;
         try {
           var updated = await apiFetch("/api/leads/" + gid(lead), "PUT", {
             agentId: targetAgentId,
