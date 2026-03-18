@@ -388,8 +388,10 @@ var Header = function(p) {
   var t = p.t;
   var upcoming = p.leads.filter(function(l){return l.callbackTime&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&!l.archived;});
   var notifRef = useRef(null);
+  var [badgeHidden, setBadgeHidden] = useState(false);
   useEffect(function(){
     if (!p.showNotif) return;
+    setBadgeHidden(true);
     var fn=function(e){if(notifRef.current&&!notifRef.current.contains(e.target))p.setShowNotif(false);};
     document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
   },[p.showNotif]);
@@ -407,7 +409,7 @@ var Header = function(p) {
       <div style={{ position:"relative" }} ref={notifRef}>
         <button onClick={function(){p.setShowNotif(!p.showNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <Bell size={16} color={C.textLight}/>
-          {upcoming.length>0&&!p.showNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.danger, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{upcoming.length}</span>}
+          {upcoming.length>0&&!badgeHidden&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.danger, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{upcoming.length}</span>}
         </button>
         {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:360, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -1134,7 +1136,8 @@ var DealsPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
   var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
-  var total=deals.reduce(function(s,d){return s+(parseFloat((d.budget||"0").replace(/,/g,""))||0);},0);
+  var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
+  var total=deals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var [showAdd,setShowAdd]=useState(false);
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -1151,18 +1154,18 @@ var DealsPage = function(p) {
         onClose={function(){setShowAdd(false);}}
         onSave={function(lead){p.setLeads(function(prev){return [lead].concat(prev);});setShowAdd(false);}}/>
     </Modal>
-    <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:480 }}>
+    <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:600 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,isAdmin&&t.agent,isAdmin&&t.source].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,isAdmin?t.agent:null,isAdmin?t.source:null].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {deals.length===0&&<tr><td colSpan={7} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
-        {deals.map(function(d){return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
+        {deals.map(function(d){var bv=parseBudget(d.budget);return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
           <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
           <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>
           <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight }}>{d.phone2||"-"}</td>
-          <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project}</td>
-          <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>{d.budget}</td>
+          <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
+          <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
           {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>{getAg(d)}</td>}
           {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.source}</td>}
         </tr>;})}
@@ -1227,17 +1230,17 @@ var TasksPage = function(p) {
     </div>
 
     <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
-      <StatCard icon={Phone} label={"مكالمات اليوم"} value={callbacksToday.length+""} c={C.info} onClick={function(){var el=document.getElementById("sec-callbacks");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
-      <StatCard icon={AlertCircle} label={"متأخرة"} value={(overdue.length+overdueTasks.length)+""} c={C.danger} onClick={function(){var el=document.getElementById("sec-overdue");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
-      <StatCard icon={Activity} label={"بدون نشاط"} value={noActivity.length+""} c={C.warning} onClick={function(){var el=document.getElementById("sec-noactivity");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
-      <StatCard icon={CheckCircle} label={"مهام اليوم"} value={todayTasks.length+""} c={"#8B5CF6"} onClick={function(){var el=document.getElementById("sec-todaytasks");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
+      <StatCard icon={Phone} label={"مكالمات اليوم"} value={callbacksToday.length+""} c={C.info}/>
+      <StatCard icon={AlertCircle} label={"متأخرة"} value={(overdue.length+overdueTasks.length)+""} c={C.danger}/>
+      <StatCard icon={Activity} label={"بدون نشاط"} value={noActivity.length+""} c={C.warning}/>
+      <StatCard icon={CheckCircle} label={"مهام اليوم"} value={todayTasks.length+""} c={"#8B5CF6"}/>
     </div>
 
-    {overdue.length>0&&<div id="sec-overdue"><Sec icon="⚠️" title="مكالمات متأخرة" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
+    {overdue.length>0&&<Sec icon="⚠️" title="مكالمات متأخرة" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
     {overdueTasks.length>0&&<Sec icon="🔴" title="مهام متأخرة" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
-    {callbacksToday.length>0&&<div id="sec-callbacks"><Sec icon="📞" title="مكالمات اليوم" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
-    {todayTasks.length>0&&<div id="sec-todaytasks"><Sec icon="📋" title="مهام اليوم" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec></div>}
-    {noActivity.length>0&&<div id="sec-noactivity"><Sec icon="😴" title="بدون نشاط +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
+    {callbacksToday.length>0&&<Sec icon="📞" title="مكالمات اليوم" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
+    {todayTasks.length>0&&<Sec icon="📋" title="مهام اليوم" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec>}
+    {noActivity.length>0&&<Sec icon="😴" title="بدون نشاط +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
     {upcoming.length>0&&<Sec icon="📅" title="مهام قادمة" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
 
     {callbacksToday.length===0&&overdue.length===0&&noActivity.length===0&&myTasks.length===0&&
@@ -1783,10 +1786,22 @@ var SettingsPage = function(p) {
   var [company,setCompany]=useState(function(){return getSaved('company','شركة ARO العقارية');});
   var [em,setEm]=useState(function(){return getSaved('email','admin@aro.com');});
   var [ph,setPh]=useState(function(){return getSaved('phone','01012345678');});
-  var [reassignAgent,setReassignAgent]=useState(function(){return getSaved('reassign_agent','');});
+  var [reassignAgents,setReassignAgents]=useState(function(){
+    try{return JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]');}catch(e){return[];}
+  });
   var [saved,setSaved]=useState(false);
+  var toggleAgent=function(uid){
+    setReassignAgents(function(prev){
+      return prev.includes(uid)?prev.filter(function(x){return x!==uid;}):[...prev,uid];
+    });
+  };
   var doSave=function(){
-    try{ localStorage.setItem('crm_set_company',company); localStorage.setItem('crm_set_email',em); localStorage.setItem('crm_set_phone',ph); localStorage.setItem('crm_set_reassign_agent',reassignAgent); }catch(e){}
+    try{
+      localStorage.setItem('crm_set_company',company);
+      localStorage.setItem('crm_set_email',em);
+      localStorage.setItem('crm_set_phone',ph);
+      localStorage.setItem('crm_set_reassign_agents',JSON.stringify(reassignAgents));
+    }catch(e){}
     setSaved(true); setTimeout(function(){setSaved(false);},2500);
   };
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -1796,12 +1811,23 @@ var SettingsPage = function(p) {
       <Inp label={t.email} value={em} onChange={function(e){setEm(e.target.value);}}/>
       <Inp label={t.phone} value={ph} onChange={function(e){setPh(e.target.value);}}/>
       <div style={{marginBottom:13}}>
-        <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>موظف الإعادة التلقائية (CallBack)</label>
-        <select value={reassignAgent} onChange={function(e){setReassignAgent(e.target.value);}} style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:14,background:"#fff",boxSizing:"border-box"}}>
-          <option value="">- اختر موظف -</option>
-          {salesAgentsForSetting.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name} — {u.title}</option>;})}
-        </select>
-        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>لما يفوت موعد CallBack هيتحول تلقائياً لهذا الموظف</div>
+        <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>موظفو الإعادة التلقائية (CallBack)</label>
+        <div style={{border:"1px solid #E2E8F0",borderRadius:10,padding:"8px 12px",background:"#fff",maxHeight:200,overflowY:"auto"}}>
+          {salesAgentsForSetting.length===0&&<div style={{fontSize:12,color:C.textLight,padding:"6px 0"}}>لا يوجد موظفين</div>}
+          {salesAgentsForSetting.map(function(u){
+            var uid=gid(u); var checked=reassignAgents.includes(uid);
+            return <div key={uid} onClick={function(){toggleAgent(uid);}} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 4px",cursor:"pointer",borderRadius:7,background:checked?C.accent+"10":"transparent",marginBottom:2}}>
+              <div style={{width:18,height:18,borderRadius:5,border:"2px solid",borderColor:checked?C.accent:"#CBD5E1",background:checked?C.accent:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s"}}>
+                {checked&&<span style={{color:"#fff",fontSize:11,fontWeight:700,lineHeight:1}}>✓</span>}
+              </div>
+              <div>
+                <div style={{fontSize:13,fontWeight:600}}>{u.name}</div>
+                <div style={{fontSize:11,color:C.textLight}}>{u.title}</div>
+              </div>
+            </div>;
+          })}
+        </div>
+        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>لما يفوت موعد CallBack هيتوزع على الموظفين المحددين ({reassignAgents.length} محدد)</div>
       </div>
       <Inp label={t.language} type="select" value={p.lang} onChange={function(e){p.setLang(e.target.value);}} options={[{value:"ar",label:"عربي"},{value:"en",label:"English"}]}/>
       {saved&&<div style={{marginBottom:12,padding:"10px 14px",background:"#DCFCE7",borderRadius:10,color:"#15803D",fontSize:13,fontWeight:600}}>✅ تم الحفظ بنجاح</div>}
