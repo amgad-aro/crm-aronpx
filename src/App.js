@@ -409,7 +409,7 @@ var Header = function(p) {
           <Bell size={16} color={C.textLight}/>
           {upcoming.length>0&&!p.showNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.danger, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{upcoming.length}</span>}
         </button>
-        {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:360, overflowY:"auto" }}>
+        {p.showNotif&&<div style={{ position:"absolute", top:44, ...(p.t.dir==="rtl"?{left:0}:{right:0}), width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:360, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder} ({upcoming.length})</span>
             <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
@@ -454,7 +454,7 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId ? (form.status||"Potential") : "NewLead", phone2: form.phone2||"" });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(p.cu.role==="sales"||p.cu.role==="manager"?p.cu.id:""), status: p.editId ? (form.status||"Potential") : (form.status||"NewLead"), phone2: form.phone2||"" });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
@@ -1134,9 +1134,21 @@ var DealsPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
   var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
-  var total=deals.reduce(function(s,d){return s+(parseFloat((d.budget||"0").replace(/,/g,""))||0);},0);
+  var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
+  var total=deals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var [showAdd,setShowAdd]=useState(false);
+
+  // Per-agent stats
+  var agentStats=salesUsers.map(function(u){
+    var uid=gid(u);
+    var agentDeals=deals.filter(function(d){var a=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return a===uid;});
+    var agentTotal=agentDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+    var targetM=(u.monthlyTarget||1)*1000000; // target in EGP (monthlyTarget * 1M)
+    var prog=targetM>0?Math.min(100,Math.round((agentTotal/targetM)*100)):0;
+    return{user:u,cnt:agentDeals.length,total:agentTotal,targetM:targetM,prog:prog};
+  }).filter(function(a){return a.cnt>0;}).sort(function(a,b){return b.total-a.total;});
+
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
@@ -1151,19 +1163,46 @@ var DealsPage = function(p) {
         onClose={function(){setShowAdd(false);}}
         onSave={function(lead){p.setLeads(function(prev){return [lead].concat(prev);});setShowAdd(false);}}/>
     </Modal>
-    <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:480 }}>
+
+    {/* Per-agent stats */}
+    {isAdmin&&agentStats.length>0&&<Card style={{ marginBottom:18 }}>
+      <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 أداء المبيعات</h3>
+      <div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse" }}>
+        <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+          {["الموظف","عدد الصفقات","الإجمالي (EGP)","التارجت (EGP)","نسبة الإنجاز"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
+        </tr></thead>
+        <tbody>{agentStats.map(function(a,i){return <tr key={gid(a.user)} style={{ borderBottom:"1px solid #F1F5F9", background:i===0?"#FFFBEB":"transparent" }}>
+          <td style={{ padding:"12px", fontWeight:700 }}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":""} {a.user.name}</td>
+          <td style={{ padding:"12px", color:C.info, fontWeight:700, textAlign:"center" }}>{a.cnt}</td>
+          <td style={{ padding:"12px", color:C.success, fontWeight:700 }}>{a.total.toLocaleString()}</td>
+          <td style={{ padding:"12px", color:C.textLight }}>{a.targetM.toLocaleString()}</td>
+          <td style={{ padding:"12px", minWidth:140 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <div style={{ flex:1, height:8, background:"#F1F5F9", borderRadius:4 }}>
+                <div style={{ height:"100%", width:a.prog+"%", borderRadius:4, background:a.prog>=100?C.success:a.prog>=50?C.accent:C.warning, transition:"width 0.6s" }}/>
+              </div>
+              <span style={{ fontSize:12, fontWeight:700, minWidth:36, color:a.prog>=100?C.success:C.text }}>{a.prog}%</span>
+            </div>
+          </td>
+        </tr>;})}
+        </tbody>
+      </table></div>
+    </Card>}
+
+    <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:600 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,t.phone,"رقم إضافي",t.project,t.budget,isAdmin&&t.agent,isAdmin&&t.source].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
-        {deals.length===0&&<tr><td colSpan={6} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
+        {deals.length===0&&<tr><td colSpan={7} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
         {deals.map(function(d){return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
           <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
           <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>
+          <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, direction:"ltr" }}>{d.phone2||"-"}</td>
           <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project}</td>
-          <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>{d.budget}</td>
+          <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>{parseBudget(d.budget)>0?parseBudget(d.budget).toLocaleString():d.budget}</td>
           {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>{getAg(d)}</td>}
-          <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.source}</td>
+          {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.source}</td>}
         </tr>;})}
       </tbody>
     </table></div></Card>
@@ -1216,6 +1255,10 @@ var TasksPage = function(p) {
     <button onClick={function(){doneTask(tk._id);}} style={{ padding:"4px 12px", borderRadius:7, border:"none", background:C.success, color:"#fff", fontSize:11, fontWeight:600, cursor:"pointer" }}>✓ تم</button>
   </div>;};
 
+  var [activeSection,setActiveSection]=useState(null);
+
+  var scrollTo=function(id){setActiveSection(id);setTimeout(function(){var el=document.getElementById(id);if(el)el.scrollIntoView({behavior:"smooth",block:"start"});},100);};
+
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div>
@@ -1226,17 +1269,17 @@ var TasksPage = function(p) {
     </div>
 
     <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
-      <StatCard icon={Phone} label={"مكالمات اليوم"} value={callbacksToday.length+""} c={C.info}/>
-      <StatCard icon={AlertCircle} label={"متأخرة"} value={(overdue.length+overdueTasks.length)+""} c={C.danger}/>
-      <StatCard icon={Activity} label={"بدون نشاط"} value={noActivity.length+""} c={C.warning}/>
-      <StatCard icon={CheckCircle} label={"مهام اليوم"} value={todayTasks.length+""} c={"#8B5CF6"}/>
+      <StatCard icon={Phone} label={"مكالمات اليوم"} value={callbacksToday.length+""} c={C.info} onClick={function(){scrollTo("sec-callbacks");}}/>
+      <StatCard icon={AlertCircle} label={"متأخرة"} value={(overdue.length+overdueTasks.length)+""} c={C.danger} onClick={function(){scrollTo("sec-overdue");}}/>
+      <StatCard icon={Activity} label={"بدون نشاط"} value={noActivity.length+""} c={C.warning} onClick={function(){scrollTo("sec-noactivity");}}/>
+      <StatCard icon={CheckCircle} label={"مهام اليوم"} value={todayTasks.length+""} c={"#8B5CF6"} onClick={function(){scrollTo("sec-todaytasks");}}/>
     </div>
 
-    {overdue.length>0&&<Sec icon="⚠️" title="مكالمات متأخرة" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
+    {overdue.length>0&&<div id="sec-overdue"><Sec icon="⚠️" title="مكالمات متأخرة" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {overdueTasks.length>0&&<Sec icon="🔴" title="مهام متأخرة" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
-    {callbacksToday.length>0&&<Sec icon="📞" title="مكالمات اليوم" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
-    {todayTasks.length>0&&<Sec icon="📋" title="مهام اليوم" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec>}
-    {noActivity.length>0&&<Sec icon="😴" title="بدون نشاط +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
+    {callbacksToday.length>0&&<div id="sec-callbacks"><Sec icon="📞" title="مكالمات اليوم" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
+    {todayTasks.length>0&&<div id="sec-todaytasks"><Sec icon="📋" title="مهام اليوم" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec></div>}
+    {noActivity.length>0&&<div id="sec-noactivity"><Sec icon="😴" title="بدون نشاط +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {upcoming.length>0&&<Sec icon="📅" title="مهام قادمة" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
 
     {callbacksToday.length===0&&overdue.length===0&&noActivity.length===0&&myTasks.length===0&&
@@ -1259,19 +1302,11 @@ var TasksPage = function(p) {
 
 var ArchivePage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
-  var [archivedLeads, setArchivedLeads] = useState([]);
-  var [archLoading, setArchLoading] = useState(true);
-  useEffect(function(){
-    apiFetch("/api/leads/archived", "GET", null, p.token)
-      .then(function(data){ setArchivedLeads(Array.isArray(data)?data:[]); setArchLoading(false); })
-      .catch(function(){ setArchivedLeads([]); setArchLoading(false); });
-  },[]);
-  var archived = archivedLeads;
+  var archived = p.leads.filter(function(l){ return l.archived; });
   var restore=async function(lid){
     try{
       var upd=await apiFetch("/api/leads/"+lid,"PUT",{archived:false},p.token);
-      setArchivedLeads(function(prev){return prev.filter(function(l){return gid(l)!==lid;});});
-      p.setLeads(function(prev){return [upd].concat(prev);});
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:false}):l;});});
     }catch(e){alert(e.message);}
   };
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -1373,7 +1408,7 @@ var DailyRequestsPage = function(p) {
         callbackTime:form.callbackTime||"",
         agentId:drAgentId,
         source:"Daily Request",
-        status:"Potential"
+        status:"NewLead"
       };
       var r=await apiFetch("/api/daily-requests","POST",submitData,p.token);
       setRequests(function(prev){return [r].concat(prev);});
@@ -1782,10 +1817,24 @@ var SettingsPage = function(p) {
   var [company,setCompany]=useState(function(){return getSaved('company','شركة ARO العقارية');});
   var [em,setEm]=useState(function(){return getSaved('email','admin@aro.com');});
   var [ph,setPh]=useState(function(){return getSaved('phone','01012345678');});
-  var [reassignAgent,setReassignAgent]=useState(function(){return getSaved('reassign_agent','');});
+  var [reassignAgents,setReassignAgents]=useState(function(){
+    try{return JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]');}catch(e){return[];}
+  });
   var [saved,setSaved]=useState(false);
+
+  var toggleAgent=function(uid){
+    setReassignAgents(function(prev){
+      return prev.includes(uid)?prev.filter(function(x){return x!==uid;}):[...prev,uid];
+    });
+  };
+
   var doSave=function(){
-    try{ localStorage.setItem('crm_set_company',company); localStorage.setItem('crm_set_email',em); localStorage.setItem('crm_set_phone',ph); localStorage.setItem('crm_set_reassign_agent',reassignAgent); }catch(e){}
+    try{
+      localStorage.setItem('crm_set_company',company);
+      localStorage.setItem('crm_set_email',em);
+      localStorage.setItem('crm_set_phone',ph);
+      localStorage.setItem('crm_set_reassign_agents',JSON.stringify(reassignAgents));
+    }catch(e){}
     setSaved(true); setTimeout(function(){setSaved(false);},2500);
   };
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -1795,12 +1844,20 @@ var SettingsPage = function(p) {
       <Inp label={t.email} value={em} onChange={function(e){setEm(e.target.value);}}/>
       <Inp label={t.phone} value={ph} onChange={function(e){setPh(e.target.value);}}/>
       <div style={{marginBottom:13}}>
-        <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>موظف الإعادة التلقائية (CallBack)</label>
-        <select value={reassignAgent} onChange={function(e){setReassignAgent(e.target.value);}} style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:14,background:"#fff",boxSizing:"border-box"}}>
-          <option value="">- اختر موظف -</option>
-          {salesAgentsForSetting.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name} — {u.title}</option>;})}
-        </select>
-        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>لما يفوت موعد CallBack هيتحول تلقائياً لهذا الموظف</div>
+        <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>موظفو الإعادة التلقائية (CallBack)</label>
+        <div style={{border:"1px solid #E2E8F0",borderRadius:10,padding:"8px 12px",background:"#fff"}}>
+          {salesAgentsForSetting.length===0&&<div style={{fontSize:12,color:C.textLight}}>لا يوجد موظفين</div>}
+          {salesAgentsForSetting.map(function(u){var uid=gid(u);var checked=reassignAgents.includes(uid);return <div key={uid} onClick={function(){toggleAgent(uid);}} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 4px",cursor:"pointer",borderRadius:7,background:checked?C.accent+"10":"transparent"}}>
+            <div style={{width:18,height:18,borderRadius:5,border:"2px solid",borderColor:checked?C.accent:"#CBD5E1",background:checked?C.accent:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+              {checked&&<span style={{color:"#fff",fontSize:11,fontWeight:700}}>✓</span>}
+            </div>
+            <div>
+              <div style={{fontSize:13,fontWeight:600}}>{u.name}</div>
+              <div style={{fontSize:11,color:C.textLight}}>{u.title}</div>
+            </div>
+          </div>;})}
+        </div>
+        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>لما يفوت موعد CallBack هيتوزع تلقائياً على الموظفين المحددين</div>
       </div>
       <Inp label={t.language} type="select" value={p.lang} onChange={function(e){p.setLang(e.target.value);}} options={[{value:"ar",label:"عربي"},{value:"en",label:"English"}]}/>
       {saved&&<div style={{marginBottom:12,padding:"10px 14px",background:"#DCFCE7",borderRadius:10,color:"#15803D",fontSize:13,fontWeight:600}}>✅ تم الحفظ بنجاح</div>}
@@ -1813,7 +1870,9 @@ var SettingsPage = function(p) {
 export default function CRMApp() {
   var [lang,setLang]=useState("ar");
   var [currentUser,setCurrentUser]=useState(null); var [token,setToken]=useState(null);
-  var [page,setPage]=useState(null); // will be set after login
+  var [page,setPage]=useState(function(){
+    try{return sessionStorage.getItem('crm_page')||null;}catch(e){return null;}
+  });
   var [leads,setLeads]=useState([]); var [users,setUsers]=useState([]);
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
@@ -1958,7 +2017,12 @@ export default function CRMApp() {
   }, [token, leads.length, users.length]);
 
   var handleLogout=function(){setCurrentUser(null);setToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
-  var nav=function(pg){setPage(pg||"dashboard");setInitSelected(null);};
+  var nav=function(pg){
+    var p2=pg||"dashboard";
+    setPage(p2);
+    setInitSelected(null);
+    try{sessionStorage.setItem('crm_page',p2);}catch(e){}
+  };
 
   if(!currentUser) return <LoginPage t={t} onLogin={handleLogin}/>;
   if(loading) return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"#F0F2F5", fontFamily:"Cairo,sans-serif" }}><div style={{ textAlign:"center" }}><div style={{ width:40, height:40, borderRadius:"50%", border:"3px solid #E8ECF1", borderTopColor:C.accent, animation:"spin 0.8s linear infinite", margin:"0 auto 16px" }}/><div style={{ color:C.textLight, fontSize:14 }}>{t.loading}</div></div></div>;
@@ -1995,7 +2059,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ أنت غير متصل بالإنترنت — البيانات لن تُحفظ حتى يعود الاتصال
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);nav("leads");}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setPage("leads");setInitSelected(l);try{sessionStorage.setItem('crm_page',"leads");}catch(e){}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
