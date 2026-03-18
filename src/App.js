@@ -483,7 +483,7 @@ var LeadForm = function(p) {
       <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder="01xxxxxxxxx"/>
       <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder="اختياري"/>
       <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
-      <Inp label={t.budget} value={form.budget} onChange={function(e){upd("budget",e.target.value);}}/>
+      <Inp label={t.budget} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
     </div>
     <Inp label={t.project} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="اكتب اسم المشروع..."/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
@@ -1523,7 +1523,7 @@ var DailyRequestsPage = function(p) {
         <Inp label={"هاتف إضافي"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder="اختياري"/>
         <Inp label={"نوع العقار"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- اختر -"};})}/>
         <Inp label={"المنطقة"} value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder="مثال: التجمع الخامس"/>
-        <div style={{ gridColumn:"1/-1" }}><Inp label={"الميزانية"} value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:e.target.value});})}}/></div>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={"الميزانية"} value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>
       </div>
       {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- اختر -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
       <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/> 
