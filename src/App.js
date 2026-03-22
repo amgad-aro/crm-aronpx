@@ -177,6 +177,7 @@ var STATUSES = function(t) { return [
   { value: "HotCase", label: t.hotCase, bg: "#FEE2E2", color: "#DC2626" },
   { value: "CallBack", label: t.callBack, bg: "#FEF3C7", color: "#B45309" },
   { value: "MeetingDone", label: t.meetingDone, bg: "#F3E8FF", color: "#7C3AED" },
+  { value: "EOI", label: "EOI", bg: "#FFF7ED", color: "#EA580C" },
   { value: "NotInterested", label: t.notInterested, bg: "#F1F5F9", color: "#64748B" },
   { value: "NoAnswer", label: t.noAnswer, bg: "#E0E7FF", color: "#4338CA" },
   { value: "DoneDeal", label: t.doneDeal, bg: "#DCFCE7", color: "#15803D" },
@@ -276,6 +277,7 @@ var StatusModal = function(p) {
   var st = p.newStatus;
   var isNewLead    = st==="NewLead";
   var isDoneDeal   = st==="DoneDeal";
+  var isEOI        = st==="EOI";
   var isReject     = st==="NotInterested";
   var needsComment = st==="Potential"||st==="HotCase"||st==="MeetingDone";
   var needsCb      = st==="CallBack"||st==="NoAnswer";
@@ -288,9 +290,9 @@ var StatusModal = function(p) {
     if (needsComment && !comment.trim()) { setErr("لازم تكتب ملاحظة"); return; }
     if (needsCb && !cbTime)              { setErr("لازم تختار موعد"); return; }
     if (isReject && !comment.trim())     { setErr("لازم تختار سبب الرفض"); return; }
-    if (isDoneDeal && !dealBudget.trim()){ setErr("لازم تكتب المبلغ"); return; }
+    if ((isDoneDeal||isEOI) && !dealBudget.trim()){ setErr("لازم تكتب المبلغ"); return; }
     setSaving(true);
-    var extra = isDoneDeal ? { project: dealProject, notes: dealUnitType, budget: dealBudget } : {};
+    var extra = (isDoneDeal||isEOI) ? { project: dealProject, notes: dealUnitType, budget: dealBudget } : {};
     await p.onConfirm(comment.trim(), cbTime, extra);
     setSaving(false);
   };
@@ -334,8 +336,8 @@ var StatusModal = function(p) {
       </div>
     </div>}
 
-    {/* DoneDeal: project + unit type + budget */}
-    {isDoneDeal&&<div>
+    {/* DoneDeal / EOI: project + unit type + budget */}
+    {(isDoneDeal||isEOI)&&<div>
       <div style={{ marginBottom:11 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏠 المشروع</label>
         <input type="text" placeholder="اسم المشروع" value={dealProject} onChange={function(e){setDealProject(e.target.value);}}
@@ -1209,6 +1211,16 @@ var DealsPage = function(p) {
   var total=deals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var [showAdd,setShowAdd]=useState(false);
+  var [editDeal,setEditDeal]=useState(null);
+
+  var archiveDeal=async function(lid){
+    if(!window.confirm("أرشفة هذه الصفقة؟"))return;
+    try{
+      await apiFetch("/api/leads/"+lid+"/archive","PUT",null,p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:true}):l;});});
+    }catch(e){alert(e.message);}
+  };
+
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
@@ -1223,12 +1235,18 @@ var DealsPage = function(p) {
         onClose={function(){setShowAdd(false);}}
         onSave={function(lead){p.setLeads(function(prev){return [lead].concat(prev);});setShowAdd(false);}}/>
     </Modal>
-    <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:600 }}>
+    {editDeal&&<Modal show={true} onClose={function(){setEditDeal(null);}} title={t.edit}>
+      <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
+        editId={gid(editDeal)} initial={editDeal}
+        onClose={function(){setEditDeal(null);}}
+        onSave={function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(updated)?updated:l;});});setEditDeal(null);}}/>
+    </Modal>}
+    <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:650 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,isAdmin?t.agent:null,isAdmin?t.source:null].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,isAdmin?t.agent:null,isAdmin?t.source:null,isAdmin?"":""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
-        {deals.length===0&&<tr><td colSpan={7} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
+        {deals.length===0&&<tr><td colSpan={8} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
         {deals.map(function(d){var bv=parseBudget(d.budget);return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
           <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
           <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>
@@ -1237,6 +1255,18 @@ var DealsPage = function(p) {
           <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
           {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>{getAg(d)}</td>}
           {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.source}</td>}
+          <td style={{ padding:"8px 12px" }}>
+            <div style={{ display:"flex", gap:5 }}>
+              <button onClick={function(){setEditDeal(d);}} title={t.edit}
+                style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <Edit size={13} color={C.info}/>
+              </button>
+              {isAdmin&&<button onClick={function(){archiveDeal(gid(d));}} title={t.archive}
+                style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <Archive size={13} color={C.warning}/>
+              </button>}
+            </div>
+          </td>
         </tr>;})}
       </tbody>
     </table></div></Card>
@@ -1624,7 +1654,11 @@ var UsersPage = function(p) {
         <td style={{ padding:"11px 12px", fontSize:12 }}>{u.title}</td>
         <td style={{ padding:"11px 12px" }}><Badge bg={(rc[u.role]||"#94A3B8")+"15"} color={rc[u.role]||"#94A3B8"}>{rl[u.role]||u.role}</Badge></td>
         <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{u.phone}</td>
-        <td style={{ padding:"11px 12px" }}><input type="number" value={u.monthlyTarget||15} onChange={function(e){updateTarget(u,e.target.value);}} style={{ width:60, padding:"4px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:12 }}/></td>
+        <td style={{ padding:"11px 12px" }}>
+          {(p.cu.role==="admin")?
+            <input type="number" value={u.monthlyTarget||15} onChange={function(e){updateTarget(u,e.target.value);}} style={{ width:70, padding:"4px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:12 }}/>
+            :<span style={{ fontSize:12, fontWeight:600, color:C.text }}>{(u.monthlyTarget||0).toLocaleString()}</span>}
+        </td>
         <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(u.role!=="admin")toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
         <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:u.name});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button><button onClick={function(){if(u.role!=="admin")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.role!=="admin"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.role==="admin"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
       </tr>;})}
