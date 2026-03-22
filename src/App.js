@@ -266,39 +266,101 @@ var Loader = function() { return <div style={{ display:"flex", alignItems:"cente
 var StatusModal = function(p) {
   var [comment, setComment] = useState("");
   var [cbTime, setCbTime] = useState("");
-  var [err, setErr] = useState(false);
+  var [dealProject, setDealProject] = useState("");
+  var [dealUnitType, setDealUnitType] = useState("");
+  var [dealBudget, setDealBudget] = useState("");
+  var [err, setErr] = useState("");
   var [saving, setSaving] = useState(false);
-  var sc = STATUSES(p.t); var ns = sc.find(function(s){return s.value===p.newStatus;});
-  var needsCb = p.newStatus==="CallBack" || p.newStatus==="NoAnswer" || p.newStatus==="Potential" || p.newStatus==="HotCase" || p.newStatus==="MeetingDone";
-  var isReject = p.newStatus==="NotInterested";
-  var isNewLead = p.newStatus==="NewLead";
-  var isPotential = p.newStatus==="Potential";
-  useEffect(function(){setComment("");setCbTime("");setErr(false);},[p.show]);
+  var sc = STATUSES(p.t);
+  var ns = sc.find(function(s){return s.value===p.newStatus;});
+  var st = p.newStatus;
+  var isNewLead    = st==="NewLead";
+  var isDoneDeal   = st==="DoneDeal";
+  var isReject     = st==="NotInterested";
+  var needsComment = st==="Potential"||st==="HotCase"||st==="MeetingDone";
+  var needsCb      = st==="CallBack"||st==="NoAnswer";
+
+  useEffect(function(){
+    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setErr("");
+  },[p.show]);
 
   var submit = async function() {
-    
-    if (needsCb && !cbTime) { alert("اختار موعد المكالمة"); return; }
-    if (!needsCb && !isReject && !isNewLead && !comment.trim()) { setErr(true); return; }
-    setSaving(true); await p.onConfirm(comment.trim(), cbTime); setSaving(false); setComment(""); setCbTime(""); setErr(false);
+    if (needsComment && !comment.trim()) { setErr("لازم تكتب ملاحظة"); return; }
+    if (needsCb && !cbTime)              { setErr("لازم تختار موعد"); return; }
+    if (isReject && !comment.trim())     { setErr("لازم تختار سبب الرفض"); return; }
+    if (isDoneDeal && !dealBudget.trim()){ setErr("لازم تكتب المبلغ"); return; }
+    setSaving(true);
+    var extra = isDoneDeal ? { project: dealProject, notes: dealUnitType, budget: dealBudget } : {};
+    await p.onConfirm(comment.trim(), cbTime, extra);
+    setSaving(false);
   };
+
   return <Modal show={p.show} onClose={p.onClose} title={p.t.changeStatus}>
-    {ns && <div style={{ marginBottom:14, padding:"10px 14px", background:ns.bg, borderRadius:10, display:"flex", alignItems:"center", gap:8 }}><span style={{ width:10, height:10, borderRadius:"50%", background:ns.color }}/><span style={{ fontSize:14, fontWeight:600, color:ns.color }}>{ns.label}</span></div>}
-    {!isNewLead && <div style={{ marginBottom:12 }}>
-      <Inp label={"📅 موعد المكالمة القادمة "+(needsCb?"(مطلوب)":"(اختياري)")} type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);}} req={needsCb}/>
-      {cbTime&&<div style={{ fontSize:11, color:"#6366F1", marginTop:-8, marginBottom:10 }}>🔔 سيتم تذكيرك قبل الموعد بـ 15 دقيقة</div>}
+    {ns&&<div style={{ marginBottom:14, padding:"10px 14px", background:ns.bg, borderRadius:10, display:"flex", alignItems:"center", gap:8 }}>
+      <span style={{ width:10, height:10, borderRadius:"50%", background:ns.color }}/>
+      <span style={{ fontSize:14, fontWeight:600, color:ns.color }}>{ns.label}</span>
     </div>}
-    {isReject && <div style={{ marginBottom:12 }}>
-      <div style={{ fontSize:12, fontWeight:600, marginBottom:8, color:"#EF4444" }}>سبب الرفض:</div>
-      <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:10 }}>
-        {["السعر مرتفع","المنطقة مش مناسبة","اشترى من مكان تاني","مش جاهز دلوقتي","مش مهتم خالص","سبب تاني"].map(function(reason){
-          return <button key={reason} onClick={function(){setComment(reason);}} style={{ padding:"8px 12px", borderRadius:8, border:"1px solid", borderColor:comment===reason?"#EF4444":"#E2E8F0", background:comment===reason?"#FEF2F2":"#fff", color:comment===reason?"#EF4444":"#64748B", fontSize:12, cursor:"pointer", textAlign:"right" }}>{reason}</button>;
+
+    {/* CallBack / NoAnswer: date required */}
+    {needsCb&&<div style={{ marginBottom:12 }}>
+      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 موعد المكالمة <span style={{color:C.danger}}>*</span></label>
+      <input type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);setErr("");}}
+        style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
+    </div>}
+
+    {/* Potential / HotCase / MeetingDone: comment required */}
+    {needsComment&&<div style={{ marginBottom:12 }}>
+      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 ملاحظة <span style={{color:C.danger}}>*</span></label>
+      <textarea rows={3} placeholder="اكتب ملاحظة..." value={comment} onChange={function(e){setComment(e.target.value);setErr("");}}
+        style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
+    </div>}
+
+    {/* CallBack / NoAnswer: optional comment */}
+    {needsCb&&<div style={{ marginBottom:12 }}>
+      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 ملاحظة (اختياري)</label>
+      <textarea rows={2} placeholder="اختياري..." value={comment} onChange={function(e){setComment(e.target.value);}}
+        style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
+    </div>}
+
+    {/* NotInterested: reason required */}
+    {isReject&&<div style={{ marginBottom:12 }}>
+      <div style={{ fontSize:13, fontWeight:600, marginBottom:8, color:"#EF4444" }}>سبب الرفض <span style={{color:C.danger}}>*</span></div>
+      <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+        {["السعر مرتفع","المنطقة مش مناسبة","اشترى من مكان تاني","مش جاهز دلوقتي","مش مهتم خالص","سبب تاني"].map(function(r){
+          return <button key={r} onClick={function(){setComment(r);setErr("");}}
+            style={{ padding:"8px 12px", borderRadius:8, border:"1px solid", borderColor:comment===r?"#EF4444":"#E2E8F0",
+              background:comment===r?"#FEF2F2":"#fff", color:comment===r?"#EF4444":"#64748B", fontSize:12, cursor:"pointer", textAlign:"right" }}>{r}</button>;
         })}
       </div>
     </div>}
-    {(isPotential || (!needsCb && !isNewLead && !isReject)) && <Inp label={isPotential?"سبب التحويل لـ Potential (مطلوب)":p.t.statusComment} type="textarea" placeholder={p.t.statusCommentPH} value={comment} onChange={function(e){setComment(e.target.value);setErr(false);}} req={true}/>}
-    {needsCb && !isPotential && <Inp label={"ملاحظة (اختياري)"} type="textarea" value={comment} onChange={function(e){setComment(e.target.value);}}/>}
-    {err && <div style={{ color:C.danger, fontSize:12, marginBottom:12, padding:"8px 12px", background:"#FEF2F2", borderRadius:8 }}>{p.t.commentRequired}</div>}
-    <div style={{ display:"flex", gap:10 }}><Btn outline onClick={p.onClose} style={{ flex:1 }}>{p.t.cancel}</Btn><Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.t.save}</Btn></div>
+
+    {/* DoneDeal: project + unit type + budget */}
+    {isDoneDeal&&<div>
+      <div style={{ marginBottom:11 }}>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏠 المشروع</label>
+        <input type="text" placeholder="اسم المشروع" value={dealProject} onChange={function(e){setDealProject(e.target.value);}}
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
+      </div>
+      <div style={{ marginBottom:11 }}>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏷️ نوع الوحدة</label>
+        <select value={dealUnitType} onChange={function(e){setDealUnitType(e.target.value);}}
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", boxSizing:"border-box" }}>
+          {["- اختر -","شقة","دوبلكس","تاون هاوس","فيلا","محل تجاري","مكتب"].map(function(x){return <option key={x} value={x}>{x}</option>;})}
+        </select>
+      </div>
+      <div style={{ marginBottom:11 }}>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💰 المبلغ (EGP) <span style={{color:C.danger}}>*</span></label>
+        <input type="text" placeholder="مثال: 1,500,000" value={dealBudget}
+          onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setDealBudget(r?Number(r).toLocaleString():"");setErr("");}}
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
+      </div>
+    </div>}
+
+    {err&&<div style={{ color:C.danger, fontSize:12, marginBottom:12, padding:"8px 12px", background:"#FEF2F2", borderRadius:8 }}>⚠️ {err}</div>}
+    <div style={{ display:"flex", gap:10 }}>
+      <Btn outline onClick={p.onClose} style={{ flex:1 }}>{p.t.cancel}</Btn>
+      <Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.t.save}</Btn>
+    </div>
   </Modal>;
 };
 
@@ -411,7 +473,7 @@ var Header = function(p) {
           <Bell size={16} color={C.textLight}/>
           {upcoming.length>0&&!badgeHidden&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.danger, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{upcoming.length}</span>}
         </button>
-        {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:360, overflowY:"auto" }}>
+        {p.showNotif&&<div style={{ position:"absolute", top:44, left:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:360, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder} ({upcoming.length})</span>
             <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
@@ -456,7 +518,7 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||(salesUsers[0]?gid(salesUsers[0]):p.cu.id), status: p.editId ? (form.status||"Potential") : "NewLead", phone2: form.phone2||"" });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : "NewLead", phone2: form.phone2||"" });
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
@@ -683,10 +745,17 @@ var LeadsPage = function(p) {
     setPendingStatus({leadId:lid,newStatus:st}); setShowStatusComment(true);
   };
 
-  var confirmStatus = async function(comment) {
+  var confirmStatus = async function(comment, cbTime, extra) {
     if(!pendingStatus) return;
     try {
-      var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",{status:pendingStatus.newStatus},p.token);
+      var upData = { status: pendingStatus.newStatus };
+      if(cbTime) upData.callbackTime = cbTime;
+      if(extra) {
+        if(extra.budget)  upData.budget  = extra.budget;
+        if(extra.project) upData.project = extra.project;
+        if(extra.notes)   upData.notes   = extra.notes;
+      }
+      var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
       await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment},p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?updated:l;});});
       if(selected&&gid(selected)===pendingStatus.leadId) setSelected(updated);
@@ -1230,17 +1299,17 @@ var TasksPage = function(p) {
     </div>
 
     <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
-      <StatCard icon={Phone} label={"مكالمات اليوم"} value={callbacksToday.length+""} c={C.info}/>
-      <StatCard icon={AlertCircle} label={"متأخرة"} value={(overdue.length+overdueTasks.length)+""} c={C.danger}/>
-      <StatCard icon={Activity} label={"بدون نشاط"} value={noActivity.length+""} c={C.warning}/>
-      <StatCard icon={CheckCircle} label={"مهام اليوم"} value={todayTasks.length+""} c={"#8B5CF6"}/>
+      <StatCard icon={Phone} label={"مكالمات اليوم"} value={callbacksToday.length+""} c={C.info} onClick={function(){var el=document.getElementById("t-callbacks");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
+      <StatCard icon={AlertCircle} label={"متأخرة"} value={(overdue.length+overdueTasks.length)+""} c={C.danger} onClick={function(){var el=document.getElementById("t-overdue");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
+      <StatCard icon={Activity} label={"بدون نشاط"} value={noActivity.length+""} c={C.warning} onClick={function(){var el=document.getElementById("t-noact");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
+      <StatCard icon={CheckCircle} label={"مهام اليوم"} value={todayTasks.length+""} c={"#8B5CF6"} onClick={function(){var el=document.getElementById("t-today");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
     </div>
 
-    {overdue.length>0&&<Sec icon="⚠️" title="مكالمات متأخرة" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
+    {overdue.length>0&&<div id="t-overdue"><Sec icon="⚠️" title="مكالمات متأخرة" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {overdueTasks.length>0&&<Sec icon="🔴" title="مهام متأخرة" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
-    {callbacksToday.length>0&&<Sec icon="📞" title="مكالمات اليوم" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
-    {todayTasks.length>0&&<Sec icon="📋" title="مهام اليوم" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec>}
-    {noActivity.length>0&&<Sec icon="😴" title="بدون نشاط +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec>}
+    {callbacksToday.length>0&&<div id="t-callbacks"><Sec icon="📞" title="مكالمات اليوم" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
+    {todayTasks.length>0&&<div id="t-today"><Sec icon="📋" title="مهام اليوم" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec></div>}
+    {noActivity.length>0&&<div id="t-noact"><Sec icon="😴" title="بدون نشاط +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {upcoming.length>0&&<Sec icon="📅" title="مهام قادمة" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
 
     {callbacksToday.length===0&&overdue.length===0&&noActivity.length===0&&myTasks.length===0&&
@@ -1263,19 +1332,11 @@ var TasksPage = function(p) {
 
 var ArchivePage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
-  var [archivedLeads, setArchivedLeads] = useState([]);
-  var [archLoading, setArchLoading] = useState(true);
-  useEffect(function(){
-    apiFetch("/api/leads/archived", "GET", null, p.token)
-      .then(function(data){ setArchivedLeads(Array.isArray(data)?data:[]); setArchLoading(false); })
-      .catch(function(){ setArchivedLeads([]); setArchLoading(false); });
-  },[]);
-  var archived = archivedLeads;
+  var archived = p.leads.filter(function(l){ return l.archived; });
   var restore=async function(lid){
     try{
-      var upd=await apiFetch("/api/leads/"+lid,"PUT",{archived:false},p.token);
-      setArchivedLeads(function(prev){return prev.filter(function(l){return gid(l)!==lid;});});
-      p.setLeads(function(prev){return [upd].concat(prev);});
+      await apiFetch("/api/leads/"+lid,"PUT",{archived:false},p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:false}):l;});});
     }catch(e){alert(e.message);}
   };
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -1365,7 +1426,7 @@ var DailyRequestsPage = function(p) {
   var addReq=async function(){
     if(!form.name||!form.phone)return;setSaving(true);
     try{
-      var drAgentId=form.agentId||(p.cu.role==="sales"?p.cu.id:(salesUsers.length>0?gid(salesUsers[0]):p.cu.id));
+      var drAgentId=form.agentId||"";
       var submitData={
         name:form.name||"",
         phone:form.phone||"",
@@ -1546,7 +1607,7 @@ var UsersPage = function(p) {
   var add=async function(){if(!nU.name||!nU.username)return;setSaving(true);try{var user=await apiFetch("/api/users","POST",nU,p.token);p.setUsers(function(prev){return prev.concat([user]);});setShowAdd(false);setNU({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15});}catch(e){alert(e.message);}setSaving(false);};
   var toggleActive=async function(u){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid,"PUT",{active:!u.active},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?upd:x;});});}catch(e){}};
   var del=async function(uid){if(!window.confirm(t.deleteConfirm))return;try{await apiFetch("/api/users/"+uid,"DELETE",null,p.token);p.setUsers(function(prev){return prev.filter(function(x){return gid(x)!==uid;});});}catch(e){alert(e.message);}};
-  var updateTarget=async function(u,val){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid+"/target","PUT",{monthlyTarget:Number(val)},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?upd:x;});});}catch(e){}};
+  var updateTarget=async function(u,val){var uid=gid(u);try{await apiFetch("/api/users/"+uid,"PUT",{monthlyTarget:Number(val)},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?Object.assign({},x,{monthlyTarget:Number(val)}):x;});});}catch(e){}};
 
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", marginBottom:18 }}>
