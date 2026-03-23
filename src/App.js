@@ -270,6 +270,7 @@ var StatusModal = function(p) {
   var [dealProject, setDealProject] = useState("");
   var [dealUnitType, setDealUnitType] = useState("");
   var [dealBudget, setDealBudget] = useState("");
+  var [eoiDeposit, setEoiDeposit] = useState("");
   var [err, setErr] = useState("");
   var [saving, setSaving] = useState(false);
   var sc = STATUSES(p.t);
@@ -283,7 +284,7 @@ var StatusModal = function(p) {
   var needsCb      = st==="CallBack"||st==="NoAnswer";
 
   useEffect(function(){
-    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setErr("");
+    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit(""); setErr("");
   },[p.show]);
 
   var submit = async function() {
@@ -292,7 +293,7 @@ var StatusModal = function(p) {
     if (isReject && !comment.trim())     { setErr("لازم تختار سبب الرفض"); return; }
     if ((isDoneDeal||isEOI) && !dealBudget.trim()){ setErr("لازم تكتب المبلغ"); return; }
     setSaving(true);
-    var extra = (isDoneDeal||isEOI) ? { project: dealProject, notes: dealUnitType, budget: dealBudget } : {};
+    var extra = (isDoneDeal||isEOI) ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit } : {};
     await p.onConfirm(comment.trim(), cbTime, extra);
     setSaving(false);
   };
@@ -356,6 +357,12 @@ var StatusModal = function(p) {
           onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setDealBudget(r?Number(r).toLocaleString():"");setErr("");}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
       </div>
+      {isEOI&&<div style={{ marginBottom:11 }}>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💵 قيمة الحجز (EGP)</label>
+        <input type="text" placeholder="مثال: 50,000" value={eoiDeposit}
+          onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setEoiDeposit(r?Number(r).toLocaleString():"");}}
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
+      </div>}
     </div>}
 
     {err&&<div style={{ color:C.danger, fontSize:12, marginBottom:12, padding:"8px 12px", background:"#FEF2F2", borderRadius:8 }}>⚠️ {err}</div>}
@@ -759,10 +766,12 @@ var LeadsPage = function(p) {
       var upData = { status: pendingStatus.newStatus };
       if(cbTime) upData.callbackTime = cbTime;
       if(extra) {
-        if(extra.budget)  upData.budget  = extra.budget;
-        if(extra.project) upData.project = extra.project;
-        if(extra.notes)   upData.notes   = extra.notes;
+        if(extra.budget)     upData.budget     = extra.budget;
+        if(extra.project)    upData.project    = extra.project;
+        if(extra.notes)      upData.notes      = extra.notes;
+        if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
       }
+      if(pendingStatus.newStatus === "EOI") upData.eoiDate = new Date().toISOString();
       var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
       await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment},p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?updated:l;});});
@@ -1249,21 +1258,23 @@ var EOIPage = function(p) {
       <div style={{ fontSize:13, marginTop:8 }}>العملاء اللي حالتهم EOI هيظهروا هنا تلقائياً</div>
     </div>}
 
-    {eoiLeads.length>0&&<Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:650 }}>
+    {eoiLeads.length>0&&<Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#FFF7ED", borderBottom:"2px solid #FED7AA" }}>
-        {[t.name,t.phone,t.project,"نوع الوحدة",t.budget,isAdmin?t.agent:null,"تاريخ الإضافة",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:"#EA580C", whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.phone,t.project,"نوع الوحدة",t.budget,"قيمة الحجز",isAdmin?t.agent:null,"تاريخ التحويل لـ EOI",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:"#EA580C", whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {eoiLeads.map(function(d){
           var bv=parseBudget(d.budget);
+          var eoiDateStr=d.eoiDate?new Date(d.eoiDate).toLocaleDateString("ar-EG"):d.updatedAt?new Date(d.updatedAt).toLocaleDateString("ar-EG"):"-";
           return <tr key={gid(d)} style={{ borderBottom:"1px solid #FEF3E2" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
             <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.notes||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:"#EA580C" }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.eoiDeposit||"-"}</td>
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>{getAg(d)}</td>}
-            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight }}>{d.createdAt?new Date(d.createdAt).toLocaleDateString("ar-EG"):"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight }}>{eoiDateStr}</td>
             <td style={{ padding:"8px 12px" }}>
               <div style={{ display:"flex", gap:5 }}>
                 <button onClick={function(){setEditLead(d);}} title={t.edit}
