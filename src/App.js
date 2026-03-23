@@ -2262,6 +2262,7 @@ export default function CRMApp() {
   var [leadFilter,setLeadFilter]=useState("all");
   var [showNotif,setShowNotif]=useState(false);
   var [dealNotifs,setDealNotifs]=useState([]); // {id, leadName, agentName, status, time}
+  var [dealNotifsSeenCount,setDealNotifsSeenCount]=useState(0);
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
