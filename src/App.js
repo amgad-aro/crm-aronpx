@@ -944,6 +944,7 @@ var LeadsPage = function(p) {
                       var newAgent=e.target.value;
                       try{var upd=await apiFetch("/api/leads/"+gid(lead),"PUT",{agentId:newAgent},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?upd:l;});});if(selected&&gid(selected)===gid(lead))setSelected(upd);}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
+                      <option value="">— بدون موظف —</option>
                       {salesUsers.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
                     </select>
                   </td>}
@@ -998,6 +999,7 @@ var LeadsPage = function(p) {
               var newAgent=e.target.value;
               try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{agentId:newAgent},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
+              <option value="">— بدون موظف —</option>
               {salesUsers.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name} - {u.title}</option>;})}
             </select>
           </div>}
@@ -1557,6 +1559,7 @@ var DailyRequestsPage = function(p) {
                       var newAgent=e.target.value;
                       try{var upd=await apiFetch("/api/daily-requests/"+rid,"PUT",{agentId:newAgent},p.token);setRequests(function(prev){return prev.map(function(x){return gid(x)===rid?upd:x;});});if(selected&&gid(selected)===rid)setSelected(upd);}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", maxWidth:110 }}>
+                      <option value="">— بدون موظف —</option>
                       {salesUsers.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
                     </select>
                   </td>}
@@ -2155,33 +2158,36 @@ export default function CRMApp() {
     if (!token || !leads.length || !users.length) return;
 
     var check = async function() {
-      // Smart reassign - pick agent with least leads (most available)
-      var salesAgents = users.filter(function(u){ return (u.role==="sales"||u.role==="manager") && u.active; });
+      // Use only agents selected in settings
+      var savedAgents = [];
+      try{ savedAgents = JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]'); }catch(e){}
+      if (!savedAgents.length) return; // no agents configured = no auto reassign
+
+      var salesAgents = users.filter(function(u){
+        return savedAgents.includes(gid(u)) && (u.role==="sales"||u.role==="manager") && u.active;
+      });
       if (!salesAgents.length) return;
 
       var now = new Date();
       var toReassign = leads.filter(function(l){
-        var currentAgentId = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
         return l.status === "CallBack" &&
                l.callbackTime &&
                new Date(l.callbackTime) < now &&
-               !l.archived &&
-               currentAgentId !== targetAgentId; // don't reassign if already assigned to target
+               !l.archived;
       });
 
       for (var i = 0; i < toReassign.length; i++) {
         var lead = toReassign[i];
         var currentAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
         var fromName = lead.agentId && lead.agentId.name ? lead.agentId.name : "موظف";
-        // Pick agent with least leads (excluding current agent)
-        var others = salesAgents.filter(function(u){ return gid(u) !== currentAgentId; });
-        if (!others.length) others = salesAgents;
-        var agentLoads = others.map(function(u){
+        // Pick agent from selected list with least leads
+        var agentLoads = salesAgents.map(function(u){
           return { agent:u, cnt:leads.filter(function(l){ var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return a===gid(u)&&!l.archived; }).length };
         });
         agentLoads.sort(function(a,b){ return a.cnt-b.cnt; });
         var targetAgent = agentLoads[0].agent;
         var targetAgentId = gid(targetAgent);
+        if (targetAgentId === currentAgentId) continue;
         try {
           var updated = await apiFetch("/api/leads/" + gid(lead), "PUT", {
             agentId: targetAgentId,
