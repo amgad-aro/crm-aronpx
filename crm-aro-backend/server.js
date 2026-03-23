@@ -26,7 +26,8 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   source:{type:String,default:"Facebook"}, project:{type:String,default:""},
   agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, budget:{type:String,default:""},
   notes:{type:String,default:""}, callbackTime:{type:String,default:""},
-  lastActivityTime:{type:Date,default:Date.now}, archived:{type:Boolean,default:false}, isVIP:{type:Boolean,default:false}
+  lastActivityTime:{type:Date,default:Date.now}, archived:{type:Boolean,default:false}, isVIP:{type:Boolean,default:false},
+  eoiDeposit:{type:String,default:""}, eoiDate:{type:String,default:""}
 },{timestamps:true}));
 
 var Activity = mongoose.model("Activity", new mongoose.Schema({
@@ -219,9 +220,9 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
 app.post("/api/leads", auth, async function(req, res) {
   try {
     console.log("NEW LEAD body:", JSON.stringify(req.body));
-    var agentId = req.body.agentId
+    var agentId = (req.body.agentId && req.body.agentId !== "")
       ? new mongoose.Types.ObjectId(req.body.agentId)
-      : new mongoose.Types.ObjectId(req.user.id);
+      : null;
     var lead = await Lead.create({
       name:             req.body.name,
       phone:            req.body.phone,
@@ -252,12 +253,16 @@ app.put("/api/leads/:id", auth, async function(req, res) {
   try {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
-    await Activity.create({
-      userId: req.user.id,
-      leadId: req.params.id,
-      type: req.body.status ? "status_change" : "note",
-      note: req.body.status ? "Status: " + req.body.status : "Updated",
-    });
+    try {
+      await Activity.create({
+        userId: req.user.id,
+        leadId: req.params.id,
+        type: req.body.status ? "status_change" : "note",
+        note: req.body.status ? "Status: " + req.body.status : "Updated",
+      });
+    } catch(actErr) {
+      console.error("Activity log error (non-fatal):", actErr.message);
+    }
     res.json(lead);
   } catch (e) {
     res.status(500).json({ error: e.message });
