@@ -495,8 +495,8 @@ var Header = function(p) {
       {/* Deal notifications bell - admin only */}
       {p.isAdmin&&<div style={{ position:"relative" }}>
         <button onClick={function(){p.setShowDealNotif(!p.showDealNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
-          <DollarSign size={16} color={p.dealNotifs&&p.dealNotifs.length>0?"#15803D":C.textLight}/>
-          {p.dealNotifs&&p.dealNotifs.length>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:"#15803D", color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.dealNotifs.length}</span>}
+          <DollarSign size={16} color={p.unseenDeals>0?"#15803D":C.textLight}/>
+          {p.unseenDeals>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:"#15803D", color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.unseenDeals}</span>}
         </button>
         {p.showDealNotif&&<div style={{ position:"absolute", top:44, left:0, width:310, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -522,31 +522,31 @@ var Header = function(p) {
       <div style={{ position:"relative" }} ref={notifRef}>
         <button onClick={function(){p.setShowNotif(!p.showNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <Bell size={16} color={C.textLight}/>
-          {(upcoming.length+allNoActivity.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.danger, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{upcoming.length+allNoActivity.length+overdueCallback.length}</span>}
+          {(upcoming.length+allNoActivity.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:4, right:4, width:8, height:8, borderRadius:"50%", background:C.danger }}/>}
         </button>
         {p.showNotif&&<div style={{ position:"absolute", top:44, left:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:360, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder} ({upcoming.length+allNoActivity.length+overdueCallback.length})</span>
+            <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder}</span>
             <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
           </div>
           {upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد تنبيهات</div>}
           {overdueCallback.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 CallBack فات موعده ({overdueCallback.length})</div>
-            {overdueCallback.slice(0,5).map(function(l){return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
+            <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 CallBack فات موعده</div>
+            {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
-                <div style={{ fontSize:10, color:C.danger }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
+                <div style={{ fontSize:10, color:C.danger }}>{agName?agName+" · ":""}{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
               </div>
             </div>;})}
           </div>}
           {allNoActivity.length>0&&<div style={{ padding:"8px 16px", background:"#FFF7ED", borderBottom:"1px solid #FEF3E2" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:"#EA580C", marginBottom:6 }}>😴 بدون تواصل +يوم ({allNoActivity.length})</div>
-            {allNoActivity.slice(0,5).map(function(l){return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEF3E2" }}>
+            <div style={{ fontSize:11, fontWeight:700, color:"#EA580C", marginBottom:6 }}>😴 بدون تواصل +يوم</div>
+            {allNoActivity.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEF3E2" }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"#FED7AA", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>😴</div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
-                <div style={{ fontSize:10, color:"#EA580C" }}>{timeAgo(l.lastActivityTime,p.t)}</div>
+                <div style={{ fontSize:10, color:"#EA580C" }}>{agName?agName+" · ":""}{timeAgo(l.lastActivityTime,p.t)}</div>
               </div>
             </div>;})}
           </div>}
@@ -1665,19 +1665,19 @@ var DealsPage = function(p) {
     </Modal>}
 
     {/* Project Weight Modal */}
-    {isAdmin&&projWeightModal&&<Modal show={true} onClose={function(){setProjWeightModal(false);}} title={"⚙️ وزن المشاريع في التارجت"}>
+    {isAdmin&&projWeightModal&&<Modal show={true} onClose={function(){setProjWeightModal(false);}} title={"⚙️ عمولة المشاريع"}>
       <div style={{ fontSize:12, color:C.textLight, marginBottom:12, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>
-        100% = يحسب كامل في التارجت والعمولة<br/>50% = يحسب نص فقط
+        100% = يحسب كامل في التارجت والعمولة<br/>50% = يحسب نص في التارجت والعمولة
       </div>
       {(function(){var projects=[];deals.forEach(function(d){if(d.project&&!projects.includes(d.project))projects.push(d.project);});return projects.map(function(proj){
         var w=getProjectWeight(proj);
         return <div key={proj} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
           <span style={{ fontSize:13, fontWeight:600 }}>{proj}</span>
           <div style={{ display:"flex", gap:6 }}>
-            <button onClick={function(){saveProjectWeight(proj,1);setProjWeightModal(false);setProjWeightModal(true);}}
-              style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:w===1?C.success:"#E2E8F0", background:w===1?"#DCFCE7":"#fff", color:w===1?C.success:C.textLight, fontSize:12, cursor:"pointer" }}>100%</button>
-            <button onClick={function(){saveProjectWeight(proj,0.5);setProjWeightModal(false);setProjWeightModal(true);}}
-              style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:w===0.5?"#F59E0B":"#E2E8F0", background:w===0.5?"#FEF3C7":"#fff", color:w===0.5?"#B45309":C.textLight, fontSize:12, cursor:"pointer" }}>50%</button>
+            <button onClick={function(){saveProjectWeight(proj,1);setProjWeights(function(prev){return Object.assign({},prev,{[proj]:1});});}}
+              style={{ padding:"5px 12px", borderRadius:7, border:"2px solid", borderColor:w===1?C.success:"#E2E8F0", background:w===1?"#DCFCE7":"#fff", color:w===1?C.success:C.textLight, fontSize:12, fontWeight:w===1?700:400, cursor:"pointer" }}>100%</button>
+            <button onClick={function(){saveProjectWeight(proj,0.5);setProjWeights(function(prev){return Object.assign({},prev,{[proj]:0.5});});}}
+              style={{ padding:"5px 12px", borderRadius:7, border:"2px solid", borderColor:w===0.5?"#F59E0B":"#E2E8F0", background:w===0.5?"#FEF3C7":"#fff", color:w===0.5?"#B45309":C.textLight, fontSize:12, fontWeight:w===0.5?700:400, cursor:"pointer" }}>50%</button>
           </div>
         </div>;
       });})()}
@@ -1716,7 +1716,7 @@ var DealsPage = function(p) {
     {/* Action buttons row */}
     {isAdmin&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
       <Btn outline onClick={function(){setCommModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.success, borderColor:C.success }}>💰 العمولات</Btn>
-      <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ وزن المشاريع</Btn>
+      <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ عمولة المشاريع</Btn>
     </div>}
 
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
@@ -2604,8 +2604,9 @@ export default function CRMApp() {
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
   var [showNotif,setShowNotif]=useState(false);
-  var [dealNotifs,setDealNotifs]=useState([]); // {id, leadName, agentName, status, time}
   var [dealNotifsSeenCount,setDealNotifsSeenCount]=useState(0);
+  var [dealNotifs,setDealNotifsRaw]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_deal_notifs")||"[]");}catch(e){return[];}});
+  var setDealNotifs=function(fn){setDealNotifsRaw(function(prev){var next=typeof fn==="function"?fn(prev):fn;try{localStorage.setItem("crm_deal_notifs",JSON.stringify(next));}catch(e){}return next;});};
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
