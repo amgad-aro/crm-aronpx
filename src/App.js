@@ -466,6 +466,7 @@ var Sidebar = function(p) {
 var Header = function(p) {
   var t = p.t;
   var upcoming = p.leads.filter(function(l){return l.callbackTime&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&!l.archived;});
+  var overdueCallback = p.leads.filter(function(l){return l.status==="CallBack"&&l.callbackTime&&new Date(l.callbackTime)<new Date()&&!l.archived;});
   var noActivityLeads = p.leads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>1*24*60*60*1000;});
   var noActivityDR = (p.dailyRequests||[]).filter(function(r){return !r.archived&&r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>1*24*60*60*1000;});
   var allNoActivity = noActivityLeads.concat(noActivityDR);
@@ -521,14 +522,24 @@ var Header = function(p) {
       <div style={{ position:"relative" }} ref={notifRef}>
         <button onClick={function(){p.setShowNotif(!p.showNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <Bell size={16} color={C.textLight}/>
-          {(upcoming.length+allNoActivity.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.danger, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{upcoming.length+allNoActivity.length}</span>}
+          {(upcoming.length+allNoActivity.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.danger, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{upcoming.length+allNoActivity.length+overdueCallback.length}</span>}
         </button>
         {p.showNotif&&<div style={{ position:"absolute", top:44, left:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:360, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder} ({upcoming.length+allNoActivity.length})</span>
+            <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder} ({upcoming.length+allNoActivity.length+overdueCallback.length})</span>
             <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
           </div>
-          {upcoming.length===0&&allNoActivity.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد تنبيهات</div>}
+          {upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد تنبيهات</div>}
+          {overdueCallback.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
+            <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 CallBack فات موعده ({overdueCallback.length})</div>
+            {overdueCallback.slice(0,5).map(function(l){return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
+              <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
+                <div style={{ fontSize:10, color:C.danger }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
+              </div>
+            </div>;})}
+          </div>}
           {allNoActivity.length>0&&<div style={{ padding:"8px 16px", background:"#FFF7ED", borderBottom:"1px solid #FEF3E2" }}>
             <div style={{ fontSize:11, fontWeight:700, color:"#EA580C", marginBottom:6 }}>😴 بدون تواصل +يوم ({allNoActivity.length})</div>
             {allNoActivity.slice(0,5).map(function(l){return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEF3E2" }}>
@@ -2352,6 +2363,41 @@ export default function CRMApp() {
   // ===== AUTO ROTATION: No-activity leads after 1 day + 1 hour no contact =====
   useEffect(function(){
     if (!token || !leads.length || !users.length) return;
+    var checkCbRotation = async function() {
+      var savedAgents = [];
+      try{ savedAgents = JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]'); }catch(e){}
+      if (!savedAgents.length) return;
+      var salesAgents = users.filter(function(u){ return savedAgents.includes(gid(u))&&(u.role==="sales"||u.role==="manager")&&u.active; });
+      if (!salesAgents.length) return;
+      var DAY = 24*60*60*1000;
+      var now = Date.now();
+      var toRotate = leads.filter(function(l){
+        if(l.archived||l.status!=="CallBack"||!l.callbackTime) return false;
+        var cbTime = new Date(l.callbackTime).getTime();
+        if(cbTime >= now) return false; // not overdue yet
+        // Check if overdue > 1 day
+        return (now - cbTime) >= DAY;
+      });
+      for(var i=0;i<toRotate.length;i++){
+        var lead = toRotate[i];
+        var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
+        var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"موظف";
+        var agentLoads = salesAgents.map(function(u){return {agent:u,cnt:leads.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return a===gid(u)&&!l.archived;}).length};});
+        agentLoads.sort(function(a,b){return a.cnt-b.cnt;});
+        var targetAgent = agentLoads[0].agent;
+        var targetAgentId = gid(targetAgent);
+        if(targetAgentId===currentAgentId) continue;
+        try{
+          var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{agentId:targetAgentId,callbackTime:""},token);
+          await apiFetch("/api/activities","POST",{leadId:gid(lead),type:"reassign",note:"🔄 تحويل تلقائي من "+fromName+" إلى "+targetAgent.name+" (CallBack فات يوم)"},token);
+          setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+          showBrowserNotif("🔄 تحويل تلقائي",lead.name+" تم تحويله لـ "+targetAgent.name+" (CallBack فات يوم)");
+        }catch(e){console.error("CB rotation error:",e);}
+      }
+    };
+    checkCbRotation();
+    var cbRotInterval = setInterval(checkCbRotation, 15*60*1000);
+
     var checkRotation = async function() {
       var savedAgents = [];
       try{ savedAgents = JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]'); }catch(e){}
@@ -2393,7 +2439,7 @@ export default function CRMApp() {
     };
     checkRotation();
     var rotInterval = setInterval(checkRotation, 10*60*1000); // check every 10 min
-    return function(){clearInterval(rotInterval);};
+    return function(){clearInterval(cbRotInterval);clearInterval(rotInterval);};
   }, [token, leads.length, users.length]);
 
   // ===== AUTO REASSIGN: CallBack leads past callback time -> specific agent from settings =====
