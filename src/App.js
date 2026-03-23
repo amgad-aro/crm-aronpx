@@ -1410,6 +1410,82 @@ var EOIPage = function(p) {
 };
 
 // ===== DEALS =====
+
+// ===== COMMISSION SYSTEM =====
+// Project weight settings stored in localStorage: crm_proj_weight_{projectName} = 0.5 or 1
+var getProjectWeight = function(project){
+  try{ var w=localStorage.getItem("crm_proj_weight_"+(project||"").replace(/\s/g,"_")); return w?parseFloat(w):1; }catch(e){return 1;}
+};
+var saveProjectWeight = function(project,weight){
+  try{localStorage.setItem("crm_proj_weight_"+(project||"").replace(/\s/g,"_"),String(weight));}catch(e){}
+};
+// Deal split stored in localStorage: crm_deal_split_{leadId} = {agent2Id, agent2Name}
+var getDealSplit = function(lid){ try{return JSON.parse(localStorage.getItem("crm_deal_split_"+lid)||"null");}catch(e){return null;}};
+var saveDealSplit = function(lid,split){ try{localStorage.setItem("crm_deal_split_"+lid,JSON.stringify(split));}catch(e){}};
+
+// Calculate commission for a user based on their deals
+var calcCommission = function(user, allDeals, allUsers, forQ) {
+  var uid = typeof user === "string" ? user : gid(user);
+  var uRole = typeof user === "object" ? user.role : (allUsers.find(function(u){return gid(u)===uid;})||{}).role;
+  var parseBudgetC = function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
+
+  // Get Q targets
+  var qt = {};
+  try{qt = JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){}
+  var getQ = function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
+  var curQ = forQ || (function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+  var qTarget = qt[curQ] || 0;
+
+  // Get deals for this agent in current Q
+  var agentDeals = allDeals.filter(function(d){
+    var aid = d.agentId&&d.agentId._id?d.agentId._id:d.agentId;
+    if(aid !== uid) return false;
+    var dd = d.updatedAt||d.createdAt;
+    return dd && getQ(dd) === curQ;
+  });
+
+  // Calculate effective revenue (applying project weight and split)
+  var effectiveRevenue = agentDeals.reduce(function(sum, d){
+    var raw = parseBudgetC(d.budget);
+    var weight = getProjectWeight(d.project);
+    var split = getDealSplit(gid(d));
+    var splitFactor = split ? 0.5 : 1;
+    return sum + (raw * weight * splitFactor);
+  }, 0);
+
+  // Also add deals where this agent is agent2 in a split
+  allDeals.forEach(function(d){
+    var split = getDealSplit(gid(d));
+    if(split && split.agent2Id === uid){
+      var dd = d.updatedAt||d.createdAt;
+      if(dd && getQ(dd) === curQ){
+        var raw = parseBudgetC(d.budget);
+        var weight = getProjectWeight(d.project);
+        effectiveRevenue += raw * weight * 0.5;
+      }
+    }
+  });
+
+  // Determine commission rate based on role and target achievement
+  var commRate = 0;
+  if(uRole === "manager"){
+    commRate = 2000; // 2,000 per million always
+  } else {
+    // Sales: depends on target multiplier
+    if(qTarget > 0){
+      var multiplier = effectiveRevenue / qTarget;
+      if(multiplier >= 3) commRate = 7000;
+      else if(multiplier >= 2) commRate = 6000;
+      else commRate = 5000;
+    } else {
+      commRate = 5000; // default if no target set
+    }
+  }
+
+  var commission = (effectiveRevenue / 1000000) * commRate;
+  return { effectiveRevenue, commission, commRate, qTarget, curQ };
+};
+
 var DealsPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
   var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
@@ -1419,7 +1495,12 @@ var DealsPage = function(p) {
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var [showAdd,setShowAdd]=useState(false);
   var [editDeal,setEditDeal]=useState(null);
-  var [stagesModal,setStagesModal]=useState(null); // lead object
+  var [stagesModal,setStagesModal]=useState(null);
+  var [splitModal,setSplitModal]=useState(null); // lead for split
+  var [splitAgent2,setSplitAgent2]=useState("");
+  var [commModal,setCommModal]=useState(false); // show commission summary
+  var [commQ,setCommQ]=useState((function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})());
+  var [projWeightModal,setProjWeightModal]=useState(false);
 
   // Get stages from localStorage
   var getStages=function(lid){try{return JSON.parse(localStorage.getItem("crm_stages_"+lid)||"{}");} catch(e){return {};}};
@@ -1552,6 +1633,92 @@ var DealsPage = function(p) {
       </div>
     </Modal>}
 
+    {/* Commission Summary Modal */}
+    {isAdmin&&commModal&&<Modal show={true} onClose={function(){setCommModal(false);}} title={"💰 العمولات — "+commQ}>
+      <div style={{ display:"flex", gap:6, marginBottom:14 }}>
+        {["Q1","Q2","Q3","Q4"].map(function(q){return <button key={q} onClick={function(){setCommQ(q);}}
+          style={{ flex:1, padding:"6px", borderRadius:8, border:"1px solid", borderColor:commQ===q?C.accent:"#E2E8F0", background:commQ===q?C.accent+"12":"#fff", color:commQ===q?C.accent:C.textLight, fontSize:12, fontWeight:600, cursor:"pointer" }}>{q}</button>;})}
+      </div>
+      {p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;}).map(function(u){
+        var res = calcCommission(u, deals, p.users, commQ);
+        return <div key={gid(u)} style={{ padding:"12px 0", borderBottom:"1px solid #F1F5F9" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <div>
+              <div style={{ fontSize:13, fontWeight:700 }}>{u.name}</div>
+              <div style={{ fontSize:11, color:C.textLight }}>{u.role==="manager"?"مدير — 2,000/M ثابت":"سيلز — "+res.commRate.toLocaleString()+"/M"}</div>
+            </div>
+            <div style={{ textAlign:"left" }}>
+              <div style={{ fontSize:15, fontWeight:800, color:C.success }}>{res.commission.toLocaleString()} EGP</div>
+              <div style={{ fontSize:10, color:C.textLight }}>مبيعات فعلية: {(res.effectiveRevenue/1000000).toFixed(2)}M</div>
+            </div>
+          </div>
+          {res.qTarget>0&&<div style={{ marginTop:6 }}>
+            <div style={{ height:5, background:"#F1F5F9", borderRadius:3 }}>
+              <div style={{ height:"100%", width:Math.min(100,(res.effectiveRevenue/res.qTarget*100))+"%", background:res.effectiveRevenue>=res.qTarget*3?C.success:res.effectiveRevenue>=res.qTarget*2?"#8B5CF6":C.accent, borderRadius:3 }}/>
+            </div>
+            <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>
+              {res.effectiveRevenue>=res.qTarget*3?"🏆 3x — عمولة 7,000/M":res.effectiveRevenue>=res.qTarget*2?"⚡ 2x — عمولة 6,000/M":"📈 "+Math.round(res.effectiveRevenue/res.qTarget*100)+"% من التارجت"}
+            </div>
+          </div>}
+        </div>;
+      })}
+    </Modal>}
+
+    {/* Project Weight Modal */}
+    {isAdmin&&projWeightModal&&<Modal show={true} onClose={function(){setProjWeightModal(false);}} title={"⚙️ وزن المشاريع في التارجت"}>
+      <div style={{ fontSize:12, color:C.textLight, marginBottom:12, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>
+        100% = يحسب كامل في التارجت والعمولة<br/>50% = يحسب نص فقط
+      </div>
+      {(function(){var projects=[];deals.forEach(function(d){if(d.project&&!projects.includes(d.project))projects.push(d.project);});return projects.map(function(proj){
+        var w=getProjectWeight(proj);
+        return <div key={proj} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
+          <span style={{ fontSize:13, fontWeight:600 }}>{proj}</span>
+          <div style={{ display:"flex", gap:6 }}>
+            <button onClick={function(){saveProjectWeight(proj,1);setProjWeightModal(false);setProjWeightModal(true);}}
+              style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:w===1?C.success:"#E2E8F0", background:w===1?"#DCFCE7":"#fff", color:w===1?C.success:C.textLight, fontSize:12, cursor:"pointer" }}>100%</button>
+            <button onClick={function(){saveProjectWeight(proj,0.5);setProjWeightModal(false);setProjWeightModal(true);}}
+              style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:w===0.5?"#F59E0B":"#E2E8F0", background:w===0.5?"#FEF3C7":"#fff", color:w===0.5?"#B45309":C.textLight, fontSize:12, cursor:"pointer" }}>50%</button>
+          </div>
+        </div>;
+      });})()}
+      <Btn onClick={function(){setProjWeightModal(false);}} style={{ marginTop:14, width:"100%" }}>إغلاق</Btn>
+    </Modal>}
+
+    {/* Split Modal */}
+    {splitModal&&<Modal show={true} onClose={function(){setSplitModal(null);setSplitAgent2("");}} title={"🤝 تقسيم صفقة — "+splitModal.name}>
+      <div style={{ fontSize:12, color:C.textLight, marginBottom:12 }}>الصفقة هتتقسم 50/50 بين موظفين</div>
+      <div style={{ marginBottom:10 }}>
+        <div style={{ fontSize:12, fontWeight:600, marginBottom:6 }}>السيلز الأول</div>
+        <div style={{ padding:"8px 12px", borderRadius:8, background:"#F8FAFC", fontSize:13 }}>{splitModal.agentId&&splitModal.agentId.name?splitModal.agentId.name:"—"}</div>
+      </div>
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontSize:12, fontWeight:600, marginBottom:6 }}>السيلز الثاني</div>
+        <select value={splitAgent2} onChange={function(e){setSplitAgent2(e.target.value);}}
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", boxSizing:"border-box" }}>
+          <option value="">— اختر سيلز —</option>
+          {salesUsers.filter(function(u){var uid=gid(u);var a1=splitModal.agentId&&splitModal.agentId._id?splitModal.agentId._id:splitModal.agentId;return uid!==a1;}).map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name} — {u.title}</option>;})}
+        </select>
+      </div>
+      {getDealSplit(gid(splitModal))&&<div style={{ padding:"8px 12px", background:"#FEF3C7", borderRadius:8, fontSize:12, marginBottom:10 }}>
+        تقسيم حالي: {getDealSplit(gid(splitModal)).agent2Name} — <button onClick={function(){saveDealSplit(gid(splitModal),null);setSplitModal(null);}} style={{ background:"none", border:"none", color:C.danger, cursor:"pointer", fontSize:12 }}>إلغاء التقسيم</button>
+      </div>}
+      <div style={{ display:"flex", gap:10 }}>
+        <Btn outline onClick={function(){setSplitModal(null);setSplitAgent2("");}} style={{ flex:1 }}>إلغاء</Btn>
+        <Btn onClick={function(){
+          if(!splitAgent2) return;
+          var ag2=salesUsers.find(function(u){return gid(u)===splitAgent2;});
+          saveDealSplit(gid(splitModal),{agent2Id:splitAgent2,agent2Name:ag2?ag2.name:"?"});
+          setSplitModal(null); setSplitAgent2("");
+        }} style={{ flex:1 }}>✅ حفظ</Btn>
+      </div>
+    </Modal>}
+
+    {/* Action buttons row */}
+    {isAdmin&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
+      <Btn outline onClick={function(){setCommModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.success, borderColor:C.success }}>💰 العمولات</Btn>
+      <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ وزن المشاريع</Btn>
+    </div>}
+
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"مراحل الصفقة",isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
@@ -1580,10 +1747,15 @@ var DealsPage = function(p) {
                 </div>
               </button>
             </td>
-            {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>{getAg(d)}</td>}
+            {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>
+              <div>{getAg(d)}</div>
+              {(function(){var sp=getDealSplit(gid(d));return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
+            </td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.source}</td>}
             <td style={{ padding:"8px 12px" }}>
               <div style={{ display:"flex", gap:5 }}>
+                {isAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplit(gid(d));setSplitAgent2(sp?sp.agent2Id:"");}} title="تقسيم صفقة"
+                  style={{ width:28, height:28, borderRadius:6, border:"1px solid "+(getDealSplit(gid(d))?"#8B5CF6":"#E2E8F0"), background:getDealSplit(gid(d))?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12 }}>🤝</button>}
                 <button onClick={function(){setEditDeal(d);}} title={t.edit}
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <Edit size={13} color={C.info}/>
