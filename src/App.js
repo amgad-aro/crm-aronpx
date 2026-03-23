@@ -407,6 +407,7 @@ var Sidebar = function(p) {
     {id:"leads",icon:Users,label:t.leads},
     {id:"dailyReq",icon:ClipboardList,label:t.dailyReq},
     {id:"deals",icon:Briefcase,label:t.deals},
+    {id:"eoi",icon:Target,label:"EOI"},
     {id:"tasks",icon:CheckCircle,label:t.tasks},
     isAdmin&&{id:"reports",icon:BarChart3,label:t.reports},
     isAdmin&&{id:"team",icon:UserPlus,label:t.team},
@@ -1206,6 +1207,79 @@ var DashboardPage = function(p) {
         })}
       </Card>
     </div>
+  </div>;
+};
+
+
+// ===== EOI PAGE =====
+var EOIPage = function(p) {
+  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
+  var eoiLeads=p.leads.filter(function(l){return l.status==="EOI"&&!l.archived;});
+  var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
+  var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
+  var total=eoiLeads.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var [editLead,setEditLead]=useState(null);
+
+  var archiveLead=async function(lid){
+    if(!window.confirm(t.archiveConfirm))return;
+    try{
+      await apiFetch("/api/leads/"+lid+"/archive","PUT",null,p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:true}):l;});});
+    }catch(e){alert(e.message);}
+  };
+
+  return <div style={{ padding:"18px 16px 40px" }}>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+        <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>🎯 EOI ({eoiLeads.length})</h2>
+        {total>0&&<div style={{ fontSize:13, fontWeight:700, color:"#EA580C", background:"#FFF7ED", padding:"5px 14px", borderRadius:20 }}>إجمالي: {total.toLocaleString()} EGP</div>}
+      </div>
+    </div>
+
+    {editLead&&<Modal show={true} onClose={function(){setEditLead(null);}} title={t.edit}>
+      <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
+        editId={gid(editLead)} initial={editLead}
+        onClose={function(){setEditLead(null);}}
+        onSave={function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(updated)?updated:l;});});setEditLead(null);}}/>
+    </Modal>}
+
+    {eoiLeads.length===0&&<div style={{ textAlign:"center", padding:"60px 20px", color:C.textLight }}>
+      <div style={{ fontSize:48, marginBottom:12 }}>🎯</div>
+      <div style={{ fontSize:16, fontWeight:700 }}>لا يوجد عملاء EOI حالياً</div>
+      <div style={{ fontSize:13, marginTop:8 }}>العملاء اللي حالتهم EOI هيظهروا هنا تلقائياً</div>
+    </div>}
+
+    {eoiLeads.length>0&&<Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:650 }}>
+      <thead><tr style={{ background:"#FFF7ED", borderBottom:"2px solid #FED7AA" }}>
+        {[t.name,t.phone,t.project,"نوع الوحدة",t.budget,isAdmin?t.agent:null,"تاريخ الإضافة",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:"#EA580C", whiteSpace:"nowrap" }}>{h}</th>;})}
+      </tr></thead>
+      <tbody>
+        {eoiLeads.map(function(d){
+          var bv=parseBudget(d.budget);
+          return <tr key={gid(d)} style={{ borderBottom:"1px solid #FEF3E2" }}>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.notes||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:"#EA580C" }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
+            {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>{getAg(d)}</td>}
+            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight }}>{d.createdAt?new Date(d.createdAt).toLocaleDateString("ar-EG"):"-"}</td>
+            <td style={{ padding:"8px 12px" }}>
+              <div style={{ display:"flex", gap:5 }}>
+                <button onClick={function(){setEditLead(d);}} title={t.edit}
+                  style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                  <Edit size={13} color={C.info}/>
+                </button>
+                {isAdmin&&<button onClick={function(){archiveLead(gid(d));}} title={t.archive}
+                  style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                  <Archive size={13} color={C.warning}/>
+                </button>}
+              </div>
+            </td>
+          </tr>;
+        })}
+      </tbody>
+    </table></div></Card>}
   </div>;
 };
 
@@ -2219,7 +2293,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,myday:t.myDay,leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
+  var titles={dashboard:t.dashboard,myday:t.myDay,leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
   var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected};
 
   var renderPage=function(){
@@ -2229,6 +2303,7 @@ export default function CRMApp() {
       case "leads": return <LeadsPage {...sp} isRequest={false}/>;
       case "dailyReq": return <DailyRequestsPage {...sp}/>;
       case "deals": return <DealsPage {...sp}/>;
+      case "eoi": return <EOIPage {...sp}/>;
       case "projects": return <ProjectsPage {...sp}/>;
       case "tasks": return <TasksPage {...sp}/>;
       case "reports": return <ReportsPage {...sp}/>;
