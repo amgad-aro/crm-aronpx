@@ -173,6 +173,7 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     if (req.body.role) update.role = req.body.role;
     if (req.body.title) update.title = req.body.title;
     if (req.body.active !== undefined) update.active = req.body.active;
+    if (req.body.monthlyTarget !== undefined) update.monthlyTarget = Number(req.body.monthlyTarget);
     if (req.body.password) update.password = await bcrypt.hash(req.body.password, 10);
     var user = await User.findByIdAndUpdate(req.params.id, update, { new: true }).select("-password");
     res.json(user);
@@ -218,9 +219,9 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
 app.post("/api/leads", auth, async function(req, res) {
   try {
     console.log("NEW LEAD body:", JSON.stringify(req.body));
-    var agentId = req.body.agentId && req.body.agentId !== ""
+    var agentId = req.body.agentId
       ? new mongoose.Types.ObjectId(req.body.agentId)
-      : null;
+      : new mongoose.Types.ObjectId(req.user.id);
     var lead = await Lead.create({
       name:             req.body.name,
       phone:            req.body.phone,

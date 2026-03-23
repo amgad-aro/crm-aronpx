@@ -452,10 +452,13 @@ var Header = function(p) {
   var t = p.t;
   var upcoming = p.leads.filter(function(l){return l.callbackTime&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&!l.archived;});
   var notifRef = useRef(null);
-  var [badgeHidden, setBadgeHidden] = useState(false);
+  var [badgeHidden, setBadgeHidden] = useState(function(){
+    try{return localStorage.getItem("crm_notif_seen")==="1";}catch(e){return false;}
+  });
   useEffect(function(){
     if (!p.showNotif) return;
     setBadgeHidden(true);
+    try{localStorage.setItem("crm_notif_seen","1");}catch(e){}
     var fn=function(e){if(notifRef.current&&!notifRef.current.contains(e.target))p.setShowNotif(false);};
     document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
   },[p.showNotif]);
@@ -1737,13 +1740,20 @@ var ReportsPage = function(p) {
   var periodLeads=allLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<ms;});
   var periodDeals=allLeads.filter(function(l){return l.status==="DoneDeal"&&l.updatedAt&&(now-new Date(l.updatedAt).getTime())<ms;});
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+  var parseBudgetR=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
+  var getQTargetsR=function(uid){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}};
   var agentStats=salesUsers.map(function(u){
     var uid=gid(u);
     var uNew=periodLeads.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return a===uid;});
     var uDeals=periodDeals.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return a===uid;});
-    var target=u.monthlyTarget||15; var prog=Math.min(100,Math.round((uDeals.length/target)*100));
-    return{user:u,newL:uNew.length,deals:uDeals.length,target:target,prog:prog};
-  }).sort(function(a,b){return b.deals-a.deals;});
+    var revenue=uDeals.reduce(function(s,d){return s+parseBudgetR(d.budget);},0);
+    var qt=getQTargetsR(uid);
+    var curQR=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+    var qTarget=qt[curQR]||0;
+    var target=qTarget>0?qTarget:(u.monthlyTarget||0)*1000000;
+    var prog=target>0?Math.min(100,Math.round((revenue/target)*100)):0;
+    return{user:u,newL:uNew.length,deals:uDeals.length,revenue:revenue,target:target,prog:prog};
+  }).sort(function(a,b){return b.revenue-a.revenue;});
   var exportReport=async function(){
     setExporting(true);
     var XLSX=await new Promise(function(res){if(window.XLSX){res(window.XLSX);return;}var s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=function(){res(window.XLSX);};document.head.appendChild(s);});
@@ -1769,14 +1779,15 @@ var ReportsPage = function(p) {
       <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 أداء الفريق — {pLabel[period]}</h3>
       <div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse" }}>
         <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-          {["#","الموظف","جدد","صفقات","الهدف","نسبة الإنجاز"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
+          {["#","الموظف","جدد","صفقات","الإيراد","الهدف","نسبة الإنجاز"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
         </tr></thead>
         <tbody>{agentStats.map(function(a,i){return <tr key={gid(a.user)} style={{ borderBottom:"1px solid #F1F5F9", background:i===0?"#FFFBEB":"transparent" }}>
           <td style={{ padding:"12px", fontSize:16 }}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":i+1}</td>
           <td style={{ padding:"12px", fontWeight:700 }}>{a.user.name}</td>
           <td style={{ padding:"12px", color:C.info, fontWeight:600 }}>{a.newL}</td>
           <td style={{ padding:"12px", color:C.success, fontWeight:700 }}>{a.deals}</td>
-          <td style={{ padding:"12px", color:C.textLight }}>{a.target}</td>
+          <td style={{ padding:"12px", color:C.success, fontWeight:700 }}>{(a.revenue/1000000).toFixed(2)}M</td>
+          <td style={{ padding:"12px", color:C.textLight }}>{a.target>0?(a.target/1000000).toFixed(2)+"M":"—"}</td>
           <td style={{ padding:"12px", minWidth:120 }}><div style={{ display:"flex", alignItems:"center", gap:8 }}><div style={{ flex:1, height:6, background:"#F1F5F9", borderRadius:3 }}><div style={{ height:"100%", width:a.prog+"%", borderRadius:3, background:a.prog>=100?C.success:a.prog>=50?C.accent:C.warning }}/></div><span style={{ fontSize:11, fontWeight:700, minWidth:32 }}>{a.prog}%</span></div></td>
         </tr>;})}
         </tbody>
@@ -1793,13 +1804,16 @@ var ReportsPage = function(p) {
 
 var TeamPage = function(p) {
   var t=p.t;
+  var isAdmin=p.cu.role==="admin";
   var sales=p.users.filter(function(u){return u.role==="sales"||u.role==="manager";});
   var allDeals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
   var getQ=function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
   var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var getQTargets=function(uid){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}};
+  var saveQTargets=function(uid,qt){try{localStorage.setItem("crm_qt_"+uid,JSON.stringify(qt));}catch(e){}};
   var [viewQ,setViewQ]=useState(curQ);
+  var [editQModal,setEditQModal]=useState(null);
 
   // Manager sees only their team if teamId set
   var visibleSales = sales.filter(function(u){
@@ -1846,6 +1860,8 @@ var TeamPage = function(p) {
             <div style={{ width:52, height:52, borderRadius:14, margin:"0 auto 10px", background:"rgba(255,255,255,0.15)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:20 }}>{a.name[0]}</div>
             <div style={{ color:"#fff", fontSize:15, fontWeight:700 }}>{a.name}</div>
             <div style={{ color:"rgba(255,255,255,0.55)", fontSize:12, marginTop:2 }}>{a.title}</div>
+            {isAdmin&&<button onClick={function(){var qt=getQTargets(uid);setEditQModal({user:a,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
+              style={{ marginTop:8, padding:"4px 12px", borderRadius:6, border:"none", background:"rgba(255,255,255,0.2)", color:"#fff", fontSize:11, fontWeight:600, cursor:"pointer" }}>🎯 تعديل Targets</button>}
           </div>
           <div style={{ padding:"14px 16px" }}>
             {/* Quarter progress */}
@@ -1893,6 +1909,23 @@ var TeamPage = function(p) {
         </Card>;
       })}
     </div>
+    {editQModal&&<Modal show={true} onClose={function(){setEditQModal(null);}} title={"🎯 Quarterly Targets — "+editQModal.user.name}>
+      <div style={{ fontSize:12, color:C.textLight, marginBottom:14, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>تارجت كل Quarter بالمليون (EGP)</div>
+      {["Q1","Q2","Q3","Q4"].map(function(q,i){
+        var labels=["يناير — مارس","أبريل — يونيو","يوليو — سبتمبر","أكتوبر — ديسمبر"];
+        return <div key={q} style={{ marginBottom:11 }}>
+          <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:4 }}>{q} <span style={{ fontSize:11, color:C.textLight }}>({labels[i]})</span></label>
+          <input type="text" placeholder="مثال: 5,000,000"
+            value={editQModal.targets[q]?Number(editQModal.targets[q]).toLocaleString():""}
+            onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setEditQModal(function(prev){return Object.assign({},prev,{targets:Object.assign({},prev.targets,{[q]:r?Number(r):0})});});}}
+            style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
+        </div>;
+      })}
+      <div style={{ display:"flex", gap:10 }}>
+        <Btn outline onClick={function(){setEditQModal(null);}} style={{ flex:1 }}>إلغاء</Btn>
+        <Btn onClick={function(){saveQTargets(gid(editQModal.user),editQModal.targets);setEditQModal(null);}} style={{ flex:1 }}>✅ حفظ</Btn>
+      </div>
+    </Modal>}
   </div>;
 };
 
