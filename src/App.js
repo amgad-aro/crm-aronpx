@@ -288,6 +288,7 @@ var StatusModal = function(p) {
   },[p.show]);
 
   var submit = async function() {
+    if (needsComment && !cbTime)         { setErr("لازم تختار موعد المكالمة"); return; }
     if (needsComment && !comment.trim()) { setErr("لازم تكتب ملاحظة"); return; }
     if (needsCb && !cbTime)              { setErr("لازم تختار موعد"); return; }
     if (isReject && !comment.trim())     { setErr("لازم تختار سبب الرفض"); return; }
@@ -311,7 +312,11 @@ var StatusModal = function(p) {
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
     </div>}
 
-    {/* Potential / HotCase / MeetingDone: comment required */}
+    {/* Potential / HotCase / MeetingDone: date + comment required */}
+    {needsComment&&<div style={{ marginBottom:12 }}>
+      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 موعد المكالمة القادمة <span style={{color:C.danger}}>*</span></label>
+      <input type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);setErr("");}} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
+    </div>}
     {needsComment&&<div style={{ marginBottom:12 }}>
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 ملاحظة <span style={{color:C.danger}}>*</span></label>
       <textarea rows={3} placeholder="اكتب ملاحظة..." value={comment} onChange={function(e){setComment(e.target.value);setErr("");}}
