@@ -488,6 +488,33 @@ var Header = function(p) {
         <input placeholder={t.search} value={p.search} onChange={function(e){p.setSearch(e.target.value);}} style={{ border:"none", background:"transparent", outline:"none", fontSize:13, color:C.text, width:"100%" }}/>
       </div>}
       <button onClick={function(){p.setLang(p.lang==="ar"?"en":"ar");}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:12, fontWeight:600, color:C.text }}>{p.lang==="ar"?"EN":"عر"}</button>
+      {/* Deal notifications bell - admin only */}
+      {p.isAdmin&&<div style={{ position:"relative" }}>
+        <button onClick={function(){p.setShowDealNotif(!p.showDealNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
+          <DollarSign size={16} color={p.dealNotifs&&p.dealNotifs.length>0?"#15803D":C.textLight}/>
+          {p.dealNotifs&&p.dealNotifs.length>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:"#15803D", color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.dealNotifs.length}</span>}
+        </button>
+        {p.showDealNotif&&<div style={{ position:"absolute", top:44, left:0, width:310, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
+          <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <span style={{ fontWeight:700, fontSize:13 }}>🎉 صفقات جديدة ({p.dealNotifs?p.dealNotifs.length:0})</span>
+            <div style={{ display:"flex", gap:6 }}>
+              {p.dealNotifs&&p.dealNotifs.length>0&&<button onClick={function(){p.setDealNotifs([]);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.textLight }}>مسح الكل</button>}
+              <button onClick={function(){p.setShowDealNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
+            </div>
+          </div>
+          {(!p.dealNotifs||p.dealNotifs.length===0)&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد صفقات جديدة</div>}
+          {p.dealNotifs&&p.dealNotifs.map(function(n){return <div key={n.id} style={{ padding:"12px 16px", borderBottom:"1px solid #F8FAFC" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <div style={{ width:32, height:32, borderRadius:8, background:n.status==="DoneDeal"?"#DCFCE7":"#FFF7ED", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{n.status==="DoneDeal"?"🎉":"🎯"}</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:12, fontWeight:700 }}>{n.status==="DoneDeal"?"Done Deal":"EOI"} — {n.leadName}</div>
+                <div style={{ fontSize:11, color:C.textLight }}>بواسطة {n.agentName}{n.budget?" · "+n.budget+" EGP":""}</div>
+                <div style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.time,p.t)}</div>
+              </div>
+            </div>
+          </div>;})}
+        </div>}
+      </div>}
       <div style={{ position:"relative" }} ref={notifRef}>
         <button onClick={function(){p.setShowNotif(!p.showNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <Bell size={16} color={C.textLight}/>
@@ -779,6 +806,11 @@ var LeadsPage = function(p) {
         if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
       }
       if(pendingStatus.newStatus === "EOI") upData.eoiDate = new Date().toISOString();
+      // Notify admin when DoneDeal or EOI
+      if(pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI"){
+        var notifEntry={id:Date.now(),leadName:selected?selected.name:"عميل",agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:"",time:new Date().toISOString()};
+        if(p.addDealNotif) p.addDealNotif(notifEntry);
+      }
       var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
       await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment},p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?updated:l;});});
@@ -2216,6 +2248,8 @@ export default function CRMApp() {
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
   var [showNotif,setShowNotif]=useState(false);
+  var [dealNotifs,setDealNotifs]=useState([]); // {id, leadName, agentName, status, time}
+  var [showDealNotif,setShowDealNotif]=useState(false);
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
   var [sidebarOpen,setSidebarOpen]=useState(false);
@@ -2368,7 +2402,7 @@ export default function CRMApp() {
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager";
   var currentPage=page||"dashboard";
   var titles={dashboard:t.dashboard,myday:t.myDay,leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected};
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
   var renderPage=function(){
     switch(currentPage){
@@ -2397,7 +2431,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ أنت غير متصل بالإنترنت — البيانات لن تُحفظ حتى يعود الاتصال
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);nav("leads");}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);nav("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} isAdmin={isAdmin}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
