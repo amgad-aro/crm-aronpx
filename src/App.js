@@ -1419,6 +1419,12 @@ var DealsPage = function(p) {
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var [showAdd,setShowAdd]=useState(false);
   var [editDeal,setEditDeal]=useState(null);
+  var [stagesModal,setStagesModal]=useState(null); // lead object
+
+  // Get stages from localStorage
+  var getStages=function(lid){try{return JSON.parse(localStorage.getItem("crm_stages_"+lid)||"{}");} catch(e){return {};}};
+  var saveStages=function(lid,stages){try{localStorage.setItem("crm_stages_"+lid,JSON.stringify(stages));}catch(e){}};
+  var [stagesForm,setStagesForm]=useState({contract:false,contractDate:"",payment1:false,payment1Date:"",payment1Amount:"",payment2:false,payment2Date:"",payment2Amount:""});
 
   var archiveDeal=async function(lid){
     if(!window.confirm("أرشفة هذه الصفقة؟"))return;
@@ -1426,6 +1432,22 @@ var DealsPage = function(p) {
       await apiFetch("/api/leads/"+lid+"/archive","PUT",null,p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:true}):l;});});
     }catch(e){alert(e.message);}
+  };
+
+  var openStages=function(d){
+    var s=getStages(gid(d));
+    setStagesForm({
+      contract:s.contract||false, contractDate:s.contractDate||"",
+      payment1:s.payment1||false, payment1Date:s.payment1Date||"", payment1Amount:s.payment1Amount||"",
+      payment2:s.payment2||false, payment2Date:s.payment2Date||"", payment2Amount:s.payment2Amount||""
+    });
+    setStagesModal(d);
+  };
+
+  var stagesProgress=function(lid){
+    var s=getStages(lid);
+    var done=[s.contract,s.payment1,s.payment2].filter(Boolean).length;
+    return done;
   };
 
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -1436,45 +1458,144 @@ var DealsPage = function(p) {
       </div>
       {isAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {t.addLead}</Btn>}
     </div>
+
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
         initial={{name:"",phone:"",phone2:"",email:"",budget:"",project:"",source:"Referral",agentId:"",callbackTime:"",notes:"",status:"DoneDeal"}}
         onClose={function(){setShowAdd(false);}}
         onSave={function(lead){p.setLeads(function(prev){return [lead].concat(prev);});setShowAdd(false);}}/>
     </Modal>
+
     {editDeal&&<Modal show={true} onClose={function(){setEditDeal(null);}} title={t.edit}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
         editId={gid(editDeal)} initial={editDeal}
         onClose={function(){setEditDeal(null);}}
         onSave={function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(updated)?updated:l;});});setEditDeal(null);}}/>
     </Modal>}
-    <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:650 }}>
+
+    {/* Stages Modal */}
+    {stagesModal&&<Modal show={true} onClose={function(){setStagesModal(null);}} title={"📋 مراحل الصفقة — "+stagesModal.name}>
+      <div style={{ marginBottom:14, padding:"10px 14px", background:"#DCFCE7", borderRadius:10, fontSize:12, color:"#15803D", fontWeight:600 }}>
+        {stagesProgress(gid(stagesModal))}/3 مراحل مكتملة
+        <div style={{ height:6, background:"#BBF7D0", borderRadius:3, marginTop:6 }}>
+          <div style={{ height:"100%", width:(stagesProgress(gid(stagesModal))/3*100)+"%", background:C.success, borderRadius:3, transition:"width 0.4s" }}/>
+        </div>
+      </div>
+
+      {/* Contract */}
+      <div style={{ marginBottom:14, padding:"12px 14px", background:"#F8FAFC", borderRadius:10, border:"1px solid "+(!stagesForm.contract?"#E2E8F0":C.success) }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:stagesForm.contract?8:0 }}>
+          <div onClick={function(){setStagesForm(function(f){return Object.assign({},f,{contract:!f.contract});});}}
+            style={{ width:22, height:22, borderRadius:6, border:"2px solid", borderColor:stagesForm.contract?C.success:"#CBD5E1", background:stagesForm.contract?C.success:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}>
+            {stagesForm.contract&&<span style={{ color:"#fff", fontSize:13, fontWeight:700 }}>✓</span>}
+          </div>
+          <span style={{ fontSize:13, fontWeight:600 }}>📝 العقد اتوقع</span>
+        </div>
+        {stagesForm.contract&&<div style={{ marginTop:8 }}>
+          <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>تاريخ التوقيع</label>
+          <input type="date" value={stagesForm.contractDate} onChange={function(e){setStagesForm(function(f){return Object.assign({},f,{contractDate:e.target.value});});}}
+            style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box" }}/>
+        </div>}
+      </div>
+
+      {/* Payment 1 */}
+      <div style={{ marginBottom:14, padding:"12px 14px", background:"#F8FAFC", borderRadius:10, border:"1px solid "+(!stagesForm.payment1?"#E2E8F0":C.success) }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:stagesForm.payment1?8:0 }}>
+          <div onClick={function(){setStagesForm(function(f){return Object.assign({},f,{payment1:!f.payment1});});}}
+            style={{ width:22, height:22, borderRadius:6, border:"2px solid", borderColor:stagesForm.payment1?C.success:"#CBD5E1", background:stagesForm.payment1?C.success:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}>
+            {stagesForm.payment1&&<span style={{ color:"#fff", fontSize:13, fontWeight:700 }}>✓</span>}
+          </div>
+          <span style={{ fontSize:13, fontWeight:600 }}>💰 الدفعة الأولى</span>
+        </div>
+        {stagesForm.payment1&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 10px", marginTop:8 }}>
+          <div>
+            <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>التاريخ</label>
+            <input type="date" value={stagesForm.payment1Date} onChange={function(e){setStagesForm(function(f){return Object.assign({},f,{payment1Date:e.target.value});});}}
+              style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box" }}/>
+          </div>
+          <div>
+            <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>المبلغ (EGP)</label>
+            <input type="text" placeholder="مثال: 500,000" value={stagesForm.payment1Amount}
+              onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setStagesForm(function(f){return Object.assign({},f,{payment1Amount:r?Number(r).toLocaleString():""});});}}
+              style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
+          </div>
+        </div>}
+      </div>
+
+      {/* Payment 2 */}
+      <div style={{ marginBottom:16, padding:"12px 14px", background:"#F8FAFC", borderRadius:10, border:"1px solid "+(!stagesForm.payment2?"#E2E8F0":C.success) }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:stagesForm.payment2?8:0 }}>
+          <div onClick={function(){setStagesForm(function(f){return Object.assign({},f,{payment2:!f.payment2});});}}
+            style={{ width:22, height:22, borderRadius:6, border:"2px solid", borderColor:stagesForm.payment2?C.success:"#CBD5E1", background:stagesForm.payment2?C.success:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}>
+            {stagesForm.payment2&&<span style={{ color:"#fff", fontSize:13, fontWeight:700 }}>✓</span>}
+          </div>
+          <span style={{ fontSize:13, fontWeight:600 }}>💰 الدفعة الثانية</span>
+        </div>
+        {stagesForm.payment2&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 10px", marginTop:8 }}>
+          <div>
+            <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>التاريخ</label>
+            <input type="date" value={stagesForm.payment2Date} onChange={function(e){setStagesForm(function(f){return Object.assign({},f,{payment2Date:e.target.value});});}}
+              style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box" }}/>
+          </div>
+          <div>
+            <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>المبلغ (EGP)</label>
+            <input type="text" placeholder="مثال: 500,000" value={stagesForm.payment2Amount}
+              onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setStagesForm(function(f){return Object.assign({},f,{payment2Amount:r?Number(r).toLocaleString():""});});}}
+              style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
+          </div>
+        </div>}
+      </div>
+
+      <div style={{ display:"flex", gap:10 }}>
+        <Btn outline onClick={function(){setStagesModal(null);}} style={{ flex:1 }}>إلغاء</Btn>
+        <Btn onClick={function(){saveStages(gid(stagesModal),stagesForm);setStagesModal(null);}} style={{ flex:1 }}>✅ حفظ</Btn>
+      </div>
+    </Modal>}
+
+    <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,isAdmin?t.agent:null,isAdmin?t.source:null,isAdmin?"":""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"مراحل الصفقة",isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
-        {deals.length===0&&<tr><td colSpan={8} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
-        {deals.map(function(d){var bv=parseBudget(d.budget);return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
-          <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
-          <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>
-          <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight }}>{d.phone2||"-"}</td>
-          <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
-          <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
-          {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>{getAg(d)}</td>}
-          {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.source}</td>}
-          <td style={{ padding:"8px 12px" }}>
-            <div style={{ display:"flex", gap:5 }}>
-              <button onClick={function(){setEditDeal(d);}} title={t.edit}
-                style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                <Edit size={13} color={C.info}/>
+        {deals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
+        {deals.map(function(d){
+          var bv=parseBudget(d.budget);
+          var prog=stagesProgress(gid(d));
+          var stages=getStages(gid(d));
+          return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight }}>{d.phone2||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
+            <td style={{ padding:"11px 12px", minWidth:130 }}>
+              <button onClick={function(){openStages(d);}}
+                style={{ background:"none", border:"none", cursor:"pointer", width:"100%", textAlign:"right", padding:0 }}>
+                <div style={{ display:"flex", gap:4, marginBottom:3 }}>
+                  {["contract","payment1","payment2"].map(function(k){return <span key={k} style={{ width:18, height:18, borderRadius:5, background:stages[k]?C.success:"#E2E8F0", display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:9, color:stages[k]?"#fff":"#94A3B8" }}>{stages[k]?"✓":"·"}</span>;})}
+                  <span style={{ fontSize:10, color:C.textLight, marginRight:4 }}>{prog}/3</span>
+                </div>
+                <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}>
+                  <div style={{ height:"100%", width:(prog/3*100)+"%", background:prog===3?C.success:C.accent, borderRadius:2 }}/>
+                </div>
               </button>
-              {isAdmin&&<button onClick={function(){archiveDeal(gid(d));}} title={t.archive}
-                style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                <Archive size={13} color={C.warning}/>
-              </button>}
-            </div>
-          </td>
-        </tr>;})}
+            </td>
+            {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>{getAg(d)}</td>}
+            {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.source}</td>}
+            <td style={{ padding:"8px 12px" }}>
+              <div style={{ display:"flex", gap:5 }}>
+                <button onClick={function(){setEditDeal(d);}} title={t.edit}
+                  style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                  <Edit size={13} color={C.info}/>
+                </button>
+                {isAdmin&&<button onClick={function(){archiveDeal(gid(d));}} title={t.archive}
+                  style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                  <Archive size={13} color={C.warning}/>
+                </button>}
+              </div>
+            </td>
+          </tr>;
+        })}
       </tbody>
     </table></div></Card>
   </div>;
