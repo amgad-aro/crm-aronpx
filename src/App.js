@@ -1551,7 +1551,11 @@ var DailyRequestsPage = function(p) {
   };
 
   var addReq=async function(){
-    if(!form.name||!form.phone)return;setSaving(true);
+    if(!form.name||!form.phone)return;
+    if(!form.area.trim()){alert("المنطقة مطلوبة");return;}
+    if(!form.budget.trim()){alert("الميزانية مطلوبة");return;}
+    if(!form.callbackTime){alert("موعد المكالمة مطلوب");return;}
+    setSaving(true);
     try{
       var drAgentId=form.agentId||"";
       var submitData={
@@ -1711,11 +1715,11 @@ var DailyRequestsPage = function(p) {
         <Inp label={"الهاتف"} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});})}} placeholder="01xxxxxxxxx"/>
         <Inp label={"هاتف إضافي"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder="اختياري"/>
         <Inp label={"نوع العقار"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- اختر -"};})}/>
-        <Inp label={"المنطقة"} value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder="مثال: التجمع الخامس"/>
-        <div style={{ gridColumn:"1/-1" }}><Inp label={"الميزانية"} value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>
+        <Inp label={"المنطقة"} req value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder="مثال: التجمع الخامس"/>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={"الميزانية"} req value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>
       </div>
       {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- اختر -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
-      <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/> 
+      <Inp label={t.callbackTime} req type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/> 
       <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/> 
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addReq} loading={saving} style={{ flex:1 }}>إضافة رقم</Btn></div>
     </Modal>
