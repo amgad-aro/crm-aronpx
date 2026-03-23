@@ -65,6 +65,7 @@ var TR = {
     activityLog: "سجل الأنشطة", clientHistory: "تاريخ العميل",
     duplicateFound: "⚠️ الرقم ده موجود بالفعل!", duplicateClient: "عميل موجود بنفس الرقم",
     monthlyTarget: "التارجت الشهري", myDay: "يومي",
+    salesDay:"مبيعات اليوم", salesWeek:"مبيعات الأسبوع", salesMonth:"مبيعات الشهر", dealsCount:"صفقة", newLeadsToday:"عملاء جدد اليوم", bestAgent:"🏆 الأفضل هذا الشهر", kpiTitle:"📊 KPIs — المبيعات",
     bulkReassign: "تحويل جماعي", selectAll: "تحديد الكل", reassignTo: "تحويل لـ",
     whatsapp: "واتساب", call: "اتصال",
     propertyType: "نوع العقار", area: "المنطقة",
@@ -134,6 +135,7 @@ var TR = {
     activityLog: "Activity Log", clientHistory: "Client History",
     duplicateFound: "⚠️ This number already exists!", duplicateClient: "Existing client with same number",
     monthlyTarget: "Monthly Target", myDay: "My Day",
+    salesDay:"Today's Deals", salesWeek:"This Week's Deals", salesMonth:"This Month's Deals", dealsCount:"deal(s)", newLeadsToday:"New Leads Today", bestAgent:"🏆 Top Performer", kpiTitle:"📊 KPIs — Deals",
     bulkReassign: "Bulk Reassign", selectAll: "Select All", reassignTo: "Reassign To",
     whatsapp: "WhatsApp", call: "Call",
     propertyType: "Property Type", area: "Area",
@@ -1205,30 +1207,30 @@ var DashboardPage = function(p) {
 
     {/* Admin KPI Section */}
     {isAdmin&&<div style={{ marginBottom:22 }}>
-      <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10, textTransform:"uppercase", letterSpacing:1 }}>📊 KPIs — الإيراد</div>
+      <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10, textTransform:"uppercase", letterSpacing:1 }}>{t.kpiTitle}</div>
       <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:10 }}>
         <div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#0EA5E9,#0284C7)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
-          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>إيراد اليوم</div>
+          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>{t.salesDay}</div>
           <div style={{ fontSize:22, fontWeight:800 }}>{todayRev>0?(todayRev/1000000).toFixed(2)+"M":"—"}</div>
-          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{todayDeals.length} صفقة</div>
+          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{todayDeals.length} {t.dealsCount}</div>
         </div>
         <div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#8B5CF6,#7C3AED)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
-          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>إيراد الأسبوع</div>
+          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>{t.salesWeek}</div>
           <div style={{ fontSize:22, fontWeight:800 }}>{weekRev>0?(weekRev/1000000).toFixed(2)+"M":"—"}</div>
-          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{weekDeals.length} صفقة</div>
+          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{weekDeals.length} {t.dealsCount}</div>
         </div>
         <div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#10B981,#059669)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
-          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>إيراد الشهر</div>
+          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>{t.salesMonth}</div>
           <div style={{ fontSize:22, fontWeight:800 }}>{monthRev>0?(monthRev/1000000).toFixed(2)+"M":"—"}</div>
-          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{monthDeals.length} صفقة</div>
+          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{monthDeals.length} {t.dealsCount}</div>
         </div>
         <div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#F59E0B,#D97706)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
-          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>عملاء جدد اليوم</div>
+          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>{t.newLeadsToday}</div>
           <div style={{ fontSize:22, fontWeight:800 }}>{todayLeads.length}</div>
-          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>من إجمالي {normalLeads.length}</div>
+          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{normalLeads.length} {t.totalLeads}</div>
         </div>
         {topAgent&&<div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#EC4899,#DB2777)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
-          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>🏆 الأفضل هذا الشهر</div>
+          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>{t.bestAgent}</div>
           <div style={{ fontSize:16, fontWeight:800 }}>{topAgent.u.name}</div>
           <div style={{ fontSize:12, opacity:0.85, marginTop:4 }}>{(topAgent.rev/1000000).toFixed(2)}M EGP</div>
         </div>}
