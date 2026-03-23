@@ -218,9 +218,9 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
 app.post("/api/leads", auth, async function(req, res) {
   try {
     console.log("NEW LEAD body:", JSON.stringify(req.body));
-    var agentId = req.body.agentId
+    var agentId = req.body.agentId && req.body.agentId !== ""
       ? new mongoose.Types.ObjectId(req.body.agentId)
-      : new mongoose.Types.ObjectId(req.user.id);
+      : null;
     var lead = await Lead.create({
       name:             req.body.name,
       phone:            req.body.phone,
