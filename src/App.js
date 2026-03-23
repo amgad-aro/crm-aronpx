@@ -700,6 +700,31 @@ var LeadsPage = function(p) {
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var isReq = !!p.isRequest;
 
+  // ---- State declarations (must be before filter logic) ----
+  var [selected, setSelected] = useState(null);
+  var [statusDrop, setStatusDrop] = useState(null);
+  var [showAdd, setShowAdd] = useState(false);
+  var [editLead, setEditLead] = useState(null);
+  var [showStatusPicker, setShowStatusPicker] = useState(false);
+  var [showStatusComment, setShowStatusComment] = useState(false);
+  var [pendingStatus, setPendingStatus] = useState(null);
+  var [actNote, setActNote] = useState(""); var [actType, setActType] = useState("call"); var [showActForm, setShowActForm] = useState(false);
+  var [saving, setSaving] = useState(false);
+  var [importing, setImporting] = useState(false); var [importMsg, setImportMsg] = useState("");
+  var [selected2, setSelected2] = useState([]);
+  var [showBulk, setShowBulk] = useState(false); var [bulkAgent, setBulkAgent] = useState("");
+  var [showWaTemplates, setShowWaTemplates] = useState(false);
+  var [waLead, setWaLead] = useState(null);
+  var [showQuickAdd, setShowQuickAdd] = useState(false);
+  var [quickForm, setQuickForm] = useState({name:"",phone:"",project:PROJECTS[0],source:"Facebook"});
+  var [quickSaving, setQuickSaving] = useState(false);
+  var [notifGranted, setNotifGranted] = useState(typeof Notification!=="undefined"&&Notification.permission==="granted");
+  var [vipFilter, setVipFilter] = useState(false);
+  var [agentFilter, setAgentFilter] = useState("");
+  var [sortBy, setSortBy] = useState("lastActivity");
+  var fileRef = useRef(null);
+
+  // ---- Filter logic (uses state values above) ----
   var allVisible = p.leads.filter(function(l){ return !l.archived && (isReq?l.source==="Daily Request":l.source!=="Daily Request"); });
   var filtered = p.leadFilter==="all"?allVisible:allVisible.filter(function(l){return l.status===p.leadFilter;});
   filtered = filtered.filter(function(l){return matchSearch(l,p.search);});
@@ -712,29 +737,6 @@ var LeadsPage = function(p) {
     if (sortBy==="name") return a.name.localeCompare(b.name,"ar");
     return 0;
   });
-
-  var [selected, setSelected] = useState(null);
-  var [statusDrop, setStatusDrop] = useState(null);
-  var [showAdd, setShowAdd] = useState(false);
-  var [editLead, setEditLead] = useState(null);
-  var [showStatusPicker, setShowStatusPicker] = useState(false);
-  var [showStatusComment, setShowStatusComment] = useState(false);
-  var [pendingStatus, setPendingStatus] = useState(null);
-  var [actNote, setActNote] = useState(""); var [actType, setActType] = useState("call"); var [showActForm, setShowActForm] = useState(false);
-  var [saving, setSaving] = useState(false);
-  var [importing, setImporting] = useState(false); var [importMsg, setImportMsg] = useState("");
-  var [selected2, setSelected2] = useState([]); // bulk select
-  var [showBulk, setShowBulk] = useState(false); var [bulkAgent, setBulkAgent] = useState("");
-  var [showWaTemplates, setShowWaTemplates] = useState(false);
-  var [waLead, setWaLead] = useState(null);
-  var [showQuickAdd, setShowQuickAdd] = useState(false);
-  var [quickForm, setQuickForm] = useState({name:"",phone:"",project:PROJECTS[0],source:"Facebook"});
-  var [quickSaving, setQuickSaving] = useState(false);
-  var [notifGranted, setNotifGranted] = useState(typeof Notification!=="undefined"&&Notification.permission==="granted");
-  var [vipFilter, setVipFilter] = useState(false);
-  var [agentFilter, setAgentFilter] = useState("");
-  var [sortBy, setSortBy] = useState("lastActivity");
-  var fileRef = useRef(null);
 
   useEffect(function(){ if(p.initSelected){setSelected(p.initSelected);} },[p.initSelected]);
 
@@ -1638,6 +1640,9 @@ var UsersPage = function(p) {
   var toggleActive=async function(u){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid,"PUT",{active:!u.active},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?upd:x;});});}catch(e){}};
   var del=async function(uid){if(!window.confirm(t.deleteConfirm))return;try{await apiFetch("/api/users/"+uid,"DELETE",null,p.token);p.setUsers(function(prev){return prev.filter(function(x){return gid(x)!==uid;});});}catch(e){alert(e.message);}};
   var updateTarget=async function(u,val){var uid=gid(u);try{await apiFetch("/api/users/"+uid,"PUT",{monthlyTarget:Number(val)},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?Object.assign({},x,{monthlyTarget:Number(val)}):x;});});}catch(e){}};
+  var getQTargets=function(uid){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}};
+  var saveQTargets=function(uid,qt){try{localStorage.setItem("crm_qt_"+uid,JSON.stringify(qt));}catch(e){}};
+  var [qtModal,setQtModal]=useState(null);
 
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", marginBottom:18 }}>
@@ -1654,16 +1659,45 @@ var UsersPage = function(p) {
         <td style={{ padding:"11px 12px", fontSize:12 }}>{u.title}</td>
         <td style={{ padding:"11px 12px" }}><Badge bg={(rc[u.role]||"#94A3B8")+"15"} color={rc[u.role]||"#94A3B8"}>{rl[u.role]||u.role}</Badge></td>
         <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{u.phone}</td>
-        <td style={{ padding:"11px 12px" }}>
-          {(p.cu.role==="admin")?
-            <input type="number" value={u.monthlyTarget||15} onChange={function(e){updateTarget(u,e.target.value);}} style={{ width:70, padding:"4px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:12 }}/>
-            :<span style={{ fontSize:12, fontWeight:600, color:C.text }}>{(u.monthlyTarget||0).toLocaleString()}</span>}
+        <td style={{ padding:"8px 12px" }}>
+          {p.cu.role==="admin"
+            ?<div style={{ display:"flex", alignItems:"center", gap:5 }}>
+              <input type="number" value={u.monthlyTarget||15} onChange={function(e){updateTarget(u,e.target.value);}} style={{ width:60, padding:"4px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:12 }}/>
+              <button onClick={function(){var qt=getQTargets(uid);setQtModal({user:u,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
+                title="Quarterly Targets"
+                style={{ padding:"3px 8px", borderRadius:6, border:"1px solid "+C.accent, background:C.accent+"10", color:C.accent, fontSize:10, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>Q</button>
+            </div>
+            :<div>
+              <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{(u.monthlyTarget||0).toLocaleString()}</div>
+              <div style={{ display:"flex", gap:3, marginTop:3 }}>
+                {["Q1","Q2","Q3","Q4"].map(function(q){var qt=getQTargets(uid);var v=qt[q]||0;return <span key={q} style={{ fontSize:9, padding:"1px 4px", borderRadius:3, background:"#F1F5F9", color:C.textLight }}>{q}:{v>0?(v/1000000).toFixed(1)+"M":"—"}</span>;})}
+              </div>
+            </div>}
         </td>
         <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(u.role!=="admin")toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
         <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:u.name});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button><button onClick={function(){if(u.role!=="admin")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.role!=="admin"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.role==="admin"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
       </tr>;})}
       </tbody>
     </table></div></Card>
+    {qtModal&&<Modal show={true} onClose={function(){setQtModal(null);}} title={"🎯 Quarterly Targets — "+qtModal.user.name}>
+      <div style={{ fontSize:12, color:C.textLight, marginBottom:14, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>
+        تارجت كل Quarter بالمليون — بيتحسب من صفقات Done Deal
+      </div>
+      {["Q1","Q2","Q3","Q4"].map(function(q,i){
+        var labels=["يناير — مارس","أبريل — يونيو","يوليو — سبتمبر","أكتوبر — ديسمبر"];
+        return <div key={q} style={{ marginBottom:11 }}>
+          <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:4 }}>{q} <span style={{ fontSize:11, color:C.textLight, fontWeight:400 }}>({labels[i]})</span></label>
+          <input type="text" placeholder="مثال: 5,000,000"
+            value={qtModal.targets[q]?Number(qtModal.targets[q]).toLocaleString():""}
+            onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setQtModal(function(prev){return Object.assign({},prev,{targets:Object.assign({},prev.targets,{[q]:r?Number(r):0})});});}}
+            style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
+        </div>;
+      })}
+      <div style={{ display:"flex", gap:10, marginTop:4 }}>
+        <Btn outline onClick={function(){setQtModal(null);}} style={{ flex:1 }}>إلغاء</Btn>
+        <Btn onClick={function(){saveQTargets(gid(qtModal.user),qtModal.targets);setQtModal(null);}} style={{ flex:1 }}>✅ حفظ</Btn>
+      </div>
+    </Modal>}
     {pwModal&&<Modal show={true} onClose={function(){setPwModal(null);setPwMsg("");}} title={t.changePassword+" — "+pwModal.userName}>
       <Inp label={t.newPassword} type="password" value={pwForm.newPass} onChange={function(e){setPwForm(Object.assign({},pwForm,{newPass:e.target.value}));setPwMsg("");}}/>
       <Inp label={t.confirmPassword} type="password" value={pwForm.confirmPass} onChange={function(e){setPwForm(Object.assign({},pwForm,{confirmPass:e.target.value}));setPwMsg("");}}/>
@@ -1760,42 +1794,100 @@ var ReportsPage = function(p) {
 var TeamPage = function(p) {
   var t=p.t;
   var sales=p.users.filter(function(u){return u.role==="sales"||u.role==="manager";});
-  var normalLeads=p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
+  var allDeals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
+  var getQ=function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
+  var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+  var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
+  var getQTargets=function(uid){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}};
+  var [viewQ,setViewQ]=useState(curQ);
+
+  // Manager sees only their team if teamId set
+  var visibleSales = sales.filter(function(u){
+    if(p.cu.role==="admin") return true;
+    if(p.cu.role==="manager"){
+      if(!p.cu.teamId) return true;
+      return u.teamId===p.cu.teamId;
+    }
+    return false;
+  });
+
   return <div style={{ padding:"18px 16px 40px" }}>
-    <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.team}</h2>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18, flexWrap:"wrap", gap:10 }}>
+      <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.team}</h2>
+      <div style={{ display:"flex", gap:6 }}>
+        {["Q1","Q2","Q3","Q4"].map(function(q){return <button key={q} onClick={function(){setViewQ(q);}}
+          style={{ padding:"6px 14px", borderRadius:8, border:"1px solid", borderColor:viewQ===q?C.accent:"#E2E8F0",
+            background:viewQ===q?C.accent+"12":"#fff", color:viewQ===q?C.accent:C.textLight,
+            fontSize:12, fontWeight:600, cursor:"pointer" }}>{q}{q===curQ?" 🔵":""}</button>;})}
+      </div>
+    </div>
     <div style={{ display:"flex", gap:14, flexWrap:"wrap" }}>
-      {sales.map(function(a){
+      {visibleSales.map(function(a){
         var uid=gid(a);
-        var al=normalLeads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===uid;});
-        var deals=al.filter(function(l){return l.status==="DoneDeal";}).length;
+        var al=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===uid&&!l.archived;});
         var calls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return auid===uid&&ac.type==="call";}).length;
         var meets=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return auid===uid&&ac.type==="meeting";}).length;
-        var rate=al.length>0?Math.round(deals/al.length*100):0;
-        var target=a.monthlyTarget||15;
-        var progress=Math.min(Math.round(deals/target*100),100);
-        return <Card key={uid} style={{ flex:"1 1 280px", maxWidth:360, overflow:"hidden", padding:0 }}>
+        var qt=getQTargets(uid);
+        var qTarget=qt[viewQ]||0;
+        var qDeals=allDeals.filter(function(d){
+          var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;
+          if(aid!==uid) return false;
+          var dd=d.updatedAt||d.createdAt;
+          return dd&&getQ(dd)===viewQ;
+        });
+        var qRevenue=qDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+        var qProg=qTarget>0?Math.min(100,Math.round((qRevenue/qTarget)*100)):0;
+        var allAgentDeals=allDeals.filter(function(d){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return aid===uid;});
+        var totalRevenue=allAgentDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+        var rate=al.length>0?Math.round(allAgentDeals.length/al.length*100):0;
+
+        return <Card key={uid} style={{ flex:"1 1 300px", maxWidth:380, overflow:"hidden", padding:0 }}>
           <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:20, textAlign:"center" }}>
             <div style={{ width:52, height:52, borderRadius:14, margin:"0 auto 10px", background:"rgba(255,255,255,0.15)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:20 }}>{a.name[0]}</div>
             <div style={{ color:"#fff", fontSize:15, fontWeight:700 }}>{a.name}</div>
             <div style={{ color:"rgba(255,255,255,0.55)", fontSize:12, marginTop:2 }}>{a.title}</div>
           </div>
           <div style={{ padding:"14px 16px" }}>
-            {/* Target Progress */}
-            <div style={{ marginBottom:14 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
-                <span style={{ fontSize:11, color:C.textLight }}>{t.monthlyTarget}: {target}</span>
-                <span style={{ fontSize:11, fontWeight:700, color:progress>=100?C.success:C.accent }}>{deals} / {target}</span>
+            {/* Quarter progress */}
+            <div style={{ marginBottom:14, padding:"10px 12px", background:"#F8FAFC", borderRadius:10 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                <span style={{ fontSize:12, fontWeight:700 }}>{viewQ} Target</span>
+                <span style={{ fontSize:11, color:C.textLight }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"لم يتحدد"}</span>
               </div>
-              <div style={{ height:6, background:"#F1F5F9", borderRadius:3 }}><div style={{ height:"100%", width:progress+"%", background:progress>=100?C.success:"linear-gradient(90deg,"+C.accent+","+C.accentLight+")", borderRadius:3, transition:"width 0.6s" }}/></div>
+              <div style={{ height:8, background:"#E2E8F0", borderRadius:4, marginBottom:5 }}>
+                <div style={{ height:"100%", width:qProg+"%", borderRadius:4, background:qProg>=100?C.success:qProg>=50?C.accent:C.warning, transition:"width 0.6s" }}/>
+              </div>
+              <div style={{ display:"flex", justifyContent:"space-between" }}>
+                <span style={{ fontSize:12, color:C.success, fontWeight:700 }}>{qRevenue.toLocaleString()} EGP</span>
+                <span style={{ fontSize:12, fontWeight:700, color:qProg>=100?C.success:C.accent }}>{qProg}%</span>
+              </div>
+              <div style={{ fontSize:10, color:C.textLight, marginTop:3 }}>{qDeals.length} صفقة في {viewQ}</div>
             </div>
-            <div style={{ display:"flex", justifyContent:"space-around", marginBottom:12 }}>
-              <div style={{ textAlign:"center" }}><div style={{ fontSize:18, fontWeight:700 }}>{al.length}</div><div style={{ fontSize:10, color:C.textLight }}>{t.leads}</div></div>
-              <div style={{ textAlign:"center" }}><div style={{ fontSize:18, fontWeight:700, color:C.success }}>{deals}</div><div style={{ fontSize:10, color:C.textLight }}>{t.deals}</div></div>
-              <div style={{ textAlign:"center" }}><div style={{ fontSize:18, fontWeight:700, color:C.accent }}>{rate}%</div><div style={{ fontSize:10, color:C.textLight }}>Conv.</div></div>
+            {/* Stats */}
+            <div style={{ display:"flex", justifyContent:"space-around", marginBottom:10 }}>
+              <div style={{ textAlign:"center" }}><div style={{ fontSize:16, fontWeight:700 }}>{al.length}</div><div style={{ fontSize:10, color:C.textLight }}>عملاء</div></div>
+              <div style={{ textAlign:"center" }}><div style={{ fontSize:16, fontWeight:700, color:C.success }}>{allAgentDeals.length}</div><div style={{ fontSize:10, color:C.textLight }}>صفقات</div></div>
+              <div style={{ textAlign:"center" }}><div style={{ fontSize:13, fontWeight:700, color:C.accent }}>{(totalRevenue/1000000).toFixed(1)}M</div><div style={{ fontSize:10, color:C.textLight }}>إجمالي</div></div>
+              <div style={{ textAlign:"center" }}><div style={{ fontSize:16, fontWeight:700, color:C.info }}>{calls}</div><div style={{ fontSize:10, color:C.textLight }}>مكالمات</div></div>
             </div>
-            <div style={{ display:"flex", justifyContent:"space-around", borderTop:"1px solid #F1F5F9", paddingTop:10 }}>
-              <div style={{ textAlign:"center" }}><div style={{ fontSize:14, fontWeight:700, color:C.success }}>{calls}</div><div style={{ fontSize:10, color:C.textLight }}>{t.calls}</div></div>
-              <div style={{ textAlign:"center" }}><div style={{ fontSize:14, fontWeight:700, color:C.info }}>{meets}</div><div style={{ fontSize:10, color:C.textLight }}>{t.meetings}</div></div>
+            {/* Mini Q bars */}
+            <div style={{ borderTop:"1px solid #F1F5F9", paddingTop:10 }}>
+              <div style={{ fontSize:10, color:C.textLight, marginBottom:5, fontWeight:600 }}>أداء الـ Quarters</div>
+              <div style={{ display:"flex", gap:6 }}>
+                {["Q1","Q2","Q3","Q4"].map(function(q){
+                  var qd=allDeals.filter(function(d){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;if(aid!==uid)return false;var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===q;});
+                  var qr=qd.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+                  var qt2=getQTargets(uid);var qt2q=qt2[q]||0;
+                  var qp=qt2q>0?Math.min(100,Math.round((qr/qt2q)*100)):0;
+                  return <div key={q} style={{ flex:1, textAlign:"center" }}>
+                    <div style={{ fontSize:9, color:q===curQ?C.accent:C.textLight, fontWeight:q===curQ?700:400, marginBottom:2 }}>{q}</div>
+                    <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}>
+                      <div style={{ height:"100%", width:qp+"%", background:qp>=100?C.success:C.accent, borderRadius:2 }}/>
+                    </div>
+                    <div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{(qr/1000000).toFixed(1)}M</div>
+                  </div>;
+                })}
+              </div>
             </div>
           </div>
         </Card>;
