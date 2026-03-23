@@ -1757,7 +1757,27 @@ var DealsPage = function(p) {
                 var ag=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;
                 var agUser=p.users.find(function(u){return gid(u)===ag;});
                 var agRole=agUser?agUser.role:"sales";
-                var commRate=agRole==="manager"?2000:5000;
+                var commRate=agRole==="manager"?2000:(function(){
+                  if(!agUser) return 5000;
+                  var qt={};try{qt=JSON.parse(localStorage.getItem("crm_qt_"+ag)||"{}");}catch(e){}
+                  var curQNow=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+                  var qTarget=qt[curQNow]||0;
+                  if(!qTarget) return 5000;
+                  // calc total effective revenue for this agent in current Q
+                  var allDealsNow=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
+                  var getQNow=function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
+                  var agentRev=allDealsNow.reduce(function(s,dd){
+                    var aid=dd.agentId&&dd.agentId._id?dd.agentId._id:dd.agentId;
+                    if(aid!==ag) return s;
+                    var ddate=dd.updatedAt||dd.createdAt;
+                    if(!ddate||getQNow(ddate)!==curQNow) return s;
+                    var w=getProjectWeight(dd.project);
+                    var sp=getDealSplit(gid(dd));
+                    return s+(parseBudget(dd.budget)*w*(sp?0.5:1));
+                  },0);
+                  var mult=agentRev/qTarget;
+                  return mult>=3?7000:mult>=2?6000:5000;
+                })();
                 var comm=(effRev/1000000)*commRate;
                 return <div>
                   <div style={{ fontSize:12, fontWeight:700, color:C.success }}>{comm>0?comm.toLocaleString()+" EGP":"—"}</div>
