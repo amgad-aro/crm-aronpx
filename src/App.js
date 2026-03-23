@@ -1750,7 +1750,7 @@ var DealsPage = function(p) {
             {isAdmin&&<td style={{ padding:"11px 12px" }}>
               {(function(){
                 var raw=parseBudget(d.budget);
-                var weight=projWeights[d.project]!==undefined?projWeights[d.project]:getProjectWeight(d.project);
+                var weight=getProjectWeight(d.project);
                 var split=getDealSplit(gid(d));
                 var splitFactor=split?0.5:1;
                 var effRev=raw*weight*splitFactor;
