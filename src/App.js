@@ -1182,15 +1182,67 @@ var DashboardPage = function(p) {
   var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
   var normalLeads = p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   var myLeads = isAdmin?normalLeads:normalLeads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===p.cu.id;});
+  var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
+  var now=Date.now();
+  var DAY=86400000; var WEEK=7*DAY; var MONTH=30*DAY;
+  var allDeals=normalLeads.filter(function(l){return l.status==="DoneDeal";});
+  var todayDeals=allDeals.filter(function(l){return l.updatedAt&&(now-new Date(l.updatedAt).getTime())<DAY;});
+  var weekDeals=allDeals.filter(function(l){return l.updatedAt&&(now-new Date(l.updatedAt).getTime())<WEEK;});
+  var monthDeals=allDeals.filter(function(l){return l.updatedAt&&(now-new Date(l.updatedAt).getTime())<MONTH;});
+  var todayRev=todayDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var weekRev=weekDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var monthRev=monthDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var todayLeads=normalLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;});
+  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+  var topAgent=isAdmin?(function(){
+    var stats=salesUsers.map(function(u){var uid=gid(u);var rev=monthDeals.filter(function(d){var a=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return a===uid;}).reduce(function(s,d){return s+parseBudget(d.budget);},0);return{u:u,rev:rev};});
+    stats.sort(function(a,b){return b.rev-a.rev;});
+    return stats[0]&&stats[0].rev>0?stats[0]:null;
+  })():null;
+
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ fontSize:14, color:C.textLight, marginBottom:18 }}>{t.welcome}, <b style={{ color:C.text }}>{p.cu.name}</b> 👋</div>
+
+    {/* Admin KPI Section */}
+    {isAdmin&&<div style={{ marginBottom:22 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10, textTransform:"uppercase", letterSpacing:1 }}>📊 KPIs — الإيراد</div>
+      <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:10 }}>
+        <div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#0EA5E9,#0284C7)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
+          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>إيراد اليوم</div>
+          <div style={{ fontSize:22, fontWeight:800 }}>{todayRev>0?(todayRev/1000000).toFixed(2)+"M":"—"}</div>
+          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{todayDeals.length} صفقة</div>
+        </div>
+        <div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#8B5CF6,#7C3AED)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
+          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>إيراد الأسبوع</div>
+          <div style={{ fontSize:22, fontWeight:800 }}>{weekRev>0?(weekRev/1000000).toFixed(2)+"M":"—"}</div>
+          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{weekDeals.length} صفقة</div>
+        </div>
+        <div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#10B981,#059669)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
+          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>إيراد الشهر</div>
+          <div style={{ fontSize:22, fontWeight:800 }}>{monthRev>0?(monthRev/1000000).toFixed(2)+"M":"—"}</div>
+          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{monthDeals.length} صفقة</div>
+        </div>
+        <div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#F59E0B,#D97706)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
+          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>عملاء جدد اليوم</div>
+          <div style={{ fontSize:22, fontWeight:800 }}>{todayLeads.length}</div>
+          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>من إجمالي {normalLeads.length}</div>
+        </div>
+        {topAgent&&<div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#EC4899,#DB2777)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
+          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>🏆 الأفضل هذا الشهر</div>
+          <div style={{ fontSize:16, fontWeight:800 }}>{topAgent.u.name}</div>
+          <div style={{ fontSize:12, opacity:0.85, marginTop:4 }}>{(topAgent.rev/1000000).toFixed(2)}M EGP</div>
+        </div>}
+      </div>
+    </div>}
+
+    {/* Regular stats */}
     <div style={{ display:"flex", gap:10, marginBottom:22, flexWrap:"wrap" }}>
       <StatCard icon={Users} label={isAdmin?t.allLeads:t.myLeads} value={myLeads.length+""} c={C.info} onClick={function(){p.nav("leads");}}/>
       <StatCard icon={Target} label={t.newLeads} value={myLeads.filter(function(l){return l.status==="Potential";}).length+""} c={C.success} onClick={function(){p.nav("leads");p.setFilter("Potential");}}/>
       <StatCard icon={Briefcase} label={t.activeDeals} value={myLeads.filter(function(l){return["HotCase","CallBack","MeetingDone"].includes(l.status);}).length+""} c={C.accent} onClick={function(){p.nav("leads");p.setFilter("HotCase");}}/>
       <StatCard icon={DollarSign} label={t.doneDeals} value={myLeads.filter(function(l){return l.status==="DoneDeal";}).length+""} c={C.primary} onClick={function(){p.nav("deals");}}/>
-      <StatCard icon={Activity} label={"جدد اليوم"} value={(function(){ return myLeads.filter(function(l){ return l.createdAt && (Date.now()-new Date(l.createdAt).getTime())<86400000; }).length+""; })()} c={"#8B5CF6"}/>
     </div>
+
     <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
       <Card style={{ flex:2, minWidth:250 }}>
         <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.leadsByStatus}</h3>
