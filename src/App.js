@@ -1721,7 +1721,7 @@ var DealsPage = function(p) {
 
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"مراحل الصفقة",isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"مراحل الصفقة",isAdmin?"عمولة":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {deals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
@@ -1747,6 +1747,26 @@ var DealsPage = function(p) {
                 </div>
               </button>
             </td>
+            {isAdmin&&<td style={{ padding:"11px 12px" }}>
+              {(function(){
+                var raw=parseBudget(d.budget);
+                var weight=getProjectWeight(d.project);
+                var split=getDealSplit(gid(d));
+                var splitFactor=split?0.5:1;
+                var effRev=raw*weight*splitFactor;
+                var ag=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;
+                var agUser=p.users.find(function(u){return gid(u)===ag;});
+                var agRole=agUser?agUser.role:"sales";
+                var commRate=agRole==="manager"?2000:5000;
+                var comm=(effRev/1000000)*commRate;
+                var weightLabel=weight<1?"(50%)":"";
+                return <div>
+                  <div style={{ fontSize:12, fontWeight:700, color:C.success }}>{comm>0?comm.toLocaleString()+" EGP":"—"}</div>
+                  {weight<1&&<div style={{ fontSize:9, color:"#B45309" }}>⚠️ 50%</div>}
+                  {split&&<div style={{ fontSize:9, color:"#8B5CF6" }}>🤝 مقسومة</div>}
+                </div>;
+              })()}
+            </td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>
               <div>{getAg(d)}</div>
               {(function(){var sp=getDealSplit(gid(d));return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
