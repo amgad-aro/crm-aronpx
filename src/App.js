@@ -1501,6 +1501,9 @@ var DealsPage = function(p) {
   var [commModal,setCommModal]=useState(false); // show commission summary
   var [commQ,setCommQ]=useState((function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})());
   var [projWeightModal,setProjWeightModal]=useState(false);
+  var [projWeights,setProjWeights]=useState(function(){
+    var w={};deals.forEach(function(d){if(d.project)w[d.project]=getProjectWeight(d.project);});return w;
+  });
 
   // Get stages from localStorage
   var getStages=function(lid){try{return JSON.parse(localStorage.getItem("crm_stages_"+lid)||"{}");} catch(e){return {};}};
