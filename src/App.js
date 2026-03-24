@@ -1043,7 +1043,7 @@ var LeadsPage = function(p) {
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.phone2}</th>
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.project}</th>
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.status}</th>
-              {!p.isMobile&&<th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90 }}>{t.source}</th>}
+              {!p.isMobile&&isAdmin&&<th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90 }}>{t.source}</th>}
               {isAdmin&&<th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.agent}</th>}
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90 }}>{t.lastActivity}</th>
               {!p.isMobile&&<th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.callbackTime}</th>}
@@ -1090,7 +1090,7 @@ var LeadsPage = function(p) {
                       </div>}
                     </div>
                   </td>
-                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"right", whiteSpace:"nowrap" }}>{lead.source}</td>}
+                  {!p.isMobile&&isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"right", whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
@@ -1156,7 +1156,7 @@ var LeadsPage = function(p) {
             </select>
           </div>}
           {/* Details */}
-          {[{l:t.budget,v:selected.budget},{l:t.source,v:selected.source},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"آخر تواصل",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("ar-EG")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"تاريخ الإضافة",v:selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-"},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:t.budget,v:selected.budget},{l:t.source,v:isAdmin?selected.source:null},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"آخر تواصل",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("ar-EG")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"تاريخ الإضافة",v:selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-"},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span></div>:null;
           })}
           {/* WhatsApp Templates */}
@@ -1491,10 +1491,10 @@ var EOIPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight }}>{eoiDateStr}</td>
             <td style={{ padding:"8px 12px" }}>
               <div style={{ display:"flex", gap:5 }}>
-                <button onClick={function(){setEditLead(d);}} title={t.edit}
+                {isAdmin&&<button onClick={function(){setEditLead(d);}} title={t.edit}
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <Edit size={13} color={C.info}/>
-                </button>
+                </button>}
                 {isAdmin&&<button onClick={function(){archiveLead(gid(d));}} title={t.archive}
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <Archive size={13} color={C.warning}/>
@@ -1924,10 +1924,10 @@ var DealsPage = function(p) {
               <div style={{ display:"flex", gap:5 }}>
                 {isAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplit(gid(d));setSplitAgent2(sp?sp.agent2Id:"");}} title="تقسيم صفقة"
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid "+(getDealSplit(gid(d))?"#8B5CF6":"#E2E8F0"), background:getDealSplit(gid(d))?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12 }}>🤝</button>}
-                <button onClick={function(){setEditDeal(d);}} title={t.edit}
+                {isAdmin&&<button onClick={function(){setEditDeal(d);}} title={t.edit}
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <Edit size={13} color={C.info}/>
-                </button>
+                </button>}
                 {isAdmin&&<button onClick={function(){archiveDeal(gid(d));}} title={t.archive}
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <Archive size={13} color={C.warning}/>
@@ -2915,6 +2915,44 @@ export default function CRMApp() {
     var interval = setInterval(function(){ loadData(token); }, 5*60*1000);
     return function(){ clearInterval(interval); };
   },[token]);
+
+  // ===== SALES NOTIFICATIONS =====
+  useEffect(function(){
+    if(!token||!currentUser||currentUser.role!=="sales") return;
+    var lastLeadCount = leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===currentUser.id;}).length;
+
+    // Notify on new lead assigned
+    var checkNewLeads = function(){
+      var myLeads = leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===currentUser.id&&!l.archived;});
+      if(myLeads.length>lastLeadCount){
+        var newOnes = myLeads.slice(0, myLeads.length-lastLeadCount);
+        newOnes.forEach(function(l){
+          showBrowserNotif("👤 عميل جديد وصلك", l.name+" — "+l.phone);
+        });
+      }
+    };
+
+    // Notify on upcoming callbacks (within 30 min)
+    var checkCallbacks = function(){
+      var now = Date.now();
+      var soon = 30*60*1000;
+      var myLeads = leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===currentUser.id&&l.callbackTime&&!l.archived;});
+      myLeads.forEach(function(l){
+        var cbTime = new Date(l.callbackTime).getTime();
+        var diff = cbTime - now;
+        if(diff>0&&diff<=soon){
+          var key="crm_cb_notif_"+gid(l);
+          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("📞 موعد مكالمة قريب",l.name+" — خلال "+Math.round(diff/60000)+" دقيقة");}}catch(e){}
+        } else if(diff<0){
+          try{localStorage.removeItem("crm_cb_notif_"+gid(l));}catch(e){}
+        }
+      });
+    };
+
+    checkCallbacks();
+    var cbInterval = setInterval(checkCallbacks, 60000);
+    return function(){clearInterval(cbInterval);};
+  },[token, currentUser, leads.length]);
 
   // ===== HEARTBEAT every 2 minutes =====
   useEffect(function(){
