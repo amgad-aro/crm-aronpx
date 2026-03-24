@@ -421,13 +421,15 @@ var LoginPage = function(p) {
 // ===== SIDEBAR =====
 var Sidebar = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
+  var isSales = p.cu.role==="sales";
   var items = [
     {id:"dashboard",icon:Home,label:t.dashboard},
     {id:"leads",icon:Users,label:t.leads},
-    {id:"dailyReq",icon:ClipboardList,label:t.dailyReq},
+    !isSales&&{id:"dailyReq",icon:ClipboardList,label:t.dailyReq},
     {id:"deals",icon:Briefcase,label:t.deals},
     {id:"eoi",icon:Target,label:"EOI"},
     {id:"tasks",icon:CheckCircle,label:t.tasks},
+    isSales&&{id:"myperf",icon:TrendingUp,label:"أدائي"},
     isAdmin&&{id:"reports",icon:BarChart3,label:t.reports},
     isAdmin&&{id:"team",icon:UserPlus,label:t.team},
     isAdmin&&{id:"users",icon:Lock,label:t.users},
@@ -1416,7 +1418,7 @@ var DashboardPage = function(p) {
         {p.activities.slice(0,8).map(function(a){
           var lId=a.leadId?(gid(a.leadId)):null; var lName=a.leadId&&a.leadId.name?a.leadId.name:""; var uName=a.userId&&a.userId.name?a.userId.name:"";
           var ml=lId?p.leads.find(function(l){return gid(l)===lId;}):null;
-          return <div key={a._id||a.id} onClick={function(){if(ml){p.setInitSelected(ml);p.nav("leads");}}} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderBottom:"1px solid #F8FAFC", cursor:ml?"pointer":"default", borderRadius:4 }}
+          return <div key={a._id||a.id} onClick={function(){if(ml){p.setInitSelected(ml);p.nav("leads",true);}}} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderBottom:"1px solid #F8FAFC", cursor:ml?"pointer":"default", borderRadius:4 }}
             onMouseEnter={function(e){if(ml)e.currentTarget.style.background="#F8FAFC";}} onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
             <div style={{ width:26, height:26, borderRadius:7, background:(a.type==="call"?C.success:a.type==="status_change"?C.warning:C.info)+"15", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
               {a.type==="call"?<Phone size={11} color={C.success}/>:a.type==="meeting"?<Calendar size={11} color={C.info}/>:<Activity size={11} color={C.warning}/>}
@@ -2810,6 +2812,111 @@ var SettingsPage = function(p) {
   </div>;
 };
 
+// ===== MY PERFORMANCE PAGE (Sales only) =====
+var MyPerfPage = function(p) {
+  var t=p.t; var uid=p.cu.id;
+  var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
+  var myLeads=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===uid&&!l.archived&&l.source!=="Daily Request";});
+  var myDeals=myLeads.filter(function(l){return l.status==="DoneDeal";});
+  var myActs=p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return auid===uid;});
+  var now=Date.now(); var DAY=24*60*60*1000; var WEEK=7*DAY; var MONTH=30*DAY;
+  // Time-based stats
+  var todayDeals=myDeals.filter(function(d){return d.updatedAt&&(now-new Date(d.updatedAt).getTime())<DAY;});
+  var weekDeals=myDeals.filter(function(d){return d.updatedAt&&(now-new Date(d.updatedAt).getTime())<WEEK;});
+  var monthDeals=myDeals.filter(function(d){return d.updatedAt&&(now-new Date(d.updatedAt).getTime())<MONTH;});
+  var todayCalls=myActs.filter(function(a){return a.type==="call"&&a.createdAt&&(now-new Date(a.createdAt).getTime())<DAY;});
+  var weekCalls=myActs.filter(function(a){return a.type==="call"&&a.createdAt&&(now-new Date(a.createdAt).getTime())<WEEK;});
+  var monthCalls=myActs.filter(function(a){return a.type==="call"&&a.createdAt&&(now-new Date(a.createdAt).getTime())<MONTH;});
+  var todayLeads=myLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;});
+  var weekLeads=myLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<WEEK;});
+  var monthLeads=myLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<MONTH;});
+  // Target
+  var myUser=p.users.find(function(u){return gid(u)===uid||u._id===uid;})||{};
+  var monthTarget=(myUser.monthlyTarget||0)*1000000;
+  var monthRev=monthDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var prog=monthTarget>0?Math.min(100,Math.round(monthRev/monthTarget*100)):0;
+  // Q targets
+  var getQ=function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
+  var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+  var qt={}; try{qt=JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){}
+  var qTarget=qt[curQ]||0;
+  var qDeals=myDeals.filter(function(d){var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===curQ;});
+  var qRev=qDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var qProg=qTarget>0?Math.min(100,Math.round(qRev/qTarget*100)):0;
+  var convRate=myLeads.length>0?Math.round(myDeals.length/myLeads.length*100):0;
+  var isOnlineNow=myUser.lastSeen&&(Date.now()-new Date(myUser.lastSeen).getTime())<3*60*1000;
+
+  return <div style={{ padding:"18px 16px 40px" }}>
+    <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>أدائي</h2>
+
+    {/* Profile Card */}
+    <Card style={{ maxWidth:440, marginBottom:20, padding:0, overflow:"hidden" }}>
+      <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:20, textAlign:"center" }}>
+        <div style={{ margin:"0 auto 10px", display:"inline-block" }}><Avatar name={p.cu.name} size={56} online={isOnlineNow}/></div>
+        <div style={{ color:"#fff", fontSize:16, fontWeight:700 }}>{p.cu.name}</div>
+        <div style={{ color:"rgba(255,255,255,0.55)", fontSize:12, marginTop:2 }}>{p.cu.title}</div>
+        <div style={{ marginTop:6, fontSize:10, color:isOnlineNow?"#86EFAC":"rgba(255,255,255,0.45)", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
+          <span style={{ width:7, height:7, borderRadius:"50%", background:isOnlineNow?"#22C55E":"rgba(255,255,255,0.3)", display:"inline-block" }}/>
+          {isOnlineNow?"متصل الآن":""}
+        </div>
+      </div>
+      <div style={{ padding:"14px 16px" }}>
+        {/* Monthly target */}
+        <div style={{ marginBottom:12, padding:"10px 12px", background:"#F8FAFC", borderRadius:10 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+            <span style={{ fontSize:12, fontWeight:700 }}>التارجت الشهري</span>
+            <span style={{ fontSize:11, color:C.textLight }}>{monthTarget>0?(monthTarget/1000000).toFixed(0)+"M EGP":"لم يتحدد"}</span>
+          </div>
+          <div style={{ height:8, background:"#E2E8F0", borderRadius:4, marginBottom:5 }}>
+            <div style={{ height:"100%", width:prog+"%", borderRadius:4, background:prog>=100?C.success:prog>=50?C.accent:C.warning, transition:"width 0.6s" }}/>
+          </div>
+          <div style={{ display:"flex", justifyContent:"space-between" }}>
+            <span style={{ fontSize:12, color:C.success, fontWeight:700 }}>{(monthRev/1000000).toFixed(2)}M EGP</span>
+            <span style={{ fontSize:12, fontWeight:700, color:prog>=100?C.success:C.accent }}>{prog}%</span>
+          </div>
+        </div>
+        {/* Q target */}
+        <div style={{ marginBottom:12, padding:"10px 12px", background:"#F8FAFC", borderRadius:10 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+            <span style={{ fontSize:12, fontWeight:700 }}>{curQ} Target</span>
+            <span style={{ fontSize:11, color:C.textLight }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"لم يتحدد"}</span>
+          </div>
+          <div style={{ height:8, background:"#E2E8F0", borderRadius:4, marginBottom:5 }}>
+            <div style={{ height:"100%", width:qProg+"%", borderRadius:4, background:qProg>=100?C.success:C.accent, transition:"width 0.6s" }}/>
+          </div>
+          <div style={{ display:"flex", justifyContent:"space-between" }}>
+            <span style={{ fontSize:12, color:C.success, fontWeight:700 }}>{(qRev/1000000).toFixed(2)}M EGP</span>
+            <span style={{ fontSize:12, fontWeight:700, color:qProg>=100?C.success:C.accent }}>{qProg}%</span>
+          </div>
+          <div style={{ fontSize:10, color:C.textLight, marginTop:3 }}>{qDeals.length} صفقة في {curQ}</div>
+        </div>
+        {/* Stats grid */}
+        <div style={{ display:"flex", gap:10, marginBottom:10 }}>
+          {[{v:myLeads.length,l:"إجمالي العملاء",c:C.info},{v:myDeals.length,l:"إجمالي الصفقات",c:C.success},{v:myActs.filter(function(a){return a.type==="call";}).length,l:"إجمالي المكالمات",c:C.accent},{v:convRate+"%",l:"معدل التحويل",c:C.warning}].map(function(s){return <div key={s.l} style={{ flex:1, textAlign:"center", padding:"8px 4px", background:"#F8FAFC", borderRadius:8 }}>
+            <div style={{ fontSize:16, fontWeight:700, color:s.c }}>{s.v}</div>
+            <div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{s.l}</div>
+          </div>;})}
+        </div>
+      </div>
+    </Card>
+
+    {/* Period stats */}
+    <div style={{ display:"flex", gap:14, flexWrap:"wrap" }}>
+      {[
+        {label:"اليوم", deals:todayDeals.length, calls:todayCalls.length, leads:todayLeads.length},
+        {label:"الأسبوع", deals:weekDeals.length, calls:weekCalls.length, leads:weekLeads.length},
+        {label:"الشهر", deals:monthDeals.length, calls:monthCalls.length, leads:monthLeads.length},
+      ].map(function(period){return <Card key={period.label} style={{ flex:"1 1 180px" }}>
+        <div style={{ fontSize:13, fontWeight:700, marginBottom:12, color:C.text }}>{period.label}</div>
+        {[{v:period.deals,l:"صفقات",c:C.success,icon:"🏆"},{v:period.calls,l:"مكالمات",c:C.info,icon:"📞"},{v:period.leads,l:"عملاء جدد",c:C.accent,icon:"👤"}].map(function(s){return <div key={s.l} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"7px 0", borderBottom:"1px solid #F1F5F9" }}>
+          <span style={{ fontSize:12, color:C.textLight }}>{s.icon} {s.l}</span>
+          <span style={{ fontSize:14, fontWeight:700, color:s.c }}>{s.v}</span>
+        </div>;})}
+      </Card>;})}
+    </div>
+  </div>;
+};
+
 // ===== MAIN APP =====
 export default function CRMApp() {
   var [lang,setLang]=useState("ar");
@@ -2932,25 +3039,42 @@ export default function CRMApp() {
       }
     };
 
-    // Notify on upcoming callbacks (within 30 min)
+    // Notify on upcoming callbacks — every 15 min until overdue
     var checkCallbacks = function(){
       var now = Date.now();
-      var soon = 30*60*1000;
+      var HOUR = 60*60*1000;
       var myLeads = leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===currentUser.id&&l.callbackTime&&!l.archived;});
       myLeads.forEach(function(l){
         var cbTime = new Date(l.callbackTime).getTime();
-        var diff = cbTime - now;
-        if(diff>0&&diff<=soon){
-          var key="crm_cb_notif_"+gid(l);
-          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("📞 موعد مكالمة قريب",l.name+" — خلال "+Math.round(diff/60000)+" دقيقة");}}catch(e){}
-        } else if(diff<0){
-          try{localStorage.removeItem("crm_cb_notif_"+gid(l));}catch(e){}
+        var diff = cbTime - now; // positive = future, negative = overdue
+        var lid = gid(l);
+        var lastNotifKey = "crm_cb_last_"+lid;
+        var lastNotif = 0;
+        try{lastNotif=Number(localStorage.getItem(lastNotifKey)||0);}catch(e){}
+        var timeSinceLast = now - lastNotif;
+        var FIFTEEN = 15*60*1000;
+
+        if(diff > 0 && diff <= HOUR) {
+          // Upcoming within 1 hour — notify every 15 min
+          if(timeSinceLast >= FIFTEEN) {
+            try{localStorage.setItem(lastNotifKey, String(now));}catch(e){}
+            showBrowserNotif("📞 موعد مكالمة قريب", l.name+" — خلال "+Math.round(diff/60000)+" دقيقة");
+          }
+        } else if(diff <= 0 && diff > -HOUR) {
+          // Overdue within 1 hour — notify every 15 min
+          if(timeSinceLast >= FIFTEEN) {
+            try{localStorage.setItem(lastNotifKey, String(now));}catch(e){}
+            showBrowserNotif("⚠️ فات موعد المكالمة", l.name+" — فات "+Math.round(-diff/60000)+" دقيقة");
+          }
+        } else if(diff < -HOUR) {
+          // More than 1 hour overdue — stop notifying, clear key
+          try{localStorage.removeItem(lastNotifKey);}catch(e){}
         }
       });
     };
 
     checkCallbacks();
-    var cbInterval = setInterval(checkCallbacks, 60000);
+    var cbInterval = setInterval(checkCallbacks, 15*60*1000); // every 15 min
     return function(){clearInterval(cbInterval);};
   },[token, currentUser, leads.length]);
 
@@ -3137,7 +3261,7 @@ export default function CRMApp() {
   },[token, leads.length, users.length]);
 
   var handleLogout=function(){setCurrentUser(null);setToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
-  var nav=function(pg){setPage(pg||"dashboard");setInitSelected(null);};
+  var nav=function(pg,keepSelected){setPage(pg||"dashboard");if(!keepSelected)setInitSelected(null);};
 
   if(!currentUser) return <LoginPage t={t} onLogin={handleLogin}/>;
   if(loading) return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"#F0F2F5", fontFamily:"Cairo,sans-serif" }}><div style={{ textAlign:"center" }}><div style={{ width:40, height:40, borderRadius:"50%", border:"3px solid #E8ECF1", borderTopColor:C.accent, animation:"spin 0.8s linear infinite", margin:"0 auto 16px" }}/><div style={{ color:C.textLight, fontSize:14 }}>{t.loading}</div></div></div>;
@@ -3145,13 +3269,14 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,myday:t.myDay,leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
+  var titles={dashboard:t.dashboard,myday:t.myDay,myperf:"أدائي",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
   var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
   var renderPage=function(){
     switch(currentPage){
       case "dashboard": return <DashboardPage {...sp}/>;
       case "myday_disabled": return <MyDayPage {...sp}/>;
+      case "myperf": return <MyPerfPage {...sp}/>
       case "leads": return <LeadsPage {...sp} isRequest={false}/>;
       case "dailyReq": return <DailyRequestsPage {...sp}/>;
       case "deals": return <DealsPage {...sp}/>;
