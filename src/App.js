@@ -1531,8 +1531,8 @@ var calcCommission = function(user, allDeals, allUsers, forQ) {
   var parseBudgetC = function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
 
   // Get Q targets
-  var qt = {};
-  try{qt = JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){}
+  var qtUser = allUsers ? allUsers.find(function(u){return gid(u)===uid;}) : null;
+  var qt = (qtUser&&qtUser.qTargets&&Object.keys(qtUser.qTargets).length>0) ? qtUser.qTargets : (function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){return {};}})();
   var getQ = function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
   var curQ = forQ || (function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
   var qTarget = qt[curQ] || 0;
@@ -1890,7 +1890,7 @@ var DealsPage = function(p) {
                 var agRole=agUser?agUser.role:"sales";
                 var commRate=agRole==="manager"?2000:(function(){
                   if(!agUser) return 5000;
-                  var qt={};try{qt=JSON.parse(localStorage.getItem("crm_qt_"+ag)||"{}");}catch(e){}
+                  var agU=p.users.find(function(u){return gid(u)===ag;});var qt=(agU&&agU.qTargets&&Object.keys(agU.qTargets).length>0)?agU.qTargets:(function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+ag)||"{}");}catch(e){return {};}})();
                   var curQNow=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
                   var qTarget=qt[curQNow]||0;
                   if(!qTarget) return 5000;
@@ -2313,8 +2313,16 @@ var UsersPage = function(p) {
   var toggleActive=async function(u){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid,"PUT",{active:!u.active},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?upd:x;});});}catch(e){}};
   var del=async function(uid){if(!window.confirm(t.deleteConfirm))return;try{await apiFetch("/api/users/"+uid,"DELETE",null,p.token);p.setUsers(function(prev){return prev.filter(function(x){return gid(x)!==uid;});});}catch(e){alert(e.message);}};
   var updateTarget=async function(u,val){var uid=gid(u);try{await apiFetch("/api/users/"+uid,"PUT",{monthlyTarget:Number(val)},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?Object.assign({},x,{monthlyTarget:Number(val)}):x;});});}catch(e){}};
-  var getQTargets=function(uid){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}};
-  var saveQTargets=function(uid,qt){try{localStorage.setItem("crm_qt_"+uid,JSON.stringify(qt));}catch(e){}};
+  var getQTargets=function(uid){
+    var u=p.users.find(function(x){return gid(x)===uid;});
+    if(u&&u.qTargets&&Object.keys(u.qTargets).length>0) return u.qTargets;
+    try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}
+  };
+  var saveQTargets=async function(uid,qt){
+    try{localStorage.setItem("crm_qt_"+uid,JSON.stringify(qt));}catch(e){}
+    try{await apiFetch("/api/users/"+uid,"PUT",{qTargets:qt},p.token);}catch(e){console.error("saveQTargets error",e);}
+    p.setUsers(function(prev){return prev.map(function(u){return gid(u)===uid?Object.assign({},u,{qTargets:qt}):u;});});
+  };
   var [qtModal,setQtModal]=useState(null);
 
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -2378,7 +2386,7 @@ var UsersPage = function(p) {
       })}
       <div style={{ display:"flex", gap:10, marginTop:4 }}>
         <Btn outline onClick={function(){setQtModal(null);}} style={{ flex:1 }}>إلغاء</Btn>
-        <Btn onClick={function(){saveQTargets(gid(qtModal.user),qtModal.targets);setQtModal(null);}} style={{ flex:1 }}>✅ حفظ</Btn>
+        <Btn onClick={function(){saveQTargets(gid(qtModal.user),qtModal.targets).then(function(){setQtModal(null);});}} style={{ flex:1 }}>✅ حفظ</Btn>
       </div>
     </Modal>}
     {pwModal&&<Modal show={true} onClose={function(){setPwModal(null);setPwMsg("");}} title={t.changePassword+" — "+pwModal.userName}>
@@ -2421,7 +2429,7 @@ var ReportsPage = function(p) {
   var periodDeals=allLeads.filter(function(l){return l.status==="DoneDeal"&&l.updatedAt&&(now-new Date(l.updatedAt).getTime())<ms;});
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var parseBudgetR=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
-  var getQTargetsR=function(uid){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}};
+  var getQTargetsR=function(uid){var u=p.users.find(function(x){return gid(x)===uid;});if(u&&u.qTargets&&Object.keys(u.qTargets).length>0)return u.qTargets;try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}}
   var agentStats=salesUsers.map(function(u){
     var uid=gid(u);
     var uNew=periodLeads.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return a===uid;});
@@ -2490,8 +2498,16 @@ var TeamPage = function(p) {
   var getQ=function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
   var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
-  var getQTargets=function(uid){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}};
-  var saveQTargets=function(uid,qt){try{localStorage.setItem("crm_qt_"+uid,JSON.stringify(qt));}catch(e){}};
+  var getQTargets=function(uid){
+    var u=p.users.find(function(x){return gid(x)===uid;});
+    if(u&&u.qTargets&&Object.keys(u.qTargets).length>0) return u.qTargets;
+    try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}
+  };
+  var saveQTargets=async function(uid,qt){
+    try{localStorage.setItem("crm_qt_"+uid,JSON.stringify(qt));}catch(e){}
+    try{await apiFetch("/api/users/"+uid,"PUT",{qTargets:qt},p.token);}catch(e){console.error("saveQTargets error",e);}
+    p.setUsers(function(prev){return prev.map(function(u){return gid(u)===uid?Object.assign({},u,{qTargets:qt}):u;});});
+  };
   var [viewQ,setViewQ]=useState(curQ);
   var [editQModal,setEditQModal]=useState(null);
 
