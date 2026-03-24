@@ -486,6 +486,16 @@ var Header = function(p) {
     var fn=function(e){if(notifRef.current&&!notifRef.current.contains(e.target))p.setShowNotif(false);};
     document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
   },[p.showNotif]);
+  // Close deal notif + rot notif on outside click
+  useEffect(function(){
+    if(!p.showDealNotif&&!p.showRotNotif) return;
+    var fn=function(e){
+      if(p.showDealNotif&&p.setShowDealNotif) p.setShowDealNotif(false);
+      if(p.showRotNotif&&p.setShowRotNotif) p.setShowRotNotif(false);
+    };
+    setTimeout(function(){document.addEventListener("mousedown",fn);},0);
+    return function(){document.removeEventListener("mousedown",fn);};
+  },[p.showDealNotif,p.showRotNotif]);
   return <div style={{ height:64, background:"#fff", borderBottom:"1px solid #E8ECF1", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 16px", position:"sticky", top:0, zIndex:100, gap:10 }}>
     <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
       {p.isMobile&&<button onClick={p.onMenu} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}><Menu size={18} color={C.text}/></button>}
@@ -980,6 +990,16 @@ var LeadsPage = function(p) {
       </div>
       <div style={{ display:"flex", gap:7, flexShrink:0, flexWrap:"wrap" }}>
         {selected2.length>0&&isAdmin&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> {t.bulkReassign} ({selected2.length})</Btn>}
+        {selected2.length>0&&isAdmin&&<Btn outline onClick={async function(){
+          if(!window.confirm("أرشفة "+selected2.length+" عميل؟"))return;
+          var ids=[...selected2];
+          for(var i=0;i<ids.length;i++){
+            try{await apiFetch("/api/leads/"+ids[i]+"/archive","PUT",null,p.token);}catch(e){}
+          }
+          p.setLeads(function(prev){return prev.map(function(l){return ids.includes(gid(l))?Object.assign({},l,{archived:true}):l;});});
+          setSelected2([]);
+          if(selected&&ids.includes(gid(selected)))setSelected(null);
+        }} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Archive size={13}/> أرشفة ({selected2.length})</Btn>}
         {selected2.length>0&&<Btn outline onClick={function(){
           var selectedLeads=filtered.filter(function(l){return selected2.includes(gid(l));});
           var msg=encodeURIComponent("أهلاً، نحن من شركة ARO العقارية\nلدينا عروض مميزة على مشاريعنا\nتواصل معنا للمزيد 🏠");
@@ -989,7 +1009,7 @@ var LeadsPage = function(p) {
         {isAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
         {isAdmin&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
         {!notifGranted&&<Btn outline onClick={async function(){var ok=await requestNotifPermission();setNotifGranted(ok);}} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Bell size={13}/> {t.enableNotif}</Btn>}
-        <Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>
+        {isAdmin&&<Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>}
         {isAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
       </div>
     </div>
