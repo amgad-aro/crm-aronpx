@@ -17,7 +17,7 @@ var User = mongoose.model("User", new mongoose.Schema({
   password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
   role:{type:String,enum:["admin","manager","sales","viewer"],default:"sales"},
   title:{type:String,default:""}, active:{type:Boolean,default:true},
-  monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}
+  monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, qTargets:{type:Object,default:{}}
 },{timestamps:true}));
 
 var Lead = mongoose.model("Lead", new mongoose.Schema({
@@ -185,6 +185,7 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     if (req.body.active !== undefined) update.active = req.body.active;
     if (req.body.monthlyTarget !== undefined) update.monthlyTarget = Number(req.body.monthlyTarget);
     if (req.body.password) update.password = await bcrypt.hash(req.body.password, 10);
+    if (req.body.qTargets !== undefined) update.qTargets = req.body.qTargets;
     var user = await User.findByIdAndUpdate(req.params.id, update, { new: true }).select("-password");
     res.json(user);
   } catch (e) {
