@@ -17,7 +17,7 @@ var User = mongoose.model("User", new mongoose.Schema({
   password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
   role:{type:String,enum:["admin","manager","sales","viewer"],default:"sales"},
   title:{type:String,default:""}, active:{type:Boolean,default:true},
-  monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}
+  monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}
 },{timestamps:true}));
 
 var Lead = mongoose.model("Lead", new mongoose.Schema({
@@ -119,12 +119,20 @@ app.post("/api/login", async function(req, res) {
     var valid = await bcrypt.compare(req.body.password, user.password);
     if (!valid) return res.status(401).json({ error: "Invalid credentials" });
     var token = jwt.sign({ id: user._id, role: user.role, name: user.name }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    await User.findByIdAndUpdate(user._id, { lastSeen: new Date() });
     res.json({ token: token, user: { id: user._id, name: user.name, username: user.username, role: user.role, title: user.title, email: user.email, phone: user.phone } });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// ===== HEARTBEAT =====
+app.post("/api/heartbeat", auth, async function(req, res) {
+  try {
+    await User.findByIdAndUpdate(req.user.id, { lastSeen: new Date() });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
 app.get("/api/me", auth, async function(req, res) {
   try {
     var user = await User.findById(req.user.id).select("-password");
