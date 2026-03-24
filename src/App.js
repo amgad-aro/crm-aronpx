@@ -2845,7 +2845,7 @@ var KPIsPage = function(p) {
   var [selQ, setSelQ] = useState(curQ);
   var [selYear, setSelYear] = useState(curYear);
 
-  var qt = {}; try{qt=JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){}
+  var qt = (myUser.qTargets&&Object.keys(myUser.qTargets).length>0) ? myUser.qTargets : (function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){return {};}})();
   var qTarget = qt[selQ]||0;
 
   // Filter by selected Q and year
