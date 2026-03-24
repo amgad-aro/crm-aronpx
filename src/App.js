@@ -524,6 +524,47 @@ var Header = function(p) {
           </div>;})}
         </div>}
       </div>}
+
+      {/* Rotation notifications bell - admin only */}
+      {p.isAdmin&&(function(){
+        var rotNotifs=[];
+        try{rotNotifs=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}
+        var unseenRot=0;
+        try{var seen=Number(localStorage.getItem("crm_rot_seen")||"0");unseenRot=Math.max(0,rotNotifs.length-seen);}catch(e){}
+        var [showRot,setShowRot]=p.rotNotifState||[false,function(){}];
+        return <div style={{ position:"relative" }}>
+          <button onClick={function(){
+            var next=!showRot;
+            if(p.setShowRotNotif)p.setShowRotNotif(next);
+            if(next){try{localStorage.setItem("crm_rot_seen",String(rotNotifs.length));}catch(e){}}
+          }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", fontSize:15 }}>
+            🔄
+            {unseenRot>0&&!p.showRotNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.warning, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{unseenRot}</span>}
+          </button>
+          {p.showRotNotif&&<div style={{ position:"absolute", top:44, left:0, width:320, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
+            <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <span style={{ fontWeight:700, fontSize:13 }}>🔄 التحويلات التلقائية ({rotNotifs.length})</span>
+              <div style={{ display:"flex", gap:6 }}>
+                {rotNotifs.length>0&&<button onClick={function(){try{localStorage.setItem("crm_rot_notifs","[]");}catch(e){}if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger }}>مسح الكل</button>}
+                <button onClick={function(){if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
+              </div>
+            </div>
+            {rotNotifs.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد تحويلات</div>}
+            {rotNotifs.map(function(n){return <div key={n.id} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC" }}>
+              <div style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
+                <span style={{ fontSize:16, flexShrink:0 }}>🔄</span>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:12, fontWeight:700 }}>{n.leadName}</div>
+                  <div style={{ fontSize:11, color:C.textLight }}>{n.fromName} ← {n.toName}</div>
+                  <div style={{ fontSize:10, color:C.warning, fontWeight:600, marginTop:2 }}>{n.reason}</div>
+                  <div style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.time,p.t)}</div>
+                </div>
+              </div>
+            </div>;})}
+          </div>}
+        </div>;
+      })()}
+
       <div style={{ position:"relative" }} ref={notifRef}>
 
         <button onClick={function(){p.setShowNotif(!p.showNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
@@ -1336,6 +1377,7 @@ var DashboardPage = function(p) {
       <StatCard icon={Target} label={t.newLeads} value={myLeads.filter(function(l){return l.status==="Potential";}).length+""} c={C.success} onClick={function(){p.nav("leads");p.setFilter("Potential");}}/>
       <StatCard icon={Briefcase} label={t.activeDeals} value={myLeads.filter(function(l){return["HotCase","CallBack","MeetingDone"].includes(l.status);}).length+""} c={C.accent} onClick={function(){p.nav("leads");p.setFilter("HotCase");}}/>
       <StatCard icon={DollarSign} label={t.doneDeals} value={myLeads.filter(function(l){return l.status==="DoneDeal";}).length+""} c={C.primary} onClick={function(){p.nav("deals");}}/>
+      {isAdmin&&(function(){var rots=[];try{rots=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}var todayRots=rots.filter(function(r){return r.time&&(Date.now()-new Date(r.time).getTime())<24*60*60*1000;});return todayRots.length>0?<StatCard icon={RotateCcw} label="تحويلات اليوم" value={todayRots.length+""} c={C.warning}/>:null;})()}
     </div>
 
     <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
@@ -2665,6 +2707,13 @@ var SettingsPage = function(p) {
   var [reassignAgents,setReassignAgents]=useState(function(){
     try{return JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]');}catch(e){return[];}
   });
+  // Rotation durations (in hours)
+  var [rotNoAnswerCount,setRotNoAnswerCount]=useState(function(){try{return Number(localStorage.getItem('crm_rot_na_count')||'2');}catch(e){return 2;}});
+  var [rotNoAnswerHours,setRotNoAnswerHours]=useState(function(){try{return Number(localStorage.getItem('crm_rot_na_hours')||'1');}catch(e){return 1;}});
+  var [rotNotIntDays,setRotNotIntDays]=useState(function(){try{return Number(localStorage.getItem('crm_rot_ni_days')||'1');}catch(e){return 1;}});
+  var [rotNoActDays,setRotNoActDays]=useState(function(){try{return Number(localStorage.getItem('crm_rot_noact_days')||'2');}catch(e){return 2;}});
+  var [rotCbDays,setRotCbDays]=useState(function(){try{return Number(localStorage.getItem('crm_rot_cb_days')||'1');}catch(e){return 1;}});
+  var [rotHotDays,setRotHotDays]=useState(function(){try{return Number(localStorage.getItem('crm_rot_hot_days')||'2');}catch(e){return 2;}});
   var [saved,setSaved]=useState(false);
   var toggleAgent=function(uid){
     setReassignAgents(function(prev){
@@ -2677,17 +2726,26 @@ var SettingsPage = function(p) {
       localStorage.setItem('crm_set_email',em);
       localStorage.setItem('crm_set_phone',ph);
       localStorage.setItem('crm_set_reassign_agents',JSON.stringify(reassignAgents));
+      localStorage.setItem('crm_rot_na_count',String(rotNoAnswerCount));
+      localStorage.setItem('crm_rot_na_hours',String(rotNoAnswerHours));
+      localStorage.setItem('crm_rot_ni_days',String(rotNotIntDays));
+      localStorage.setItem('crm_rot_noact_days',String(rotNoActDays));
+      localStorage.setItem('crm_rot_cb_days',String(rotCbDays));
+      localStorage.setItem('crm_rot_hot_days',String(rotHotDays));
     }catch(e){}
     setSaved(true); setTimeout(function(){setSaved(false);},2500);
   };
+  var rotInpStyle={width:60,padding:"4px 8px",borderRadius:7,border:"1px solid #E2E8F0",fontSize:13,textAlign:"center"};
   return <div style={{ padding:"18px 16px 40px" }}>
     <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.settings}</h2>
-    <Card style={{ maxWidth:520 }}>
+    <Card style={{ maxWidth:560 }}>
       <Inp label={t.companyName} value={company} onChange={function(e){setCompany(e.target.value);}}/>
       <Inp label={t.email} value={em} onChange={function(e){setEm(e.target.value);}}/>
       <Inp label={t.phone} value={ph} onChange={function(e){setPh(e.target.value);}}/>
+
+      {/* Rotation Agents */}
       <div style={{marginBottom:13}}>
-        <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>موظفو الإعادة التلقائية (CallBack)</label>
+        <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>🔄 موظفو الإعادة التلقائية (الروتيشن)</label>
         <div style={{border:"1px solid #E2E8F0",borderRadius:10,padding:"8px 12px",background:"#fff",maxHeight:200,overflowY:"auto"}}>
           {salesAgentsForSetting.length===0&&<div style={{fontSize:12,color:C.textLight,padding:"6px 0"}}>لا يوجد موظفين</div>}
           {salesAgentsForSetting.map(function(u){
@@ -2703,8 +2761,28 @@ var SettingsPage = function(p) {
             </div>;
           })}
         </div>
-        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>لما يفوت موعد CallBack هيتوزع على الموظفين المحددين ({reassignAgents.length} محدد)</div>
+        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>العملاء هيتوزعوا بس على الموظفين المحددين ({reassignAgents.length} محدد) — لو مفيش محدد مفيش روتيشن</div>
       </div>
+
+      {/* Rotation Durations */}
+      <div style={{marginBottom:13,padding:"14px 16px",background:"#F8FAFC",borderRadius:12,border:"1px solid #E8ECF1"}}>
+        <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:12}}>⚙️ مدد الروتيشن التلقائي</div>
+        {[
+          {label:"No Answer — عدد المرات قبل التحويل",val:rotNoAnswerCount,set:setRotNoAnswerCount,unit:"مرة"},
+          {label:"No Answer — انتظر بعد آخر مرة",val:rotNoAnswerHours,set:setRotNoAnswerHours,unit:"ساعة"},
+          {label:"Not Interested — يرجع بعد",val:rotNotIntDays,set:setRotNotIntDays,unit:"يوم"},
+          {label:"بدون تواصل — يتحول بعد",val:rotNoActDays,set:setRotNoActDays,unit:"يوم"},
+          {label:"CallBack فات موعده — يتحول بعد",val:rotCbDays,set:setRotCbDays,unit:"يوم"},
+          {label:"Potential/HotCase/Meeting بدون أكشن — يتحول بعد",val:rotHotDays,set:setRotHotDays,unit:"يوم"},
+        ].map(function(row){return <div key={row.label} style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9,gap:10}}>
+          <span style={{fontSize:12,color:C.text,flex:1}}>{row.label}</span>
+          <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+            <input type="number" min={1} max={30} value={row.val} onChange={function(e){row.set(Number(e.target.value));}} style={rotInpStyle}/>
+            <span style={{fontSize:11,color:C.textLight}}>{row.unit}</span>
+          </div>
+        </div>;})}
+      </div>
+
       <Inp label={t.language} type="select" value={p.lang} onChange={function(e){p.setLang(e.target.value);}} options={[{value:"ar",label:"عربي"},{value:"en",label:"English"}]}/>
       {saved&&<div style={{marginBottom:12,padding:"10px 14px",background:"#DCFCE7",borderRadius:10,color:"#15803D",fontSize:13,fontWeight:600}}>✅ تم الحفظ بنجاح</div>}
       <Btn onClick={doSave}>{t.save}</Btn>
@@ -2725,6 +2803,7 @@ export default function CRMApp() {
   var [dealNotifs,setDealNotifsRaw]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_deal_notifs")||"[]");}catch(e){return[];}});
   var setDealNotifs=function(fn){setDealNotifsRaw(function(prev){var next=typeof fn==="function"?fn(prev):fn;try{localStorage.setItem("crm_deal_notifs",JSON.stringify(next));}catch(e){}return next;});};
   var [showDealNotif,setShowDealNotif]=useState(false);
+  var [showRotNotif,setShowRotNotif]=useState(false);
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
   var [sidebarOpen,setSidebarOpen]=useState(false);
@@ -2830,14 +2909,28 @@ export default function CRMApp() {
   useEffect(function(){
     if(!token||!leads.length||!users.length) return;
 
-    // Helper: get active sales agents (all, not from settings)
-    var getSalesAgents = function(){
-      return users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+    // Load rotation agents from settings — if none selected, NO rotation
+    var getSavedAgents = function(){
+      try{return JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]');}catch(e){return[];}
     };
 
-    // Helper: pick agent with least active leads (exclude current agent)
+    // Load configurable durations from settings
+    var getRotDurations = function(){
+      try{return {
+        naCount:  Number(localStorage.getItem('crm_rot_na_count')||'2'),
+        naHours:  Number(localStorage.getItem('crm_rot_na_hours')||'1'),
+        niDays:   Number(localStorage.getItem('crm_rot_ni_days')||'1'),
+        noActDays:Number(localStorage.getItem('crm_rot_noact_days')||'2'),
+        cbDays:   Number(localStorage.getItem('crm_rot_cb_days')||'1'),
+        hotDays:  Number(localStorage.getItem('crm_rot_hot_days')||'2'),
+      };}catch(e){return{naCount:2,naHours:1,niDays:1,noActDays:2,cbDays:1,hotDays:2};}
+    };
+
+    // Helper: pick agent from saved list with least active leads
     var pickAgent = function(excludeId){
-      var agents = getSalesAgents();
+      var savedIds = getSavedAgents();
+      if(!savedIds.length) return null; // no agents = no rotation
+      var agents = users.filter(function(u){return savedIds.includes(gid(u))&&(u.role==="sales"||u.role==="manager")&&u.active;});
       if(!agents.length) return null;
       var loads = agents.map(function(u){
         return {agent:u, cnt:leads.filter(function(l){
@@ -2846,25 +2939,32 @@ export default function CRMApp() {
         }).length};
       });
       loads.sort(function(a,b){return a.cnt-b.cnt;});
-      // prefer different agent
       var best = loads.find(function(x){return gid(x.agent)!==excludeId;});
-      return best?best.agent:loads[0].agent;
+      return best?best.agent:(loads[0].agent!==excludeId?loads[0].agent:null);
     };
 
-    // Helper: notify admins/managers
-    var notifyAdmins = function(leadName, fromName, toName, reason){
-      var admins = users.filter(function(u){return u.role==="admin"||u.role==="manager";});
-      showBrowserNotif("🔄 تحويل تلقائي", leadName+" من "+fromName+" إلى "+toName+" ("+reason+")");
+    // Helper: send in-app notification to admins + browser notif
+    var notifyAdmins = function(lead, fromName, toName, reason){
+      var timeStr = new Date().toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"});
+      var dateStr = new Date().toLocaleDateString("ar-EG");
+      showBrowserNotif("🔄 تحويل تلقائي", lead.name+" — من "+fromName+" إلى "+toName+" ("+reason+")");
+      // Store in-app notification for admins
+      try{
+        var notifs = JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");
+        notifs.unshift({id:Date.now(),leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason,time:new Date().toISOString()});
+        localStorage.setItem("crm_rot_notifs",JSON.stringify(notifs.slice(0,50)));
+      }catch(e){}
     };
 
-    // Helper: do rotation - resets to NewLead, clears history visibility
+    // Helper: do rotation
     var doRotate = async function(lead, reason){
       var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
       var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"موظف";
       var targetAgent = pickAgent(currentAgentId);
-      if(!targetAgent) return;
+      if(!targetAgent) return; // no valid target agent
       var targetAgentId = gid(targetAgent);
       if(targetAgentId===currentAgentId) return;
+      var timeStr=new Date().toLocaleString("ar-EG");
       try{
         var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{
           agentId: targetAgentId,
@@ -2875,19 +2975,22 @@ export default function CRMApp() {
         },token);
         await apiFetch("/api/activities","POST",{
           leadId:gid(lead),type:"reassign",
-          note:"🔄 تحويل تلقائي من "+fromName+" إلى "+targetAgent.name+" — السبب: "+reason
+          note:"🔄 تحويل تلقائي | من: "+fromName+" ← إلى: "+targetAgent.name+" | السبب: "+reason+" | "+timeStr
         },token);
         setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
-        notifyAdmins(lead.name,fromName,targetAgent.name,reason);
+        notifyAdmins(lead,fromName,targetAgent.name,reason);
       }catch(e){console.error("Rotation error:",e);}
     };
 
     var HOUR = 60*60*1000;
     var DAY  = 24*60*60*1000;
-    var TWO_DAYS = 2*DAY;
     var now  = Date.now();
 
     var runChecks = async function(){
+      var savedIds = getSavedAgents();
+      if(!savedIds.length) return; // ← no agents configured = no rotation at all
+      var dur = getRotDurations();
+
       var salesLeads = leads.filter(function(l){
         return !l.archived && l.source!=="Daily Request";
       });
@@ -2896,91 +2999,82 @@ export default function CRMApp() {
         var l = salesLeads[i];
         var lid = gid(l);
         var lastAct = new Date(l.lastActivityTime||0).getTime();
-        var rotKey = "crm_rot_done_"+lid;
 
         // Skip DoneDeal and EOI — never rotate
         if(l.status==="DoneDeal"||l.status==="EOI") continue;
 
-        // ── RULE 1: NoAnswer x2 in a row → rotate after 1 hour ──────────
+        // Skip VIP leads — pinned, never rotate
+        if(l.isVIP) continue;
+
+        // ── RULE 1: NoAnswer x(naCount) → rotate after naHours ──────────
         if(l.status==="NoAnswer"){
-          var naKey = "crm_na_count_"+lid;
-          var naTimeKey = "crm_na_time_"+lid;
-          var naCount = 0; var naTime = 0;
+          var naKey="crm_na_count_"+lid; var naTimeKey="crm_na_time_"+lid;
+          var naCount=0; var naTime=0;
           try{naCount=Number(localStorage.getItem(naKey)||0);}catch(e){}
           try{naTime=Number(localStorage.getItem(naTimeKey)||0);}catch(e){}
-          if(naCount>=2 && naTime>0 && (now-naTime)>=HOUR){
-            await doRotate(l,"No Answer مرتين");
+          if(naCount>=dur.naCount && naTime>0 && (now-naTime)>=(dur.naHours*HOUR)){
+            await doRotate(l,"No Answer "+dur.naCount+" مرات");
             try{localStorage.removeItem(naKey);localStorage.removeItem(naTimeKey);}catch(e){}
             continue;
           }
         }
 
-        // ── RULE 2: NotInterested → rotate after 1 day as NewLead ────────
+        // ── RULE 2: NotInterested → rotate after niDays ────────────────
         if(l.status==="NotInterested"){
-          var niKey = "crm_ni_time_"+lid;
-          var niTime = 0;
+          var niKey="crm_ni_time_"+lid; var niTime=0;
           try{niTime=Number(localStorage.getItem(niKey)||0);}catch(e){}
           if(!niTime){try{localStorage.setItem(niKey,String(lastAct));}catch(e){} continue;}
-          if((now-niTime)>=DAY){
-            await doRotate(l,"Not Interested — فرصة جديدة");
+          if((now-niTime)>=(dur.niDays*DAY)){
+            await doRotate(l,"Not Interested — فرصة جديدة بعد "+dur.niDays+" يوم");
             try{localStorage.removeItem(niKey);}catch(e){}
             continue;
           }
         }
 
-        // ── RULE 3: No activity +2 days (except DoneDeal/EOI/NotInterested) ──
+        // ── RULE 3: No activity +noActDays ─────────────────────────────
         if(l.status!=="NotInterested"&&l.status!=="DoneDeal"&&l.status!=="EOI"){
-          if((now-lastAct)>=TWO_DAYS){
-            var noActKey="crm_noact2_"+lid;
-            var noActDone=false;
+          if((now-lastAct)>=(dur.noActDays*DAY)){
+            var noActKey="crm_noact2_"+lid; var noActDone=false;
             try{noActDone=localStorage.getItem(noActKey)==="1";}catch(e){}
             if(!noActDone){
-              await doRotate(l,"بدون تواصل +يومين");
+              await doRotate(l,"بدون تواصل +"+dur.noActDays+" أيام");
               try{localStorage.setItem(noActKey,"1");}catch(e){}
               continue;
             }
-          } else {
-            try{localStorage.removeItem("crm_noact2_"+lid);}catch(e){}
-          }
+          } else { try{localStorage.removeItem("crm_noact2_"+lid);}catch(e){} }
         }
 
-        // ── RULE 4: CallBack overdue by 1 day → rotate immediately ───────
+        // ── RULE 4: CallBack overdue by cbDays ─────────────────────────
         if(l.status==="CallBack"&&l.callbackTime){
           var cbTime=new Date(l.callbackTime).getTime();
-          if((now-cbTime)>=DAY){
-            var cbDoneKey="crm_cbrot_"+lid;
-            var cbDone=false;
+          if((now-cbTime)>=(dur.cbDays*DAY)){
+            var cbDoneKey="crm_cbrot_"+lid; var cbDone=false;
             try{cbDone=localStorage.getItem(cbDoneKey)==="1";}catch(e){}
             if(!cbDone){
-              await doRotate(l,"CallBack فات موعده بيوم");
+              await doRotate(l,"CallBack فات موعده بـ "+dur.cbDays+" يوم");
               try{localStorage.setItem(cbDoneKey,"1");}catch(e){}
               continue;
             }
-          } else {
-            try{localStorage.removeItem("crm_cbrot_"+lid);}catch(e){}
-          }
+          } else { try{localStorage.removeItem("crm_cbrot_"+lid);}catch(e){} }
         }
 
-        // ── RULE 5: Potential/HotCase/MeetingDone — no action 2 days ─────
+        // ── RULE 5: Potential/HotCase/MeetingDone no action hotDays ────
         if(["Potential","HotCase","MeetingDone"].includes(l.status)){
-          if((now-lastAct)>=TWO_DAYS){
-            var hotKey="crm_hotrot_"+lid;
-            var hotDone=false;
+          if((now-lastAct)>=(dur.hotDays*DAY)){
+            var hotKey="crm_hotrot_"+lid; var hotDone=false;
             try{hotDone=localStorage.getItem(hotKey)==="1";}catch(e){}
             if(!hotDone){
-              await doRotate(l,l.status+" — بدون أكشن يومين");
+              await doRotate(l,l.status+" — بدون أكشن "+dur.hotDays+" أيام");
               try{localStorage.setItem(hotKey,"1");}catch(e){}
               continue;
             }
-          } else {
-            try{localStorage.removeItem("crm_hotrot_"+lid);}catch(e){}
-          }
+          } else { try{localStorage.removeItem("crm_hotrot_"+lid);}catch(e){} }
         }
       }
     };
 
     runChecks();
-    var rotInterval = setInterval(runChecks, 5*60*1000); // check every 5 min
+    var rotInterval = setInterval(runChecks, 5*60*1000);
     return function(){clearInterval(rotInterval);};
   },[token, leads.length, users.length]);
 
@@ -3023,7 +3117,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ أنت غير متصل بالإنترنت — البيانات لن تُحفظ حتى يعود الاتصال
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} isAdmin={isAdmin} dailyRequests={[]} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={[]} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
