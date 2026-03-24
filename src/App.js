@@ -1107,10 +1107,13 @@ var LeadsPage = function(p) {
           {/* Activity Log */}
           {leadActs.length>0&&<div style={{ marginTop:14 }}>
             <div style={{ fontSize:11, color:C.textLight, fontWeight:600, marginBottom:8 }}>{t.clientHistory}</div>
-            {leadActs.map(function(a,i){return <div key={a._id||i} style={{ fontSize:10, padding:"6px 0", borderBottom:"1px solid #F8FAFC", display:"flex", gap:6 }}>
-              <span style={{ flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="note"?"📝":"🔔"}</span>
-              <span style={{ flex:1 }}>{a.note}</span>
-              <span style={{ color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
+            {leadActs.map(function(a,i){var uname=a.userId&&a.userId.name?a.userId.name:"";return <div key={a._id||i} style={{ fontSize:10, padding:"8px 0", borderBottom:"1px solid #F8FAFC" }}>
+              <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
+                <span style={{ flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="note"?"📝":"🔔"}</span>
+                <span style={{ flex:1 }}>{a.note}</span>
+                <span style={{ color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
+              </div>
+              {uname&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{uname} · {new Date(a.createdAt).toLocaleDateString("ar-EG")}</div>}
             </div>;})}
           </div>}
         </div>
@@ -1504,6 +1507,13 @@ var DealsPage = function(p) {
   var [projWeights,setProjWeights]=useState(function(){
     var w={};deals.forEach(function(d){if(d.project)w[d.project]=getProjectWeight(d.project);});return w;
   });
+  var [dateFrom,setDateFrom]=useState(""); var [dateTo,setDateTo]=useState("");
+  var filteredDeals=deals.filter(function(d){
+    if(dateFrom&&new Date(d.updatedAt||d.createdAt)<new Date(dateFrom)) return false;
+    if(dateTo&&new Date(d.updatedAt||d.createdAt)>new Date(dateTo+"T23:59:59")) return false;
+    return true;
+  });
+  var filteredTotal=filteredDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
 
   // Get stages from localStorage
   var getStages=function(lid){try{return JSON.parse(localStorage.getItem("crm_stages_"+lid)||"{}");} catch(e){return {};}};
@@ -1537,12 +1547,24 @@ var DealsPage = function(p) {
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-        <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.deals} ({deals.length})</h2>
-        {total>0&&<div style={{ fontSize:13, fontWeight:700, color:C.success, background:"#DCFCE7", padding:"5px 14px", borderRadius:20 }}>إجمالي: {total.toLocaleString()} EGP</div>}
+        <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.deals} ({filteredDeals.length})</h2>
+        {filteredTotal>0&&<div style={{ fontSize:13, fontWeight:700, color:C.success, background:"#DCFCE7", padding:"5px 14px", borderRadius:20 }}>إجمالي: {filteredTotal.toLocaleString()} EGP</div>}
       </div>
       {isAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {t.addLead}</Btn>}
     </div>
 
+    {/* Date filter */}
+    <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+        <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>📅 من:</span>
+        <input type="date" value={dateFrom} onChange={function(e){setDateFrom(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+        <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>إلى:</span>
+        <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
+      </div>
+      {(dateFrom||dateTo)&&<button onClick={function(){setDateFrom("");setDateTo("");}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ مسح</button>}
+    </div>
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} initialStatus="DoneDeal"
         initial={{name:"",phone:"",phone2:"",email:"",budget:"",project:"",source:"Referral",agentId:"",callbackTime:"",notes:"",status:"DoneDeal"}}
@@ -1727,8 +1749,8 @@ var DealsPage = function(p) {
         {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"تاريخ الصفقة","مراحل الصفقة",isAdmin?"عمولة":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
-        {deals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
-        {deals.map(function(d){
+        {filteredDeals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
+        {filteredDeals.map(function(d){
           var bv=parseBudget(d.budget);
           var prog=stagesProgress(gid(d));
           var stages=getStages(gid(d));
@@ -2697,6 +2719,13 @@ export default function CRMApp() {
     setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok})); } catch(e){}
   };
+  // ===== AUTO REFRESH every 5 minutes =====
+  useEffect(function(){
+    if(!token) return;
+    var interval = setInterval(function(){ loadData(token); }, 5*60*1000);
+    return function(){ clearInterval(interval); };
+  },[token]);
+
   // ===== AUTO ROTATION: No-activity leads after 1 day + 1 hour no contact =====
   useEffect(function(){
     if (!token || !leads.length || !users.length) return;
