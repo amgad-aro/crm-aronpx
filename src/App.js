@@ -170,10 +170,8 @@ var C = {
   primary: "#1a2942", primaryLight: "#243752", primaryDark: "#0d1f33",
   accent: "#E8A838", accentLight: "#F5C563",
   success: "#22C55E", danger: "#EF4444", warning: "#F59E0B", info: "#3B82F6",
-  bg: "var(--crm-bg)", text: "var(--crm-text)", textLight: "var(--crm-text-light)", border: "var(--crm-border)"
+  bg: "#F0F2F5", text: "#1E293B", textLight: "#64748B", border: "#E2E8F0"
 };
-var DARK_STYLE = `:root{--crm-bg:#0f172a;--crm-text:#F1F5F9;--crm-text-light:#94A3B8;--crm-border:#1E293B;--crm-card:#1E293B;--crm-card-border:#334155;--crm-input-bg:#0f172a;--crm-input-border:#334155;}`;
-var LIGHT_STYLE = `:root{--crm-bg:#F0F2F5;--crm-text:#1E293B;--crm-text-light:#64748B;--crm-border:#E2E8F0;--crm-card:#ffffff;--crm-card-border:#E8ECF1;--crm-input-bg:#ffffff;--crm-input-border:#E2E8F0;}`;
 
 var STATUSES = function(t) { return [
   { value: "NewLead", label: "New Lead", bg: "#EEF2FF", color: "#6366F1" },
@@ -237,7 +235,7 @@ var rowToLead = function(row) {
 
 // ===== UI COMPONENTS =====
 var Badge = function(p) { return <span style={{ background: p.bg||"#F1F5F9", color: p.color||C.text, padding:"4px 12px", borderRadius:20, fontSize:12, fontWeight:600, whiteSpace:"nowrap", cursor:p.onClick?"pointer":"default", border:p.dashed?"1px dashed "+(p.color||C.text):"none", display:"inline-flex", alignItems:"center", gap:4 }} onClick={p.onClick}>{p.children}</span>; };
-var Card = function(p) { return <div style={Object.assign({ background:"var(--crm-card)", borderRadius:14, padding:p.p!==undefined?p.p:22, boxShadow:"0 1px 4px rgba(0,0,0,0.07)", border:"1px solid #E8ECF1" }, p.style||{})}>{p.children}</div>; };
+var Card = function(p) { return <div style={Object.assign({ background:"#fff", borderRadius:14, padding:p.p!==undefined?p.p:22, boxShadow:"0 1px 4px rgba(0,0,0,0.07)", border:"1px solid #E8ECF1" }, p.style||{})}>{p.children}</div>; };
 var StatCard = function(p) {
   var I = p.icon;
   return <div onClick={p.onClick} style={{ background:"#fff", borderRadius:14, padding:"16px 18px", flex:1, minWidth:150, boxShadow:"0 1px 4px rgba(0,0,0,0.07)", border:"1px solid #E8ECF1", display:"flex", alignItems:"center", gap:13, cursor:p.onClick?"pointer":"default", transition:"transform 0.15s,box-shadow 0.15s" }}
@@ -250,7 +248,7 @@ var StatCard = function(p) {
 var Modal = function(p) {
   if (!p.show) return null;
   return <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.52)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:300, padding:16 }} onClick={p.onClose}>
-    <div style={{ background:"var(--crm-card)", borderRadius:18, padding:26, width:"100%", maxWidth:p.w||500, maxHeight:"90vh", overflowY:"auto" }} onClick={function(e){e.stopPropagation();}}>
+    <div style={{ background:"#fff", borderRadius:18, padding:26, width:"100%", maxWidth:p.w||500, maxHeight:"90vh", overflowY:"auto" }} onClick={function(e){e.stopPropagation();}}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
         <h2 style={{ margin:0, fontSize:17, fontWeight:700, color:C.text }}>{p.title}</h2>
         <button onClick={p.onClose} style={{ width:28, height:28, borderRadius:7, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><X size={14}/></button>
@@ -263,10 +261,10 @@ var Inp = function(p) {
   return <div style={{ marginBottom:13 }}>
     <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>{p.label}{p.req&&<span style={{ color:C.danger, marginRight:3 }}>*</span>}</label>
     {p.type==="select"
-      ? <select value={p.value} onChange={p.onChange} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid var(--crm-input-border)", fontSize:14, background:"var(--crm-input-bg)", boxSizing:"border-box" }}>{p.options.map(function(o){return <option key={o.value!==undefined?o.value:o} value={o.value!==undefined?o.value:o}>{o.label||o}</option>;})}</select>
+      ? <select value={p.value} onChange={p.onChange} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", boxSizing:"border-box" }}>{p.options.map(function(o){return <option key={o.value!==undefined?o.value:o} value={o.value!==undefined?o.value:o}>{o.label||o}</option>;})}</select>
       : p.type==="textarea"
-      ? <textarea rows={3} placeholder={p.placeholder||""} value={p.value} onChange={p.onChange} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid var(--crm-input-border)", fontSize:14, outline:"none", background:"var(--crm-input-bg)", color:"var(--crm-text)", boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
-      : <input type={p.type||"text"} placeholder={p.placeholder||""} value={p.value} onChange={p.onChange} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid var(--crm-input-border)", fontSize:14, outline:"none", background:"var(--crm-input-bg)", color:"var(--crm-text)", boxSizing:"border-box" }}/>}
+      ? <textarea rows={3} placeholder={p.placeholder||""} value={p.value} onChange={p.onChange} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, outline:"none", boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
+      : <input type={p.type||"text"} placeholder={p.placeholder||""} value={p.value} onChange={p.onChange} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, outline:"none", boxSizing:"border-box" }}/>}
   </div>;
 };
 var Btn = function(p) { return <button onClick={p.onClick} disabled={p.loading||p.disabled} style={Object.assign({ padding:"9px 18px", borderRadius:10, border:p.outline?"1px solid #E2E8F0":"none", background:p.outline?"#fff":p.danger?C.danger:p.success?C.success:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", color:p.outline?C.textLight:"#fff", fontSize:13, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:7, justifyContent:"center", opacity:p.loading||p.disabled?0.65:1 }, p.style||{})}>{p.children}</button>; };
@@ -361,7 +359,7 @@ var StatusModal = function(p) {
       <div style={{ marginBottom:11 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏷️ نوع الوحدة</label>
         <select value={dealUnitType} onChange={function(e){setDealUnitType(e.target.value);}}
-          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid var(--crm-input-border)", fontSize:14, background:"var(--crm-input-bg)", boxSizing:"border-box" }}>
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", boxSizing:"border-box" }}>
           {["- اختر -","شقة","دوبلكس","تاون هاوس","فيلا","محل تجاري","مكتب"].map(function(x){return <option key={x} value={x}>{x}</option>;})}
         </select>
       </div>
@@ -463,10 +461,6 @@ var Sidebar = function(p) {
           <div style={{ width:34, height:34, borderRadius:8, background:"linear-gradient(135deg,#3B82F6,#1D4ED8)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:13, flexShrink:0 }}>{p.cu.name[0]}</div>
           <div style={{ flex:1, minWidth:0 }}><div style={{ color:"#fff", fontSize:12, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.cu.name}</div><div style={{ color:"rgba(255,255,255,0.4)", fontSize:10 }}>{p.cu.title}</div></div>
         </div>
-        <button onClick={function(){if(p.onDarkMode)p.onDarkMode(!p.darkMode);}} style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"8px 12px", background:"rgba(255,255,255,0.07)", border:"none", borderRadius:8, color:"rgba(255,255,255,0.7)", fontSize:12, cursor:"pointer", marginBottom:6 }}>
-          <span style={{ display:"flex", alignItems:"center", gap:6 }}>{p.darkMode?"☀️":"🌙"} {p.darkMode?"وضع النهار":"وضع الليل"}</span>
-          <span style={{ width:32, height:18, borderRadius:9, background:p.darkMode?"#E8A838":"rgba(255,255,255,0.2)", display:"inline-flex", alignItems:"center", padding:"2px", transition:"background 0.3s" }}><span style={{ width:14, height:14, borderRadius:"50%", background:"#fff", transform:p.darkMode?"translateX(14px)":"translateX(0)", transition:"transform 0.3s", display:"block" }}/></span>
-        </button>
         <button onClick={p.onLogout} style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"8px", background:"rgba(255,255,255,0.07)", border:"none", borderRadius:8, color:"rgba(255,255,255,0.55)", fontSize:12, cursor:"pointer" }}><LogOut size={14}/> {t.logout}</button>
       </div>
     </div>
@@ -492,7 +486,7 @@ var Header = function(p) {
     var fn=function(e){if(notifRef.current&&!notifRef.current.contains(e.target))p.setShowNotif(false);};
     document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
   },[p.showNotif]);
-  return <div style={{ height:64, background:"var(--crm-card)", borderBottom:"1px solid var(--crm-border)", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 16px", position:"sticky", top:0, zIndex:100, gap:10 }}>
+  return <div style={{ height:64, background:"#fff", borderBottom:"1px solid #E8ECF1", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 16px", position:"sticky", top:0, zIndex:100, gap:10 }}>
     <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
       {p.isMobile&&<button onClick={p.onMenu} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}><Menu size={18} color={C.text}/></button>}
       <h1 style={{ fontSize:p.isMobile?15:19, fontWeight:700, color:C.text, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.title}</h1>
@@ -969,7 +963,7 @@ var LeadsPage = function(p) {
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?600:900 }}>
-            <thead><tr style={{ background:"var(--crm-card)", borderBottom:"2px solid var(--crm-border)" }}>
+            <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
               {isAdmin&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(l){return gid(l);}):[])}}/></th>}
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.name}</th>
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.phone}</th>
@@ -1738,7 +1732,7 @@ var DealsPage = function(p) {
       <div style={{ marginBottom:14 }}>
         <div style={{ fontSize:12, fontWeight:600, marginBottom:6 }}>السيلز الثاني</div>
         <select value={splitAgent2} onChange={function(e){setSplitAgent2(e.target.value);}}
-          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid var(--crm-input-border)", fontSize:14, background:"var(--crm-input-bg)", boxSizing:"border-box" }}>
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", boxSizing:"border-box" }}>
           <option value="">— اختر سيلز —</option>
           {salesUsers.filter(function(u){var uid=gid(u);var a1=splitModal.agentId&&splitModal.agentId._id?splitModal.agentId._id:splitModal.agentId;return uid!==a1;}).map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name} — {u.title}</option>;})}
         </select>
@@ -1764,7 +1758,7 @@ var DealsPage = function(p) {
     </div>}
 
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
-      <thead><tr style={{ background:"var(--crm-card)", borderBottom:"2px solid var(--crm-border)" }}>
+      <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"تاريخ الصفقة","مراحل الصفقة",isAdmin?"عمولة":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
@@ -1957,7 +1951,7 @@ var ArchivePage = function(p) {
     <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.archive} ({archived.length})</h2>
     {archived.length===0&&<div style={{ textAlign:"center", padding:50, color:C.textLight }}>الأرشيف فاضي</div>}
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:480 }}>
-      <thead><tr style={{ background:"var(--crm-card)", borderBottom:"2px solid var(--crm-border)" }}>
+      <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,t.phone,t.project,t.status,isAdmin&&t.agent,""].filter(Boolean).map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight }}>{h}</th>;})}
       </tr></thead>
       <tbody>{archived.map(function(l){var lid=gid(l);var so=STATUSES(t).find(function(s){return s.value===l.status;})||STATUSES(t)[0];var ag=l.agentId&&l.agentId.name?l.agentId.name:"";
@@ -2100,7 +2094,7 @@ var DailyRequestsPage = function(p) {
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         {loading?<Loader/>:<div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}>
-            <thead><tr style={{ background:"var(--crm-card)", borderBottom:"2px solid var(--crm-border)" }}>
+            <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
               {["الاسم","الهاتف","نوع العقار","المنطقة","الميزانية","الحالة",isAdmin&&"الموظف","آخر نشاط","موعد المكالمة"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
             </tr></thead>
             <tbody>
@@ -2237,7 +2231,7 @@ var UsersPage = function(p) {
       <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><UserPlus size={14}/> {t.addUser}</Btn>
     </div>
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:580 }}>
-      <thead><tr style={{ background:"var(--crm-card)", borderBottom:"2px solid var(--crm-border)" }}>
+      <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,t.username,t.title,t.role,t.phone,t.monthlyTarget,"آخر ظهور",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>{p.users.map(function(u){var uid=gid(u);return <tr key={uid} style={{ borderBottom:"1px solid #F1F5F9" }}>
@@ -2372,7 +2366,7 @@ var ReportsPage = function(p) {
     <Card style={{ marginBottom:20 }}>
       <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 أداء الفريق — {pLabel[period]}</h3>
       <div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse" }}>
-        <thead><tr style={{ background:"var(--crm-card)", borderBottom:"2px solid var(--crm-border)" }}>
+        <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
           {["#","الموظف","جدد","صفقات","الإيراد","الهدف","نسبة الإنجاز"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
         </tr></thead>
         <tbody>{agentStats.map(function(a,i){return <tr key={gid(a.user)} style={{ borderBottom:"1px solid #F1F5F9", background:i===0?"#FFFBEB":"transparent" }}>
@@ -2699,7 +2693,6 @@ export default function CRMApp() {
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
   var [showNotif,setShowNotif]=useState(false);
-  var [darkMode,setDarkMode]=useState(function(){try{return localStorage.getItem("crm_dark")==="1";}catch(e){return false;}});
   var [dealNotifsSeenCount,setDealNotifsSeenCount]=useState(function(){try{return Number(localStorage.getItem("crm_deal_seen_count")||"0");}catch(e){return 0;}});
   var [dealNotifs,setDealNotifsRaw]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_deal_notifs")||"[]");}catch(e){return[];}});
   var setDealNotifs=function(fn){setDealNotifsRaw(function(prev){var next=typeof fn==="function"?fn(prev):fn;try{localStorage.setItem("crm_deal_notifs",JSON.stringify(next));}catch(e){}return next;});};
@@ -2954,7 +2947,7 @@ export default function CRMApp() {
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager";
   var currentPage=page||"dashboard";
   var titles={dashboard:t.dashboard,myday:t.myDay,leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,darkMode,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
   var renderPage=function(){
     switch(currentPage){
@@ -2975,15 +2968,15 @@ export default function CRMApp() {
     }
   };
 
-  return <div style={{ display:"flex", minHeight:"100vh", background:darkMode?"#0f172a":C.bg, fontFamily:"'Cairo','Segoe UI',Tahoma,sans-serif", direction:t.dir, colorScheme:darkMode?"dark":"light" }}>
-    <style>{(darkMode?DARK_STYLE:LIGHT_STYLE)+"* { box-sizing: border-box; margin: 0; padding: 0; } ::-webkit-scrollbar { width: 4px; height: 4px; } ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; } input::placeholder, textarea::placeholder { color: #94A3B8; } @keyframes spin { to { transform: rotate(360deg); } }"}</style>
-    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} darkMode={darkMode} onDarkMode={function(v){setDarkMode(v);try{localStorage.setItem("crm_dark",v?"1":"0");}catch(e){}}}/>
+  return <div style={{ display:"flex", minHeight:"100vh", background:C.bg, fontFamily:"'Cairo','Segoe UI',Tahoma,sans-serif", direction:t.dir }}>
+    <style>{"* { box-sizing: border-box; margin: 0; padding: 0; } ::-webkit-scrollbar { width: 4px; height: 4px; } ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; } input::placeholder, textarea::placeholder { color: #94A3B8; } @keyframes spin { to { transform: rotate(360deg); } }"}</style>
+    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
       <QuickPhoneSearch leads={leads} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ أنت غير متصل بالإنترنت — البيانات لن تُحفظ حتى يعود الاتصال
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} isAdmin={isAdmin} dailyRequests={[]} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}} darkMode={darkMode} setDarkMode={function(v){setDarkMode(v);try{localStorage.setItem("crm_dark",v?"1":"0");}catch(e){}}} />
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} isAdmin={isAdmin} dailyRequests={[]} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
