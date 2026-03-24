@@ -842,10 +842,22 @@ var LeadsPage = function(p) {
         if(p.addDealNotif) p.addDealNotif(notifEntry);
       }
       var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
-      await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment},p.token);
+      try { await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment},p.token); } catch(actE){ console.error("activity log error:",actE.message); }
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?updated:l;});});
       if(selected&&gid(selected)===pendingStatus.leadId) setSelected(updated);
       p.setActivities(function(prev){return [{_id:Date.now(),userId:{name:p.cu.name},leadId:{_id:pendingStatus.leadId,name:selected?selected.name:""},type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment,createdAt:new Date().toISOString()}].concat(prev);});
+      // Track NoAnswer count for rotation
+      if(pendingStatus.newStatus==="NoAnswer"){
+        var naKey="crm_na_count_"+pendingStatus.leadId;
+        var naTimeKey="crm_na_time_"+pendingStatus.leadId;
+        var naCount=0; try{naCount=Number(localStorage.getItem(naKey)||0);}catch(e){}
+        naCount+=1; try{localStorage.setItem(naKey,String(naCount));localStorage.setItem(naTimeKey,String(Date.now()));}catch(e){}
+      } else {
+        // Reset NoAnswer count if status changed to something else
+        try{localStorage.removeItem("crm_na_count_"+pendingStatus.leadId);localStorage.removeItem("crm_na_time_"+pendingStatus.leadId);}catch(e){}
+        // Reset no-activity rotation flags
+        try{localStorage.removeItem("crm_noact2_"+pendingStatus.leadId);localStorage.removeItem("crm_hotrot_"+pendingStatus.leadId);localStorage.removeItem("crm_cbrot_"+pendingStatus.leadId);}catch(e){}
+      }
     } catch(e){alert(e.message);}
     setShowStatusComment(false); setPendingStatus(null); setShowStatusPicker(false);
   };
@@ -1111,17 +1123,33 @@ var LeadsPage = function(p) {
             </div>}
           </div>
           {/* Activity Log */}
-          {leadActs.length>0&&<div style={{ marginTop:14 }}>
-            <div style={{ fontSize:11, color:C.textLight, fontWeight:600, marginBottom:8 }}>{t.clientHistory}</div>
-            {leadActs.map(function(a,i){var uname=a.userId&&a.userId.name?a.userId.name:"";return <div key={a._id||i} style={{ fontSize:10, padding:"8px 0", borderBottom:"1px solid #F8FAFC" }}>
-              <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
-                <span style={{ flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="note"?"📝":"🔔"}</span>
-                <span style={{ flex:1 }}>{a.note}</span>
-                <span style={{ color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
+          {(function(){
+            var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
+            // Sales sees only activities after last rotation
+            var visibleActs=leadActs;
+            if(!isAdmin&&selected&&selected.lastRotationAt){
+              var rotTime=new Date(selected.lastRotationAt).getTime();
+              visibleActs=leadActs.filter(function(a){return new Date(a.createdAt).getTime()>=rotTime;});
+            }
+            if(visibleActs.length===0&&!isAdmin) return null;
+            return <div style={{ marginTop:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                <span style={{ fontSize:11, color:C.textLight, fontWeight:600 }}>{t.clientHistory}</span>
+                {isAdmin&&selected&&(selected.rotationCount||0)>0&&<span style={{ fontSize:9, background:"#FEF3C7", color:"#B45309", padding:"2px 6px", borderRadius:6, fontWeight:600 }}>🔄 {selected.rotationCount} تحويل</span>}
               </div>
-              {uname&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{uname} · {new Date(a.createdAt).toLocaleDateString("ar-EG")}</div>}
-            </div>;})}
-          </div>}
+              {visibleActs.map(function(a,i){var uname=a.userId&&a.userId.name?a.userId.name:"";return <div key={a._id||i} style={{ fontSize:10, padding:"8px 0", borderBottom:"1px solid #F8FAFC" }}>
+                <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
+                  <span style={{ flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔"}</span>
+                  <span style={{ flex:1 }}>{a.note}</span>
+                  <span style={{ color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
+                </div>
+                {uname&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{uname} · {new Date(a.createdAt).toLocaleDateString("ar-EG")}</div>}
+              </div>;})}
+              {isAdmin&&leadActs.length>visibleActs.length&&<div style={{ fontSize:9, color:C.info, marginTop:6, textAlign:"center", padding:"4px", background:"#EFF6FF", borderRadius:6 }}>
+                📋 يوجد {leadActs.length-visibleActs.length} نشاط قبل آخر تحويل (مخفي عن السيلز)
+              </div>}
+            </div>;
+          })()}
         </div>
       </Card>}
     </div>
@@ -2798,144 +2826,163 @@ export default function CRMApp() {
     return function(){clearInterval(interval);};
   },[token]);
 
-  // ===== AUTO ROTATION: No-activity leads after 1 day + 1 hour no contact =====
+  // ===== SMART AUTO ROTATION SYSTEM =====
   useEffect(function(){
-    if (!token || !leads.length || !users.length) return;
-    var checkCbRotation = async function() {
-      var savedAgents = [];
-      try{ savedAgents = JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]'); }catch(e){}
-      if (!savedAgents.length) return;
-      var salesAgents = users.filter(function(u){ return savedAgents.includes(gid(u))&&(u.role==="sales"||u.role==="manager")&&u.active; });
-      if (!salesAgents.length) return;
-      var DAY = 24*60*60*1000;
-      var now = Date.now();
-      var toRotate = leads.filter(function(l){
-        if(l.archived||l.status!=="CallBack"||!l.callbackTime) return false;
-        var cbTime = new Date(l.callbackTime).getTime();
-        if(cbTime >= now) return false; // not overdue yet
-        // Check if overdue > 1 day
-        return (now - cbTime) >= DAY;
-      });
-      for(var i=0;i<toRotate.length;i++){
-        var lead = toRotate[i];
-        var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
-        var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"موظف";
-        var agentLoads = salesAgents.map(function(u){return {agent:u,cnt:leads.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return a===gid(u)&&!l.archived;}).length};});
-        agentLoads.sort(function(a,b){return a.cnt-b.cnt;});
-        var targetAgent = agentLoads[0].agent;
-        var targetAgentId = gid(targetAgent);
-        if(targetAgentId===currentAgentId) continue;
-        try{
-          var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{agentId:targetAgentId,callbackTime:""},token);
-          await apiFetch("/api/activities","POST",{leadId:gid(lead),type:"reassign",note:"🔄 تحويل تلقائي من "+fromName+" إلى "+targetAgent.name+" (CallBack فات يوم)"},token);
-          setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
-          showBrowserNotif("🔄 تحويل تلقائي",lead.name+" تم تحويله لـ "+targetAgent.name+" (CallBack فات يوم)");
-        }catch(e){console.error("CB rotation error:",e);}
-      }
-    };
-    checkCbRotation();
-    var cbRotInterval = setInterval(checkCbRotation, 15*60*1000);
+    if(!token||!leads.length||!users.length) return;
 
-    var checkRotation = async function() {
-      var savedAgents = [];
-      try{ savedAgents = JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]'); }catch(e){}
-      if (!savedAgents.length) return;
-      var salesAgents = users.filter(function(u){ return savedAgents.includes(gid(u)) && (u.role==="sales"||u.role==="manager") && u.active; });
-      if (!salesAgents.length) return;
-      var DAY = 1*24*60*60*1000;
-      var HOUR = 60*60*1000;
-      var now = Date.now();
-      // Find leads with no activity > 1 day AND notif was shown > 1 hour ago
-      var toRotate = leads.filter(function(l){
-        if(l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
+    // Helper: get active sales agents (all, not from settings)
+    var getSalesAgents = function(){
+      return users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+    };
+
+    // Helper: pick agent with least active leads (exclude current agent)
+    var pickAgent = function(excludeId){
+      var agents = getSalesAgents();
+      if(!agents.length) return null;
+      var loads = agents.map(function(u){
+        return {agent:u, cnt:leads.filter(function(l){
+          var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
+          return a===gid(u)&&!l.archived;
+        }).length};
+      });
+      loads.sort(function(a,b){return a.cnt-b.cnt;});
+      // prefer different agent
+      var best = loads.find(function(x){return gid(x.agent)!==excludeId;});
+      return best?best.agent:loads[0].agent;
+    };
+
+    // Helper: notify admins/managers
+    var notifyAdmins = function(leadName, fromName, toName, reason){
+      var admins = users.filter(function(u){return u.role==="admin"||u.role==="manager";});
+      showBrowserNotif("🔄 تحويل تلقائي", leadName+" من "+fromName+" إلى "+toName+" ("+reason+")");
+    };
+
+    // Helper: do rotation - resets to NewLead, clears history visibility
+    var doRotate = async function(lead, reason){
+      var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
+      var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"موظف";
+      var targetAgent = pickAgent(currentAgentId);
+      if(!targetAgent) return;
+      var targetAgentId = gid(targetAgent);
+      if(targetAgentId===currentAgentId) return;
+      try{
+        var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{
+          agentId: targetAgentId,
+          status: "NewLead",
+          callbackTime: "",
+          lastRotationAt: new Date().toISOString(),
+          rotationCount: (lead.rotationCount||0)+1
+        },token);
+        await apiFetch("/api/activities","POST",{
+          leadId:gid(lead),type:"reassign",
+          note:"🔄 تحويل تلقائي من "+fromName+" إلى "+targetAgent.name+" — السبب: "+reason
+        },token);
+        setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+        notifyAdmins(lead.name,fromName,targetAgent.name,reason);
+      }catch(e){console.error("Rotation error:",e);}
+    };
+
+    var HOUR = 60*60*1000;
+    var DAY  = 24*60*60*1000;
+    var TWO_DAYS = 2*DAY;
+    var now  = Date.now();
+
+    var runChecks = async function(){
+      var salesLeads = leads.filter(function(l){
+        return !l.archived && l.source!=="Daily Request";
+      });
+
+      for(var i=0;i<salesLeads.length;i++){
+        var l = salesLeads[i];
+        var lid = gid(l);
         var lastAct = new Date(l.lastActivityTime||0).getTime();
-        if((now - lastAct) < DAY) return false;
-        // Check if notif was triggered > 1 hour ago
-        var notifKey = "crm_noact_notif_"+gid(l);
-        var notifTime = 0;
-        try{ notifTime = Number(localStorage.getItem(notifKey)||0); }catch(e){}
-        if(!notifTime){ try{localStorage.setItem(notifKey, String(now));}catch(e){} return false; }
-        return (now - notifTime) >= HOUR;
-      });
-      for(var i=0;i<toRotate.length;i++){
-        var lead = toRotate[i];
-        var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
-        var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"موظف";
-        var agentLoads = salesAgents.map(function(u){ return {agent:u,cnt:leads.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return a===gid(u)&&!l.archived;}).length}; });
-        agentLoads.sort(function(a,b){return a.cnt-b.cnt;});
-        var targetAgent = agentLoads[0].agent;
-        var targetAgentId = gid(targetAgent);
-        if(targetAgentId===currentAgentId) continue;
-        try{
-          var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{agentId:targetAgentId},token);
-          await apiFetch("/api/activities","POST",{leadId:gid(lead),type:"reassign",note:"🔄 تحويل تلقائي من "+fromName+" إلى "+targetAgent.name+" (بدون تواصل)"},token);
-          setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
-          try{localStorage.removeItem("crm_noact_notif_"+gid(lead));}catch(e){}
-          showBrowserNotif("🔄 تحويل تلقائي",lead.name+" تم تحويله لـ "+targetAgent.name+" (بدون تواصل)");
-        }catch(e){console.error("Auto rotation error:",e);}
+        var rotKey = "crm_rot_done_"+lid;
+
+        // Skip DoneDeal and EOI — never rotate
+        if(l.status==="DoneDeal"||l.status==="EOI") continue;
+
+        // ── RULE 1: NoAnswer x2 in a row → rotate after 1 hour ──────────
+        if(l.status==="NoAnswer"){
+          var naKey = "crm_na_count_"+lid;
+          var naTimeKey = "crm_na_time_"+lid;
+          var naCount = 0; var naTime = 0;
+          try{naCount=Number(localStorage.getItem(naKey)||0);}catch(e){}
+          try{naTime=Number(localStorage.getItem(naTimeKey)||0);}catch(e){}
+          if(naCount>=2 && naTime>0 && (now-naTime)>=HOUR){
+            await doRotate(l,"No Answer مرتين");
+            try{localStorage.removeItem(naKey);localStorage.removeItem(naTimeKey);}catch(e){}
+            continue;
+          }
+        }
+
+        // ── RULE 2: NotInterested → rotate after 1 day as NewLead ────────
+        if(l.status==="NotInterested"){
+          var niKey = "crm_ni_time_"+lid;
+          var niTime = 0;
+          try{niTime=Number(localStorage.getItem(niKey)||0);}catch(e){}
+          if(!niTime){try{localStorage.setItem(niKey,String(lastAct));}catch(e){} continue;}
+          if((now-niTime)>=DAY){
+            await doRotate(l,"Not Interested — فرصة جديدة");
+            try{localStorage.removeItem(niKey);}catch(e){}
+            continue;
+          }
+        }
+
+        // ── RULE 3: No activity +2 days (except DoneDeal/EOI/NotInterested) ──
+        if(l.status!=="NotInterested"&&l.status!=="DoneDeal"&&l.status!=="EOI"){
+          if((now-lastAct)>=TWO_DAYS){
+            var noActKey="crm_noact2_"+lid;
+            var noActDone=false;
+            try{noActDone=localStorage.getItem(noActKey)==="1";}catch(e){}
+            if(!noActDone){
+              await doRotate(l,"بدون تواصل +يومين");
+              try{localStorage.setItem(noActKey,"1");}catch(e){}
+              continue;
+            }
+          } else {
+            try{localStorage.removeItem("crm_noact2_"+lid);}catch(e){}
+          }
+        }
+
+        // ── RULE 4: CallBack overdue by 1 day → rotate immediately ───────
+        if(l.status==="CallBack"&&l.callbackTime){
+          var cbTime=new Date(l.callbackTime).getTime();
+          if((now-cbTime)>=DAY){
+            var cbDoneKey="crm_cbrot_"+lid;
+            var cbDone=false;
+            try{cbDone=localStorage.getItem(cbDoneKey)==="1";}catch(e){}
+            if(!cbDone){
+              await doRotate(l,"CallBack فات موعده بيوم");
+              try{localStorage.setItem(cbDoneKey,"1");}catch(e){}
+              continue;
+            }
+          } else {
+            try{localStorage.removeItem("crm_cbrot_"+lid);}catch(e){}
+          }
+        }
+
+        // ── RULE 5: Potential/HotCase/MeetingDone — no action 2 days ─────
+        if(["Potential","HotCase","MeetingDone"].includes(l.status)){
+          if((now-lastAct)>=TWO_DAYS){
+            var hotKey="crm_hotrot_"+lid;
+            var hotDone=false;
+            try{hotDone=localStorage.getItem(hotKey)==="1";}catch(e){}
+            if(!hotDone){
+              await doRotate(l,l.status+" — بدون أكشن يومين");
+              try{localStorage.setItem(hotKey,"1");}catch(e){}
+              continue;
+            }
+          } else {
+            try{localStorage.removeItem("crm_hotrot_"+lid);}catch(e){}
+          }
+        }
       }
     };
-    checkRotation();
-    var rotInterval = setInterval(checkRotation, 10*60*1000); // check every 10 min
-    return function(){clearInterval(cbRotInterval);clearInterval(rotInterval);};
-  }, [token, leads.length, users.length]);
 
-  // ===== AUTO REASSIGN: CallBack leads past callback time -> specific agent from settings =====
-  useEffect(function(){
-    if (!token || !leads.length || !users.length) return;
-
-    var check = async function() {
-      // Use only agents selected in settings
-      var savedAgents = [];
-      try{ savedAgents = JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]'); }catch(e){}
-      if (!savedAgents.length) return; // no agents configured = no auto reassign
-
-      var salesAgents = users.filter(function(u){
-        return savedAgents.includes(gid(u)) && (u.role==="sales"||u.role==="manager") && u.active;
-      });
-      if (!salesAgents.length) return;
-
-      var now = new Date();
-      var toReassign = leads.filter(function(l){
-        return l.status === "CallBack" &&
-               l.callbackTime &&
-               new Date(l.callbackTime) < now &&
-               !l.archived;
-      });
-
-      for (var i = 0; i < toReassign.length; i++) {
-        var lead = toReassign[i];
-        var currentAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
-        var fromName = lead.agentId && lead.agentId.name ? lead.agentId.name : "موظف";
-        // Pick agent from selected list with least leads
-        var agentLoads = salesAgents.map(function(u){
-          return { agent:u, cnt:leads.filter(function(l){ var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return a===gid(u)&&!l.archived; }).length };
-        });
-        agentLoads.sort(function(a,b){ return a.cnt-b.cnt; });
-        var targetAgent = agentLoads[0].agent;
-        var targetAgentId = gid(targetAgent);
-        if (targetAgentId === currentAgentId) continue;
-        try {
-          var updated = await apiFetch("/api/leads/" + gid(lead), "PUT", {
-            agentId: targetAgentId,
-            status: "Potential",
-            callbackTime: ""
-          }, token);
-          await apiFetch("/api/activities", "POST", {
-            leadId: gid(lead),
-            type: "reassign",
-            note: "🔄 تحويل تلقائي من " + fromName + " إلى " + targetAgent.name + " (فات موعد المكالمة)"
-          }, token);
-          setLeads(function(prev){ return prev.map(function(l){ return gid(l)===gid(lead)?updated:l; }); });
-          showBrowserNotif("🔄 تحويل تلقائي", lead.name+" تم تحويله لـ "+targetAgent.name);
-        } catch(e) { console.error("Auto reassign error:", e); }
-      }
-    };
-
-    check();
-    var interval = setInterval(check, 60000); // check every minute
-    return function(){ clearInterval(interval); };
-  }, [token, leads.length, users.length]);
+    runChecks();
+    var rotInterval = setInterval(runChecks, 5*60*1000); // check every 5 min
+    return function(){clearInterval(rotInterval);};
+  },[token, leads.length, users.length]);
 
   var handleLogout=function(){setCurrentUser(null);setToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg){setPage(pg||"dashboard");setInitSelected(null);};
