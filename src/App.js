@@ -1488,7 +1488,7 @@ var calcCommission = function(user, allDeals, allUsers, forQ) {
 
 var DealsPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
-  var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
+  var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var total=deals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
@@ -1724,7 +1724,7 @@ var DealsPage = function(p) {
 
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"مراحل الصفقة",isAdmin?"عمولة":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"تاريخ الصفقة","مراحل الصفقة",isAdmin?"عمولة":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {deals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
@@ -1738,6 +1738,7 @@ var DealsPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight }}>{d.phone2||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{d.updatedAt?new Date(d.updatedAt).toLocaleDateString("ar-EG")+" "+new Date(d.updatedAt).toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"}):"-"}</td>
             <td style={{ padding:"11px 12px", minWidth:130 }}>
               <button onClick={function(){openStages(d);}}
                 style={{ background:"none", border:"none", cursor:"pointer", width:"100%", textAlign:"right", padding:0 }}>
