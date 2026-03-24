@@ -27,7 +27,8 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, budget:{type:String,default:""},
   notes:{type:String,default:""}, callbackTime:{type:String,default:""},
   lastActivityTime:{type:Date,default:Date.now}, archived:{type:Boolean,default:false}, isVIP:{type:Boolean,default:false},
-  eoiDeposit:{type:String,default:""}, eoiDate:{type:String,default:""}
+  eoiDeposit:{type:String,default:""}, eoiDate:{type:String,default:""},
+  lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0}
 },{timestamps:true}));
 
 var Activity = mongoose.model("Activity", new mongoose.Schema({
@@ -314,6 +315,16 @@ app.post("/api/activities", auth, async function(req, res) {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ===== LEAD FULL HISTORY (Admin only) =====
+app.get("/api/leads/:id/full-history", auth, adminOnly, async function(req, res) {
+  try {
+    var activities = await Activity.find({ leadId: req.params.id })
+      .populate("userId", "name title")
+      .sort({ createdAt: 1 });
+    res.json(activities);
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ===== TASK ROUTES =====
