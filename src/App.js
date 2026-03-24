@@ -192,6 +192,11 @@ var PROJECTS = [
 var SOURCES = ["Facebook", "Instagram", "TikTok", "WhatsApp", "Google Ads", "Referral", "Walk In", "Website"];
 var PROP_TYPES = ["شقة", "دوبلكس", "تاون هاوس", "فيلا", "محل تجاري", "مكتب"];
 
+
+// ===== AVATAR COLORS =====
+var AVATAR_COLORS = ["#6366F1","#EC4899","#F59E0B","#10B981","#3B82F6","#8B5CF6","#EF4444","#14B8A6","#F97316","#06B6D4"];
+var avatarColor = function(name){ var i=0; if(name)for(var j=0;j<name.length;j++)i+=name.charCodeAt(j); return AVATAR_COLORS[i%AVATAR_COLORS.length]; };
+var Avatar = function(p){ var color=avatarColor(p.name); var size=p.size||36; return <div style={{ width:size, height:size, borderRadius:p.round?"50%":Math.round(size*0.28), background:color, display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:Math.round(size*0.38), flexShrink:0, position:"relative" }}>{p.name?(p.name[0]+( p.name.split(" ")[1]?p.name.split(" ")[1][0]:"")).toUpperCase():""}{p.online!==undefined&&<span style={{ position:"absolute", bottom:1, right:1, width:Math.round(size*0.28), height:Math.round(size*0.28), borderRadius:"50%", background:p.online?"#22C55E":"#94A3B8", border:"2px solid #fff" }}/>}</div>; };
 var gid = function(o) { return o && (o._id || o.id); };
 var timeAgo = function(d, t) {
   if (!d) return "-";
@@ -520,6 +525,8 @@ var Header = function(p) {
         </div>}
       </div>}
       <div style={{ position:"relative" }} ref={notifRef}>
+      {/* Dark Mode Toggle */}
+      <button onClick={function(){p.setDarkMode&&p.setDarkMode(!p.darkMode);}} title={p.darkMode?"وضع النهار":"وضع الليل"} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:p.darkMode?"#1E293B":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", fontSize:16 }}>{p.darkMode?"☀️":"🌙"}</button>
         <button onClick={function(){p.setShowNotif(!p.showNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <Bell size={16} color={C.textLight}/>
           {(upcoming.length+allNoActivity.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:4, right:4, width:8, height:8, borderRadius:"50%", background:C.danger }}/>}
@@ -1507,10 +1514,12 @@ var DealsPage = function(p) {
   var [projWeights,setProjWeights]=useState(function(){
     var w={};deals.forEach(function(d){if(d.project)w[d.project]=getProjectWeight(d.project);});return w;
   });
-  var [dateFrom,setDateFrom]=useState(""); var [dateTo,setDateTo]=useState("");
+  var [dateFrom,setDateFrom]=useState(""); var [dateTo,setDateTo]=useState(""); var [dealSearch,setDealSearch]=useState(""); var [dealAgent,setDealAgent]=useState("");
   var filteredDeals=deals.filter(function(d){
     if(dateFrom&&new Date(d.updatedAt||d.createdAt)<new Date(dateFrom)) return false;
     if(dateTo&&new Date(d.updatedAt||d.createdAt)>new Date(dateTo+"T23:59:59")) return false;
+    if(dealSearch){var q=dealSearch.toLowerCase();var nm=d.name?d.name.toLowerCase():"";var pr=d.project?d.project.toLowerCase():"";var ph=d.phone||"";if(!nm.includes(q)&&!pr.includes(q)&&!ph.includes(q))return false;}
+    if(dealAgent){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;if(aid!==dealAgent)return false;}
     return true;
   });
   var filteredTotal=filteredDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
@@ -1553,8 +1562,13 @@ var DealsPage = function(p) {
       {isAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {t.addLead}</Btn>}
     </div>
 
-    {/* Date filter */}
+    {/* Deals Search + Filter bar */}
     <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
+      <input placeholder="🔍 بحث بالاسم أو المشروع أو الهاتف..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, minWidth:220 }}/>
+      {isAdmin&&<select value={dealAgent} onChange={function(e){setDealAgent(e.target.value);}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
+        <option value="">👤 كل الموظفين</option>
+        {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
+      </select>}
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
         <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>📅 من:</span>
         <input type="date" value={dateFrom} onChange={function(e){setDateFrom(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
@@ -1563,7 +1577,7 @@ var DealsPage = function(p) {
         <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>إلى:</span>
         <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
       </div>
-      {(dateFrom||dateTo)&&<button onClick={function(){setDateFrom("");setDateTo("");}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ مسح</button>}
+      {(dateFrom||dateTo||dealSearch||dealAgent)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ مسح الكل</button>}
     </div>
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} initialStatus="DoneDeal"
@@ -2219,7 +2233,7 @@ var UsersPage = function(p) {
     </div>
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:580 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.username,t.title,t.role,t.phone,t.monthlyTarget,t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.username,t.title,t.role,t.phone,t.monthlyTarget,"آخر ظهور",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>{p.users.map(function(u){var uid=gid(u);return <tr key={uid} style={{ borderBottom:"1px solid #F1F5F9" }}>
         <td style={{ padding:"11px 12px" }}><div style={{ display:"flex", alignItems:"center", gap:8 }}><div style={{ width:32, height:32, borderRadius:8, background:C.primary+"15", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:12, color:C.primary, flexShrink:0 }}>{u.name[0]}</div><div><div style={{ fontSize:12, fontWeight:600 }}>{u.name}</div><div style={{ fontSize:10, color:C.textLight }}>{u.email}</div></div></div></td>
@@ -2241,6 +2255,16 @@ var UsersPage = function(p) {
                 {["Q1","Q2","Q3","Q4"].map(function(q){var qt=getQTargets(uid);var v=qt[q]||0;return <span key={q} style={{ fontSize:9, padding:"1px 4px", borderRadius:3, background:"#F1F5F9", color:C.textLight }}>{q}:{v>0?(v/1000000).toFixed(1)+"M":"—"}</span>;})}
               </div>
             </div>}
+        </td>
+        <td style={{ padding:"11px 12px" }}>
+          {(function(){
+            var isOn=u.lastSeen&&(Date.now()-new Date(u.lastSeen).getTime())<3*60*1000;
+            var ls=u.lastSeen?timeAgo(u.lastSeen,p.t):"—";
+            return <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+              <span style={{ width:8, height:8, borderRadius:"50%", background:isOn?"#22C55E":"#CBD5E1", flexShrink:0 }}/>
+              <span style={{ fontSize:11, color:isOn?C.success:C.textLight, fontWeight:isOn?700:400 }}>{isOn?"متصل":ls}</span>
+            </div>;
+          })()}
         </td>
         <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(u.role!=="admin")toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
         <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:u.name});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button><button onClick={function(){if(u.role!=="admin")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.role!=="admin"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.role==="admin"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
@@ -2420,11 +2444,17 @@ var TeamPage = function(p) {
         var totalRevenue=allAgentDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
         var rate=al.length>0?Math.round(allAgentDeals.length/al.length*100):0;
 
+        var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<3*60*1000;
+        var lastSeenStr=a.lastSeen?timeAgo(a.lastSeen,p.t):"لم يسجل دخول";
         return <Card key={uid} style={{ flex:"1 1 300px", maxWidth:380, overflow:"hidden", padding:0 }}>
           <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:20, textAlign:"center" }}>
-            <div style={{ width:52, height:52, borderRadius:14, margin:"0 auto 10px", background:"rgba(255,255,255,0.15)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:20 }}>{a.name[0]}</div>
+            <div style={{ margin:"0 auto 10px", display:"inline-block" }}><Avatar name={a.name} size={52} online={isOnlineNow}/></div>
             <div style={{ color:"#fff", fontSize:15, fontWeight:700 }}>{a.name}</div>
             <div style={{ color:"rgba(255,255,255,0.55)", fontSize:12, marginTop:2 }}>{a.title}</div>
+            <div style={{ marginTop:6, fontSize:10, color:isOnlineNow?"#86EFAC":"rgba(255,255,255,0.45)", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
+              <span style={{ width:7, height:7, borderRadius:"50%", background:isOnlineNow?"#22C55E":"rgba(255,255,255,0.3)", display:"inline-block" }}/>
+              {isOnlineNow?"متصل الآن":"آخر ظهور: "+lastSeenStr}
+            </div>
             {isAdmin&&<button onClick={function(){var qt=getQTargets(uid);setEditQModal({user:a,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
               style={{ marginTop:8, padding:"4px 12px", borderRadius:6, border:"none", background:"rgba(255,255,255,0.2)", color:"#fff", fontSize:11, fontWeight:600, cursor:"pointer" }}>🎯 تعديل Targets</button>}
           </div>
@@ -2519,7 +2549,7 @@ var ReportsPage = function(p) {
           var target=a.monthlyTarget||15; var prog=Math.min(Math.round(d/target*100),100);
           return <div key={uid} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
             <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-              <div style={{ width:32, height:32, borderRadius:8, background:C.primary+"15", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:12, color:C.primary, flexShrink:0 }}>{a.name[0]}</div>
+              <Avatar name={a.name} size={32}/>
               <div style={{ flex:1 }}><div style={{ fontSize:12, fontWeight:600 }}>{a.name}</div><div style={{ fontSize:10, color:C.textLight }}>{a.title}</div></div>
               {[{v:al.length,l:t.leads,c:C.text},{v:d,l:t.deals,c:C.success},{v:cl,l:t.calls,c:C.info},{v:rate+"%",l:"Conv.",c:C.accent}].map(function(s){return <div key={s.l} style={{ textAlign:"center", minWidth:36 }}><div style={{ fontSize:12, fontWeight:700, color:s.c }}>{s.v}</div><div style={{ fontSize:9, color:C.textLight }}>{s.l}</div></div>;})}
             </div>
@@ -2534,12 +2564,46 @@ var ReportsPage = function(p) {
           var cnt=normalLeads.filter(function(l){return l.source===src;}).length;
           var won=normalLeads.filter(function(l){return l.source===src&&l.status==="DoneDeal";}).length;
           if(cnt===0)return null;
-          return <div key={src} style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 0", borderBottom:"1px solid #F1F5F9" }}>
-            <span style={{ flex:1, fontSize:12, fontWeight:500 }}>{src}</span>
-            <div style={{ textAlign:"center", minWidth:36 }}><div style={{ fontSize:12, fontWeight:700 }}>{cnt}</div><div style={{ fontSize:9, color:C.textLight }}>{t.leads}</div></div>
-            <div style={{ textAlign:"center", minWidth:36 }}><div style={{ fontSize:12, fontWeight:700, color:C.success }}>{won}</div><div style={{ fontSize:9, color:C.textLight }}>{t.deals}</div></div>
+          var convR=cnt>0?Math.round(won/cnt*100):0;
+          return <div key={src} style={{ padding:"9px 0", borderBottom:"1px solid #F1F5F9" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <span style={{ flex:1, fontSize:12, fontWeight:500 }}>{src}</span>
+              <div style={{ textAlign:"center", minWidth:36 }}><div style={{ fontSize:12, fontWeight:700 }}>{cnt}</div><div style={{ fontSize:9, color:C.textLight }}>{t.leads}</div></div>
+              <div style={{ textAlign:"center", minWidth:36 }}><div style={{ fontSize:12, fontWeight:700, color:C.success }}>{won}</div><div style={{ fontSize:9, color:C.textLight }}>{t.deals}</div></div>
+              <div style={{ textAlign:"center", minWidth:40 }}><div style={{ fontSize:12, fontWeight:700, color:C.accent }}>{convR}%</div><div style={{ fontSize:9, color:C.textLight }}>Conv.</div></div>
+            </div>
+            {won>0&&<div style={{ height:3, background:"#F1F5F9", borderRadius:2, marginTop:5 }}><div style={{ height:"100%", width:convR+"%", background:convR>=20?C.success:C.accent, borderRadius:2 }}/></div>}
           </div>;
         })}
+      </Card>
+      <Card style={{ flex:1, minWidth:260 }}>
+        <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 مصادر الصفقات</h3>
+        {(function(){
+          var dealsBySource={};
+          normalLeads.filter(function(l){return l.status==="DoneDeal";}).forEach(function(l){
+            var src=l.source||"غير محدد";
+            if(!dealsBySource[src])dealsBySource[src]={cnt:0,rev:0};
+            dealsBySource[src].cnt++;
+            dealsBySource[src].rev+=parseFloat((l.budget||"0").toString().replace(/,/g,""))||0;
+          });
+          var sorted=Object.keys(dealsBySource).sort(function(a,b){return dealsBySource[b].cnt-dealsBySource[a].cnt;});
+          if(sorted.length===0)return <div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد صفقات بعد</div>;
+          return sorted.map(function(src,i){
+            var d=dealsBySource[src];
+            var maxCnt=dealsBySource[sorted[0]].cnt;
+            return <div key={src} style={{ padding:"9px 0", borderBottom:"1px solid #F1F5F9" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                <span style={{ fontSize:14 }}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":"📌"}</span>
+                <span style={{ flex:1, fontSize:12, fontWeight:600 }}>{src}</span>
+                <div style={{ textAlign:"left" }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:C.success }}>{d.cnt} صفقة</div>
+                  {d.rev>0&&<div style={{ fontSize:9, color:C.textLight }}>{(d.rev/1000000).toFixed(1)}M EGP</div>}
+                </div>
+              </div>
+              <div style={{ height:3, background:"#F1F5F9", borderRadius:2, marginTop:5 }}><div style={{ height:"100%", width:Math.round(d.cnt/maxCnt*100)+"%", background:i===0?C.success:i===1?"#8B5CF6":C.accent, borderRadius:2 }}/></div>
+            </div>;
+          });
+        })()}
       </Card>
     </div>
   </div>;
@@ -2630,6 +2694,7 @@ export default function CRMApp() {
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
   var [showNotif,setShowNotif]=useState(false);
+  var [darkMode,setDarkMode]=useState(function(){try{return localStorage.getItem("crm_dark")==="1";}catch(e){return false;}});
   var [dealNotifsSeenCount,setDealNotifsSeenCount]=useState(function(){try{return Number(localStorage.getItem("crm_deal_seen_count")||"0");}catch(e){return 0;}});
   var [dealNotifs,setDealNotifsRaw]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_deal_notifs")||"[]");}catch(e){return[];}});
   var setDealNotifs=function(fn){setDealNotifsRaw(function(prev){var next=typeof fn==="function"?fn(prev):fn;try{localStorage.setItem("crm_deal_notifs",JSON.stringify(next));}catch(e){}return next;});};
@@ -2724,6 +2789,15 @@ export default function CRMApp() {
     if(!token) return;
     var interval = setInterval(function(){ loadData(token); }, 5*60*1000);
     return function(){ clearInterval(interval); };
+  },[token]);
+
+  // ===== HEARTBEAT every 2 minutes =====
+  useEffect(function(){
+    if(!token) return;
+    var hb=function(){try{apiFetch("/api/heartbeat","POST",null,token);}catch(e){}};
+    hb();
+    var interval=setInterval(hb,2*60*1000);
+    return function(){clearInterval(interval);};
   },[token]);
 
   // ===== AUTO ROTATION: No-activity leads after 1 day + 1 hour no contact =====
@@ -2875,7 +2949,7 @@ export default function CRMApp() {
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager";
   var currentPage=page||"dashboard";
   var titles={dashboard:t.dashboard,myday:t.myDay,leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,darkMode,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
   var renderPage=function(){
     switch(currentPage){
@@ -2896,7 +2970,7 @@ export default function CRMApp() {
     }
   };
 
-  return <div style={{ display:"flex", minHeight:"100vh", background:C.bg, fontFamily:"'Cairo','Segoe UI',Tahoma,sans-serif", direction:t.dir }}>
+  return <div style={{ display:"flex", minHeight:"100vh", background:darkMode?"#0f172a":C.bg, fontFamily:"'Cairo','Segoe UI',Tahoma,sans-serif", direction:t.dir, colorScheme:darkMode?"dark":"light" }}>
     <style>{"* { box-sizing: border-box; margin: 0; padding: 0; } ::-webkit-scrollbar { width: 4px; height: 4px; } ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; } input::placeholder, textarea::placeholder { color: #94A3B8; } @keyframes spin { to { transform: rotate(360deg); } }"}</style>
     <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
@@ -2904,7 +2978,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ أنت غير متصل بالإنترنت — البيانات لن تُحفظ حتى يعود الاتصال
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} isAdmin={isAdmin} dailyRequests={[]} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} isAdmin={isAdmin} dailyRequests={[]} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}} darkMode={darkMode} setDarkMode={function(v){setDarkMode(v);try{localStorage.setItem("crm_dark",v?"1":"0");}catch(e){}}} />
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
