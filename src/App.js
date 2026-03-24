@@ -421,6 +421,7 @@ var LoginPage = function(p) {
 // ===== SIDEBAR =====
 var Sidebar = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
+  var isSales = p.cu.role==="sales";
   var items = [
     {id:"dashboard",icon:Home,label:t.dashboard},
     {id:"leads",icon:Users,label:t.leads},
@@ -428,6 +429,7 @@ var Sidebar = function(p) {
     {id:"deals",icon:Briefcase,label:t.deals},
     {id:"eoi",icon:Target,label:"EOI"},
     {id:"tasks",icon:CheckCircle,label:t.tasks},
+    isSales&&{id:"kpis",icon:TrendingUp,label:"KPIs"},
     isAdmin&&{id:"reports",icon:BarChart3,label:t.reports},
     isAdmin&&{id:"team",icon:UserPlus,label:t.team},
     isAdmin&&{id:"users",icon:Lock,label:t.users},
@@ -2810,6 +2812,137 @@ var SettingsPage = function(p) {
   </div>;
 };
 
+// ===== KPIs PAGE (Sales only) =====
+var KPIsPage = function(p) {
+  var uid = p.cu.id;
+  var parseBudget = function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
+  var myLeads = p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===uid&&!l.archived&&l.source!=="Daily Request";});
+  var myDeals = myLeads.filter(function(l){return l.status==="DoneDeal";});
+  var myActs = p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return auid===uid;});
+  var myUser = p.users.find(function(u){return gid(u)===uid;})||{};
+
+  var getQ = function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
+  var getYear = function(date){return new Date(date).getFullYear();};
+  var curQ = (function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+  var curYear = new Date().getFullYear();
+
+  var [selQ, setSelQ] = useState(curQ);
+  var [selYear, setSelYear] = useState(curYear);
+
+  var qt = {}; try{qt=JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){}
+  var qTarget = qt[selQ]||0;
+
+  // Filter by selected Q and year
+  var qDeals = myDeals.filter(function(d){
+    var dd = d.updatedAt||d.createdAt; if(!dd) return false;
+    return getQ(dd)===selQ && getYear(dd)===selYear;
+  });
+  var qCalls = myActs.filter(function(a){
+    if(a.type!=="call"||!a.createdAt) return false;
+    return getQ(a.createdAt)===selQ && getYear(a.createdAt)===selYear;
+  });
+  var qLeads = myLeads.filter(function(l){
+    if(!l.createdAt) return false;
+    return getQ(l.createdAt)===selQ && getYear(l.createdAt)===selYear;
+  });
+  var qRev = qDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var qProg = qTarget>0?Math.min(100,Math.round(qRev/qTarget*100)):0;
+  var convRate = qLeads.length>0?Math.round(qDeals.length/qLeads.length*100):0;
+
+  var isOnlineNow = myUser.lastSeen&&(Date.now()-new Date(myUser.lastSeen).getTime())<3*60*1000;
+
+  // Available years — current and past 2
+  var years = [curYear, curYear-1, curYear-2];
+
+  return <div style={{ padding:"18px 16px 40px" }}>
+    <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>KPIs</h2>
+
+    {/* Profile Card — centered */}
+    <div style={{ display:"flex", justifyContent:"center", marginBottom:20 }}>
+      <Card style={{ width:"100%", maxWidth:420, padding:0, overflow:"hidden" }}>
+        <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:24, textAlign:"center" }}>
+          <div style={{ display:"flex", justifyContent:"center", marginBottom:10 }}>
+            <Avatar name={p.cu.name} size={60} online={isOnlineNow}/>
+          </div>
+          <div style={{ color:"#fff", fontSize:16, fontWeight:700 }}>{p.cu.name}</div>
+          <div style={{ color:"rgba(255,255,255,0.55)", fontSize:12, marginTop:2 }}>{p.cu.title}</div>
+          <div style={{ marginTop:6, fontSize:10, color:isOnlineNow?"#86EFAC":"rgba(255,255,255,0.4)", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
+            <span style={{ width:7, height:7, borderRadius:"50%", background:isOnlineNow?"#22C55E":"rgba(255,255,255,0.3)", display:"inline-block" }}/>
+            {isOnlineNow?"متصل الآن":""}
+          </div>
+        </div>
+        {/* Overall stats */}
+        <div style={{ display:"flex", padding:"12px 16px", gap:8 }}>
+          {[
+            {v:myLeads.length, l:"إجمالي العملاء", c:C.info},
+            {v:myDeals.length, l:"إجمالي الصفقات", c:C.success},
+            {v:myActs.filter(function(a){return a.type==="call";}).length, l:"إجمالي المكالمات", c:C.accent},
+            {v:myLeads.length>0?Math.round(myDeals.length/myLeads.length*100)+"%":"0%", l:"معدل التحويل", c:C.warning},
+          ].map(function(s){return <div key={s.l} style={{ flex:1, textAlign:"center", padding:"8px 4px", background:"#F8FAFC", borderRadius:8 }}>
+            <div style={{ fontSize:15, fontWeight:700, color:s.c }}>{s.v}</div>
+            <div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{s.l}</div>
+          </div>;})}
+        </div>
+      </Card>
+    </div>
+
+    {/* Q selector + year */}
+    <div style={{ display:"flex", gap:8, marginBottom:16, alignItems:"center", flexWrap:"wrap" }}>
+      <div style={{ display:"flex", gap:6 }}>
+        {["Q1","Q2","Q3","Q4"].map(function(q){return <button key={q} onClick={function(){setSelQ(q);}}
+          style={{ padding:"7px 16px", borderRadius:8, border:"1px solid", borderColor:selQ===q?C.accent:"#E2E8F0",
+            background:selQ===q?C.accent+"12":"#fff", color:selQ===q?C.accent:C.textLight,
+            fontSize:13, fontWeight:600, cursor:"pointer" }}>{q}{q===curQ&&selYear===curYear?" 🔵":""}</button>;})}
+      </div>
+      <select value={selYear} onChange={function(e){setSelYear(Number(e.target.value));}}
+        style={{ padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff", color:C.text }}>
+        {years.map(function(y){return <option key={y} value={y}>{y}</option>;})}
+      </select>
+    </div>
+
+    {/* Q Target progress */}
+    <Card style={{ marginBottom:16 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
+        <span style={{ fontSize:13, fontWeight:700 }}>{selQ} Target — {selYear}</span>
+        <span style={{ fontSize:12, color:C.textLight }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"لم يتحدد"}</span>
+      </div>
+      <div style={{ height:10, background:"#E2E8F0", borderRadius:5, marginBottom:8 }}>
+        <div style={{ height:"100%", width:qProg+"%", borderRadius:5, background:qProg>=100?C.success:qProg>=50?C.accent:C.warning, transition:"width 0.6s" }}/>
+      </div>
+      <div style={{ display:"flex", justifyContent:"space-between" }}>
+        <span style={{ fontSize:13, color:C.success, fontWeight:700 }}>{(qRev/1000000).toFixed(2)}M EGP</span>
+        <span style={{ fontSize:13, fontWeight:700, color:qProg>=100?C.success:C.accent }}>{qProg}%</span>
+      </div>
+    </Card>
+
+    {/* Q stats */}
+    <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
+      {[
+        {v:qDeals.length, l:"صفقات", c:C.success, icon:"🏆"},
+        {v:qCalls.length, l:"مكالمات", c:C.info, icon:"📞"},
+        {v:qLeads.length, l:"عملاء جدد", c:C.accent, icon:"👤"},
+        {v:convRate+"%", l:"معدل التحويل", c:C.warning, icon:"📊"},
+      ].map(function(s){return <Card key={s.l} style={{ flex:"1 1 120px", textAlign:"center", padding:"16px 12px" }}>
+        <div style={{ fontSize:22, marginBottom:4 }}>{s.icon}</div>
+        <div style={{ fontSize:22, fontWeight:800, color:s.c }}>{s.v}</div>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:4 }}>{s.l}</div>
+      </Card>;})}
+    </div>
+
+    {/* Q Deals list */}
+    {qDeals.length>0&&<Card style={{ marginTop:16 }}>
+      <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>🏆 صفقات {selQ} — {selYear}</div>
+      {qDeals.map(function(d){return <div key={gid(d)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 0", borderBottom:"1px solid #F1F5F9" }}>
+        <div>
+          <div style={{ fontSize:12, fontWeight:600 }}>{d.name}</div>
+          <div style={{ fontSize:10, color:C.textLight }}>{d.project||"-"}</div>
+        </div>
+        <div style={{ fontSize:13, fontWeight:700, color:C.success }}>{parseBudget(d.budget)>0?(parseBudget(d.budget)/1000000).toFixed(2)+"M":d.budget||"-"}</div>
+      </div>;})}
+    </Card>}
+  </div>;
+};
+
 // ===== MAIN APP =====
 export default function CRMApp() {
   var [lang,setLang]=useState("ar");
@@ -3145,12 +3278,13 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,myday:t.myDay,leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
+  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
   var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
   var renderPage=function(){
     switch(currentPage){
       case "dashboard": return <DashboardPage {...sp}/>;
+      case "kpis": return <KPIsPage {...sp}/>
       case "myday_disabled": return <MyDayPage {...sp}/>;
       case "leads": return <LeadsPage {...sp} isRequest={false}/>;
       case "dailyReq": return <DailyRequestsPage {...sp}/>;
