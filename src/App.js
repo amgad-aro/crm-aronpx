@@ -494,8 +494,8 @@ var Header = function(p) {
       <button onClick={function(){p.setLang(p.lang==="ar"?"en":"ar");}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:12, fontWeight:600, color:C.text }}>{p.lang==="ar"?"EN":"عر"}</button>
       {/* Deal notifications bell - admin only */}
       {p.isAdmin&&<div style={{ position:"relative" }}>
-        <button onClick={function(){p.setShowDealNotif(!p.showDealNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
-          <DollarSign size={16} color={p.unseenDeals>0?"#15803D":C.textLight}/>
+        <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening&&p.onDealNotifSeen)p.onDealNotifSeen();}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
+          <DollarSign size={16} color={p.unseenDeals>0&&!p.showDealNotif?"#15803D":C.textLight}/>
           {p.unseenDeals>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:"#15803D", color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.unseenDeals}</span>}
         </button>
         {p.showDealNotif&&<div style={{ position:"absolute", top:44, left:0, width:310, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
@@ -1488,7 +1488,7 @@ var calcCommission = function(user, allDeals, allUsers, forQ) {
 
 var DealsPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
-  var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
+  var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var total=deals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
@@ -1724,7 +1724,7 @@ var DealsPage = function(p) {
 
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"تاريخ الصفقة","مراحل الصفقة",isAdmin?"عمولة":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"مراحل الصفقة",isAdmin?"عمولة":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {deals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
@@ -1738,7 +1738,6 @@ var DealsPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight }}>{d.phone2||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
-            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{d.updatedAt?new Date(d.updatedAt).toLocaleDateString("ar-EG")+" "+new Date(d.updatedAt).toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"}):"-"}</td>
             <td style={{ padding:"11px 12px", minWidth:130 }}>
               <button onClick={function(){openStages(d);}}
                 style={{ background:"none", border:"none", cursor:"pointer", width:"100%", textAlign:"right", padding:0 }}>
@@ -2502,7 +2501,7 @@ var ReportsPage = function(p) {
               {[{v:al.length,l:t.leads,c:C.text},{v:d,l:t.deals,c:C.success},{v:cl,l:t.calls,c:C.info},{v:rate+"%",l:"Conv.",c:C.accent}].map(function(s){return <div key={s.l} style={{ textAlign:"center", minWidth:36 }}><div style={{ fontSize:12, fontWeight:700, color:s.c }}>{s.v}</div><div style={{ fontSize:9, color:C.textLight }}>{s.l}</div></div>;})}
             </div>
             <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}><div style={{ height:"100%", width:prog+"%", background:prog>=100?C.success:C.accent, borderRadius:2 }}/></div>
-            <div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{t.monthlyTarget}: {d}/{target}</div>
+            <div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{t.monthlyTarget}: {d}/{target}M EGP</div>
           </div>;
         })}
       </Card>
