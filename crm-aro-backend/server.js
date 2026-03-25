@@ -185,13 +185,8 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     if (req.body.active !== undefined) update.active = req.body.active;
     if (req.body.monthlyTarget !== undefined) update.monthlyTarget = Number(req.body.monthlyTarget);
     if (req.body.password) update.password = await bcrypt.hash(req.body.password, 10);
-    if (req.body.qTargets !== undefined) {
-      var user2 = await User.findById(req.params.id);
-      if (user2) { user2.qTargets = req.body.qTargets; user2.markModified("qTargets"); await user2.save(); }
-      var finalUser = await User.findById(req.params.id).select("-password");
-      if (Object.keys(update).filter(function(k){return k!=="qTargets";}).length === 0) return res.json(finalUser);
-    }
-    var user = await User.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).select("-password");
+    if (req.body.qTargets !== undefined) update["qTargets"] = req.body.qTargets;
+    var user = await User.findByIdAndUpdate(req.params.id, { $set: update }, { new: true, strict: false }).select("-password");
     res.json(user);
   } catch (e) {
     res.status(500).json({ error: e.message });
