@@ -1083,7 +1083,6 @@ var LeadsPage = function(p) {
                     <div style={{ display:"flex", gap:4, marginTop:2, justifyContent:"flex-end" }}>
                       <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/> {t.call}</a>
                       <a href={"https://wa.me/2"+lead.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}>💬 {t.whatsapp}</a>
-                      <button onClick={function(e){e.stopPropagation();setSelected(lead);setShowActForm(true);}} style={{ fontSize:10, color:C.accent, background:"none", border:"none", cursor:"pointer", display:"flex", alignItems:"center", gap:2, padding:0 }}>📝 ملاحظة</button>
                     </div>
                   </td>
                   <td style={{ padding:"10px 12px", whiteSpace:"nowrap", textAlign:"right" }}>
@@ -3003,34 +3002,6 @@ var KPIsPage = function(p) {
       </Card>;})}
     </div>
 
-    {/* Comparison with previous Q */}
-    {(function(){
-      var prevQMap={"Q1":"Q4","Q2":"Q1","Q3":"Q2","Q4":"Q3"};
-      var prevQ=prevQMap[selQ]; var prevYear=selQ==="Q1"?selYear-1:selYear;
-      var prevDeals=myDeals.filter(function(d){var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===prevQ&&getYear(dd)===prevYear;});
-      var prevRev=prevDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
-      var prevCalls=myActs.filter(function(a){return a.type==="call"&&a.createdAt&&getQ(a.createdAt)===prevQ&&getYear(a.createdAt)===prevYear;});
-      var dealDiff=qDeals.length-prevDeals.length;
-      var revDiff=qRev-prevRev;
-      var callDiff=qCalls.length-prevCalls.length;
-      return <Card style={{ marginTop:16 }}>
-        <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>📊 مقارنة {selQ} vs {prevQ} ({prevYear})</div>
-        <div style={{ display:"flex", gap:10 }}>
-          {[
-            {label:"صفقات",cur:qDeals.length,prev:prevDeals.length,diff:dealDiff,c:C.success},
-            {label:"مكالمات",cur:qCalls.length,prev:prevCalls.length,diff:callDiff,c:C.info},
-            {label:"إيرادات",cur:(qRev/1000000).toFixed(1)+"M",prev:(prevRev/1000000).toFixed(1)+"M",diff:revDiff,c:C.accent,isMoney:true},
-          ].map(function(s){var up=s.diff>0;var same=s.diff===0;return <div key={s.label} style={{ flex:1, textAlign:"center", padding:"10px 8px", background:"#F8FAFC", borderRadius:10 }}>
-            <div style={{ fontSize:11, color:C.textLight, marginBottom:6 }}>{s.label}</div>
-            <div style={{ fontSize:16, fontWeight:700, color:s.c }}>{s.cur}</div>
-            <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>vs {s.prev}</div>
-            <div style={{ fontSize:11, fontWeight:700, marginTop:4, color:same?"#94A3B8":up?C.success:C.danger }}>
-              {same?"—":up?"▲ +":"▼ "}{same?"":(s.isMoney?(Math.abs(revDiff)/1000000).toFixed(1)+"M":Math.abs(s.diff))}
-            </div>
-          </div>;})}
-        </div>
-      </Card>;
-    })()}
 
     {/* Q Deals list */}
     {qDeals.length>0&&<Card style={{ marginTop:16 }}>
