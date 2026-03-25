@@ -430,6 +430,7 @@ var Sidebar = function(p) {
     {id:"eoi",icon:Target,label:"EOI"},
     {id:"tasks",icon:CheckCircle,label:t.tasks},
     isSales&&{id:"kpis",icon:TrendingUp,label:"KPIs"},
+    isSales&&{id:"calendar",icon:Calendar,label:"تقويم"},
     isAdmin&&{id:"reports",icon:BarChart3,label:t.reports},
     isAdmin&&{id:"team",icon:UserPlus,label:t.team},
     isAdmin&&{id:"users",icon:Lock,label:t.users},
@@ -703,6 +704,19 @@ var showBrowserNotif = function(title, body, onClick) {
   var n = new Notification(title, { body: body, icon: "/favicon.ico", badge: "/favicon.ico" });
   if (onClick) n.onclick = onClick;
   setTimeout(function() { n.close(); }, 8000);
+};
+var playAlertSound = function() {
+  try {
+    var ctx = new (window.AudioContext||window.webkitAudioContext)();
+    var o = ctx.createOscillator(); var g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.frequency.setValueAtTime(880, ctx.currentTime);
+    o.frequency.setValueAtTime(660, ctx.currentTime+0.1);
+    o.frequency.setValueAtTime(880, ctx.currentTime+0.2);
+    g.gain.setValueAtTime(0.3, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+0.4);
+    o.start(ctx.currentTime); o.stop(ctx.currentTime+0.4);
+  } catch(e) {}
 };
 
 
@@ -1069,6 +1083,7 @@ var LeadsPage = function(p) {
                     <div style={{ display:"flex", gap:4, marginTop:2, justifyContent:"flex-end" }}>
                       <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}><Phone size={9}/> {t.call}</a>
                       <a href={"https://wa.me/2"+lead.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:10, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:2 }}>💬 {t.whatsapp}</a>
+                      <button onClick={function(e){e.stopPropagation();setSelected(lead);setShowActForm(true);}} style={{ fontSize:10, color:C.accent, background:"none", border:"none", cursor:"pointer", display:"flex", alignItems:"center", gap:2, padding:0 }}>📝 ملاحظة</button>
                     </div>
                   </td>
                   <td style={{ padding:"10px 12px", whiteSpace:"nowrap", textAlign:"right" }}>
@@ -2988,6 +3003,35 @@ var KPIsPage = function(p) {
       </Card>;})}
     </div>
 
+    {/* Comparison with previous Q */}
+    {(function(){
+      var prevQMap={"Q1":"Q4","Q2":"Q1","Q3":"Q2","Q4":"Q3"};
+      var prevQ=prevQMap[selQ]; var prevYear=selQ==="Q1"?selYear-1:selYear;
+      var prevDeals=myDeals.filter(function(d){var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===prevQ&&getYear(dd)===prevYear;});
+      var prevRev=prevDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+      var prevCalls=myActs.filter(function(a){return a.type==="call"&&a.createdAt&&getQ(a.createdAt)===prevQ&&getYear(a.createdAt)===prevYear;});
+      var dealDiff=qDeals.length-prevDeals.length;
+      var revDiff=qRev-prevRev;
+      var callDiff=qCalls.length-prevCalls.length;
+      return <Card style={{ marginTop:16 }}>
+        <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>📊 مقارنة {selQ} vs {prevQ} ({prevYear})</div>
+        <div style={{ display:"flex", gap:10 }}>
+          {[
+            {label:"صفقات",cur:qDeals.length,prev:prevDeals.length,diff:dealDiff,c:C.success},
+            {label:"مكالمات",cur:qCalls.length,prev:prevCalls.length,diff:callDiff,c:C.info},
+            {label:"إيرادات",cur:(qRev/1000000).toFixed(1)+"M",prev:(prevRev/1000000).toFixed(1)+"M",diff:revDiff,c:C.accent,isMoney:true},
+          ].map(function(s){var up=s.diff>0;var same=s.diff===0;return <div key={s.label} style={{ flex:1, textAlign:"center", padding:"10px 8px", background:"#F8FAFC", borderRadius:10 }}>
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:6 }}>{s.label}</div>
+            <div style={{ fontSize:16, fontWeight:700, color:s.c }}>{s.cur}</div>
+            <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>vs {s.prev}</div>
+            <div style={{ fontSize:11, fontWeight:700, marginTop:4, color:same?"#94A3B8":up?C.success:C.danger }}>
+              {same?"—":up?"▲ +":"▼ "}{same?"":(s.isMoney?(Math.abs(revDiff)/1000000).toFixed(1)+"M":Math.abs(s.diff))}
+            </div>
+          </div>;})}
+        </div>
+      </Card>;
+    })()}
+
     {/* Q Deals list */}
     {qDeals.length>0&&<Card style={{ marginTop:16 }}>
       <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>🏆 صفقات {selQ} — {selYear}</div>
@@ -2999,6 +3043,114 @@ var KPIsPage = function(p) {
         <div style={{ fontSize:13, fontWeight:700, color:C.success }}>{parseBudget(d.budget)>0?(parseBudget(d.budget)/1000000).toFixed(2)+"M":d.budget||"-"}</div>
       </div>;})}
     </Card>}
+  </div>;
+};
+
+// ===== CALL CALENDAR PAGE =====
+var CallCalendarPage = function(p) {
+  var uid = String(p.cu.id);
+  var now = new Date();
+  var [viewDate, setViewDate] = useState(new Date(now.getFullYear(), now.getMonth(), 1));
+  var year = viewDate.getFullYear(); var month = viewDate.getMonth();
+  var daysInMonth = new Date(year, month+1, 0).getDate();
+  var firstDay = new Date(year, month, 1).getDay(); // 0=Sun
+  var monthNames = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
+
+  var myCallbacks = p.leads.filter(function(l){
+    var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
+    return String(aid)===uid&&l.callbackTime&&!l.archived;
+  });
+
+  var getCallbacksForDay = function(day){
+    return myCallbacks.filter(function(l){
+      var d = new Date(l.callbackTime);
+      return d.getFullYear()===year && d.getMonth()===month && d.getDate()===day;
+    });
+  };
+
+  var today = new Date();
+  var [selectedDay, setSelectedDay] = useState(null);
+
+  var cells = [];
+  // Empty cells for first day offset (Sunday=0, adjust for RTL week starting Saturday)
+  var offset = (firstDay+1)%7; // Mon=0
+  for(var i=0;i<offset;i++) cells.push(null);
+  for(var d=1;d<=daysInMonth;d++) cells.push(d);
+
+  var dayLabels = ["الإثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت","الأحد"];
+
+  return <div style={{ padding:"18px 16px 40px" }}>
+    <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>📅 تقويم المكالمات</h2>
+
+    {/* Month nav */}
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+      <button onClick={function(){setViewDate(new Date(year,month-1,1));setSelectedDay(null);}} style={{ width:32, height:32, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:16 }}>‹</button>
+      <span style={{ fontSize:15, fontWeight:700 }}>{monthNames[month]} {year}</span>
+      <button onClick={function(){setViewDate(new Date(year,month+1,1));setSelectedDay(null);}} style={{ width:32, height:32, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:16 }}>›</button>
+    </div>
+
+    {/* Day labels */}
+    <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:4, marginBottom:4 }}>
+      {dayLabels.map(function(d){return <div key={d} style={{ textAlign:"center", fontSize:10, fontWeight:600, color:C.textLight, padding:"4px 0" }}>{d}</div>;})}
+    </div>
+
+    {/* Calendar grid */}
+    <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:4, marginBottom:16 }}>
+      {cells.map(function(day,i){
+        if(!day) return <div key={"e"+i}/>;
+        var cbs = getCallbacksForDay(day);
+        var isToday = day===today.getDate()&&month===today.getMonth()&&year===today.getFullYear();
+        var isSel = day===selectedDay;
+        var hasCb = cbs.length>0;
+        return <div key={day} onClick={function(){setSelectedDay(isSel?null:day);}}
+          style={{ aspectRatio:"1", borderRadius:10, border:"2px solid", borderColor:isSel?C.accent:isToday?C.info:"#E8ECF1",
+            background:isSel?C.accent+"12":isToday?"#EFF6FF":"#FAFBFC",
+            display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+            cursor:hasCb?"pointer":"default", position:"relative", padding:4 }}>
+          <span style={{ fontSize:13, fontWeight:isToday||isSel?700:400, color:isSel?C.accent:isToday?C.info:C.text }}>{day}</span>
+          {hasCb&&<div style={{ display:"flex", gap:2, marginTop:2, flexWrap:"wrap", justifyContent:"center" }}>
+            {cbs.slice(0,3).map(function(l,ci){return <span key={ci} style={{ width:6, height:6, borderRadius:"50%", background:C.accent, display:"inline-block" }}/>;});}
+            {cbs.length>3&&<span style={{ fontSize:8, color:C.accent, fontWeight:700 }}>+{cbs.length-3}</span>}
+          </div>}
+        </div>;
+      })}
+    </div>
+
+    {/* Selected day callbacks */}
+    {selectedDay&&(function(){
+      var cbs=getCallbacksForDay(selectedDay);
+      return <Card>
+        <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>📞 مكالمات {selectedDay} {monthNames[month]}</div>
+        {cbs.length===0&&<div style={{ color:C.textLight, fontSize:13 }}>لا يوجد مكالمات</div>}
+        {cbs.map(function(l){
+          var ci=callbackColor(l.callbackTime);
+          var sc=STATUSES(p.t); var so=sc.find(function(s){return s.value===l.status;})||sc[0];
+          return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}}
+            style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 0", borderBottom:"1px solid #F1F5F9", cursor:"pointer" }}>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:13, fontWeight:600 }}>{l.name}</div>
+              <div style={{ fontSize:11, color:C.textLight }}>{l.phone}</div>
+            </div>
+            <div style={{ textAlign:"left" }}>
+              <span style={{ background:so.bg, color:so.color, padding:"2px 8px", borderRadius:12, fontSize:10, fontWeight:600 }}>{so.label}</span>
+              <div style={{ fontSize:10, color:ci?ci.color:C.textLight, marginTop:3, fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(11,16):""}</div>
+            </div>
+          </div>;
+        })}
+      </Card>;
+    })()}
+
+    {/* Summary */}
+    <div style={{ marginTop:16, display:"flex", gap:10 }}>
+      <Card style={{ flex:1, textAlign:"center", padding:"12px" }}>
+        <div style={{ fontSize:20, fontWeight:700, color:C.accent }}>{myCallbacks.filter(function(l){var d=new Date(l.callbackTime);return d.getFullYear()===year&&d.getMonth()===month;}).length}</div>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:4 }}>مكالمات الشهر</div>
+      </Card>
+      <Card style={{ flex:1, textAlign:"center", padding:"12px" }}>
+        <div style={{ fontSize:20, fontWeight:700, color:C.danger }}>{myCallbacks.filter(function(l){return new Date(l.callbackTime)<new Date()&&l.status==="CallBack";}).length}</div>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:4 }}>فات موعدها</div>
+      </Card>
+    </div>
   </div>;
 };
 
@@ -3337,13 +3489,14 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
+  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"تقويم المكالمات",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
   var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
   var renderPage=function(){
     switch(currentPage){
       case "dashboard": return <DashboardPage {...sp}/>;
       case "kpis": return <KPIsPage {...sp}/>
+      case "calendar": return <CallCalendarPage {...sp}/>
       case "myday_disabled": return <MyDayPage {...sp}/>;
       case "leads": return <LeadsPage {...sp} isRequest={false}/>;
       case "dailyReq": return <DailyRequestsPage {...sp}/>;
