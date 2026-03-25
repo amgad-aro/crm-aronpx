@@ -121,7 +121,7 @@ app.post("/api/login", async function(req, res) {
     if (!valid) return res.status(401).json({ error: "Invalid credentials" });
     var token = jwt.sign({ id: user._id, role: user.role, name: user.name }, process.env.JWT_SECRET, { expiresIn: "7d" });
     await User.findByIdAndUpdate(user._id, { lastSeen: new Date() });
-    res.json({ token: token, user: { id: user._id, name: user.name, username: user.username, role: user.role, title: user.title, email: user.email, phone: user.phone } });
+    res.json({ token: token, user: { id: user._id, name: user.name, username: user.username, role: user.role, title: user.title, email: user.email, phone: user.phone, teamId: user.teamId||"", teamName: user.teamName||"" } });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
