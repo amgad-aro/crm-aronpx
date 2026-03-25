@@ -278,6 +278,9 @@ var StatusModal = function(p) {
   var [dealUnitType, setDealUnitType] = useState("");
   var [dealBudget, setDealBudget] = useState("");
   var [eoiDeposit, setEoiDeposit] = useState("");
+  var [potBudget, setPotBudget] = useState("");
+  var [potDeposit, setPotDeposit] = useState("");
+  var [potInstalment, setPotInstalment] = useState("");
   var [err, setErr] = useState("");
   var [saving, setSaving] = useState(false);
   var sc = STATUSES(p.t);
@@ -289,10 +292,14 @@ var StatusModal = function(p) {
   var isReject     = st==="NotInterested";
   var needsComment = st==="Potential"||st==="HotCase"||st==="MeetingDone";
   var needsCb      = st==="CallBack"||st==="NoAnswer";
+  var needsPotFields = st==="Potential"||st==="HotCase";
 
   useEffect(function(){
-    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit(""); setErr("");
+    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit("");
+    setPotBudget(""); setPotDeposit(""); setPotInstalment(""); setErr("");
   },[p.show]);
+
+  var fmtNum = function(val, set){ return function(e){ var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,""); set(r?Number(r).toLocaleString():""); setErr(""); }; };
 
   var submit = async function() {
     if (needsComment && !cbTime)         { setErr("لازم تختار موعد المكالمة"); return; }
@@ -300,8 +307,15 @@ var StatusModal = function(p) {
     if (needsCb && !cbTime)              { setErr("لازم تختار موعد"); return; }
     if (isReject && !comment.trim())     { setErr("لازم تختار سبب الرفض"); return; }
     if ((isDoneDeal||isEOI) && !dealBudget.trim()){ setErr("لازم تكتب المبلغ"); return; }
+    if (needsPotFields && !potBudget.trim()){ setErr("لازم تكتب الميزانية"); return; }
+    if (needsPotFields && !potDeposit.trim()){ setErr("لازم تكتب المقدم"); return; }
+    if (needsPotFields && !potInstalment.trim()){ setErr("لازم تكتب الأقساط"); return; }
     setSaving(true);
-    var extra = (isDoneDeal||isEOI) ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit } : {};
+    var extra = (isDoneDeal||isEOI)
+      ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit }
+      : needsPotFields
+        ? { budget: potBudget, deposit: potDeposit, instalment: potInstalment }
+        : {};
     await p.onConfirm(comment.trim(), cbTime, extra);
     setSaving(false);
   };
@@ -328,6 +342,28 @@ var StatusModal = function(p) {
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 ملاحظة <span style={{color:C.danger}}>*</span></label>
       <textarea rows={3} placeholder="اكتب ملاحظة..." value={comment} onChange={function(e){setComment(e.target.value);setErr("");}}
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
+    </div>}
+
+    {/* Potential / HotCase: budget + deposit + instalment */}
+    {needsPotFields&&<div style={{ background:"#F0F9FF", borderRadius:10, padding:"12px 14px", marginBottom:12, border:"1px solid #BAE6FD" }}>
+      <div style={{ fontSize:12, fontWeight:700, color:"#0284C7", marginBottom:10 }}>💰 البيانات المالية</div>
+      <div style={{ marginBottom:9 }}>
+        <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>الميزانية (EGP) <span style={{color:C.danger}}>*</span></label>
+          <input type="text" placeholder="مثال: 1,000,000" value={potBudget} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setPotBudget(r?Number(r).toLocaleString():"");setErr("");}}
+            style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+        <div>
+          <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>المقدم (EGP) <span style={{color:C.danger}}>*</span></label>
+          <input type="text" placeholder="مثال: 500,000" value={potDeposit} onChange={fmtNum(potDeposit,setPotDeposit)}
+            style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
+        </div>
+        <div>
+          <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>الأقساط (EGP) <span style={{color:C.danger}}>*</span></label>
+          <input type="text" placeholder="مثال: 20,000" value={potInstalment} onChange={fmtNum(potInstalment,setPotInstalment)}
+            style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
+        </div>
+      </div>
     </div>}
 
     {/* CallBack / NoAnswer: optional comment */}
@@ -901,6 +937,7 @@ var LeadsPage = function(p) {
         if(extra.project)    upData.project    = extra.project;
         if(extra.notes)      upData.notes      = extra.notes;
         if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
+        if(extra.deposit)    upData.notes      = (upData.notes?upData.notes+" | ":"")+"مقدم: "+extra.deposit+" EGP | أقساط: "+extra.instalment+" EGP";
       }
       if(pendingStatus.newStatus === "EOI") upData.eoiDate = new Date().toISOString();
       // Notify admin when DoneDeal or EOI
