@@ -894,6 +894,10 @@ var LeadsPage = function(p) {
   var [showWaTemplates, setShowWaTemplates] = useState(false);
   var [waLead, setWaLead] = useState(null);
   var [showQuickAdd, setShowQuickAdd] = useState(false);
+  var [showHistory, setShowHistory] = useState(false);
+  var [historyLead, setHistoryLead] = useState(null);
+  var [fullHistory, setFullHistory] = useState([]);
+  var [historyLoading, setHistoryLoading] = useState(false);
   var [quickForm, setQuickForm] = useState({name:"",phone:"",project:PROJECTS[0],source:"Facebook"});
   var [quickSaving, setQuickSaving] = useState(false);
   var [notifGranted, setNotifGranted] = useState(typeof Notification!=="undefined"&&Notification.permission==="granted");
@@ -964,6 +968,25 @@ var LeadsPage = function(p) {
       }
     } catch(e){alert(e.message);}
     setShowStatusComment(false); setPendingStatus(null); setShowStatusPicker(false);
+  };
+
+  var openHistory = async function(lead) {
+    setHistoryLead(lead); setShowHistory(true); setFullHistory([]); setHistoryLoading(true);
+    var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
+    try {
+      if(isAdmin) {
+        var hist = await apiFetch("/api/leads/"+gid(lead)+"/full-history","GET",null,p.token);
+        setFullHistory(hist||[]);
+      } else {
+        var rotTime = lead.lastRotationAt ? new Date(lead.lastRotationAt).getTime() : 0;
+        var acts = p.activities.filter(function(a){
+          var lid=gid(lead); var match=a.leadId&&(gid(a.leadId)===lid||a.leadId===lid);
+          return match && (!rotTime||new Date(a.createdAt).getTime()>=rotTime);
+        });
+        setFullHistory(acts);
+      }
+    } catch(e){ setFullHistory([]); }
+    setHistoryLoading(false);
   };
 
   var archiveLead = async function(lid) {
@@ -1090,7 +1113,7 @@ var LeadsPage = function(p) {
         <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?600:900 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-              {isAdmin&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(l){return gid(l);}):[])}}/></th>}
+              <th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(l){return gid(l);}):[])}}/></th>
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.name}</th>
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.phone}</th>
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.phone2}</th>
@@ -1107,7 +1130,7 @@ var LeadsPage = function(p) {
                 var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0];
                 var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
                 return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
-                  {isAdmin&&<td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();setSelected2(function(prev){return prev.includes(lid)?prev.filter(function(x){return x!==lid;}):[...prev,lid];});}}><input type="checkbox" checked={isChk} readOnly/></td>}
+                  <td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();setSelected2(function(prev){return prev.includes(lid)?prev.filter(function(x){return x!==lid;}):[...prev,lid];});}}><input type="checkbox" checked={isChk} readOnly/></td>
                   <td style={{ padding:"10px 12px", textAlign:"right" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                       {lead.isVIP&&<span style={{ fontSize:14 }} title="VIP">⭐</span>}
@@ -1175,6 +1198,7 @@ var LeadsPage = function(p) {
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
             <div style={{ display:"flex", gap:5 }}>
+              <button onClick={function(){openHistory(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title="تاريخ العميل">📋</button>
               {isAdmin&&<button onClick={function(){setEditLead(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.edit}><Edit size={11}/></button>}
               {isAdmin&&<button onClick={function(){archiveLead(gid(selected));}} style={{ background:"rgba(255,165,0,0.3)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.archive}><Archive size={11}/></button>}
             </div>
@@ -1267,6 +1291,29 @@ var LeadsPage = function(p) {
         </div>
       </Card>}
     </div>
+
+    {/* Full History Modal */}
+    {showHistory&&historyLead&&<Modal show={true} onClose={function(){setShowHistory(false);setHistoryLead(null);}} title={"📋 تاريخ العميل — "+historyLead.name} w={520}>
+      {historyLoading&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>جاري التحميل...</div>}
+      {!historyLoading&&fullHistory.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>لا يوجد سجل أنشطة</div>}
+      {!historyLoading&&fullHistory.length>0&&<div style={{ maxHeight:400, overflowY:"auto" }}>
+        {fullHistory.map(function(a,i){
+          var uname=a.userId&&a.userId.name?a.userId.name:"";
+          return <div key={a._id||i} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
+            <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
+              <span style={{ fontSize:16, flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔"}</span>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:12, fontWeight:500, color:C.text }}>{a.note}</div>
+                <div style={{ fontSize:10, color:C.textLight, marginTop:3, display:"flex", gap:8 }}>
+                  {uname&&<span style={{ fontWeight:600, color:C.accent }}>{uname}</span>}
+                  <span>{a.createdAt?new Date(a.createdAt).toLocaleDateString("ar-EG")+" — "+new Date(a.createdAt).toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"}):""}</span>
+                </div>
+              </div>
+            </div>
+          </div>;
+        })}
+      </div>}
+    </Modal>}
 
     {/* WhatsApp Templates Modal */}
     {showWaTemplates&&waLead&&<Modal show={true} onClose={function(){setShowWaTemplates(false);setWaLead(null);}} title={"💬 رسائل واتساب — "+waLead.name}>
