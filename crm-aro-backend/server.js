@@ -17,7 +17,7 @@ var User = mongoose.model("User", new mongoose.Schema({
   password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
   role:{type:String,enum:["admin","manager","sales","viewer"],default:"sales"},
   title:{type:String,default:""}, active:{type:Boolean,default:true},
-  monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, qTargets:{type:Object,default:{}}
+  monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, qTargets:{type:Object,default:{}}, reportsTo:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null}
 },{timestamps:true}));
 
 var Lead = mongoose.model("Lead", new mongoose.Schema({
@@ -121,7 +121,7 @@ app.post("/api/login", async function(req, res) {
     if (!valid) return res.status(401).json({ error: "Invalid credentials" });
     var token = jwt.sign({ id: user._id, role: user.role, name: user.name }, process.env.JWT_SECRET, { expiresIn: "7d" });
     await User.findByIdAndUpdate(user._id, { lastSeen: new Date() });
-    res.json({ token: token, user: { id: user._id, name: user.name, username: user.username, role: user.role, title: user.title, email: user.email, phone: user.phone, teamId: user.teamId||"", teamName: user.teamName||"" } });
+    res.json({ token: token, user: { id: user._id, name: user.name, username: user.username, role: user.role, title: user.title, email: user.email, phone: user.phone, teamId: user.teamId||"", teamName: user.teamName||"", reportsTo: user.reportsTo||null } });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -186,6 +186,7 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     if (req.body.monthlyTarget !== undefined) update.monthlyTarget = Number(req.body.monthlyTarget);
     if (req.body.password) update.password = await bcrypt.hash(req.body.password, 10);
     if (req.body.qTargets !== undefined) update["qTargets"] = req.body.qTargets;
+    if (req.body.reportsTo !== undefined) update.reportsTo = req.body.reportsTo || null;
     var user = await User.findByIdAndUpdate(req.params.id, { $set: update }, { new: true, strict: false }).select("-password");
     res.json(user);
   } catch (e) {
