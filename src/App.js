@@ -3333,21 +3333,37 @@ export default function CRMApp() {
   var t=TR[lang];
 
 
-  var getVisibleLeads = function(allLeads, user) {
+  var getVisibleLeads = function(allLeads, user, allUsers) {
     if (!user || user.role === "admin") return allLeads;
     if (user.role === "manager") {
       if (!user.teamId) return allLeads;
+      // Build set of team member IDs
+      var teamMemberIds = {};
+      if (allUsers) {
+        allUsers.forEach(function(u) {
+          if (u.teamId === user.teamId) {
+            teamMemberIds[String(u._id)] = true;
+            if (u.id) teamMemberIds[String(u.id)] = true;
+          }
+        });
+      }
       return allLeads.filter(function(l) {
         var agent = l.agentId;
         if (!agent) return false;
-        if (typeof agent === "object" && agent.teamId) return agent.teamId === user.teamId;
-        return false;
+        // Case 1: agentId is populated object
+        if (typeof agent === "object") {
+          if (agent.teamId) return agent.teamId === user.teamId;
+          var aid = String(agent._id || agent.id || "");
+          return teamMemberIds[aid] || false;
+        }
+        // Case 2: agentId is plain string/ObjectId
+        return teamMemberIds[String(agent)] || false;
       });
     }
-    // Sales sees only their own leads (including archived)
+    // Sales sees only their own leads
     return allLeads.filter(function(l) {
       var aid = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
-      return aid === user.id;
+      return String(aid) === String(user.id);
     });
   };
 
@@ -3366,7 +3382,7 @@ export default function CRMApp() {
           return l;
         });
       } catch(e) {}
-      setLeads(getVisibleLeads(leadsData, currentUser)); setUsers(results[1]); setActivities(results[2]); setTasks(results[3]);
+      setLeads(getVisibleLeads(leadsData, currentUser, results[1])); setUsers(results[1]); setActivities(results[2]); setTasks(results[3]);
     } catch(e){setDataError(e.message);}
     setLoading(false);
   },[]);
