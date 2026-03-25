@@ -2830,12 +2830,12 @@ var SettingsPage = function(p) {
 
 // ===== KPIs PAGE (Sales only) =====
 var KPIsPage = function(p) {
-  var uid = p.cu.id;
+  var uid = String(p.cu.id);
   var parseBudget = function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var myLeads = p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===uid&&!l.archived&&l.source!=="Daily Request";});
   var myDeals = myLeads.filter(function(l){return l.status==="DoneDeal";});
   var myActs = p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return auid===uid;});
-  var myUser = p.users.find(function(u){return gid(u)===uid;})||{};
+  var myUser = p.users.find(function(u){return String(gid(u))===uid;})||{};
 
   var getQ = function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
   var getYear = function(date){return new Date(date).getFullYear();};
