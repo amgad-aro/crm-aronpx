@@ -1109,7 +1109,26 @@ var LeadsPage = function(p) {
       {/* Status dropdown overlay */}
       {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
     {/* Table */}
-      <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
+      {p.isMobile&&!selected?<div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>لا يوجد بيانات</div>}
+        {filtered.map(function(lead){
+          var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0]; var isVIP=lead.isVIP;
+          return <div key={lid} onClick={function(){setSelected(lead);}} style={{ background:"#fff", borderRadius:12, padding:"12px 14px", border:"1px solid #E8ECF1", borderRight:isVIP?"3px solid #F59E0B":"1px solid #E8ECF1", cursor:"pointer" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
+              <div><div style={{ fontSize:14, fontWeight:700, color:isVIP?C.accent:C.text }}>{isVIP?"⭐ ":""}{lead.name}</div><div style={{ fontSize:11, color:C.textLight, direction:"ltr", marginTop:2 }}>{lead.phone}</div></div>
+              <span style={{ background:so.bg, color:so.color, padding:"3px 10px", borderRadius:12, fontSize:11, fontWeight:600, whiteSpace:"nowrap" }}>{so.label}</span>
+            </div>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <span style={{ fontSize:11, color:C.textLight }}>{lead.project||"—"}</span>
+              <span style={{ fontSize:10, color:C.accent }}>{timeAgo(lead.lastActivityTime,t)}</span>
+            </div>
+            <div style={{ display:"flex", gap:6, marginTop:8 }}>
+              <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#DCFCE7", color:"#15803D", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={11}/> اتصال</a>
+              <a href={"https://wa.me/2"+lead.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#DCFCE7", color:"#25D366", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>💬 واتساب</a>
+            </div>
+          </div>;
+        })}
+      </div>:<Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?600:900 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
@@ -1190,7 +1209,7 @@ var LeadsPage = function(p) {
             </tbody>
           </table>
         </div>
-      </Card>
+      </Card>}
 
       {/* Side Panel */}
       {selected&&<Card style={{ flex:"0 0 295px", maxHeight:"calc(100vh - 120px)", overflowY:"auto", padding:0 }}>
@@ -1375,60 +1394,117 @@ var LeadsPage = function(p) {
 // ===== MY DAY PAGE =====
 var MyDayPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
+  var [activeTab, setActiveTab] = useState("callbacks");
   var myLeads = p.leads.filter(function(l){
     if(l.archived) return false;
     var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
     return aid===p.cu.id;
   });
   var myTasks = p.tasks.filter(function(tk){var uid=tk.userId&&tk.userId._id?tk.userId._id:tk.userId;return uid===p.cu.id&&!tk.done;});
-  var callbacks = myLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime)<=new Date(Date.now()+24*60*60*1000);}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
-  var noActivity = myLeads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime).getTime())>1*24*60*60*1000;});
+  var now = Date.now();
+  var callbacks = myLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime)<=new Date(now+24*60*60*1000);}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
+  var overdue = callbacks.filter(function(l){return new Date(l.callbackTime)<new Date();});
+  var upcoming = callbacks.filter(function(l){return new Date(l.callbackTime)>=new Date();});
+  var noActivity = myLeads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(now-new Date(l.lastActivityTime).getTime())>1*24*60*60*1000;});
+  var today = new Date(); today.setHours(0,0,0,0);
+  var todayActs = p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return String(auid)===String(p.cu.id)&&a.createdAt&&new Date(a.createdAt)>=today;});
+
+  var tabs = [
+    {id:"callbacks", label:"📞 المكالمات", count:callbacks.length, danger:overdue.length>0},
+    {id:"noact", label:"⚠️ بدون تواصل", count:noActivity.length, danger:noActivity.length>0},
+    {id:"tasks", label:"✅ المهام", count:myTasks.length, danger:false},
+    {id:"activity", label:"📊 نشاطي", count:todayActs.length, danger:false},
+  ];
+
+  var tabBtn = function(tab){ var act=activeTab===tab.id; return <button key={tab.id} onClick={function(){setActiveTab(tab.id);}}
+    style={{ padding:"8px 14px", borderRadius:10, border:"none", background:act?C.accent:"#F1F5F9",
+      color:act?"#fff":tab.danger?"#EF4444":C.textLight, fontSize:12, fontWeight:act?700:500,
+      cursor:"pointer", display:"flex", alignItems:"center", gap:5, position:"relative", flexShrink:0 }}>
+    {tab.label}
+    {tab.count>0&&<span style={{ background:act?"rgba(255,255,255,0.3)":tab.danger?"#EF4444":"#CBD5E1", color:act||tab.danger?"#fff":C.textLight, borderRadius:10, padding:"1px 6px", fontSize:10, fontWeight:700 }}>{tab.count}</span>}
+  </button>; };
 
   return <div style={{ padding:"18px 16px 40px" }}>
-    <div style={{ fontSize:16, color:C.textLight, marginBottom:18 }}>{t.welcome}, <b style={{ color:C.text }}>{p.cu.name}</b> 👋</div>
-    <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
-      <StatCard icon={Users} label={t.myLeads} value={myLeads.length+""} c={C.info}/>
-      <StatCard icon={CheckCircle} label={t.tasks+" "+t.pending} value={myTasks.length+""} c={C.accent}/>
-      <StatCard icon={Phone} label={t.callReminder} value={callbacks.length+""} c={C.warning}/>
-      <StatCard icon={AlertCircle} label={t.noActivity} value={noActivity.length+""} c={C.danger}/>
+    <div style={{ marginBottom:18 }}>
+      <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:4 }}>يومي 🌟</div>
+      <div style={{ fontSize:12, color:C.textLight }}>{new Date().toLocaleDateString("ar-EG",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
     </div>
-    <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
-      {/* Today Callbacks */}
-      <Card style={{ flex:1, minWidth:280 }}>
-        <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}><Phone size={16} color={C.warning}/> {t.callReminder}</h3>
-        {callbacks.length===0&&<div style={{ color:C.textLight, fontSize:13, textAlign:"center", padding:"20px 0" }}>لا يوجد مكالمات</div>}
-        {callbacks.slice(0,8).map(function(l){var so=sc.find(function(s){return s.value===l.status;})||sc[0];
-          return <div key={gid(l)} onClick={function(){p.nav("leads");p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 0", borderBottom:"1px solid #F8FAFC", cursor:"pointer" }}>
-            <div style={{ flex:1, minWidth:0 }}><div style={{ fontSize:12, fontWeight:600 }}>{l.name}</div><div style={{ fontSize:10, color:C.textLight, direction:"ltr" }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
-            <Badge bg={so.bg} color={so.color}>{so.label}</Badge>
-            <div style={{ display:"flex", gap:4 }}>
-              <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ width:26, height:26, borderRadius:6, background:C.success+"15", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={12} color={C.success}/></a>
-              <a href={"https://wa.me/2"+l.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:26, height:26, borderRadius:6, background:"#25D36615", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:12 }}>💬</a>
+
+    {/* Summary cards */}
+    <div style={{ display:"flex", gap:8, marginBottom:18, flexWrap:"wrap" }}>
+      {[
+        {label:"عملائي",v:myLeads.length,c:"#3B82F6",bg:"#EFF6FF",icon:"👥"},
+        {label:"مكالمات اليوم",v:todayActs.filter(function(a){return a.type==="call";}).length,c:"#10B981",bg:"#F0FDF4",icon:"📞"},
+        {label:"متأخرة",v:overdue.length,c:overdue.length>0?"#EF4444":"#94A3B8",bg:overdue.length>0?"#FEF2F2":"#F8FAFC",icon:"⚠️"},
+        {label:"مهام",v:myTasks.length,c:"#8B5CF6",bg:"#F5F3FF",icon:"✅"},
+      ].map(function(s){return <div key={s.label} style={{ flex:"1 1 80px", background:s.bg, borderRadius:12, padding:"12px 10px", textAlign:"center", border:"1px solid "+s.c+"22" }}>
+        <div style={{ fontSize:18 }}>{s.icon}</div>
+        <div style={{ fontSize:20, fontWeight:800, color:s.c, marginTop:4 }}>{s.v}</div>
+        <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>{s.label}</div>
+      </div>;})}
+    </div>
+
+    {/* Tabs */}
+    <div style={{ display:"flex", gap:6, marginBottom:16, overflowX:"auto", paddingBottom:4 }}>
+      {tabs.map(tabBtn)}
+    </div>
+
+    {/* Tab content */}
+    {activeTab==="callbacks"&&<div>
+      {overdue.length>0&&<div style={{ marginBottom:14 }}>
+        <div style={{ fontSize:11, fontWeight:700, color:"#EF4444", marginBottom:8, display:"flex", alignItems:"center", gap:5 }}><AlertCircle size={12}/> فات موعدها ({overdue.length})</div>
+        {overdue.map(function(l){var so=sc.find(function(s){return s.value===l.status;})||sc[0];
+          return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#FEF2F2", border:"1px solid #FECACA", marginBottom:6, cursor:"pointer" }}>
+            <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600, color:C.text }}>{l.name}</div><div style={{ fontSize:10, color:"#EF4444", fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
+            <div style={{ display:"flex", gap:5 }}>
+              <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:C.success, display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#fff"/></a>
+              <a href={"https://wa.me/2"+l.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#25D366", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:14 }}>💬</a>
             </div>
-          </div>;
-        })}
-      </Card>
-      {/* My Tasks */}
-      <Card style={{ flex:1, minWidth:260 }}>
-        <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}><CheckCircle size={16} color={C.accent}/> {t.tasks}</h3>
-        {myTasks.length===0&&<div style={{ color:C.textLight, fontSize:13, textAlign:"center", padding:"20px 0" }}>لا يوجد مهام</div>}
-        {myTasks.slice(0,8).map(function(tk){var lName=tk.leadId&&tk.leadId.name?tk.leadId.name:"";
-          return <div key={gid(tk)} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 0", borderBottom:"1px solid #F8FAFC" }}>
-            <div style={{ width:20, height:20, borderRadius:5, border:"2px solid #CBD5E1", flexShrink:0 }}/>
-            <div style={{ flex:1 }}><div style={{ fontSize:12, fontWeight:600 }}>{tk.title}</div><div style={{ fontSize:10, color:C.textLight }}>{lName} {tk.time}</div></div>
-            <Badge bg={tk.type==="call"?"#DCFCE7":tk.type==="meeting"?"#DBEAFE":"#FEF3C7"} color={tk.type==="call"?"#15803D":tk.type==="meeting"?"#1D4ED8":"#B45309"}>{tk.type}</Badge>
-          </div>;
-        })}
-      </Card>
-      {/* No Activity */}
-      {noActivity.length>0&&<Card style={{ flex:1, minWidth:260 }}>
-        <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700, display:"flex", alignItems:"center", gap:8, color:C.danger }}><AlertCircle size={16}/> {t.noActivity}</h3>
-        {noActivity.slice(0,6).map(function(l){return <div key={gid(l)} onClick={function(){p.nav("leads");p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 0", borderBottom:"1px solid #F8FAFC", cursor:"pointer" }}>
-          <div style={{ flex:1 }}><div style={{ fontSize:12, fontWeight:600 }}>{l.name}</div><div style={{ fontSize:10, color:C.danger }}>{timeAgo(l.lastActivityTime,t)}</div></div>
-          <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ width:26, height:26, borderRadius:6, background:C.success+"15", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={12} color={C.success}/></a>
+          </div>;})}
+      </div>}
+      {upcoming.length>0&&<div>
+        <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:8 }}>قادمة ({upcoming.length})</div>
+        {upcoming.map(function(l){var so=sc.find(function(s){return s.value===l.status;})||sc[0]; var ci=callbackColor(l.callbackTime);
+          return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#F8FAFC", border:"1px solid #E8ECF1", marginBottom:6, cursor:"pointer" }}>
+            <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}</div><div style={{ fontSize:10, color:ci?ci.color:C.textLight, fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
+            <Badge bg={so.bg} color={so.color}>{so.label}</Badge>
+            <div style={{ display:"flex", gap:5 }}>
+              <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:C.success, display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#fff"/></a>
+              <a href={"https://wa.me/2"+l.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#25D366", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:14 }}>💬</a>
+            </div>
+          </div>;})}
+      </div>}
+      {callbacks.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>🎉 مفيش مكالمات دلوقتي</div>}
+    </div>}
+
+    {activeTab==="noact"&&<div>
+      {noActivity.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>✅ كل العملاء عندهم تواصل</div>}
+      {noActivity.map(function(l){return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#FFFBEB", border:"1px solid #FDE68A", marginBottom:6, cursor:"pointer" }}>
+        <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}</div><div style={{ fontSize:10, color:"#B45309", fontWeight:600 }}>آخر تواصل: {timeAgo(l.lastActivityTime,t)}</div></div>
+        <div style={{ display:"flex", gap:5 }}>
+          <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:C.success, display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#fff"/></a>
+          <a href={"https://wa.me/2"+l.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#25D366", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:14 }}>💬</a>
+        </div>
+      </div>;})}
+    </div>}
+
+    {activeTab==="tasks"&&<div>
+      {myTasks.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>✅ مفيش مهام</div>}
+      {myTasks.map(function(tk){var lName=tk.leadId&&tk.leadId.name?tk.leadId.name:"";
+        return <div key={gid(tk)} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#F8FAFC", border:"1px solid #E8ECF1", marginBottom:6 }}>
+          <div style={{ width:22, height:22, borderRadius:6, border:"2px solid #CBD5E1", flexShrink:0, background:"#fff" }}/>
+          <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{tk.title}</div><div style={{ fontSize:10, color:C.textLight }}>{lName}{lName&&tk.time?" · ":""}{tk.time}</div></div>
+          <Badge bg={tk.type==="call"?"#DCFCE7":tk.type==="meeting"?"#DBEAFE":"#FEF3C7"} color={tk.type==="call"?"#15803D":tk.type==="meeting"?"#1D4ED8":"#B45309"}>{tk.type}</Badge>
         </div>;})}
-      </Card>}
-    </div>
+    </div>}
+
+    {activeTab==="activity"&&<div>
+      {todayActs.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>لا يوجد نشاط اليوم</div>}
+      {todayActs.map(function(a,i){return <div key={a._id||i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"10px 12px", borderRadius:10, background:"#F8FAFC", border:"1px solid #E8ECF1", marginBottom:6 }}>
+        <span style={{ fontSize:18, flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":"📝"}</span>
+        <div style={{ flex:1 }}><div style={{ fontSize:12, fontWeight:500 }}>{a.note}</div><div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>{timeAgo(a.createdAt,t)}</div></div>
+      </div>;})}
+    </div>}
   </div>;
 };
 
