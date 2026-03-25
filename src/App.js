@@ -2527,17 +2527,19 @@ var UsersPage = function(p) {
   var [pwModal,setPwModal]=useState(null); // {userId, userName}
   var [pwForm,setPwForm]=useState({newPass:"",confirmPass:""});
   var [pwMsg,setPwMsg]=useState(""); var [pwSaving,setPwSaving]=useState(false);
-  var [teamModal,setTeamModal]=useState(null); // {userId, userName, teamId, teamName}
+  var [teamModal,setTeamModal]=useState(null); // {userId, userName, teamId, teamName, reportsTo}
   var [teamSaving,setTeamSaving]=useState(false);
   var saveTeam=async function(){
     if(!teamModal)return; setTeamSaving(true);
     try{
-      var upd=await apiFetch("/api/users/"+teamModal.userId,"PUT",{teamId:teamModal.teamId,teamName:teamModal.teamName},p.token);
-      p.setUsers(function(prev){return prev.map(function(x){return gid(x)===teamModal.userId?Object.assign({},x,{teamId:teamModal.teamId,teamName:teamModal.teamName}):x;});});
+      var upd=await apiFetch("/api/users/"+teamModal.userId,"PUT",{teamId:teamModal.teamId,teamName:teamModal.teamName,reportsTo:teamModal.reportsTo||null},p.token);
+      p.setUsers(function(prev){return prev.map(function(x){return gid(x)===teamModal.userId?Object.assign({},x,{teamId:teamModal.teamId,teamName:teamModal.teamName,reportsTo:teamModal.reportsTo||null}):x;});});
       setTeamModal(null);
     }catch(e){alert(e.message);} setTeamSaving(false);
   };
   var rc={admin:"#EF4444",manager:"#8B5CF6",sales:"#3B82F6",viewer:"#94A3B8"};
+  var getManagerName=function(uid){var u=p.users.find(function(x){return gid(x)===String(uid||"");});return u?u.name:"";};
+  var getRoleLabel=function(u){if(u.role==="manager"&&u.reportsTo)return "Team Leader";if(u.role==="manager")return "Manager";return u.role==="admin"?"Admin":"Sales";};
   var rl={admin:t.admin,manager:t.salesManager,sales:t.salesAgent,viewer:t.viewer};
   var changePassword=async function(){if(!pwForm.newPass||!pwForm.confirmPass)return;if(pwForm.newPass!==pwForm.confirmPass){setPwMsg(t.passwordMismatch);return;}setPwSaving(true);try{await apiFetch("/api/users/"+pwModal.userId,"PUT",{password:pwForm.newPass},p.token);setPwMsg(t.passwordSuccess);setTimeout(function(){setPwModal(null);setPwMsg("");setPwForm({newPass:"",confirmPass:""});},1500);}catch(e){setPwMsg(t.passwordError);}setPwSaving(false);};
   var add=async function(){if(!nU.name||!nU.username)return;setSaving(true);try{var user=await apiFetch("/api/users","POST",nU,p.token);p.setUsers(function(prev){return prev.concat([user]);});setShowAdd(false);setNU({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15});}catch(e){alert(e.message);}setSaving(false);};
@@ -2598,7 +2600,7 @@ var UsersPage = function(p) {
         </td>
         <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(u.role!=="admin")toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
         <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:u.name});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button>
-              <button onClick={function(){setTeamModal({userId:uid,userName:u.name,teamId:u.teamId||"",teamName:u.teamName||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="تعديل الفريق"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(u.role!=="admin")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.role!=="admin"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.role==="admin"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
+              <button onClick={function(){setTeamModal({userId:uid,userName:u.name,teamId:u.teamId||"",teamName:u.teamName||"",reportsTo:u.reportsTo||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="تعديل الفريق"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(u.role!=="admin")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.role!=="admin"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.role==="admin"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
       </tr>;})}
       </tbody>
     </table></div></Card>
@@ -2622,18 +2624,25 @@ var UsersPage = function(p) {
       </div>
     </Modal>}
     {teamModal&&<Modal show={true} onClose={function(){setTeamModal(null);}} title={"👥 تعديل الفريق — "+teamModal.userName}>
+      {/* reportsTo */}
       <div style={{marginBottom:12}}>
-        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>كود الفريق</label>
+        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>يرفع تقاريره لـ (المسؤول المباشر)</label>
+        <select value={teamModal.reportsTo||""} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{reportsTo:e.target.value||null});});}}
+          style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:13,background:"#fff",boxSizing:"border-box"}}>
+          <option value="">— لا يوجد (مدير رئيسي) —</option>
+          {p.users.filter(function(u){return u.role==="manager"&&gid(u)!==teamModal.userId;}).map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name} ({u.title||"مدير"})</option>;})}
+        </select>
+        <div style={{fontSize:10,color:"#8B5CF6",marginTop:4}}>لو المسؤول المباشر فارغ = مدير رئيسي يشوف كل من تحته. لو محدد = Team Leader يشوف فريقه بس.</div>
+      </div>
+      <div style={{marginBottom:12}}>
+        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>كود الفريق (اختياري)</label>
         <input type="text" placeholder="مثال: team-a" value={teamModal.teamId} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{teamId:e.target.value});});}}
           style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:14,boxSizing:"border-box"}}/>
       </div>
       <div style={{marginBottom:16}}>
-        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>اسم الفريق</label>
+        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>اسم الفريق (اختياري)</label>
         <input type="text" placeholder="مثال: فريق أ" value={teamModal.teamName} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{teamName:e.target.value});});}}
           style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:14,boxSizing:"border-box"}}/>
-      </div>
-      <div style={{fontSize:11,color:"#8B5CF6",background:"#F5F3FF",padding:"8px 12px",borderRadius:8,marginBottom:14}}>
-        ⚠️ تأكد إن المدير وكل أعضاء فريقه عندهم نفس كود الفريق بالظبط
       </div>
       <div style={{display:"flex",gap:10}}><Btn outline onClick={function(){setTeamModal(null);}} style={{flex:1}}>{t.cancel}</Btn><Btn onClick={saveTeam} loading={teamSaving} style={{flex:1}}>{t.save}</Btn></div>
     </Modal>}
@@ -3361,37 +3370,62 @@ export default function CRMApp() {
   var t=TR[lang];
 
 
-  var getVisibleLeads = function(allLeads, user, allUsers) {
-    if (!user || user.role === "admin") return allLeads;
+  // Build set of visible agent IDs for a given user based on hierarchy
+  var getVisibleAgentIds = function(user, allUsers) {
+    var uid = String(user.id || user._id || "");
+    var ids = {};
+    if (!allUsers || !allUsers.length) return ids;
+
+    if (user.role === "admin") {
+      // Admin sees everyone
+      allUsers.forEach(function(u){ ids[String(u._id)] = true; });
+      return ids;
+    }
+
     if (user.role === "manager") {
-      if (!user.teamId) return allLeads;
-      // Build set of team member IDs
-      var teamMemberIds = {};
-      if (allUsers) {
-        allUsers.forEach(function(u) {
-          if (u.teamId === user.teamId) {
-            teamMemberIds[String(u._id)] = true;
-            if (u.id) teamMemberIds[String(u.id)] = true;
-          }
+      var reportsToMe = allUsers.filter(function(u){ return String(u.reportsTo||"") === uid; });
+
+      if (!user.reportsTo) {
+        // Top-level manager: sees direct reports (team leaders) + their teams
+        reportsToMe.forEach(function(tl){
+          ids[String(tl._id)] = true;
+          // Sales under this team leader
+          allUsers.filter(function(u){ return String(u.reportsTo||"") === String(tl._id); })
+            .forEach(function(s){ ids[String(s._id)] = true; });
         });
+      } else {
+        // Team leader: sees only direct reports (sales)
+        reportsToMe.forEach(function(s){ ids[String(s._id)] = true; });
       }
+      // Always include self
+      ids[uid] = true;
+      return ids;
+    }
+
+    // Sales: only themselves
+    ids[uid] = true;
+    return ids;
+  };
+
+  var getVisibleLeads = function(allLeads, user, allUsers) {
+    if (!user) return allLeads;
+    if (user.role === "admin") return allLeads;
+
+    var visibleIds = getVisibleAgentIds(user, allUsers);
+
+    if (user.role === "manager") {
       return allLeads.filter(function(l) {
         var agent = l.agentId;
         if (!agent) return false;
-        // Case 1: agentId is populated object
-        if (typeof agent === "object") {
-          if (agent.teamId) return agent.teamId === user.teamId;
-          var aid = String(agent._id || agent.id || "");
-          return teamMemberIds[aid] || false;
-        }
-        // Case 2: agentId is plain string/ObjectId
-        return teamMemberIds[String(agent)] || false;
+        var aid = typeof agent === "object" ? String(agent._id || agent.id || "") : String(agent);
+        return visibleIds[aid] || false;
       });
     }
-    // Sales sees only their own leads
+
+    // Sales: only their own leads
     return allLeads.filter(function(l) {
-      var aid = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
-      return String(aid) === String(user.id);
+      var aid = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId||"");
+      return aid === String(user.id || user._id || "");
     });
   };
 
