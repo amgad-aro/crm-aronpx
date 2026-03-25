@@ -3367,11 +3367,12 @@ export default function CRMApp() {
     });
   };
 
-  var loadData=useCallback(async function(tok){
+  var loadData=useCallback(async function(tok, userOverride){
     setLoading(true); setDataError(null);
     try {
       var results=await Promise.all([apiFetch("/api/leads","GET",null,tok),apiFetch("/api/users","GET",null,tok),apiFetch("/api/activities","GET",null,tok),apiFetch("/api/tasks","GET",null,tok)]);
-      var loadedUser=results[1]?results[1].find(function(u){return u._id===tok||true;}):null;
+      // Use userOverride if passed (avoids React state timing issue)
+      var effectiveUser = userOverride || currentUser;
       // Restore phone2 from cache for leads that are missing it
       var leadsData = results[0]||[];
       try {
@@ -3382,7 +3383,7 @@ export default function CRMApp() {
           return l;
         });
       } catch(e) {}
-      setLeads(getVisibleLeads(leadsData, currentUser, results[1])); setUsers(results[1]); setActivities(results[2]); setTasks(results[3]);
+      setLeads(getVisibleLeads(leadsData, effectiveUser, results[1])); setUsers(results[1]); setActivities(results[2]); setTasks(results[3]);
     } catch(e){setDataError(e.message);}
     setLoading(false);
   },[]);
@@ -3393,13 +3394,13 @@ export default function CRMApp() {
       var saved = localStorage.getItem('crm_aro_session');
       if (saved) {
         var s = JSON.parse(saved);
-        if (s.user && s.token) { setCurrentUser(s.user); setToken(s.token); loadData(s.token); }
+        if (s.user && s.token) { setCurrentUser(s.user); setToken(s.token); loadData(s.token, s.user); }
       }
     } catch(e) {}
   }, []);
 
   var handleLogin=function(user,tok){
-    setCurrentUser(user); setToken(tok); loadData(tok);
+    setCurrentUser(user); setToken(tok); loadData(tok, user);
     var defaultPage = (user.role==="sales") ? "myday" : "dashboard";
     setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok})); } catch(e){}
@@ -3407,7 +3408,7 @@ export default function CRMApp() {
   // ===== AUTO REFRESH every 5 minutes =====
   useEffect(function(){
     if(!token) return;
-    var interval = setInterval(function(){ loadData(token); }, 5*60*1000);
+    var interval = setInterval(function(){ loadData(token, currentUser); }, 5*60*1000);
     return function(){ clearInterval(interval); };
   },[token]);
 
