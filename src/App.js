@@ -1393,6 +1393,95 @@ var DashboardPage = function(p) {
       </div>
     </div>}
 
+    {/* Sales colorful cards */}
+    {!isAdmin&&(function(){
+      var uid=String(p.cu.id);
+      var myU=p.users.find(function(u){return String(gid(u))===uid;})||{};
+      var qt=(myU.qTargets&&Object.keys(myU.qTargets).length>0)?myU.qTargets:(function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){return {};}})();
+      var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+      var qTarget=qt[curQ]||0;
+      var myDeals=myLeads.filter(function(l){return l.status==="DoneDeal";});
+      var getQ=function(d){var m=new Date(d).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
+      var qRev=myDeals.filter(function(d){var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===curQ;}).reduce(function(s,d){return s+parseBudget(d.budget);},0);
+      var qProg=qTarget>0?Math.min(100,Math.round(qRev/qTarget*100)):0;
+      var callbackSoon=myLeads.filter(function(l){return l.callbackTime&&!l.archived&&(new Date(l.callbackTime).getTime()-Date.now())<2*60*60*1000&&new Date(l.callbackTime).getTime()>Date.now();});
+      var noAct=myLeads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>2*DAY;});
+      var todayCallsCount=p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return String(auid)===uid&&a.type==="call"&&a.createdAt&&(Date.now()-new Date(a.createdAt).getTime())<DAY;}).length;
+      var cards=[
+        {label:"عملائي",value:myLeads.length+"",bg:"linear-gradient(135deg,#3B82F6,#1D4ED8)",icon:"👥",onClick:function(){p.nav("leads");}},
+        {label:"مكالمات اليوم",value:todayCallsCount+"",bg:"linear-gradient(135deg,#10B981,#059669)",icon:"📞",onClick:function(){p.nav("myday");}},
+        {label:"CallBack قريب",value:callbackSoon.length+"",bg:"linear-gradient(135deg,#F59E0B,#D97706)",icon:"🔔",onClick:function(){p.nav("leads");p.setFilter("CallBack");}},
+        {label:"بدون تواصل",value:noAct.length+"",bg:"linear-gradient(135deg,#EF4444,#DC2626)",icon:"⚠️",onClick:function(){p.nav("leads");}},
+        {label:"صفقاتي",value:myDeals.length+"",bg:"linear-gradient(135deg,#8B5CF6,#7C3AED)",icon:"🏆",onClick:function(){p.nav("deals");}},
+      ];
+      return <div style={{ marginBottom:22 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10, textTransform:"uppercase", letterSpacing:1 }}>نظرة عامة</div>
+        <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:10 }}>
+          {cards.map(function(card){return <div key={card.label} onClick={card.onClick} style={{ flex:"1 1 130px", background:card.bg, borderRadius:14, padding:"16px 18px", color:"#fff", cursor:"pointer", transition:"transform 0.15s,box-shadow 0.15s" }}
+            onMouseEnter={function(e){e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.boxShadow="0 8px 24px rgba(0,0,0,0.2)";}}
+            onMouseLeave={function(e){e.currentTarget.style.transform="none";e.currentTarget.style.boxShadow="none";}}>
+            <div style={{ fontSize:20, marginBottom:6 }}>{card.icon}</div>
+            <div style={{ fontSize:22, fontWeight:800 }}>{card.value}</div>
+            <div style={{ fontSize:11, opacity:0.85, marginTop:4 }}>{card.label}</div>
+          </div>;})}
+          {/* Q Target card */}
+          <div onClick={function(){p.nav("kpis");}} style={{ flex:"1 1 130px", background:"linear-gradient(135deg,#EC4899,#DB2777)", borderRadius:14, padding:"16px 18px", color:"#fff", cursor:"pointer", transition:"transform 0.15s,box-shadow 0.15s" }}
+            onMouseEnter={function(e){e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.boxShadow="0 8px 24px rgba(0,0,0,0.2)";}}
+            onMouseLeave={function(e){e.currentTarget.style.transform="none";e.currentTarget.style.boxShadow="none";}}>
+            <div style={{ fontSize:20, marginBottom:6 }}>🎯</div>
+            <div style={{ fontSize:18, fontWeight:800 }}>{qProg}%</div>
+            <div style={{ fontSize:11, opacity:0.85, marginTop:2 }}>{curQ} Target</div>
+            <div style={{ height:4, background:"rgba(255,255,255,0.3)", borderRadius:2, marginTop:6 }}>
+              <div style={{ height:"100%", width:qProg+"%", background:"#fff", borderRadius:2, transition:"width 0.6s" }}/>
+            </div>
+          </div>
+        </div>
+      </div>;
+    })()}
+
+    {/* Sales colorful cards */}
+    {!isAdmin&&(function(){
+      var uid=String(p.cu.id);
+      var myU=p.users.find(function(u){return String(gid(u))===uid;})||{};
+      var qt=(myU.qTargets&&Object.keys(myU.qTargets).length>0)?myU.qTargets:(function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){return {};}})();
+      var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+      var qTarget=qt[curQ]||0;
+      var myDeals=myLeads.filter(function(l){return l.status==="DoneDeal";});
+      var getQ=function(d){var m=new Date(d).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
+      var qRev=myDeals.filter(function(d){var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===curQ;}).reduce(function(s,d){return s+parseBudget(d.budget);},0);
+      var qProg=qTarget>0?Math.min(100,Math.round(qRev/qTarget*100)):0;
+      var callbackSoon=myLeads.filter(function(l){return l.callbackTime&&!l.archived&&(new Date(l.callbackTime).getTime()-Date.now())<2*60*60*1000&&new Date(l.callbackTime).getTime()>Date.now();});
+      var noAct=myLeads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>2*DAY;});
+      var todayCallsCount=p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return String(auid)===uid&&a.type==="call"&&a.createdAt&&(Date.now()-new Date(a.createdAt).getTime())<DAY;}).length;
+      var cards=[
+        {label:"عملائي",value:myLeads.length+"",bg:"linear-gradient(135deg,#3B82F6,#1D4ED8)",icon:"👥",onClick:function(){p.nav("leads");}},
+        {label:"مكالمات اليوم",value:todayCallsCount+"",bg:"linear-gradient(135deg,#10B981,#059669)",icon:"📞",onClick:function(){p.nav("myday");}},
+        {label:"CallBack قريب",value:callbackSoon.length+"",bg:"linear-gradient(135deg,#F59E0B,#D97706)",icon:"🔔",onClick:function(){p.nav("leads");p.setFilter("CallBack");}},
+        {label:"بدون تواصل",value:noAct.length+"",bg:"linear-gradient(135deg,#EF4444,#DC2626)",icon:"⚠️",onClick:function(){p.nav("leads");}},
+        {label:"صفقاتي",value:myDeals.length+"",bg:"linear-gradient(135deg,#8B5CF6,#7C3AED)",icon:"🏆",onClick:function(){p.nav("deals");}},
+      ];
+      return <div style={{ marginBottom:22 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10, textTransform:"uppercase", letterSpacing:1 }}>نظرة عامة</div>
+        <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:10 }}>
+          {cards.map(function(card){return <div key={card.label} onClick={card.onClick} style={{ flex:"1 1 130px", background:card.bg, borderRadius:14, padding:"16px 18px", color:"#fff", cursor:"pointer", transition:"transform 0.15s,box-shadow 0.15s" }}
+            onMouseEnter={function(e){e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.boxShadow="0 8px 24px rgba(0,0,0,0.2)";}}
+            onMouseLeave={function(e){e.currentTarget.style.transform="none";e.currentTarget.style.boxShadow="none";}}>
+            <div style={{ fontSize:20, marginBottom:6 }}>{card.icon}</div>
+            <div style={{ fontSize:22, fontWeight:800 }}>{card.value}</div>
+            <div style={{ fontSize:11, opacity:0.85, marginTop:4 }}>{card.label}</div>
+          </div>;})}
+          <div onClick={function(){p.nav("kpis");}} style={{ flex:"1 1 130px", background:"linear-gradient(135deg,#EC4899,#DB2777)", borderRadius:14, padding:"16px 18px", color:"#fff", cursor:"pointer", transition:"transform 0.15s" }}
+            onMouseEnter={function(e){e.currentTarget.style.transform="translateY(-2px)";}}
+            onMouseLeave={function(e){e.currentTarget.style.transform="none";}}>
+            <div style={{ fontSize:20, marginBottom:6 }}>🎯</div>
+            <div style={{ fontSize:18, fontWeight:800 }}>{qProg}%</div>
+            <div style={{ fontSize:11, opacity:0.85, marginTop:2 }}>{curQ} Target</div>
+            <div style={{ height:4, background:"rgba(255,255,255,0.3)", borderRadius:2, marginTop:6 }}><div style={{ height:"100%", width:qProg+"%", background:"#fff", borderRadius:2 }}/></div>
+          </div>
+        </div>
+      </div>;
+    })()}
+
     {/* Regular stats */}
     <div style={{ display:"flex", gap:10, marginBottom:22, flexWrap:"wrap" }}>
       <StatCard icon={Users} label={isAdmin?t.allLeads:t.myLeads} value={myLeads.length+""} c={C.info} onClick={function(){p.nav("leads");}}/>
