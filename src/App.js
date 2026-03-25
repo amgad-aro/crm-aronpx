@@ -876,6 +876,8 @@ var LeadsPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
   var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+  var isManager = p.cu.role==="manager";
+  var myTeamUsers = isManager && p.cu.teamId ? salesUsers.filter(function(u){return u.teamId===p.cu.teamId;}) : salesUsers;
   var isReq = !!p.isRequest;
 
   // ---- State declarations (must be before filter logic) ----
