@@ -1655,7 +1655,7 @@ var DashboardPage = function(p) {
 
 // ===== EOI PAGE =====
 var EOIPage = function(p) {
-  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
+  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin=p.cu.role==="admin";
   var eoiLeads=p.leads.filter(function(l){return l.status==="EOI"&&!l.archived;});
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
