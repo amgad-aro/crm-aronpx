@@ -2527,6 +2527,16 @@ var UsersPage = function(p) {
   var [pwModal,setPwModal]=useState(null); // {userId, userName}
   var [pwForm,setPwForm]=useState({newPass:"",confirmPass:""});
   var [pwMsg,setPwMsg]=useState(""); var [pwSaving,setPwSaving]=useState(false);
+  var [teamModal,setTeamModal]=useState(null); // {userId, userName, teamId, teamName}
+  var [teamSaving,setTeamSaving]=useState(false);
+  var saveTeam=async function(){
+    if(!teamModal)return; setTeamSaving(true);
+    try{
+      var upd=await apiFetch("/api/users/"+teamModal.userId,"PUT",{teamId:teamModal.teamId,teamName:teamModal.teamName},p.token);
+      p.setUsers(function(prev){return prev.map(function(x){return gid(x)===teamModal.userId?Object.assign({},x,{teamId:teamModal.teamId,teamName:teamModal.teamName}):x;});});
+      setTeamModal(null);
+    }catch(e){alert(e.message);} setTeamSaving(false);
+  };
   var rc={admin:"#EF4444",manager:"#8B5CF6",sales:"#3B82F6",viewer:"#94A3B8"};
   var rl={admin:t.admin,manager:t.salesManager,sales:t.salesAgent,viewer:t.viewer};
   var changePassword=async function(){if(!pwForm.newPass||!pwForm.confirmPass)return;if(pwForm.newPass!==pwForm.confirmPass){setPwMsg(t.passwordMismatch);return;}setPwSaving(true);try{await apiFetch("/api/users/"+pwModal.userId,"PUT",{password:pwForm.newPass},p.token);setPwMsg(t.passwordSuccess);setTimeout(function(){setPwModal(null);setPwMsg("");setPwForm({newPass:"",confirmPass:""});},1500);}catch(e){setPwMsg(t.passwordError);}setPwSaving(false);};
@@ -2587,7 +2597,8 @@ var UsersPage = function(p) {
           })()}
         </td>
         <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(u.role!=="admin")toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
-        <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:u.name});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button><button onClick={function(){if(u.role!=="admin")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.role!=="admin"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.role==="admin"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
+        <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:u.name});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button>
+              <button onClick={function(){setTeamModal({userId:uid,userName:u.name,teamId:u.teamId||"",teamName:u.teamName||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="تعديل الفريق"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(u.role!=="admin")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.role!=="admin"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.role==="admin"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
       </tr>;})}
       </tbody>
     </table></div></Card>
@@ -2610,6 +2621,23 @@ var UsersPage = function(p) {
         <Btn onClick={function(){saveQTargets(gid(qtModal.user),qtModal.targets).then(function(){setQtModal(null);});}} style={{ flex:1 }}>✅ حفظ</Btn>
       </div>
     </Modal>}
+    {teamModal&&<Modal show={true} onClose={function(){setTeamModal(null);}} title={"👥 تعديل الفريق — "+teamModal.userName}>
+      <div style={{marginBottom:12}}>
+        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>كود الفريق</label>
+        <input type="text" placeholder="مثال: team-a" value={teamModal.teamId} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{teamId:e.target.value});});}}
+          style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:14,boxSizing:"border-box"}}/>
+      </div>
+      <div style={{marginBottom:16}}>
+        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>اسم الفريق</label>
+        <input type="text" placeholder="مثال: فريق أ" value={teamModal.teamName} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{teamName:e.target.value});});}}
+          style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:14,boxSizing:"border-box"}}/>
+      </div>
+      <div style={{fontSize:11,color:"#8B5CF6",background:"#F5F3FF",padding:"8px 12px",borderRadius:8,marginBottom:14}}>
+        ⚠️ تأكد إن المدير وكل أعضاء فريقه عندهم نفس كود الفريق بالظبط
+      </div>
+      <div style={{display:"flex",gap:10}}><Btn outline onClick={function(){setTeamModal(null);}} style={{flex:1}}>{t.cancel}</Btn><Btn onClick={saveTeam} loading={teamSaving} style={{flex:1}}>{t.save}</Btn></div>
+    </Modal>}
+
     {pwModal&&<Modal show={true} onClose={function(){setPwModal(null);setPwMsg("");}} title={t.changePassword+" — "+pwModal.userName}>
       <Inp label={t.newPassword} type="password" value={pwForm.newPass} onChange={function(e){setPwForm(Object.assign({},pwForm,{newPass:e.target.value}));setPwMsg("");}}/>
       <Inp label={t.confirmPassword} type="password" value={pwForm.confirmPass} onChange={function(e){setPwForm(Object.assign({},pwForm,{confirmPass:e.target.value}));setPwMsg("");}}/>
