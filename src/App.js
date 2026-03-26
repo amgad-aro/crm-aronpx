@@ -575,7 +575,7 @@ var Header = function(p) {
       </div>}
 
       {/* Rotation notifications bell - admin only */}
-      {p.cu&&p.cu.role==="admin"&&(function(){
+      {p.isAdmin&&p.cu&&p.cu.role!=="manager"&&(function(){
         var rotNotifs=[];
         try{rotNotifs=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}
         var unseenRot=0;
@@ -1061,7 +1061,7 @@ var LeadsPage = function(p) {
     {/* Bulk Reassign Modal */}
     <Modal show={showBulk} onClose={function(){setShowBulk(false);}} title={t.bulkReassign}>
       <div style={{ marginBottom:14, padding:"10px 14px", background:"#F0F9FF", borderRadius:10, fontSize:13 }}>تم تحديد <b>{selected2.length}</b> عميل</div>
-      <Inp label={t.reassignTo} type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- اختر موظف -"}].concat(myTeamUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>
+      <Inp label={t.reassignTo} type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- اختر موظف -"}].concat((isOnlyAdmin?p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;}):myTeamUsers).map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowBulk(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={doBulkReassign} style={{ flex:1 }}>{t.bulkReassign}</Btn></div>
     </Modal>
 
