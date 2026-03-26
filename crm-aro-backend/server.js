@@ -146,7 +146,39 @@ app.get("/api/me", auth, async function(req, res) {
 // ===== USER ROUTES =====
 app.get("/api/users", auth, async function(req, res) {
   try {
-    var users = await User.find().select("-password").sort({ createdAt: -1 });
+    var role = req.user.role;
+    var uid = req.user.id;
+    var users;
+
+    if (role === "admin") {
+      // Admin sees all users
+      users = await User.find().select("-password").sort({ createdAt: -1 });
+
+    } else if (role === "manager") {
+      var managerUser = await User.findById(uid).lean();
+      var visibleIds = [managerUser._id];
+
+      if (!managerUser.reportsTo) {
+        // Top-level manager: sees team leaders under him + their sales
+        var teamLeaders = await User.find({ reportsTo: managerUser._id }).lean();
+        teamLeaders.forEach(function(tl) { visibleIds.push(tl._id); });
+        if (teamLeaders.length > 0) {
+          var tlIds = teamLeaders.map(function(tl) { return tl._id; });
+          var salesUnder = await User.find({ reportsTo: { $in: tlIds } }).lean();
+          salesUnder.forEach(function(s) { visibleIds.push(s._id); });
+        }
+      } else {
+        // Team leader: sees only direct sales
+        var directSales = await User.find({ reportsTo: managerUser._id }).lean();
+        directSales.forEach(function(s) { visibleIds.push(s._id); });
+      }
+      users = await User.find({ _id: { $in: visibleIds } }).select("-password").sort({ createdAt: -1 });
+
+    } else {
+      // Sales/viewer: only themselves
+      users = await User.find({ _id: uid }).select("-password");
+    }
+
     res.json(users);
   } catch (e) {
     res.status(500).json({ error: e.message });
