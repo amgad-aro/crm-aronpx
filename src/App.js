@@ -909,7 +909,14 @@ var LeadsPage = function(p) {
   var fileRef = useRef(null);
 
   // ---- Filter logic (uses state values above) ----
-  var allVisible = p.leads.filter(function(l){ return !l.archived && (isReq?l.source==="Daily Request":l.source!=="Daily Request"); });
+  var allVisible = p.leads.filter(function(l){
+    if(l.archived) return false;
+    var matchSource = isReq?l.source==="Daily Request":l.source!=="Daily Request";
+    if(!matchSource) return false;
+    // Manager: hide leads with no agent in daily request
+    if(isReq && p.cu.role==="manager" && !l.agentId) return false;
+    return true;
+  });
   var filtered = p.leadFilter==="all"?allVisible:allVisible.filter(function(l){return l.status===p.leadFilter;});
   filtered = filtered.filter(function(l){return matchSearch(l,p.search);});
   if (vipFilter) filtered = filtered.filter(function(l){return l.isVIP;});
@@ -1398,6 +1405,8 @@ var LeadsPage = function(p) {
 // ===== MY DAY PAGE =====
 var MyDayPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
+  var isManager = p.cu.role==="manager";
+  var getAgName = function(l){ if(!l.agentId) return ""; var a=l.agentId; if(a.name) return a.name; var u=p.users.find(function(x){return String(gid(x))===String(a);}); return u?u.name:""; };
   var [activeTab, setActiveTab] = useState("callbacks");
   var myLeads = p.leads.filter(function(l){
     if(l.archived) return false;
@@ -1459,7 +1468,7 @@ var MyDayPage = function(p) {
         <div style={{ fontSize:11, fontWeight:700, color:"#EF4444", marginBottom:8, display:"flex", alignItems:"center", gap:5 }}><AlertCircle size={12}/> فات موعدها ({overdue.length})</div>
         {overdue.map(function(l){var so=sc.find(function(s){return s.value===l.status;})||sc[0];
           return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#FEF2F2", border:"1px solid #FECACA", marginBottom:6, cursor:"pointer" }}>
-            <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600, color:C.text }}>{l.name}</div><div style={{ fontSize:10, color:"#EF4444", fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
+            <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600, color:C.text }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:"#EF4444", fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
             <div style={{ display:"flex", gap:5 }}>
               <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:C.success, display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#fff"/></a>
               <a href={"https://wa.me/2"+l.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#25D366", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:14 }}>💬</a>
@@ -1470,7 +1479,7 @@ var MyDayPage = function(p) {
         <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:8 }}>قادمة ({upcoming.length})</div>
         {upcoming.map(function(l){var so=sc.find(function(s){return s.value===l.status;})||sc[0]; var ci=callbackColor(l.callbackTime);
           return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#F8FAFC", border:"1px solid #E8ECF1", marginBottom:6, cursor:"pointer" }}>
-            <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}</div><div style={{ fontSize:10, color:ci?ci.color:C.textLight, fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
+            <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:ci?ci.color:C.textLight, fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
             <Badge bg={so.bg} color={so.color}>{so.label}</Badge>
             <div style={{ display:"flex", gap:5 }}>
               <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:C.success, display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#fff"/></a>
@@ -1484,7 +1493,7 @@ var MyDayPage = function(p) {
     {activeTab==="noact"&&<div>
       {noActivity.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>✅ كل العملاء عندهم تواصل</div>}
       {noActivity.map(function(l){return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#FFFBEB", border:"1px solid #FDE68A", marginBottom:6, cursor:"pointer" }}>
-        <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}</div><div style={{ fontSize:10, color:"#B45309", fontWeight:600 }}>آخر تواصل: {timeAgo(l.lastActivityTime,t)}</div></div>
+        <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:"#B45309", fontWeight:600 }}>آخر تواصل: {timeAgo(l.lastActivityTime,t)}</div></div>
         <div style={{ display:"flex", gap:5 }}>
           <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:C.success, display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#fff"/></a>
           <a href={"https://wa.me/2"+l.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#25D366", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:14 }}>💬</a>
@@ -1985,7 +1994,7 @@ var DealsPage = function(p) {
     </Modal>}
 
     {/* Commission Summary Modal */}
-    {isAdmin&&commModal&&<Modal show={true} onClose={function(){setCommModal(false);}} title={"💰 العمولات — "+commQ}>
+    {commModal&&<Modal show={true} onClose={function(){setCommModal(false);}} title={"💰 العمولات — "+commQ}>
       <div style={{ display:"flex", gap:6, marginBottom:14 }}>
         {["Q1","Q2","Q3","Q4"].map(function(q){return <button key={q} onClick={function(){setCommQ(q);}}
           style={{ flex:1, padding:"6px", borderRadius:8, border:"1px solid", borderColor:commQ===q?C.accent:"#E2E8F0", background:commQ===q?C.accent+"12":"#fff", color:commQ===q?C.accent:C.textLight, fontSize:12, fontWeight:600, cursor:"pointer" }}>{q}</button>;})}
@@ -2065,14 +2074,14 @@ var DealsPage = function(p) {
     </Modal>}
 
     {/* Action buttons row */}
-    {isOnlyAdmin&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
+    {isAdmin&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
       <Btn outline onClick={function(){setCommModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.success, borderColor:C.success }}>💰 العمولات</Btn>
-      <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ عمولة المشاريع</Btn>
+      {isOnlyAdmin&&<Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ عمولة المشاريع</Btn>}
     </div>}
 
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"تاريخ الصفقة","مراحل الصفقة",isOnlyAdmin?"عمولة":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"تاريخ الصفقة","مراحل الصفقة",isAdmin?"عمولة":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {filteredDeals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
@@ -2099,7 +2108,7 @@ var DealsPage = function(p) {
                 </div>
               </button>
             </td>
-            {isOnlyAdmin&&<td style={{ padding:"11px 12px" }}>
+            {isAdmin&&<td style={{ padding:"11px 12px" }}>
               {(function(){
                 var raw=parseBudget(d.budget);
                 var weight=getProjectWeight(d.project);
