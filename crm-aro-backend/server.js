@@ -523,7 +523,35 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
     if (req.body.status) {
-      await Activity.create({ userId: req.user.id, type: "status_change", note: "DailyReq: " + req.body.status });
+      await Activity.create({ userId: req.user.id, type: "status_change", note: "DailyReq: " + req.body.status, leadId: r._id });
+      // If status is DoneDeal or EOI — create/update a Lead in the main collection
+      if (req.body.status === "DoneDeal" || req.body.status === "EOI") {
+        var existingLead = await Lead.findOne({ phone: r.phone, source: "Daily Request" });
+        if (existingLead) {
+          await Lead.findByIdAndUpdate(existingLead._id, {
+            status: req.body.status,
+            budget: req.body.budget || r.budget || existingLead.budget,
+            project: req.body.project || r.propertyType || existingLead.project,
+            agentId: r.agentId,
+            lastActivityTime: new Date(),
+            notes: req.body.notes || r.notes || existingLead.notes,
+            eoiDeposit: req.body.eoiDeposit || existingLead.eoiDeposit || "",
+          });
+        } else {
+          await Lead.create({
+            name: r.name, phone: r.phone, phone2: r.phone2 || "",
+            email: r.email || "", budget: req.body.budget || r.budget || "",
+            project: req.body.project || r.propertyType || "",
+            notes: req.body.notes || r.notes || "",
+            status: req.body.status,
+            source: "Daily Request",
+            agentId: r.agentId,
+            callbackTime: r.callbackTime || "",
+            lastActivityTime: new Date(),
+            eoiDeposit: req.body.eoiDeposit || "",
+          });
+        }
+      }
     }
     res.json(r);
   } catch(e) { res.status(500).json({ error: e.message }); }
