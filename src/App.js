@@ -2116,6 +2116,11 @@ var DealsPage = function(p) {
                 var splitFactor=split?0.5:1;
                 var effRev=raw*weight*splitFactor;
                 var ag=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;
+                // For manager: show their own commission (2000/M), not agent's
+                if(!isOnlyAdmin){
+                  var managerComm=(effRev/1000000)*2000;
+                  return <div><div style={{ fontSize:12, fontWeight:700, color:C.success }}>{managerComm>0?Math.round(managerComm).toLocaleString()+" EGP":"—"}</div><div style={{ fontSize:10, color:C.textLight }}>2,000/M</div></div>;
+                }
                 var agUser=p.users.find(function(u){return gid(u)===ag;});
                 var agRole=agUser?agUser.role:"sales";
                 var commRate=agRole==="manager"?2000:(function(){
