@@ -3651,28 +3651,8 @@ export default function CRMApp() {
   var currentPage=page||"dashboard";
   var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"تقويم المكالمات",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
   // Build team-filtered users for manager
-  var getMyTeamUserIds = function(cu, allUsers) {
-    if(!cu||cu.role==="admin") return null; // null = all
-    if(cu.role!=="manager") return null;
-    var uid = String(cu.id||cu._id||"");
-    var ids = new Set([uid]);
-    if(!cu.reportsTo) {
-      // Top-level manager: team leaders reporting to me + their sales
-      allUsers.forEach(function(u){
-        if(String(u.reportsTo||"")===uid){ ids.add(String(u._id));
-          allUsers.forEach(function(s){ if(String(s.reportsTo||"")===String(u._id)) ids.add(String(s._id)); });
-        }
-      });
-    } else {
-      // Team leader: only sales reporting directly to me
-      allUsers.forEach(function(u){ if(String(u.reportsTo||"")===uid) ids.add(String(u._id)); });
-    }
-    return ids;
-  };
-  var myTeamUserIds = getMyTeamUserIds(currentUser, users);
-  var myTeamUsers = myTeamUserIds
-    ? users.filter(function(u){ return myTeamUserIds.has(String(u._id)); })
-    : users;
+  // Server already filters users by role/hierarchy — p.users IS the team
+  var myTeamUsers = users;
 
   var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
