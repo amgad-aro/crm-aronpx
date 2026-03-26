@@ -877,7 +877,7 @@ var LeadsPage = function(p) {
   var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var isManager = p.cu.role==="manager";
-  var myTeamUsers = isManager && p.cu.teamId ? salesUsers.filter(function(u){return u.teamId===p.cu.teamId;}) : salesUsers;
+  var myTeamUsers = p.myTeamUsers || salesUsers;
   var isReq = !!p.isRequest;
 
   // ---- State declarations (must be before filter logic) ----
@@ -1252,7 +1252,7 @@ var LeadsPage = function(p) {
               try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{agentId:newAgent},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
               <option value="">— بدون موظف —</option>
-              {(p.cu.role==="manager"&&p.cu.teamId?salesUsers.filter(function(u){return u.teamId===p.cu.teamId;}):salesUsers).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name} - {u.title}</option>;})}
+              {(p.myTeamUsers||salesUsers).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name} - {u.title}</option>;})}
             </select>
           </div>}
           {/* Details */}
@@ -1529,7 +1529,7 @@ var DashboardPage = function(p) {
   var weekRev=weekDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var monthRev=monthDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var todayLeads=normalLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;});
-  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+  var salesUsers=p.myTeamUsers||p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var topAgent=isAdmin?(function(){
     var stats=salesUsers.map(function(u){var uid=gid(u);var rev=monthDeals.filter(function(d){var a=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return a===uid;}).reduce(function(s,d){return s+parseBudget(d.budget);},0);return{u:u,rev:rev};});
     stats.sort(function(a,b){return b.rev-a.rev;});
@@ -3650,7 +3650,31 @@ export default function CRMApp() {
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"; var isOnlyAdmin=currentUser.role==="admin";
   var currentPage=page||"dashboard";
   var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"تقويم المكالمات",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
+  // Build team-filtered users for manager
+  var getMyTeamUserIds = function(cu, allUsers) {
+    if(!cu||cu.role==="admin") return null; // null = all
+    if(cu.role!=="manager") return null;
+    var uid = String(cu.id||cu._id||"");
+    var ids = new Set([uid]);
+    if(!cu.reportsTo) {
+      // Top-level manager: team leaders reporting to me + their sales
+      allUsers.forEach(function(u){
+        if(String(u.reportsTo||"")===uid){ ids.add(String(u._id));
+          allUsers.forEach(function(s){ if(String(s.reportsTo||"")===String(u._id)) ids.add(String(s._id)); });
+        }
+      });
+    } else {
+      // Team leader: only sales reporting directly to me
+      allUsers.forEach(function(u){ if(String(u.reportsTo||"")===uid) ids.add(String(u._id)); });
+    }
+    return ids;
+  };
+  var myTeamUserIds = getMyTeamUserIds(currentUser, users);
+  var myTeamUsers = myTeamUserIds
+    ? users.filter(function(u){ return myTeamUserIds.has(String(u._id)); })
+    : users;
+
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
   var renderPage=function(){
     switch(currentPage){
