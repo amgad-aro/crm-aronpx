@@ -188,6 +188,17 @@ app.get("/api/users", auth, async function(req, res) {
 app.post("/api/users", auth, adminOnly, async function(req, res) {
   try {
     var hashed = await bcrypt.hash(req.body.password || "sales123", 10);
+    var teamId = req.body.teamId || "";
+    var teamName = req.body.teamName || "";
+    var monthlyTarget = req.body.monthlyTarget ? Number(req.body.monthlyTarget) : 15;
+    
+    // Auto-set reportsTo: find manager with same teamId
+    var reportsTo = req.body.reportsTo || null;
+    if(!reportsTo && teamId) {
+      var manager = await User.findOne({ role: "manager", teamId: teamId, active: true });
+      if(manager) reportsTo = manager._id;
+    }
+
     var user = await User.create({
       name: req.body.name,
       username: req.body.username,
@@ -197,6 +208,10 @@ app.post("/api/users", auth, adminOnly, async function(req, res) {
       role: req.body.role || "sales",
       title: req.body.title || "",
       active: true,
+      teamId: teamId,
+      teamName: teamName,
+      monthlyTarget: monthlyTarget,
+      reportsTo: reportsTo,
     });
     var obj = user.toObject();
     delete obj.password;
