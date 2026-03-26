@@ -3370,63 +3370,9 @@ export default function CRMApp() {
   var t=TR[lang];
 
 
-  // Build set of visible agent IDs for a given user based on hierarchy
-  var getVisibleAgentIds = function(user, allUsers) {
-    var uid = String(user.id || user._id || "");
-    var ids = {};
-    if (!allUsers || !allUsers.length) return ids;
-
-    if (user.role === "admin") {
-      // Admin sees everyone
-      allUsers.forEach(function(u){ ids[String(u._id)] = true; });
-      return ids;
-    }
-
-    if (user.role === "manager") {
-      var reportsToMe = allUsers.filter(function(u){ return String(u.reportsTo||"") === uid; });
-
-      if (!user.reportsTo) {
-        // Top-level manager: sees direct reports (team leaders) + their teams
-        reportsToMe.forEach(function(tl){
-          ids[String(tl._id)] = true;
-          // Sales under this team leader
-          allUsers.filter(function(u){ return String(u.reportsTo||"") === String(tl._id); })
-            .forEach(function(s){ ids[String(s._id)] = true; });
-        });
-      } else {
-        // Team leader: sees only direct reports (sales)
-        reportsToMe.forEach(function(s){ ids[String(s._id)] = true; });
-      }
-      // Always include self
-      ids[uid] = true;
-      return ids;
-    }
-
-    // Sales: only themselves
-    ids[uid] = true;
-    return ids;
-  };
-
+  // Server already filters leads by role/hierarchy — frontend just returns as-is
   var getVisibleLeads = function(allLeads, user, allUsers) {
-    if (!user) return allLeads;
-    if (user.role === "admin") return allLeads;
-
-    var visibleIds = getVisibleAgentIds(user, allUsers);
-
-    if (user.role === "manager") {
-      return allLeads.filter(function(l) {
-        var agent = l.agentId;
-        if (!agent) return false;
-        var aid = typeof agent === "object" ? String(agent._id || agent.id || "") : String(agent);
-        return visibleIds[aid] || false;
-      });
-    }
-
-    // Sales: only their own leads
-    return allLeads.filter(function(l) {
-      var aid = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId||"");
-      return aid === String(user.id || user._id || "");
-    });
+    return allLeads; // server handles all filtering
   };
 
   var loadData=useCallback(async function(tok, userOverride){
