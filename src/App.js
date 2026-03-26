@@ -1744,6 +1744,26 @@ var EOIPage = function(p) {
 
 // ===== COMMISSION SYSTEM =====
 // Project weight settings stored in localStorage: crm_proj_weight_{projectName} = 0.5 or 1
+var getEffectiveQTarget = function(user, allUsers, forQ) {
+  var uid = typeof user === "string" ? user : gid(user);
+  var userObj = typeof user === "object" ? user : (allUsers||[]).find(function(u){return gid(u)===uid;}) || {};
+  var curQ = forQ || (function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+  if(userObj.role === "manager" && userObj.reportsTo && allUsers) {
+    var teamMembers = allUsers.filter(function(u){ return String(u.reportsTo||"") === uid; });
+    if(teamMembers.length > 0) {
+      var total = teamMembers.reduce(function(sum, u){
+        var qt = (u.qTargets&&Object.keys(u.qTargets).length>0) ? u.qTargets :
+          (function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+gid(u))||"{}");}catch(e){return {};}})();
+        return sum + (qt[curQ]||0);
+      }, 0);
+      if(total > 0) return total;
+    }
+  }
+  var qt = (userObj.qTargets&&Object.keys(userObj.qTargets).length>0) ? userObj.qTargets :
+    (function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){return {};}})();
+  return qt[curQ]||0;
+};
+
 var getProjectWeight = function(project){
   try{ var w=localStorage.getItem("crm_proj_weight_"+(project||"").replace(/\s/g,"_")); return w?parseFloat(w):1; }catch(e){return 1;}
 };
@@ -1818,34 +1838,6 @@ var calcCommission = function(user, allDeals, allUsers, forQ) {
 
   var commission = (effectiveRevenue / 1000000) * commRate;
   return { effectiveRevenue, commission, commRate, qTarget, curQ };
-};
-
-// Helper: get effective qTarget for a user
-// For team leaders: sum of team members' qTargets
-var getEffectiveQTarget = function(user, allUsers, forQ) {
-  var uid = typeof user === "string" ? user : gid(user);
-  var userObj = typeof user === "object" ? user : (allUsers||[]).find(function(u){return gid(u)===uid;}) || {};
-  var curQ = forQ || (function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
-
-  // Team leader: sum of direct reports' qTargets
-  if(userObj.role === "manager" && userObj.reportsTo && allUsers) {
-    var teamMembers = allUsers.filter(function(u){
-      return String(u.reportsTo||"") === uid;
-    });
-    if(teamMembers.length > 0) {
-      var total = teamMembers.reduce(function(sum, u){
-        var qt = (u.qTargets&&Object.keys(u.qTargets).length>0) ? u.qTargets :
-          (function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+gid(u))||"{}");}catch(e){return {};}})();
-        return sum + (qt[curQ]||0);
-      }, 0);
-      if(total > 0) return total;
-    }
-  }
-
-  // Regular user or top-level manager: use their own qTargets
-  var qt = (userObj.qTargets&&Object.keys(userObj.qTargets).length>0) ? userObj.qTargets :
-    (function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){return {};}})();
-  return qt[curQ]||0;
 };
 
 var DealsPage = function(p) {
