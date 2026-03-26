@@ -575,7 +575,7 @@ var Header = function(p) {
       </div>}
 
       {/* Rotation notifications bell - admin only */}
-      {p.isAdmin&&(function(){
+      {p.isAdmin&&p.cu&&p.cu.role==="admin"&&(function(){
         var rotNotifs=[];
         try{rotNotifs=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}
         var unseenRot=0;
@@ -2065,14 +2065,14 @@ var DealsPage = function(p) {
     </Modal>}
 
     {/* Action buttons row */}
-    {isAdmin&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
+    {isOnlyAdmin&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
       <Btn outline onClick={function(){setCommModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.success, borderColor:C.success }}>💰 العمولات</Btn>
       <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ عمولة المشاريع</Btn>
     </div>}
 
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"تاريخ الصفقة","مراحل الصفقة",isAdmin?"عمولة":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"تاريخ الصفقة","مراحل الصفقة",isOnlyAdmin?"عمولة":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {filteredDeals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
@@ -2099,7 +2099,7 @@ var DealsPage = function(p) {
                 </div>
               </button>
             </td>
-            {isAdmin&&<td style={{ padding:"11px 12px" }}>
+            {isOnlyAdmin&&<td style={{ padding:"11px 12px" }}>
               {(function(){
                 var raw=parseBudget(d.budget);
                 var weight=getProjectWeight(d.project);
@@ -2183,7 +2183,15 @@ var TasksPage = function(p) {
   var overdue=myLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime)<new Date()&&new Date(l.callbackTime).toDateString()!==today;});
   var noActivity=myLeads.filter(function(l){return (!l.lastActivityTime||(now-new Date(l.lastActivityTime).getTime())>1*24*60*60*1000)&&l.status!=="DoneDeal"&&l.status!=="NotInterested";});
 
-  var myTasks=p.tasks.filter(function(tk){return !tk.done&&(p.cu.role==="admin"||p.cu.role==="manager"||tk.userId===p.cu.id);});
+  var myTasks=p.tasks.filter(function(tk){
+    if(tk.done) return false;
+    if(p.cu.role==="admin") return true;
+    if(p.cu.role==="manager"){
+      var taskUid=tk.userId&&tk.userId._id?String(tk.userId._id):String(tk.userId||"");
+      return (p.myTeamUsers||[]).some(function(u){return String(u._id)===taskUid;});
+    }
+    return tk.userId===p.cu.id;
+  });
   var overdueTasks=myTasks.filter(function(tk){return tk.time&&new Date(tk.time)<new Date();});
   var todayTasks=myTasks.filter(function(tk){return tk.time&&new Date(tk.time).toDateString()===today&&new Date(tk.time)>=new Date();});
   var upcoming=myTasks.filter(function(tk){return !tk.time||(new Date(tk.time)>new Date()&&new Date(tk.time).toDateString()!==today);});
@@ -3090,7 +3098,14 @@ var SettingsPage = function(p) {
 var KPIsPage = function(p) {
   var uid = String(p.cu.id);
   var parseBudget = function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
-  var myLeads = p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===uid&&!l.archived&&l.source!=="Daily Request";});
+  var isTeamLeader = p.cu.role==="manager";
+  // For manager/team leader: include all team deals in revenue calc
+  var teamUids = isTeamLeader ? new Set((p.myTeamUsers||[]).map(function(u){return String(u._id);})) : null;
+  var myLeads = p.leads.filter(function(l){
+    var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
+    if(isTeamLeader && teamUids) return teamUids.has(aid)&&!l.archived&&l.source!=="Daily Request";
+    return aid===uid&&!l.archived&&l.source!=="Daily Request";
+  });
   var myDeals = myLeads.filter(function(l){return l.status==="DoneDeal";});
   var myActs = p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return auid===uid;});
   var myUser = p.users.find(function(u){return String(gid(u))===uid;})||{};
