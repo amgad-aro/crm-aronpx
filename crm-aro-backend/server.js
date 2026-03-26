@@ -207,10 +207,48 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
 app.get("/api/leads", auth, async function(req, res) {
   try {
     var query = {};
-    if (req.user.role === "sales") {
-      query.agentId = new mongoose.Types.ObjectId(req.user.id);
+    var role = req.user.role;
+    var uid = req.user.id;
+
+    if (role === "sales") {
+      // Sales sees only their own leads
+      query.agentId = new mongoose.Types.ObjectId(uid);
+
+    } else if (role === "manager") {
+      // Get the manager's own user record to check reportsTo
+      var managerUser = await User.findById(uid).lean();
+      if (!managerUser) return res.status(404).json({ error: "User not found" });
+
+      // Build list of visible agent IDs based on hierarchy
+      var visibleAgentIds = [new mongoose.Types.ObjectId(uid)];
+
+      if (!managerUser.reportsTo) {
+        // Top-level manager: sees team leaders that report to him + their sales
+        var teamLeaders = await User.find({ reportsTo: managerUser._id }).lean();
+        teamLeaders.forEach(function(tl) {
+          visibleAgentIds.push(tl._id);
+        });
+        // Get sales under each team leader
+        if (teamLeaders.length > 0) {
+          var tlIds = teamLeaders.map(function(tl) { return tl._id; });
+          var salesUnder = await User.find({ reportsTo: { $in: tlIds } }).lean();
+          salesUnder.forEach(function(s) {
+            visibleAgentIds.push(s._id);
+          });
+        }
+      } else {
+        // Team leader: sees only sales that report directly to him
+        var directSales = await User.find({ reportsTo: managerUser._id }).lean();
+        directSales.forEach(function(s) {
+          visibleAgentIds.push(s._id);
+        });
+      }
+
+      query.agentId = { $in: visibleAgentIds };
     }
-    var leads = await Lead.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
+    // admin: no filter, sees all
+
+    var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").sort({ createdAt: -1 });
     res.json(leads);
   } catch (e) {
     res.status(500).json({ error: e.message });
