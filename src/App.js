@@ -575,7 +575,7 @@ var Header = function(p) {
       </div>}
 
       {/* Rotation notifications bell - admin only */}
-      {p.isAdmin&&p.cu&&p.cu.role==="admin"&&(function(){
+      {p.isAdmin&&(function(){
         var rotNotifs=[];
         try{rotNotifs=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}
         var unseenRot=0;
@@ -2340,17 +2340,40 @@ var DailyRequestsPage = function(p) {
   });
 
   var reqStatus=function(rid,st){
-    if(st==="DoneDeal"&&!window.confirm("⚠️ هل أنت متأكد؟"))return;
     setPendingStatus({leadId:rid,newStatus:st});setShowStatusComment(true);
   };
-  var confirmStatus=async function(comment,cbTime){
+  var confirmStatus=async function(comment,cbTime,extra){
     if(!pendingStatus)return;
     try{
       var updateData={status:pendingStatus.newStatus};
-      if(cbTime)updateData.callbackTime=cbTime;
+      if(cbTime) updateData.callbackTime=cbTime;
+      if(comment) updateData.notes=comment;
+      // Pass deal fields from StatusModal
+      if(extra){
+        if(extra.budget)    updateData.budget=extra.budget;
+        if(extra.project)   updateData.project=extra.project;
+        if(extra.notes)     updateData.notes=(updateData.notes?updateData.notes+" | ":"")+extra.notes;
+        if(extra.eoiDeposit) updateData.eoiDeposit=extra.eoiDeposit;
+      }
       var upd=await apiFetch("/api/daily-requests/"+pendingStatus.leadId,"PUT",updateData,p.token);
       setRequests(function(prev){return prev.map(function(r){return gid(r)===pendingStatus.leadId?upd:r;});});
       if(selected&&gid(selected)===pendingStatus.leadId)setSelected(upd);
+      // Notify admin on DoneDeal or EOI
+      if((pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI")&&p.addDealNotif){
+        var req=requests.find(function(r){return gid(r)===pendingStatus.leadId;})||{};
+        p.addDealNotif({
+          id:Date.now(),
+          leadName:req.name||upd.name||"",
+          agentName:req.agentId&&req.agentId.name?req.agentId.name:p.cu.name,
+          status:pendingStatus.newStatus,
+          budget:updateData.budget||req.budget||"",
+          time:new Date().toISOString()
+        });
+        showBrowserNotif(
+          pendingStatus.newStatus==="DoneDeal"?"🏆 صفقة جديدة!":"📋 EOI جديد!",
+          (req.name||"عميل")+" — "+(updateData.budget||req.budget||"")
+        );
+      }
     }catch(e){alert(e.message);}
     setShowStatusComment(false);setPendingStatus(null);setStatusDrop(null);
   };
