@@ -575,7 +575,7 @@ var Header = function(p) {
       </div>}
 
       {/* Rotation notifications bell - admin only */}
-      {p.isAdmin&&(function(){
+      {p.cu&&p.cu.role==="admin"&&(function(){
         var rotNotifs=[];
         try{rotNotifs=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}
         var unseenRot=0;
