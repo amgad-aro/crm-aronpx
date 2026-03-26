@@ -243,42 +243,42 @@ app.get("/api/leads", auth, async function(req, res) {
     var uid = req.user.id;
 
     if (role === "sales") {
-      // Sales sees only their own leads
       query.agentId = new mongoose.Types.ObjectId(uid);
 
     } else if (role === "manager") {
-      // Get the manager's own user record to check reportsTo
       var managerUser = await User.findById(uid).lean();
       if (!managerUser) return res.status(404).json({ error: "User not found" });
 
-      // Build list of visible agent IDs based on hierarchy
-      var visibleAgentIds = [new mongoose.Types.ObjectId(uid)];
+      var visibleAgentIds = [managerUser._id];
 
-      if (!managerUser.reportsTo) {
-        // Top-level manager: sees team leaders that report to him + their sales
-        var teamLeaders = await User.find({ reportsTo: managerUser._id }).lean();
-        teamLeaders.forEach(function(tl) {
-          visibleAgentIds.push(tl._id);
-        });
-        // Get sales under each team leader
-        if (teamLeaders.length > 0) {
-          var tlIds = teamLeaders.map(function(tl) { return tl._id; });
-          var salesUnder = await User.find({ reportsTo: { $in: tlIds } }).lean();
-          salesUnder.forEach(function(s) {
-            visibleAgentIds.push(s._id);
-          });
+      // METHOD 1: Use reportsTo hierarchy (new system)
+      var hasReportsTo = false;
+      var directReports = await User.find({ reportsTo: managerUser._id }).lean();
+      if (directReports.length > 0) {
+        hasReportsTo = true;
+        directReports.forEach(function(u) { visibleAgentIds.push(u._id); });
+        // If this manager has team leaders under him, get their sales too
+        if (!managerUser.reportsTo) {
+          var tlIds = directReports.map(function(u) { return u._id; });
+          var salesUnderTLs = await User.find({ reportsTo: { $in: tlIds } }).lean();
+          salesUnderTLs.forEach(function(s) { visibleAgentIds.push(s._id); });
         }
-      } else {
-        // Team leader: sees only sales that report directly to him
-        var directSales = await User.find({ reportsTo: managerUser._id }).lean();
-        directSales.forEach(function(s) {
-          visibleAgentIds.push(s._id);
-        });
       }
 
-      query.agentId = { $in: visibleAgentIds };
+      // METHOD 2: Fallback to teamId (old system) if no reportsTo relationships found
+      if (!hasReportsTo && managerUser.teamId) {
+        var teamMembers = await User.find({ teamId: managerUser.teamId }).lean();
+        teamMembers.forEach(function(u) { visibleAgentIds.push(u._id); });
+      }
+
+      // Deduplicate
+      var uniqueIds = visibleAgentIds.filter(function(id, i, arr) {
+        return arr.findIndex(function(x) { return String(x) === String(id); }) === i;
+      });
+
+      query.agentId = { $in: uniqueIds };
     }
-    // admin: no filter, sees all
+    // admin: no filter
 
     var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").sort({ createdAt: -1 });
     res.json(leads);
@@ -477,7 +477,25 @@ app.get("/", function(req, res) {
 app.get("/api/daily-requests", auth, async function(req, res) {
   try {
     var query = {};
-    if (req.user.role === "sales") query.agentId = req.user.id;
+    if (req.user.role === "sales") {
+      query.agentId = req.user.id;
+    } else if (req.user.role === "manager") {
+      // Manager: only assigned requests (no unassigned), filtered by team
+      var managerUser = await User.findById(req.user.id).lean();
+      var visibleIds = [managerUser._id];
+      if (!managerUser.reportsTo) {
+        var tls = await User.find({ reportsTo: managerUser._id }).lean();
+        tls.forEach(function(tl){ visibleIds.push(tl._id); });
+        if (tls.length > 0) {
+          var sales = await User.find({ reportsTo: { $in: tls.map(function(t){return t._id;}) } }).lean();
+          sales.forEach(function(s){ visibleIds.push(s._id); });
+        }
+      } else {
+        var direct = await User.find({ reportsTo: managerUser._id }).lean();
+        direct.forEach(function(s){ visibleIds.push(s._id); });
+      }
+      query.agentId = { $in: visibleIds }; // only assigned ones
+    }
     var requests = await DailyRequest.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
     res.json(requests);
   } catch(e) { res.status(500).json({ error: e.message }); }
