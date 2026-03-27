@@ -545,7 +545,7 @@ var Header = function(p) {
         <Search size={14} color={C.textLight}/>
         <input placeholder={t.search} value={p.search} onChange={function(e){p.setSearch(e.target.value);}} style={{ border:"none", background:"transparent", outline:"none", fontSize:13, color:C.text, width:"100%" }}/>
       </div>}
-      <button onClick={function(){p.setLang(p.lang==="ar"?"en":"ar");}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:12, fontWeight:600, color:C.text }}>{p.lang==="ar"?"EN":"عر"}</button>
+      
       {/* Deal notifications bell - admin only */}
       {(p.isAdmin||p.cu&&p.cu.role==="sales_admin")&&<div style={{ position:"relative" }}>
         <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening&&p.onDealNotifSeen)p.onDealNotifSeen();}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
@@ -1645,8 +1645,8 @@ var DashboardPage = function(p) {
       var noAct=myLeads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>2*DAY;});
       var todayCallsCount=p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return String(auid)===uid&&a.type==="call"&&a.createdAt&&(Date.now()-new Date(a.createdAt).getTime())<DAY;}).length;
       var cards=[
-        {label:p.lang==="en"?"My Leads":"عملائي",value:myLeads.length+"",bg:"linear-gradient(135deg,#3B82F6,#1D4ED8)",icon:"👥",onClick:function(){p.nav("leads");}},
-        {label:p.lang==="en"?"Today's Calls":"Today's Calls",value:todayCallsCount+"",bg:"linear-gradient(135deg,#10B981,#059669)",icon:"📞",onClick:function(){p.nav("myday");}},
+        {label:"My Leads",value:myLeads.length+"",bg:"linear-gradient(135deg,#3B82F6,#1D4ED8)",icon:"👥",onClick:function(){p.nav("leads");}},
+        {label:"Today's Calls",value:todayCallsCount+"",bg:"linear-gradient(135deg,#10B981,#059669)",icon:"📞",onClick:function(){p.nav("myday");}},
         {label:p.lang==="en"?"CallBack Soon":"CallBack قريب",value:callbackSoon.length+"",bg:"linear-gradient(135deg,#F59E0B,#D97706)",icon:"🔔",onClick:function(){p.nav("leads");p.setFilter("CallBack");}},
         {label:p.lang==="en"?"No Contact":"No Contact",value:noAct.length+"",bg:"linear-gradient(135deg,#EF4444,#DC2626)",icon:"⚠️",onClick:function(){p.nav("leads");}},
         {label:p.lang==="en"?"My Deals":"My Deals",value:myDeals.length+"",bg:"linear-gradient(135deg,#8B5CF6,#7C3AED)",icon:"🏆",onClick:function(){p.nav("deals");}},
@@ -3669,7 +3669,7 @@ var CallCalendarPage = function(p) {
 
 // ===== MAIN APP =====
 export default function CRMApp() {
-  var [lang,setLang]=useState((function(){try{return localStorage.getItem("crm_lang")||"en";}catch(e){return "ar";}})());
+  var [lang,setLang]=useState((function(){try{return "en";}catch(e){return "ar";}})());
   var [currentUser,setCurrentUser]=useState(null); var [token,setToken]=useState(null);
   var [page,setPage]=useState((function(){try{return localStorage.getItem("crm_page")||null;}catch(e){return null;}})());
   var [leads,setLeads]=useState([]); var [users,setUsers]=useState([]);
