@@ -1137,16 +1137,18 @@ var LeadsPage = function(p) {
               </div>
               <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
             </div>
+            {/* Phone2 */}
+            {lead.phone2&&<div style={{ fontSize:12, color:C.textLight, direction:"ltr", marginBottom:6 }}>{lead.phone2}</div>}
             {/* Project + Last Activity */}
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-              {lead.project?<span style={{ background:C.accent+"15", color:C.accent, padding:"3px 10px", borderRadius:8, fontSize:11, fontWeight:600 }}>{lead.project}</span>:<span style={{ color:C.textLight, fontSize:11 }}>—</span>}
+              {lead.project?<span style={{ fontSize:11, color:C.textLight, fontWeight:500 }}>📍 {lead.project}</span>:<span style={{ color:C.textLight, fontSize:11 }}>—</span>}
               <span style={{ fontSize:11, color:actColor, fontWeight:600 }}>🕐 {lastAct}</span>
             </div>
             {/* Action buttons */}
             <div style={{ display:"flex", gap:8 }}>
               <a href={"tel:"+lead.phone} onClick={async function(e){e.stopPropagation();try{await apiFetch("/api/activities","POST",{leadId:gid(lead),type:"call",note:"📞 Call initiated"},p.token);}catch(ex){}}}
-                style={{ flex:1, padding:"11px", borderRadius:10, background:"#FEF3C7", color:"#92400E", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6, border:"1px solid #F59E0B60" }}>
-                <Phone size={14} color="#92400E"/> Call
+                style={{ flex:1, padding:"11px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6, border:"1px solid #BFDBFE" }}>
+                <Phone size={14} color="#1D4ED8"/> Call
               </a>
               <a href={"https://wa.me/2"+lead.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}}
                 style={{ flex:1, padding:"11px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6, border:"1px solid #22C55E60" }}>
