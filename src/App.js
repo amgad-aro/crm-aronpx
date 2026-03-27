@@ -1751,7 +1751,8 @@ var getEffectiveQTarget = function(user, allUsers, forQ) {
   // ALL managers: sum of direct reports' qTargets
   if(userObj.role === "manager" && allUsers) {
     var teamMembers = allUsers.filter(function(u){
-      return String(u.reportsTo||"") === uid && u.role !== "manager";
+      var rt = u.reportsTo && u.reportsTo._id ? String(u.reportsTo._id) : String(u.reportsTo||"");
+      return rt === uid && u.role !== "manager";
     });
     if(teamMembers.length > 0) {
       var total = teamMembers.reduce(function(sum, u){
