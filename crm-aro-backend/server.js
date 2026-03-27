@@ -353,13 +353,29 @@ app.post("/api/leads", auth, async function(req, res) {
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
+    // If agentId is being changed (manual reassign) — reset status to NewLead
+    var oldLead = null;
+    if (req.body.agentId) {
+      oldLead = await Lead.findById(req.params.id).lean();
+    }
     var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
     try {
+      var actType = "note";
+      var actNote = "Updated";
+      if (req.body.status) {
+        actType = "status_change";
+        actNote = "Status: " + req.body.status;
+      } else if (req.body.agentId && oldLead && String(oldLead.agentId) !== String(req.body.agentId)) {
+        actType = "reassign";
+        actNote = "تم التحويل اليدوي إلى موظف جديد";
+        // Also log reassignedAt
+        await Lead.findByIdAndUpdate(req.params.id, { $set: { reassignedAt: new Date() } });
+      }
       await Activity.create({
         userId: req.user.id,
         leadId: req.params.id,
-        type: req.body.status ? "status_change" : "note",
-        note: req.body.status ? "Status: " + req.body.status : "Updated",
+        type: actType,
+        note: actNote,
       });
     } catch(actErr) {
       console.error("Activity log error (non-fatal):", actErr.message);
