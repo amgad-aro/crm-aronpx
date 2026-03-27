@@ -2867,7 +2867,7 @@ var ReportsPage = function(p) {
 
 var TeamPage = function(p) {
   var t=p.t;
-  var isAdmin=p.cu.role==="admin";
+  var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var allDeals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
   var getQ=function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
   var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
