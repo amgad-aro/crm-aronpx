@@ -553,8 +553,8 @@ var Header = function(p) {
       </div>}
       
       {/* Deal notifications bell - admin only */}
-      {(p.isAdmin||p.cu&&p.cu.role==="sales_admin")&&<div style={{ position:"relative" }}>
-        <div ref={dealNotifRef} style={{position:"relative",display:"inline-block"}}><button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening){p.setShowNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);if(p.onDealNotifSeen)p.onDealNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
+      {(p.isAdmin||p.cu&&p.cu.role==="sales_admin")&&<div ref={dealNotifRef} style={{ position:"relative" }}>
+        <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening){p.setShowNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);if(p.onDealNotifSeen)p.onDealNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <DollarSign size={16} color={p.unseenDeals>0&&!p.showDealNotif?"#15803D":C.textLight}/>
           {p.unseenDeals>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:"#15803D", color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.unseenDeals}</span>}
         </button>
