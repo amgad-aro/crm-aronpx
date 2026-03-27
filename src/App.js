@@ -3051,6 +3051,12 @@ var TeamPage = function(p) {
 var ReportsPage = function(p) {
   var t=p.t;
   var [rPeriod,setRPeriod]=useState("monthly");
+  var [dailyRequests,setDailyRequests]=useState([]);
+  useEffect(function(){
+    apiFetch("/api/daily-requests","GET",null,p.token)
+      .then(function(d){setDailyRequests(Array.isArray(d)?d:[]);})
+      .catch(function(){setDailyRequests([]);});
+  },[]);
   var sales=p.users.filter(function(u){return u.role==="sales"||u.role==="manager";});
   var normalLeads=p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   var convRate=normalLeads.length>0?Math.round(normalLeads.filter(function(l){return l.status==="DoneDeal";}).length/normalLeads.length*100):0;
@@ -3075,8 +3081,8 @@ var ReportsPage = function(p) {
             {sales.map(function(a){var uid=gid(a);
               var curQR2=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
               var al=normalLeads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.createdAt&&(now2-new Date(l.createdAt).getTime())<ms2;});
-              var dailyReqCount=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.source==="Daily Request"&&!l.archived&&l.createdAt&&(now2-new Date(l.createdAt).getTime())<ms2;}).length;
-              var meetDone=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="MeetingDone"&&l.updatedAt&&(now2-new Date(l.updatedAt).getTime())<ms2;}).length;
+              var dailyReqCount=dailyRequests.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.createdAt&&(now2-new Date(l.createdAt).getTime())<ms2;}).length;
+              var meetDone=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="MeetingDone"&&l.updatedAt&&(now2-new Date(l.updatedAt).getTime())<ms2;}).length+dailyRequests.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="MeetingDone"&&l.updatedAt&&(now2-new Date(l.updatedAt).getTime())<ms2;}).length;
               var d=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="DoneDeal"&&!l.archived&&l.updatedAt&&(now2-new Date(l.updatedAt).getTime())<ms2;}).length;
               var cl=p.activities.filter(function(ac){var auid=String(ac.userId&&ac.userId._id?ac.userId._id:ac.userId||"");return auid===uid&&ac.type==="call"&&ac.createdAt&&(now2-new Date(ac.createdAt).getTime())<ms2;}).length;
               var rate=al.length>0?Math.round(d/al.length*100):0;
