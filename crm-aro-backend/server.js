@@ -571,6 +571,16 @@ app.post("/api/daily-requests", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req, res) {
+  try {
+    var { leadIds, agentId } = req.body;
+    if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
+    var agentObjId = new mongoose.Types.ObjectId(agentId);
+    await DailyRequest.updateMany({ _id: { $in: leadIds } }, { $set: { agentId: agentObjId } });
+    res.json({ ok: true, count: leadIds.length });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.put("/api/daily-requests/:id", auth, async function(req, res) {
   try {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
