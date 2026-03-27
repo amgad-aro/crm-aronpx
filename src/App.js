@@ -456,7 +456,7 @@ var LoginPage = function(p) {
 
 // ===== SIDEBAR =====
 var Sidebar = function(p) {
-  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var isSales = p.cu.role==="sales";
   var items = [
     {id:"dashboard",icon:Home,label:t.dashboard},
@@ -508,7 +508,7 @@ var Sidebar = function(p) {
 
 // ===== HEADER =====
 var Header = function(p) {
-  var t = p.t; var isOnlyAdmin = p.cu&&p.cu.role==="admin";
+  var t = p.t; var isOnlyAdmin = p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin");
   var upcoming = p.leads.filter(function(l){return l.callbackTime&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&!l.archived;});
   var overdueCallback = p.leads.filter(function(l){return l.status==="CallBack"&&l.callbackTime&&new Date(l.callbackTime)<new Date()&&!l.archived;});
   var noActivityLeads = p.leads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>1*24*60*60*1000;});
@@ -547,7 +547,7 @@ var Header = function(p) {
       </div>}
       <button onClick={function(){p.setLang(p.lang==="ar"?"en":"ar");}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:12, fontWeight:600, color:C.text }}>{p.lang==="ar"?"EN":"عر"}</button>
       {/* Deal notifications bell - admin only */}
-      {p.isAdmin&&<div style={{ position:"relative" }}>
+      {(p.isAdmin||p.cu&&p.cu.role==="sales_admin")&&<div style={{ position:"relative" }}>
         <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening&&p.onDealNotifSeen)p.onDealNotifSeen();}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <DollarSign size={16} color={p.unseenDeals>0&&!p.showDealNotif?"#15803D":C.textLight}/>
           {p.unseenDeals>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:"#15803D", color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.unseenDeals}</span>}
@@ -575,7 +575,7 @@ var Header = function(p) {
       </div>}
 
       {/* Rotation notifications bell - admin only */}
-      {p.isAdmin&&(!p.cu||p.cu.role!=="manager")&&(function(){
+      {(p.isAdmin||p.cu&&p.cu.role==="sales_admin")&&(!p.cu||p.cu.role!=="manager")&&(function(){
         var rotNotifs=[];
         try{rotNotifs=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}
         var unseenRot=0;
@@ -663,7 +663,7 @@ var Header = function(p) {
 
 // ===== LEAD FORM (shared for add/edit) =====
 var LeadForm = function(p) {
-  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
+  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential" });
   var [dupWarning, setDupWarning] = useState(null);
@@ -874,7 +874,7 @@ var PhoneCell = function(p) {
 // ===== LEADS PAGE =====
 var LeadsPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
-  var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var isManager = p.cu.role==="manager";
   var myTeamUsers = p.myTeamUsers || salesUsers;
@@ -981,7 +981,7 @@ var LeadsPage = function(p) {
 
   var openHistory = async function(lead) {
     setHistoryLead(lead); setShowHistory(true); setFullHistory([]); setHistoryLoading(true);
-    var isAdmin = p.cu.role==="admin"||p.cu.role==="manager";
+    var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager";
     try {
       if(isAdmin) {
         var hist = await apiFetch("/api/leads/"+gid(lead)+"/full-history","GET",null,p.token);
@@ -1092,7 +1092,7 @@ var LeadsPage = function(p) {
         }} style={{ padding:"7px 11px", fontSize:12, color:"#25D366", borderColor:"#25D366" }}>💬 {t.bulkWhatsApp} ({selected2.length})</Btn>}
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
         {isOnlyAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
-        {p.cu.role==="admin"&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
+        {p.cu&&p.cu.role==="admin"&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
         {!notifGranted&&<Btn outline onClick={async function(){var ok=await requestNotifPermission();setNotifGranted(ok);}} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Bell size={13}/> {t.enableNotif}</Btn>}
         {isOnlyAdmin&&<Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>}
         {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
@@ -1542,7 +1542,7 @@ var MyDayPage = function(p) {
 // ===== DASHBOARD =====
 var DashboardPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
-  var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var normalLeads = p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   var myLeads = isAdmin?normalLeads:normalLeads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===p.cu.id;});
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
