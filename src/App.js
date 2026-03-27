@@ -1724,7 +1724,7 @@ var EOIPage = function(p) {
 
     {eoiLeads.length>0&&<Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#FFF7ED", borderBottom:"2px solid #FED7AA" }}>
-        {[t.name,t.phone,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"تاريخ التحويل لـ EOI",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:"#EA580C", whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:"#EA580C", whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {eoiLeads.map(function(d){
@@ -1732,7 +1732,7 @@ var EOIPage = function(p) {
           var eoiDateStr=d.eoiDate?new Date(d.eoiDate).toLocaleDateString("en-GB"):d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB"):"-";
           return <tr key={gid(d)} style={{ borderBottom:"1px solid #FEF3E2" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
-            <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>
+            {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>}
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.notes||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:"#EA580C" }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
@@ -1741,7 +1741,7 @@ var EOIPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight }}>{eoiDateStr}</td>
             <td style={{ padding:"8px 12px" }}>
               <div style={{ display:"flex", gap:5 }}>
-                {isOnlyAdmin&&<button onClick={function(){setEditLead(d);}} title={t.edit}
+                {p.cu.role==="admin"&&<button onClick={function(){setEditLead(d);}} title={t.edit}
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <Edit size={13} color={C.info}/>
                 </button>}
@@ -2146,8 +2146,8 @@ var DealsPage = function(p) {
           var stages=getStages(gid(d));
           return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
-            <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>
-            <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight }}>{d.phone2||"-"}</td>
+            {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>}
+            {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight }}>{d.phone2||"-"}</td>}
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>
               {(function(){
