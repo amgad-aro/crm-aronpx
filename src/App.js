@@ -492,7 +492,7 @@ var Sidebar = function(p) {
       </div>
       <div style={{ flex:1, padding:"8px 6px", overflowY:"auto" }}>
         {items.map(function(item){ var I=item.icon; var act=p.active===item.id;
-          return <button key={item.id} onClick={function(){p.setActive(item.id);if(p.isMobile)p.onClose();}} style={{ width:"100%", display:"flex", alignItems:"center", gap:11, padding:"10px 14px", background:act?"rgba(232,168,56,0.18)":"transparent", border:"none", borderRadius:8, cursor:"pointer", color:act?C.accent:"rgba(255,255,255,0.62)", fontSize:13, fontWeight:act?600:400, marginBottom:1, textAlign:isRTL?"right":"left" }}><I size={17}/><span>{item.label}</span></button>;
+          return <button key={item.id} onClick={function(){p.setActive(item.id);try{localStorage.setItem("crm_page",item.id);}catch(e){}if(p.isMobile)p.onClose();}} style={{ width:"100%", display:"flex", alignItems:"center", gap:11, padding:"10px 14px", background:act?"rgba(232,168,56,0.18)":"transparent", border:"none", borderRadius:8, cursor:"pointer", color:act?C.accent:"rgba(255,255,255,0.62)", fontSize:13, fontWeight:act?600:400, marginBottom:1, textAlign:isRTL?"right":"left" }}><I size={17}/><span>{item.label}</span></button>;
         })}
       </div>
       <div style={{ padding:"14px 16px", borderTop:"1px solid rgba(255,255,255,0.08)" }}>
@@ -3669,9 +3669,9 @@ var CallCalendarPage = function(p) {
 
 // ===== MAIN APP =====
 export default function CRMApp() {
-  var [lang,setLang]=useState((function(){try{return localStorage.getItem("crm_lang")||"ar";}catch(e){return "ar";}})());
+  var [lang,setLang]=useState((function(){try{return localStorage.getItem("crm_lang")||"en";}catch(e){return "ar";}})());
   var [currentUser,setCurrentUser]=useState(null); var [token,setToken]=useState(null);
-  var [page,setPage]=useState(null); // will be set after login
+  var [page,setPage]=useState((function(){try{return localStorage.getItem("crm_page")||null;}catch(e){return null;}})());
   var [leads,setLeads]=useState([]); var [users,setUsers]=useState([]);
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
@@ -4080,7 +4080,7 @@ export default function CRMApp() {
   },[token, leads.length, users.length]);
 
   var handleLogout=function(){setCurrentUser(null);setToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
-  var nav=function(pg){setPage(pg||"dashboard");setInitSelected(null);};
+  var nav=function(pg){var p2=pg||"dashboard";setPage(p2);setInitSelected(null);try{localStorage.setItem("crm_page",p2);}catch(e){}};
 
   if(!currentUser) return <LoginPage t={t} onLogin={handleLogin}/>;
   if(loading) return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"#F0F2F5", fontFamily:"Cairo,sans-serif" }}><div style={{ textAlign:"center" }}><div style={{ width:40, height:40, borderRadius:"50%", border:"3px solid #E8ECF1", borderTopColor:C.accent, animation:"spin 0.8s linear infinite", margin:"0 auto 16px" }}/><div style={{ color:C.textLight, fontSize:14 }}>{t.loading}</div></div></div>;
