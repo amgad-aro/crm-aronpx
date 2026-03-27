@@ -348,18 +348,18 @@ var StatusModal = function(p) {
     {needsPotFields&&<div style={{ background:"#F0F9FF", borderRadius:10, padding:"12px 14px", marginBottom:12, border:"1px solid #BAE6FD" }}>
       <div style={{ fontSize:12, fontWeight:700, color:"#0284C7", marginBottom:10 }}>💰 البيانات المالية</div>
       <div style={{ marginBottom:9 }}>
-        <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>الميزانية (EGP) <span style={{color:C.danger}}>*</span></label>
+        <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Budget (EGP) <span style={{color:C.danger}}>*</span></label>
           <input type="text" placeholder="مثال: 1,000,000" value={potBudget} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setPotBudget(r?Number(r).toLocaleString():"");setErr("");}}
             style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
       </div>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
         <div>
-          <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>المقدم (EGP) <span style={{color:C.danger}}>*</span></label>
+          <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Down Payment (EGP) <span style={{color:C.danger}}>*</span></label>
           <input type="text" placeholder="مثال: 500,000" value={potDeposit} onChange={fmtNum(potDeposit,setPotDeposit)}
             style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
         </div>
         <div>
-          <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>الأقساط (EGP) <span style={{color:C.danger}}>*</span></label>
+          <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Installments (EGP) <span style={{color:C.danger}}>*</span></label>
           <input type="text" placeholder="مثال: 20,000" value={potInstalment} onChange={fmtNum(potInstalment,setPotInstalment)}
             style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
         </div>
@@ -375,7 +375,7 @@ var StatusModal = function(p) {
 
     {/* NotInterested: reason required */}
     {isReject&&<div style={{ marginBottom:12 }}>
-      <div style={{ fontSize:13, fontWeight:600, marginBottom:8, color:"#EF4444" }}>سبب الرفض <span style={{color:C.danger}}>*</span></div>
+      <div style={{ fontSize:13, fontWeight:600, marginBottom:8, color:"#EF4444" }}>Rejection Reason <span style={{color:C.danger}}>*</span></div>
       <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
         {["السعر مرتفع","المنطقة مش مناسبة","اشترى من مكان تاني","مش جاهز دلوقتي","مش مهتم خالص","سبب تاني"].map(function(r){
           return <button key={r} onClick={function(){setComment(r);setErr("");}}
@@ -556,17 +556,17 @@ var Header = function(p) {
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontWeight:700, fontSize:13 }}>🎉 صفقات جديدة ({p.dealNotifs?p.dealNotifs.length:0})</span>
             <div style={{ display:"flex", gap:6 }}>
-              {p.dealNotifs&&p.dealNotifs.length>0&&<button onClick={function(){p.setDealNotifs([]);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.textLight }}>مسح الكل</button>}
+              {p.dealNotifs&&p.dealNotifs.length>0&&<button onClick={function(){p.setDealNotifs([]);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.textLight }}>Clear All</button>}
               <button onClick={function(){p.setShowDealNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
             </div>
           </div>
-          {(!p.dealNotifs||p.dealNotifs.length===0)&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد صفقات جديدة</div>}
+          {(!p.dealNotifs||p.dealNotifs.length===0)&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No new deals</div>}
           {p.dealNotifs&&p.dealNotifs.map(function(n){return <div key={n.id} style={{ padding:"12px 16px", borderBottom:"1px solid #F8FAFC" }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <div style={{ width:32, height:32, borderRadius:8, background:n.status==="DoneDeal"?"#DCFCE7":"#FFF7ED", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{n.status==="DoneDeal"?"🎉":"🎯"}</div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:12, fontWeight:700 }}>{n.status==="DoneDeal"?"Done Deal":"EOI"} — {n.leadName}</div>
-                <div style={{ fontSize:11, color:C.textLight }}>بواسطة {n.agentName}{n.budget?" · "+n.budget+" EGP":""}</div>
+                <div style={{ fontSize:11, color:C.textLight }}>By {n.agentName}{n.budget?" · "+n.budget+" EGP":""}</div>
                 <div style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.time,p.t)}</div>
               </div>
             </div>
@@ -594,11 +594,11 @@ var Header = function(p) {
             <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, fontSize:13 }}>🔄 التحويلات التلقائية ({rotNotifs.length})</span>
               <div style={{ display:"flex", gap:6 }}>
-                {rotNotifs.length>0&&<button onClick={function(){try{localStorage.setItem("crm_rot_notifs","[]");}catch(e){}if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger }}>مسح الكل</button>}
+                {rotNotifs.length>0&&<button onClick={function(){try{localStorage.setItem("crm_rot_notifs","[]");}catch(e){}if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger }}>Clear All</button>}
                 <button onClick={function(){if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
               </div>
             </div>
-            {rotNotifs.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد تحويلات</div>}
+            {rotNotifs.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No rotations</div>}
             {rotNotifs.map(function(n){return <div key={n.id} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC" }}>
               <div style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
                 <span style={{ fontSize:16, flexShrink:0 }}>🔄</span>
@@ -625,7 +625,7 @@ var Header = function(p) {
             <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder}</span>
             <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
           </div>
-          {upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد تنبيهات</div>}
+          {upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No notifications</div>}
           {overdueCallback.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
             <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 CallBack فات موعده</div>
             {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
@@ -837,8 +837,8 @@ var QuickPhoneSearch = function(p) {
         <button onClick={function(){setShow(false);setQ("");}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:18, color:"#94A3B8" }}>✕</button>
       </div>
       <input autoFocus value={q} onChange={function(e){setQ(e.target.value);}} placeholder="اكتب آخر 4 أرقام أو الرقم كامل..." style={{ width:"100%", padding:"10px 14px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr", marginBottom:12 }}/>
-      {q.length>0&&q.length<4&&<div style={{ fontSize:12, color:"#94A3B8", textAlign:"center", marginBottom:10 }}>اكتب على الأقل 4 أرقام</div>}
-      {results.length===0&&q.length>=4&&<div style={{ fontSize:13, color:"#94A3B8", textAlign:"center", padding:20 }}>مفيش نتائج</div>}
+      {q.length>0&&q.length<4&&<div style={{ fontSize:12, color:"#94A3B8", textAlign:"center", marginBottom:10 }}>Type at least 4 digits</div>}
+      {results.length===0&&q.length>=4&&<div style={{ fontSize:13, color:"#94A3B8", textAlign:"center", padding:20 }}>No results</div>}
       {results.map(function(l){
         var so=sc.find(function(s){return s.value===l.status;})||sc[0];
         return <div key={gid(l)} onClick={function(){p.onSelect(l);setShow(false);setQ("");}} style={{ padding:"12px 14px", borderRadius:12, border:"1px solid #E8ECF1", marginBottom:8, cursor:"pointer", background:"#FAFBFC" }}>
@@ -1060,7 +1060,7 @@ var LeadsPage = function(p) {
 
     {/* Bulk Reassign Modal */}
     <Modal show={showBulk} onClose={function(){setShowBulk(false);}} title={t.bulkReassign}>
-      <div style={{ marginBottom:14, padding:"10px 14px", background:"#F0F9FF", borderRadius:10, fontSize:13 }}>تم تحديد <b>{selected2.length}</b> عميل</div>
+      <div style={{ marginBottom:14, padding:"10px 14px", background:"#F0F9FF", borderRadius:10, fontSize:13 }}>{selected2.length} leads selected</div>
       <Inp label={t.reassignTo} type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- اختر موظف -"}].concat((isOnlyAdmin?p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;}):myTeamUsers).map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowBulk(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={doBulkReassign} style={{ flex:1 }}>{t.bulkReassign}</Btn></div>
     </Modal>
@@ -1119,7 +1119,7 @@ var LeadsPage = function(p) {
       {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
     {/* Table */}
       {p.isMobile&&!selected?<div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-        {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>لا يوجد بيانات</div>}
+        {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>No data</div>}
         {filtered.map(function(lead){
           var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0]; var isVIP=lead.isVIP;
           return <div key={lid} onClick={function(){setSelected(lead);}} style={{ background:"#fff", borderRadius:12, padding:"12px 14px", border:"1px solid #E8ECF1", borderRight:isVIP?"3px solid #F59E0B":"1px solid #E8ECF1", cursor:"pointer" }}>
@@ -1153,7 +1153,7 @@ var LeadsPage = function(p) {
               {!p.isMobile&&<th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.callbackTime}</th>}
             </tr></thead>
             <tbody>
-              {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد بيانات</td></tr>}
+              {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No data</td></tr>}
               {filtered.map(function(lead){
                 var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0];
                 var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
@@ -1342,8 +1342,8 @@ var LeadsPage = function(p) {
 
     {/* Full History Modal */}
     {showHistory&&historyLead&&<Modal show={true} onClose={function(){setShowHistory(false);setHistoryLead(null);}} title={"📋 تاريخ العميل — "+historyLead.name} w={520}>
-      {historyLoading&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>جاري التحميل...</div>}
-      {!historyLoading&&fullHistory.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>لا يوجد سجل أنشطة</div>}
+      {historyLoading&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>Loading...</div>}
+      {!historyLoading&&fullHistory.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>No activity history</div>}
       {!historyLoading&&fullHistory.length>0&&<div style={{ maxHeight:400, overflowY:"auto" }}>
         {fullHistory.slice().reverse().map(function(a,i){
           var uname=a.userId&&a.userId.name?a.userId.name:"";
@@ -1457,7 +1457,7 @@ var MyDayPage = function(p) {
 
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ marginBottom:18 }}>
-      <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:4 }}>يومي 🌟</div>
+      <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:4 }}>My Day 🌟</div>
       <div style={{ fontSize:12, color:C.textLight }}>{new Date().toLocaleDateString("ar-EG",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
     </div>
 
@@ -1494,7 +1494,7 @@ var MyDayPage = function(p) {
           </div>;})}
       </div>}
       {upcoming.length>0&&<div>
-        <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:8 }}>قادمة ({upcoming.length})</div>
+        <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:8 }}>Upcoming ({upcoming.length})</div>
         {upcoming.map(function(l){var so=sc.find(function(s){return s.value===l.status;})||sc[0]; var ci=callbackColor(l.callbackTime);
           return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#F8FAFC", border:"1px solid #E8ECF1", marginBottom:6, cursor:"pointer" }}>
             <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:ci?ci.color:C.textLight, fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
@@ -1511,7 +1511,7 @@ var MyDayPage = function(p) {
     {activeTab==="noact"&&<div>
       {noActivity.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>✅ كل العملاء عندهم تواصل</div>}
       {noActivity.map(function(l){return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#FFFBEB", border:"1px solid #FDE68A", marginBottom:6, cursor:"pointer" }}>
-        <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:"#B45309", fontWeight:600 }}>آخر تواصل: {timeAgo(l.lastActivityTime,t)}</div></div>
+        <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:"#B45309", fontWeight:600 }}>Last contact: {timeAgo(l.lastActivityTime,t)}</div></div>
         <div style={{ display:"flex", gap:5 }}>
           <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:C.success, display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#fff"/></a>
           <a href={"https://wa.me/2"+l.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#25D366", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:14 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
@@ -1530,7 +1530,7 @@ var MyDayPage = function(p) {
     </div>}
 
     {activeTab==="activity"&&<div>
-      {todayActs.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>لا يوجد نشاط اليوم</div>}
+      {todayActs.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>No activity today</div>}
       {todayActs.map(function(a,i){return <div key={a._id||i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"10px 12px", borderRadius:10, background:"#F8FAFC", border:"1px solid #E8ECF1", marginBottom:6 }}>
         <span style={{ fontSize:18, flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":"📝"}</span>
         <div style={{ flex:1 }}><div style={{ fontSize:12, fontWeight:500 }}>{a.note}</div><div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>{timeAgo(a.createdAt,t)}</div></div>
@@ -1662,7 +1662,7 @@ var DashboardPage = function(p) {
       </Card>
       <Card style={{ flex:1, minWidth:230 }}>
         <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.todayActivities}</h3>
-        {p.activities.length===0&&<div style={{ color:C.textLight, fontSize:13, textAlign:"center", padding:"20px 0" }}>لا يوجد نشاط</div>}
+        {p.activities.length===0&&<div style={{ color:C.textLight, fontSize:13, textAlign:"center", padding:"20px 0" }}>No activity</div>}
         {p.activities.slice(0,8).map(function(a){
           var lId=a.leadId?(gid(a.leadId)):null; var lName=a.leadId&&a.leadId.name?a.leadId.name:""; var uName=a.userId&&a.userId.name?a.userId.name:"";
           var ml=lId?p.leads.find(function(l){return gid(l)===lId;}):null;
@@ -1705,7 +1705,7 @@ var EOIPage = function(p) {
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>🎯 EOI ({eoiLeads.length})</h2>
-        {total>0&&<div style={{ fontSize:13, fontWeight:700, color:"#EA580C", background:"#FFF7ED", padding:"5px 14px", borderRadius:20 }}>إجمالي: {total.toLocaleString()} EGP</div>}
+        {total>0&&<div style={{ fontSize:13, fontWeight:700, color:"#EA580C", background:"#FFF7ED", padding:"5px 14px", borderRadius:20 }}>Total: {total.toLocaleString()} EGP</div>}
       </div>
     </div>
 
@@ -1718,8 +1718,8 @@ var EOIPage = function(p) {
 
     {eoiLeads.length===0&&<div style={{ textAlign:"center", padding:"60px 20px", color:C.textLight }}>
       <div style={{ fontSize:48, marginBottom:12 }}>🎯</div>
-      <div style={{ fontSize:16, fontWeight:700 }}>لا يوجد عملاء EOI حالياً</div>
-      <div style={{ fontSize:13, marginTop:8 }}>العملاء اللي حالتهم EOI هيظهروا هنا تلقائياً</div>
+      <div style={{ fontSize:16, fontWeight:700 }}>No EOI clients yet</div>
+      <div style={{ fontSize:13, marginTop:8 }}>Clients with EOI status will appear here automatically</div>
     </div>}
 
     {eoiLeads.length>0&&<Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
@@ -1933,7 +1933,7 @@ var DealsPage = function(p) {
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.deals} ({filteredDeals.length})</h2>
-        {filteredTotal>0&&<div style={{ fontSize:13, fontWeight:700, color:C.success, background:"#DCFCE7", padding:"5px 14px", borderRadius:20 }}>إجمالي: {filteredTotal.toLocaleString()} EGP</div>}
+        {filteredTotal>0&&<div style={{ fontSize:13, fontWeight:700, color:C.success, background:"#DCFCE7", padding:"5px 14px", borderRadius:20 }}>Total: {filteredTotal.toLocaleString()} EGP</div>}
       </div>
       {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {t.addLead}</Btn>}
     </div>
@@ -1950,10 +1950,10 @@ var DealsPage = function(p) {
         <input type="date" value={dateFrom} onChange={function(e){setDateFrom(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-        <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>إلى:</span>
+        <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>To:</span>
         <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
       </div>
-      {(dateFrom||dateTo||dealSearch||dealAgent)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ مسح الكل</button>}
+      {(dateFrom||dateTo||dealSearch||dealAgent)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
     </div>
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} initialStatus="DoneDeal"
@@ -1988,7 +1988,7 @@ var DealsPage = function(p) {
           <span style={{ fontSize:13, fontWeight:600 }}>📝 العقد اتوقع</span>
         </div>
         {stagesForm.contract&&<div style={{ marginTop:8 }}>
-          <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>تاريخ التوقيع</label>
+          <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>Signing Date</label>
           <input type="date" value={stagesForm.contractDate} onChange={function(e){setStagesForm(function(f){return Object.assign({},f,{contractDate:e.target.value});});}}
             style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box" }}/>
         </div>}
@@ -2005,12 +2005,12 @@ var DealsPage = function(p) {
         </div>
         {stagesForm.payment1&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 10px", marginTop:8 }}>
           <div>
-            <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>التاريخ</label>
+            <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>Date</label>
             <input type="date" value={stagesForm.payment1Date} onChange={function(e){setStagesForm(function(f){return Object.assign({},f,{payment1Date:e.target.value});});}}
               style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box" }}/>
           </div>
           <div>
-            <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>المبلغ (EGP)</label>
+            <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>Amount (EGP)</label>
             <input type="text" placeholder="مثال: 500,000" value={stagesForm.payment1Amount}
               onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setStagesForm(function(f){return Object.assign({},f,{payment1Amount:r?Number(r).toLocaleString():""});});}}
               style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
@@ -2029,12 +2029,12 @@ var DealsPage = function(p) {
         </div>
         {stagesForm.payment2&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 10px", marginTop:8 }}>
           <div>
-            <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>التاريخ</label>
+            <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>Date</label>
             <input type="date" value={stagesForm.payment2Date} onChange={function(e){setStagesForm(function(f){return Object.assign({},f,{payment2Date:e.target.value});});}}
               style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box" }}/>
           </div>
           <div>
-            <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>المبلغ (EGP)</label>
+            <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>Amount (EGP)</label>
             <input type="text" placeholder="مثال: 500,000" value={stagesForm.payment2Amount}
               onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setStagesForm(function(f){return Object.assign({},f,{payment2Amount:r?Number(r).toLocaleString():""});});}}
               style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
