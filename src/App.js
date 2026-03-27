@@ -1748,12 +1748,26 @@ var getEffectiveQTarget = function(user, allUsers, forQ) {
   var uid = typeof user === "string" ? user : gid(user);
   var userObj = typeof user === "object" ? user : (allUsers||[]).find(function(u){return gid(u)===uid;}) || {};
   var curQ = forQ || (function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
-  // ALL managers: sum of direct reports' qTargets
+
   if(userObj.role === "manager" && allUsers) {
-    var teamMembers = allUsers.filter(function(u){
-      var rt = u.reportsTo && u.reportsTo._id ? String(u.reportsTo._id) : String(u.reportsTo||"");
-      return rt === uid && u.role !== "manager";
-    });
+    var teamId = userObj.teamId || "";
+    var teamMembers = [];
+
+    if(teamId) {
+      // Find by teamId (current system)
+      teamMembers = allUsers.filter(function(u){
+        return u.role === "sales" && u.teamId === teamId;
+      });
+    }
+
+    // Fallback: find by reportsTo
+    if(teamMembers.length === 0) {
+      teamMembers = allUsers.filter(function(u){
+        var rt = u.reportsTo && u.reportsTo._id ? String(u.reportsTo._id) : String(u.reportsTo||"");
+        return rt === uid && u.role !== "manager";
+      });
+    }
+
     if(teamMembers.length > 0) {
       var total = teamMembers.reduce(function(sum, u){
         var qt = (u.qTargets&&Object.keys(u.qTargets).length>0) ? u.qTargets :
@@ -1763,6 +1777,7 @@ var getEffectiveQTarget = function(user, allUsers, forQ) {
       if(total > 0) return total;
     }
   }
+
   // Fallback: own qTargets
   var qt = (userObj.qTargets&&Object.keys(userObj.qTargets).length>0) ? userObj.qTargets :
     (function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){return {};}})();
