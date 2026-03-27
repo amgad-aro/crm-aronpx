@@ -2539,7 +2539,63 @@ var DailyRequestsPage = function(p) {
 
     <div style={{ display:"flex", gap:14 }}>
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
-        {loading?<Loader/>:<div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
+        {loading?<Loader/>:p.isMobile?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:"12px", maxWidth:500, margin:"0 auto" }}>
+          {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>No requests</div>}
+          {selected&&<div style={{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }}>
+            {/* Mobile detail panel - same as leads */}
+            <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"16px 16px 20px" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, width:32, height:32, cursor:"pointer", color:"#fff", fontSize:18, display:"flex", alignItems:"center", justifyContent:"center" }}>←</button>
+                <div style={{ textAlign:"center", flex:1 }}>
+                  <div style={{ color:"#fff", fontSize:16, fontWeight:700 }}>{selected.name}</div>
+                  <div style={{ color:"rgba(255,255,255,0.7)", fontSize:12, direction:"ltr" }}>{selected.phone}</div>
+                </div>
+                <div style={{ width:32 }}/>
+              </div>
+              <div style={{ display:"flex", gap:8, marginTop:14 }}>
+                <a href={"tel:"+selected.phone} style={{ flex:1, padding:"10px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}><Phone size={14} color="#1D4ED8"/> Call</a>
+                <a href={"https://wa.me/2"+selected.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" style={{ flex:1, padding:"10px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>{WA_SVG_GREEN} WhatsApp</a>
+              </div>
+            </div>
+            <div style={{ padding:"16px" }}>
+              {[{l:"Property Type",v:selected.propertyType},{l:"Area",v:selected.area},{l:"Budget",v:selected.budget},{l:"Status",v:selected.status},{l:"Agent",v:getAgentName(selected)},{l:"Callback",v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"Last Activity",v:timeAgo(selected.lastActivityTime,t)},{l:"Notes",v:selected.notes}].map(function(f){return f.v?<div key={f.l} style={{ padding:"10px 0", borderBottom:"1px solid #F8FAFC" }}><div style={{ fontSize:11, color:C.textLight, marginBottom:3 }}>{f.l}</div><div style={{ fontSize:13, fontWeight:600 }}>{f.v}</div></div>:null;})}
+              <div style={{ marginTop:16 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:8 }}>Change Status</div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                  {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid", borderColor:selected.status===s.value?s.color:"#E2E8F0", background:selected.status===s.value?s.bg:"#fff", color:selected.status===s.value?s.color:C.textLight, fontSize:11, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
+                </div>
+              </div>
+            </div>
+          </div>}
+          {filtered.map(function(r){
+            var rid=gid(r); var so=sc.find(function(s){return s.value===r.status;})||sc[0];
+            var lastAct=r.lastActivityTime?timeAgo(r.lastActivityTime,t):"—";
+            var actColor=(Date.now()-new Date(r.lastActivityTime||0).getTime())>3*24*60*60*1000?C.danger:C.accent;
+            var borderCol=so.color||"#E8ECF1";
+            return <div key={rid} onClick={function(){setSelected(r);window.scrollTo({top:0,behavior:"smooth"});}}
+              style={{ background:"#fff", borderRadius:16, padding:"16px", border:"2px solid "+borderCol, cursor:"pointer", boxShadow:"0 3px 12px "+borderCol+"35" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:2 }}>{r.name}</div>
+                  <div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr" }}>{r.phone}</div>
+                  {r.phone2&&<div style={{ fontSize:11, fontWeight:700, color:C.textLight, direction:"ltr" }}>{r.phone2}</div>}
+                </div>
+                <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
+              </div>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                  {r.area&&<span style={{ fontSize:11, color:"#6D28D9", fontWeight:700, background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>📍 {r.area}</span>}
+                  {r.budget&&<span style={{ fontSize:11, color:C.success, fontWeight:700 }}>💰 {r.budget}</span>}
+                </div>
+                <span style={{ fontSize:11, color:actColor, fontWeight:600 }}>🕐 {lastAct}</span>
+              </div>
+              <div style={{ display:"flex", gap:8 }}>
+                <a href={"tel:"+r.phone} onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"10px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5, border:"1px solid #BFDBFE" }}><Phone size={13} color="#1D4ED8"/> Call</a>
+                <a href={"https://wa.me/2"+r.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"10px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5, border:"1px solid #22C55E60" }}>{WA_SVG_GREEN} WhatsApp</a>
+              </div>
+            </div>;
+          })}
+        </div>:<div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
               {["Name","Phone","Property Type","Area","Budget","Status",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
