@@ -2925,8 +2925,10 @@ var TeamPage = function(p) {
     var qProg=qTarget>0?Math.min(100,Math.round((qRevenue/qTarget)*100)):0;
     var allAgentDeals=allDeals.filter(function(d){return matchesAgent(d);});
     var totalRevenue=allAgentDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
-    var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<3*60*1000;
-    var lastSeenStr=a.lastSeen?timeAgo(a.lastSeen,p.t):"Never logged in";
+    var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<2*60*1000;
+    var isIdleNow=!isOnlineNow&&a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<15*60*1000;
+    var lastSeenStr=a.lastSeen?("Last seen: "+new Date(a.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" — "+timeAgo(a.lastSeen,p.t)):"Never logged in";
+    var onlineStatus=isOnlineNow?"🟢 Active now":isIdleNow?"🟡 Idle ("+timeAgo(a.lastSeen,p.t)+")":"⚫ "+lastSeenStr;
     return <Card key={uid} style={{ flex:"1 1 280px", maxWidth:360, overflow:"hidden", padding:0 }}>
       <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:18, textAlign:"center" }}>
         <div style={{ margin:"0 auto 8px", display:"inline-block" }}><Avatar name={a.name} size={48} online={isOnlineNow}/></div>
@@ -2964,7 +2966,7 @@ var TeamPage = function(p) {
   };
 
   // Activity feed - last 20 activities across all team
-  var teamActivityFeed = p.activities.slice(0,20).map(function(a){
+  var teamActivityFeed = p.activities.map(function(a){
     var uname=a.userId&&a.userId.name?a.userId.name:"";
     var lname=a.leadId&&a.leadId.name?a.leadId.name:"";
     var icon=a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔";
@@ -3694,12 +3696,31 @@ export default function CRMApp() {
       });
     };
 
+    // 4. Follow-up reminders — leads with no activity 2+ days
+    var checkFollowUps = function(){
+      var now = Date.now();
+      var twoDays = 2*24*60*60*1000;
+      var myLeads = getMyLeads().filter(function(l){
+        return l.status!=="DoneDeal"&&l.status!=="NotInterested"&&l.status!=="EOI";
+      });
+      myLeads.forEach(function(l){
+        var lastAct = l.lastActivityTime?new Date(l.lastActivityTime).getTime():0;
+        var idle = now - lastAct;
+        if(idle>=twoDays){
+          var key="crm_followup_"+gid(l)+"_"+Math.floor(idle/twoDays);
+          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("🔔 Follow-up Needed",l.name+" — no contact for "+Math.floor(idle/86400000)+" days");}}catch(e){}
+        }
+      });
+    };
+
     checkCallbacks();
     checkTasks();
+    checkFollowUps();
     var interval = setInterval(function(){
       checkCallbacks();
       checkTasks();
       checkNewLeads();
+      checkFollowUps();
     }, 60*1000);
     return function(){clearInterval(interval);};
   },[token, currentUser, leads.length, tasks.length]);
@@ -3733,13 +3754,29 @@ export default function CRMApp() {
     return function(){clearInterval(rptInterval);};
   },[token, currentUser]);
 
-  // ===== HEARTBEAT every 2 minutes =====
+  // ===== HEARTBEAT + ACTIVITY TRACKING =====
   useEffect(function(){
     if(!token) return;
-    var hb=function(){try{apiFetch("/api/heartbeat","POST",null,token);}catch(e){}};
+    var lastUserAction = Date.now();
+    // Track user interactions
+    var onAction = function(){ lastUserAction = Date.now(); };
+    document.addEventListener("click", onAction);
+    document.addEventListener("keydown", onAction);
+    document.addEventListener("mousemove", onAction);
+
+    var hb=function(){
+      var idleMs = Date.now() - lastUserAction;
+      var isActive = idleMs < 2*60*1000; // active if action within 2 min
+      try{apiFetch("/api/heartbeat","POST",{isActive:isActive},token);}catch(e){}
+    };
     hb();
-    var interval=setInterval(hb,2*60*1000);
-    return function(){clearInterval(interval);};
+    var interval=setInterval(hb,60*1000); // every 1 min
+    return function(){
+      clearInterval(interval);
+      document.removeEventListener("click", onAction);
+      document.removeEventListener("keydown", onAction);
+      document.removeEventListener("mousemove", onAction);
+    };
   },[token]);
 
   // ===== SMART AUTO ROTATION SYSTEM =====
