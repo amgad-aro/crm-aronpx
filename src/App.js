@@ -1318,8 +1318,8 @@ var LeadsPage = function(p) {
                 visibleActs=leadActs.filter(function(a){return new Date(a.createdAt).getTime()>=cutoffTime;});
               }
             }
-            // reverse: newest first
-            var displayActs = visibleActs.slice().reverse();
+            // sort by createdAt ascending then reverse = newest first
+            var displayActs = visibleActs.slice().sort(function(a,b){return new Date(a.createdAt)-new Date(b.createdAt);}).reverse();
             if(displayActs.length===0&&!isOnlyAdminH) return null;
             return <div style={{ marginTop:14 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
