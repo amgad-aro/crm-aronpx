@@ -190,7 +190,7 @@ var PROJECTS = [
   "بالم هيلز", "ماونتن فيو", "سوديك ايست", "الرحاب", "مدينتي"
 ];
 var SOURCES = ["Facebook", "Instagram", "TikTok", "WhatsApp", "Google Ads", "Referral", "Walk In", "Website"];
-var PROP_TYPES = ["شقة", "دوبلكس", "تاون هاوس", "فيلا", "محل تجاري", "مكتب"];
+var PROP_TYPES = ["Apartment","Duplex","Townhouse","Twinhouse","Standalone","Commercial","Admin","Clinic","Service Apartment","Chalet"];
 
 
 // ===== AVATAR COLORS =====
@@ -396,7 +396,7 @@ var StatusModal = function(p) {
         <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏷️ Unit Type</label>
         <select value={dealUnitType} onChange={function(e){setDealUnitType(e.target.value);}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", boxSizing:"border-box" }}>
-          {["- Select -","شقة","دوبلكس","تاون هاوس","فيلا","محل تجاري","مكتب"].map(function(x){return <option key={x} value={x}>{x}</option>;})}
+          {["","Apartment","Duplex","Townhouse","Twinhouse","Standalone","Commercial","Admin","Clinic","Service Apartment","Chalet"].map(function(x){return <option key={x} value={x}>{x||"- Select -"}</option>;})}
         </select>
       </div>
       <div style={{ marginBottom:11 }}>
