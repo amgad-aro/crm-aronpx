@@ -456,7 +456,7 @@ var LoginPage = function(p) {
 
 // ===== SIDEBAR =====
 var Sidebar = function(p) {
-  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin";
+  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var isSales = p.cu.role==="sales";
   var items = [
     {id:"dashboard",icon:Home,label:t.dashboard},
@@ -874,7 +874,7 @@ var PhoneCell = function(p) {
 // ===== LEADS PAGE =====
 var LeadsPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
-  var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin";
+  var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var isManager = p.cu.role==="manager";
   var myTeamUsers = p.myTeamUsers || salesUsers;
@@ -1092,7 +1092,7 @@ var LeadsPage = function(p) {
         }} style={{ padding:"7px 11px", fontSize:12, color:"#25D366", borderColor:"#25D366" }}>💬 {t.bulkWhatsApp} ({selected2.length})</Btn>}
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
         {isOnlyAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
-        {isOnlyAdmin&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
+        {p.cu.role==="admin"&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
         {!notifGranted&&<Btn outline onClick={async function(){var ok=await requestNotifPermission();setNotifGranted(ok);}} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Bell size={13}/> {t.enableNotif}</Btn>}
         {isOnlyAdmin&&<Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>}
         {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
@@ -1542,7 +1542,7 @@ var MyDayPage = function(p) {
 // ===== DASHBOARD =====
 var DashboardPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
-  var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin";
+  var isAdmin = p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var normalLeads = p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   var myLeads = isAdmin?normalLeads:normalLeads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===p.cu.id;});
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
@@ -1686,7 +1686,7 @@ var DashboardPage = function(p) {
 
 // ===== EOI PAGE =====
 var EOIPage = function(p) {
-  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin=p.cu.role==="admin";
+  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var eoiLeads=p.leads.filter(function(l){return l.status==="EOI"&&!l.archived;});
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
@@ -1873,7 +1873,7 @@ var calcCommission = function(user, allDeals, allUsers, forQ) {
 };
 
 var DealsPage = function(p) {
-  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin=p.cu.role==="admin";
+  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
@@ -2341,7 +2341,7 @@ var TasksPage = function(p) {
 
 
 var ArchivePage = function(p) {
-  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
+  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager";
   var archived = p.leads.filter(function(l){ return l.archived; });
   var restore=async function(lid){
     try{
@@ -2373,7 +2373,7 @@ var ArchivePage = function(p) {
 // ===== DAILY REQUESTS =====
 var DailyRequestsPage = function(p) {
   var t=p.t; var sc=STATUSES(t);
-  var isAdmin=p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin=p.cu.role==="admin";
+  var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var [requests,setRequests]=useState([]);
   var [loading,setLoading]=useState(true);
@@ -2634,7 +2634,7 @@ var DailyRequestsPage = function(p) {
 
 // ===== USERS =====
 var UsersPage = function(p) {
-  var t=p.t; var isOnlyAdmin=p.cu.role==="admin"; var [showAdd,setShowAdd]=useState(false); var [saving,setSaving]=useState(false);
+  var t=p.t; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"; var [showAdd,setShowAdd]=useState(false); var [saving,setSaving]=useState(false);
   var [nU,setNU]=useState({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15,teamId:"",teamName:""});
   var [pwModal,setPwModal]=useState(null); // {userId, userName}
   var [pwForm,setPwForm]=useState({newPass:"",confirmPass:""});
@@ -2649,10 +2649,10 @@ var UsersPage = function(p) {
       setTeamModal(null);
     }catch(e){alert(e.message);} setTeamSaving(false);
   };
-  var rc={admin:"#EF4444",manager:"#8B5CF6",sales:"#3B82F6",viewer:"#94A3B8"};
+  var rc={admin:"#EF4444",sales_admin:"#E8A838",manager:"#8B5CF6",sales:"#3B82F6",viewer:"#94A3B8"};
   var getManagerName=function(uid){var u=p.users.find(function(x){return gid(x)===String(uid||"");});return u?u.name:"";};
   var getRoleLabel=function(u){if(u.role==="manager"&&u.reportsTo)return "Team Leader";if(u.role==="manager")return "Manager";return u.role==="admin"?"Admin":"Sales";};
-  var rl={admin:t.admin,manager:t.salesManager,sales:t.salesAgent,viewer:t.viewer};
+  var rl={admin:t.admin,sales_admin:"Sales Admin",manager:t.salesManager,sales:t.salesAgent,viewer:t.viewer};
   var changePassword=async function(){if(!pwForm.newPass||!pwForm.confirmPass)return;if(pwForm.newPass!==pwForm.confirmPass){setPwMsg(t.passwordMismatch);return;}setPwSaving(true);try{await apiFetch("/api/users/"+pwModal.userId,"PUT",{password:pwForm.newPass},p.token);setPwMsg(t.passwordSuccess);setTimeout(function(){setPwModal(null);setPwMsg("");setPwForm({newPass:"",confirmPass:""});},1500);}catch(e){setPwMsg(t.passwordError);}setPwSaving(false);};
   var add=async function(){if(!nU.name||!nU.username)return;setSaving(true);try{var user=await apiFetch("/api/users","POST",nU,p.token);p.setUsers(function(prev){return prev.concat([user]);});setShowAdd(false);setNU({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15});}catch(e){alert(e.message);}setSaving(false);};
   var toggleActive=async function(u){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid,"PUT",{active:!u.active},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?upd:x;});});}catch(e){}};
@@ -3514,7 +3514,7 @@ var CallCalendarPage = function(p) {
 
 // ===== MAIN APP =====
 export default function CRMApp() {
-  var [lang,setLang]=useState("ar");
+  var [lang,setLang]=useState((function(){try{return localStorage.getItem("crm_lang")||"ar";}catch(e){return "ar";}})());
   var [currentUser,setCurrentUser]=useState(null); var [token,setToken]=useState(null);
   var [page,setPage]=useState(null); // will be set after login
   var [leads,setLeads]=useState([]); var [users,setUsers]=useState([]);
@@ -3599,12 +3599,7 @@ export default function CRMApp() {
     setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok})); } catch(e){}
   };
-  // ===== AUTO REFRESH every 5 minutes =====
-  useEffect(function(){
-    if(!token) return;
-    var interval = setInterval(function(){ loadData(token, currentUser); }, 5*60*1000);
-    return function(){ clearInterval(interval); };
-  },[token]);
+  // Auto-refresh disabled
 
   // ===== SALES NOTIFICATIONS =====
   useEffect(function(){
@@ -3871,7 +3866,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ أنت غير Online بالإنترنت — البيانات لن تُحفظ حتى يعود الاتصال
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={[]} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={[]} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
