@@ -1745,28 +1745,22 @@ var EOIPage = function(p) {
 // ===== COMMISSION SYSTEM =====
 // Project weight settings stored in localStorage: crm_proj_weight_{projectName} = 0.5 or 1
 var getEffectiveQTarget = function(user, allUsers, forQ) {
-  var uid = typeof user === "string" ? user : gid(user);
-  var userObj = typeof user === "object" ? user : (allUsers||[]).find(function(u){return gid(u)===uid;}) || {};
+  var uid = String(typeof user === "string" ? user : gid(user));
+  var userObj = typeof user === "object" ? user : (allUsers||[]).find(function(u){return String(gid(u))===uid;}) || {};
   var curQ = forQ || (function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
 
   if(userObj.role === "manager" && allUsers) {
-    var teamId = userObj.teamId || "";
-    var teamMembers = [];
-
-    if(teamId) {
-      // Find by teamId (current system)
-      teamMembers = allUsers.filter(function(u){
-        return u.role === "sales" && u.teamId === teamId;
-      });
-    }
-
-    // Fallback: find by reportsTo
-    if(teamMembers.length === 0) {
-      teamMembers = allUsers.filter(function(u){
-        var rt = u.reportsTo && u.reportsTo._id ? String(u.reportsTo._id) : String(u.reportsTo||"");
-        return rt === uid && u.role !== "manager";
-      });
-    }
+    // Find team members by reportsTo (primary) or teamId (fallback)
+    var teamMembers = allUsers.filter(function(u){
+      if(u.role !== "sales") return false;
+      // Check reportsTo
+      var rt = u.reportsTo && u.reportsTo._id ? String(u.reportsTo._id) :
+               u.reportsTo ? String(u.reportsTo) : "";
+      if(rt === uid) return true;
+      // Check teamId match (if both have same non-empty teamId)
+      if(userObj.teamId && u.teamId && userObj.teamId === u.teamId) return true;
+      return false;
+    });
 
     if(teamMembers.length > 0) {
       var total = teamMembers.reduce(function(sum, u){
@@ -1778,7 +1772,7 @@ var getEffectiveQTarget = function(user, allUsers, forQ) {
     }
   }
 
-  // Fallback: own qTargets
+  // Own qTargets
   var qt = (userObj.qTargets&&Object.keys(userObj.qTargets).length>0) ? userObj.qTargets :
     (function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){return {};}})();
   return qt[curQ]||0;
