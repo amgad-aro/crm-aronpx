@@ -1118,7 +1118,7 @@ var LeadsPage = function(p) {
       {/* Status dropdown overlay */}
       {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
     {/* Table */}
-      {p.isMobile&&!selected?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:"4px 12px", maxWidth:500, margin:"0 auto", width:"100%" }}>
+      {p.isMobile&&!selected?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:"4px 16px", maxWidth:480, margin:"0 auto", width:"100%", boxSizing:"border-box" }}>
         {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>No data</div>}
         {filtered.map(function(lead){
           var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0]; var isVIP=lead.isVIP;
@@ -1138,7 +1138,7 @@ var LeadsPage = function(p) {
               <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
             </div>
             {/* Phone2 */}
-            {lead.phone2&&<div style={{ fontSize:11, fontWeight:700, color:C.textLight, direction:"ltr", marginBottom:6 }}>{lead.phone2}</div>}
+            {lead.phone2&&<div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr", marginBottom:4 }}>{lead.phone2}</div>}
             {/* Project + Last Activity */}
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
               {lead.project?<span style={{ fontSize:11, color:C.text, fontWeight:700 }}>📍 {lead.project}</span>:<span style={{ color:C.textLight, fontSize:11 }}>—</span>}
@@ -1241,7 +1241,7 @@ var LeadsPage = function(p) {
       </Card>}
 
       {/* Side Panel */}
-      {selected&&<Card style={{ flex:"0 0 295px", maxHeight:"calc(100vh - 120px)", overflowY:"auto", padding:0 }}>
+      {selected&&<Card style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ flex:"0 0 295px", maxHeight:"calc(100vh - 120px)", overflowY:"auto", padding:0 }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px", position:"sticky", top:0 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
