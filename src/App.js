@@ -29,19 +29,19 @@ var TR = {
     login: "تسجيل الدخول", loginBtn: "دخول", loginError: "اسم الدخول أو كلمة المرور غلط",
     username: "اسم الدخول", password: "كلمة المرور", logout: "تسجيل خروج",
     dashboard: "الرئيسية", leads: "العملاء", deals: "الصفقات", projects: "المشاريع",
-    tasks: "المهام", reports: "التقارير", team: "فريق المبيعات", users: "المستخدمين",
+    tasks: "المهام", reports: "التقارير", team: "فريق المبيعات", users: "Users",
     units: "الوحدات", settings: "الإعدادات", channels: "القنوات", dailyReq: "Daily Request",
     archive: "الأرشيف",
     search: "بحث...",
     all: "الكل", totalLeads: "إجمالي العملاء", newLeads: "جدد",
     activeDeals: "صفقات نشطة", doneDeals: "تم البيع",
-    addLead: "إضافة عميل", addUser: "إضافة مستخدم", addTask: "إضافة مهمة", addRequest: "إضافة رقم",
+    addLead: "إضافة عميل", addUser: "Add User", addTask: "إضافة مهمة", addRequest: "Add Number",
     name: "الاسم", phone: "الهاتف", phone2: "هاتف إضافي", email: "الإيميل", budget: "الميزانية",
     project: "المشروع", source: "المصدر", agent: "الموظف",
     status: "الحالة", cancel: "إلغاء", save: "حفظ", add: "إضافة", edit: "تعديل",
     callbackTime: "موعد المكالمة", notes: "ملاحظات",
-    changeStatus: "تغيير الحالة", assignTo: "تعيين لـ",
-    lastActivity: "آخر نشاط", title: "المسمى الوظيفي", role: "الصلاحية",
+    changeStatus: "Change Status", assignTo: "Assign To",
+    lastActivity: "Last Activity", title: "المسمى الوظيفي", role: "الصلاحية",
     active: "نشط", inactive: "غير نشط",
     admin: "مدير نظام", salesManager: "مدير مبيعات", salesAgent: "موظف مبيعات", viewer: "مشاهد",
     potential: "Potential", hotCase: "Hot Case", callBack: "Call Back", notInterested: "Not Interested",
@@ -59,8 +59,8 @@ var TR = {
     loading: "جاري التحميل...", error: "خطأ في الاتصال", retry: "إعادة المحاولة",
     deleteConfirm: "هل أنت متأكد؟", archiveConfirm: "أرشفة العميل؟ يمكن استعادته لاحقاً",
     logActivity: "تسجيل نشاط",
-    statusComment: "سبب تغيير الحالة (مطلوب)", statusCommentPH: "اكتب ملاحظة عن هذا التغيير...",
-    commentRequired: "⚠️ لازم تكتب ملاحظة قبل تغيير الحالة",
+    statusComment: "سبب Change Status (مطلوب)", statusCommentPH: "اكتب ملاحظة عن هذا التغيير...",
+    commentRequired: "⚠️ لازم تكتب ملاحظة قبل Change Status",
     importExcel: "استيراد Excel", importDone: "تم الاستيراد", importErr: "خطأ — تأكد من الأعمدة: name, phone",
     activityLog: "سجل الأنشطة", clientHistory: "تاريخ العميل",
     duplicateFound: "⚠️ الرقم ده موجود بالفعل!", duplicateClient: "عميل موجود بنفس الرقم",
@@ -69,7 +69,7 @@ var TR = {
     bulkReassign: "تحويل جماعي", selectAll: "تحديد الكل", reassignTo: "تحويل لـ",
     whatsapp: "واتساب", call: "اتصال",
     propertyType: "نوع العقار", area: "المنطقة",
-    totalRequests: "إجمالي الأرقام",
+    totalRequests: "Total Numbers",
     restore: "استعادة",
     overdue: "متأخرون",
     noActivity: "بدون نشاط +يوم",
@@ -800,7 +800,7 @@ var exportLeadsToExcel = async function(leads, users, filename) {
     "VIP": l.isVIP ? "نعم" : "",
     "ملاحظات": l.notes || "",
     "موعد المكالمة": l.callbackTime ? l.callbackTime.slice(0,16).replace("T"," ") : "",
-    "آخر نشاط": l.lastActivityTime ? new Date(l.lastActivityTime).toLocaleDateString("ar-EG") : "",
+    "Last Activity": l.lastActivityTime ? new Date(l.lastActivityTime).toLocaleDateString("ar-EG") : "",
     "تاريخ الإضافة": l.createdAt ? new Date(l.createdAt).toLocaleDateString("ar-EG") : "",
   };});
   var ws = XLSX.utils.json_to_sheet(rows);
@@ -1110,7 +1110,7 @@ var LeadsPage = function(p) {
         <option value="">👤 كل الموظفين</option>
         {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
       </select>}
-      <button onClick={function(){setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP فقط {vipFilter?"✓":""}</button>
+      <button onClick={function(){setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP Only {vipFilter?"✓":""}</button>
     </div>
     {importMsg&&<div style={{ marginBottom:10, padding:"9px 14px", background:importMsg.startsWith("✅")?"#DCFCE7":"#FEE2E2", color:importMsg.startsWith("✅")?"#15803D":"#B91C1C", borderRadius:9, fontSize:13 }}>{importMsg}</div>}
 
@@ -1200,7 +1200,7 @@ var LeadsPage = function(p) {
                       var newAgent=e.target.value;
                       try{var upd=await apiFetch("/api/leads/"+gid(lead),"PUT",{agentId:newAgent,status:"NewLead",reassignedAt:new Date().toISOString()},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?upd:l;});});if(selected&&gid(selected)===gid(lead))setSelected(upd);}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
-                      <option value="">— بدون موظف —</option>
+                      <option value="">— No Agent —</option>
                       {salesUsers.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
                     </select>
                   </td>}
@@ -1258,7 +1258,7 @@ var LeadsPage = function(p) {
               if(isManagerUser&&p.cu.teamId){var tgt=p.users.find(function(u){return gid(u)===newAgent;});if(tgt&&tgt.teamId!==p.cu.teamId)return;}
               try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{agentId:newAgent,status:"NewLead",reassignedAt:new Date().toISOString()},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
-              <option value="">— بدون موظف —</option>
+              <option value="">— No Agent —</option>
               {(p.myTeamUsers||salesUsers).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name} - {u.title}</option>;})}
             </select>
           </div>}
@@ -1465,8 +1465,8 @@ var MyDayPage = function(p) {
     <div style={{ display:"flex", gap:8, marginBottom:18, flexWrap:"wrap" }}>
       {[
         {label:"عملائي",v:myLeads.length,c:"#3B82F6",bg:"#EFF6FF",icon:"👥"},
-        {label:"مكالمات اليوم",v:todayActs.filter(function(a){return a.type==="call";}).length,c:"#10B981",bg:"#F0FDF4",icon:"📞"},
-        {label:"متأخرة",v:overdue.length,c:overdue.length>0?"#EF4444":"#94A3B8",bg:overdue.length>0?"#FEF2F2":"#F8FAFC",icon:"⚠️"},
+        {label:"Today's Calls",v:todayActs.filter(function(a){return a.type==="call";}).length,c:"#10B981",bg:"#F0FDF4",icon:"📞"},
+        {label:"Overdue",v:overdue.length,c:overdue.length>0?"#EF4444":"#94A3B8",bg:overdue.length>0?"#FEF2F2":"#F8FAFC",icon:"⚠️"},
         {label:"مهام",v:myTasks.length,c:"#8B5CF6",bg:"#F5F3FF",icon:"✅"},
       ].map(function(s){return <div key={s.label} style={{ flex:"1 1 80px", background:s.bg, borderRadius:12, padding:"12px 10px", textAlign:"center", border:"1px solid "+s.c+"22" }}>
         <div style={{ fontSize:18 }}>{s.icon}</div>
@@ -1614,7 +1614,7 @@ var DashboardPage = function(p) {
       var todayCallsCount=p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return String(auid)===uid&&a.type==="call"&&a.createdAt&&(Date.now()-new Date(a.createdAt).getTime())<DAY;}).length;
       var cards=[
         {label:p.lang==="en"?"My Leads":"عملائي",value:myLeads.length+"",bg:"linear-gradient(135deg,#3B82F6,#1D4ED8)",icon:"👥",onClick:function(){p.nav("leads");}},
-        {label:p.lang==="en"?"Today's Calls":"مكالمات اليوم",value:todayCallsCount+"",bg:"linear-gradient(135deg,#10B981,#059669)",icon:"📞",onClick:function(){p.nav("myday");}},
+        {label:p.lang==="en"?"Today's Calls":"Today's Calls",value:todayCallsCount+"",bg:"linear-gradient(135deg,#10B981,#059669)",icon:"📞",onClick:function(){p.nav("myday");}},
         {label:p.lang==="en"?"CallBack Soon":"CallBack قريب",value:callbackSoon.length+"",bg:"linear-gradient(135deg,#F59E0B,#D97706)",icon:"🔔",onClick:function(){p.nav("leads");p.setFilter("CallBack");}},
         {label:p.lang==="en"?"No Contact":"بدون تواصل",value:noAct.length+"",bg:"linear-gradient(135deg,#EF4444,#DC2626)",icon:"⚠️",onClick:function(){p.nav("leads");}},
         {label:p.lang==="en"?"My Deals":"صفقاتي",value:myDeals.length+"",bg:"linear-gradient(135deg,#8B5CF6,#7C3AED)",icon:"🏆",onClick:function(){p.nav("deals");}},
@@ -1724,7 +1724,7 @@ var EOIPage = function(p) {
 
     {eoiLeads.length>0&&<Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#FFF7ED", borderBottom:"2px solid #FED7AA" }}>
-        {[t.name,t.phone,t.project,"نوع الوحدة",t.budget,"قيمة الحجز",isAdmin?t.agent:null,"تاريخ التحويل لـ EOI",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:"#EA580C", whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.phone,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"تاريخ التحويل لـ EOI",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:"#EA580C", whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {eoiLeads.map(function(d){
@@ -1940,7 +1940,7 @@ var DealsPage = function(p) {
 
     {/* Deals Search + Filter bar */}
     <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
-      <input placeholder="🔍 بحث بالاسم أو المشروع أو الهاتف..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, minWidth:220 }}/>
+      <input placeholder="🔍 Search by name, project or phone..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, minWidth:220 }}/>
       {isAdmin&&<select value={dealAgent} onChange={function(e){setDealAgent(e.target.value);}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
         <option value="">👤 كل الموظفين</option>
         {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
@@ -2136,10 +2136,10 @@ var DealsPage = function(p) {
 
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.phone,"رقم إضافي",t.project,t.budget,"تاريخ الصفقة","مراحل الصفقة",isOnlyAdmin?"عمولة":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.phone,"Alt. Phone",t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
-        {filteredDeals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد صفقات بعد</td></tr>}
+        {filteredDeals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>No deals yet</td></tr>}
         {filteredDeals.map(function(d){
           var bv=parseBudget(d.budget);
           var prog=stagesProgress(gid(d));
@@ -2302,23 +2302,23 @@ var TasksPage = function(p) {
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div>
-        <h2 style={{ margin:"0 0 2px", fontSize:18, fontWeight:800 }}>☀️ يومي والمهام</h2>
+        <h2 style={{ margin:"0 0 2px", fontSize:18, fontWeight:800 }}>☀️ My Day & Tasks</h2>
         <div style={{ fontSize:12, color:C.textLight }}>{new Date().toLocaleDateString("ar-EG",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
       </div>
       <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> مهمة جديدة</Btn>
     </div>
 
     <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
-      <StatCard icon={Phone} label={"مكالمات اليوم"} value={callbacksToday.length+""} c={C.info} onClick={function(){var el=document.getElementById("t-callbacks");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
-      <StatCard icon={AlertCircle} label={"متأخرة"} value={(overdue.length+overdueTasks.length)+""} c={C.danger} onClick={function(){var el=document.getElementById("t-overdue");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
-      <StatCard icon={Activity} label={"بدون نشاط"} value={noActivity.length+""} c={C.warning} onClick={function(){var el=document.getElementById("t-noact");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
-      <StatCard icon={CheckCircle} label={"مهام اليوم"} value={todayTasks.length+""} c={"#8B5CF6"} onClick={function(){var el=document.getElementById("t-today");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
+      <StatCard icon={Phone} label={"Today's Calls"} value={callbacksToday.length+""} c={C.info} onClick={function(){var el=document.getElementById("t-callbacks");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
+      <StatCard icon={AlertCircle} label={"Overdue"} value={(overdue.length+overdueTasks.length)+""} c={C.danger} onClick={function(){var el=document.getElementById("t-overdue");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
+      <StatCard icon={Activity} label={"No Activity"} value={noActivity.length+""} c={C.warning} onClick={function(){var el=document.getElementById("t-noact");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
+      <StatCard icon={CheckCircle} label={"Today's Tasks"} value={todayTasks.length+""} c={"#8B5CF6"} onClick={function(){var el=document.getElementById("t-today");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
     </div>
 
-    {overdue.length>0&&<div id="t-overdue"><Sec icon="⚠️" title="مكالمات متأخرة" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
+    {overdue.length>0&&<div id="t-overdue"><Sec icon="⚠️" title="Overdue Calls" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {overdueTasks.length>0&&<Sec icon="🔴" title="مهام متأخرة" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
-    {callbacksToday.length>0&&<div id="t-callbacks"><Sec icon="📞" title="مكالمات اليوم" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
-    {todayTasks.length>0&&<div id="t-today"><Sec icon="📋" title="مهام اليوم" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec></div>}
+    {callbacksToday.length>0&&<div id="t-callbacks"><Sec icon="📞" title="Today's Calls" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
+    {todayTasks.length>0&&<div id="t-today"><Sec icon="📋" title="Today's Tasks" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec></div>}
     {noActivity.length>0&&<div id="t-noact"><Sec icon="😴" title="بدون نشاط +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {upcoming.length>0&&<Sec icon="📅" title="مهام قادمة" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
 
@@ -2491,10 +2491,10 @@ var DailyRequestsPage = function(p) {
 
     {/* Stats */}
     <div style={{ display:"flex", gap:10, marginBottom:16, flexWrap:"wrap" }}>
-      <StatCard icon={ClipboardList} label={"إجمالي الأرقام"} value={requests.length+""} c={C.info}/>
+      <StatCard icon={ClipboardList} label={"Total Numbers"} value={requests.length+""} c={C.info}/>
       <StatCard icon={Target} label={"Potential"} value={requests.filter(function(r){return r.status==="Potential";}).length+""} c={"#1D4ED8"}/>
       <StatCard icon={DollarSign} label={t.doneDeals} value={requests.filter(function(r){return r.status==="DoneDeal";}).length+""} c={C.success}/>
-      <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13, alignSelf:"center", marginRight:"auto" }}><Plus size={14}/> إضافة رقم</Btn>
+      <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13, alignSelf:"center", marginRight:"auto" }}><Plus size={14}/> Add Number</Btn>
     </div>
 
     {/* Filters */}
@@ -2520,7 +2520,7 @@ var DailyRequestsPage = function(p) {
         {loading?<Loader/>:<div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-              {["الاسم","الهاتف","نوع العقار","المنطقة","الميزانية","الحالة",isAdmin&&"الموظف","آخر نشاط","موعد المكالمة"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+              {["الاسم","الهاتف","نوع العقار","المنطقة","الميزانية","الحالة",isAdmin&&"الموظف","Last Activity","موعد المكالمة"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
             </tr></thead>
             <tbody>
               {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد أرقام</td></tr>}
@@ -2559,7 +2559,7 @@ var DailyRequestsPage = function(p) {
                       var newAgent=e.target.value;
                       try{var upd=await apiFetch("/api/daily-requests/"+rid,"PUT",{agentId:newAgent},p.token);setRequests(function(prev){return prev.map(function(x){return gid(x)===rid?upd:x;});});if(selected&&gid(selected)===rid)setSelected(upd);}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", maxWidth:110 }}>
-                      <option value="">— بدون موظف —</option>
+                      <option value="">— No Agent —</option>
                       {salesUsers.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
                     </select>
                   </td>}
@@ -2615,7 +2615,7 @@ var DailyRequestsPage = function(p) {
       </Card>}
     </div>
 
-    <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ إضافة رقم جديد"}>
+    <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ Add Number جديد"}>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
         <div style={{ gridColumn:"1/-1" }}><Inp label={"الاسم"} req value={form.name} onChange={function(e){setForm(function(f){return Object.assign({},f,{name:e.target.value});})}}/></div>
         <Inp label={"الهاتف"} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});})}} placeholder="01xxxxxxxxx"/>
@@ -2627,7 +2627,7 @@ var DailyRequestsPage = function(p) {
       {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- اختر -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
       <Inp label={t.callbackTime} req type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/> 
       <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/> 
-      <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addReq} loading={saving} style={{ flex:1 }}>إضافة رقم</Btn></div>
+      <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addReq} loading={saving} style={{ flex:1 }}>Add Number</Btn></div>
     </Modal>
   </div>;
 };
@@ -2677,7 +2677,7 @@ var UsersPage = function(p) {
     </div>
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:580 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.username,t.title,t.role,t.phone,t.monthlyTarget,"آخر ظهور",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.username,t.title,t.role,t.phone,t.monthlyTarget,"Last Seen",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>{p.users.map(function(u){var uid=gid(u);return <tr key={uid} style={{ borderBottom:"1px solid #F1F5F9" }}>
         <td style={{ padding:"11px 12px" }}><div style={{ display:"flex", alignItems:"center", gap:8 }}><div style={{ width:32, height:32, borderRadius:8, background:C.primary+"15", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:12, color:C.primary, flexShrink:0 }}>{u.name[0]}</div><div><div style={{ fontSize:12, fontWeight:600 }}>{u.name}</div><div style={{ fontSize:10, color:C.textLight }}>{u.email}</div></div></div></td>
@@ -2721,10 +2721,10 @@ var UsersPage = function(p) {
         تارجت كل Quarter بالمليون — بيتحسب من صفقات Done Deal
       </div>
       {["Q1","Q2","Q3","Q4"].map(function(q,i){
-        var labels=["يناير — مارس","أبريل — يونيو","يوليو — سبتمبر","أكتوبر — ديسمبر"];
+        var labels=["Jan — Mar","Apr — Jun","Jul — Sep","Oct — Dec"];
         return <div key={q} style={{ marginBottom:11 }}>
           <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:4 }}>{q} <span style={{ fontSize:11, color:C.textLight, fontWeight:400 }}>({labels[i]})</span></label>
-          <input type="text" placeholder="مثال: 5,000,000"
+          <input type="text" placeholder="e.g. 5,000,000"
             value={qtModal.targets[q]?Number(qtModal.targets[q]).toLocaleString():""}
             onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setQtModal(function(prev){return Object.assign({},prev,{targets:Object.assign({},prev.targets,{[q]:r?Number(r):0})});});}}
             style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
@@ -2925,7 +2925,7 @@ var TeamPage = function(p) {
     var allAgentDeals=allDeals.filter(function(d){return matchesAgent(d);});
     var totalRevenue=allAgentDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
     var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<3*60*1000;
-    var lastSeenStr=a.lastSeen?timeAgo(a.lastSeen,p.t):"لم يسجل دخول";
+    var lastSeenStr=a.lastSeen?timeAgo(a.lastSeen,p.t):"Never logged in";
     return <Card key={uid} style={{ flex:"1 1 280px", maxWidth:360, overflow:"hidden", padding:0 }}>
       <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:18, textAlign:"center" }}>
         <div style={{ margin:"0 auto 8px", display:"inline-block" }}><Avatar name={a.name} size={48} online={isOnlineNow}/></div>
@@ -2933,16 +2933,16 @@ var TeamPage = function(p) {
         <div style={{ color:"rgba(255,255,255,0.55)", fontSize:11, marginTop:2 }}>{a.title}</div>
         <div style={{ marginTop:4, fontSize:10, color:isOnlineNow?"#86EFAC":"rgba(255,255,255,0.45)", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
           <span style={{ width:6, height:6, borderRadius:"50%", background:isOnlineNow?"#22C55E":"rgba(255,255,255,0.3)", display:"inline-block" }}/>
-          {isOnlineNow?"متصل الآن":"آخر ظهور: "+lastSeenStr}
+          {isOnlineNow?"Online now":"Last Seen: "+lastSeenStr}
         </div>
         {isAdmin&&<button onClick={function(){var qt=getQTargets(uid);setEditQModal({user:a,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
-          style={{ marginTop:8, padding:"4px 12px", borderRadius:6, border:"none", background:"rgba(255,255,255,0.2)", color:"#fff", fontSize:11, fontWeight:600, cursor:"pointer" }}>🎯 تعديل Targets</button>}
+          style={{ marginTop:8, padding:"4px 12px", borderRadius:6, border:"none", background:"rgba(255,255,255,0.2)", color:"#fff", fontSize:11, fontWeight:600, cursor:"pointer" }}>🎯 Edit Targets</button>}
       </div>
       <div style={{ padding:"12px 14px" }}>
         <div style={{ marginBottom:10, padding:"8px 10px", background:"#F8FAFC", borderRadius:8 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
             <span style={{ fontSize:11, fontWeight:700 }}>{viewQ} Target</span>
-            <span style={{ fontSize:10, color:C.textLight }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"لم يتحدد"}</span>
+            <span style={{ fontSize:10, color:C.textLight }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"Not set"}</span>
           </div>
           <div style={{ height:6, background:"#E2E8F0", borderRadius:3, marginBottom:4 }}>
             <div style={{ height:"100%", width:qProg+"%", borderRadius:3, background:qProg>=100?C.success:qProg>=50?C.accent:C.warning, transition:"width 0.6s" }}/>
@@ -2995,7 +2995,7 @@ var TeamPage = function(p) {
           <Avatar name={mgr.name} size={40} online={isOnline}/>
           <div style={{ flex:1 }}>
             <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{mgr.name}</div>
-            <div style={{ color:"rgba(255,255,255,0.6)", fontSize:11 }}>{mgr.title} — {team.length} عضو</div>
+            <div style={{ color:"rgba(255,255,255,0.6)", fontSize:11 }}>{mgr.title} — {team.length} member</div>
           </div>
           <div style={{ textAlign:"left", minWidth:100 }}>
             <div style={{ height:5, background:"rgba(255,255,255,0.2)", borderRadius:3, marginBottom:3, width:100 }}>
@@ -3028,12 +3028,12 @@ var TeamPage = function(p) {
     </div>}
 
     {editQModal&&<Modal show={true} onClose={function(){setEditQModal(null);}} title={"🎯 Quarterly Targets — "+editQModal.user.name}>
-      <div style={{ fontSize:12, color:C.textLight, marginBottom:14, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>تارجت كل Quarter بالمليون (EGP)</div>
+      <div style={{ fontSize:12, color:C.textLight, marginBottom:14, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>Quarterly target in EGP</div>
       {["Q1","Q2","Q3","Q4"].map(function(q,i){
-        var labels=["يناير — مارس","أبريل — يونيو","يوليو — سبتمبر","أكتوبر — ديسمبر"];
+        var labels=["Jan — Mar","Apr — Jun","Jul — Sep","Oct — Dec"];
         return <div key={q} style={{ marginBottom:11 }}>
           <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:4 }}>{q} <span style={{ fontSize:11, color:C.textLight }}>({labels[i]})</span></label>
-          <input type="text" placeholder="مثال: 5,000,000"
+          <input type="text" placeholder="e.g. 5,000,000"
             value={editQModal.targets[q]?Number(editQModal.targets[q]).toLocaleString():""}
             onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setEditQModal(function(prev){return Object.assign({},prev,{targets:Object.assign({},prev.targets,{[q]:r?Number(r):0})});});}}
             style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
@@ -3122,17 +3122,17 @@ var ReportsPage = function(p) {
         })}
       </Card>
       <Card style={{ flex:1, minWidth:260 }}>
-        <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 مصادر الصفقات</h3>
+        <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 Deal Sources</h3>
         {(function(){
           var dealsBySource={};
           normalLeads.filter(function(l){return l.status==="DoneDeal";}).forEach(function(l){
-            var src=l.source||"غير محدد";
+            var src=l.source||"Unknown";
             if(!dealsBySource[src])dealsBySource[src]={cnt:0,rev:0};
             dealsBySource[src].cnt++;
             dealsBySource[src].rev+=parseFloat((l.budget||"0").toString().replace(/,/g,""))||0;
           });
           var sorted=Object.keys(dealsBySource).sort(function(a,b){return dealsBySource[b].cnt-dealsBySource[a].cnt;});
-          if(sorted.length===0)return <div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>لا يوجد صفقات بعد</div>;
+          if(sorted.length===0)return <div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No deals yet</div>;
           return sorted.map(function(src,i){
             var d=dealsBySource[src];
             var maxCnt=dealsBySource[sorted[0]].cnt;
@@ -3328,7 +3328,7 @@ var KPIsPage = function(p) {
           <div style={{ color:"rgba(255,255,255,0.55)", fontSize:12, marginTop:2 }}>{p.cu.title}</div>
           <div style={{ marginTop:6, fontSize:10, color:isOnlineNow?"#86EFAC":"rgba(255,255,255,0.4)", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
             <span style={{ width:7, height:7, borderRadius:"50%", background:isOnlineNow?"#22C55E":"rgba(255,255,255,0.3)", display:"inline-block" }}/>
-            {isOnlineNow?"متصل الآن":""}
+            {isOnlineNow?"Online now":""}
           </div>
         </div>
         {/* Overall stats */}
@@ -3364,7 +3364,7 @@ var KPIsPage = function(p) {
     <Card style={{ marginBottom:16 }}>
       <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
         <span style={{ fontSize:13, fontWeight:700 }}>{selQ} Target — {selYear}</span>
-        <span style={{ fontSize:12, color:C.textLight }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"لم يتحدد"}</span>
+        <span style={{ fontSize:12, color:C.textLight }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"Not set"}</span>
       </div>
       <div style={{ height:10, background:"#E2E8F0", borderRadius:5, marginBottom:8 }}>
         <div style={{ height:"100%", width:qProg+"%", borderRadius:5, background:qProg>=100?C.success:qProg>=50?C.accent:C.warning, transition:"width 0.6s" }}/>
@@ -3435,7 +3435,7 @@ var CallCalendarPage = function(p) {
   for(var i=0;i<offset;i++) cells.push(null);
   for(var d=1;d<=daysInMonth;d++) cells.push(d);
 
-  var dayLabels = ["الإثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت","الأحد"];
+  var dayLabels = ["الإثنين","الثلاثاء","الأربعاء","الخميس","Friday","السبت","الأحد"];
 
   return <div style={{ padding:"18px 16px 40px" }}>
     <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>📅 تقويم المكالمات</h2>
