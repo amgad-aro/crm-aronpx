@@ -3088,7 +3088,7 @@ var ReportsPage = function(p) {
                 <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
                   <Avatar name={a.name} size={32}/>
                   <div style={{ flex:1 }}><div style={{ fontSize:12, fontWeight:600 }}>{a.name}</div><div style={{ fontSize:10, color:C.textLight }}>{a.title}</div></div>
-                  {[{v:al.length,l:t.leads,c:C.text},{v:dailyReqCount,l:"Daily",c:"#8B5CF6"},{v:meetDone,l:"Meeting",c:"#F59E0B"},{v:d,l:t.deals,c:C.success},{v:cl,l:t.calls,c:C.info},{v:rate+"%",l:"Conv.",c:C.accent}].map(function(s){return <div key={s.l} style={{ textAlign:"center", minWidth:32 }}><div style={{ fontSize:12, fontWeight:700, color:s.c }}>{s.v}</div><div style={{ fontSize:9, color:C.textLight }}>{s.l}</div></div>;})}
+                  {[{v:al.length,l:t.leads,c:C.text},{v:dailyReqCount,l:"Requests",c:"#8B5CF6"},{v:meetDone,l:"Meeting",c:"#F59E0B"},{v:d,l:t.deals,c:C.success},{v:cl,l:t.calls,c:C.info},{v:rate+"%",l:"Conv.",c:C.accent}].map(function(s){return <div key={s.l} style={{ textAlign:"center", minWidth:32 }}><div style={{ fontSize:12, fontWeight:700, color:s.c }}>{s.v}</div><div style={{ fontSize:9, color:C.textLight }}>{s.l}</div></div>;})}
                 </div>
                 <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}><div style={{ height:"100%", width:prog+"%", background:prog>=100?C.success:C.accent, borderRadius:2 }}/></div>
                 <div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>Q Target: {(revenue2/1000000).toFixed(1)}M / {qTarget2>0?(qTarget2/1000000).toFixed(1)+"M":"—"}</div>
