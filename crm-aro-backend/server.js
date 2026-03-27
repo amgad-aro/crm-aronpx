@@ -591,6 +591,29 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== FIX MANAGER TEAM IDS =====
+// One-time endpoint to auto-assign teamId to managers based on their sales' teamIds
+app.post("/api/fix-manager-teams", auth, adminOnly, async function(req, res) {
+  try {
+    var managers = await User.find({ role: "manager", active: true }).lean();
+    var fixed = [];
+    for(var i = 0; i < managers.length; i++) {
+      var mgr = managers[i];
+      if(mgr.teamId) continue; // already has teamId
+      // Find a sales user with reportsTo this manager OR that was created under same team
+      // Try: find sales whose teamId is set, and this manager has no teamId
+      // Strategy: find most common teamId among sales that reportsTo this manager
+      var salesUnder = await User.find({ reportsTo: mgr._id }).lean();
+      if(salesUnder.length > 0 && salesUnder[0].teamId) {
+        var newTeamId = salesUnder[0].teamId;
+        await User.findByIdAndUpdate(mgr._id, { teamId: newTeamId, teamName: salesUnder[0].teamName||"" });
+        fixed.push({ name: mgr.name, teamId: newTeamId });
+      }
+    }
+    res.json({ ok: true, fixed: fixed });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== ARCHIVE LEAD =====
 app.put("/api/leads/:id/archive", auth, adminOnly, async function(req, res) {
   try {
