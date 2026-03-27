@@ -548,7 +548,7 @@ var Header = function(p) {
       
       {/* Deal notifications bell - admin only */}
       {(p.isAdmin||p.cu&&p.cu.role==="sales_admin")&&<div style={{ position:"relative" }}>
-        <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening&&p.onDealNotifSeen)p.onDealNotifSeen();}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
+        <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening){p.setShowNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);if(p.onDealNotifSeen)p.onDealNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <DollarSign size={16} color={p.unseenDeals>0&&!p.showDealNotif?"#15803D":C.textLight}/>
           {p.unseenDeals>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:"#15803D", color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.unseenDeals}</span>}
         </button>
@@ -583,9 +583,9 @@ var Header = function(p) {
         var [showRot,setShowRot]=p.rotNotifState||[false,function(){}];
         return <div style={{ position:"relative" }}>
           <button onClick={function(){
-            var next=!showRot;
+            var next=!p.showRotNotif;
             if(p.setShowRotNotif)p.setShowRotNotif(next);
-            if(next){try{localStorage.setItem("crm_rot_seen",String(rotNotifs.length));}catch(e){}}
+            if(next){p.setShowNotif(false);p.setShowDealNotif(false);try{localStorage.setItem("crm_rot_seen",String(rotNotifs.length));}catch(e){}}
           }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", fontSize:15 }}>
             🔄
             {unseenRot>0&&!p.showRotNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.warning, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{unseenRot}</span>}
