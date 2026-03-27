@@ -552,7 +552,7 @@ var Header = function(p) {
           <DollarSign size={16} color={p.unseenDeals>0&&!p.showDealNotif?"#15803D":C.textLight}/>
           {p.unseenDeals>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:"#15803D", color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.unseenDeals}</span>}
         </button>
-        {p.showDealNotif&&<div style={{ position:"absolute", top:44, left:0, width:310, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
+        {p.showDealNotif&&<div style={{ position:"absolute", top:44, right:0, width:310, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontWeight:700, fontSize:13 }}>🎉 New Deals ({p.dealNotifs?p.dealNotifs.length:0})</span>
             <div style={{ display:"flex", gap:6 }}>
@@ -590,7 +590,7 @@ var Header = function(p) {
             🔄
             {unseenRot>0&&!p.showRotNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.warning, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{unseenRot}</span>}
           </button>
-          {p.showRotNotif&&<div style={{ position:"absolute", top:44, left:0, width:320, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
+          {p.showRotNotif&&<div style={{ position:"absolute", top:44, right:0, width:320, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
             <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, fontSize:13 }}>🔄 Auto Rotation ({rotNotifs.length})</span>
               <div style={{ display:"flex", gap:6 }}>
@@ -620,7 +620,7 @@ var Header = function(p) {
           <Bell size={16} color={C.textLight}/>
           {(upcoming.length+allNoActivity.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:4, right:4, width:8, height:8, borderRadius:"50%", background:C.danger }}/>}
         </button>
-        {p.showNotif&&<div style={{ position:"absolute", top:44, left:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:360, overflowY:"auto" }}>
+        {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:360, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder}</span>
             <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
