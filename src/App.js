@@ -36,10 +36,10 @@ var TR = {
     all: "الكل", totalLeads: "Total الLeads", newLeads: "جدد",
     activeDeals: "Deals نشطة", doneDeals: "تم البيع",
     addLead: "إضافة leads", addUser: "Add User", addTask: "إضافة مهمة", addRequest: "Add Number",
-    name: "الاسم", phone: "الهاتف", phone2: "هاتف إضافي", email: "الإيميل", budget: "الميزانية",
-    project: "المشروع", source: "المصدر", agent: "الموظف",
+    name: "Name", phone: "Phone", phone2: "هاتف إضافي", email: "الإيميل", budget: "Budget",
+    project: "المشروع", source: "المصدر", agent: "Agent",
     status: "Status", cancel: "إلغاء", save: "حفظ", add: "إضافة", edit: "تعديل",
-    callbackTime: "Callback", notes: "ملاحظات",
+    callbackTime: "Callback", notes: "Notes",
     changeStatus: "Change Status", assignTo: "Assign To",
     lastActivity: "Last Activity", title: "Job Title", role: "Role",
     active: "نشط", inactive: "غير نشط",
@@ -53,14 +53,14 @@ var TR = {
     language: "اللغة", calls: "Calls", meetings: "اجتماعات", followups: "متابعات",
     taskTitle: "عنوان المهمة", taskType: "النوع", taskTime: "الوقت", relatedLead: "الleads",
     sourcePerf: "أداء المصادر", leadsByStatus: "الLeads حسب Status",
-    agentPerf: "أداء الموظفين", companyName: "اسم الشركة",
+    agentPerf: "أداء Agentين", companyName: "اسم الشركة",
     welcome: "مرحباً", myLeads: "عملائي", allLeads: "كل الLeads",
     pending: "متبقية", ago: "منذ", minutes: "دقيقة", hours: "ساعة", days: "يوم", just: "الآن",
     loading: "Loading...", error: "خطأ في الاتصال", retry: "إعادة المحاولة",
     deleteConfirm: "هل أنت متأكد؟", archiveConfirm: "أرشفة الleads؟ يمكن استعادته لاحقاً",
     logActivity: "تسجيل نشاط",
-    statusComment: "سبب Change Status (مطلوب)", statusCommentPH: "اكتب ملاحظة عن هذا التغيير...",
-    commentRequired: "⚠️ لازم تكتب ملاحظة قبل Change Status",
+    statusComment: "Reason for status change (required)", statusCommentPH: "Write a note about this change...",
+    commentRequired: "⚠️ A note is required قبل Change Status",
     importExcel: "استيراد Excel", importDone: "تم الاستيراد", importErr: "خطأ — تأكد من الأعمدة: name, phone",
     activityLog: "سجل الأنشطة", clientHistory: "تاريخ الleads",
     duplicateFound: "⚠️ الرقم ده موجود بالفعل!", duplicateClient: "leads موجود بنفس الرقم",
@@ -230,7 +230,7 @@ var loadXLSX = function() {
 };
 var rowToLead = function(row) {
   var g = function() { for (var i = 0; i < arguments.length; i++) { var v = row[arguments[i]]; if (v) return String(v).trim(); } return ""; };
-  return { name: g("name","الاسم","اسم الleads"), phone: g("phone","phone number","الهاتف","موبايل","رقم"), phone2: g("phone2","phone2 ","phone 2","هاتف إضافي","هاتف2","رقم2","موبايل2"), email: g("email","الإيميل"), budget: g("budget","الميزانية"), project: g("project","campaign","المشروع","الكامبين") || "", source: g("source","المصدر") || "Facebook", notes: g("notes","ملاحظات") };
+  return { name: g("name","Name","اسم الleads"), phone: g("phone","phone number","Phone","موبايل","رقم"), phone2: g("phone2","phone2 ","phone 2","هاتف إضافي","هاتف2","رقم2","موبايل2"), email: g("email","الإيميل"), budget: g("budget","Budget"), project: g("project","campaign","المشروع","الكامبين") || "", source: g("source","المصدر") || "Facebook", notes: g("notes","Notes") };
 };
 
 // ===== UI COMPONENTS =====
@@ -303,11 +303,11 @@ var StatusModal = function(p) {
 
   var submit = async function() {
     if (needsComment && !cbTime)         { setErr("لازم تختار Callback"); return; }
-    if (needsComment && !comment.trim()) { setErr("لازم تكتب ملاحظة"); return; }
+    if (needsComment && !comment.trim()) { setErr("A note is required"); return; }
     if (needsCb && !cbTime)              { setErr("لازم تختار موعد"); return; }
     if (isReject && !comment.trim())     { setErr("لازم تختار سبب الرفض"); return; }
     if ((isDoneDeal||isEOI) && !dealBudget.trim()){ setErr("لازم تكتب المبلغ"); return; }
-    if (needsPotFields && !potBudget.trim()){ setErr("لازم تكتب الميزانية"); return; }
+    if (needsPotFields && !potBudget.trim()){ setErr("لازم تكتب Budget"); return; }
     if (needsPotFields && !potDeposit.trim()){ setErr("لازم تكتب المقدم"); return; }
     if (needsPotFields && !potInstalment.trim()){ setErr("لازم تكتب الأقساط"); return; }
     setSaving(true);
@@ -339,8 +339,8 @@ var StatusModal = function(p) {
       <input type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);setErr("");}} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
     </div>}
     {needsComment&&<div style={{ marginBottom:12 }}>
-      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 ملاحظة <span style={{color:C.danger}}>*</span></label>
-      <textarea rows={3} placeholder="اكتب ملاحظة..." value={comment} onChange={function(e){setComment(e.target.value);setErr("");}}
+      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 Feedback <span style={{color:C.danger}}>*</span></label>
+      <textarea rows={3} placeholder="اكتب Feedback..." value={comment} onChange={function(e){setComment(e.target.value);setErr("");}}
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
     </div>}
 
@@ -368,7 +368,7 @@ var StatusModal = function(p) {
 
     {/* CallBack / NoAnswer: optional comment */}
     {needsCb&&<div style={{ marginBottom:12 }}>
-      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 ملاحظة (اختياري)</label>
+      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 Feedback (optional)</label>
       <textarea rows={2} placeholder="اختياري..." value={comment} onChange={function(e){setComment(e.target.value);}}
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
     </div>}
@@ -637,7 +637,7 @@ var Header = function(p) {
             </div>;})}
           </div>}
           {allNoActivity.length>0&&<div style={{ padding:"8px 16px", background:"#FFF7ED", borderBottom:"1px solid #FEF3E2" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:"#EA580C", marginBottom:6 }}>😴 بدون تواصل +يوم</div>
+            <div style={{ fontSize:11, fontWeight:700, color:"#EA580C", marginBottom:6 }}>😴 No Contact +1 Day</div>
             {allNoActivity.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEF3E2" }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"#FED7AA", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>😴</div>
               <div style={{ flex:1, minWidth:0 }}>
@@ -788,17 +788,17 @@ var exportLeadsToExcel = async function(leads, users, filename) {
     return u ? u.name : "";
   };
   var rows = leads.map(function(l) { return {
-    "الاسم": l.name,
-    "الهاتف": l.phone,
+    "Name": l.name,
+    "Phone": l.phone,
     "هاتف إضافي": l.phone2 || "",
     "الإيميل": l.email || "",
     "المشروع": l.project || "",
     "Status": l.status || "",
     "المصدر": l.source || "",
-    "الميزانية": l.budget || "",
-    "الموظف": getAgentName(l),
+    "Budget": l.budget || "",
+    "Agent": getAgentName(l),
     "VIP": l.isVIP ? "نعم" : "",
-    "ملاحظات": l.notes || "",
+    "Notes": l.notes || "",
     "Callback": l.callbackTime ? l.callbackTime.slice(0,16).replace("T"," ") : "",
     "Last Activity": l.lastActivityTime ? new Date(l.lastActivityTime).toLocaleDateString("en-GB") : "",
     "تاريخ الإضافة": l.createdAt ? new Date(l.createdAt).toLocaleDateString("en-GB") : "",
@@ -1102,9 +1102,9 @@ var LeadsPage = function(p) {
     <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
       <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
         <option value="lastActivity">⏱ Last Activity</option>
-        <option value="newest">🆕 الأحدث</option>
-        <option value="oldest">📅 الأقدم</option>
-        <option value="name">🔤 الاسم</option>
+        <option value="newest">🆕 Newest</option>
+        <option value="oldest">📅 Oldest</option>
+        <option value="name">🔤 Name</option>
       </select>
       {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
         <option value="">👤 All Agents</option>
@@ -1281,7 +1281,7 @@ var LeadsPage = function(p) {
                 <option value="call">📞 مكالمة</option>
                 <option value="meeting">🤝 اجتماع</option>
                 <option value="followup">🔔 متابعة</option>
-                <option value="note">📝 ملاحظة</option>
+                <option value="note">📝 Feedback</option>
               </select>
               <textarea rows={2} placeholder={t.statusCommentPH} value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
               <div style={{ display:"flex", gap:6, marginTop:6 }}>
@@ -1442,7 +1442,7 @@ var MyDayPage = function(p) {
 
   var tabs = [
     {id:"callbacks", label:"📞 Calls", count:callbacks.length, danger:overdue.length>0},
-    {id:"noact", label:"⚠️ بدون تواصل", count:noActivity.length, danger:noActivity.length>0},
+    {id:"noact", label:"⚠️ No Contact", count:noActivity.length, danger:noActivity.length>0},
     {id:"tasks", label:"✅ المهام", count:myTasks.length, danger:false},
     {id:"activity", label:"📊 نشاطي", count:todayActs.length, danger:false},
   ];
@@ -1616,7 +1616,7 @@ var DashboardPage = function(p) {
         {label:p.lang==="en"?"My Leads":"عملائي",value:myLeads.length+"",bg:"linear-gradient(135deg,#3B82F6,#1D4ED8)",icon:"👥",onClick:function(){p.nav("leads");}},
         {label:p.lang==="en"?"Today's Calls":"Today's Calls",value:todayCallsCount+"",bg:"linear-gradient(135deg,#10B981,#059669)",icon:"📞",onClick:function(){p.nav("myday");}},
         {label:p.lang==="en"?"CallBack Soon":"CallBack قريب",value:callbackSoon.length+"",bg:"linear-gradient(135deg,#F59E0B,#D97706)",icon:"🔔",onClick:function(){p.nav("leads");p.setFilter("CallBack");}},
-        {label:p.lang==="en"?"No Contact":"بدون تواصل",value:noAct.length+"",bg:"linear-gradient(135deg,#EF4444,#DC2626)",icon:"⚠️",onClick:function(){p.nav("leads");}},
+        {label:p.lang==="en"?"No Contact":"No Contact",value:noAct.length+"",bg:"linear-gradient(135deg,#EF4444,#DC2626)",icon:"⚠️",onClick:function(){p.nav("leads");}},
         {label:p.lang==="en"?"My Deals":"My Deals",value:myDeals.length+"",bg:"linear-gradient(135deg,#8B5CF6,#7C3AED)",icon:"🏆",onClick:function(){p.nav("deals");}},
       ];
       return <div style={{ marginBottom:22 }}>
@@ -2049,7 +2049,7 @@ var DealsPage = function(p) {
     </Modal>}
 
     {/* Commission Summary Modal */}
-    {commModal&&<Modal show={true} onClose={function(){setCommModal(false);}} title={"💰 العمولات — "+commQ}>
+    {commModal&&<Modal show={true} onClose={function(){setCommModal(false);}} title={"💰 Commissions — "+commQ}>
       <div style={{ display:"flex", gap:6, marginBottom:14 }}>
         {["Q1","Q2","Q3","Q4"].map(function(q){return <button key={q} onClick={function(){setCommQ(q);}}
           style={{ flex:1, padding:"6px", borderRadius:8, border:"1px solid", borderColor:commQ===q?C.accent:"#E2E8F0", background:commQ===q?C.accent+"12":"#fff", color:commQ===q?C.accent:C.textLight, fontSize:12, fontWeight:600, cursor:"pointer" }}>{q}</button>;})}
@@ -2130,7 +2130,7 @@ var DealsPage = function(p) {
 
     {/* Action buttons row */}
     {isOnlyAdmin&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
-      <Btn outline onClick={function(){setCommModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.success, borderColor:C.success }}>💰 العمولات</Btn>
+      <Btn outline onClick={function(){setCommModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.success, borderColor:C.success }}>💰 Commissions</Btn>
       <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ Commission المشاريع</Btn>
     </div>}
 
@@ -2215,7 +2215,7 @@ var DealsPage = function(p) {
                 return <div>
                   <div style={{ fontSize:12, fontWeight:700, color:C.success }}>{comm>0?comm.toLocaleString()+" EGP":"—"}</div>
                   {weight<1&&<div style={{ fontSize:9, color:"#B45309" }}>⚠️ 50%</div>}
-                  {split&&<div style={{ fontSize:9, color:"#8B5CF6" }}>🤝 مقسومة</div>}
+                  {split&&<div style={{ fontSize:9, color:"#8B5CF6" }}>🤝 Split</div>}
                 </div>;
               })()}
             </td>}
@@ -2305,7 +2305,7 @@ var TasksPage = function(p) {
         <h2 style={{ margin:"0 0 2px", fontSize:18, fontWeight:800 }}>☀️ My Day & Tasks</h2>
         <div style={{ fontSize:12, color:C.textLight }}>{new Date().toLocaleDateString("ar-EG",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
       </div>
-      <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> مهمة جديدة</Btn>
+      <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> New Task</Btn>
     </div>
 
     <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
@@ -2319,7 +2319,7 @@ var TasksPage = function(p) {
     {overdueTasks.length>0&&<Sec icon="🔴" title="مهام Overdue" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
     {callbacksToday.length>0&&<div id="t-callbacks"><Sec icon="📞" title="Today's Calls" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {todayTasks.length>0&&<div id="t-today"><Sec icon="📋" title="Today's Tasks" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec></div>}
-    {noActivity.length>0&&<div id="t-noact"><Sec icon="😴" title="No Activity +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
+    {noActivity.length>0&&<div id="t-noact"><Sec icon="😴" title="No Activity +3 Days" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {upcoming.length>0&&<Sec icon="📅" title="مهام Upcoming" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
 
     {callbacksToday.length===0&&overdue.length===0&&noActivity.length===0&&myTasks.length===0&&
@@ -2329,11 +2329,11 @@ var TasksPage = function(p) {
         <div style={{ fontSize:13, color:C.textLight }}>مفيش مهام معلقة دلوقتي</div>
       </div>}
 
-    <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ مهمة جديدة"}>
+    <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ New Task"}>
       <Inp label={"عنوان المهمة"} req value={nT.title} onChange={function(e){setNT(function(f){return Object.assign({},f,{title:e.target.value});});}}/>
       <Inp label={"النوع"} type="select" value={nT.type} onChange={function(e){setNT(function(f){return Object.assign({},f,{type:e.target.value});});}} options={[{value:"call",label:"📞 مكالمة"},{value:"meeting",label:"🤝 اجتماع"},{value:"followup",label:"🔔 متابعة"},{value:"email",label:"📧 إيميل"}]}/>
       <Inp label={"الموعد"} type="datetime-local" value={nT.time} onChange={function(e){setNT(function(f){return Object.assign({},f,{time:e.target.value});});}}/>
-      <Inp label={"ملاحظات (اختياري)"} type="textarea" value={nT.notes} onChange={function(e){setNT(function(f){return Object.assign({},f,{notes:e.target.value});});}}/>
+      <Inp label={"Notes (optional)"} type="textarea" value={nT.notes} onChange={function(e){setNT(function(f){return Object.assign({},f,{notes:e.target.value});});}}/>
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addTask} loading={saving} style={{ flex:1 }}>إضافة</Btn></div>
     </Modal>
   </div>;
@@ -2459,7 +2459,7 @@ var DailyRequestsPage = function(p) {
   var addReq=async function(){
     if(!form.name||!form.phone)return;
     if(!form.area.trim()){alert("Area مطلوبة");return;}
-    if(!form.budget.trim()){alert("الميزانية مطلوبة");return;}
+    if(!form.budget.trim()){alert("Budget مطلوبة");return;}
     if(!form.callbackTime){alert("Callback مطلوب");return;}
     setSaving(true);
     try{
@@ -2511,7 +2511,7 @@ var DailyRequestsPage = function(p) {
       </select>}
       <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
         <option value="lastActivity">⏱ Last Activity</option>
-        <option value="newest">🆕 الأحدث</option>
+        <option value="newest">🆕 Newest</option>
       </select>
     </div>
 
@@ -2520,7 +2520,7 @@ var DailyRequestsPage = function(p) {
         {loading?<Loader/>:<div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-              {["الاسم","الهاتف","Property Type","Area","الميزانية","Status",isAdmin&&"الموظف","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+              {["Name","Phone","Property Type","Area","Budget","Status",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
             </tr></thead>
             <tbody>
               {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>No أرقام</td></tr>}
@@ -2592,7 +2592,7 @@ var DailyRequestsPage = function(p) {
               {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid", borderColor:selected.status===s.value?s.color:"#E2E8F0", background:selected.status===s.value?s.bg:"#fff", color:selected.status===s.value?s.color:C.textLight, fontSize:10, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
             </div>
           </div>
-          {[{l:"Property Type",v:selected.propertyType},{l:"Area",v:selected.area},{l:"الميزانية",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"تاريخ الإضافة",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:"Property Type",v:selected.propertyType},{l:"Area",v:selected.area},{l:"Budget",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"تاريخ الإضافة",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span></div>:null;
           })}
           <div style={{ marginTop:12 }}>
@@ -2602,9 +2602,9 @@ var DailyRequestsPage = function(p) {
                 <option value="call">📞 مكالمة</option>
                 <option value="meeting">🤝 اجتماع</option>
                 <option value="followup">🔔 متابعة</option>
-                <option value="note">📝 ملاحظة</option>
+                <option value="note">📝 Feedback</option>
               </select>
-              <textarea rows={2} placeholder="ملاحظة..." value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
+              <textarea rows={2} placeholder="Feedback..." value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
               <div style={{ display:"flex", gap:6, marginTop:6 }}>
                 <Btn onClick={logActivity} loading={actSaving} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.save}</Btn>
                 <Btn outline onClick={function(){setShowActForm(false);setActNote("");}} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.cancel}</Btn>
@@ -2617,12 +2617,12 @@ var DailyRequestsPage = function(p) {
 
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ Add Number جديد"}>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
-        <div style={{ gridColumn:"1/-1" }}><Inp label={"الاسم"} req value={form.name} onChange={function(e){setForm(function(f){return Object.assign({},f,{name:e.target.value});})}}/></div>
-        <Inp label={"الهاتف"} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});})}} placeholder="01xxxxxxxxx"/>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={"Name"} req value={form.name} onChange={function(e){setForm(function(f){return Object.assign({},f,{name:e.target.value});})}}/></div>
+        <Inp label={"Phone"} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});})}} placeholder="01xxxxxxxxx"/>
         <Inp label={"هاتف إضافي"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder="اختياري"/>
         <Inp label={"Property Type"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- Select -"};})}/>
         <Inp label={"Area"} req value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder="مثال: التجمع الخامس"/>
-        <div style={{ gridColumn:"1/-1" }}><Inp label={"الميزانية"} req value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={"Budget"} req value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>
       </div>
       {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
       <Inp label={t.callbackTime} req type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/> 
@@ -2817,7 +2817,7 @@ var ReportsPage = function(p) {
   var exportReport=async function(){
     setExporting(true);
     var XLSX=await new Promise(function(res){if(window.XLSX){res(window.XLSX);return;}var s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=function(){res(window.XLSX);};document.head.appendChild(s);});
-    var rows=agentStats.map(function(a){return{"الموظف":a.user.name,"جدد":a.newL,"Daily Request":a.dailyReq,"Meeting Done":a.meetingDone,"Deals":a.deals,"الهدف":a.target,"نسبة":a.prog+"%"};});
+    var rows=agentStats.map(function(a){return{"Agent":a.user.name,"جدد":a.newL,"Daily Request":a.dailyReq,"Meeting Done":a.meetingDone,"Deals":a.deals,"الهدف":a.target,"نسبة":a.prog+"%"};});
     var ws=XLSX.utils.json_to_sheet(rows);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"تقرير");
     XLSX.writeFile(wb,"تقرير_ARO_"+new Date().toISOString().slice(0,10)+".xlsx");setExporting(false);
   };
@@ -2839,7 +2839,7 @@ var ReportsPage = function(p) {
       <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 أداء الفريق — {pLabel[period]}</h3>
       <div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse" }}>
         <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-          {["#","الموظف","جدد","Daily Req","Meeting Done","Deals","الإيراد","الهدف","نسبة الإنجاز"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
+          {["#","Agent","جدد","Daily Req","Meeting Done","Deals","الإيراد","الهدف","نسبة الإنجاز"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
         </tr></thead>
         <tbody>{agentStats.map(function(a,i){return <tr key={gid(a.user)} style={{ borderBottom:"1px solid #F1F5F9", background:i===0?"#FFFBEB":"transparent" }}>
           <td style={{ padding:"12px", fontSize:16 }}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":i+1}</td>
@@ -3237,7 +3237,7 @@ var SettingsPage = function(p) {
             </div>;
           })}
         </div>
-        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>الLeads هيتوزعوا بس على الموظفين المحددين ({reassignAgents.length} محدد) — لو مفيش محدد مفيش روتيشن</div>
+        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>الLeads هيتوزعوا بس على Agentين المحددين ({reassignAgents.length} محدد) — لو مفيش محدد مفيش روتيشن</div>
       </div>
 
       {/* Rotation Durations */}
@@ -3247,7 +3247,7 @@ var SettingsPage = function(p) {
           {label:"No Answer — عدد المرات قبل التحويل",val:rotNoAnswerCount,set:setRotNoAnswerCount,unit:"مرة"},
           {label:"No Answer — انتظر بعد آخر مرة",val:rotNoAnswerHours,set:setRotNoAnswerHours,unit:"ساعة"},
           {label:"Not Interested — يرجع بعد",val:rotNotIntDays,set:setRotNotIntDays,unit:"يوم"},
-          {label:"بدون تواصل — يتحول بعد",val:rotNoActDays,set:setRotNoActDays,unit:"يوم"},
+          {label:"No Contact — يتحول بعد",val:rotNoActDays,set:setRotNoActDays,unit:"يوم"},
           {label:"CallBack فات موعده — يتحول بعد",val:rotCbDays,set:setRotCbDays,unit:"يوم"},
           {label:"Potential/HotCase/Meeting بدون أكشن — يتحول بعد",val:rotHotDays,set:setRotHotDays,unit:"يوم"},
         ].map(function(row){return <div key={row.label} style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9,gap:10}}>
@@ -3785,7 +3785,7 @@ export default function CRMApp() {
             var noActKey="crm_noact2_"+lid; var noActDone=false;
             try{noActDone=localStorage.getItem(noActKey)==="1";}catch(e){}
             if(!noActDone){
-              await doRotate(l,"بدون تواصل +"+dur.noActDays+" أيام");
+              await doRotate(l,"No Contact +"+dur.noActDays+" أيام");
               try{localStorage.setItem(noActKey,"1");}catch(e){}
               continue;
             }
