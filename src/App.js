@@ -26,53 +26,53 @@ async function apiFetch(path, method, body, token) {
 var TR = {
   ar: {
     dir: "rtl",
-    login: "تسجيل الدخول", loginBtn: "دخول", loginError: "اسم الدخول أو كلمة المرور غلط",
-    username: "اسم الدخول", password: "كلمة المرور", logout: "تسجيل خروج",
+    login: "تسجيل الدخول", loginBtn: "دخول", loginError: "Username أو كلمة المرور غلط",
+    username: "Username", password: "كلمة المرور", logout: "تسجيل خروج",
     dashboard: "الرئيسية", leads: "العملاء", deals: "الصفقات", projects: "المشاريع",
     tasks: "المهام", reports: "التقارير", team: "فريق المبيعات", users: "Users",
     units: "الوحدات", settings: "الإعدادات", channels: "القنوات", dailyReq: "Daily Request",
-    archive: "الأرشيف",
-    search: "بحث...",
+    archive: "الArchive",
+    search: "Search...",
     all: "الكل", totalLeads: "إجمالي العملاء", newLeads: "جدد",
     activeDeals: "صفقات نشطة", doneDeals: "تم البيع",
-    addLead: "إضافة عميل", addUser: "Add User", addTask: "إضافة مهمة", addRequest: "Add Number",
+    addLead: "إضافة leads", addUser: "Add User", addTask: "إضافة مهمة", addRequest: "Add Number",
     name: "الاسم", phone: "الهاتف", phone2: "هاتف إضافي", email: "الإيميل", budget: "الميزانية",
     project: "المشروع", source: "المصدر", agent: "الموظف",
-    status: "الحالة", cancel: "إلغاء", save: "حفظ", add: "إضافة", edit: "تعديل",
-    callbackTime: "موعد المكالمة", notes: "ملاحظات",
+    status: "Status", cancel: "إلغاء", save: "حفظ", add: "إضافة", edit: "تعديل",
+    callbackTime: "Callback", notes: "ملاحظات",
     changeStatus: "Change Status", assignTo: "Assign To",
-    lastActivity: "Last Activity", title: "المسمى الوظيفي", role: "الصلاحية",
+    lastActivity: "Last Activity", title: "Job Title", role: "Role",
     active: "نشط", inactive: "غير نشط",
     admin: "مدير نظام", salesManager: "مدير مبيعات", salesAgent: "موظف مبيعات", viewer: "مشاهد",
     potential: "Potential", hotCase: "Hot Case", callBack: "Call Back", notInterested: "Not Interested",
     noAnswer: "No Answer", doneDeal: "Done Deal", meetingDone: "Meeting Done",
     connected: "متصل", disconnected: "غير متصل",
     conversionRate: "معدل التحويل", totalCalls: "المكالمات",
-    todayActivities: "أنشطة اليوم", callReminder: "تنبيهات",
+    todayActivities: "أنشطة Today", callReminder: "تنبيهات",
     available: "متاح", reserved: "محجوز", sold: "مباع",
     language: "اللغة", calls: "مكالمات", meetings: "اجتماعات", followups: "متابعات",
-    taskTitle: "عنوان المهمة", taskType: "النوع", taskTime: "الوقت", relatedLead: "العميل",
-    sourcePerf: "أداء المصادر", leadsByStatus: "العملاء حسب الحالة",
+    taskTitle: "عنوان المهمة", taskType: "النوع", taskTime: "الوقت", relatedLead: "الleads",
+    sourcePerf: "أداء المصادر", leadsByStatus: "العملاء حسب Status",
     agentPerf: "أداء الموظفين", companyName: "اسم الشركة",
     welcome: "مرحباً", myLeads: "عملائي", allLeads: "كل العملاء",
     pending: "متبقية", ago: "منذ", minutes: "دقيقة", hours: "ساعة", days: "يوم", just: "الآن",
-    loading: "جاري التحميل...", error: "خطأ في الاتصال", retry: "إعادة المحاولة",
-    deleteConfirm: "هل أنت متأكد؟", archiveConfirm: "أرشفة العميل؟ يمكن استعادته لاحقاً",
+    loading: "Loading...", error: "خطأ في الاتصال", retry: "إعادة المحاولة",
+    deleteConfirm: "هل أنت متأكد؟", archiveConfirm: "أرشفة الleads؟ يمكن استعادته لاحقاً",
     logActivity: "تسجيل نشاط",
     statusComment: "سبب Change Status (مطلوب)", statusCommentPH: "اكتب ملاحظة عن هذا التغيير...",
     commentRequired: "⚠️ لازم تكتب ملاحظة قبل Change Status",
     importExcel: "استيراد Excel", importDone: "تم الاستيراد", importErr: "خطأ — تأكد من الأعمدة: name, phone",
-    activityLog: "سجل الأنشطة", clientHistory: "تاريخ العميل",
-    duplicateFound: "⚠️ الرقم ده موجود بالفعل!", duplicateClient: "عميل موجود بنفس الرقم",
-    monthlyTarget: "التارجت الشهري", myDay: "يومي",
-    salesDay:"مبيعات اليوم", salesWeek:"مبيعات الأسبوع", salesMonth:"مبيعات الشهر", dealsCount:"صفقة", newLeadsToday:"عملاء جدد اليوم", bestAgent:"🏆 الأفضل هذا الشهر", kpiTitle:"📊 KPIs — المبيعات",
+    activityLog: "سجل الأنشطة", clientHistory: "تاريخ الleads",
+    duplicateFound: "⚠️ الرقم ده موجود بالفعل!", duplicateClient: "leads موجود بنفس الرقم",
+    monthlyTarget: "Monthly Target", myDay: "يومي",
+    salesDay:"مبيعات Today", salesWeek:"مبيعات This Week", salesMonth:"مبيعات This Month", dealsCount:"صفقة", newLeadsToday:"عملاء جدد Today", bestAgent:"🏆 الأفضل هذا This Month", kpiTitle:"📊 KPIs — المبيعات",
     bulkReassign: "تحويل جماعي", selectAll: "تحديد الكل", reassignTo: "تحويل لـ",
     whatsapp: "واتساب", call: "اتصال",
-    propertyType: "نوع العقار", area: "المنطقة",
+    propertyType: "Property Type", area: "Area",
     totalRequests: "Total Numbers",
     restore: "استعادة",
     overdue: "متأخرون",
-    noActivity: "بدون نشاط +يوم",
+    noActivity: "No Activity +يوم",
     exportExcel: "تصدير Excel",
     vip: "VIP",
     markVip: "تمييز كـ VIP",
@@ -89,7 +89,7 @@ var TR = {
     changePassword: "تغيير كلمة المرور",
     currentPassword: "كلمة المرور الحالية",
     newPassword: "كلمة المرور الجديدة",
-    confirmPassword: "تأكيد كلمة المرور الجديدة",
+    confirmPassword: "Confirm كلمة المرور الجديدة",
     passwordMismatch: "كلمتا المرور مش متطابقتين",
     passwordSuccess: "✅ تم تغيير كلمة المرور بنجاح",
     passwordError: "❌ خطأ في تغيير كلمة المرور",
@@ -230,7 +230,7 @@ var loadXLSX = function() {
 };
 var rowToLead = function(row) {
   var g = function() { for (var i = 0; i < arguments.length; i++) { var v = row[arguments[i]]; if (v) return String(v).trim(); } return ""; };
-  return { name: g("name","الاسم","اسم العميل"), phone: g("phone","phone number","الهاتف","موبايل","رقم"), phone2: g("phone2","phone2 ","phone 2","هاتف إضافي","هاتف2","رقم2","موبايل2"), email: g("email","الإيميل"), budget: g("budget","الميزانية"), project: g("project","campaign","المشروع","الكامبين") || "", source: g("source","المصدر") || "Facebook", notes: g("notes","ملاحظات") };
+  return { name: g("name","الاسم","اسم الleads"), phone: g("phone","phone number","الهاتف","موبايل","رقم"), phone2: g("phone2","phone2 ","phone 2","هاتف إضافي","هاتف2","رقم2","موبايل2"), email: g("email","الإيميل"), budget: g("budget","الميزانية"), project: g("project","campaign","المشروع","الكامبين") || "", source: g("source","المصدر") || "Facebook", notes: g("notes","ملاحظات") };
 };
 
 // ===== UI COMPONENTS =====
@@ -302,7 +302,7 @@ var StatusModal = function(p) {
   var fmtNum = function(val, set){ return function(e){ var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,""); set(r?Number(r).toLocaleString():""); setErr(""); }; };
 
   var submit = async function() {
-    if (needsComment && !cbTime)         { setErr("لازم تختار موعد المكالمة"); return; }
+    if (needsComment && !cbTime)         { setErr("لازم تختار Callback"); return; }
     if (needsComment && !comment.trim()) { setErr("لازم تكتب ملاحظة"); return; }
     if (needsCb && !cbTime)              { setErr("لازم تختار موعد"); return; }
     if (isReject && !comment.trim())     { setErr("لازم تختار سبب الرفض"); return; }
@@ -328,14 +328,14 @@ var StatusModal = function(p) {
 
     {/* CallBack / NoAnswer: date required */}
     {needsCb&&<div style={{ marginBottom:12 }}>
-      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 موعد المكالمة <span style={{color:C.danger}}>*</span></label>
+      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 Callback <span style={{color:C.danger}}>*</span></label>
       <input type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);setErr("");}}
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
     </div>}
 
     {/* Potential / HotCase / MeetingDone: date + comment required */}
     {needsComment&&<div style={{ marginBottom:12 }}>
-      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 موعد المكالمة القادمة <span style={{color:C.danger}}>*</span></label>
+      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 Callback الUpcoming <span style={{color:C.danger}}>*</span></label>
       <input type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);setErr("");}} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
     </div>}
     {needsComment&&<div style={{ marginBottom:12 }}>
@@ -377,7 +377,7 @@ var StatusModal = function(p) {
     {isReject&&<div style={{ marginBottom:12 }}>
       <div style={{ fontSize:13, fontWeight:600, marginBottom:8, color:"#EF4444" }}>Rejection Reason <span style={{color:C.danger}}>*</span></div>
       <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-        {["السعر مرتفع","المنطقة مش مناسبة","اشترى من مكان تاني","مش جاهز دلوقتي","مش مهتم خالص","سبب تاني"].map(function(r){
+        {["السعر مرتفع","Area مش مناسبة","اشترى من مكان تاني","مش جاهز دلوقتي","مش مهتم خالص","سبب تاني"].map(function(r){
           return <button key={r} onClick={function(){setComment(r);setErr("");}}
             style={{ padding:"8px 12px", borderRadius:8, border:"1px solid", borderColor:comment===r?"#EF4444":"#E2E8F0",
               background:comment===r?"#FEF2F2":"#fff", color:comment===r?"#EF4444":"#64748B", fontSize:12, cursor:"pointer", textAlign:"right" }}>{r}</button>;
@@ -393,7 +393,7 @@ var StatusModal = function(p) {
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
       </div>
       <div style={{ marginBottom:11 }}>
-        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏷️ نوع الوحدة</label>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏷️ Unit Type</label>
         <select value={dealUnitType} onChange={function(e){setDealUnitType(e.target.value);}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", boxSizing:"border-box" }}>
           {["- اختر -","شقة","دوبلكس","تاون هاوس","فيلا","محل تجاري","مكتب"].map(function(x){return <option key={x} value={x}>{x}</option>;})}
@@ -406,7 +406,7 @@ var StatusModal = function(p) {
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
       </div>
       {isEOI&&<div style={{ marginBottom:11 }}>
-        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💵 قيمة الحجز (EGP)</label>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💵 Deposit (EGP)</label>
         <input type="text" placeholder="مثال: 50,000" value={eoiDeposit}
           onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setEoiDeposit(r?Number(r).toLocaleString():"");}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
@@ -592,7 +592,7 @@ var Header = function(p) {
           </button>
           {p.showRotNotif&&<div style={{ position:"absolute", top:44, left:0, width:320, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
             <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <span style={{ fontWeight:700, fontSize:13 }}>🔄 التحويلات التلقائية ({rotNotifs.length})</span>
+              <span style={{ fontWeight:700, fontSize:13 }}>🔄 Auto Rotation ({rotNotifs.length})</span>
               <div style={{ display:"flex", gap:6 }}>
                 {rotNotifs.length>0&&<button onClick={function(){try{localStorage.setItem("crm_rot_notifs","[]");}catch(e){}if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger }}>Clear All</button>}
                 <button onClick={function(){if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
@@ -759,9 +759,9 @@ var playAlertSound = function() {
 // ===== WHATSAPP TEMPLATES =====
 var WA_TEMPLATES_AR = [
   { id:1, label:"ترحيب", text:"أهلاً {name} 👋\nأنا {agent} من شركة ARO العقارية\nشكراً لاهتمامك بمشروع {project}\nمتى يناسبك نتكلم؟" },
-  { id:2, label:"متابعة", text:"أهلاً {name}\nبتواصل معاكم بخصوص عرضنا على {project}\nهل عندك وقت نتكلم اليوم؟ 🏠" },
+  { id:2, label:"متابعة", text:"أهلاً {name}\nبتواصل معاكم بخصوص عرضنا على {project}\nهل عندك وقت نتكلم Today؟ 🏠" },
   { id:3, label:"عرض خاص", text:"🎯 عرض خاص لـ {name}\nلدينا وحدات محدودة في {project}\nبسعر مميز - تواصل معنا الآن! 📞" },
-  { id:4, label:"تأكيد موعد", text:"أهلاً {name} 😊\nبتذكيرك بموعدنا غداً\nنتطلع لنراك! ✅" },
+  { id:4, label:"Confirm موعد", text:"أهلاً {name} 😊\nبتذكيرك بموعدنا غداً\nنتطلع لنراك! ✅" },
   { id:5, label:"بعد الاجتماع", text:"شكراً {name} على وقتك الكريم 🙏\nيسعدني خدمتك دائماً\nلو عندك أي استفسار أنا دايماً موجود" },
 ];
 
@@ -793,13 +793,13 @@ var exportLeadsToExcel = async function(leads, users, filename) {
     "هاتف إضافي": l.phone2 || "",
     "الإيميل": l.email || "",
     "المشروع": l.project || "",
-    "الحالة": l.status || "",
+    "Status": l.status || "",
     "المصدر": l.source || "",
     "الميزانية": l.budget || "",
     "الموظف": getAgentName(l),
     "VIP": l.isVIP ? "نعم" : "",
     "ملاحظات": l.notes || "",
-    "موعد المكالمة": l.callbackTime ? l.callbackTime.slice(0,16).replace("T"," ") : "",
+    "Callback": l.callbackTime ? l.callbackTime.slice(0,16).replace("T"," ") : "",
     "Last Activity": l.lastActivityTime ? new Date(l.lastActivityTime).toLocaleDateString("ar-EG") : "",
     "تاريخ الإضافة": l.createdAt ? new Date(l.createdAt).toLocaleDateString("ar-EG") : "",
   };});
@@ -816,7 +816,7 @@ var callbackColor = function(cbTime) {
   var mins = diff / 60000;
   if (mins < 0) return { bg:"#FEE2E2", color:"#DC2626", label:"⚠️ فات الموعد" };
   if (mins < 60) return { bg:"#FEF3C7", color:"#D97706", label:"🔔 خلال ساعة" };
-  if (mins < 1440) return { bg:"#DCFCE7", color:"#15803D", label:"✅ اليوم" };
+  if (mins < 1440) return { bg:"#DCFCE7", color:"#15803D", label:"✅ Today" };
   return null;
 };
 
@@ -955,7 +955,7 @@ var LeadsPage = function(p) {
       if(pendingStatus.newStatus === "EOI") upData.eoiDate = new Date().toISOString();
       // Notify admin when DoneDeal or EOI
       if(pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI"){
-        var notifEntry={id:Date.now(),leadName:selected?selected.name:"عميل",agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:"",time:new Date().toISOString()};
+        var notifEntry={id:Date.now(),leadName:selected?selected.name:"leads",agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:"",time:new Date().toISOString()};
         if(p.addDealNotif) p.addDealNotif(notifEntry);
       }
       var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
@@ -1076,7 +1076,7 @@ var LeadsPage = function(p) {
       <div style={{ display:"flex", gap:7, flexShrink:0, flexWrap:"wrap" }}>
         {selected2.length>0&&isAdmin&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> {t.bulkReassign} ({selected2.length})</Btn>}
         {selected2.length>0&&isOnlyAdmin&&<Btn outline onClick={async function(){
-          if(!window.confirm("أرشفة "+selected2.length+" عميل؟"))return;
+          if(!window.confirm("أرشفة "+selected2.length+" leads؟"))return;
           var ids=[...selected2];
           for(var i=0;i<ids.length;i++){
             try{await apiFetch("/api/leads/"+ids[i]+"/archive","PUT",null,p.token);}catch(e){}
@@ -1107,7 +1107,7 @@ var LeadsPage = function(p) {
         <option value="name">🔤 الاسم</option>
       </select>
       {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
-        <option value="">👤 كل الموظفين</option>
+        <option value="">👤 All Agents</option>
         {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
       </select>}
       <button onClick={function(){setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP Only {vipFilter?"✓":""}</button>
@@ -1226,7 +1226,7 @@ var LeadsPage = function(p) {
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
             <div style={{ display:"flex", gap:5 }}>
-              {isOnlyAdmin&&<button onClick={function(){openHistory(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title="تاريخ العميل">📋</button>}
+              {isOnlyAdmin&&<button onClick={function(){openHistory(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title="تاريخ الleads">📋</button>}
               {isOnlyAdmin&&<button onClick={function(){setEditLead(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.edit}><Edit size={11}/></button>}
               {isOnlyAdmin&&<button onClick={function(){archiveLead(gid(selected));}} style={{ background:"rgba(255,165,0,0.3)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.archive}><Archive size={11}/></button>}
             </div>
@@ -1341,7 +1341,7 @@ var LeadsPage = function(p) {
     </div>
 
     {/* Full History Modal */}
-    {showHistory&&historyLead&&<Modal show={true} onClose={function(){setShowHistory(false);setHistoryLead(null);}} title={"📋 تاريخ العميل — "+historyLead.name} w={520}>
+    {showHistory&&historyLead&&<Modal show={true} onClose={function(){setShowHistory(false);setHistoryLead(null);}} title={"📋 تاريخ الleads — "+historyLead.name} w={520}>
       {historyLoading&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>Loading...</div>}
       {!historyLoading&&fullHistory.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>No activity history</div>}
       {!historyLoading&&fullHistory.length>0&&<div style={{ maxHeight:400, overflowY:"auto" }}>
@@ -1402,7 +1402,7 @@ var LeadsPage = function(p) {
             p.setLeads(function(prev){return [lead].concat(prev);});
             setShowQuickAdd(false);
             setQuickForm({name:"",phone:"",project:PROJECTS[0],source:"Facebook"});
-            showBrowserNotif("✅ تم إضافة عميل",lead.name+" — "+lead.phone);
+            showBrowserNotif("✅ تم إضافة leads",lead.name+" — "+lead.phone);
           }catch(e){alert(e.message);}
           setQuickSaving(false);
         }} style={{ flex:2 }}>⚡ {t.quickAdd}</Btn>
@@ -1647,7 +1647,7 @@ var DashboardPage = function(p) {
       <StatCard icon={Target} label={t.newLeads} value={myLeads.filter(function(l){return l.status==="Potential";}).length+""} c={C.success} onClick={function(){p.nav("leads");p.setFilter("Potential");}}/>
       <StatCard icon={Briefcase} label={t.activeDeals} value={myLeads.filter(function(l){return["HotCase","CallBack","MeetingDone"].includes(l.status);}).length+""} c={C.accent} onClick={function(){p.nav("leads");p.setFilter("HotCase");}}/>
       <StatCard icon={DollarSign} label={t.doneDeals} value={myLeads.filter(function(l){return l.status==="DoneDeal";}).length+""} c={C.primary} onClick={function(){p.nav("deals");}}/>
-      {(function(){var rots=[];try{rots=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}var todayRots=rots.filter(function(r){return r.time&&(Date.now()-new Date(r.time).getTime())<24*60*60*1000;});return todayRots.length>0?<StatCard icon={RotateCcw} label="تحويلات اليوم" value={todayRots.length+""} c={C.warning}/>:null;})()}
+      {(function(){var rots=[];try{rots=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}var todayRots=rots.filter(function(r){return r.time&&(Date.now()-new Date(r.time).getTime())<24*60*60*1000;});return todayRots.length>0?<StatCard icon={RotateCcw} label="تحويلات Today" value={todayRots.length+""} c={C.warning}/>:null;})()}
     </div>}
 
     <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
@@ -1942,7 +1942,7 @@ var DealsPage = function(p) {
     <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
       <input placeholder="🔍 Search by name, project or phone..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, minWidth:220 }}/>
       {isAdmin&&<select value={dealAgent} onChange={function(e){setDealAgent(e.target.value);}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
-        <option value="">👤 كل الموظفين</option>
+        <option value="">👤 All Agents</option>
         {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
       </select>}
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
@@ -1970,7 +1970,7 @@ var DealsPage = function(p) {
     </Modal>}
 
     {/* Stages Modal */}
-    {stagesModal&&<Modal show={true} onClose={function(){setStagesModal(null);}} title={"📋 مراحل الصفقة — "+stagesModal.name}>
+    {stagesModal&&<Modal show={true} onClose={function(){setStagesModal(null);}} title={"📋 Deal Stages — "+stagesModal.name}>
       <div style={{ marginBottom:14, padding:"10px 14px", background:"#DCFCE7", borderRadius:10, fontSize:12, color:"#15803D", fontWeight:600 }}>
         {stagesProgress(gid(stagesModal))}/3 مراحل مكتملة
         <div style={{ height:6, background:"#BBF7D0", borderRadius:3, marginTop:6 }}>
@@ -2072,7 +2072,7 @@ var DealsPage = function(p) {
               <div style={{ height:"100%", width:Math.min(100,(res.effectiveRevenue/res.qTarget*100))+"%", background:res.effectiveRevenue>=res.qTarget*3?C.success:res.effectiveRevenue>=res.qTarget*2?"#8B5CF6":C.accent, borderRadius:3 }}/>
             </div>
             <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>
-              {res.effectiveRevenue>=res.qTarget*3?"🏆 3x — عمولة 7,000/M":res.effectiveRevenue>=res.qTarget*2?"⚡ 2x — عمولة 6,000/M":"📈 "+Math.round(res.effectiveRevenue/res.qTarget*100)+"% من التارجت"}
+              {res.effectiveRevenue>=res.qTarget*3?"🏆 3x — Commission 7,000/M":res.effectiveRevenue>=res.qTarget*2?"⚡ 2x — Commission 6,000/M":"📈 "+Math.round(res.effectiveRevenue/res.qTarget*100)+"% من التارجت"}
             </div>
           </div>}
         </div>;
@@ -2080,9 +2080,9 @@ var DealsPage = function(p) {
     </Modal>}
 
     {/* Project Weight Modal */}
-    {isAdmin&&projWeightModal&&<Modal show={true} onClose={function(){setProjWeightModal(false);}} title={"⚙️ عمولة المشاريع"}>
+    {isAdmin&&projWeightModal&&<Modal show={true} onClose={function(){setProjWeightModal(false);}} title={"⚙️ Commission المشاريع"}>
       <div style={{ fontSize:12, color:C.textLight, marginBottom:12, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>
-        100% = يحسب كامل في التارجت والعمولة<br/>50% = يحسب نص في التارجت والعمولة
+        100% = يحسب كامل في التارجت والCommission<br/>50% = يحسب نص في التارجت والCommission
       </div>
       {(function(){var projects=[];deals.forEach(function(d){if(d.project&&!projects.includes(d.project))projects.push(d.project);});return projects.map(function(proj){
         var w=getProjectWeight(proj);
@@ -2131,7 +2131,7 @@ var DealsPage = function(p) {
     {/* Action buttons row */}
     {isOnlyAdmin&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
       <Btn outline onClick={function(){setCommModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.success, borderColor:C.success }}>💰 العمولات</Btn>
-      <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ عمولة المشاريع</Btn>
+      <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ Commission المشاريع</Btn>
     </div>}
 
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
@@ -2316,11 +2316,11 @@ var TasksPage = function(p) {
     </div>
 
     {overdue.length>0&&<div id="t-overdue"><Sec icon="⚠️" title="Overdue Calls" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
-    {overdueTasks.length>0&&<Sec icon="🔴" title="مهام متأخرة" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
+    {overdueTasks.length>0&&<Sec icon="🔴" title="مهام Overdue" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
     {callbacksToday.length>0&&<div id="t-callbacks"><Sec icon="📞" title="Today's Calls" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {todayTasks.length>0&&<div id="t-today"><Sec icon="📋" title="Today's Tasks" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec></div>}
-    {noActivity.length>0&&<div id="t-noact"><Sec icon="😴" title="بدون نشاط +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
-    {upcoming.length>0&&<Sec icon="📅" title="مهام قادمة" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
+    {noActivity.length>0&&<div id="t-noact"><Sec icon="😴" title="No Activity +3 أيام" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
+    {upcoming.length>0&&<Sec icon="📅" title="مهام Upcoming" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
 
     {callbacksToday.length===0&&overdue.length===0&&noActivity.length===0&&myTasks.length===0&&
       <div style={{ textAlign:"center", padding:"60px 20px" }}>
@@ -2351,7 +2351,7 @@ var ArchivePage = function(p) {
   };
   return <div style={{ padding:"18px 16px 40px" }}>
     <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.archive} ({archived.length})</h2>
-    {archived.length===0&&<div style={{ textAlign:"center", padding:50, color:C.textLight }}>الأرشيف فاضي</div>}
+    {archived.length===0&&<div style={{ textAlign:"center", padding:50, color:C.textLight }}>الArchive فاضي</div>}
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:480 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,t.phone,t.project,t.status,isAdmin&&t.agent,""].filter(Boolean).map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight }}>{h}</th>;})}
@@ -2438,7 +2438,7 @@ var DailyRequestsPage = function(p) {
         });
         showBrowserNotif(
           pendingStatus.newStatus==="DoneDeal"?"🏆 صفقة جديدة!":"📋 EOI جديد!",
-          (req.name||"عميل")+" — "+(updateData.budget||req.budget||"")
+          (req.name||"leads")+" — "+(updateData.budget||req.budget||"")
         );
       }
     }catch(e){alert(e.message);}
@@ -2458,9 +2458,9 @@ var DailyRequestsPage = function(p) {
 
   var addReq=async function(){
     if(!form.name||!form.phone)return;
-    if(!form.area.trim()){alert("المنطقة مطلوبة");return;}
+    if(!form.area.trim()){alert("Area مطلوبة");return;}
     if(!form.budget.trim()){alert("الميزانية مطلوبة");return;}
-    if(!form.callbackTime){alert("موعد المكالمة مطلوب");return;}
+    if(!form.callbackTime){alert("Callback مطلوب");return;}
     setSaving(true);
     try{
       var drAgentId=form.agentId||"";
@@ -2506,7 +2506,7 @@ var DailyRequestsPage = function(p) {
     </div>
     <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
       {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
-        <option value="">👤 كل الموظفين</option>
+        <option value="">👤 All Agents</option>
         {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
       </select>}
       <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
@@ -2520,10 +2520,10 @@ var DailyRequestsPage = function(p) {
         {loading?<Loader/>:<div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-              {["الاسم","الهاتف","نوع العقار","المنطقة","الميزانية","الحالة",isAdmin&&"الموظف","Last Activity","موعد المكالمة"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+              {["الاسم","الهاتف","Property Type","Area","الميزانية","Status",isAdmin&&"الموظف","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"right", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
             </tr></thead>
             <tbody>
-              {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>لا يوجد أرقام</td></tr>}
+              {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>No أرقام</td></tr>}
               {filtered.map(function(r){
                 var rid=gid(r); var so=sc.find(function(s){return s.value===r.status;})||sc[0]; var isSel=selected&&gid(selected)===rid;
                 var ci=callbackColor(r.callbackTime);
@@ -2592,7 +2592,7 @@ var DailyRequestsPage = function(p) {
               {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid", borderColor:selected.status===s.value?s.color:"#E2E8F0", background:selected.status===s.value?s.bg:"#fff", color:selected.status===s.value?s.color:C.textLight, fontSize:10, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
             </div>
           </div>
-          {[{l:"نوع العقار",v:selected.propertyType},{l:"المنطقة",v:selected.area},{l:"الميزانية",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"تاريخ الإضافة",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:"Property Type",v:selected.propertyType},{l:"Area",v:selected.area},{l:"الميزانية",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"تاريخ الإضافة",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span></div>:null;
           })}
           <div style={{ marginTop:12 }}>
@@ -2620,8 +2620,8 @@ var DailyRequestsPage = function(p) {
         <div style={{ gridColumn:"1/-1" }}><Inp label={"الاسم"} req value={form.name} onChange={function(e){setForm(function(f){return Object.assign({},f,{name:e.target.value});})}}/></div>
         <Inp label={"الهاتف"} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});})}} placeholder="01xxxxxxxxx"/>
         <Inp label={"هاتف إضافي"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder="اختياري"/>
-        <Inp label={"نوع العقار"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- اختر -"};})}/>
-        <Inp label={"المنطقة"} req value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder="مثال: التجمع الخامس"/>
+        <Inp label={"Property Type"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- اختر -"};})}/>
+        <Inp label={"Area"} req value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder="مثال: التجمع الخامس"/>
         <div style={{ gridColumn:"1/-1" }}><Inp label={"الميزانية"} req value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>
       </div>
       {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- اختر -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
@@ -2738,22 +2738,22 @@ var UsersPage = function(p) {
     {teamModal&&<Modal show={true} onClose={function(){setTeamModal(null);}} title={"👥 تعديل الفريق — "+teamModal.userName}>
       {/* reportsTo */}
       <div style={{marginBottom:12}}>
-        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>يرفع تقاريره لـ (المسؤول المباشر)</label>
+        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>Reports To (Direct Manager)</label>
         <select value={teamModal.reportsTo||""} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{reportsTo:e.target.value||null});});}}
           style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:13,background:"#fff",boxSizing:"border-box"}}>
-          <option value="">— لا يوجد (مدير رئيسي) —</option>
+          <option value="">— No (مدير رئيسي) —</option>
           {p.users.filter(function(u){return u.role==="manager"&&gid(u)!==teamModal.userId;}).map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name} ({u.title||"مدير"})</option>;})}
         </select>
-        <div style={{fontSize:10,color:"#8B5CF6",marginTop:4}}>لو المسؤول المباشر فارغ = مدير رئيسي يشوف كل من تحته. لو محدد = Team Leader يشوف فريقه بس.</div>
+        <div style={{fontSize:10,color:"#8B5CF6",marginTop:4}}>Empty = Top Manager. Set = Team Leader sees only direct team.</div>
       </div>
       <div style={{marginBottom:12}}>
-        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>كود الفريق (اختياري)</label>
-        <input type="text" placeholder="مثال: team-a" value={teamModal.teamId} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{teamId:e.target.value});});}}
+        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>Team Code (optional)</label>
+        <input type="text" placeholder="e.g. team-a" value={teamModal.teamId} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{teamId:e.target.value});});}}
           style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:14,boxSizing:"border-box"}}/>
       </div>
       <div style={{marginBottom:16}}>
-        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>اسم الفريق (اختياري)</label>
-        <input type="text" placeholder="مثال: فريق أ" value={teamModal.teamName} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{teamName:e.target.value});});}}
+        <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>Team Name (optional)</label>
+        <input type="text" placeholder="e.g. Team A" value={teamModal.teamName} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{teamName:e.target.value});});}}
           style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:14,boxSizing:"border-box"}}/>
       </div>
       <div style={{display:"flex",gap:10}}><Btn outline onClick={function(){setTeamModal(null);}} style={{flex:1}}>{t.cancel}</Btn><Btn onClick={saveTeam} loading={teamSaving} style={{flex:1}}>{t.save}</Btn></div>
@@ -2775,7 +2775,7 @@ var UsersPage = function(p) {
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.phone} value={nU.phone} onChange={function(e){setNU(Object.assign({},nU,{phone:e.target.value}));}}/></div>
         <Inp label={t.monthlyTarget} type="number" value={nU.monthlyTarget} onChange={function(e){setNU(Object.assign({},nU,{monthlyTarget:Number(e.target.value)}));}}/>
       {(nU.role==="sales"||nU.role==="manager")&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
-        <Inp label={"اسم الفريق"} value={nU.teamName||""} onChange={function(e){setNU(Object.assign({},nU,{teamName:e.target.value}));}} placeholder="مثال: فريق أ"/>
+        <Inp label={"اسم الفريق"} value={nU.teamName||""} onChange={function(e){setNU(Object.assign({},nU,{teamName:e.target.value}));}} placeholder="e.g. Team A"/>
         <Inp label={"كود الفريق"} value={nU.teamId||""} onChange={function(e){setNU(Object.assign({},nU,{teamId:e.target.value}));}} placeholder="team-a"/>
       </div>}
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.role} type="select" value={nU.role} onChange={function(e){setNU(Object.assign({},nU,{role:e.target.value}));}} options={[{value:"admin",label:t.admin},{value:"manager",label:t.salesManager},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/></div>
@@ -2791,7 +2791,7 @@ var ReportsPage = function(p) {
   var t=p.t; var sc=STATUSES(t);
   var [period,setPeriod]=useState("monthly");
   var [exporting,setExporting]=useState(false);
-  var pLabel={daily:"اليوم",weekly:"الأسبوع",monthly:"الشهر"};
+  var pLabel={daily:"Today",weekly:"This Week",monthly:"This Month"};
   var ms={daily:86400000,weekly:604800000,monthly:2592000000}[period];
   var now=Date.now();
   var allLeads=p.leads.filter(function(l){return !l.archived;});
@@ -3076,7 +3076,7 @@ var ReportsPage = function(p) {
           var ms2={daily:86400000,weekly:604800000,monthly:2592000000}[rPeriod];
           return <>
             <div style={{ display:"flex", gap:6, marginBottom:12 }}>
-              {["daily","weekly","monthly"].map(function(pp){var lbl={daily:"اليوم",weekly:"الأسبوع",monthly:"الشهر"}[pp];return <button key={pp} onClick={function(){setRPeriod(pp);}} style={{ padding:"4px 10px", borderRadius:7, border:"1px solid", borderColor:rPeriod===pp?C.accent:"#E2E8F0", background:rPeriod===pp?C.accent+"12":"#fff", color:rPeriod===pp?C.accent:C.textLight, fontSize:11, cursor:"pointer" }}>{lbl}</button>;})}
+              {["daily","weekly","monthly"].map(function(pp){var lbl={daily:"Today",weekly:"This Week",monthly:"This Month"}[pp];return <button key={pp} onClick={function(){setRPeriod(pp);}} style={{ padding:"4px 10px", borderRadius:7, border:"1px solid", borderColor:rPeriod===pp?C.accent:"#E2E8F0", background:rPeriod===pp?C.accent+"12":"#fff", color:rPeriod===pp?C.accent:C.textLight, fontSize:11, cursor:"pointer" }}>{lbl}</button>;})}
             </div>
             {sales.map(function(a){var uid=gid(a);
               var curQR2=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
@@ -3223,7 +3223,7 @@ var SettingsPage = function(p) {
       <div style={{marginBottom:13}}>
         <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>🔄 موظفو الإعادة التلقائية (الروتيشن)</label>
         <div style={{border:"1px solid #E2E8F0",borderRadius:10,padding:"8px 12px",background:"#fff",maxHeight:200,overflowY:"auto"}}>
-          {salesAgentsForSetting.length===0&&<div style={{fontSize:12,color:C.textLight,padding:"6px 0"}}>لا يوجد موظفين</div>}
+          {salesAgentsForSetting.length===0&&<div style={{fontSize:12,color:C.textLight,padding:"6px 0"}}>No موظفين</div>}
           {salesAgentsForSetting.map(function(u){
             var uid=gid(u); var checked=reassignAgents.includes(uid);
             return <div key={uid} onClick={function(){toggleAgent(uid);}} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 4px",cursor:"pointer",borderRadius:7,background:checked?C.accent+"10":"transparent",marginBottom:2}}>
@@ -3479,7 +3479,7 @@ var CallCalendarPage = function(p) {
       var cbs=getCallbacksForDay(selectedDay);
       return <Card>
         <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>📞 مكالمات {selectedDay} {monthNames[month]}</div>
-        {cbs.length===0&&<div style={{ color:C.textLight, fontSize:13 }}>لا يوجد مكالمات</div>}
+        {cbs.length===0&&<div style={{ color:C.textLight, fontSize:13 }}>No مكالمات</div>}
         {cbs.map(function(l){
           var ci=callbackColor(l.callbackTime);
           var sc=STATUSES(p.t); var so=sc.find(function(s){return s.value===l.status;})||sc[0];
@@ -3502,7 +3502,7 @@ var CallCalendarPage = function(p) {
     <div style={{ marginTop:16, display:"flex", gap:10 }}>
       <Card style={{ flex:1, textAlign:"center", padding:"12px" }}>
         <div style={{ fontSize:20, fontWeight:700, color:C.accent }}>{myCallbacks.filter(function(l){var d=new Date(l.callbackTime);return d.getFullYear()===year&&d.getMonth()===month;}).length}</div>
-        <div style={{ fontSize:11, color:C.textLight, marginTop:4 }}>مكالمات الشهر</div>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:4 }}>مكالمات This Month</div>
       </Card>
       <Card style={{ flex:1, textAlign:"center", padding:"12px" }}>
         <div style={{ fontSize:20, fontWeight:700, color:C.danger }}>{myCallbacks.filter(function(l){return new Date(l.callbackTime)<new Date()&&l.status==="CallBack";}).length}</div>
@@ -3617,7 +3617,7 @@ export default function CRMApp() {
       if(myLeads.length>lastLeadCount){
         var newOnes = myLeads.slice(0, myLeads.length-lastLeadCount);
         newOnes.forEach(function(l){
-          showBrowserNotif("👤 عميل جديد وصلك", l.name+" — "+l.phone);
+          showBrowserNotif("👤 leads جديد وصلك", l.name+" — "+l.phone);
         });
       }
     };
