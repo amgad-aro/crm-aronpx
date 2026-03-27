@@ -346,7 +346,7 @@ var StatusModal = function(p) {
 
     {/* Potential / HotCase: budget + deposit + instalment */}
     {needsPotFields&&<div style={{ background:"#F0F9FF", borderRadius:10, padding:"12px 14px", marginBottom:12, border:"1px solid #BAE6FD" }}>
-      <div style={{ fontSize:12, fontWeight:700, color:"#0284C7", marginBottom:10 }}>💰 البيانات المالية</div>
+      <div style={{ fontSize:12, fontWeight:700, color:"#0284C7", marginBottom:10 }}>💰 Budget Details</div>
       <div style={{ marginBottom:9 }}>
         <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Budget (EGP) <span style={{color:C.danger}}>*</span></label>
           <input type="text" placeholder="مثال: 1,000,000" value={potBudget} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setPotBudget(r?Number(r).toLocaleString():"");setErr("");}}
