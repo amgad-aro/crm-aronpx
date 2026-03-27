@@ -1292,20 +1292,31 @@ var LeadsPage = function(p) {
           </div>
           {/* Activity Log */}
           {(function(){
-            var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
-            // Sales sees only activities after last rotation
+            var cuRole=p.cu.role;
+            var isOnlyAdminH=cuRole==="admin";
+            // Admin: sees all history
+            // Manager: sees only activities after last reassign (reassignedAt)
+            // Sales: sees only activities after last reassign (reassignedAt)
             var visibleActs=leadActs;
-            if(!isAdmin&&selected&&selected.lastRotationAt){
-              var rotTime=new Date(selected.lastRotationAt).getTime();
-              visibleActs=leadActs.filter(function(a){return new Date(a.createdAt).getTime()>=rotTime;});
+            if(!isOnlyAdminH && selected){
+              var cutoffTime = selected.reassignedAt
+                ? new Date(selected.reassignedAt).getTime()
+                : selected.lastRotationAt
+                  ? new Date(selected.lastRotationAt).getTime()
+                  : 0;
+              if(cutoffTime>0){
+                visibleActs=leadActs.filter(function(a){return new Date(a.createdAt).getTime()>=cutoffTime;});
+              }
             }
-            if(visibleActs.length===0&&!isAdmin) return null;
+            // reverse: newest first
+            var displayActs = visibleActs.slice().reverse();
+            if(displayActs.length===0&&!isOnlyAdminH) return null;
             return <div style={{ marginTop:14 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
                 <span style={{ fontSize:11, color:C.textLight, fontWeight:600 }}>{t.clientHistory}</span>
-                {isAdmin&&selected&&(selected.rotationCount||0)>0&&<span style={{ fontSize:9, background:"#FEF3C7", color:"#B45309", padding:"2px 6px", borderRadius:6, fontWeight:600 }}>🔄 {selected.rotationCount} تحويل</span>}
+                {isOnlyAdminH&&selected&&(selected.rotationCount||0)>0&&<span style={{ fontSize:9, background:"#FEF3C7", color:"#B45309", padding:"2px 6px", borderRadius:6, fontWeight:600 }}>🔄 {selected.rotationCount} تحويل</span>}
               </div>
-              {visibleActs.map(function(a,i){var uname=a.userId&&a.userId.name?a.userId.name:"";return <div key={a._id||i} style={{ fontSize:10, padding:"8px 0", borderBottom:"1px solid #F8FAFC" }}>
+              {displayActs.map(function(a,i){var uname=a.userId&&a.userId.name?a.userId.name:"";return <div key={a._id||i} style={{ fontSize:10, padding:"8px 0", borderBottom:"1px solid #F8FAFC" }}>
                 <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
                   <span style={{ flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔"}</span>
                   <span style={{ flex:1 }}>{a.note}</span>
@@ -1313,9 +1324,6 @@ var LeadsPage = function(p) {
                 </div>
                 {uname&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{uname} · {new Date(a.createdAt).toLocaleDateString("ar-EG")}</div>}
               </div>;})}
-              {isAdmin&&leadActs.length>visibleActs.length&&<div style={{ fontSize:9, color:C.info, marginTop:6, textAlign:"center", padding:"4px", background:"#EFF6FF", borderRadius:6 }}>
-                📋 يوجد {leadActs.length-visibleActs.length} نشاط قبل آخر تحويل (مخفي عن السيلز)
-              </div>}
             </div>;
           })()}
         </div>
