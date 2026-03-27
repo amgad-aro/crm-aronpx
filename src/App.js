@@ -2495,6 +2495,7 @@ var DailyRequestsPage = function(p) {
       <StatCard icon={Target} label={"Potential"} value={requests.filter(function(r){return r.status==="Potential";}).length+""} c={"#1D4ED8"}/>
       <StatCard icon={DollarSign} label={t.doneDeals} value={requests.filter(function(r){return r.status==="DoneDeal";}).length+""} c={C.success}/>
       <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13, alignSelf:"center", marginRight:"auto" }}><Plus size={14}/> Add Number</Btn>
+      {p.cu.role==="admin"&&<Btn outline onClick={async function(){var XLSX=await new Promise(function(res){if(window.XLSX){res(window.XLSX);return;}var s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=function(){res(window.XLSX);};document.head.appendChild(s);});var rows=filtered.map(function(r){return{"Name":r.name,"Phone":r.phone,"Phone2":r.phone2||"","Property Type":r.propertyType||"","Area":r.area||"","Budget":r.budget||"","Status":r.status||"","Agent":r.agentId&&r.agentId.name?r.agentId.name:"","Callback":r.callbackTime||"","Last Activity":r.lastActivityTime?new Date(r.lastActivityTime).toLocaleDateString("en-GB"):"","Notes":r.notes||""};});var ws=XLSX.utils.json_to_sheet(rows);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Daily Requests");XLSX.writeFile(wb,"daily_requests_"+new Date().toISOString().slice(0,10)+".xlsx");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> Export Excel</Btn>}
     </div>
 
     {/* Filters */}
@@ -2962,6 +2963,14 @@ var TeamPage = function(p) {
     </Card>;
   };
 
+  // Activity feed - last 20 activities across all team
+  var teamActivityFeed = p.activities.slice(0,20).map(function(a){
+    var uname=a.userId&&a.userId.name?a.userId.name:"";
+    var lname=a.leadId&&a.leadId.name?a.leadId.name:"";
+    var icon=a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔";
+    return {icon,uname,lname,note:a.note,time:a.createdAt};
+  });
+
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18, flexWrap:"wrap", gap:10 }}>
       <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.team}</h2>
@@ -3025,6 +3034,23 @@ var TeamPage = function(p) {
       {p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;}).map(function(a){
         return <MemberCard key={gid(a)} user={a}/>;
       })}
+    </div>}
+
+    {/* Activity Feed */}
+    {isAdmin&&<div style={{ marginTop:20 }}>
+      <h3 style={{ fontSize:14, fontWeight:700, marginBottom:12 }}>⚡ Live Activity Feed</h3>
+      <div style={{ background:"#fff", borderRadius:12, border:"1px solid #E8ECF1", overflow:"hidden" }}>
+        {teamActivityFeed.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No recent activity</div>}
+        {teamActivityFeed.map(function(a,i){return <div key={i} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderBottom:"1px solid #F8FAFC" }}>
+          <span style={{ fontSize:16, flexShrink:0 }}>{a.icon}</span>
+          <div style={{ flex:1, minWidth:0 }}>
+            <span style={{ fontSize:12, fontWeight:600, color:C.accent }}>{a.uname}</span>
+            {a.lname&&<span style={{ fontSize:12, color:C.textLight }}> — {a.lname}</span>}
+            {a.note&&<div style={{ fontSize:11, color:C.textLight, marginTop:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{a.note}</div>}
+          </div>
+          <span style={{ fontSize:10, color:C.textLight, flexShrink:0 }}>{timeAgo(a.time,{ago:"ago",minutes:"min",hours:"hr",days:"days",just:"now"})}</span>
+        </div>;})}
+      </div>
     </div>}
 
     {editQModal&&<Modal show={true} onClose={function(){setEditQModal(null);}} title={"🎯 Quarterly Targets — "+editQModal.user.name}>
@@ -3677,6 +3703,35 @@ export default function CRMApp() {
     }, 60*1000);
     return function(){clearInterval(interval);};
   },[token, currentUser, leads.length, tasks.length]);
+
+  // ===== DAILY REPORT NOTIFICATION (9 PM for admin) =====
+  useEffect(function(){
+    if(!token||!currentUser||(currentUser.role!=="admin"&&currentUser.role!=="sales_admin")) return;
+    var checkDailyReport = function(){
+      var now = new Date();
+      var h = now.getHours(); var m = now.getMinutes();
+      if(h===21&&m<2){
+        var key = "crm_daily_report_"+now.toDateString();
+        try{
+          if(!localStorage.getItem(key)){
+            localStorage.setItem(key,"1");
+            // Build report from activities today
+            var todayStart = new Date(); todayStart.setHours(0,0,0,0);
+            var todayActs = activities.filter(function(a){return new Date(a.createdAt)>=todayStart;});
+            var todayLeads = leads.filter(function(l){return l.createdAt&&new Date(l.createdAt)>=todayStart&&!l.archived;});
+            var todayDeals = leads.filter(function(l){return l.updatedAt&&new Date(l.updatedAt)>=todayStart&&l.status==="DoneDeal";});
+            var calls = todayActs.filter(function(a){return a.type==="call";}).length;
+            showBrowserNotif(
+              "📊 Daily Report — "+now.toLocaleDateString("en-GB"),
+              "New Leads: "+todayLeads.length+" | Calls: "+calls+" | Deals: "+todayDeals.length
+            );
+          }
+        }catch(e){}
+      }
+    };
+    var rptInterval = setInterval(checkDailyReport, 60*1000);
+    return function(){clearInterval(rptInterval);};
+  },[token, currentUser]);
 
   // ===== HEARTBEAT every 2 minutes =====
   useEffect(function(){
