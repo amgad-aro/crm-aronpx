@@ -1125,7 +1125,7 @@ var LeadsPage = function(p) {
           var lastAct=lead.lastActivityTime?timeAgo(lead.lastActivityTime,t):"—";
           var actColor=lead.lastActivityTime&&(Date.now()-new Date(lead.lastActivityTime).getTime())>3*24*60*60*1000?C.danger:C.accent;
           var borderCol=isVIP?"#F59E0B":so.color||"#E8ECF1";
-          return <div key={lid} onClick={function(){setSelected(lead);}}
+          return <div key={lid} onClick={function(){setSelected(lead);window.scrollTo({top:0,behavior:"smooth"});}}
             style={{ background:"#fff", borderRadius:16, padding:"16px",
               border:"2px solid "+borderCol,
               cursor:"pointer", boxShadow:"0 3px 12px "+borderCol+"35" }}>
@@ -1133,15 +1133,15 @@ var LeadsPage = function(p) {
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:16, fontWeight:700, color:isVIP?C.accent:C.text, marginBottom:3 }}>{isVIP?"⭐ ":""}{lead.name}</div>
-                <div style={{ fontSize:12, color:C.textLight, direction:"ltr" }}>{lead.phone}</div>
+                <div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr" }}>{lead.phone}</div>
               </div>
               <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
             </div>
             {/* Phone2 */}
-            {lead.phone2&&<div style={{ fontSize:12, color:C.textLight, direction:"ltr", marginBottom:6 }}>{lead.phone2}</div>}
+            {lead.phone2&&<div style={{ fontSize:11, fontWeight:700, color:C.textLight, direction:"ltr", marginBottom:6 }}>{lead.phone2}</div>}
             {/* Project + Last Activity */}
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-              {lead.project?<span style={{ fontSize:11, color:C.textLight, fontWeight:500 }}>📍 {lead.project}</span>:<span style={{ color:C.textLight, fontSize:11 }}>—</span>}
+              {lead.project?<span style={{ fontSize:11, color:C.text, fontWeight:700 }}>📍 {lead.project}</span>:<span style={{ color:C.textLight, fontSize:11 }}>—</span>}
               <span style={{ fontSize:11, color:actColor, fontWeight:600 }}>🕐 {lastAct}</span>
             </div>
             {/* Action buttons */}
