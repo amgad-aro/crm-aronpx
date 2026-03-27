@@ -1299,11 +1299,21 @@ var LeadsPage = function(p) {
             // Sales: sees only activities after last reassign (reassignedAt)
             var visibleActs=leadActs;
             if(!isOnlyAdminH && selected){
-              var cutoffTime = selected.reassignedAt
-                ? new Date(selected.reassignedAt).getTime()
-                : selected.lastRotationAt
-                  ? new Date(selected.lastRotationAt).getTime()
-                  : 0;
+              var cutoffTime = 0;
+              if(selected.reassignedAt){
+                cutoffTime = new Date(selected.reassignedAt).getTime();
+              } else if(selected.lastRotationAt){
+                cutoffTime = new Date(selected.lastRotationAt).getTime();
+              } else {
+                // No reassign date: show only activities by current agent
+                var curAgentId = selected.agentId && selected.agentId._id
+                  ? String(selected.agentId._id)
+                  : String(selected.agentId||"");
+                visibleActs = leadActs.filter(function(a){
+                  var auid = a.userId && a.userId._id ? String(a.userId._id) : String(a.userId||"");
+                  return auid === curAgentId || auid === String(p.cu.id||"");
+                });
+              }
               if(cutoffTime>0){
                 visibleActs=leadActs.filter(function(a){return new Date(a.createdAt).getTime()>=cutoffTime;});
               }
