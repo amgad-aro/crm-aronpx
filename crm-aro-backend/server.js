@@ -17,7 +17,7 @@ var User = mongoose.model("User", new mongoose.Schema({
   password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
   role:{type:String,enum:["admin","sales_admin","manager","sales","viewer"],default:"sales"},
   title:{type:String,default:""}, active:{type:Boolean,default:true},
-  monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, qTargets:{type:Object,default:{}}, reportsTo:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null}
+  monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, lastActive:{type:Date,default:null}, qTargets:{type:Object,default:{}}, reportsTo:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null}
 },{timestamps:true}));
 
 var Lead = mongoose.model("Lead", new mongoose.Schema({
@@ -130,7 +130,12 @@ app.post("/api/login", async function(req, res) {
 // ===== HEARTBEAT =====
 app.post("/api/heartbeat", auth, async function(req, res) {
   try {
-    await User.findByIdAndUpdate(req.user.id, { lastSeen: new Date() });
+    var update = { lastSeen: new Date() };
+    // If user sent isActive flag, update lastActive too
+    if(req.body && req.body.isActive) {
+      update.lastActive = new Date();
+    }
+    await User.findByIdAndUpdate(req.user.id, update);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
