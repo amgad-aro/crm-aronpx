@@ -2881,7 +2881,7 @@ var TeamPage = function(p) {
 
   // Card for one member
   var MemberCard = function(mp){
-    var a=mp.user; var uid=gid(a);
+    var a=mp.user; var uid=String(gid(a));
     var al=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===uid&&!l.archived;});
     var calls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return auid===uid&&ac.type==="call";}).length;
     var qt=getQTargets(uid);
