@@ -349,18 +349,18 @@ var StatusModal = function(p) {
       <div style={{ fontSize:12, fontWeight:700, color:"#0284C7", marginBottom:10 }}>💰 Budget Details</div>
       <div style={{ marginBottom:9 }}>
         <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Budget (EGP) <span style={{color:C.danger}}>*</span></label>
-          <input type="text" placeholder="10,000,000" value={potBudget} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setPotBudget(r?Number(r).toLocaleString():"");setErr("");}}
+          <input type="text" placeholder="مثال: 10,000,000" value={potBudget} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setPotBudget(r?Number(r).toLocaleString():"");setErr("");}}
             style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
       </div>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
         <div>
           <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Down Payment (EGP) <span style={{color:C.danger}}>*</span></label>
-          <input type="text" placeholder="500,000" value={potDeposit} onChange={fmtNum(potDeposit,setPotDeposit)}
+          <input type="text" placeholder="مثال: 500,000" value={potDeposit} onChange={fmtNum(potDeposit,setPotDeposit)}
             style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
         </div>
         <div>
           <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Installments (EGP) <span style={{color:C.danger}}>*</span></label>
-          <input type="text" placeholder="60,000" value={potInstalment} onChange={fmtNum(potInstalment,setPotInstalment)}
+          <input type="text" placeholder="مثال: 60,000" value={potInstalment} onChange={fmtNum(potInstalment,setPotInstalment)}
             style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
         </div>
       </div>
