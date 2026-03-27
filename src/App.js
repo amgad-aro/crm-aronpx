@@ -2421,6 +2421,9 @@ var DailyRequestsPage = function(p) {
   var [sortBy,setSortBy]=useState("lastActivity");
   var [agentFilter,setAgentFilter]=useState("");
   var [form,setForm]=useState({name:"",phone:"",phone2:"",propertyType:"",area:"",budget:"",notes:"",agentId:"",callbackTime:""});
+  var [selected2,setSelected2]=useState([]);
+  var [showBulk,setShowBulk]=useState(false);
+  var [bulkAgent,setBulkAgent]=useState("");
 
   useEffect(function(){
     apiFetch("/api/daily-requests","GET",null,p.token)
@@ -2527,6 +2530,7 @@ var DailyRequestsPage = function(p) {
       <StatCard icon={Target} label={"Potential"} value={requests.filter(function(r){return r.status==="Potential";}).length+""} c={"#1D4ED8"}/>
       <StatCard icon={DollarSign} label={t.doneDeals} value={requests.filter(function(r){return r.status==="DoneDeal";}).length+""} c={C.success}/>
       <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13, alignSelf:"center", marginRight:"auto" }}><Plus size={14}/> Add Number</Btn>
+      {selected2.length>0&&p.cu.role==="admin"&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> {t.bulkReassign} ({selected2.length})</Btn>}
       {p.cu.role==="admin"&&<Btn outline onClick={async function(){var XLSX=await new Promise(function(res){if(window.XLSX){res(window.XLSX);return;}var s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=function(){res(window.XLSX);};document.head.appendChild(s);});var rows=filtered.map(function(r){return{"Name":r.name,"Phone":r.phone,"Phone2":r.phone2||"","Property Type":r.propertyType||"","Area":r.area||"","Budget":r.budget||"","Status":r.status||"","Agent":r.agentId&&r.agentId.name?r.agentId.name:"","Callback":r.callbackTime||"","Last Activity":r.lastActivityTime?new Date(r.lastActivityTime).toLocaleDateString("en-GB"):"","Notes":r.notes||""};});var ws=XLSX.utils.json_to_sheet(rows);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Daily Requests");XLSX.writeFile(wb,"daily_requests_"+new Date().toISOString().slice(0,10)+".xlsx");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> Export Excel</Btn>}
     </div>
 
