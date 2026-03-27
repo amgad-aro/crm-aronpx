@@ -302,14 +302,14 @@ var StatusModal = function(p) {
   var fmtNum = function(val, set){ return function(e){ var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,""); set(r?Number(r).toLocaleString():""); setErr(""); }; };
 
   var submit = async function() {
-    if (needsComment && !cbTime)         { setErr("لازم تختار Callback"); return; }
+    if (needsComment && !cbTime)         { setErr("Please select a Callback time"); return; }
     if (needsComment && !comment.trim()) { setErr("A note is required"); return; }
-    if (needsCb && !cbTime)              { setErr("لازم تختار موعد"); return; }
-    if (isReject && !comment.trim())     { setErr("لازم تختار سبب الرفض"); return; }
-    if ((isDoneDeal||isEOI) && !dealBudget.trim()){ setErr("لازم تكتب المبلغ"); return; }
-    if (needsPotFields && !potBudget.trim()){ setErr("لازم تكتب Budget"); return; }
-    if (needsPotFields && !potDeposit.trim()){ setErr("لازم تكتب المقدم"); return; }
-    if (needsPotFields && !potInstalment.trim()){ setErr("لازم تكتب الأقساط"); return; }
+    if (needsCb && !cbTime)              { setErr("Please select a time"); return; }
+    if (isReject && !comment.trim())     { setErr("Please select a rejection reason"); return; }
+    if ((isDoneDeal||isEOI) && !dealBudget.trim()){ setErr("Please enter the amount"); return; }
+    if (needsPotFields && !potBudget.trim()){ setErr("Please enter the Budget"); return; }
+    if (needsPotFields && !potDeposit.trim()){ setErr("Please enter the Down Payment"); return; }
+    if (needsPotFields && !potInstalment.trim()){ setErr("Please enter the Installments"); return; }
     setSaving(true);
     var extra = (isDoneDeal||isEOI)
       ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit }
@@ -349,18 +349,18 @@ var StatusModal = function(p) {
       <div style={{ fontSize:12, fontWeight:700, color:"#0284C7", marginBottom:10 }}>💰 Budget Details</div>
       <div style={{ marginBottom:9 }}>
         <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Budget (EGP) <span style={{color:C.danger}}>*</span></label>
-          <input type="text" placeholder="مثال: 10,000,000" value={potBudget} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setPotBudget(r?Number(r).toLocaleString():"");setErr("");}}
+          <input type="text" placeholder="e.g. 10,000,000" value={potBudget} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setPotBudget(r?Number(r).toLocaleString():"");setErr("");}}
             style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
       </div>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
         <div>
           <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Down Payment (EGP) <span style={{color:C.danger}}>*</span></label>
-          <input type="text" placeholder="مثال: 500,000" value={potDeposit} onChange={fmtNum(potDeposit,setPotDeposit)}
+          <input type="text" placeholder="e.g. 500,000" value={potDeposit} onChange={fmtNum(potDeposit,setPotDeposit)}
             style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
         </div>
         <div>
           <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Installments (EGP) <span style={{color:C.danger}}>*</span></label>
-          <input type="text" placeholder="مثال: 60,000" value={potInstalment} onChange={fmtNum(potInstalment,setPotInstalment)}
+          <input type="text" placeholder="e.g. 60,000" value={potInstalment} onChange={fmtNum(potInstalment,setPotInstalment)}
             style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
         </div>
       </div>
@@ -377,7 +377,7 @@ var StatusModal = function(p) {
     {isReject&&<div style={{ marginBottom:12 }}>
       <div style={{ fontSize:13, fontWeight:600, marginBottom:8, color:"#EF4444" }}>Rejection Reason <span style={{color:C.danger}}>*</span></div>
       <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-        {["السعر مرتفع","Area مش مناسبة","اشترى من مكان تاني","مش جاهز دلوقتي","مش مهتم خالص","سبب تاني"].map(function(r){
+        {["Price too high","Area not suitable","Bought elsewhere","Not ready yet","Not interested at all","Other reason"].map(function(r){
           return <button key={r} onClick={function(){setComment(r);setErr("");}}
             style={{ padding:"8px 12px", borderRadius:8, border:"1px solid", borderColor:comment===r?"#EF4444":"#E2E8F0",
               background:comment===r?"#FEF2F2":"#fff", color:comment===r?"#EF4444":"#64748B", fontSize:12, cursor:"pointer", textAlign:"right" }}>{r}</button>;
@@ -388,7 +388,7 @@ var StatusModal = function(p) {
     {/* DoneDeal / EOI: project + unit type + budget */}
     {(isDoneDeal||isEOI)&&<div>
       <div style={{ marginBottom:11 }}>
-        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏠 المشروع</label>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏠 Project</label>
         <input type="text" placeholder="" value={dealProject} onChange={function(e){setDealProject(e.target.value);}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
       </div>
@@ -400,7 +400,7 @@ var StatusModal = function(p) {
         </select>
       </div>
       <div style={{ marginBottom:11 }}>
-        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💰 المبلغ (EGP) <span style={{color:C.danger}}>*</span></label>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💰 Amount (EGP) <span style={{color:C.danger}}>*</span></label>
         <input type="text" placeholder="" value={dealBudget}
           onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setDealBudget(r?Number(r).toLocaleString():"");setErr("");}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
@@ -466,7 +466,7 @@ var Sidebar = function(p) {
     {id:"eoi",icon:Target,label:"EOI"},
     {id:"tasks",icon:CheckCircle,label:t.tasks},
     isSales&&{id:"kpis",icon:TrendingUp,label:"KPIs"},
-    isSales&&{id:"calendar",icon:Calendar,label:"تقويم"},
+    isSales&&{id:"calendar",icon:Calendar,label:"Calendar"},
     isAdmin&&{id:"reports",icon:BarChart3,label:t.reports},
     isAdmin&&{id:"team",icon:UserPlus,label:t.team},
     isOnlyAdmin&&{id:"users",icon:Lock,label:t.users},
@@ -633,7 +633,7 @@ var Header = function(p) {
           </div>
           {upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No notifications</div>}
           {overdueCallback.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 CallBack فات موعده</div>
+            <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Overdue CallBack</div>
             {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
               <div style={{ flex:1, minWidth:0 }}>
@@ -796,22 +796,22 @@ var exportLeadsToExcel = async function(leads, users, filename) {
   var rows = leads.map(function(l) { return {
     "Name": l.name,
     "Phone": l.phone,
-    "هاتف إضافي": l.phone2 || "",
+    "Alt. Phone": l.phone2 || "",
     "Email": l.email || "",
-    "المشروع": l.project || "",
+    "Project": l.project || "",
     "Status": l.status || "",
-    "المصدر": l.source || "",
+    "Source": l.source || "",
     "Budget": l.budget || "",
     "Agent": getAgentName(l),
-    "VIP": l.isVIP ? "نعم" : "",
+    "VIP": l.isVIP ? "Yes" : "",
     "Notes": l.notes || "",
     "Callback": l.callbackTime ? l.callbackTime.slice(0,16).replace("T"," ") : "",
     "Last Activity": l.lastActivityTime ? new Date(l.lastActivityTime).toLocaleDateString("en-GB") : "",
-    "تاريخ الإضافة": l.createdAt ? new Date(l.createdAt).toLocaleDateString("en-GB") : "",
+    "Date Added": l.createdAt ? new Date(l.createdAt).toLocaleDateString("en-GB") : "",
   };});
   var ws = XLSX.utils.json_to_sheet(rows);
   var wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "الLeads");
+  XLSX.utils.book_append_sheet(wb, ws, "Leads");
   XLSX.writeFile(wb, (filename || "leads") + "_" + new Date().toISOString().slice(0,10) + ".xlsx");
 };
 
@@ -820,8 +820,8 @@ var callbackColor = function(cbTime) {
   if (!cbTime) return null;
   var diff = new Date(cbTime).getTime() - Date.now();
   var mins = diff / 60000;
-  if (mins < 0) return { bg:"#FEE2E2", color:"#DC2626", label:"⚠️ فات الموعد" };
-  if (mins < 60) return { bg:"#FEF3C7", color:"#D97706", label:"🔔 خلال ساعة" };
+  if (mins < 0) return { bg:"#FEE2E2", color:"#DC2626", label:"⚠️ Overdue" };
+  if (mins < 60) return { bg:"#FEF3C7", color:"#D97706", label:"🔔 Within 1hr" };
   if (mins < 1440) return { bg:"#DCFCE7", color:"#15803D", label:"✅ Today" };
   return null;
 };
@@ -835,11 +835,11 @@ var QuickPhoneSearch = function(p) {
     return l.phone&&(l.phone.includes(q)||l.phone.endsWith(q));
   }):[];
   var sc=STATUSES(p.t);
-  if(!show)return <button onClick={function(){setShow(true);}} style={{ position:"fixed", bottom:24, left:24, zIndex:300, width:52, height:52, borderRadius:"50%", background:"#25D366", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 4px 20px rgba(37,211,102,0.5)", fontSize:22 }} title="بحث سريع بالموبايل">📞</button>;
+  if(!show)return <button onClick={function(){setShow(true);}} style={{ position:"fixed", bottom:24, left:24, zIndex:300, width:52, height:52, borderRadius:"50%", background:"#25D366", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 4px 20px rgba(37,211,102,0.5)", fontSize:22 }} title="Quick Phone Search">📞</button>;
   return <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center" }} onClick={function(){setShow(false);setQ("");}}>
     <div style={{ background:"#fff", borderRadius:18, padding:20, width:340, maxWidth:"90vw", maxHeight:"80vh", overflow:"auto" }} onClick={function(e){e.stopPropagation();}}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
-        <div style={{ fontSize:15, fontWeight:700 }}>📞 بحث سريع بالموبايل</div>
+        <div style={{ fontSize:15, fontWeight:700 }}>📞 Quick Phone Search</div>
         <button onClick={function(){setShow(false);setQ("");}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:18, color:"#94A3B8" }}>✕</button>
       </div>
       <input autoFocus value={q} onChange={function(e){setQ(e.target.value);}} placeholder="Enter last 4 digits or full number..." style={{ width:"100%", padding:"10px 14px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr", marginBottom:12 }}/>
@@ -854,8 +854,8 @@ var QuickPhoneSearch = function(p) {
           </div>
           <div style={{ fontSize:12, color:"#64748B", marginTop:4, direction:"ltr" }}>{l.phone}</div>
           <div style={{ display:"flex", gap:8, marginTop:8 }}>
-            <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#DCFCE7", color:"#15803D", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>📞 اتصال</a>
-            <a href={"https://wa.me/2"+l.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#DCFCE7", color:"#25D366", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> واتساب</a>
+            <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#DCFCE7", color:"#15803D", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>📞 Call</a>
+            <a href={"https://wa.me/2"+l.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#DCFCE7", color:"#25D366", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp</a>
           </div>
         </div>;
       })}
@@ -873,7 +873,7 @@ var PhoneCell = function(p) {
     onMouseEnter={function(){setShow(true);}}
     onMouseLeave={function(){setShow(false);}}
     style={{ cursor:"pointer", direction:"ltr", letterSpacing:1, userSelect:show?"text":"none" }}
-    title="اضغط للإظهار"
+    title="Click to show"
   >{show ? p.phone : masked}</span>;
 };
 
@@ -956,7 +956,7 @@ var LeadsPage = function(p) {
         if(extra.project)    upData.project    = extra.project;
         if(extra.notes)      upData.notes      = extra.notes;
         if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
-        if(extra.deposit)    upData.notes      = (upData.notes?upData.notes+" | ":"")+"مقدم: "+extra.deposit+" EGP | أقساط: "+extra.instalment+" EGP";
+        if(extra.deposit)    upData.notes      = (upData.notes?upData.notes+" | ":"")+"Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
       }
       if(pendingStatus.newStatus === "EOI") upData.eoiDate = new Date().toISOString();
       // Notify admin when DoneDeal or EOI
@@ -1082,7 +1082,7 @@ var LeadsPage = function(p) {
       <div style={{ display:"flex", gap:7, flexShrink:0, flexWrap:"wrap" }}>
         {selected2.length>0&&isAdmin&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> {t.bulkReassign} ({selected2.length})</Btn>}
         {selected2.length>0&&isOnlyAdmin&&<Btn outline onClick={async function(){
-          if(!window.confirm("أرشفة "+selected2.length+" leads؟"))return;
+          if(!window.confirm("Archive "+selected2.length+" leads?"))return;
           var ids=[...selected2];
           for(var i=0;i<ids.length;i++){
             try{await apiFetch("/api/leads/"+ids[i]+"/archive","PUT",null,p.token);}catch(e){}
@@ -1090,7 +1090,7 @@ var LeadsPage = function(p) {
           p.setLeads(function(prev){return prev.map(function(l){return ids.includes(gid(l))?Object.assign({},l,{archived:true}):l;});});
           setSelected2([]);
           if(selected&&ids.includes(gid(selected)))setSelected(null);
-        }} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Archive size={13}/> أرشفة ({selected2.length})</Btn>}
+        }} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Archive size={13}/> Archive ({selected2.length})</Btn>}
         {selected2.length>0&&<Btn outline onClick={function(){
           var selectedLeads=filtered.filter(function(l){return selected2.includes(gid(l));});
           var msg=encodeURIComponent("أهلاً، نحن من شركة ARO العقارية\nلدينا عروض مميزة على مشاريعنا\nتواصل معنا للمزيد 🏠");
@@ -1253,7 +1253,7 @@ var LeadsPage = function(p) {
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
             <div style={{ display:"flex", gap:5 }}>
-              {isOnlyAdmin&&<button onClick={function(){openHistory(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title="تاريخ الleads">📋</button>}
+              {isOnlyAdmin&&<button onClick={function(){openHistory(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title="Lead History">📋</button>}
               {isOnlyAdmin&&<button onClick={function(){setEditLead(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.edit}><Edit size={11}/></button>}
               {isOnlyAdmin&&<button onClick={function(){archiveLead(gid(selected));}} style={{ background:"rgba(255,165,0,0.3)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.archive}><Archive size={11}/></button>}
             </div>
@@ -1362,7 +1362,7 @@ var LeadsPage = function(p) {
             return <div style={{ marginTop:14 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
                 <span style={{ fontSize:11, color:C.textLight, fontWeight:600 }}>{t.clientHistory}</span>
-                {isOnlyAdminH&&selected&&(selected.rotationCount||0)>0&&<span style={{ fontSize:9, background:"#FEF3C7", color:"#B45309", padding:"2px 6px", borderRadius:6, fontWeight:600 }}>🔄 {selected.rotationCount} تحويل</span>}
+                {isOnlyAdminH&&selected&&(selected.rotationCount||0)>0&&<span style={{ fontSize:9, background:"#FEF3C7", color:"#B45309", padding:"2px 6px", borderRadius:6, fontWeight:600 }}>🔄 {selected.rotationCount} transfers</span>}
               </div>
               {displayActs.map(function(a,i){var uname=a.userId&&a.userId.name?a.userId.name:"";return <div key={a._id||i} style={{ fontSize:10, padding:"8px 0", borderBottom:"1px solid #F8FAFC" }}>
                 <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
@@ -1379,7 +1379,7 @@ var LeadsPage = function(p) {
     </div>
 
     {/* Full History Modal */}
-    {showHistory&&historyLead&&<Modal show={true} onClose={function(){setShowHistory(false);setHistoryLead(null);}} title={"📋 تاريخ الleads — "+historyLead.name} w={520}>
+    {showHistory&&historyLead&&<Modal show={true} onClose={function(){setShowHistory(false);setHistoryLead(null);}} title={"📋 Lead History — "+historyLead.name} w={520}>
       {historyLoading&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>Loading...</div>}
       {!historyLoading&&fullHistory.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>No activity history</div>}
       {!historyLoading&&fullHistory.length>0&&<div style={{ maxHeight:400, overflowY:"auto" }}>
@@ -1402,7 +1402,7 @@ var LeadsPage = function(p) {
     </Modal>}
 
     {/* WhatsApp Templates Modal */}
-    {showWaTemplates&&waLead&&<Modal show={true} onClose={function(){setShowWaTemplates(false);setWaLead(null);}} title={"💬 رسائل واتساب — "+waLead.name}>
+    {showWaTemplates&&waLead&&<Modal show={true} onClose={function(){setShowWaTemplates(false);setWaLead(null);}} title={"💬 WhatsApp Messages — "+waLead.name}>
       <div style={{ marginBottom:14, padding:"10px 14px", background:"#F0FDF4", borderRadius:10, fontSize:12, color:"#15803D", display:"flex", alignItems:"center", gap:8 }}>
         <Phone size={14}/> {waLead.phone}{waLead.phone2?" / "+waLead.phone2:""}
       </div>
@@ -1415,8 +1415,8 @@ var LeadsPage = function(p) {
             <div style={{ fontSize:12, fontWeight:700, marginBottom:6, color:C.text }}>{tmpl.label}</div>
             <div style={{ fontSize:11, color:C.textLight, marginBottom:10, lineHeight:1.6, whiteSpace:"pre-line" }}>{msg}</div>
             <div style={{ display:"flex", gap:8 }}>
-              <a href={waUrl} target="_blank" rel="noreferrer" style={{ flex:1, padding:"8px", borderRadius:8, background:"#25D366", color:"#fff", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>💬 إرسال</a>
-              <button onClick={function(){navigator.clipboard.writeText(msg);}} style={{ padding:"8px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.textLight }}>📋 نسخ</button>
+              <a href={waUrl} target="_blank" rel="noreferrer" style={{ flex:1, padding:"8px", borderRadius:8, background:"#25D366", color:"#fff", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>💬 Send</a>
+              <button onClick={function(){navigator.clipboard.writeText(msg);}} style={{ padding:"8px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.textLight }}>📋 Copy</button>
             </div>
           </div>;
         })}
@@ -1440,7 +1440,7 @@ var LeadsPage = function(p) {
             p.setLeads(function(prev){return [lead].concat(prev);});
             setShowQuickAdd(false);
             setQuickForm({name:"",phone:"",project:PROJECTS[0],source:"Facebook"});
-            showBrowserNotif("✅ تم إضافة leads",lead.name+" — "+lead.phone);
+            showBrowserNotif("✅ Lead Added",lead.name+" — "+lead.phone);
           }catch(e){alert(e.message);}
           setQuickSaving(false);
         }} style={{ flex:2 }}>⚡ {t.quickAdd}</Btn>
@@ -1481,8 +1481,8 @@ var MyDayPage = function(p) {
   var tabs = [
     {id:"callbacks", label:"📞 Calls", count:callbacks.length, danger:overdue.length>0},
     {id:"noact", label:"⚠️ No Contact", count:noActivity.length, danger:noActivity.length>0},
-    {id:"tasks", label:"✅ المهام", count:myTasks.length, danger:false},
-    {id:"activity", label:"📊 نشاطي", count:todayActs.length, danger:false},
+    {id:"tasks", label:"✅ Tasks", count:myTasks.length, danger:false},
+    {id:"activity", label:"📊 My Activity", count:todayActs.length, danger:false},
   ];
 
   var tabBtn = function(tab){ var act=activeTab===tab.id; return <button key={tab.id} onClick={function(){setActiveTab(tab.id);}}
@@ -1502,10 +1502,10 @@ var MyDayPage = function(p) {
     {/* Summary cards */}
     <div style={{ display:"flex", gap:8, marginBottom:18, flexWrap:"wrap" }}>
       {[
-        {label:"عملائي",v:myLeads.length,c:"#3B82F6",bg:"#EFF6FF",icon:"👥"},
+        {label:"My Clients",v:myLeads.length,c:"#3B82F6",bg:"#EFF6FF",icon:"👥"},
         {label:"Today's Calls",v:todayActs.filter(function(a){return a.type==="call";}).length,c:"#10B981",bg:"#F0FDF4",icon:"📞"},
         {label:"Overdue",v:overdue.length,c:overdue.length>0?"#EF4444":"#94A3B8",bg:overdue.length>0?"#FEF2F2":"#F8FAFC",icon:"⚠️"},
-        {label:"مهام",v:myTasks.length,c:"#8B5CF6",bg:"#F5F3FF",icon:"✅"},
+        {label:"Tasks",v:myTasks.length,c:"#8B5CF6",bg:"#F5F3FF",icon:"✅"},
       ].map(function(s){return <div key={s.label} style={{ flex:"1 1 80px", background:s.bg, borderRadius:12, padding:"12px 10px", textAlign:"center", border:"1px solid "+s.c+"22" }}>
         <div style={{ fontSize:18 }}>{s.icon}</div>
         <div style={{ fontSize:20, fontWeight:800, color:s.c, marginTop:4 }}>{s.v}</div>
@@ -1521,7 +1521,7 @@ var MyDayPage = function(p) {
     {/* Tab content */}
     {activeTab==="callbacks"&&<div>
       {overdue.length>0&&<div style={{ marginBottom:14 }}>
-        <div style={{ fontSize:11, fontWeight:700, color:"#EF4444", marginBottom:8, display:"flex", alignItems:"center", gap:5 }}><AlertCircle size={12}/> فات موعدها ({overdue.length})</div>
+        <div style={{ fontSize:11, fontWeight:700, color:"#EF4444", marginBottom:8, display:"flex", alignItems:"center", gap:5 }}><AlertCircle size={12}/> Overdue ({overdue.length})</div>
         {overdue.map(function(l){var so=sc.find(function(s){return s.value===l.status;})||sc[0];
           return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#FEF2F2", border:"1px solid #FECACA", marginBottom:6, cursor:"pointer" }}>
             <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600, color:C.text }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:"#EF4444", fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
@@ -1558,7 +1558,7 @@ var MyDayPage = function(p) {
     </div>}
 
     {activeTab==="tasks"&&<div>
-      {myTasks.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>✅ مفيش مهام</div>}
+      {myTasks.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>✅ No tasks</div>}
       {myTasks.map(function(tk){var lName=tk.leadId&&tk.leadId.name?tk.leadId.name:"";
         return <div key={gid(tk)} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#F8FAFC", border:"1px solid #E8ECF1", marginBottom:6 }}>
           <div style={{ width:22, height:22, borderRadius:6, border:"2px solid #CBD5E1", flexShrink:0, background:"#fff" }}/>
@@ -1653,12 +1653,12 @@ var DashboardPage = function(p) {
       var cards=[
         {label:"My Leads",value:myLeads.length+"",bg:"linear-gradient(135deg,#3B82F6,#1D4ED8)",icon:"👥",onClick:function(){p.nav("leads");}},
         {label:"Today's Calls",value:todayCallsCount+"",bg:"linear-gradient(135deg,#10B981,#059669)",icon:"📞",onClick:function(){p.nav("myday");}},
-        {label:p.lang==="en"?"CallBack Soon":"CallBack قريب",value:callbackSoon.length+"",bg:"linear-gradient(135deg,#F59E0B,#D97706)",icon:"🔔",onClick:function(){p.nav("leads");p.setFilter("CallBack");}},
+        {label:p.lang==="en"?"CallBack Soon":"CallBack Soon",value:callbackSoon.length+"",bg:"linear-gradient(135deg,#F59E0B,#D97706)",icon:"🔔",onClick:function(){p.nav("leads");p.setFilter("CallBack");}},
         {label:p.lang==="en"?"No Contact":"No Contact",value:noAct.length+"",bg:"linear-gradient(135deg,#EF4444,#DC2626)",icon:"⚠️",onClick:function(){p.nav("leads");}},
         {label:p.lang==="en"?"My Deals":"My Deals",value:myDeals.length+"",bg:"linear-gradient(135deg,#8B5CF6,#7C3AED)",icon:"🏆",onClick:function(){p.nav("deals");}},
       ];
       return <div style={{ marginBottom:22 }}>
-        <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10, textTransform:"uppercase", letterSpacing:1 }}>{p.lang==="en"?"OVERVIEW":"نظرة عامة"}</div>
+        <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10, textTransform:"uppercase", letterSpacing:1 }}>{p.lang==="en"?"OVERVIEW":"OVERVIEW"}</div>
         <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:10 }}>
           {cards.map(function(card){return <div key={card.label} onClick={card.onClick} style={{ flex:"1 1 130px", background:card.bg, borderRadius:14, padding:"16px 18px", color:"#fff", cursor:"pointer", transition:"transform 0.15s,box-shadow 0.15s" }}
             onMouseEnter={function(e){e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.boxShadow="0 8px 24px rgba(0,0,0,0.2)";}}
@@ -1685,7 +1685,7 @@ var DashboardPage = function(p) {
       <StatCard icon={Target} label={t.newLeads} value={myLeads.filter(function(l){return l.status==="Potential";}).length+""} c={C.success} onClick={function(){p.nav("leads");p.setFilter("Potential");}}/>
       <StatCard icon={Briefcase} label={t.activeDeals} value={myLeads.filter(function(l){return["HotCase","CallBack","MeetingDone"].includes(l.status);}).length+""} c={C.accent} onClick={function(){p.nav("leads");p.setFilter("HotCase");}}/>
       <StatCard icon={DollarSign} label={t.doneDeals} value={myLeads.filter(function(l){return l.status==="DoneDeal";}).length+""} c={C.primary} onClick={function(){p.nav("deals");}}/>
-      {(function(){var rots=[];try{rots=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}var todayRots=rots.filter(function(r){return r.time&&(Date.now()-new Date(r.time).getTime())<24*60*60*1000;});return todayRots.length>0?<StatCard icon={RotateCcw} label="تحويلات Today" value={todayRots.length+""} c={C.warning}/>:null;})()}
+      {(function(){var rots=[];try{rots=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}var todayRots=rots.filter(function(r){return r.time&&(Date.now()-new Date(r.time).getTime())<24*60*60*1000;});return todayRots.length>0?<StatCard icon={RotateCcw} label="Rotations Today" value={todayRots.length+""} c={C.warning}/>:null;})()}
     </div>}
 
     <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
@@ -1984,7 +1984,7 @@ var DealsPage = function(p) {
         {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
       </select>}
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-        <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>📅 من:</span>
+        <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>📅 From:</span>
         <input type="date" value={dateFrom} onChange={function(e){setDateFrom(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
@@ -2010,7 +2010,7 @@ var DealsPage = function(p) {
     {/* Stages Modal */}
     {stagesModal&&<Modal show={true} onClose={function(){setStagesModal(null);}} title={"📋 Deal Stages — "+stagesModal.name}>
       <div style={{ marginBottom:14, padding:"10px 14px", background:"#DCFCE7", borderRadius:10, fontSize:12, color:"#15803D", fontWeight:600 }}>
-        {stagesProgress(gid(stagesModal))}/3 مراحل مكتملة
+        {stagesProgress(gid(stagesModal))}/3 stages completed
         <div style={{ height:6, background:"#BBF7D0", borderRadius:3, marginTop:6 }}>
           <div style={{ height:"100%", width:(stagesProgress(gid(stagesModal))/3*100)+"%", background:C.success, borderRadius:3, transition:"width 0.4s" }}/>
         </div>
@@ -2023,7 +2023,7 @@ var DealsPage = function(p) {
             style={{ width:22, height:22, borderRadius:6, border:"2px solid", borderColor:stagesForm.contract?C.success:"#CBD5E1", background:stagesForm.contract?C.success:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}>
             {stagesForm.contract&&<span style={{ color:"#fff", fontSize:13, fontWeight:700 }}>✓</span>}
           </div>
-          <span style={{ fontSize:13, fontWeight:600 }}>📝 العقد اتوقع</span>
+          <span style={{ fontSize:13, fontWeight:600 }}>📝 Contract Signed</span>
         </div>
         {stagesForm.contract&&<div style={{ marginTop:8 }}>
           <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>Signing Date</label>
@@ -2039,7 +2039,7 @@ var DealsPage = function(p) {
             style={{ width:22, height:22, borderRadius:6, border:"2px solid", borderColor:stagesForm.payment1?C.success:"#CBD5E1", background:stagesForm.payment1?C.success:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}>
             {stagesForm.payment1&&<span style={{ color:"#fff", fontSize:13, fontWeight:700 }}>✓</span>}
           </div>
-          <span style={{ fontSize:13, fontWeight:600 }}>💰 الدفعة الأولى</span>
+          <span style={{ fontSize:13, fontWeight:600 }}>💰 1st Payment</span>
         </div>
         {stagesForm.payment1&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 10px", marginTop:8 }}>
           <div>
@@ -2063,7 +2063,7 @@ var DealsPage = function(p) {
             style={{ width:22, height:22, borderRadius:6, border:"2px solid", borderColor:stagesForm.payment2?C.success:"#CBD5E1", background:stagesForm.payment2?C.success:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}>
             {stagesForm.payment2&&<span style={{ color:"#fff", fontSize:13, fontWeight:700 }}>✓</span>}
           </div>
-          <span style={{ fontSize:13, fontWeight:600 }}>💰 الدفعة الثانية</span>
+          <span style={{ fontSize:13, fontWeight:600 }}>💰 2nd Payment</span>
         </div>
         {stagesForm.payment2&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 10px", marginTop:8 }}>
           <div>
@@ -2081,8 +2081,8 @@ var DealsPage = function(p) {
       </div>
 
       <div style={{ display:"flex", gap:10 }}>
-        <Btn outline onClick={function(){setStagesModal(null);}} style={{ flex:1 }}>إلغاء</Btn>
-        <Btn onClick={function(){saveStages(gid(stagesModal),stagesForm);setStagesModal(null);}} style={{ flex:1 }}>✅ حفظ</Btn>
+        <Btn outline onClick={function(){setStagesModal(null);}} style={{ flex:1 }}>Cancel</Btn>
+        <Btn onClick={function(){saveStages(gid(stagesModal),stagesForm);setStagesModal(null);}} style={{ flex:1 }}>✅ Save</Btn>
       </div>
     </Modal>}
 
@@ -2098,11 +2098,11 @@ var DealsPage = function(p) {
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <div>
               <div style={{ fontSize:13, fontWeight:700 }}>{u.name}</div>
-              <div style={{ fontSize:11, color:C.textLight }}>{u.role==="manager"?"مدير — 2,000/M ثابت":"سيلز — "+res.commRate.toLocaleString()+"/M"}</div>
+              <div style={{ fontSize:11, color:C.textLight }}>{u.role==="manager"?"Manager — 2,000/M fixed":"Sales — "+res.commRate.toLocaleString()+"/M"}</div>
             </div>
             <div style={{ textAlign:"left" }}>
               <div style={{ fontSize:15, fontWeight:800, color:C.success }}>{res.commission.toLocaleString()} EGP</div>
-              <div style={{ fontSize:10, color:C.textLight }}>مبيعات فعلية: {(res.effectiveRevenue/1000000).toFixed(2)}M</div>
+              <div style={{ fontSize:10, color:C.textLight }}>Actual Sales: {(res.effectiveRevenue/1000000).toFixed(2)}M</div>
             </div>
           </div>
           {res.qTarget>0&&<div style={{ marginTop:6 }}>
@@ -2110,7 +2110,7 @@ var DealsPage = function(p) {
               <div style={{ height:"100%", width:Math.min(100,(res.effectiveRevenue/res.qTarget*100))+"%", background:res.effectiveRevenue>=res.qTarget*3?C.success:res.effectiveRevenue>=res.qTarget*2?"#8B5CF6":C.accent, borderRadius:3 }}/>
             </div>
             <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>
-              {res.effectiveRevenue>=res.qTarget*3?"🏆 3x — Commission 7,000/M":res.effectiveRevenue>=res.qTarget*2?"⚡ 2x — Commission 6,000/M":"📈 "+Math.round(res.effectiveRevenue/res.qTarget*100)+"% من التارجت"}
+              {res.effectiveRevenue>=res.qTarget*3?"🏆 3x — Commission 7,000/M":res.effectiveRevenue>=res.qTarget*2?"⚡ 2x — Commission 6,000/M":"📈 "+Math.round(res.effectiveRevenue/res.qTarget*100)+"% of Target"}
             </div>
           </div>}
         </div>;
@@ -2118,9 +2118,9 @@ var DealsPage = function(p) {
     </Modal>}
 
     {/* Project Weight Modal */}
-    {isAdmin&&projWeightModal&&<Modal show={true} onClose={function(){setProjWeightModal(false);}} title={"⚙️ Commission المشاريع"}>
+    {isAdmin&&projWeightModal&&<Modal show={true} onClose={function(){setProjWeightModal(false);}} title={"⚙️ Commission Projects"}>
       <div style={{ fontSize:12, color:C.textLight, marginBottom:12, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>
-        100% = يحسب كامل في التارجت والCommission<br/>50% = يحسب نص في التارجت والCommission
+        100% = fully counted in Target & Commission<br/>50% = counted as half in Target & Commission
       </div>
       {(function(){var projects=[];deals.forEach(function(d){if(d.project&&!projects.includes(d.project))projects.push(d.project);});return projects.map(function(proj){
         var w=getProjectWeight(proj);
@@ -2134,42 +2134,42 @@ var DealsPage = function(p) {
           </div>
         </div>;
       });})()}
-      <Btn onClick={function(){setProjWeightModal(false);}} style={{ marginTop:14, width:"100%" }}>إغلاق</Btn>
+      <Btn onClick={function(){setProjWeightModal(false);}} style={{ marginTop:14, width:"100%" }}>Close</Btn>
     </Modal>}
 
     {/* Split Modal */}
     {splitModal&&<Modal show={true} onClose={function(){setSplitModal(null);setSplitAgent2("");}} title={"🤝 Split Deal — "+splitModal.name}>
       <div style={{ fontSize:12, color:C.textLight, marginBottom:12 }}>Deal will be split 50/50 between two agents</div>
       <div style={{ marginBottom:10 }}>
-        <div style={{ fontSize:12, fontWeight:600, marginBottom:6 }}>السيلز الأول</div>
+        <div style={{ fontSize:12, fontWeight:600, marginBottom:6 }}>Agent 1</div>
         <div style={{ padding:"8px 12px", borderRadius:8, background:"#F8FAFC", fontSize:13 }}>{splitModal.agentId&&splitModal.agentId.name?splitModal.agentId.name:"—"}</div>
       </div>
       <div style={{ marginBottom:14 }}>
-        <div style={{ fontSize:12, fontWeight:600, marginBottom:6 }}>السيلز الثاني</div>
+        <div style={{ fontSize:12, fontWeight:600, marginBottom:6 }}>Agent 2</div>
         <select value={splitAgent2} onChange={function(e){setSplitAgent2(e.target.value);}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", boxSizing:"border-box" }}>
-          <option value="">— اختر سيلز —</option>
+          <option value="">— Select Agent —</option>
           {salesUsers.filter(function(u){var uid=gid(u);var a1=splitModal.agentId&&splitModal.agentId._id?splitModal.agentId._id:splitModal.agentId;return uid!==a1;}).map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name} — {u.title}</option>;})}
         </select>
       </div>
       {getDealSplit(gid(splitModal))&&<div style={{ padding:"8px 12px", background:"#FEF3C7", borderRadius:8, fontSize:12, marginBottom:10 }}>
-        تقسيم حالي: {getDealSplit(gid(splitModal)).agent2Name} — <button onClick={function(){saveDealSplit(gid(splitModal),null);setSplitModal(null);}} style={{ background:"none", border:"none", color:C.danger, cursor:"pointer", fontSize:12 }}>إلغاء التقسيم</button>
+        Current split: {getDealSplit(gid(splitModal)).agent2Name} — <button onClick={function(){saveDealSplit(gid(splitModal),null);setSplitModal(null);}} style={{ background:"none", border:"none", color:C.danger, cursor:"pointer", fontSize:12 }}>Remove Split</button>
       </div>}
       <div style={{ display:"flex", gap:10 }}>
-        <Btn outline onClick={function(){setSplitModal(null);setSplitAgent2("");}} style={{ flex:1 }}>إلغاء</Btn>
+        <Btn outline onClick={function(){setSplitModal(null);setSplitAgent2("");}} style={{ flex:1 }}>Cancel</Btn>
         <Btn onClick={function(){
           if(!splitAgent2) return;
           var ag2=salesUsers.find(function(u){return gid(u)===splitAgent2;});
           saveDealSplit(gid(splitModal),{agent2Id:splitAgent2,agent2Name:ag2?ag2.name:"?"});
           setSplitModal(null); setSplitAgent2("");
-        }} style={{ flex:1 }}>✅ حفظ</Btn>
+        }} style={{ flex:1 }}>✅ Save</Btn>
       </div>
     </Modal>}
 
     {/* Action buttons row */}
     {isOnlyAdmin&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
       <Btn outline onClick={function(){setCommModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.success, borderColor:C.success }}>💰 Commissions</Btn>
-      <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ Commission المشاريع</Btn>
+      <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ Commission Projects</Btn>
     </div>}
 
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
@@ -2194,7 +2194,7 @@ var DealsPage = function(p) {
                 if(split&&bv>0){
                   return <div>
                     <div>{(bv/2).toLocaleString()}</div>
-                    <div style={{ fontSize:10, color:"#8B5CF6", fontWeight:600 }}>🤝 50% — {split.agent2Name||"مشترك"}</div>
+                    <div style={{ fontSize:10, color:"#8B5CF6", fontWeight:600 }}>🤝 50% — {split.agent2Name||"Shared"}</div>
                   </div>;
                 }
                 return displayVal;
@@ -2333,8 +2333,8 @@ var TasksPage = function(p) {
   </div>;};
 
   var TRow=function(tp){var tk=tp.task;return <div style={{ padding:"10px 14px", borderRadius:10, background:tp.bg||"#F8FAFC", border:"1px solid "+tp.border, marginBottom:8, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-    <div><div style={{ fontWeight:600, fontSize:13 }}>{tk.title}</div><div style={{ fontSize:11, color:tp.tc||"#64748B" }}>{tk.time?tk.time.slice(0,16).replace("T"," "):"بدون موعد"}</div></div>
-    <button onClick={function(){doneTask(tk._id);}} style={{ padding:"4px 12px", borderRadius:7, border:"none", background:C.success, color:"#fff", fontSize:11, fontWeight:600, cursor:"pointer" }}>✓ تم</button>
+    <div><div style={{ fontWeight:600, fontSize:13 }}>{tk.title}</div><div style={{ fontSize:11, color:tp.tc||"#64748B" }}>{tk.time?tk.time.slice(0,16).replace("T"," "):"No time set"}</div></div>
+    <button onClick={function(){doneTask(tk._id);}} style={{ padding:"4px 12px", borderRadius:7, border:"none", background:C.success, color:"#fff", fontSize:11, fontWeight:600, cursor:"pointer" }}>✓ Done</button>
   </div>;};
 
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -2354,25 +2354,25 @@ var TasksPage = function(p) {
     </div>
 
     {overdue.length>0&&<div id="t-overdue"><Sec icon="⚠️" title="Overdue Calls" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
-    {overdueTasks.length>0&&<Sec icon="🔴" title="مهام Overdue" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
+    {overdueTasks.length>0&&<Sec icon="🔴" title="Overdue Tasks" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
     {callbacksToday.length>0&&<div id="t-callbacks"><Sec icon="📞" title="Today's Calls" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {todayTasks.length>0&&<div id="t-today"><Sec icon="📋" title="Today's Tasks" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec></div>}
     {noActivity.length>0&&<div id="t-noact"><Sec icon="😴" title="No Activity +3 Days" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
-    {upcoming.length>0&&<Sec icon="📅" title="مهام Upcoming" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
+    {upcoming.length>0&&<Sec icon="📅" title="Upcoming Tasks" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
 
     {callbacksToday.length===0&&overdue.length===0&&noActivity.length===0&&myTasks.length===0&&
       <div style={{ textAlign:"center", padding:"60px 20px" }}>
         <div style={{ fontSize:48, marginBottom:12 }}>🎉</div>
-        <div style={{ fontSize:16, fontWeight:700, marginBottom:8 }}>يومك نضيف!</div>
-        <div style={{ fontSize:13, color:C.textLight }}>مفيش مهام معلقة دلوقتي</div>
+        <div style={{ fontSize:16, fontWeight:700, marginBottom:8 }}>Clear day!</div>
+        <div style={{ fontSize:13, color:C.textLight }}>No pending tasks right now</div>
       </div>}
 
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ New Task"}>
-      <Inp label={"عنوان المهمة"} req value={nT.title} onChange={function(e){setNT(function(f){return Object.assign({},f,{title:e.target.value});});}}/>
-      <Inp label={"النوع"} type="select" value={nT.type} onChange={function(e){setNT(function(f){return Object.assign({},f,{type:e.target.value});});}} options={[{value:"call",label:"📞 مكالمة"},{value:"meeting",label:"🤝 اجتماع"},{value:"followup",label:"🔔 متابعة"},{value:"email",label:"📧 إيميل"}]}/>
-      <Inp label={"الموعد"} type="datetime-local" value={nT.time} onChange={function(e){setNT(function(f){return Object.assign({},f,{time:e.target.value});});}}/>
+      <Inp label={"Task Title"} req value={nT.title} onChange={function(e){setNT(function(f){return Object.assign({},f,{title:e.target.value});});}}/>
+      <Inp label={"Type"} type="select" value={nT.type} onChange={function(e){setNT(function(f){return Object.assign({},f,{type:e.target.value});});}} options={[{value:"call",label:"📞 Call"},{value:"meeting",label:"🤝 Meeting"},{value:"followup",label:"🔔 Follow-up"},{value:"email",label:"📧 Email"}]}/>
+      <Inp label={"Time"} type="datetime-local" value={nT.time} onChange={function(e){setNT(function(f){return Object.assign({},f,{time:e.target.value});});}}/>
       <Inp label={"Notes (optional)"} type="textarea" value={nT.notes} onChange={function(e){setNT(function(f){return Object.assign({},f,{notes:e.target.value});});}}/>
-      <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addTask} loading={saving} style={{ flex:1 }}>إضافة</Btn></div>
+      <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addTask} loading={saving} style={{ flex:1 }}>Add</Btn></div>
     </Modal>
   </div>;
 };
@@ -2389,7 +2389,7 @@ var ArchivePage = function(p) {
   };
   return <div style={{ padding:"18px 16px 40px" }}>
     <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.archive} ({archived.length})</h2>
-    {archived.length===0&&<div style={{ textAlign:"center", padding:50, color:C.textLight }}>الArchive فاضي</div>}
+    {archived.length===0&&<div style={{ textAlign:"center", padding:50, color:C.textLight }}>Archive is empty</div>}
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:480 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,t.phone,t.project,t.status,isAdmin&&t.agent,""].filter(Boolean).map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight }}>{h}</th>;})}
@@ -2478,7 +2478,7 @@ var DailyRequestsPage = function(p) {
           time:new Date().toISOString()
         });
         showBrowserNotif(
-          pendingStatus.newStatus==="DoneDeal"?"🏆 deal جديدة!":"📋 EOI جديد!",
+          pendingStatus.newStatus==="DoneDeal"?"🏆 New Deal!":"📋 New EOI!",
           (req.name||"leads")+" — "+(updateData.budget||req.budget||"")
         );
       }
@@ -2499,9 +2499,9 @@ var DailyRequestsPage = function(p) {
 
   var addReq=async function(){
     if(!form.name||!form.phone)return;
-    if(!form.area.trim()){alert("Area مطلوبة");return;}
-    if(!form.budget.trim()){alert("Budget مطلوبة");return;}
-    if(!form.callbackTime){alert("Callback مطلوب");return;}
+    if(!form.area.trim()){alert("Area is required");return;}
+    if(!form.budget.trim()){alert("Budget is required");return;}
+    if(!form.callbackTime){alert("Callback is required");return;}
     setSaving(true);
     try{
       var drAgentId=form.agentId||"";
@@ -2694,8 +2694,8 @@ var DailyRequestsPage = function(p) {
           <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selected.name}</div>
           <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}>{selected.phone}{selected.phone2?" / "+selected.phone2:""}</div>
           <div style={{ display:"flex", gap:6, marginTop:10 }}>
-            <a href={"tel:"+selected.phone} style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(34,197,94,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> اتصال</a>
-            <a href={"https://wa.me/2"+selected.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(37,211,102,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> واتساب</a>
+            <a href={"tel:"+selected.phone} style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(34,197,94,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> Call</a>
+            <a href={"https://wa.me/2"+selected.phone.replace(/^0/,"")} target="_blank" rel="noreferrer" style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(37,211,102,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp</a>
           </div>
         </div>
         <div style={{ padding:"12px 14px" }}>
@@ -2709,7 +2709,7 @@ var DailyRequestsPage = function(p) {
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span></div>:null;
           })}
           <div style={{ marginTop:12 }}>
-            <button onClick={function(){setShowActForm(!showActForm);}} style={{ width:"100%", padding:"8px", borderRadius:9, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><MessageSquare size={12}/> تسجيل نشاط</button>
+            <button onClick={function(){setShowActForm(!showActForm);}} style={{ width:"100%", padding:"8px", borderRadius:9, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><MessageSquare size={12}/> Log Activity</button>
             {showActForm&&<div style={{ marginTop:9, padding:10, background:"#F8FAFC", borderRadius:10 }}>
               <select value={actType} onChange={function(e){setActType(e.target.value);}} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:7, background:"#fff" }}>
                 <option value="call">📞 Call</option>
@@ -2728,11 +2728,11 @@ var DailyRequestsPage = function(p) {
       </Card>}
     </div>
 
-    <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ Add Number جديد"}>
+    <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ Add New Number"}>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
         <div style={{ gridColumn:"1/-1" }}><Inp label={"Name"} req value={form.name} onChange={function(e){setForm(function(f){return Object.assign({},f,{name:e.target.value});})}}/></div>
         <Inp label={"Phone"} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});})}} placeholder=""/>
-        <Inp label={"هاتف إضافي"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder=""/>
+        <Inp label={"Alt. Phone"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder=""/>
         <Inp label={"Property Type"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- Select -"};})}/>
         <Inp label={"Area"} req value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder=""/>
         <div style={{ gridColumn:"1/-1" }}><Inp label={"Budget"} req value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>
@@ -2846,7 +2846,7 @@ var UsersPage = function(p) {
         </td>
         <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(u.role!=="admin")toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
         <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:u.name});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button>
-              <button onClick={function(){setTeamModal({userId:uid,userName:u.name,teamId:u.teamId||"",teamName:u.teamName||"",reportsTo:u.reportsTo||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="تعديل الفريق"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(u.username!=="amgad")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.username!=="amgad"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.username==="amgad"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
+              <button onClick={function(){setTeamModal({userId:uid,userName:u.name,teamId:u.teamId||"",teamName:u.teamName||"",reportsTo:u.reportsTo||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Edit Team"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(u.username!=="amgad")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.username!=="amgad"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.username==="amgad"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
       </tr>;})}
       </tbody>
     </table></div></Card>
@@ -2865,18 +2865,18 @@ var UsersPage = function(p) {
         </div>;
       })}
       <div style={{ display:"flex", gap:10, marginTop:4 }}>
-        <Btn outline onClick={function(){setQtModal(null);}} style={{ flex:1 }}>إلغاء</Btn>
-        <Btn onClick={function(){saveQTargets(gid(qtModal.user),qtModal.targets).then(function(){setQtModal(null);});}} style={{ flex:1 }}>✅ حفظ</Btn>
+        <Btn outline onClick={function(){setQtModal(null);}} style={{ flex:1 }}>Cancel</Btn>
+        <Btn onClick={function(){saveQTargets(gid(qtModal.user),qtModal.targets).then(function(){setQtModal(null);});}} style={{ flex:1 }}>✅ Save</Btn>
       </div>
     </Modal>}
-    {teamModal&&<Modal show={true} onClose={function(){setTeamModal(null);}} title={"👥 تعديل الفريق — "+teamModal.userName}>
+    {teamModal&&<Modal show={true} onClose={function(){setTeamModal(null);}} title={"👥 Edit Team — "+teamModal.userName}>
       {/* reportsTo */}
       <div style={{marginBottom:12}}>
         <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>Reports To (Direct Manager)</label>
         <select value={teamModal.reportsTo||""} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{reportsTo:e.target.value||null});});}}
           style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:13,background:"#fff",boxSizing:"border-box"}}>
-          <option value="">— No (مدير رئيسي) —</option>
-          {p.users.filter(function(u){return u.role==="manager"&&gid(u)!==teamModal.userId;}).map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name} ({u.title||"مدير"})</option>;})}
+          <option value="">— No (Top Manager) —</option>
+          {p.users.filter(function(u){return u.role==="manager"&&gid(u)!==teamModal.userId;}).map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name} ({u.title||"Manager"})</option>;})}
         </select>
         <div style={{fontSize:10,color:"#8B5CF6",marginTop:4}}>Empty = Top Manager. Set = Team Leader sees only direct team.</div>
       </div>
@@ -2951,29 +2951,29 @@ var ReportsPage = function(p) {
   var exportReport=async function(){
     setExporting(true);
     var XLSX=await new Promise(function(res){if(window.XLSX){res(window.XLSX);return;}var s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=function(){res(window.XLSX);};document.head.appendChild(s);});
-    var rows=agentStats.map(function(a){return{"Agent":a.user.name,"جدد":a.newL,"Daily Request":a.dailyReq,"Meeting Done":a.meetingDone,"Deals":a.deals,"الهدف":a.target,"نسبة":a.prog+"%"};});
-    var ws=XLSX.utils.json_to_sheet(rows);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"تقرير");
-    XLSX.writeFile(wb,"تقرير_ARO_"+new Date().toISOString().slice(0,10)+".xlsx");setExporting(false);
+    var rows=agentStats.map(function(a){return{"Agent":a.user.name,"New":a.newL,"Daily Request":a.dailyReq,"Meeting Done":a.meetingDone,"Deals":a.deals,"Target":a.target,"Rate":a.prog+"%"};});
+    var ws=XLSX.utils.json_to_sheet(rows);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Report");
+    XLSX.writeFile(wb,"Report_ARO_"+new Date().toISOString().slice(0,10)+".xlsx");setExporting(false);
   };
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18, flexWrap:"wrap", gap:10 }}>
-      <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>📊 التقارير</h2>
+      <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>📊 Reports</h2>
       <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
         {["daily","weekly","monthly"].map(function(p2){return <button key={p2} onClick={function(){setPeriod(p2);}} style={{ padding:"6px 14px", borderRadius:8, border:"1px solid", borderColor:period===p2?C.accent:"#E2E8F0", background:period===p2?C.accent+"12":"#fff", color:period===p2?C.accent:C.textLight, fontSize:12, fontWeight:600, cursor:"pointer" }}>{pLabel[p2]}</button>;})}
         <Btn outline onClick={exportReport} loading={exporting} style={{ padding:"6px 12px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> Excel</Btn>
       </div>
     </div>
     <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
-      <StatCard icon={Users} label={"جدد — "+pLabel[period]} value={periodLeads.length+""} c={C.info}/>
+      <StatCard icon={Users} label={"New — "+pLabel[period]} value={periodLeads.length+""} c={C.info}/>
       <StatCard icon={DollarSign} label={"Deals — "+pLabel[period]} value={periodDeals.length+""} c={C.success}/>
       <StatCard icon={Target} label={"Total"} value={allLeads.length+""} c={C.accent}/>
-      <StatCard icon={Activity} label={"معدل التحويل"} value={allLeads.length?Math.round((allLeads.filter(function(l){return l.status==="DoneDeal";}).length/allLeads.length)*100)+"%":"0%"} c={"#8B5CF6"}/>
+      <StatCard icon={Activity} label={"Conversion Rate"} value={allLeads.length?Math.round((allLeads.filter(function(l){return l.status==="DoneDeal";}).length/allLeads.length)*100)+"%":"0%"} c={"#8B5CF6"}/>
     </div>
     <Card style={{ marginBottom:20 }}>
-      <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 أداء الفريق — {pLabel[period]}</h3>
+      <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 Team Performance — {pLabel[period]}</h3>
       <div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse" }}>
         <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-          {["#","Agent","جدد","Daily Req","Meeting Done","Deals","الإيراد","الهدف","نسبة الإنجاز"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
+          {["#","Agent","New","Daily Req","Meeting Done","Deals","Revenue","Target","Achievement"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
         </tr></thead>
         <tbody>{agentStats.map(function(a,i){return <tr key={gid(a.user)} style={{ borderBottom:"1px solid #F1F5F9", background:i===0?"#FFFBEB":"transparent" }}>
           <td style={{ padding:"12px", fontSize:16 }}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":i+1}</td>
@@ -2990,7 +2990,7 @@ var ReportsPage = function(p) {
       </table></div>
     </Card>
     <Card>
-      <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>📈 توزيع الLeads</h3>
+      <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>📈 Leads Distribution</h3>
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))", gap:10 }}>
         {sc.map(function(s){var cnt=allLeads.filter(function(l){return l.status===s.value;}).length;var pct=allLeads.length?Math.round((cnt/allLeads.length)*100):0;return cnt>0?<div key={s.value} style={{ padding:"14px", borderRadius:12, background:s.bg, border:"1px solid "+s.color+"30" }}><div style={{ fontSize:22, fontWeight:800, color:s.color }}>{cnt}</div><div style={{ fontSize:12, color:s.color, fontWeight:600, marginTop:2 }}>{s.label}</div><div style={{ fontSize:11, color:s.color+"99", marginTop:4 }}>{pct}%</div></div>:null;})}
       </div>
@@ -3158,7 +3158,7 @@ var TeamPage = function(p) {
 
     {/* Top-level sales (no manager) */}
     {topLevelSales.length>0&&<div>
-      <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10 }}>موظفون بدون مدير</div>
+      <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10 }}>Agents without a manager</div>
       <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
         {topLevelSales.map(function(a){return <MemberCard key={gid(a)} user={a}/>;})}
       </div>
@@ -3201,8 +3201,8 @@ var TeamPage = function(p) {
         </div>;
       })}
       <div style={{ display:"flex", gap:10 }}>
-        <Btn outline onClick={function(){setEditQModal(null);}} style={{ flex:1 }}>إلغاء</Btn>
-        <Btn onClick={function(){saveQTargets(gid(editQModal.user),editQModal.targets);setEditQModal(null);}} style={{ flex:1 }}>✅ حفظ</Btn>
+        <Btn outline onClick={function(){setEditQModal(null);}} style={{ flex:1 }}>Cancel</Btn>
+        <Btn onClick={function(){saveQTargets(gid(editQModal.user),editQModal.targets);setEditQModal(null);}} style={{ flex:1 }}>✅ Save</Btn>
       </div>
     </Modal>}
   </div>;
@@ -3382,9 +3382,9 @@ var SettingsPage = function(p) {
 
       {/* Rotation Agents */}
       <div style={{marginBottom:13}}>
-        <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>🔄 موظفو الإعادة التلقائية (الروتيشن)</label>
+        <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>🔄 Auto-Rotation Agents</label>
         <div style={{border:"1px solid #E2E8F0",borderRadius:10,padding:"8px 12px",background:"#fff",maxHeight:200,overflowY:"auto"}}>
-          {salesAgentsForSetting.length===0&&<div style={{fontSize:12,color:C.textLight,padding:"6px 0"}}>No موظفين</div>}
+          {salesAgentsForSetting.length===0&&<div style={{fontSize:12,color:C.textLight,padding:"6px 0"}}>No agents</div>}
           {salesAgentsForSetting.map(function(u){
             var uid=gid(u); var checked=reassignAgents.includes(uid);
             return <div key={uid} onClick={function(){toggleAgent(uid);}} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 4px",cursor:"pointer",borderRadius:7,background:checked?C.accent+"10":"transparent",marginBottom:2}}>
@@ -3398,19 +3398,19 @@ var SettingsPage = function(p) {
             </div>;
           })}
         </div>
-        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>الLeads هيتوزعوا بس على Agentين المحددين ({reassignAgents.length} محدد) — لو مفيش محدد مفيش روتيشن</div>
+        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>Leads will only be assigned to selected agents ({reassignAgents.length} selected) — if none selected, no rotation occurs</div>
       </div>
 
       {/* Rotation Durations */}
       <div style={{marginBottom:13,padding:"14px 16px",background:"#F8FAFC",borderRadius:12,border:"1px solid #E8ECF1"}}>
-        <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:12}}>⚙️ مدد الروتيشن التلقائي</div>
+        <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:12}}>⚙️ Auto-Rotation Durations</div>
         {[
-          {label:"No Answer — عدد المرات قبل التحويل",val:rotNoAnswerCount,set:setRotNoAnswerCount,unit:"مرة"},
-          {label:"No Answer — انتظر بعد آخر مرة",val:rotNoAnswerHours,set:setRotNoAnswerHours,unit:"ساعة"},
-          {label:"Not Interested — يرجع بعد",val:rotNotIntDays,set:setRotNotIntDays,unit:"يوم"},
-          {label:"No Contact — يتحول بعد",val:rotNoActDays,set:setRotNoActDays,unit:"يوم"},
-          {label:"CallBack فات موعده — يتحول بعد",val:rotCbDays,set:setRotCbDays,unit:"يوم"},
-          {label:"Potential/HotCase/Meeting بدون أكشن — يتحول بعد",val:rotHotDays,set:setRotHotDays,unit:"يوم"},
+          {label:"No Answer — times before rotation",val:rotNoAnswerCount,set:setRotNoAnswerCount,unit:"times"},
+          {label:"No Answer — wait after last attempt",val:rotNoAnswerHours,set:setRotNoAnswerHours,unit:"hrs"},
+          {label:"Not Interested — return after",val:rotNotIntDays,set:setRotNotIntDays,unit:"days"},
+          {label:"No Contact — rotate after",val:rotNoActDays,set:setRotNoActDays,unit:"days"},
+          {label:"CallBack overdue — rotate after",val:rotCbDays,set:setRotCbDays,unit:"days"},
+          {label:"Potential/HotCase/Meeting no action — rotate after",val:rotHotDays,set:setRotHotDays,unit:"days"},
         ].map(function(row){return <div key={row.label} style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9,gap:10}}>
           <span style={{fontSize:12,color:C.text,flex:1}}>{row.label}</span>
           <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
@@ -3420,8 +3420,8 @@ var SettingsPage = function(p) {
         </div>;})}
       </div>
 
-      <Inp label={t.language} type="select" value={p.lang} onChange={function(e){p.setLang(e.target.value);}} options={[{value:"ar",label:"عربي"},{value:"en",label:"English"}]}/>
-      {saved&&<div style={{marginBottom:12,padding:"10px 14px",background:"#DCFCE7",borderRadius:10,color:"#15803D",fontSize:13,fontWeight:600}}>✅ تم الحفظ بنجاح</div>}
+      <Inp label={t.language} type="select" value={p.lang} onChange={function(e){p.setLang(e.target.value);}} options={[{value:"ar",label:"Arabic"},{value:"en",label:"English"}]}/>
+      {saved&&<div style={{marginBottom:12,padding:"10px 14px",background:"#DCFCE7",borderRadius:10,color:"#15803D",fontSize:13,fontWeight:600}}>✅ Saved successfully</div>}
       <Btn onClick={doSave}>{t.save}</Btn>
     </Card>
   </div>;
@@ -3495,10 +3495,10 @@ var KPIsPage = function(p) {
         {/* Overall stats */}
         <div style={{ display:"flex", padding:"12px 16px", gap:8 }}>
           {[
-            {v:myLeads.length, l:"Total الLeads", c:C.info},
-            {v:myDeals.length, l:"Total الDeals", c:C.success},
-            {v:myActs.filter(function(a){return a.type==="call";}).length, l:"Total الCalls", c:C.accent},
-            {v:myLeads.length>0?Math.round(myDeals.length/myLeads.length*100)+"%":"0%", l:"معدل التحويل", c:C.warning},
+            {v:myLeads.length, l:"Total Leads", c:C.info},
+            {v:myDeals.length, l:"Total Deals", c:C.success},
+            {v:myActs.filter(function(a){return a.type==="call";}).length, l:"Total Calls", c:C.accent},
+            {v:myLeads.length>0?Math.round(myDeals.length/myLeads.length*100)+"%":"0%", l:"Conversion Rate", c:C.warning},
           ].map(function(s){return <div key={s.l} style={{ flex:1, textAlign:"center", padding:"8px 4px", background:"#F8FAFC", borderRadius:8 }}>
             <div style={{ fontSize:15, fontWeight:700, color:s.c }}>{s.v}</div>
             <div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{s.l}</div>
@@ -3541,8 +3541,8 @@ var KPIsPage = function(p) {
       {[
         {v:qDeals.length, l:"Deals", c:C.success, icon:"🏆"},
         {v:qCalls.length, l:"Calls", c:C.info, icon:"📞"},
-        {v:qLeads.length, l:"Leads جدد", c:C.accent, icon:"👤"},
-        {v:convRate+"%", l:"معدل التحويل", c:C.warning, icon:"📊"},
+        {v:qLeads.length, l:"New Leads", c:C.accent, icon:"👤"},
+        {v:convRate+"%", l:"Conversion Rate", c:C.warning, icon:"📊"},
       ].map(function(s){return <Card key={s.l} style={{ flex:"1 1 120px", textAlign:"center", padding:"16px 12px" }}>
         <div style={{ fontSize:22, marginBottom:4 }}>{s.icon}</div>
         <div style={{ fontSize:22, fontWeight:800, color:s.c }}>{s.v}</div>
@@ -3596,10 +3596,10 @@ var CallCalendarPage = function(p) {
   for(var i=0;i<offset;i++) cells.push(null);
   for(var d=1;d<=daysInMonth;d++) cells.push(d);
 
-  var dayLabels = ["الإثنين","الثلاثاء","الأربعاء","الخميس","Friday","السبت","الأحد"];
+  var dayLabels = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 
   return <div style={{ padding:"18px 16px 40px" }}>
-    <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>📅 تقويم الCalls</h2>
+    <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>📅 Calls Calendar</h2>
 
     {/* Month nav */}
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
@@ -3667,7 +3667,7 @@ var CallCalendarPage = function(p) {
       </Card>
       <Card style={{ flex:1, textAlign:"center", padding:"12px" }}>
         <div style={{ fontSize:20, fontWeight:700, color:C.danger }}>{myCallbacks.filter(function(l){return new Date(l.callbackTime)<new Date()&&l.status==="CallBack";}).length}</div>
-        <div style={{ fontSize:11, color:C.textLight, marginTop:4 }}>فات موعدها</div>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:4 }}>Overdue</div>
       </Card>
     </div>
   </div>;
@@ -3954,7 +3954,7 @@ export default function CRMApp() {
     var notifyAdmins = function(lead, fromName, toName, reason){
       var timeStr = new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"});
       var dateStr = new Date().toLocaleDateString("en-GB");
-      showBrowserNotif("🔄 تحويل تلقائي", lead.name+" — من "+fromName+" إلى "+toName+" ("+reason+")");
+      showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
       // Store in-app notification for admins
       try{
         var notifs = JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");
@@ -3966,7 +3966,7 @@ export default function CRMApp() {
     // Helper: do rotation
     var doRotate = async function(lead, reason){
       var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
-      var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"موظف";
+      var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"Agent";
       var targetAgent = pickAgent(currentAgentId);
       if(!targetAgent) return; // no valid target agent
       var targetAgentId = gid(targetAgent);
@@ -3982,7 +3982,7 @@ export default function CRMApp() {
         },token);
         await apiFetch("/api/activities","POST",{
           leadId:gid(lead),type:"reassign",
-          note:"🔄 تحويل تلقائي | من: "+fromName+" ← إلى: "+targetAgent.name+" | السبب: "+reason+" | "+timeStr
+          note:"🔄 Auto Rotation | From: "+fromName+" ← To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
         },token);
         setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
         notifyAdmins(lead,fromName,targetAgent.name,reason);
@@ -4020,7 +4020,7 @@ export default function CRMApp() {
           try{naCount=Number(localStorage.getItem(naKey)||0);}catch(e){}
           try{naTime=Number(localStorage.getItem(naTimeKey)||0);}catch(e){}
           if(naCount>=dur.naCount && naTime>0 && (now-naTime)>=(dur.naHours*HOUR)){
-            await doRotate(l,"No Answer "+dur.naCount+" مرات");
+            await doRotate(l,"No Answer "+dur.naCount+" times");
             try{localStorage.removeItem(naKey);localStorage.removeItem(naTimeKey);}catch(e){}
             continue;
           }
@@ -4032,7 +4032,7 @@ export default function CRMApp() {
           try{niTime=Number(localStorage.getItem(niKey)||0);}catch(e){}
           if(!niTime){try{localStorage.setItem(niKey,String(lastAct));}catch(e){} continue;}
           if((now-niTime)>=(dur.niDays*DAY)){
-            await doRotate(l,"Not Interested — فرصة جديدة بعد "+dur.niDays+" يوم");
+            await doRotate(l,"Not Interested — new opportunity after "+dur.niDays+" days");
             try{localStorage.removeItem(niKey);}catch(e){}
             continue;
           }
@@ -4044,7 +4044,7 @@ export default function CRMApp() {
             var noActKey="crm_noact2_"+lid; var noActDone=false;
             try{noActDone=localStorage.getItem(noActKey)==="1";}catch(e){}
             if(!noActDone){
-              await doRotate(l,"No Contact +"+dur.noActDays+" أيام");
+              await doRotate(l,"No Contact +"+dur.noActDays+" days");
               try{localStorage.setItem(noActKey,"1");}catch(e){}
               continue;
             }
@@ -4058,7 +4058,7 @@ export default function CRMApp() {
             var cbDoneKey="crm_cbrot_"+lid; var cbDone=false;
             try{cbDone=localStorage.getItem(cbDoneKey)==="1";}catch(e){}
             if(!cbDone){
-              await doRotate(l,"CallBack فات موعده بـ "+dur.cbDays+" يوم");
+              await doRotate(l,"CallBack overdue by "+dur.cbDays+" days");
               try{localStorage.setItem(cbDoneKey,"1");}catch(e){}
               continue;
             }
@@ -4071,7 +4071,7 @@ export default function CRMApp() {
             var hotKey="crm_hotrot_"+lid; var hotDone=false;
             try{hotDone=localStorage.getItem(hotKey)==="1";}catch(e){}
             if(!hotDone){
-              await doRotate(l,l.status+" — بدون أكشن "+dur.hotDays+" أيام");
+              await doRotate(l,l.status+" — no action "+dur.hotDays+" days");
               try{localStorage.setItem(hotKey,"1");}catch(e){}
               continue;
             }
@@ -4094,7 +4094,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"; var isOnlyAdmin=currentUser.role==="admin";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"تقويم الCalls",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
+  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
   // Build team-filtered users for manager
   // Server already filters users by role/hierarchy — p.users IS the team
   var myTeamUsers = users;
@@ -4128,7 +4128,7 @@ export default function CRMApp() {
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
       <QuickPhoneSearch leads={leads} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
-        ⚠️ أنت غير Online بالإنترنت — البيانات لن تُحفظ حتى يعود الاتصال
+        ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
       <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={[]} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
