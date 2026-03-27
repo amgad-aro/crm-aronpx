@@ -234,6 +234,8 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     if (req.body.password) update.password = await bcrypt.hash(req.body.password, 10);
     if (req.body.qTargets !== undefined) update["qTargets"] = req.body.qTargets;
     if (req.body.reportsTo !== undefined) update.reportsTo = req.body.reportsTo || null;
+    if (req.body.teamId !== undefined) update.teamId = req.body.teamId;
+    if (req.body.teamName !== undefined) update.teamName = req.body.teamName;
     var user = await User.findByIdAndUpdate(req.params.id, { $set: update }, { new: true, strict: false }).select("-password");
     res.json(user);
   } catch (e) {
