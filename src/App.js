@@ -27,7 +27,7 @@ var TR = {
   ar: {
     dir: "rtl",
     login: "تسجيل الدخول", loginBtn: "دخول", loginError: "Username أو كلمة المرور غلط",
-    username: "Username", password: "كلمة المرور", logout: "تسجيل خروج",
+    username: "Username", password: "Password", logout: "تسجيل خروج",
     dashboard: "الرئيسية", leads: "الLeads", deals: "الDeals", projects: "المشاريع",
     tasks: "المهام", reports: "التقارير", team: "فريق المبيعات", users: "Users",
     units: "الوحدات", settings: "الإعدادات", channels: "القنوات", dailyReq: "Daily Request",
@@ -36,7 +36,7 @@ var TR = {
     all: "الكل", totalLeads: "Total الLeads", newLeads: "جدد",
     activeDeals: "Deals نشطة", doneDeals: "تم البيع",
     addLead: "إضافة leads", addUser: "Add User", addTask: "إضافة مهمة", addRequest: "Add Number",
-    name: "Name", phone: "Phone", phone2: "هاتف إضافي", email: "الإيميل", budget: "Budget",
+    name: "Name", phone: "Phone", phone2: "هاتف إضافي", email: "Email", budget: "Budget",
     project: "المشروع", source: "المصدر", agent: "Agent",
     status: "Status", cancel: "إلغاء", save: "حفظ", add: "إضافة", edit: "تعديل",
     callbackTime: "Callback", notes: "Notes",
@@ -230,7 +230,7 @@ var loadXLSX = function() {
 };
 var rowToLead = function(row) {
   var g = function() { for (var i = 0; i < arguments.length; i++) { var v = row[arguments[i]]; if (v) return String(v).trim(); } return ""; };
-  return { name: g("name","Name","اسم الleads"), phone: g("phone","phone number","Phone","موبايل","رقم"), phone2: g("phone2","phone2 ","phone 2","هاتف إضافي","هاتف2","رقم2","موبايل2"), email: g("email","الإيميل"), budget: g("budget","Budget"), project: g("project","campaign","المشروع","الكامبين") || "", source: g("source","المصدر") || "Facebook", notes: g("notes","Notes") };
+  return { name: g("name","Name","اسم الleads"), phone: g("phone","phone number","Phone","موبايل","رقم"), phone2: g("phone2","phone2 ","phone 2","هاتف إضافي","هاتف2","رقم2","موبايل2"), email: g("email","Email"), budget: g("budget","Budget"), project: g("project","campaign","المشروع","الكامبين") || "", source: g("source","المصدر") || "Facebook", notes: g("notes","Notes") };
 };
 
 // ===== UI COMPONENTS =====
@@ -791,7 +791,7 @@ var exportLeadsToExcel = async function(leads, users, filename) {
     "Name": l.name,
     "Phone": l.phone,
     "هاتف إضافي": l.phone2 || "",
-    "الإيميل": l.email || "",
+    "Email": l.email || "",
     "المشروع": l.project || "",
     "Status": l.status || "",
     "المصدر": l.source || "",
@@ -2775,10 +2775,10 @@ var UsersPage = function(p) {
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.phone} value={nU.phone} onChange={function(e){setNU(Object.assign({},nU,{phone:e.target.value}));}}/></div>
         <Inp label={t.monthlyTarget} type="number" value={nU.monthlyTarget} onChange={function(e){setNU(Object.assign({},nU,{monthlyTarget:Number(e.target.value)}));}}/>
       {(nU.role==="sales"||nU.role==="manager")&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
-        <Inp label={"اسم الفريق"} value={nU.teamName||""} onChange={function(e){setNU(Object.assign({},nU,{teamName:e.target.value}));}} placeholder="e.g. Team A"/>
-        <Inp label={"كود الفريق"} value={nU.teamId||""} onChange={function(e){setNU(Object.assign({},nU,{teamId:e.target.value}));}} placeholder="team-a"/>
+        <Inp label={"Team Name"} value={nU.teamName||""} onChange={function(e){setNU(Object.assign({},nU,{teamName:e.target.value}));}} placeholder="e.g. Team A"/>
+        <Inp label={"Team Code"} value={nU.teamId||""} onChange={function(e){setNU(Object.assign({},nU,{teamId:e.target.value}));}} placeholder="team-a"/>
       </div>}
-        <div style={{ gridColumn:"1/-1" }}><Inp label={t.role} type="select" value={nU.role} onChange={function(e){setNU(Object.assign({},nU,{role:e.target.value}));}} options={[{value:"admin",label:t.admin},{value:"manager",label:t.salesManager},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/></div>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={t.role} type="select" value={nU.role} onChange={function(e){setNU(Object.assign({},nU,{role:e.target.value}));}} options={[{value:"admin",label:t.admin},{value:"sales_admin",label:"Sales Admin"},{value:"manager",label:t.salesManager},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/></div>
       </div>
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={add} loading={saving} style={{ flex:1 }}>{t.add}</Btn></div>
     </Modal>
