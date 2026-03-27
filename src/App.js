@@ -335,12 +335,12 @@ var StatusModal = function(p) {
 
     {/* Potential / HotCase / MeetingDone: date + comment required */}
     {needsComment&&<div style={{ marginBottom:12 }}>
-      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 Callback الUpcoming <span style={{color:C.danger}}>*</span></label>
+      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 Upcoming Callback <span style={{color:C.danger}}>*</span></label>
       <input type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);setErr("");}} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
     </div>}
     {needsComment&&<div style={{ marginBottom:12 }}>
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 Feedback <span style={{color:C.danger}}>*</span></label>
-      <textarea rows={3} placeholder="اكتب Feedback..." value={comment} onChange={function(e){setComment(e.target.value);setErr("");}}
+      <textarea rows={3} placeholder="Write feedback..." value={comment} onChange={function(e){setComment(e.target.value);setErr("");}}
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
     </div>}
 
@@ -714,7 +714,7 @@ var LeadForm = function(p) {
       <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
       <Inp label={t.budget} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
     </div>
-    <Inp label={t.project} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="اكتب اسم المشروع..."/>
+    <Inp label={t.project} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="Project name..."/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
@@ -836,7 +836,7 @@ var QuickPhoneSearch = function(p) {
         <div style={{ fontSize:15, fontWeight:700 }}>📞 بحث سريع بالموبايل</div>
         <button onClick={function(){setShow(false);setQ("");}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:18, color:"#94A3B8" }}>✕</button>
       </div>
-      <input autoFocus value={q} onChange={function(e){setQ(e.target.value);}} placeholder="اكتب آخر 4 أرقام أو الرقم كامل..." style={{ width:"100%", padding:"10px 14px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr", marginBottom:12 }}/>
+      <input autoFocus value={q} onChange={function(e){setQ(e.target.value);}} placeholder="Enter last 4 digits or full number..." style={{ width:"100%", padding:"10px 14px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr", marginBottom:12 }}/>
       {q.length>0&&q.length<4&&<div style={{ fontSize:12, color:"#94A3B8", textAlign:"center", marginBottom:10 }}>Type at least 4 digits</div>}
       {results.length===0&&q.length>=4&&<div style={{ fontSize:13, color:"#94A3B8", textAlign:"center", padding:20 }}>No results</div>}
       {results.map(function(l){
@@ -1280,7 +1280,7 @@ var LeadsPage = function(p) {
               try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{agentId:newAgent,status:"NewLead",reassignedAt:new Date().toISOString()},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
               <option value="">— No Agent —</option>
-              {(p.myTeamUsers||salesUsers).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name} - {u.title}</option>;})}
+              {(p.myTeamUsers||salesUsers).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
             </select>
           </div>}
           {/* Details - grid on mobile */}
@@ -1421,7 +1421,7 @@ var LeadsPage = function(p) {
     <Modal show={showQuickAdd} onClose={function(){setShowQuickAdd(false);}} title={"⚡ "+t.quickAdd} w={360}>
       <Inp label={t.name} req value={quickForm.name} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{name:e.target.value});});}}/>
       <Inp label={t.phone} req value={quickForm.phone} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{phone:e.target.value});});}} placeholder="01xxxxxxxxx"/>
-      <Inp label={t.project} value={quickForm.project||""} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{project:e.target.value});});}} placeholder="اكتب اسم المشروع..."/>
+      <Inp label={t.project} value={quickForm.project||""} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{project:e.target.value});});}} placeholder="Project name..."/>
       <Inp label={t.source} type="select" value={quickForm.source} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{source:e.target.value});});}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>
       <div style={{ display:"flex", gap:10 }}>
         <Btn outline onClick={function(){setShowQuickAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn>
