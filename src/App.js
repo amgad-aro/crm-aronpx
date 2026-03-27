@@ -2355,7 +2355,7 @@ var ArchivePage = function(p) {
 // ===== DAILY REQUESTS =====
 var DailyRequestsPage = function(p) {
   var t=p.t; var sc=STATUSES(t);
-  var isAdmin=p.cu.role==="admin"||p.cu.role==="manager";
+  var isAdmin=p.cu.role==="admin"||p.cu.role==="manager"; var isOnlyAdmin=p.cu.role==="admin";
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var [requests,setRequests]=useState([]);
   var [loading,setLoading]=useState(true);
