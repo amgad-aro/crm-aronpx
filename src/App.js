@@ -2802,20 +2802,22 @@ var ReportsPage = function(p) {
   var getQTargetsR=function(uid){var u=p.users.find(function(x){return gid(x)===uid;});if(u&&u.qTargets&&Object.keys(u.qTargets).length>0)return u.qTargets;try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}}
   var agentStats=salesUsers.map(function(u){
     var uid=gid(u);
-    var uNew=periodLeads.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return a===uid;});
-    var uDeals=periodDeals.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return a===uid;});
+    var uNew=periodLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.source!=="Daily Request";});
+    var uDailyReq=periodLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.source==="Daily Request";});
+    var uDeals=periodDeals.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid;});
+    var uMeetingDone=allLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.status==="MeetingDone"&&l.updatedAt&&(now-new Date(l.updatedAt).getTime())<ms;});
     var revenue=uDeals.reduce(function(s,d){return s+parseBudgetR(d.budget);},0);
     var qt=getQTargetsR(uid);
     var curQR=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
     var qTarget=qt[curQR]||0;
     var target=qTarget>0?qTarget:(u.monthlyTarget||0)*1000000;
     var prog=target>0?Math.min(100,Math.round((revenue/target)*100)):0;
-    return{user:u,newL:uNew.length,deals:uDeals.length,revenue:revenue,target:target,prog:prog};
+    return{user:u,newL:uNew.length,dailyReq:uDailyReq.length,deals:uDeals.length,meetingDone:uMeetingDone.length,revenue:revenue,target:target,prog:prog};
   }).sort(function(a,b){return b.revenue-a.revenue;});
   var exportReport=async function(){
     setExporting(true);
     var XLSX=await new Promise(function(res){if(window.XLSX){res(window.XLSX);return;}var s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=function(){res(window.XLSX);};document.head.appendChild(s);});
-    var rows=agentStats.map(function(a){return{"الموظف":a.user.name,"جدد":a.newL,"صفقات":a.deals,"الهدف":a.target,"نسبة":a.prog+"%"};});
+    var rows=agentStats.map(function(a){return{"الموظف":a.user.name,"جدد":a.newL,"Daily Request":a.dailyReq,"Meeting Done":a.meetingDone,"صفقات":a.deals,"الهدف":a.target,"نسبة":a.prog+"%"};});
     var ws=XLSX.utils.json_to_sheet(rows);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"تقرير");
     XLSX.writeFile(wb,"تقرير_ARO_"+new Date().toISOString().slice(0,10)+".xlsx");setExporting(false);
   };
@@ -2837,12 +2839,14 @@ var ReportsPage = function(p) {
       <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 أداء الفريق — {pLabel[period]}</h3>
       <div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse" }}>
         <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-          {["#","الموظف","جدد","صفقات","الإيراد","الهدف","نسبة الإنجاز"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
+          {["#","الموظف","جدد","Daily Req","Meeting Done","صفقات","الإيراد","الهدف","نسبة الإنجاز"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
         </tr></thead>
         <tbody>{agentStats.map(function(a,i){return <tr key={gid(a.user)} style={{ borderBottom:"1px solid #F1F5F9", background:i===0?"#FFFBEB":"transparent" }}>
           <td style={{ padding:"12px", fontSize:16 }}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":i+1}</td>
           <td style={{ padding:"12px", fontWeight:700 }}>{a.user.name}</td>
           <td style={{ padding:"12px", color:C.info, fontWeight:600 }}>{a.newL}</td>
+          <td style={{ padding:"12px", color:"#8B5CF6", fontWeight:600 }}>{a.dailyReq}</td>
+          <td style={{ padding:"12px", color:"#F59E0B", fontWeight:600 }}>{a.meetingDone}</td>
           <td style={{ padding:"12px", color:C.success, fontWeight:700 }}>{a.deals}</td>
           <td style={{ padding:"12px", color:C.success, fontWeight:700 }}>{(a.revenue/1000000).toFixed(2)}M</td>
           <td style={{ padding:"12px", color:C.textLight }}>{a.target>0?(a.target/1000000).toFixed(2)+"M":"—"}</td>
