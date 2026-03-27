@@ -2736,6 +2736,27 @@ var DailyRequestsPage = function(p) {
       <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/> 
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addReq} loading={saving} style={{ flex:1 }}>Add Number</Btn></div>
     </Modal>
+    <Modal show={showBulk} onClose={function(){setShowBulk(false);}} title={"Bulk Reassign"}>
+      {selected2.length===0
+        ?<div style={{ padding:"16px", textAlign:"center", color:C.danger, fontSize:13 }}>⚠️ Please select leads first using the checkboxes</div>
+        :<div>
+          <div style={{ marginBottom:10, fontSize:13, color:C.textLight }}>{selected2.length} leads selected</div>
+          <Inp label={"Reassign To"} type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- Select Agent -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>
+          <div style={{ display:"flex", gap:10, marginTop:10 }}>
+            <Btn onClick={async function(){
+              if(!bulkAgent)return;
+              try{
+                await apiFetch("/api/daily-requests/bulk-reassign","PUT",{leadIds:selected2,agentId:bulkAgent},p.token);
+                var agentUser=p.users.find(function(u){return gid(u)===bulkAgent;});
+                setRequests(function(prev){return prev.map(function(r){return selected2.includes(gid(r))?Object.assign({},r,{agentId:{_id:bulkAgent,name:agentUser?agentUser.name:""}}):r;});});
+                setSelected2([]);setShowBulk(false);setBulkAgent("");
+              }catch(e){alert(e.message);}
+            }} style={{ flex:1 }}>Bulk Reassign</Btn>
+            <Btn outline onClick={function(){setShowBulk(false);}} style={{ flex:1 }}>{t.cancel}</Btn>
+          </div>
+        </div>
+      }
+    </Modal>
   </div>;
 };
 
