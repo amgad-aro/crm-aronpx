@@ -2101,9 +2101,9 @@ var DealsPage = function(p) {
     </Modal>}
 
     {/* Action buttons row */}
-    {isAdmin&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
+    {isOnlyAdmin&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
       <Btn outline onClick={function(){setCommModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.success, borderColor:C.success }}>💰 العمولات</Btn>
-      {isOnlyAdmin&&<Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ عمولة المشاريع</Btn>}
+      <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ عمولة المشاريع</Btn>
     </div>}
 
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
