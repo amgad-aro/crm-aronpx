@@ -3601,43 +3601,82 @@ export default function CRMApp() {
   };
   // Auto-refresh disabled
 
-  // ===== SALES NOTIFICATIONS =====
+  // ===== NOTIFICATIONS SYSTEM =====
   useEffect(function(){
-    if(!token||!currentUser||currentUser.role!=="sales") return;
-    var lastLeadCount = leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===currentUser.id;}).length;
+    if(!token||!currentUser) return;
+    var isAgent = currentUser.role==="sales"||currentUser.role==="manager";
+    if(!isAgent) return;
+    var uid = String(currentUser.id||"");
 
-    // Notify on new lead assigned
-    var checkNewLeads = function(){
-      var myLeads = leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===currentUser.id&&!l.archived;});
-      if(myLeads.length>lastLeadCount){
-        var newOnes = myLeads.slice(0, myLeads.length-lastLeadCount);
-        newOnes.forEach(function(l){
-          showBrowserNotif("👤 leads جديد وصلك", l.name+" — "+l.phone);
-        });
-      }
+    // Helper: get my leads
+    var getMyLeads = function(){
+      return leads.filter(function(l){
+        var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
+        return aid===uid&&!l.archived;
+      });
     };
 
-    // Notify on upcoming callbacks (within 30 min)
+    // 1. New lead assigned
+    var prevLeadIds = new Set(getMyLeads().map(function(l){return gid(l);}));
+    var checkNewLeads = function(){
+      var myLeads = getMyLeads();
+      myLeads.forEach(function(l){
+        var lid = gid(l);
+        if(!prevLeadIds.has(lid)){
+          prevLeadIds.add(lid);
+          showBrowserNotif("👤 New Lead Assigned", l.name+" has been assigned to you");
+        }
+      });
+    };
+
+    // 2. Overdue callbacks
     var checkCallbacks = function(){
       var now = Date.now();
-      var soon = 30*60*1000;
-      var myLeads = leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===currentUser.id&&l.callbackTime&&!l.archived;});
+      var myLeads = getMyLeads().filter(function(l){return l.callbackTime;});
       myLeads.forEach(function(l){
         var cbTime = new Date(l.callbackTime).getTime();
         var diff = cbTime - now;
-        if(diff>0&&diff<=soon){
-          var key="crm_cb_notif_"+gid(l);
-          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("📞 موعد مكالمة قريب",l.name+" — خلال "+Math.round(diff/60000)+" دقيقة");}}catch(e){}
-        } else if(diff<0){
-          try{localStorage.removeItem("crm_cb_notif_"+gid(l));}catch(e){}
+        var key = "crm_cb_notif_"+gid(l)+"_"+l.callbackTime;
+        if(diff<0&&diff>-30*60*1000){
+          // Overdue within last 30 min
+          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("⏰ Overdue Callback!",l.name+" — callback was at "+l.callbackTime.slice(11,16));}}catch(e){}
+        } else if(diff>0&&diff<=30*60*1000){
+          // Coming up within 30 min
+          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("📞 Callback in "+Math.round(diff/60000)+" min",l.name);}}catch(e){}
+        } else if(diff>30*60*1000){
+          try{localStorage.removeItem(key);}catch(e){}
+        }
+      });
+    };
+
+    // 3. Upcoming tasks (within 1 hour)
+    var checkTasks = function(){
+      var now = Date.now();
+      var myTasks = tasks.filter(function(tk){
+        var tuid=String(tk.userId&&tk.userId._id?tk.userId._id:tk.userId||"");
+        return tuid===uid&&!tk.done&&tk.time;
+      });
+      myTasks.forEach(function(tk){
+        var tTime = new Date(tk.time).getTime();
+        var diff = tTime - now;
+        var key = "crm_task_notif_"+tk._id;
+        if(diff>0&&diff<=60*60*1000){
+          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");var lName=tk.leadId&&tk.leadId.name?tk.leadId.name:"";showBrowserNotif("✅ Task due in "+Math.round(diff/60000)+" min",tk.title+(lName?" — "+lName:""));}}catch(e){}
+        } else if(diff>60*60*1000){
+          try{localStorage.removeItem(key);}catch(e){}
         }
       });
     };
 
     checkCallbacks();
-    var cbInterval = setInterval(checkCallbacks, 60000);
-    return function(){clearInterval(cbInterval);};
-  },[token, currentUser, leads.length]);
+    checkTasks();
+    var interval = setInterval(function(){
+      checkCallbacks();
+      checkTasks();
+      checkNewLeads();
+    }, 60*1000);
+    return function(){clearInterval(interval);};
+  },[token, currentUser, leads.length, tasks.length]);
 
   // ===== HEARTBEAT every 2 minutes =====
   useEffect(function(){
