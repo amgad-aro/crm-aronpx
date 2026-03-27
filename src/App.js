@@ -2146,8 +2146,8 @@ var DealsPage = function(p) {
           var stages=getStages(gid(d));
           return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
-            {isOnlyAdmin&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>}
-            {isOnlyAdmin&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight }}>{d.phone2||"-"}</td>}
+            {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>}
+            {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight }}>{d.phone2||"-"}</td>}
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>
               {(function(){
