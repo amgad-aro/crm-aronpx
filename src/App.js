@@ -3050,6 +3050,7 @@ var TeamPage = function(p) {
 // ===== REPORTS =====
 var ReportsPage = function(p) {
   var t=p.t;
+  var [rPeriod,setRPeriod]=useState("monthly");
   var sales=p.users.filter(function(u){return u.role==="sales"||u.role==="manager";});
   var normalLeads=p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   var convRate=normalLeads.length>0?Math.round(normalLeads.filter(function(l){return l.status==="DoneDeal";}).length/normalLeads.length*100):0;
@@ -3066,7 +3067,6 @@ var ReportsPage = function(p) {
         <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.agentPerf}</h3>
         {(function(){
           var now2=Date.now();
-          var [rPeriod,setRPeriod]=useState("monthly");
           var ms2={daily:86400000,weekly:604800000,monthly:2592000000}[rPeriod];
           return <>
             <div style={{ display:"flex", gap:6, marginBottom:12 }}>
