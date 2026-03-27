@@ -354,6 +354,18 @@ app.post("/api/leads", auth, async function(req, res) {
   }
 });
 
+// ===== BULK REASSIGN (must be before /:id) =====
+app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
+  try {
+    var { leadIds, agentId } = req.body;
+    if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
+    var agentObjId = new mongoose.Types.ObjectId(agentId);
+    await Lead.updateMany({ _id: { $in: leadIds } }, { $set: { agentId: agentObjId, lastActivityTime: new Date() } });
+    await Activity.create({ userId: req.user.id, type: "reassign", note: "Bulk reassign — " + leadIds.length + " leads" });
+    res.json({ ok: true, count: leadIds.length });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== UPDATE LEAD =====
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
@@ -606,17 +618,6 @@ app.delete("/api/daily-requests/:id", auth, adminOnly, async function(req, res) 
 });
 
 // ===== BULK REASSIGN =====
-app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
-  try {
-    var { leadIds, agentId } = req.body;
-    if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
-    var agentObjId = new mongoose.Types.ObjectId(agentId);
-    await Lead.updateMany({ _id: { $in: leadIds } }, { $set: { agentId: agentObjId, lastActivityTime: new Date() } });
-    await Activity.create({ userId: req.user.id, type: "reassign", note: "تحويل جماعي لـ " + leadIds.length + " عميل" });
-    res.json({ ok: true, count: leadIds.length });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
 // ===== FIX MANAGER TEAM IDS =====
 // One-time endpoint to auto-assign teamId to managers based on their sales' teamIds
 app.post("/api/fix-manager-teams", auth, adminOnly, async function(req, res) {
