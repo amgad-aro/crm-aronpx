@@ -340,7 +340,7 @@ var StatusModal = function(p) {
     </div>}
     {needsComment&&<div style={{ marginBottom:12 }}>
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 Feedback <span style={{color:C.danger}}>*</span></label>
-      <textarea rows={3} placeholder="Write feedback..." value={comment} onChange={function(e){setComment(e.target.value);setErr("");}}
+      <textarea rows={3} placeholder="" value={comment} onChange={function(e){setComment(e.target.value);setErr("");}}
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
     </div>}
 
@@ -349,18 +349,18 @@ var StatusModal = function(p) {
       <div style={{ fontSize:12, fontWeight:700, color:"#0284C7", marginBottom:10 }}>💰 Budget Details</div>
       <div style={{ marginBottom:9 }}>
         <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Budget (EGP) <span style={{color:C.danger}}>*</span></label>
-          <input type="text" placeholder="مثال: 1,000,000" value={potBudget} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setPotBudget(r?Number(r).toLocaleString():"");setErr("");}}
+          <input type="text" placeholder="" value={potBudget} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setPotBudget(r?Number(r).toLocaleString():"");setErr("");}}
             style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
       </div>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
         <div>
           <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Down Payment (EGP) <span style={{color:C.danger}}>*</span></label>
-          <input type="text" placeholder="مثال: 500,000" value={potDeposit} onChange={fmtNum(potDeposit,setPotDeposit)}
+          <input type="text" placeholder="" value={potDeposit} onChange={fmtNum(potDeposit,setPotDeposit)}
             style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
         </div>
         <div>
           <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Installments (EGP) <span style={{color:C.danger}}>*</span></label>
-          <input type="text" placeholder="مثال: 20,000" value={potInstalment} onChange={fmtNum(potInstalment,setPotInstalment)}
+          <input type="text" placeholder="" value={potInstalment} onChange={fmtNum(potInstalment,setPotInstalment)}
             style={{ width:"100%", padding:"8px 12px", borderRadius:9, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
         </div>
       </div>
@@ -369,7 +369,7 @@ var StatusModal = function(p) {
     {/* CallBack / NoAnswer: optional comment */}
     {needsCb&&<div style={{ marginBottom:12 }}>
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 Feedback (optional)</label>
-      <textarea rows={2} placeholder="اختياري..." value={comment} onChange={function(e){setComment(e.target.value);}}
+      <textarea rows={2} placeholder="" value={comment} onChange={function(e){setComment(e.target.value);}}
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
     </div>}
 
@@ -389,7 +389,7 @@ var StatusModal = function(p) {
     {(isDoneDeal||isEOI)&&<div>
       <div style={{ marginBottom:11 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏠 المشروع</label>
-        <input type="text" placeholder="اسم المشروع" value={dealProject} onChange={function(e){setDealProject(e.target.value);}}
+        <input type="text" placeholder="" value={dealProject} onChange={function(e){setDealProject(e.target.value);}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
       </div>
       <div style={{ marginBottom:11 }}>
@@ -401,13 +401,13 @@ var StatusModal = function(p) {
       </div>
       <div style={{ marginBottom:11 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💰 المبلغ (EGP) <span style={{color:C.danger}}>*</span></label>
-        <input type="text" placeholder="مثال: 1,500,000" value={dealBudget}
+        <input type="text" placeholder="" value={dealBudget}
           onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setDealBudget(r?Number(r).toLocaleString():"");setErr("");}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
       </div>
       {isEOI&&<div style={{ marginBottom:11 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💵 Deposit (EGP)</label>
-        <input type="text" placeholder="مثال: 50,000" value={eoiDeposit}
+        <input type="text" placeholder="" value={eoiDeposit}
           onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setEoiDeposit(r?Number(r).toLocaleString():"");}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
       </div>}
@@ -715,12 +715,12 @@ var LeadForm = function(p) {
     </div>}
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
       <div style={{ gridColumn:"1/-1" }}><Inp label={t.name} req value={form.name} onChange={function(e){upd("name",e.target.value);}}/></div>
-      <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder="01xxxxxxxxx"/>
-      <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder="اختياري"/>
+      <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder=""/>
+      <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder=""/>
       <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
       <Inp label={t.budget} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
     </div>
-    <Inp label={t.project} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="Project name..."/>
+    <Inp label={t.project} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder=""/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
@@ -1321,7 +1321,7 @@ var LeadsPage = function(p) {
                 <option value="followup">🔔 Follow-up</option>
                 <option value="note">📝 Feedback</option>
               </select>
-              <textarea rows={2} placeholder={t.statusCommentPH} value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
+              <textarea rows={2} placeholder="" value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
               <div style={{ display:"flex", gap:6, marginTop:6 }}>
                 <Btn onClick={logActivity} loading={saving} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.save}</Btn>
                 <Btn outline onClick={function(){setShowActForm(false);setActNote("");}} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.cancel}</Btn>
@@ -1426,8 +1426,8 @@ var LeadsPage = function(p) {
     {/* Quick Add Modal */}
     <Modal show={showQuickAdd} onClose={function(){setShowQuickAdd(false);}} title={"⚡ "+t.quickAdd} w={360}>
       <Inp label={t.name} req value={quickForm.name} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{name:e.target.value});});}}/>
-      <Inp label={t.phone} req value={quickForm.phone} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{phone:e.target.value});});}} placeholder="01xxxxxxxxx"/>
-      <Inp label={t.project} value={quickForm.project||""} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{project:e.target.value});});}} placeholder="Project name..."/>
+      <Inp label={t.phone} req value={quickForm.phone} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{phone:e.target.value});});}} placeholder=""/>
+      <Inp label={t.project} value={quickForm.project||""} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{project:e.target.value});});}} placeholder=""/>
       <Inp label={t.source} type="select" value={quickForm.source} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{source:e.target.value});});}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>
       <div style={{ display:"flex", gap:10 }}>
         <Btn outline onClick={function(){setShowQuickAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn>
@@ -2049,7 +2049,7 @@ var DealsPage = function(p) {
           </div>
           <div>
             <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>Amount (EGP)</label>
-            <input type="text" placeholder="مثال: 500,000" value={stagesForm.payment1Amount}
+            <input type="text" placeholder="" value={stagesForm.payment1Amount}
               onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setStagesForm(function(f){return Object.assign({},f,{payment1Amount:r?Number(r).toLocaleString():""});});}}
               style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
           </div>
@@ -2073,7 +2073,7 @@ var DealsPage = function(p) {
           </div>
           <div>
             <label style={{ fontSize:11, color:C.textLight, display:"block", marginBottom:4 }}>Amount (EGP)</label>
-            <input type="text" placeholder="مثال: 500,000" value={stagesForm.payment2Amount}
+            <input type="text" placeholder="" value={stagesForm.payment2Amount}
               onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setStagesForm(function(f){return Object.assign({},f,{payment2Amount:r?Number(r).toLocaleString():""});});}}
               style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, boxSizing:"border-box", direction:"ltr" }}/>
           </div>
@@ -2717,7 +2717,7 @@ var DailyRequestsPage = function(p) {
                 <option value="followup">🔔 Follow-up</option>
                 <option value="note">📝 Feedback</option>
               </select>
-              <textarea rows={2} placeholder="Feedback..." value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
+              <textarea rows={2} placeholder="" value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
               <div style={{ display:"flex", gap:6, marginTop:6 }}>
                 <Btn onClick={logActivity} loading={actSaving} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.save}</Btn>
                 <Btn outline onClick={function(){setShowActForm(false);setActNote("");}} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.cancel}</Btn>
@@ -2731,10 +2731,10 @@ var DailyRequestsPage = function(p) {
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ Add Number جديد"}>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
         <div style={{ gridColumn:"1/-1" }}><Inp label={"Name"} req value={form.name} onChange={function(e){setForm(function(f){return Object.assign({},f,{name:e.target.value});})}}/></div>
-        <Inp label={"Phone"} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});})}} placeholder="01xxxxxxxxx"/>
-        <Inp label={"هاتف إضافي"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder="اختياري"/>
+        <Inp label={"Phone"} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});})}} placeholder=""/>
+        <Inp label={"هاتف إضافي"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder=""/>
         <Inp label={"Property Type"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- Select -"};})}/>
-        <Inp label={"Area"} req value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder="مثال: التجمع الخامس"/>
+        <Inp label={"Area"} req value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder=""/>
         <div style={{ gridColumn:"1/-1" }}><Inp label={"Budget"} req value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>
       </div>
       {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
