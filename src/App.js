@@ -2882,14 +2882,25 @@ var TeamPage = function(p) {
   // Card for one member
   var MemberCard = function(mp){
     var a=mp.user; var uid=String(gid(a));
-    var al=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===uid&&!l.archived;});
-    var calls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return auid===uid&&ac.type==="call";}).length;
+    var isManagerCard = a.role==="manager";
+    // For manager card: get all team member IDs
+    var teamUids = isManagerCard ? new Set(p.users.filter(function(u){
+      var rt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
+      return rt===uid;
+    }).map(function(u){return String(u._id);})) : null;
+    var matchesAgent = function(d){
+      var aid=String(d.agentId&&d.agentId._id?d.agentId._id:d.agentId||"");
+      if(isManagerCard && teamUids) return aid===uid||teamUids.has(aid);
+      return aid===uid;
+    };
+    var al=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return String(aid)===uid&&!l.archived;});
+    var calls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return String(auid)===uid&&ac.type==="call";}).length;
     var qt=getQTargets(uid);
     var qTarget=getEffectiveQTarget(a,p.users,viewQ);
-    var qDeals=allDeals.filter(function(d){var aid=String(d.agentId&&d.agentId._id?d.agentId._id:d.agentId||"");if(aid!==uid)return false;var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;});
+    var qDeals=allDeals.filter(function(d){if(!matchesAgent(d))return false;var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;});
     var qRevenue=qDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
     var qProg=qTarget>0?Math.min(100,Math.round((qRevenue/qTarget)*100)):0;
-    var allAgentDeals=allDeals.filter(function(d){var aid=String(d.agentId&&d.agentId._id?d.agentId._id:d.agentId||"");return aid===uid;});
+    var allAgentDeals=allDeals.filter(function(d){return matchesAgent(d);});
     var totalRevenue=allAgentDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
     var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<3*60*1000;
     var lastSeenStr=a.lastSeen?timeAgo(a.lastSeen,p.t):"لم يسجل دخول";
