@@ -3064,22 +3064,38 @@ var ReportsPage = function(p) {
     <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
       <Card style={{ flex:1, minWidth:280 }}>
         <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.agentPerf}</h3>
-        {sales.map(function(a){var uid=gid(a);
-          var al=normalLeads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===uid;});
-          var d=al.filter(function(l){return l.status==="DoneDeal";}).length;
-          var cl=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return auid===uid&&ac.type==="call";}).length;
-          var rate=al.length>0?Math.round(d/al.length*100):0;
-          var target=a.monthlyTarget||15; var prog=Math.min(Math.round(d/target*100),100);
-          return <div key={uid} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-              <Avatar name={a.name} size={32}/>
-              <div style={{ flex:1 }}><div style={{ fontSize:12, fontWeight:600 }}>{a.name}</div><div style={{ fontSize:10, color:C.textLight }}>{a.title}</div></div>
-              {[{v:al.length,l:t.leads,c:C.text},{v:d,l:t.deals,c:C.success},{v:cl,l:t.calls,c:C.info},{v:rate+"%",l:"Conv.",c:C.accent}].map(function(s){return <div key={s.l} style={{ textAlign:"center", minWidth:36 }}><div style={{ fontSize:12, fontWeight:700, color:s.c }}>{s.v}</div><div style={{ fontSize:9, color:C.textLight }}>{s.l}</div></div>;})}
+        {(function(){
+          var now2=Date.now();
+          var [rPeriod,setRPeriod]=useState("monthly");
+          var ms2={daily:86400000,weekly:604800000,monthly:2592000000}[rPeriod];
+          return <>
+            <div style={{ display:"flex", gap:6, marginBottom:12 }}>
+              {["daily","weekly","monthly"].map(function(pp){var lbl={daily:"اليوم",weekly:"الأسبوع",monthly:"الشهر"}[pp];return <button key={pp} onClick={function(){setRPeriod(pp);}} style={{ padding:"4px 10px", borderRadius:7, border:"1px solid", borderColor:rPeriod===pp?C.accent:"#E2E8F0", background:rPeriod===pp?C.accent+"12":"#fff", color:rPeriod===pp?C.accent:C.textLight, fontSize:11, cursor:"pointer" }}>{lbl}</button>;})}
             </div>
-            <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}><div style={{ height:"100%", width:prog+"%", background:prog>=100?C.success:C.accent, borderRadius:2 }}/></div>
-            <div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{t.monthlyTarget}: {d}/{target}M EGP</div>
-          </div>;
-        })}
+            {sales.map(function(a){var uid=gid(a);
+              var curQR2=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+              var al=normalLeads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.createdAt&&(now2-new Date(l.createdAt).getTime())<ms2;});
+              var dailyReqCount=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.source==="Daily Request"&&!l.archived&&l.createdAt&&(now2-new Date(l.createdAt).getTime())<ms2;}).length;
+              var meetDone=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="MeetingDone"&&l.updatedAt&&(now2-new Date(l.updatedAt).getTime())<ms2;}).length;
+              var d=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="DoneDeal"&&!l.archived&&l.updatedAt&&(now2-new Date(l.updatedAt).getTime())<ms2;}).length;
+              var cl=p.activities.filter(function(ac){var auid=String(ac.userId&&ac.userId._id?ac.userId._id:ac.userId||"");return auid===uid&&ac.type==="call"&&ac.createdAt&&(now2-new Date(ac.createdAt).getTime())<ms2;}).length;
+              var rate=al.length>0?Math.round(d/al.length*100):0;
+              var qt2=a.qTargets&&Object.keys(a.qTargets).length>0?a.qTargets:{};
+              var qTarget2=getEffectiveQTarget(a,p.users,curQR2);
+              var revenue2=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="DoneDeal"&&!l.archived&&l.updatedAt&&(now2-new Date(l.updatedAt).getTime())<ms2;}).reduce(function(s,l){return s+parseFloat((l.budget||"0").toString().replace(/,/g,""))||0;},0);
+              var prog=qTarget2>0?Math.min(100,Math.round(revenue2/qTarget2*100)):0;
+              return <div key={uid} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
+                  <Avatar name={a.name} size={32}/>
+                  <div style={{ flex:1 }}><div style={{ fontSize:12, fontWeight:600 }}>{a.name}</div><div style={{ fontSize:10, color:C.textLight }}>{a.title}</div></div>
+                  {[{v:al.length,l:t.leads,c:C.text},{v:dailyReqCount,l:"Daily",c:"#8B5CF6"},{v:meetDone,l:"Meeting",c:"#F59E0B"},{v:d,l:t.deals,c:C.success},{v:cl,l:t.calls,c:C.info},{v:rate+"%",l:"Conv.",c:C.accent}].map(function(s){return <div key={s.l} style={{ textAlign:"center", minWidth:32 }}><div style={{ fontSize:12, fontWeight:700, color:s.c }}>{s.v}</div><div style={{ fontSize:9, color:C.textLight }}>{s.l}</div></div>;})}
+                </div>
+                <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}><div style={{ height:"100%", width:prog+"%", background:prog>=100?C.success:C.accent, borderRadius:2 }}/></div>
+                <div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>Q Target: {(revenue2/1000000).toFixed(1)}M / {qTarget2>0?(qTarget2/1000000).toFixed(1)+"M":"—"}</div>
+              </div>;
+            })}
+          </>;
+        })()}
       </Card>
       <Card style={{ flex:1, minWidth:260 }}>
         <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.sourcePerf}</h3>
