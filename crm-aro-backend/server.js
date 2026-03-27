@@ -15,7 +15,7 @@ delete mongoose.models["DailyRequest"];
 var User = mongoose.model("User", new mongoose.Schema({
   name:{type:String,required:true}, username:{type:String,required:true,unique:true},
   password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
-  role:{type:String,enum:["admin","manager","sales","viewer"],default:"sales"},
+  role:{type:String,enum:["admin","sales_admin","manager","sales","viewer"],default:"sales"},
   title:{type:String,default:""}, active:{type:Boolean,default:true},
   monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, qTargets:{type:Object,default:{}}, reportsTo:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null}
 },{timestamps:true}));
@@ -106,7 +106,7 @@ function auth(req, res, next) {
 }
 
 function adminOnly(req, res, next) {
-  if (req.user.role !== "admin" && req.user.role !== "manager") {
+  if (req.user.role !== "admin" && req.user.role !== "sales_admin" && req.user.role !== "manager") {
     return res.status(403).json({ error: "Admin only" });
   }
   next();
@@ -150,7 +150,7 @@ app.get("/api/users", auth, async function(req, res) {
     var uid = req.user.id;
     var users;
 
-    if (role === "admin") {
+    if (role === "admin" || role === "sales_admin") {
       // Admin sees all users
       users = await User.find().select("-password").sort({ createdAt: -1 });
       users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
