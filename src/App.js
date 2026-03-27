@@ -2850,10 +2850,10 @@ var TeamPage = function(p) {
     p.setUsers(function(prev){return prev.map(function(u){return gid(u)===uid?Object.assign({},u,{qTargets:qt}):u;});});
   };
   var [viewQ,setViewQ]=useState(curQ);
-  var [viewYear,setViewYear]=useState(curYear);
-  var [editQModal,setEditQModal]=useState(null);
   var curYear=new Date().getFullYear();
   var years=[curYear,curYear-1,curYear-2];
+  var [viewYear,setViewYear]=useState(curYear);
+  var [editQModal,setEditQModal]=useState(null);
   var [expandedManager,setExpandedManager]=useState(null); // uid of expanded manager
 
   // Build hierarchy: managers + their teams
