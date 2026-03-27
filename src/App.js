@@ -2838,7 +2838,10 @@ var TeamPage = function(p) {
     p.setUsers(function(prev){return prev.map(function(u){return gid(u)===uid?Object.assign({},u,{qTargets:qt}):u;});});
   };
   var [viewQ,setViewQ]=useState(curQ);
+  var [viewYear,setViewYear]=useState(curYear);
   var [editQModal,setEditQModal]=useState(null);
+  var curYear=new Date().getFullYear();
+  var years=[curYear,curYear-1,curYear-2];
   var [expandedManager,setExpandedManager]=useState(null); // uid of expanded manager
 
   // Build hierarchy: managers + their teams
@@ -2861,7 +2864,7 @@ var TeamPage = function(p) {
     var calls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return auid===uid&&ac.type==="call";}).length;
     var qt=getQTargets(uid);
     var qTarget=getEffectiveQTarget(a,p.users,viewQ);
-    var qDeals=allDeals.filter(function(d){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;if(aid!==uid)return false;var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===viewQ;});
+    var qDeals=allDeals.filter(function(d){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;if(aid!==uid)return false;var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;});
     var qRevenue=qDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
     var qProg=qTarget>0?Math.min(100,Math.round((qRevenue/qTarget)*100)):0;
     var allAgentDeals=allDeals.filter(function(d){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return aid===uid;});
@@ -2907,11 +2910,14 @@ var TeamPage = function(p) {
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18, flexWrap:"wrap", gap:10 }}>
       <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.team}</h2>
-      <div style={{ display:"flex", gap:6 }}>
+      <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
         {["Q1","Q2","Q3","Q4"].map(function(q){return <button key={q} onClick={function(){setViewQ(q);}}
           style={{ padding:"6px 14px", borderRadius:8, border:"1px solid", borderColor:viewQ===q?C.accent:"#E2E8F0",
             background:viewQ===q?C.accent+"12":"#fff", color:viewQ===q?C.accent:C.textLight,
-            fontSize:12, fontWeight:600, cursor:"pointer" }}>{q}{q===curQ?" 🔵":""}</button>;})}
+            fontSize:12, fontWeight:600, cursor:"pointer" }}>{q}{q===curQ&&viewYear===curYear?" 🔵":""}</button>;})}          
+        <select value={viewYear} onChange={function(e){setViewYear(Number(e.target.value));}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+          {years.map(function(y){return <option key={y} value={y}>{y}</option>;})}
+        </select>
       </div>
     </div>
 
@@ -2921,7 +2927,7 @@ var TeamPage = function(p) {
       var mDeals=allDeals.filter(function(d){
         var allTeamIds=new Set([muid].concat(team.map(function(u){return gid(u);})));
         var aid=d.agentId&&d.agentId._id?String(d.agentId._id):String(d.agentId||"");
-        var dd=d.updatedAt||d.createdAt; return dd&&getQ(dd)===viewQ&&allTeamIds.has(aid);
+        var dd=d.updatedAt||d.createdAt; return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear&&allTeamIds.has(aid);
       });
       var mRev=mDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
       var mTarget=getEffectiveQTarget(mgr,p.users,viewQ);
