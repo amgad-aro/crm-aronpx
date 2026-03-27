@@ -1198,7 +1198,7 @@ var LeadsPage = function(p) {
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
-                      try{var upd=await apiFetch("/api/leads/"+gid(lead),"PUT",{agentId:newAgent},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?upd:l;});});if(selected&&gid(selected)===gid(lead))setSelected(upd);}catch(ex){}
+                      try{var upd=await apiFetch("/api/leads/"+gid(lead),"PUT",{agentId:newAgent,status:"NewLead",reassignedAt:new Date().toISOString()},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?upd:l;});});if(selected&&gid(selected)===gid(lead))setSelected(upd);}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
                       <option value="">— بدون موظف —</option>
                       {salesUsers.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
@@ -1226,7 +1226,7 @@ var LeadsPage = function(p) {
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
             <div style={{ display:"flex", gap:5 }}>
-              <button onClick={function(){openHistory(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title="تاريخ العميل">📋</button>
+              {isOnlyAdmin&&<button onClick={function(){openHistory(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title="تاريخ العميل">📋</button>}
               {isOnlyAdmin&&<button onClick={function(){setEditLead(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.edit}><Edit size={11}/></button>}
               {isOnlyAdmin&&<button onClick={function(){archiveLead(gid(selected));}} style={{ background:"rgba(255,165,0,0.3)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.archive}><Archive size={11}/></button>}
             </div>
@@ -1256,7 +1256,7 @@ var LeadsPage = function(p) {
               var newAgent=e.target.value;
               var isManagerUser=p.cu.role==="manager";
               if(isManagerUser&&p.cu.teamId){var tgt=p.users.find(function(u){return gid(u)===newAgent;});if(tgt&&tgt.teamId!==p.cu.teamId)return;}
-              try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{agentId:newAgent},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){}
+              try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{agentId:newAgent,status:"NewLead",reassignedAt:new Date().toISOString()},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
               <option value="">— بدون موظف —</option>
               {(p.myTeamUsers||salesUsers).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name} - {u.title}</option>;})}
@@ -1327,7 +1327,7 @@ var LeadsPage = function(p) {
       {historyLoading&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>جاري التحميل...</div>}
       {!historyLoading&&fullHistory.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>لا يوجد سجل أنشطة</div>}
       {!historyLoading&&fullHistory.length>0&&<div style={{ maxHeight:400, overflowY:"auto" }}>
-        {fullHistory.map(function(a,i){
+        {fullHistory.slice().reverse().map(function(a,i){
           var uname=a.userId&&a.userId.name?a.userId.name:"";
           return <div key={a._id||i} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
             <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
