@@ -153,6 +153,7 @@ app.get("/api/users", auth, async function(req, res) {
     if (role === "admin") {
       // Admin sees all users
       users = await User.find().select("-password").sort({ createdAt: -1 });
+      users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
 
     } else if (role === "manager") {
       var managerUser = await User.findById(uid).lean();
@@ -173,10 +174,12 @@ app.get("/api/users", auth, async function(req, res) {
         directSales.forEach(function(s) { visibleIds.push(s._id); });
       }
       users = await User.find({ _id: { $in: visibleIds } }).select("-password").sort({ createdAt: -1 });
+      users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
 
     } else {
       // Sales/viewer: only themselves
       users = await User.find({ _id: uid }).select("-password");
+      users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
     }
 
     res.json(users);
