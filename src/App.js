@@ -2558,7 +2558,16 @@ var DailyRequestsPage = function(p) {
               </div>
             </div>
             <div style={{ padding:"16px" }}>
-              {[{l:"Property Type",v:selected.propertyType},{l:"Area",v:selected.area},{l:"Budget",v:selected.budget},{l:"Status",v:selected.status},{l:"Agent",v:getAgentName(selected)},{l:"Callback",v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"Last Activity",v:timeAgo(selected.lastActivityTime,t)},{l:"Notes",v:selected.notes}].map(function(f){return f.v?<div key={f.l} style={{ padding:"10px 0", borderBottom:"1px solid #F8FAFC" }}><div style={{ fontSize:11, color:C.textLight, marginBottom:3 }}>{f.l}</div><div style={{ fontSize:13, fontWeight:600 }}>{f.v}</div></div>:null;})}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:16 }}>
+                {[{l:"Property Type",v:selected.propertyType,icon:"🏠"},{l:"Area",v:selected.area,icon:"📍"},{l:"Budget",v:selected.budget,icon:"💰"},{l:"Agent",v:getAgentName(selected),icon:"👤"},{l:"Callback",v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):null,icon:"📞"},{l:"Last Activity",v:timeAgo(selected.lastActivityTime,t),icon:"🕐"}].map(function(f){return f.v?<div key={f.l} style={{ background:"#F8FAFC", borderRadius:12, padding:"12px 14px", border:"1px solid #E8ECF1" }}>
+                  <div style={{ fontSize:10, color:C.textLight, marginBottom:4, fontWeight:600 }}>{f.icon} {f.l}</div>
+                  <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{f.v}</div>
+                </div>:null;})}
+              </div>
+              {selected.notes&&<div style={{ background:"#FFFBEB", borderRadius:12, padding:"12px 14px", border:"1px solid #FDE68A", marginBottom:16 }}>
+                <div style={{ fontSize:10, color:"#92400E", fontWeight:600, marginBottom:4 }}>📝 Notes</div>
+                <div style={{ fontSize:13, color:C.text }}>{selected.notes}</div>
+              </div>}
               <div style={{ marginTop:16 }}>
                 <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:8 }}>Change Status</div>
                 <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
