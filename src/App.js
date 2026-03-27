@@ -2121,7 +2121,19 @@ var DealsPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>
             <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight }}>{d.phone2||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
-            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>
+              {(function(){
+                var split=getDealSplit(gid(d));
+                var displayVal=bv>0?bv.toLocaleString():d.budget||"-";
+                if(split&&bv>0){
+                  return <div>
+                    <div>{(bv/2).toLocaleString()}</div>
+                    <div style={{ fontSize:10, color:"#8B5CF6", fontWeight:600 }}>🤝 50% — {split.agent2Name||"مشترك"}</div>
+                  </div>;
+                }
+                return displayVal;
+              })()}
+            </td>
             <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{d.updatedAt?new Date(d.updatedAt).toLocaleDateString("ar-EG")+" "+new Date(d.updatedAt).toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"}):"-"}</td>
             <td style={{ padding:"11px 12px", minWidth:130 }}>
               <button onClick={function(){openStages(d);}}
