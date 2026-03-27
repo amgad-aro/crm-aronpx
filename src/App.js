@@ -1263,7 +1263,7 @@ var LeadsPage = function(p) {
             </select>
           </div>}
           {/* Details */}
-          {[{l:t.budget,v:selected.budget},{l:t.source,v:isAdmin?selected.source:null},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"آخر تواصل",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("ar-EG")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"تاريخ الإضافة",v:selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-"},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:t.budget,v:selected.budget},{l:t.source,v:isAdmin?selected.source:null},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"آخر تواصل",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("ar-EG")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"تاريخ الإضافة",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span></div>:null;
           })}
           {/* WhatsApp Templates */}
@@ -2574,7 +2574,7 @@ var DailyRequestsPage = function(p) {
               {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid", borderColor:selected.status===s.value?s.color:"#E2E8F0", background:selected.status===s.value?s.bg:"#fff", color:selected.status===s.value?s.color:C.textLight, fontSize:10, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
             </div>
           </div>
-          {[{l:"نوع العقار",v:selected.propertyType},{l:"المنطقة",v:selected.area},{l:"الميزانية",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"تاريخ الإضافة",v:selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-"},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:"نوع العقار",v:selected.propertyType},{l:"المنطقة",v:selected.area},{l:"الميزانية",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"تاريخ الإضافة",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span></div>:null;
           })}
           <div style={{ marginTop:12 }}>
