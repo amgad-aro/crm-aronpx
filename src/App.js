@@ -1283,8 +1283,19 @@ var LeadsPage = function(p) {
               {(p.myTeamUsers||salesUsers).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name} - {u.title}</option>;})}
             </select>
           </div>}
-          {/* Details */}
-          {[{l:t.budget,v:selected.budget},{l:t.source,v:isAdmin?selected.source:null},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"Last Contact",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("en-GB")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"تاريخ الإضافة",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
+          {/* Details - grid on mobile */}
+          {p.isMobile?<div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
+              {[{l:t.budget,v:selected.budget,icon:"💰"},{l:t.source,v:isAdmin?selected.source:null,icon:"📢"},{l:t.agent,v:getAgentName(selected),icon:"👤"},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):null,icon:"📞"},{l:"Last Contact",v:selected.lastActivityTime?timeAgo(selected.lastActivityTime,t):null,icon:"🕐"},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):null:null,icon:"📅"}].map(function(f){return f.v?<div key={f.l} style={{ background:"#F8FAFC", borderRadius:12, padding:"10px 12px", border:"1px solid #E8ECF1" }}>
+                <div style={{ fontSize:10, color:C.textLight, marginBottom:3, fontWeight:600 }}>{f.icon} {f.l}</div>
+                <div style={{ fontSize:12, fontWeight:700, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
+              </div>:null;})}
+            </div>
+            {selected.notes&&<div style={{ background:"#FFFBEB", borderRadius:12, padding:"12px 14px", border:"1px solid #FDE68A", marginBottom:12 }}>
+              <div style={{ fontSize:10, color:"#92400E", fontWeight:600, marginBottom:4 }}>📝 Notes</div>
+              <div style={{ fontSize:13, color:C.text }}>{selected.notes}</div>
+            </div>}
+          </div>:[{l:t.budget,v:selected.budget},{l:t.source,v:isAdmin?selected.source:null},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"Last Contact",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("en-GB")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span></div>:null;
           })}
           {/* WhatsApp Templates */}
@@ -1299,9 +1310,9 @@ var LeadsPage = function(p) {
             <button onClick={function(){setShowActForm(!showActForm);}} style={{ width:"100%", padding:"8px", borderRadius:9, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><MessageSquare size={12}/> {t.logActivity}</button>
             {showActForm&&<div style={{ marginTop:9, padding:10, background:"#F8FAFC", borderRadius:10 }}>
               <select value={actType} onChange={function(e){setActType(e.target.value);}} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:7, background:"#fff" }}>
-                <option value="call">📞 مكالمة</option>
-                <option value="meeting">🤝 اجتماع</option>
-                <option value="followup">🔔 متابعة</option>
+                <option value="call">📞 Call</option>
+                <option value="meeting">🤝 Meeting</option>
+                <option value="followup">🔔 Follow-up</option>
                 <option value="note">📝 Feedback</option>
               </select>
               <textarea rows={2} placeholder={t.statusCommentPH} value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
@@ -2679,16 +2690,16 @@ var DailyRequestsPage = function(p) {
               {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid", borderColor:selected.status===s.value?s.color:"#E2E8F0", background:selected.status===s.value?s.bg:"#fff", color:selected.status===s.value?s.color:C.textLight, fontSize:10, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
             </div>
           </div>
-          {[{l:"Property Type",v:selected.propertyType},{l:"Area",v:selected.area},{l:"Budget",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"تاريخ الإضافة",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:"Property Type",v:selected.propertyType},{l:"Area",v:selected.area},{l:"Budget",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span></div>:null;
           })}
           <div style={{ marginTop:12 }}>
             <button onClick={function(){setShowActForm(!showActForm);}} style={{ width:"100%", padding:"8px", borderRadius:9, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><MessageSquare size={12}/> تسجيل نشاط</button>
             {showActForm&&<div style={{ marginTop:9, padding:10, background:"#F8FAFC", borderRadius:10 }}>
               <select value={actType} onChange={function(e){setActType(e.target.value);}} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:7, background:"#fff" }}>
-                <option value="call">📞 مكالمة</option>
-                <option value="meeting">🤝 اجتماع</option>
-                <option value="followup">🔔 متابعة</option>
+                <option value="call">📞 Call</option>
+                <option value="meeting">🤝 Meeting</option>
+                <option value="followup">🔔 Follow-up</option>
                 <option value="note">📝 Feedback</option>
               </select>
               <textarea rows={2} placeholder="Feedback..." value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
