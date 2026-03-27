@@ -2823,7 +2823,6 @@ var ReportsPage = function(p) {
 var TeamPage = function(p) {
   var t=p.t;
   var isAdmin=p.cu.role==="admin";
-  var sales=p.users.filter(function(u){return u.role==="sales"||u.role==="manager";});
   var allDeals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
   var getQ=function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
   var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
@@ -2840,16 +2839,70 @@ var TeamPage = function(p) {
   };
   var [viewQ,setViewQ]=useState(curQ);
   var [editQModal,setEditQModal]=useState(null);
+  var [expandedManager,setExpandedManager]=useState(null); // uid of expanded manager
 
-  // Manager sees only their team if teamId set
-  var visibleSales = sales.filter(function(u){
-    if(p.cu.role==="admin") return true;
-    if(p.cu.role==="manager"){
-      if(!p.cu.teamId) return true;
-      return u.teamId===p.cu.teamId;
-    }
-    return false;
-  });
+  // Build hierarchy: managers + their teams
+  var managers = p.users.filter(function(u){return u.role==="manager"&&u.active;});
+  var getSalesUnder = function(muid){
+    return p.users.filter(function(u){
+      return u.active && (u.role==="sales"||u.role==="manager") && String(u.reportsTo||"")===muid;
+    });
+  };
+
+  // For non-admin manager: show only their own team
+  var visibleManagers = isAdmin ? managers : managers.filter(function(m){return gid(m)===String(p.cu.id||"");});
+  // Also show sales not under any manager (top-level sales)
+  var topLevelSales = isAdmin ? p.users.filter(function(u){return u.role==="sales"&&u.active&&!u.reportsTo;}) : [];
+
+  // Card for one member
+  var MemberCard = function(mp){
+    var a=mp.user; var uid=gid(a);
+    var al=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===uid&&!l.archived;});
+    var calls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return auid===uid&&ac.type==="call";}).length;
+    var qt=getQTargets(uid);
+    var qTarget=getEffectiveQTarget(a,p.users,viewQ);
+    var qDeals=allDeals.filter(function(d){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;if(aid!==uid)return false;var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===viewQ;});
+    var qRevenue=qDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+    var qProg=qTarget>0?Math.min(100,Math.round((qRevenue/qTarget)*100)):0;
+    var allAgentDeals=allDeals.filter(function(d){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return aid===uid;});
+    var totalRevenue=allAgentDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+    var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<3*60*1000;
+    var lastSeenStr=a.lastSeen?timeAgo(a.lastSeen,p.t):"لم يسجل دخول";
+    return <Card key={uid} style={{ flex:"1 1 280px", maxWidth:360, overflow:"hidden", padding:0 }}>
+      <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:18, textAlign:"center" }}>
+        <div style={{ margin:"0 auto 8px", display:"inline-block" }}><Avatar name={a.name} size={48} online={isOnlineNow}/></div>
+        <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{a.name}</div>
+        <div style={{ color:"rgba(255,255,255,0.55)", fontSize:11, marginTop:2 }}>{a.title}</div>
+        <div style={{ marginTop:4, fontSize:10, color:isOnlineNow?"#86EFAC":"rgba(255,255,255,0.45)", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
+          <span style={{ width:6, height:6, borderRadius:"50%", background:isOnlineNow?"#22C55E":"rgba(255,255,255,0.3)", display:"inline-block" }}/>
+          {isOnlineNow?"متصل الآن":"آخر ظهور: "+lastSeenStr}
+        </div>
+        {isAdmin&&<button onClick={function(){var qt=getQTargets(uid);setEditQModal({user:a,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
+          style={{ marginTop:8, padding:"4px 12px", borderRadius:6, border:"none", background:"rgba(255,255,255,0.2)", color:"#fff", fontSize:11, fontWeight:600, cursor:"pointer" }}>🎯 تعديل Targets</button>}
+      </div>
+      <div style={{ padding:"12px 14px" }}>
+        <div style={{ marginBottom:10, padding:"8px 10px", background:"#F8FAFC", borderRadius:8 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+            <span style={{ fontSize:11, fontWeight:700 }}>{viewQ} Target</span>
+            <span style={{ fontSize:10, color:C.textLight }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"لم يتحدد"}</span>
+          </div>
+          <div style={{ height:6, background:"#E2E8F0", borderRadius:3, marginBottom:4 }}>
+            <div style={{ height:"100%", width:qProg+"%", borderRadius:3, background:qProg>=100?C.success:qProg>=50?C.accent:C.warning, transition:"width 0.6s" }}/>
+          </div>
+          <div style={{ display:"flex", justifyContent:"space-between" }}>
+            <span style={{ fontSize:11, color:C.success, fontWeight:700 }}>{(qRevenue/1000000).toFixed(2)}M</span>
+            <span style={{ fontSize:11, fontWeight:700, color:qProg>=100?C.success:C.accent }}>{qProg}%</span>
+          </div>
+        </div>
+        <div style={{ display:"flex", justifyContent:"space-around" }}>
+          <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700 }}>{al.length}</div><div style={{ fontSize:10, color:C.textLight }}>عملاء</div></div>
+          <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700, color:C.success }}>{allAgentDeals.length}</div><div style={{ fontSize:10, color:C.textLight }}>صفقات</div></div>
+          <div style={{ textAlign:"center" }}><div style={{ fontSize:12, fontWeight:700, color:C.accent }}>{(totalRevenue/1000000).toFixed(1)}M</div><div style={{ fontSize:10, color:C.textLight }}>إجمالي</div></div>
+          <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700, color:C.info }}>{calls}</div><div style={{ fontSize:10, color:C.textLight }}>مكالمات</div></div>
+        </div>
+      </div>
+    </Card>;
+  };
 
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18, flexWrap:"wrap", gap:10 }}>
@@ -2861,8 +2914,59 @@ var TeamPage = function(p) {
             fontSize:12, fontWeight:600, cursor:"pointer" }}>{q}{q===curQ?" 🔵":""}</button>;})}
       </div>
     </div>
-    <div style={{ display:"flex", gap:14, flexWrap:"wrap" }}>
-      {visibleSales.map(function(a){
+
+    {/* Manager groups */}
+    {visibleManagers.map(function(mgr){
+      var muid=gid(mgr); var team=getSalesUnder(muid); var isExpanded=expandedManager===muid;
+      var mDeals=allDeals.filter(function(d){
+        var allTeamIds=new Set([muid].concat(team.map(function(u){return gid(u);})));
+        var aid=d.agentId&&d.agentId._id?String(d.agentId._id):String(d.agentId||"");
+        var dd=d.updatedAt||d.createdAt; return dd&&getQ(dd)===viewQ&&allTeamIds.has(aid);
+      });
+      var mRev=mDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+      var mTarget=getEffectiveQTarget(mgr,p.users,viewQ);
+      var mProg=mTarget>0?Math.min(100,Math.round(mRev/mTarget*100)):0;
+      var isOnline=mgr.lastSeen&&(Date.now()-new Date(mgr.lastSeen).getTime())<3*60*1000;
+      return <div key={muid} style={{ marginBottom:16 }}>
+        {/* Manager row - clickable */}
+        <div onClick={function(){setExpandedManager(isExpanded?null:muid);}}
+          style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", borderRadius:12, cursor:"pointer", marginBottom:isExpanded?10:0 }}>
+          <Avatar name={mgr.name} size={40} online={isOnline}/>
+          <div style={{ flex:1 }}>
+            <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{mgr.name}</div>
+            <div style={{ color:"rgba(255,255,255,0.6)", fontSize:11 }}>{mgr.title} — {team.length} عضو</div>
+          </div>
+          <div style={{ textAlign:"left", minWidth:100 }}>
+            <div style={{ height:5, background:"rgba(255,255,255,0.2)", borderRadius:3, marginBottom:3, width:100 }}>
+              <div style={{ height:"100%", width:mProg+"%", background:mProg>=100?"#22C55E":"#E8A838", borderRadius:3 }}/>
+            </div>
+            <div style={{ color:"rgba(255,255,255,0.8)", fontSize:10 }}>{(mRev/1000000).toFixed(1)}M / {mTarget>0?(mTarget/1000000).toFixed(1)+"M":"—"}</div>
+          </div>
+          <span style={{ color:"rgba(255,255,255,0.7)", fontSize:14 }}>{isExpanded?"▲":"▼"}</span>
+        </div>
+        {/* Team members expanded */}
+        {isExpanded&&<div style={{ display:"flex", gap:12, flexWrap:"wrap", paddingRight:16 }}>
+          <MemberCard user={mgr}/>
+          {team.map(function(u){return <MemberCard key={gid(u)} user={u}/>;})}</div>}
+      </div>;
+    })}
+
+    {/* Top-level sales (no manager) */}
+    {topLevelSales.length>0&&<div>
+      <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10 }}>موظفون بدون مدير</div>
+      <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
+        {topLevelSales.map(function(a){return <MemberCard key={gid(a)} user={a}/>;})}
+      </div>
+    </div>}
+
+    {/* Old fallback if no managers defined */}
+    {visibleManagers.length===0&&<div style={{ display:"flex", gap:14, flexWrap:"wrap" }}>
+      {p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;}).map(function(a){
+        return <MemberCard key={gid(a)} user={a}/>;
+      })}
+    </div>}
+
+    {editQModal&&<Modal show={true} onClose={function(){setEditQModal(null);}} title={"🎯 Quarterly Targets — "+editQModal.user.name}>
         var uid=gid(a);
         var al=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===uid&&!l.archived;});
         var calls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return auid===uid&&ac.type==="call";}).length;
