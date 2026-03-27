@@ -28,13 +28,13 @@ var TR = {
     dir: "rtl",
     login: "تسجيل الدخول", loginBtn: "دخول", loginError: "Username أو كلمة المرور غلط",
     username: "Username", password: "كلمة المرور", logout: "تسجيل خروج",
-    dashboard: "الرئيسية", leads: "العملاء", deals: "الصفقات", projects: "المشاريع",
+    dashboard: "الرئيسية", leads: "الLeads", deals: "الDeals", projects: "المشاريع",
     tasks: "المهام", reports: "التقارير", team: "فريق المبيعات", users: "Users",
     units: "الوحدات", settings: "الإعدادات", channels: "القنوات", dailyReq: "Daily Request",
     archive: "الArchive",
     search: "Search...",
-    all: "الكل", totalLeads: "إجمالي العملاء", newLeads: "جدد",
-    activeDeals: "صفقات نشطة", doneDeals: "تم البيع",
+    all: "الكل", totalLeads: "Total الLeads", newLeads: "جدد",
+    activeDeals: "Deals نشطة", doneDeals: "تم البيع",
     addLead: "إضافة leads", addUser: "Add User", addTask: "إضافة مهمة", addRequest: "Add Number",
     name: "الاسم", phone: "الهاتف", phone2: "هاتف إضافي", email: "الإيميل", budget: "الميزانية",
     project: "المشروع", source: "المصدر", agent: "الموظف",
@@ -46,15 +46,15 @@ var TR = {
     admin: "مدير نظام", salesManager: "مدير مبيعات", salesAgent: "موظف مبيعات", viewer: "مشاهد",
     potential: "Potential", hotCase: "Hot Case", callBack: "Call Back", notInterested: "Not Interested",
     noAnswer: "No Answer", doneDeal: "Done Deal", meetingDone: "Meeting Done",
-    connected: "متصل", disconnected: "غير متصل",
-    conversionRate: "معدل التحويل", totalCalls: "المكالمات",
+    connected: "Online", disconnected: "غير Online",
+    conversionRate: "معدل التحويل", totalCalls: "الCalls",
     todayActivities: "أنشطة Today", callReminder: "تنبيهات",
     available: "متاح", reserved: "محجوز", sold: "مباع",
-    language: "اللغة", calls: "مكالمات", meetings: "اجتماعات", followups: "متابعات",
+    language: "اللغة", calls: "Calls", meetings: "اجتماعات", followups: "متابعات",
     taskTitle: "عنوان المهمة", taskType: "النوع", taskTime: "الوقت", relatedLead: "الleads",
-    sourcePerf: "أداء المصادر", leadsByStatus: "العملاء حسب Status",
+    sourcePerf: "أداء المصادر", leadsByStatus: "الLeads حسب Status",
     agentPerf: "أداء الموظفين", companyName: "اسم الشركة",
-    welcome: "مرحباً", myLeads: "عملائي", allLeads: "كل العملاء",
+    welcome: "مرحباً", myLeads: "عملائي", allLeads: "كل الLeads",
     pending: "متبقية", ago: "منذ", minutes: "دقيقة", hours: "ساعة", days: "يوم", just: "الآن",
     loading: "Loading...", error: "خطأ في الاتصال", retry: "إعادة المحاولة",
     deleteConfirm: "هل أنت متأكد؟", archiveConfirm: "أرشفة الleads؟ يمكن استعادته لاحقاً",
@@ -65,7 +65,7 @@ var TR = {
     activityLog: "سجل الأنشطة", clientHistory: "تاريخ الleads",
     duplicateFound: "⚠️ الرقم ده موجود بالفعل!", duplicateClient: "leads موجود بنفس الرقم",
     monthlyTarget: "Monthly Target", myDay: "يومي",
-    salesDay:"مبيعات Today", salesWeek:"مبيعات This Week", salesMonth:"مبيعات This Month", dealsCount:"صفقة", newLeadsToday:"عملاء جدد Today", bestAgent:"🏆 الأفضل هذا This Month", kpiTitle:"📊 KPIs — المبيعات",
+    salesDay:"مبيعات Today", salesWeek:"مبيعات This Week", salesMonth:"مبيعات This Month", dealsCount:"deal", newLeadsToday:"Leads جدد Today", bestAgent:"🏆 الأفضل هذا This Month", kpiTitle:"📊 KPIs — المبيعات",
     bulkReassign: "تحويل جماعي", selectAll: "تحديد الكل", reassignTo: "تحويل لـ",
     whatsapp: "واتساب", call: "اتصال",
     propertyType: "Property Type", area: "Area",
@@ -396,7 +396,7 @@ var StatusModal = function(p) {
         <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏷️ Unit Type</label>
         <select value={dealUnitType} onChange={function(e){setDealUnitType(e.target.value);}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", boxSizing:"border-box" }}>
-          {["- اختر -","شقة","دوبلكس","تاون هاوس","فيلا","محل تجاري","مكتب"].map(function(x){return <option key={x} value={x}>{x}</option>;})}
+          {["- Select -","شقة","دوبلكس","تاون هاوس","فيلا","محل تجاري","مكتب"].map(function(x){return <option key={x} value={x}>{x}</option>;})}
         </select>
       </div>
       <div style={{ marginBottom:11 }}>
@@ -554,7 +554,7 @@ var Header = function(p) {
         </button>
         {p.showDealNotif&&<div style={{ position:"absolute", top:44, left:0, width:310, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <span style={{ fontWeight:700, fontSize:13 }}>🎉 صفقات جديدة ({p.dealNotifs?p.dealNotifs.length:0})</span>
+            <span style={{ fontWeight:700, fontSize:13 }}>🎉 New Deals ({p.dealNotifs?p.dealNotifs.length:0})</span>
             <div style={{ display:"flex", gap:6 }}>
               {p.dealNotifs&&p.dealNotifs.length>0&&<button onClick={function(){p.setDealNotifs([]);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.textLight }}>Clear All</button>}
               <button onClick={function(){p.setShowDealNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
@@ -716,7 +716,7 @@ var LeadForm = function(p) {
     </div>
     <Inp label={t.project} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="اكتب اسم المشروع..."/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
-    {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- اختر -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
+    {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
     <div style={{ display:"flex", gap:10 }}>
@@ -800,12 +800,12 @@ var exportLeadsToExcel = async function(leads, users, filename) {
     "VIP": l.isVIP ? "نعم" : "",
     "ملاحظات": l.notes || "",
     "Callback": l.callbackTime ? l.callbackTime.slice(0,16).replace("T"," ") : "",
-    "Last Activity": l.lastActivityTime ? new Date(l.lastActivityTime).toLocaleDateString("ar-EG") : "",
-    "تاريخ الإضافة": l.createdAt ? new Date(l.createdAt).toLocaleDateString("ar-EG") : "",
+    "Last Activity": l.lastActivityTime ? new Date(l.lastActivityTime).toLocaleDateString("en-GB") : "",
+    "تاريخ الإضافة": l.createdAt ? new Date(l.createdAt).toLocaleDateString("en-GB") : "",
   };});
   var ws = XLSX.utils.json_to_sheet(rows);
   var wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "العملاء");
+  XLSX.utils.book_append_sheet(wb, ws, "الLeads");
   XLSX.writeFile(wb, (filename || "leads") + "_" + new Date().toISOString().slice(0,10) + ".xlsx");
 };
 
@@ -935,7 +935,7 @@ var LeadsPage = function(p) {
 
   var reqStatus = function(lid, st) {
     if (st === "DoneDeal") {
-      if (!window.confirm("⚠️ هل أنت متأكد إن الصفقة اتعملت؟ مش هتقدر ترجع!")) return;
+      if (!window.confirm("⚠️ Are you sure this deal is done? This cannot be undone!")) return;
     }
     setPendingStatus({leadId:lid,newStatus:st}); setShowStatusComment(true);
   };
@@ -1061,7 +1061,7 @@ var LeadsPage = function(p) {
     {/* Bulk Reassign Modal */}
     <Modal show={showBulk} onClose={function(){setShowBulk(false);}} title={t.bulkReassign}>
       <div style={{ marginBottom:14, padding:"10px 14px", background:"#F0F9FF", borderRadius:10, fontSize:13 }}>{selected2.length} leads selected</div>
-      <Inp label={t.reassignTo} type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- اختر موظف -"}].concat((isOnlyAdmin?p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;}):myTeamUsers).map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>
+      <Inp label={t.reassignTo} type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- Select Agent -"}].concat((isOnlyAdmin?p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;}):myTeamUsers).map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowBulk(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={doBulkReassign} style={{ flex:1 }}>{t.bulkReassign}</Btn></div>
     </Modal>
 
@@ -1101,7 +1101,7 @@ var LeadsPage = function(p) {
 
     <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
       <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
-        <option value="lastActivity">⏱ آخر نشاط</option>
+        <option value="lastActivity">⏱ Last Activity</option>
         <option value="newest">🆕 الأحدث</option>
         <option value="oldest">📅 الأقدم</option>
         <option value="name">🔤 الاسم</option>
@@ -1263,7 +1263,7 @@ var LeadsPage = function(p) {
             </select>
           </div>}
           {/* Details */}
-          {[{l:t.budget,v:selected.budget},{l:t.source,v:isAdmin?selected.source:null},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"آخر تواصل",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("ar-EG")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"تاريخ الإضافة",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:t.budget,v:selected.budget},{l:t.source,v:isAdmin?selected.source:null},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"Last Contact",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("en-GB")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"تاريخ الإضافة",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span></div>:null;
           })}
           {/* WhatsApp Templates */}
@@ -1332,7 +1332,7 @@ var LeadsPage = function(p) {
                   <span style={{ flex:1 }}>{a.note}</span>
                   <span style={{ color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
                 </div>
-                {uname&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{uname} · {new Date(a.createdAt).toLocaleDateString("ar-EG")}</div>}
+                {uname&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{uname} · {new Date(a.createdAt).toLocaleDateString("en-GB")}</div>}
               </div>;})}
             </div>;
           })()}
@@ -1354,7 +1354,7 @@ var LeadsPage = function(p) {
                 <div style={{ fontSize:12, fontWeight:500, color:C.text }}>{a.note}</div>
                 <div style={{ fontSize:10, color:C.textLight, marginTop:3, display:"flex", gap:8 }}>
                   {uname&&<span style={{ fontWeight:600, color:C.accent }}>{uname}</span>}
-                  <span>{a.createdAt?new Date(a.createdAt).toLocaleDateString("ar-EG")+" — "+new Date(a.createdAt).toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"}):""}</span>
+                  <span>{a.createdAt?new Date(a.createdAt).toLocaleDateString("en-GB")+" — "+new Date(a.createdAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):""}</span>
                 </div>
               </div>
             </div>
@@ -1441,7 +1441,7 @@ var MyDayPage = function(p) {
   var todayActs = p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return String(auid)===String(p.cu.id)&&a.createdAt&&new Date(a.createdAt)>=today;});
 
   var tabs = [
-    {id:"callbacks", label:"📞 المكالمات", count:callbacks.length, danger:overdue.length>0},
+    {id:"callbacks", label:"📞 Calls", count:callbacks.length, danger:overdue.length>0},
     {id:"noact", label:"⚠️ بدون تواصل", count:noActivity.length, danger:noActivity.length>0},
     {id:"tasks", label:"✅ المهام", count:myTasks.length, danger:false},
     {id:"activity", label:"📊 نشاطي", count:todayActs.length, danger:false},
@@ -1505,11 +1505,11 @@ var MyDayPage = function(p) {
             </div>
           </div>;})}
       </div>}
-      {callbacks.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>🎉 مفيش مكالمات دلوقتي</div>}
+      {callbacks.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>🎉 No calls right now</div>}
     </div>}
 
     {activeTab==="noact"&&<div>
-      {noActivity.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>✅ كل العملاء عندهم تواصل</div>}
+      {noActivity.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>✅ All clients have recent contact</div>}
       {noActivity.map(function(l){return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#FFFBEB", border:"1px solid #FDE68A", marginBottom:6, cursor:"pointer" }}>
         <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:"#B45309", fontWeight:600 }}>Last contact: {timeAgo(l.lastActivityTime,t)}</div></div>
         <div style={{ display:"flex", gap:5 }}>
@@ -1617,7 +1617,7 @@ var DashboardPage = function(p) {
         {label:p.lang==="en"?"Today's Calls":"Today's Calls",value:todayCallsCount+"",bg:"linear-gradient(135deg,#10B981,#059669)",icon:"📞",onClick:function(){p.nav("myday");}},
         {label:p.lang==="en"?"CallBack Soon":"CallBack قريب",value:callbackSoon.length+"",bg:"linear-gradient(135deg,#F59E0B,#D97706)",icon:"🔔",onClick:function(){p.nav("leads");p.setFilter("CallBack");}},
         {label:p.lang==="en"?"No Contact":"بدون تواصل",value:noAct.length+"",bg:"linear-gradient(135deg,#EF4444,#DC2626)",icon:"⚠️",onClick:function(){p.nav("leads");}},
-        {label:p.lang==="en"?"My Deals":"صفقاتي",value:myDeals.length+"",bg:"linear-gradient(135deg,#8B5CF6,#7C3AED)",icon:"🏆",onClick:function(){p.nav("deals");}},
+        {label:p.lang==="en"?"My Deals":"My Deals",value:myDeals.length+"",bg:"linear-gradient(135deg,#8B5CF6,#7C3AED)",icon:"🏆",onClick:function(){p.nav("deals");}},
       ];
       return <div style={{ marginBottom:22 }}>
         <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10, textTransform:"uppercase", letterSpacing:1 }}>{p.lang==="en"?"OVERVIEW":"نظرة عامة"}</div>
@@ -1729,7 +1729,7 @@ var EOIPage = function(p) {
       <tbody>
         {eoiLeads.map(function(d){
           var bv=parseBudget(d.budget);
-          var eoiDateStr=d.eoiDate?new Date(d.eoiDate).toLocaleDateString("ar-EG"):d.updatedAt?new Date(d.updatedAt).toLocaleDateString("ar-EG"):"-";
+          var eoiDateStr=d.eoiDate?new Date(d.eoiDate).toLocaleDateString("en-GB"):d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB"):"-";
           return <tr key={gid(d)} style={{ borderBottom:"1px solid #FEF3E2" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
             <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>
@@ -1906,7 +1906,7 @@ var DealsPage = function(p) {
   var [stagesForm,setStagesForm]=useState({contract:false,contractDate:"",payment1:false,payment1Date:"",payment1Amount:"",payment2:false,payment2Date:"",payment2Amount:""});
 
   var archiveDeal=async function(lid){
-    if(!window.confirm("أرشفة هذه الصفقة؟"))return;
+    if(!window.confirm("Archive this deal?"))return;
     try{
       await apiFetch("/api/leads/"+lid+"/archive","PUT",null,p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:true}):l;});});
@@ -2100,8 +2100,8 @@ var DealsPage = function(p) {
     </Modal>}
 
     {/* Split Modal */}
-    {splitModal&&<Modal show={true} onClose={function(){setSplitModal(null);setSplitAgent2("");}} title={"🤝 تقسيم صفقة — "+splitModal.name}>
-      <div style={{ fontSize:12, color:C.textLight, marginBottom:12 }}>الصفقة هتتقسم 50/50 بين موظفين</div>
+    {splitModal&&<Modal show={true} onClose={function(){setSplitModal(null);setSplitAgent2("");}} title={"🤝 Split Deal — "+splitModal.name}>
+      <div style={{ fontSize:12, color:C.textLight, marginBottom:12 }}>Deal will be split 50/50 between two agents</div>
       <div style={{ marginBottom:10 }}>
         <div style={{ fontSize:12, fontWeight:600, marginBottom:6 }}>السيلز الأول</div>
         <div style={{ padding:"8px 12px", borderRadius:8, background:"#F8FAFC", fontSize:13 }}>{splitModal.agentId&&splitModal.agentId.name?splitModal.agentId.name:"—"}</div>
@@ -2162,7 +2162,7 @@ var DealsPage = function(p) {
                 return displayVal;
               })()}
             </td>
-            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{d.updatedAt?new Date(d.updatedAt).toLocaleDateString("ar-EG")+" "+new Date(d.updatedAt).toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"}):"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB")+" "+new Date(d.updatedAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):"-"}</td>
             <td style={{ padding:"11px 12px", minWidth:130 }}>
               <button onClick={function(){openStages(d);}}
                 style={{ background:"none", border:"none", cursor:"pointer", width:"100%", textAlign:"right", padding:0 }}>
@@ -2226,7 +2226,7 @@ var DealsPage = function(p) {
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.source}</td>}
             <td style={{ padding:"8px 12px" }}>
               <div style={{ display:"flex", gap:5 }}>
-                {isOnlyAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplit(gid(d));setSplitAgent2(sp?sp.agent2Id:"");}} title="تقسيم صفقة"
+                {isOnlyAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplit(gid(d));setSplitAgent2(sp?sp.agent2Id:"");}} title="Split Deal"
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid "+(getDealSplit(gid(d))?"#8B5CF6":"#E2E8F0"), background:getDealSplit(gid(d))?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12 }}>🤝</button>}
                 {isOnlyAdmin&&<button onClick={function(){setEditDeal(d);}} title={t.edit}
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
@@ -2437,7 +2437,7 @@ var DailyRequestsPage = function(p) {
           time:new Date().toISOString()
         });
         showBrowserNotif(
-          pendingStatus.newStatus==="DoneDeal"?"🏆 صفقة جديدة!":"📋 EOI جديد!",
+          pendingStatus.newStatus==="DoneDeal"?"🏆 deal جديدة!":"📋 EOI جديد!",
           (req.name||"leads")+" — "+(updateData.budget||req.budget||"")
         );
       }
@@ -2510,7 +2510,7 @@ var DailyRequestsPage = function(p) {
         {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
       </select>}
       <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
-        <option value="lastActivity">⏱ آخر نشاط</option>
+        <option value="lastActivity">⏱ Last Activity</option>
         <option value="newest">🆕 الأحدث</option>
       </select>
     </div>
@@ -2592,7 +2592,7 @@ var DailyRequestsPage = function(p) {
               {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid", borderColor:selected.status===s.value?s.color:"#E2E8F0", background:selected.status===s.value?s.bg:"#fff", color:selected.status===s.value?s.color:C.textLight, fontSize:10, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
             </div>
           </div>
-          {[{l:"Property Type",v:selected.propertyType},{l:"Area",v:selected.area},{l:"الميزانية",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"تاريخ الإضافة",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("ar-EG"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:"Property Type",v:selected.propertyType},{l:"Area",v:selected.area},{l:"الميزانية",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"تاريخ الإضافة",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span></div>:null;
           })}
           <div style={{ marginTop:12 }}>
@@ -2620,11 +2620,11 @@ var DailyRequestsPage = function(p) {
         <div style={{ gridColumn:"1/-1" }}><Inp label={"الاسم"} req value={form.name} onChange={function(e){setForm(function(f){return Object.assign({},f,{name:e.target.value});})}}/></div>
         <Inp label={"الهاتف"} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});})}} placeholder="01xxxxxxxxx"/>
         <Inp label={"هاتف إضافي"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder="اختياري"/>
-        <Inp label={"Property Type"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- اختر -"};})}/>
+        <Inp label={"Property Type"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- Select -"};})}/>
         <Inp label={"Area"} req value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder="مثال: التجمع الخامس"/>
         <div style={{ gridColumn:"1/-1" }}><Inp label={"الميزانية"} req value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>
       </div>
-      {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- اختر -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
+      {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
       <Inp label={t.callbackTime} req type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/> 
       <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/> 
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addReq} loading={saving} style={{ flex:1 }}>Add Number</Btn></div>
@@ -2706,7 +2706,7 @@ var UsersPage = function(p) {
             var ls=u.lastSeen?timeAgo(u.lastSeen,p.t):"—";
             return <div style={{ display:"flex", alignItems:"center", gap:5 }}>
               <span style={{ width:8, height:8, borderRadius:"50%", background:isOn?"#22C55E":"#CBD5E1", flexShrink:0 }}/>
-              <span style={{ fontSize:11, color:isOn?C.success:C.textLight, fontWeight:isOn?700:400 }}>{isOn?"متصل":ls}</span>
+              <span style={{ fontSize:11, color:isOn?C.success:C.textLight, fontWeight:isOn?700:400 }}>{isOn?"Online":ls}</span>
             </div>;
           })()}
         </td>
@@ -2718,7 +2718,7 @@ var UsersPage = function(p) {
     </table></div></Card>
     {qtModal&&<Modal show={true} onClose={function(){setQtModal(null);}} title={"🎯 Quarterly Targets — "+qtModal.user.name}>
       <div style={{ fontSize:12, color:C.textLight, marginBottom:14, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>
-        تارجت كل Quarter بالمليون — بيتحسب من صفقات Done Deal
+        تارجت كل Quarter بالمليون — بيتحسب من Deals Done Deal
       </div>
       {["Q1","Q2","Q3","Q4"].map(function(q,i){
         var labels=["Jan — Mar","Apr — Jun","Jul — Sep","Oct — Dec"];
@@ -2817,7 +2817,7 @@ var ReportsPage = function(p) {
   var exportReport=async function(){
     setExporting(true);
     var XLSX=await new Promise(function(res){if(window.XLSX){res(window.XLSX);return;}var s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=function(){res(window.XLSX);};document.head.appendChild(s);});
-    var rows=agentStats.map(function(a){return{"الموظف":a.user.name,"جدد":a.newL,"Daily Request":a.dailyReq,"Meeting Done":a.meetingDone,"صفقات":a.deals,"الهدف":a.target,"نسبة":a.prog+"%"};});
+    var rows=agentStats.map(function(a){return{"الموظف":a.user.name,"جدد":a.newL,"Daily Request":a.dailyReq,"Meeting Done":a.meetingDone,"Deals":a.deals,"الهدف":a.target,"نسبة":a.prog+"%"};});
     var ws=XLSX.utils.json_to_sheet(rows);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"تقرير");
     XLSX.writeFile(wb,"تقرير_ARO_"+new Date().toISOString().slice(0,10)+".xlsx");setExporting(false);
   };
@@ -2831,15 +2831,15 @@ var ReportsPage = function(p) {
     </div>
     <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
       <StatCard icon={Users} label={"جدد — "+pLabel[period]} value={periodLeads.length+""} c={C.info}/>
-      <StatCard icon={DollarSign} label={"صفقات — "+pLabel[period]} value={periodDeals.length+""} c={C.success}/>
-      <StatCard icon={Target} label={"إجمالي"} value={allLeads.length+""} c={C.accent}/>
+      <StatCard icon={DollarSign} label={"Deals — "+pLabel[period]} value={periodDeals.length+""} c={C.success}/>
+      <StatCard icon={Target} label={"Total"} value={allLeads.length+""} c={C.accent}/>
       <StatCard icon={Activity} label={"معدل التحويل"} value={allLeads.length?Math.round((allLeads.filter(function(l){return l.status==="DoneDeal";}).length/allLeads.length)*100)+"%":"0%"} c={"#8B5CF6"}/>
     </div>
     <Card style={{ marginBottom:20 }}>
       <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 أداء الفريق — {pLabel[period]}</h3>
       <div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse" }}>
         <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-          {["#","الموظف","جدد","Daily Req","Meeting Done","صفقات","الإيراد","الهدف","نسبة الإنجاز"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
+          {["#","الموظف","جدد","Daily Req","Meeting Done","Deals","الإيراد","الهدف","نسبة الإنجاز"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
         </tr></thead>
         <tbody>{agentStats.map(function(a,i){return <tr key={gid(a.user)} style={{ borderBottom:"1px solid #F1F5F9", background:i===0?"#FFFBEB":"transparent" }}>
           <td style={{ padding:"12px", fontSize:16 }}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":i+1}</td>
@@ -2856,7 +2856,7 @@ var ReportsPage = function(p) {
       </table></div>
     </Card>
     <Card>
-      <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>📈 توزيع العملاء</h3>
+      <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>📈 توزيع الLeads</h3>
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))", gap:10 }}>
         {sc.map(function(s){var cnt=allLeads.filter(function(l){return l.status===s.value;}).length;var pct=allLeads.length?Math.round((cnt/allLeads.length)*100):0;return cnt>0?<div key={s.value} style={{ padding:"14px", borderRadius:12, background:s.bg, border:"1px solid "+s.color+"30" }}><div style={{ fontSize:22, fontWeight:800, color:s.color }}>{cnt}</div><div style={{ fontSize:12, color:s.color, fontWeight:600, marginTop:2 }}>{s.label}</div><div style={{ fontSize:11, color:s.color+"99", marginTop:4 }}>{pct}%</div></div>:null;})}
       </div>
@@ -2953,10 +2953,10 @@ var TeamPage = function(p) {
           </div>
         </div>
         <div style={{ display:"flex", justifyContent:"space-around" }}>
-          <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700 }}>{al.length}</div><div style={{ fontSize:10, color:C.textLight }}>عملاء</div></div>
-          <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700, color:C.success }}>{allAgentDeals.length}</div><div style={{ fontSize:10, color:C.textLight }}>صفقات</div></div>
-          <div style={{ textAlign:"center" }}><div style={{ fontSize:12, fontWeight:700, color:C.accent }}>{(totalRevenue/1000000).toFixed(1)}M</div><div style={{ fontSize:10, color:C.textLight }}>إجمالي</div></div>
-          <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700, color:C.info }}>{calls}</div><div style={{ fontSize:10, color:C.textLight }}>مكالمات</div></div>
+          <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700 }}>{al.length}</div><div style={{ fontSize:10, color:C.textLight }}>Leads</div></div>
+          <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700, color:C.success }}>{allAgentDeals.length}</div><div style={{ fontSize:10, color:C.textLight }}>Deals</div></div>
+          <div style={{ textAlign:"center" }}><div style={{ fontSize:12, fontWeight:700, color:C.accent }}>{(totalRevenue/1000000).toFixed(1)}M</div><div style={{ fontSize:10, color:C.textLight }}>Total</div></div>
+          <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700, color:C.info }}>{calls}</div><div style={{ fontSize:10, color:C.textLight }}>Calls</div></div>
         </div>
       </div>
     </Card>;
@@ -3141,7 +3141,7 @@ var ReportsPage = function(p) {
                 <span style={{ fontSize:14 }}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":"📌"}</span>
                 <span style={{ flex:1, fontSize:12, fontWeight:600 }}>{src}</span>
                 <div style={{ textAlign:"left" }}>
-                  <div style={{ fontSize:12, fontWeight:700, color:C.success }}>{d.cnt} صفقة</div>
+                  <div style={{ fontSize:12, fontWeight:700, color:C.success }}>{d.cnt} deal</div>
                   {d.rev>0&&<div style={{ fontSize:9, color:C.textLight }}>{(d.rev/1000000).toFixed(1)}M EGP</div>}
                 </div>
               </div>
@@ -3237,7 +3237,7 @@ var SettingsPage = function(p) {
             </div>;
           })}
         </div>
-        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>العملاء هيتوزعوا بس على الموظفين المحددين ({reassignAgents.length} محدد) — لو مفيش محدد مفيش روتيشن</div>
+        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>الLeads هيتوزعوا بس على الموظفين المحددين ({reassignAgents.length} محدد) — لو مفيش محدد مفيش روتيشن</div>
       </div>
 
       {/* Rotation Durations */}
@@ -3334,9 +3334,9 @@ var KPIsPage = function(p) {
         {/* Overall stats */}
         <div style={{ display:"flex", padding:"12px 16px", gap:8 }}>
           {[
-            {v:myLeads.length, l:"إجمالي العملاء", c:C.info},
-            {v:myDeals.length, l:"إجمالي الصفقات", c:C.success},
-            {v:myActs.filter(function(a){return a.type==="call";}).length, l:"إجمالي المكالمات", c:C.accent},
+            {v:myLeads.length, l:"Total الLeads", c:C.info},
+            {v:myDeals.length, l:"Total الDeals", c:C.success},
+            {v:myActs.filter(function(a){return a.type==="call";}).length, l:"Total الCalls", c:C.accent},
             {v:myLeads.length>0?Math.round(myDeals.length/myLeads.length*100)+"%":"0%", l:"معدل التحويل", c:C.warning},
           ].map(function(s){return <div key={s.l} style={{ flex:1, textAlign:"center", padding:"8px 4px", background:"#F8FAFC", borderRadius:8 }}>
             <div style={{ fontSize:15, fontWeight:700, color:s.c }}>{s.v}</div>
@@ -3378,9 +3378,9 @@ var KPIsPage = function(p) {
     {/* Q stats */}
     <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
       {[
-        {v:qDeals.length, l:"صفقات", c:C.success, icon:"🏆"},
-        {v:qCalls.length, l:"مكالمات", c:C.info, icon:"📞"},
-        {v:qLeads.length, l:"عملاء جدد", c:C.accent, icon:"👤"},
+        {v:qDeals.length, l:"Deals", c:C.success, icon:"🏆"},
+        {v:qCalls.length, l:"Calls", c:C.info, icon:"📞"},
+        {v:qLeads.length, l:"Leads جدد", c:C.accent, icon:"👤"},
         {v:convRate+"%", l:"معدل التحويل", c:C.warning, icon:"📊"},
       ].map(function(s){return <Card key={s.l} style={{ flex:"1 1 120px", textAlign:"center", padding:"16px 12px" }}>
         <div style={{ fontSize:22, marginBottom:4 }}>{s.icon}</div>
@@ -3392,7 +3392,7 @@ var KPIsPage = function(p) {
 
     {/* Q Deals list */}
     {qDeals.length>0&&<Card style={{ marginTop:16 }}>
-      <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>🏆 صفقات {selQ} — {selYear}</div>
+      <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>🏆 Deals {selQ} — {selYear}</div>
       {qDeals.map(function(d){return <div key={gid(d)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 0", borderBottom:"1px solid #F1F5F9" }}>
         <div>
           <div style={{ fontSize:12, fontWeight:600 }}>{d.name}</div>
@@ -3438,7 +3438,7 @@ var CallCalendarPage = function(p) {
   var dayLabels = ["الإثنين","الثلاثاء","الأربعاء","الخميس","Friday","السبت","الأحد"];
 
   return <div style={{ padding:"18px 16px 40px" }}>
-    <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>📅 تقويم المكالمات</h2>
+    <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>📅 تقويم الCalls</h2>
 
     {/* Month nav */}
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
@@ -3478,8 +3478,8 @@ var CallCalendarPage = function(p) {
     {selectedDay&&(function(){
       var cbs=getCallbacksForDay(selectedDay);
       return <Card>
-        <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>📞 مكالمات {selectedDay} {monthNames[month]}</div>
-        {cbs.length===0&&<div style={{ color:C.textLight, fontSize:13 }}>No مكالمات</div>}
+        <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>📞 Calls {selectedDay} {monthNames[month]}</div>
+        {cbs.length===0&&<div style={{ color:C.textLight, fontSize:13 }}>No Calls</div>}
         {cbs.map(function(l){
           var ci=callbackColor(l.callbackTime);
           var sc=STATUSES(p.t); var so=sc.find(function(s){return s.value===l.status;})||sc[0];
@@ -3502,7 +3502,7 @@ var CallCalendarPage = function(p) {
     <div style={{ marginTop:16, display:"flex", gap:10 }}>
       <Card style={{ flex:1, textAlign:"center", padding:"12px" }}>
         <div style={{ fontSize:20, fontWeight:700, color:C.accent }}>{myCallbacks.filter(function(l){var d=new Date(l.callbackTime);return d.getFullYear()===year&&d.getMonth()===month;}).length}</div>
-        <div style={{ fontSize:11, color:C.textLight, marginTop:4 }}>مكالمات This Month</div>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:4 }}>Calls This Month</div>
       </Card>
       <Card style={{ flex:1, textAlign:"center", padding:"12px" }}>
         <div style={{ fontSize:20, fontWeight:700, color:C.danger }}>{myCallbacks.filter(function(l){return new Date(l.callbackTime)<new Date()&&l.status==="CallBack";}).length}</div>
@@ -3693,8 +3693,8 @@ export default function CRMApp() {
 
     // Helper: send in-app notification to admins + browser notif
     var notifyAdmins = function(lead, fromName, toName, reason){
-      var timeStr = new Date().toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"});
-      var dateStr = new Date().toLocaleDateString("ar-EG");
+      var timeStr = new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"});
+      var dateStr = new Date().toLocaleDateString("en-GB");
       showBrowserNotif("🔄 تحويل تلقائي", lead.name+" — من "+fromName+" إلى "+toName+" ("+reason+")");
       // Store in-app notification for admins
       try{
@@ -3835,7 +3835,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"; var isOnlyAdmin=currentUser.role==="admin";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"تقويم المكالمات",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
+  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"تقويم الCalls",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
   // Build team-filtered users for manager
   // Server already filters users by role/hierarchy — p.users IS the team
   var myTeamUsers = users;
@@ -3869,7 +3869,7 @@ export default function CRMApp() {
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
       <QuickPhoneSearch leads={leads} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
-        ⚠️ أنت غير متصل بالإنترنت — البيانات لن تُحفظ حتى يعود الاتصال
+        ⚠️ أنت غير Online بالإنترنت — البيانات لن تُحفظ حتى يعود الاتصال
       </div>}
       <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={setLang} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={[]} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
