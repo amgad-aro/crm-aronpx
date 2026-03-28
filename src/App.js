@@ -445,7 +445,7 @@ var LoginPage = function(p) {
       <div style={{ textAlign:"center", marginBottom:34 }}>
         <div style={{ width:68, height:68, borderRadius:18, background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", display:"inline-flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:22, color:"#fff", boxShadow:"0 8px 24px rgba(232,168,56,0.45)", marginBottom:16 }}>ARO</div>
         <h1 style={{ margin:0, fontSize:26, fontWeight:800, color:C.text }}>ARO CRM</h1>
-        <p style={{ margin:"6px 0 0", fontSize:13, color:C.textLight }}>Real Estate CRM</p>
+        <p style={{ margin:"6px 0 0", fontSize:13, color:C.textLight }}></p>
       </div>
       {err && <div style={{ background:"#FEE2E2", color:"#B91C1C", padding:"10px 16px", borderRadius:10, fontSize:13, marginBottom:18, textAlign:"center" }}>{err}</div>}
       <div style={{ marginBottom:14 }}>
@@ -496,7 +496,7 @@ var Sidebar = function(p) {
           <div style={{ color:"#fff", fontWeight:700, fontSize:14, display:"flex", alignItems:"center", gap:6 }}>
             <span>ARO CRM</span>
           </div>
-          <div style={{ color:"rgba(255,255,255,0.4)", fontSize:9 }}>Real Estate Platform</div>
+          <div style={{ color:"rgba(255,255,255,0.4)", fontSize:9 }}></div>
         </div>
         {p.isMobile&&<button onClick={p.onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"rgba(255,255,255,0.6)", display:"flex" }}><X size={18}/></button>}
       </div>
