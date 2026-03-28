@@ -671,7 +671,7 @@ var Header = function(p) {
 var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
-  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential" });
+  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"" });
   var [dupWarning, setDupWarning] = useState(null);
   var [saving, setSaving] = useState(false);
   var isReq = p.isReq||false;
@@ -692,6 +692,7 @@ var LeadForm = function(p) {
     setSaving(true);
     try {
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
+      if(form.dealDate) payload.updatedAt = new Date(form.dealDate).toISOString();
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
@@ -725,7 +726,7 @@ var LeadForm = function(p) {
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
-    <div style={{ display:"flex", gap:10 }}>
+    {p.initialStatus==="DoneDeal"&&<Inp label="Deal Date (for old deals)" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
       <Btn outline onClick={p.onClose} style={{ flex:1 }}>{t.cancel}</Btn>
       <Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.editId?t.save:t.add}</Btn>
     </div>
@@ -835,7 +836,7 @@ var QuickPhoneSearch = function(p) {
     return l.phone&&(l.phone.includes(q)||l.phone.endsWith(q));
   }):[];
   var sc=STATUSES(p.t);
-  if(!show)return <button onClick={function(){setShow(true);}} style={{ position:"fixed", bottom:24, right:24, zIndex:300, width:52, height:52, borderRadius:"50%", background:C.accent, border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 4px 20px rgba(232,168,56,0.5)", fontSize:22 }} title="Quick Phone Search">🔍</button>;
+  if(!show)return <button onClick={function(){setShow(true);}} style={{ position:"fixed", bottom:24, right:24, zIndex:300, width:46, height:46, borderRadius:"50%", background:"rgba(255,255,255,0.15)", backdropFilter:"blur(8px)", WebkitBackdropFilter:"blur(8px)", border:"1.5px solid rgba(255,255,255,0.35)", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 2px 16px rgba(0,0,0,0.18)" }} title="Quick Phone Search"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke={C.accent} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="22" y2="22"/></svg></button>;
   return <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center" }} onClick={function(){setShow(false);setQ("");}}>
     <div style={{ background:"#fff", borderRadius:18, padding:20, width:340, maxWidth:"90vw", maxHeight:"80vh", overflow:"auto" }} onClick={function(e){e.stopPropagation();}}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
@@ -1098,11 +1099,11 @@ var LeadsPage = function(p) {
         }} style={{ padding:"7px 11px", fontSize:12, color:"#25D366", borderColor:"#25D366" }}>💬 {t.bulkWhatsApp} ({selected2.length})</Btn>}
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
         {isOnlyAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
+        {isOnlyAdmin&&!p.isMobile&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
+        {isOnlyAdmin&&p.isMobile&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 11px", fontSize:12 }}><Plus size={14}/> Add</Btn>}
         {p.cu&&p.cu.role==="admin"&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
         {!notifGranted&&<Btn outline onClick={async function(){var ok=await requestNotifPermission();setNotifGranted(ok);}} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Bell size={13}/> {t.enableNotif}</Btn>}
         {isOnlyAdmin&&!p.isMobile&&<Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>}
-        {isOnlyAdmin&&!p.isMobile&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
-        {isOnlyAdmin&&p.isMobile&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 11px", fontSize:12 }}><Plus size={14}/> Add</Btn>}
       </div>
     </div>
 
