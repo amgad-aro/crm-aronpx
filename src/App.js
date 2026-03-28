@@ -727,6 +727,7 @@ var LeadForm = function(p) {
     <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
     {p.initialStatus==="DoneDeal"&&<Inp label="Deal Date (for old deals)" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
+    <div style={{ display:"flex", gap:10 }}>
       <Btn outline onClick={p.onClose} style={{ flex:1 }}>{t.cancel}</Btn>
       <Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.editId?t.save:t.add}</Btn>
     </div>
