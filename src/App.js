@@ -1235,6 +1235,7 @@ var LeadsPage = function(p) {
                   <td style={{ padding:"10px 12px", textAlign:"left" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                       {lead.isVIP&&<span style={{ fontSize:14 }} title="VIP">⭐</span>}
+                      {(function(){var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}return ids.includes(gid(lead))?<span style={{ fontSize:12 }} title="Locked — no rotation">🔒</span>:null;})()}
                       {(function(){var lockedIds=[];try{lockedIds=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}return lockedIds.includes(gid(lead))?<span style={{ fontSize:12 }} title="Locked">🔒</span>:null;})()}
                       <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
                     </div>
@@ -1357,6 +1358,19 @@ var LeadsPage = function(p) {
             <button onClick={async function(){
               try{var newVip=!selected.isVIP;var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{isVIP:newVip},p.token);var merged=Object.assign({},selected,{isVIP:newVip});p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?Object.assign({},l,{isVIP:newVip}):l;});});setSelected(merged);}catch(e){console.error("VIP error",e);}
             }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(selected.isVIP?"#F59E0B":"#E2E8F0"), background:selected.isVIP?"#FEF3C7":"#fff", fontSize:13, cursor:"pointer" }} title={selected.isVIP?t.removeVip:t.markVip}>⭐</button>
+            {(function(){
+              var lid=gid(selected);
+              var lockedIds=[];try{lockedIds=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}
+              var isLocked=lockedIds.includes(lid);
+              return <button onClick={function(){
+                var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}
+                if(isLocked){ids=ids.filter(function(x){return x!==lid;});}else{ids=ids.concat([lid]);}
+                try{localStorage.setItem("crm_locked_leads",JSON.stringify(ids));}catch(e){}
+                setSelected(function(prev){return Object.assign({},prev,{_locked:!isLocked});});
+              }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(isLocked?"#EF4444":"#E2E8F0"), background:isLocked?"#FEE2E2":"#fff", fontSize:13, cursor:"pointer" }} title={isLocked?"Unlock — allow rotation":"Lock — prevent rotation"}>
+                {isLocked?"🔒":"🔓"}
+              </button>;
+            })()}
             {(function(){
               var lid=gid(selected);
               var lockedIds=[];try{lockedIds=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}
@@ -2278,15 +2292,7 @@ var DealsPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}</td>
             {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}>{d.phone}</td>}
             {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight, textAlign:"left" }}>
-              {d.phone2&&d.phone2!==d.phone?(function(){
-                return <div>
-                  <PhoneCell phone={d.phone2}/>
-                  <div style={{ display:"flex", gap:6, marginTop:3 }}>
-                    <a href={"tel:"+d.phone2} onClick={function(e){e.stopPropagation();}} style={{ fontSize:12, color:C.success, textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:"2px 6px", borderRadius:6, background:"#DCFCE7" }}><Phone size={12}/> Call</a>
-                    <a href={"https://wa.me/"+waPhone(d.phone2)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:12, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:"2px 6px", borderRadius:6, background:"#DCFCE720" }}><svg viewBox="0 0 24 24" width="16" height="16" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp</a>
-                  </div>
-                </div>;
-              })():<span style={{ color:"#CBD5E1" }}>-</span>}
+              {d.phone2&&d.phone2!==d.phone?<PhoneCell phone={d.phone2}/>:<span style={{ color:"#CBD5E1" }}>-</span>}
             </td>}
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success, textAlign:"left" }}>
