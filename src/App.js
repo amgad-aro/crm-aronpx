@@ -189,7 +189,7 @@ var PROJECTS = [
   "العاصمة الإدارية", "المستقبل سيتي", "التجمع الخامس", "الشروق", "6 أكتوبر",
   "بالم هيلز", "ماونتن فيو", "سوديك ايست", "الرحاب", "مدينتي"
 ];
-var SOURCES = ["Facebook", "Instagram", "TikTok", "WhatsApp", "Google Ads", "Referral", "Walk In", "Website"];
+var SOURCES = ["Facebook", "Instagram", "TikTok", "WhatsApp", "Google Ads", "Referral", "Snap Chat", "Website"];
 var PROP_TYPES = ["Apartment","Duplex","Townhouse","Twinhouse","Standalone","Commercial","Admin","Clinic","Service Apartment","Chalet"];
 
 
@@ -908,12 +908,17 @@ var QuickPhoneSearch = function(p) {
 var PhoneCell = function(p) {
   var [show, setShow] = useState(false);
   if (!p.phone) return <span style={{ color:"#CBD5E1" }}>-</span>;
-  var masked = p.phone.slice(0,-4) + "****";
+  var masked = (function(){
+    var ph = p.phone;
+    if(ph.length <= 6) return ph.slice(0,2) + "****";
+    var keep = Math.ceil(ph.length * 0.35); // show ~35% from start
+    return ph.slice(0, keep) + "****" + ph.slice(-2);
+  })();
   return <span
     onMouseEnter={function(){setShow(true);}}
     onMouseLeave={function(){setShow(false);}}
     style={{ cursor:"pointer", direction:"ltr", letterSpacing:1, userSelect:show?"text":"none" }}
-    title="Click to show"
+    title="Hover to show"
   >{show ? p.phone : masked}</span>;
 };
 
