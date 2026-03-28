@@ -3722,6 +3722,12 @@ export default function CRMApp() {
   var [initSelected,setInitSelected]=useState(null);
   var [search,setSearch]=useState("");
   var [isOnline,setIsOnline]=useState(navigator.onLine);
+  var [showPwaBanner,setShowPwaBanner]=useState(function(){
+    var isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
+    var isStandalone=window.navigator.standalone===true||window.matchMedia("(display-mode: standalone)").matches;
+    var isDismissed=false; try{isDismissed=localStorage.getItem("crm_pwa_dismissed")==="1";}catch(e){}
+    return isIOS&&!isStandalone&&!isDismissed;
+  });
   useEffect(function(){
     if (!document.getElementById('cairo-font')) {
       var link=document.createElement('link'); link.id='cairo-font'; link.rel='stylesheet';
@@ -4127,13 +4133,6 @@ export default function CRMApp() {
   // Build team-filtered users for manager
   // Server already filters users by role/hierarchy — p.users IS the team
   var myTeamUsers = users;
-
-  var [showPwaBanner,setShowPwaBanner]=useState(function(){
-    var isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
-    var isStandalone=window.navigator.standalone===true||window.matchMedia("(display-mode: standalone)").matches;
-    var isDismissed=false; try{isDismissed=localStorage.getItem("crm_pwa_dismissed")==="1";}catch(e){}
-    return isIOS&&!isStandalone&&!isDismissed;
-  });
 
   var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
