@@ -68,7 +68,7 @@ var TR = {
     salesDay:"مبيعات Today", salesWeek:"مبيعات This Week", salesMonth:"مبيعات This Month", dealsCount:"deal", newLeadsToday:"Leads جدد Today", bestAgent:"🏆 الأفضل هذا This Month", kpiTitle:"📊 KPIs — المبيعات",
     bulkReassign: "تحويل جماعي", selectAll: "تحديد الكل", reassignTo: "تحويل لـ",
     whatsapp: "واتساب", call: "اتصال",
-    propertyType: "Property Type", area: "Area",
+    propertyType: "Property Type", area: "Location",
     totalRequests: "Total Numbers",
     restore: "استعادة",
     overdue: "متأخرون",
@@ -138,7 +138,7 @@ var TR = {
     salesDay:"Today's Deals", salesWeek:"This Week's Deals", salesMonth:"This Month's Deals", dealsCount:"deal(s)", newLeadsToday:"New Leads Today", bestAgent:"🏆 Top Performer", kpiTitle:"📊 KPIs — Deals",
     bulkReassign: "Bulk Reassign", selectAll: "Select All", reassignTo: "Reassign To",
     whatsapp: "WhatsApp", call: "Call",
-    propertyType: "Property Type", area: "Area",
+    propertyType: "Property Type", area: "Location",
     totalRequests: "Total Numbers",
     restore: "Restore",
     overdue: "Overdue",
@@ -1191,7 +1191,7 @@ var LeadsPage = function(p) {
               <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
             </div>
             {/* Phone2 */}
-            {lead.phone2&&<div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr", marginBottom:4 }}>{lead.phone2}</div>}
+            {lead.phone2&&<div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr", marginBottom:4 }}><PhoneCell phone={lead.phone2}/></div>}
             {/* Project + Last Activity */}
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
               {lead.project?<span style={{ fontSize:11, color:"#6D28D9", fontWeight:700, background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>📍 {lead.project}</span>:<span style={{ color:C.textLight, fontSize:11 }}>—</span>}
@@ -2516,7 +2516,7 @@ var ArchivePage = function(p) {
       <tbody>{archived.map(function(l){var lid=gid(l);var so=STATUSES(t).find(function(s){return s.value===l.status;})||STATUSES(t)[0];var ag=l.agentId&&l.agentId.name?l.agentId.name:"";
         return <tr key={lid} style={{ borderBottom:"1px solid #F1F5F9", opacity:0.7 }}>
           <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{l.name}</td>
-          <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{l.phone}</td>
+          <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}><PhoneCell phone={l.phone}/></td>
           <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{l.project}</td>
           <td style={{ padding:"11px 12px" }}><Badge bg={so.bg} color={so.color}>{so.label}</Badge></td>
           {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>{ag}</td>}
@@ -2529,12 +2529,12 @@ var ArchivePage = function(p) {
       <h3 style={{ margin:"0 0 12px", fontSize:15, fontWeight:700, color:C.textLight }}>📋 Archived Daily Requests ({archivedDR.length})</h3>
       <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:400 }}>
         <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-          {["Name","Phone","Area","Budget","Status",""].map(function(h){return <th key={h||"x"} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight }}>{h}</th>;})}
+          {["Name","Phone","Location","Budget","Status",""].map(function(h){return <th key={h||"x"} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight }}>{h}</th>;})}
         </tr></thead>
         <tbody>{archivedDR.map(function(r){var rid=gid(r);var so=STATUSES(t).find(function(s){return s.value===r.status;})||STATUSES(t)[0];
           return <tr key={rid} style={{ borderBottom:"1px solid #F1F5F9", opacity:0.7 }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{r.name}</td>
-            <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{r.phone}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}><PhoneCell phone={r.phone}/></td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{r.area||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.success, fontWeight:600 }}>{r.budget||"-"}</td>
             <td style={{ padding:"11px 12px" }}><Badge bg={so.bg} color={so.color}>{so.label}</Badge></td>
@@ -2703,7 +2703,7 @@ var DailyRequestsPage = function(p) {
         setSelected2([]);
         if(selected&&ids.includes(gid(selected)))setSelected(null);
       }} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Archive size={13}/> Archive ({selected2.length})</Btn>}
-      {p.cu.role==="admin"&&<Btn outline onClick={async function(){var XLSX=await new Promise(function(res){if(window.XLSX){res(window.XLSX);return;}var s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=function(){res(window.XLSX);};document.head.appendChild(s);});var rows=filtered.map(function(r){return{"Name":r.name,"Phone":r.phone,"Phone2":r.phone2||"","Property Type":r.propertyType||"","Area":r.area||"","Budget":r.budget||"","Status":r.status||"","Agent":r.agentId&&r.agentId.name?r.agentId.name:"","Callback":r.callbackTime||"","Last Activity":r.lastActivityTime?new Date(r.lastActivityTime).toLocaleDateString("en-GB"):"","Notes":r.notes||""};});var ws=XLSX.utils.json_to_sheet(rows);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Daily Requests");XLSX.writeFile(wb,"daily_requests_"+new Date().toISOString().slice(0,10)+".xlsx");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> Export Excel</Btn>}
+      {p.cu.role==="admin"&&<Btn outline onClick={async function(){var XLSX=await new Promise(function(res){if(window.XLSX){res(window.XLSX);return;}var s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=function(){res(window.XLSX);};document.head.appendChild(s);});var rows=filtered.map(function(r){return{"Name":r.name,"Phone":r.phone,"Phone2":r.phone2||"","Property Type":r.propertyType||"","Location":r.area||"","Budget":r.budget||"","Status":r.status||"","Agent":r.agentId&&r.agentId.name?r.agentId.name:"","Callback":r.callbackTime||"","Last Activity":r.lastActivityTime?new Date(r.lastActivityTime).toLocaleDateString("en-GB"):"","Notes":r.notes||""};});var ws=XLSX.utils.json_to_sheet(rows);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Daily Requests");XLSX.writeFile(wb,"daily_requests_"+new Date().toISOString().slice(0,10)+".xlsx");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> Export Excel</Btn>}
     </div>
 
     {/* Filters */}
@@ -2746,7 +2746,7 @@ var DailyRequestsPage = function(p) {
             </div>
             <div style={{ padding:"16px" }}>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:16 }}>
-                {[{l:"Property Type",v:selected.propertyType,icon:"🏠"},{l:"Area",v:selected.area,icon:"📍"},{l:"Budget",v:selected.budget,icon:"💰"},{l:"Agent",v:getAgentName(selected),icon:"👤"},{l:"Callback",v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):null,icon:"📞"},{l:"Last Activity",v:timeAgo(selected.lastActivityTime,t),icon:"🕐"}].map(function(f){return f.v?<div key={f.l} style={{ background:"#F8FAFC", borderRadius:12, padding:"12px 14px", border:"1px solid #E8ECF1" }}>
+                {[{l:"Property Type",v:selected.propertyType,icon:"🏠"},{l:"Location",v:selected.area,icon:"📍"},{l:"Budget",v:selected.budget,icon:"💰"},{l:"Agent",v:getAgentName(selected),icon:"👤"},{l:"Callback",v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):null,icon:"📞"},{l:"Last Activity",v:timeAgo(selected.lastActivityTime,t),icon:"🕐"}].map(function(f){return f.v?<div key={f.l} style={{ background:"#F8FAFC", borderRadius:12, padding:"12px 14px", border:"1px solid #E8ECF1" }}>
                   <div style={{ fontSize:10, color:C.textLight, marginBottom:4, fontWeight:600 }}>{f.icon} {f.l}</div>
                   <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{f.v}</div>
                 </div>:null;})}
@@ -2774,7 +2774,7 @@ var DailyRequestsPage = function(p) {
                 <div style={{ flex:1 }}>
                   <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:2 }}>{r.name}</div>
                   <div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr" }}><PhoneCell phone={r.phone}/></div>
-                  {r.phone2&&<div style={{ fontSize:11, fontWeight:700, color:C.textLight, direction:"ltr" }}>{r.phone2}</div>}
+                  {r.phone2&&<div style={{ fontSize:11, fontWeight:700, color:C.textLight, direction:"ltr" }}><PhoneCell phone={r.phone2}/></div>}
                 </div>
                 <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
               </div>
@@ -2795,7 +2795,7 @@ var DailyRequestsPage = function(p) {
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
               {p.cu.role==="admin"&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(r){return gid(r);}):[]);}}/></th>}
-              {["Name","Phone","Property Type","Area","Budget","Status",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+              {["Name","Phone","Property Type","Location","Budget","Status",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
             </tr></thead>
             <tbody>
               {filtered.length===0&&<tr><td colSpan={10} style={{ padding:40, textAlign:"center", color:C.textLight }}>No requests</td></tr>}
@@ -2868,7 +2868,7 @@ var DailyRequestsPage = function(p) {
               {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid", borderColor:selected.status===s.value?s.color:"#E2E8F0", background:selected.status===s.value?s.bg:"#fff", color:selected.status===s.value?s.color:C.textLight, fontSize:10, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
             </div>
           </div>
-          {[{l:"Property Type",v:selected.propertyType},{l:"Area",v:selected.area},{l:"Budget",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
+          {[{l:"Property Type",v:selected.propertyType},{l:"Location",v:selected.area},{l:"Budget",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span></div>:null;
           })}
           <div style={{ marginTop:12 }}>
@@ -2897,7 +2897,7 @@ var DailyRequestsPage = function(p) {
         <Inp label={"Phone"} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});})}} placeholder=""/>
         <Inp label={"Alt. Phone"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder=""/>
         <Inp label={"Property Type"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- Select -"};})}/>
-        <Inp label={"Area"} req value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder=""/>
+        <Inp label={"Location"} req value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder=""/>
         <div style={{ gridColumn:"1/-1" }}><Inp label={"Budget"} req value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>
       </div>
       {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
