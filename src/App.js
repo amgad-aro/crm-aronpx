@@ -2842,8 +2842,8 @@ var UsersPage = function(p) {
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,t.username,t.title,t.role,t.phone,t.monthlyTarget,"Last Seen",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
-      <tbody>{p.users.map(function(u){var uid=gid(u);return <tr key={uid} style={{ borderBottom:"1px solid #F1F5F9" }}>
-        <td style={{ padding:"11px 12px" }}><div style={{ display:"flex", alignItems:"center", gap:8 }}><div style={{ width:32, height:32, borderRadius:8, background:C.primary+"15", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:12, color:C.primary, flexShrink:0 }}>{u.name[0]}</div><div><div style={{ fontSize:12, fontWeight:600 }}>{u.name}</div><div style={{ fontSize:10, color:C.textLight }}>{u.email}</div></div></div></td>
+      <tbody>{p.users.map(function(u){var uid=gid(u);var displayName=u.username==="amgad"?"Amgad Mohamed":u.name;return <tr key={uid} style={{ borderBottom:"1px solid #F1F5F9" }}>
+        <td style={{ padding:"11px 12px" }}><div style={{ display:"flex", alignItems:"center", gap:8 }}><div style={{ width:32, height:32, borderRadius:8, background:C.primary+"15", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:12, color:C.primary, flexShrink:0 }}>{displayName[0]}</div><div><div style={{ fontSize:12, fontWeight:600 }}>{displayName}</div><div style={{ fontSize:10, color:C.textLight }}>{u.email}</div></div></div></td>
         <td style={{ padding:"11px 12px", fontSize:12, fontFamily:"monospace" }}>{u.username}</td>
         <td style={{ padding:"11px 12px", fontSize:12 }}>{u.title}</td>
         <td style={{ padding:"11px 12px" }}><Badge bg={(rc[u.role]||"#94A3B8")+"15"} color={rc[u.role]||"#94A3B8"}>{rl[u.role]||u.role}</Badge></td>
@@ -2954,12 +2954,19 @@ var ReportsPage = function(p) {
   var t=p.t; var sc=STATUSES(t);
   var [period,setPeriod]=useState("monthly");
   var [exporting,setExporting]=useState(false);
-  var pLabel={daily:"Today",weekly:"This Week",monthly:"This Month"};
-  var ms={daily:86400000,weekly:604800000,monthly:2592000000}[period];
+  var curQR=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+  var pLabel={daily:"Today",weekly:"This Week",monthly:"This Month",q:"This Quarter"};
+  var qStartMs=(function(){var m=new Date().getMonth();var qStart=m<3?0:m<6?3:m<9?6:9;var d=new Date();d.setMonth(qStart,1);d.setHours(0,0,0,0);return d.getTime();})();
+  var ms=period==="q"?null:{daily:86400000,weekly:604800000,monthly:2592000000}[period];
   var now=Date.now();
   var allLeads=p.leads.filter(function(l){return !l.archived;});
-  var periodLeads=allLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<ms;});
-  var periodDeals=allLeads.filter(function(l){return l.status==="DoneDeal"&&l.updatedAt&&(now-new Date(l.updatedAt).getTime())<ms;});
+  var inPeriod=function(dateStr){
+    if(!dateStr) return false;
+    if(period==="q") return new Date(dateStr).getTime()>=qStartMs;
+    return (now-new Date(dateStr).getTime())<ms;
+  };
+  var periodLeads=allLeads.filter(function(l){return l.createdAt&&inPeriod(l.createdAt);});
+  var periodDeals=allLeads.filter(function(l){return l.status==="DoneDeal"&&l.updatedAt&&inPeriod(l.updatedAt);});
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var parseBudgetR=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var getQTargetsR=function(uid){var u=p.users.find(function(x){return gid(x)===uid;});if(u&&u.qTargets&&Object.keys(u.qTargets).length>0)return u.qTargets;try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}}
@@ -2968,10 +2975,9 @@ var ReportsPage = function(p) {
     var uNew=periodLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.source!=="Daily Request";});
     var uDailyReq=periodLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.source==="Daily Request";});
     var uDeals=periodDeals.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid;});
-    var uMeetingDone=allLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.status==="MeetingDone"&&l.updatedAt&&(now-new Date(l.updatedAt).getTime())<ms;});
+    var uMeetingDone=allLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.status==="MeetingDone"&&l.updatedAt&&inPeriod(l.updatedAt);});
     var revenue=uDeals.reduce(function(s,d){return s+parseBudgetR(d.budget);},0);
     var qt=getQTargetsR(uid);
-    var curQR=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
     var qTarget=qt[curQR]||0;
     var target=qTarget>0?qTarget:(u.monthlyTarget||0)*1000000;
     var prog=target>0?Math.min(100,Math.round((revenue/target)*100)):0;
@@ -2988,7 +2994,7 @@ var ReportsPage = function(p) {
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18, flexWrap:"wrap", gap:10 }}>
       <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>📊 Reports</h2>
       <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-        {["daily","weekly","monthly"].map(function(p2){return <button key={p2} onClick={function(){setPeriod(p2);}} style={{ padding:"6px 14px", borderRadius:8, border:"1px solid", borderColor:period===p2?C.accent:"#E2E8F0", background:period===p2?C.accent+"12":"#fff", color:period===p2?C.accent:C.textLight, fontSize:12, fontWeight:600, cursor:"pointer" }}>{pLabel[p2]}</button>;})}
+        {["daily","weekly","monthly","q"].map(function(p2){return <button key={p2} onClick={function(){setPeriod(p2);}} style={{ padding:"6px 14px", borderRadius:8, border:"1px solid", borderColor:period===p2?C.accent:"#E2E8F0", background:period===p2?C.accent+"12":"#fff", color:period===p2?C.accent:C.textLight, fontSize:12, fontWeight:600, cursor:"pointer" }}>{p2==="q"?curQR+" 🔵":pLabel[p2]}</button>;})}
         <Btn outline onClick={exportReport} loading={exporting} style={{ padding:"6px 12px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> Excel</Btn>
       </div>
     </div>
