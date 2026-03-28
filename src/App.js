@@ -835,7 +835,7 @@ var QuickPhoneSearch = function(p) {
     return l.phone&&(l.phone.includes(q)||l.phone.endsWith(q));
   }):[];
   var sc=STATUSES(p.t);
-  if(!show)return <button onClick={function(){setShow(true);}} style={{ position:"fixed", bottom:24, left:24, zIndex:300, width:52, height:52, borderRadius:"50%", background:"#25D366", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 4px 20px rgba(37,211,102,0.5)", fontSize:22 }} title="Quick Phone Search">📞</button>;
+  if(!show)return <button onClick={function(){setShow(true);}} style={{ position:"fixed", bottom:24, right:24, zIndex:300, width:52, height:52, borderRadius:"50%", background:C.accent, border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 4px 20px rgba(232,168,56,0.5)", fontSize:22 }} title="Quick Phone Search">🔍</button>;
   return <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center" }} onClick={function(){setShow(false);setQ("");}}>
     <div style={{ background:"#fff", borderRadius:18, padding:20, width:340, maxWidth:"90vw", maxHeight:"80vh", overflow:"auto" }} onClick={function(e){e.stopPropagation();}}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
@@ -1496,7 +1496,7 @@ var MyDayPage = function(p) {
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ marginBottom:18 }}>
       <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:4 }}>My Day 🌟</div>
-      <div style={{ fontSize:12, color:C.textLight }}>{new Date().toLocaleDateString("ar-EG",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
+      <div style={{ fontSize:12, color:C.textLight }}>{new Date().toLocaleDateString("en-GB",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
     </div>
 
     {/* Summary cards */}
@@ -1929,10 +1929,15 @@ var DealsPage = function(p) {
     var w={};deals.forEach(function(d){if(d.project)w[d.project]=getProjectWeight(d.project);});return w;
   });
   var [dateFrom,setDateFrom]=useState(""); var [dateTo,setDateTo]=useState(""); var [dealSearch,setDealSearch]=useState(""); var [dealAgent,setDealAgent]=useState("");
+  var curYear=new Date().getFullYear(); var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+  var dealYears=[curYear,curYear-1,curYear-2,curYear-3];
+  var [dealQ,setDealQ]=useState("all"); var [dealYear,setDealYear]=useState(curYear);
   var filteredDeals=deals.filter(function(d){
+    if(dealQ!=="all"){var dd=d.updatedAt||d.createdAt;if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
+    if(dealQ!=="all"&&new Date(d.updatedAt||d.createdAt||0).getFullYear()!==dealYear) return false;
     if(dateFrom&&new Date(d.updatedAt||d.createdAt)<new Date(dateFrom)) return false;
     if(dateTo&&new Date(d.updatedAt||d.createdAt)>new Date(dateTo+"T23:59:59")) return false;
-    if(dealSearch){var q=dealSearch.toLowerCase();var nm=d.name?d.name.toLowerCase():"";var pr=d.project?d.project.toLowerCase():"";var ph=d.phone||"";if(!nm.includes(q)&&!pr.includes(q)&&!ph.includes(q))return false;}
+    if(dealSearch){var q2=dealSearch.toLowerCase();var nm=d.name?d.name.toLowerCase():"";var pr=d.project?d.project.toLowerCase():"";var ph=d.phone||"";if(!nm.includes(q2)&&!pr.includes(q2)&&!ph.includes(q2))return false;}
     if(dealAgent){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;if(aid!==dealAgent)return false;}
     return true;
   });
@@ -1977,6 +1982,17 @@ var DealsPage = function(p) {
     </div>
 
     {/* Deals Search + Filter bar */}
+    <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:10, flexWrap:"wrap" }}>
+      <div style={{ display:"flex", gap:5 }}>
+        {["all","Q1","Q2","Q3","Q4"].map(function(q){return <button key={q} onClick={function(){setDealQ(q);}}
+          style={{ padding:"5px 12px", borderRadius:8, border:"1px solid", borderColor:dealQ===q?C.accent:"#E2E8F0",
+            background:dealQ===q?C.accent+"12":"#fff", color:dealQ===q?C.accent:C.textLight,
+            fontSize:12, fontWeight:600, cursor:"pointer" }}>{q==="all"?"All":q}{q===curQ&&dealYear===curYear&&q!=="all"?" 🔵":""}</button>;})}
+      </div>
+      <select value={dealYear} onChange={function(e){setDealYear(Number(e.target.value));}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+        {dealYears.map(function(y){return <option key={y} value={y}>{y}</option>;})}
+      </select>
+    </div>
     <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
       <input placeholder="🔍 Search by name, project or phone..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, minWidth:220 }}/>
       {isAdmin&&<select value={dealAgent} onChange={function(e){setDealAgent(e.target.value);}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
@@ -2341,7 +2357,7 @@ var TasksPage = function(p) {
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div>
         <h2 style={{ margin:"0 0 2px", fontSize:18, fontWeight:800 }}>☀️ My Day & Tasks</h2>
-        <div style={{ fontSize:12, color:C.textLight }}>{new Date().toLocaleDateString("ar-EG",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
+        <div style={{ fontSize:12, color:C.textLight }}>{new Date().toLocaleDateString("en-GB",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
       </div>
       <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> New Task</Btn>
     </div>
@@ -3017,7 +3033,7 @@ var TeamPage = function(p) {
   };
   var [viewQ,setViewQ]=useState(curQ);
   var curYear=new Date().getFullYear();
-  var years=[curYear,curYear-1,curYear-2];
+  var years=[curYear,curYear-1,curYear-2,curYear-3];
   var [viewYear,setViewYear]=useState(curYear);
   var [editQModal,setEditQModal]=useState(null);
   var [expandedManager,setExpandedManager]=useState(null); // uid of expanded manager
@@ -3473,7 +3489,7 @@ var KPIsPage = function(p) {
   var isOnlineNow = myUser.lastSeen&&(Date.now()-new Date(myUser.lastSeen).getTime())<3*60*1000;
 
   // Available years — current and past 2
-  var years = [curYear, curYear-1, curYear-2];
+  var years = [curYear, curYear-1, curYear-2, curYear-3];
 
   return <div style={{ padding:"18px 16px 40px" }}>
     <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>KPIs</h2>
@@ -3971,7 +3987,7 @@ export default function CRMApp() {
       if(!targetAgent) return; // no valid target agent
       var targetAgentId = gid(targetAgent);
       if(targetAgentId===currentAgentId) return;
-      var timeStr=new Date().toLocaleString("ar-EG");
+      var timeStr=new Date().toLocaleString("en-GB");
       try{
         var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{
           agentId: targetAgentId,
