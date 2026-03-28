@@ -706,6 +706,10 @@ var LeadForm = function(p) {
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
+      // Save extra deal fields to localStorage
+      if(result && result._id && (form.downPaymentPct||form.installmentYears)){
+        saveDealExtra(String(result._id),{downPaymentPct:form.downPaymentPct||"",installmentYears:form.installmentYears||""});
+      }
       if (payload.phone2) {
         result.phone2 = payload.phone2;
         // Cache phone2 in localStorage
@@ -1871,6 +1875,8 @@ var saveProjectWeight = function(project,weight){
 // Deal split stored in localStorage: crm_deal_split_{leadId} = {agent2Id, agent2Name}
 var getDealSplit = function(lid){ try{return JSON.parse(localStorage.getItem("crm_deal_split_"+lid)||"null");}catch(e){return null;}};
 var saveDealSplit = function(lid,split){ try{localStorage.setItem("crm_deal_split_"+lid,JSON.stringify(split));}catch(e){}};
+var getDealExtra = function(lid){ try{return JSON.parse(localStorage.getItem("crm_deal_extra_"+lid)||"null");}catch(e){return null;}};
+var saveDealExtra = function(lid,extra){ try{localStorage.setItem("crm_deal_extra_"+lid,JSON.stringify(extra));}catch(e){}};
 
 // Calculate commission for a user based on their deals
 var calcCommission = function(user, allDeals, allUsers, forQ) {
@@ -2327,7 +2333,9 @@ var DealsPage = function(p) {
       </tbody>
     </table></div></Card>
 
-    {selectedDeal&&<div style={{ flex:"0 0 280px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
+    {selectedDeal&&(function(){
+      var extra=getDealExtra(gid(selectedDeal))||{};
+      return <div style={{ flex:"0 0 280px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
       <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
         <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", marginBottom:8 }}><X size={11}/></button>
         <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedDeal.name}</div>
@@ -2337,8 +2345,8 @@ var DealsPage = function(p) {
         {[
           {l:"Project", v:selectedDeal.project||"-", icon:"🏠"},
           {l:"Budget", v:selectedDeal.budget?selectedDeal.budget+" EGP":"-", icon:"💰"},
-          {l:"Down Payment %", v:selectedDeal.downPaymentPct?selectedDeal.downPaymentPct+"%":"-", icon:"📊"},
-          {l:"Installment Years", v:selectedDeal.installmentYears?selectedDeal.installmentYears+" yrs":"-", icon:"📅"},
+          {l:"Down Payment %", v:extra.downPaymentPct?extra.downPaymentPct+"%":"-", icon:"📊"},
+          {l:"Installment Years", v:extra.installmentYears?extra.installmentYears+" yrs":"-", icon:"📅"},
           {l:"Agent", v:getAg(selectedDeal), icon:"👤"},
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
           {l:"Deal Date", v:selectedDeal.updatedAt?new Date(selectedDeal.updatedAt).toLocaleDateString("en-GB"):"-", icon:"🗓"},
@@ -2348,7 +2356,7 @@ var DealsPage = function(p) {
           <span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span>
         </div>;})}
       </div>
-    </div>}
+    </div>;})()}
     </div>
   </div>;
 };
@@ -2503,7 +2511,12 @@ var DailyRequestsPage = function(p) {
 
   useEffect(function(){
     apiFetch("/api/daily-requests","GET",null,p.token)
-      .then(function(data){setRequests(Array.isArray(data)?data:[]);setLoading(false);})
+      .then(function(data){
+        var archivedIds=[];
+        try{archivedIds=JSON.parse(localStorage.getItem("crm_dr_archived")||"[]");}catch(e){}
+        var filtered2=Array.isArray(data)?data.filter(function(r){return !archivedIds.includes(gid(r));}):[];
+        setRequests(filtered2);setLoading(false);
+      })
       .catch(function(){setRequests([]);setLoading(false);});
   },[]);
 
@@ -2613,9 +2626,19 @@ var DailyRequestsPage = function(p) {
       {p.cu.role==="admin"&&selected2.length>0&&<Btn outline onClick={async function(){
         if(!window.confirm("Archive "+selected2.length+" requests?")) return;
         var ids=[...selected2];
+        // Try API first, fallback to localStorage
         for(var i=0;i<ids.length;i++){
-          try{await apiFetch("/api/daily-requests/"+ids[i],"PUT",{archived:true},p.token);}catch(e){}
+          try{await apiFetch("/api/leads/"+ids[i]+"/archive","PUT",null,p.token);}
+          catch(e){
+            try{await apiFetch("/api/daily-requests/"+ids[i],"PUT",{archived:true},p.token);}catch(e2){}
+          }
         }
+        // Store archived IDs in localStorage as backup
+        try{
+          var existing=JSON.parse(localStorage.getItem("crm_dr_archived")||"[]");
+          var merged=[...new Set(existing.concat(ids))];
+          localStorage.setItem("crm_dr_archived",JSON.stringify(merged));
+        }catch(e){}
         setRequests(function(prev){return prev.filter(function(r){return !ids.includes(gid(r));});});
         setSelected2([]);
         if(selected&&ids.includes(gid(selected)))setSelected(null);
