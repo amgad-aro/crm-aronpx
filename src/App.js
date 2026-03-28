@@ -709,15 +709,17 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
-      if(form.dealDate) payload.updatedAt = new Date(form.dealDate).toISOString();
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||null, status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
+      // Remove fields backend doesn't accept
+      delete payload.dealDate; delete payload.downPaymentPct; delete payload.installmentYears;
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
       // Save extra deal fields to localStorage
       if(result && result._id && (form.downPaymentPct||form.installmentYears)){
         saveDealExtra(String(result._id),{downPaymentPct:form.downPaymentPct||"",installmentYears:form.installmentYears||""});
-      }      if (payload.phone2) {
+      }
+      if (payload.phone2) {
         result.phone2 = payload.phone2;
         // Cache phone2 in localStorage
         try {
@@ -910,9 +912,9 @@ var PhoneCell = function(p) {
   if (!p.phone) return <span style={{ color:"#CBD5E1" }}>-</span>;
   var masked = (function(){
     var ph = p.phone;
-    if(ph.length <= 6) return ph.slice(0,2) + "****";
-    var keep = Math.ceil(ph.length * 0.35); // show ~35% from start
-    return ph.slice(0, keep) + "****" + ph.slice(-2);
+    if(ph.length < 7) return ph.slice(0,2) + "****";
+    // show first 3, mask 2, show 2, mask last 4
+    return ph.slice(0,3) + "**" + ph.slice(5,7) + "****";
   })();
   return <span
     onMouseEnter={function(){setShow(true);}}
