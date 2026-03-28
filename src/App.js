@@ -3268,23 +3268,24 @@ var ReportsPage = function(p) {
       <Card style={{ flex:1, minWidth:280 }}>
         <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.agentPerf}</h3>
         {(function(){
+          var curQR2=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+          var qStartMs2=(function(){var m=new Date().getMonth();var qStart=m<3?0:m<6?3:m<9?6:9;var d=new Date();d.setMonth(qStart,1);d.setHours(0,0,0,0);return d.getTime();})();
           var now2=Date.now();
-          var ms2={daily:86400000,weekly:604800000,monthly:2592000000}[rPeriod];
+          var ms2=rPeriod==="q"?null:{daily:86400000,weekly:604800000,monthly:2592000000}[rPeriod];
+          var inP2=function(dateStr){if(!dateStr)return false;if(rPeriod==="q")return new Date(dateStr).getTime()>=qStartMs2;return (now2-new Date(dateStr).getTime())<ms2;};
           return <>
-            <div style={{ display:"flex", gap:6, marginBottom:12 }}>
-              {["daily","weekly","monthly"].map(function(pp){var lbl={daily:"Today",weekly:"This Week",monthly:"This Month"}[pp];return <button key={pp} onClick={function(){setRPeriod(pp);}} style={{ padding:"4px 10px", borderRadius:7, border:"1px solid", borderColor:rPeriod===pp?C.accent:"#E2E8F0", background:rPeriod===pp?C.accent+"12":"#fff", color:rPeriod===pp?C.accent:C.textLight, fontSize:11, cursor:"pointer" }}>{lbl}</button>;})}
+            <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
+              {["daily","weekly","monthly","q"].map(function(pp){var lbl={daily:"Today",weekly:"This Week",monthly:"This Month",q:curQR2+" 🔵"}[pp];return <button key={pp} onClick={function(){setRPeriod(pp);}} style={{ padding:"4px 10px", borderRadius:7, border:"1px solid", borderColor:rPeriod===pp?C.accent:"#E2E8F0", background:rPeriod===pp?C.accent+"12":"#fff", color:rPeriod===pp?C.accent:C.textLight, fontSize:11, cursor:"pointer" }}>{lbl}</button>;})}
             </div>
             {sales.map(function(a){var uid=gid(a);
-              var curQR2=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
-              var al=normalLeads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.createdAt&&(now2-new Date(l.createdAt).getTime())<ms2;});
-              var dailyReqCount=dailyRequests.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.createdAt&&(now2-new Date(l.createdAt).getTime())<ms2;}).length;
-              var meetDone=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="MeetingDone"&&l.updatedAt&&(now2-new Date(l.updatedAt).getTime())<ms2;}).length+dailyRequests.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="MeetingDone"&&l.updatedAt&&(now2-new Date(l.updatedAt).getTime())<ms2;}).length;
-              var d=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="DoneDeal"&&!l.archived&&l.updatedAt&&(now2-new Date(l.updatedAt).getTime())<ms2;}).length;
-              var cl=p.activities.filter(function(ac){var auid=String(ac.userId&&ac.userId._id?ac.userId._id:ac.userId||"");return auid===uid&&ac.type==="call"&&ac.createdAt&&(now2-new Date(ac.createdAt).getTime())<ms2;}).length;
+              var al=normalLeads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.createdAt&&inP2(l.createdAt);});
+              var dailyReqCount=dailyRequests.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.createdAt&&inP2(l.createdAt);}).length;
+              var meetDone=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="MeetingDone"&&l.updatedAt&&inP2(l.updatedAt);}).length+dailyRequests.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="MeetingDone"&&l.updatedAt&&inP2(l.updatedAt);}).length;
+              var d=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="DoneDeal"&&!l.archived&&l.updatedAt&&inP2(l.updatedAt);}).length;
+              var cl=p.activities.filter(function(ac){var auid=String(ac.userId&&ac.userId._id?ac.userId._id:ac.userId||"");return auid===uid&&ac.type==="call"&&ac.createdAt&&inP2(ac.createdAt);}).length;
               var rate=al.length>0?Math.round(d/al.length*100):0;
-              var qt2=a.qTargets&&Object.keys(a.qTargets).length>0?a.qTargets:{};
               var qTarget2=getEffectiveQTarget(a,p.users,curQR2);
-              var revenue2=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="DoneDeal"&&!l.archived&&l.updatedAt&&(now2-new Date(l.updatedAt).getTime())<ms2;}).reduce(function(s,l){return s+parseFloat((l.budget||"0").toString().replace(/,/g,""))||0;},0);
+              var revenue2=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="DoneDeal"&&!l.archived&&l.updatedAt&&inP2(l.updatedAt);}).reduce(function(s,l){return s+parseFloat((l.budget||"0").toString().replace(/,/g,""))||0;},0);
               var prog=qTarget2>0?Math.min(100,Math.round(revenue2/qTarget2*100)):0;
               return <div key={uid} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
