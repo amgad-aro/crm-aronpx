@@ -179,7 +179,7 @@ var STATUSES = function(t) { return [
   { value: "HotCase", label: t.hotCase, bg: "#FEE2E2", color: "#DC2626" },
   { value: "CallBack", label: t.callBack, bg: "#FEF3C7", color: "#B45309" },
   { value: "MeetingDone", label: t.meetingDone, bg: "#F3E8FF", color: "#7C3AED" },
-  { value: "EOI", label: "EOI", bg: "#FFF7ED", color: "#EA580C" },
+  { value: "EOI", label: "EOI", bg: "#EEF2FF", color: "#4F46E5" },
   { value: "NotInterested", label: t.notInterested, bg: "#F1F5F9", color: "#64748B" },
   { value: "NoAnswer", label: t.noAnswer, bg: "#E0E7FF", color: "#4338CA" },
   { value: "DoneDeal", label: t.doneDeal, bg: "#DCFCE7", color: "#15803D" },
@@ -1236,7 +1236,6 @@ var LeadsPage = function(p) {
                     <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                       {lead.isVIP&&<span style={{ fontSize:14 }} title="VIP">⭐</span>}
                       {(function(){var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}return ids.includes(gid(lead))?<span style={{ fontSize:12 }} title="Locked — no rotation">🔒</span>:null;})()}
-                      {(function(){var lockedIds=[];try{lockedIds=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}return lockedIds.includes(gid(lead))?<span style={{ fontSize:12 }} title="Locked">🔒</span>:null;})()}
                       <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
                     </div>
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
@@ -1374,20 +1373,6 @@ var LeadsPage = function(p) {
                 var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}
                 if(isLocked){ids=ids.filter(function(x){return x!==lid;});}else{ids=ids.concat([lid]);}
                 try{localStorage.setItem("crm_locked_leads",JSON.stringify(ids));}catch(e){}
-                setSelected(function(prev){return Object.assign({},prev,{_locked:!isLocked});});
-              }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(isLocked?"#EF4444":"#E2E8F0"), background:isLocked?"#FEE2E2":"#fff", fontSize:13, cursor:"pointer" }} title={isLocked?"Unlock — allow rotation":"Lock — prevent rotation"}>
-                {isLocked?"🔒":"🔓"}
-              </button>;
-            })()}
-            {(function(){
-              var lid=gid(selected);
-              var lockedIds=[];try{lockedIds=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}
-              var isLocked=lockedIds.includes(lid);
-              return <button onClick={function(){
-                var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}
-                if(isLocked){ids=ids.filter(function(x){return x!==lid;});}else{ids=ids.concat([lid]);}
-                try{localStorage.setItem("crm_locked_leads",JSON.stringify(ids));}catch(e){}
-                p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{_locked:!isLocked}):l;});});
                 setSelected(function(prev){return Object.assign({},prev,{_locked:!isLocked});});
               }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(isLocked?"#EF4444":"#E2E8F0"), background:isLocked?"#FEE2E2":"#fff", fontSize:13, cursor:"pointer" }} title={isLocked?"Unlock — allow rotation":"Lock — prevent rotation"}>
                 {isLocked?"🔒":"🔓"}
@@ -1672,11 +1657,10 @@ var DashboardPage = function(p) {
   var allDeals=normalLeads.filter(function(l){return l.status==="DoneDeal";});
   // Use eoiDate/dealDate if available, otherwise createdAt for DoneDeal
   var getDealTime=function(d){
-    // Try eoiDate (set when status changed to DoneDeal)
+    // For recent date calculation, updatedAt is most reliable when status just changed to DoneDeal
     if(d.eoiDate) return new Date(d.eoiDate).getTime();
-    // Try createdAt as fallback (more reliable than updatedAt which changes on any edit)
-    if(d.createdAt) return new Date(d.createdAt).getTime();
-    return new Date(d.updatedAt||0).getTime();
+    if(d.updatedAt) return new Date(d.updatedAt).getTime();
+    return new Date(d.createdAt||0).getTime();
   };
   var todayStart=new Date(); todayStart.setHours(0,0,0,0);
   var weekStart=new Date(); weekStart.setDate(weekStart.getDate()-7); weekStart.setHours(0,0,0,0);
@@ -1855,22 +1839,22 @@ var EOIPage = function(p) {
     </div>}
 
     {eoiLeads.length>0&&<Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
-      <thead><tr style={{ background:"#FFF7ED", borderBottom:"2px solid #FED7AA" }}>
-        {[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:"#EA580C", whiteSpace:"nowrap" }}>{h}</th>;})}
+      <thead><tr style={{ background:"#EEF2FF", borderBottom:"2px solid #C7D2FE" }}>
+        {[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:"#4F46E5", whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {eoiLeads.map(function(d){
           var bv=parseBudget(d.budget);
           var eoiDateStr=d.eoiDate?new Date(d.eoiDate).toLocaleDateString("en-GB"):d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB"):"-";
-          return <tr key={gid(d)} style={{ borderBottom:"1px solid #FEF3E2" }}>
-            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
-            {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>}
-            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
-            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.notes||"-"}</td>
-            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:"#EA580C" }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
-            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.eoiDeposit||"-"}</td>
-            {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>{getAg(d)}</td>}
-            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight }}>{eoiDateStr}</td>
+          return <tr key={gid(d)} style={{ borderBottom:"1px solid #E0E7FF" }}>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}</td>
+            {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}>{d.phone}</td>}
+            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.notes||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:"#4F46E5", textAlign:"left" }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.eoiDeposit||"-"}</td>
+            {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>{getAg(d)}</td>}
+            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, textAlign:"left" }}>{eoiDateStr}</td>
             <td style={{ padding:"8px 12px" }}>
               <div style={{ display:"flex", gap:5 }}>
                 {p.cu.role==="admin"&&<button onClick={function(){setEditLead(d);}} title={t.edit}
