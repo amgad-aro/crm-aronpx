@@ -3963,6 +3963,37 @@ export default function CRMApp() {
     setLoading(false);
   },[]);
 
+  // ===== WEBSOCKET =====
+  useEffect(function(){
+    if(!token) return;
+    var wsUrl = (process.env.REACT_APP_API_URL||"https://crm-aro-api-production.up.railway.app").replace("https://","wss://").replace("http://","ws://");
+    var ws; var reconnectTimer;
+    function connect(){
+      ws = new WebSocket(wsUrl);
+      ws.onmessage = function(e){
+        try{
+          var msg = JSON.parse(e.data);
+          if(msg.type==="lead_created"){
+            setLeads(function(prev){
+              if(prev.find(function(l){return gid(l)===gid(msg.data);})) return prev;
+              return [msg.data].concat(prev);
+            });
+          } else if(msg.type==="lead_updated"){
+            setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(msg.data)?msg.data:l;});});
+          } else if(msg.type==="activity_created"){
+            setActivities(function(prev){return [msg.data].concat(prev).slice(0,50);});
+          } else if(msg.type==="dr_created"){
+            // Daily requests are local state per page, just notify
+          }
+        }catch(err){}
+      };
+      ws.onclose = function(){ reconnectTimer = setTimeout(connect, 5000); };
+      ws.onerror = function(){ ws.close(); };
+    }
+    connect();
+    return function(){ clearTimeout(reconnectTimer); if(ws) ws.close(); };
+  }, [token]);
+
   // Load saved session on startup
   useEffect(function(){
     try {
