@@ -681,7 +681,7 @@ var Header = function(p) {
 var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
-  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"" });
+  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", downPaymentPct:"", installmentYears:"" });
   var [dupWarning, setDupWarning] = useState(null);
   var [saving, setSaving] = useState(false);
   var isReq = p.isReq||false;
@@ -737,6 +737,10 @@ var LeadForm = function(p) {
     <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
     {p.initialStatus==="DoneDeal"&&<Inp label="Deal Date (for old deals)" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
+    {p.initialStatus==="DoneDeal"&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
+      <Inp label="Down Payment %" value={form.downPaymentPct||""} onChange={function(e){upd("downPaymentPct",e.target.value.replace(/[^0-9.]/g,""));}} placeholder="e.g. 10"/>
+      <Inp label="Installment Years" value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
+    </div>}
     <div style={{ display:"flex", gap:10 }}>
       <Btn outline onClick={p.onClose} style={{ flex:1 }}>{t.cancel}</Btn>
       <Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.editId?t.save:t.add}</Btn>
@@ -1943,6 +1947,7 @@ var DealsPage = function(p) {
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
   var [showAdd,setShowAdd]=useState(false);
   var [editDeal,setEditDeal]=useState(null);
+  var [selectedDeal,setSelectedDeal]=useState(null);
   var [stagesModal,setStagesModal]=useState(null);
   var [splitModal,setSplitModal]=useState(null); // lead for split
   var [splitAgent2,setSplitAgent2]=useState("");
@@ -2212,7 +2217,8 @@ var DealsPage = function(p) {
       <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ Commission Projects</Btn>
     </div>}
 
-    <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
+    <div style={{ display:"flex", gap:16, alignItems:"flex-start" }}>
+    <Card p={0} style={{ flex:1, overflow:"hidden" }}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}      </tr></thead>
       <tbody>
@@ -2221,7 +2227,8 @@ var DealsPage = function(p) {
           var bv=parseBudget(d.budget);
           var prog=stagesProgress(gid(d));
           var stages=getStages(gid(d));
-          return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
+          var isSel=selectedDeal&&gid(selectedDeal)===gid(d);
+          return <tr key={gid(d)} onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent", transition:"background 0.1s" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}</td>
             {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}>{d.phone}</td>}
             {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight, textAlign:"left" }}>{d.phone2||"-"}</td>}
@@ -2319,6 +2326,30 @@ var DealsPage = function(p) {
         })}
       </tbody>
     </table></div></Card>
+
+    {selectedDeal&&<div style={{ flex:"0 0 280px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
+      <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
+        <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", marginBottom:8 }}><X size={11}/></button>
+        <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedDeal.name}</div>
+        <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}>{selectedDeal.phone}</div>
+      </div>
+      <div style={{ padding:"14px 16px" }}>
+        {[
+          {l:"Project", v:selectedDeal.project||"-", icon:"🏠"},
+          {l:"Budget", v:selectedDeal.budget?selectedDeal.budget+" EGP":"-", icon:"💰"},
+          {l:"Down Payment %", v:selectedDeal.downPaymentPct?selectedDeal.downPaymentPct+"%":"-", icon:"📊"},
+          {l:"Installment Years", v:selectedDeal.installmentYears?selectedDeal.installmentYears+" yrs":"-", icon:"📅"},
+          {l:"Agent", v:getAg(selectedDeal), icon:"👤"},
+          {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
+          {l:"Deal Date", v:selectedDeal.updatedAt?new Date(selectedDeal.updatedAt).toLocaleDateString("en-GB"):"-", icon:"🗓"},
+          {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
+        ].map(function(f){return <div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
+          <span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.icon} {f.l}</span>
+          <span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span>
+        </div>;})}
+      </div>
+    </div>}
+    </div>
   </div>;
 };
 
