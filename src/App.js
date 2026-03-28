@@ -1626,9 +1626,20 @@ var DashboardPage = function(p) {
   var now=Date.now();
   var DAY=86400000; var WEEK=7*DAY; var MONTH=30*DAY;
   var allDeals=normalLeads.filter(function(l){return l.status==="DoneDeal";});
-  var todayDeals=allDeals.filter(function(l){return l.updatedAt&&(now-new Date(l.updatedAt).getTime())<DAY;});
-  var weekDeals=allDeals.filter(function(l){return l.updatedAt&&(now-new Date(l.updatedAt).getTime())<WEEK;});
-  var monthDeals=allDeals.filter(function(l){return l.updatedAt&&(now-new Date(l.updatedAt).getTime())<MONTH;});
+  // Use eoiDate/dealDate if available, otherwise createdAt for DoneDeal
+  var getDealTime=function(d){
+    // Try eoiDate (set when status changed to DoneDeal)
+    if(d.eoiDate) return new Date(d.eoiDate).getTime();
+    // Try createdAt as fallback (more reliable than updatedAt which changes on any edit)
+    if(d.createdAt) return new Date(d.createdAt).getTime();
+    return new Date(d.updatedAt||0).getTime();
+  };
+  var todayStart=new Date(); todayStart.setHours(0,0,0,0);
+  var weekStart=new Date(); weekStart.setDate(weekStart.getDate()-7); weekStart.setHours(0,0,0,0);
+  var monthStart=new Date(); monthStart.setDate(monthStart.getDate()-30); monthStart.setHours(0,0,0,0);
+  var todayDeals=allDeals.filter(function(l){var t2=getDealTime(l);return t2>=todayStart.getTime();});
+  var weekDeals=allDeals.filter(function(l){var t2=getDealTime(l);return t2>=weekStart.getTime();});
+  var monthDeals=allDeals.filter(function(l){var t2=getDealTime(l);return t2>=monthStart.getTime();});
   var todayRev=todayDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var weekRev=weekDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var monthRev=monthDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
