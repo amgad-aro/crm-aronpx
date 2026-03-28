@@ -2956,7 +2956,7 @@ var UsersPage = function(p) {
     </div>
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:580 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.username,t.title,t.role,t.phone,t.monthlyTarget,"Last Seen",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.username,t.title,t.role,t.phone,"Quarterly Target","Last Seen",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>{p.users.map(function(u){var uid=gid(u);var displayName=u.username==="amgad"?"Amgad Mohamed":u.name;return <tr key={uid} style={{ borderBottom:"1px solid #F1F5F9" }}>
         <td style={{ padding:"11px 12px" }}><div style={{ display:"flex", alignItems:"center", gap:8 }}><div style={{ width:32, height:32, borderRadius:8, background:C.primary+"15", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:12, color:C.primary, flexShrink:0 }}>{displayName[0]}</div><div><div style={{ fontSize:12, fontWeight:600 }}>{displayName}</div><div style={{ fontSize:10, color:C.textLight }}>{u.email}</div></div></div></td>
@@ -2966,17 +2966,11 @@ var UsersPage = function(p) {
         <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{u.phone}</td>
         <td style={{ padding:"8px 12px" }}>
           {p.cu.role==="admin"
-            ?<div style={{ display:"flex", alignItems:"center", gap:5 }}>
-              <input type="number" value={u.monthlyTarget||15} onChange={function(e){updateTarget(u,e.target.value);}} style={{ width:60, padding:"4px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:12 }}/>
-              <button onClick={function(){var qt=getQTargets(uid);setQtModal({user:u,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
+            ?<button onClick={function(){var qt=getQTargets(uid);setQtModal({user:u,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
                 title="Quarterly Targets"
-                style={{ padding:"3px 8px", borderRadius:6, border:"1px solid "+C.accent, background:C.accent+"10", color:C.accent, fontSize:10, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>Q</button>
-            </div>
-            :<div>
-              <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{(u.monthlyTarget||0).toLocaleString()}</div>
-              <div style={{ display:"flex", gap:3, marginTop:3 }}>
-                {["Q1","Q2","Q3","Q4"].map(function(q){var qt=getQTargets(uid);var v=qt[q]||0;return <span key={q} style={{ fontSize:9, padding:"1px 4px", borderRadius:3, background:"#F1F5F9", color:C.textLight }}>{q}:{v>0?(v/1000000).toFixed(1)+"M":"—"}</span>;})}
-              </div>
+                style={{ padding:"3px 10px", borderRadius:6, border:"1px solid "+C.accent, background:C.accent+"10", color:C.accent, fontSize:11, fontWeight:700, cursor:"pointer" }}>Q</button>
+            :<div style={{ display:"flex", gap:3 }}>
+              {["Q1","Q2","Q3","Q4"].map(function(q){var qt=getQTargets(uid);var v=qt[q]||0;return <span key={q} style={{ fontSize:9, padding:"1px 4px", borderRadius:3, background:"#F1F5F9", color:C.textLight }}>{q}:{v>0?(v/1000000).toFixed(1)+"M":"—"}</span>;})}
             </div>}
         </td>
         <td style={{ padding:"11px 12px" }}>
