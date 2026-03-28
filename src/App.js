@@ -3247,6 +3247,8 @@ var TeamPage = function(p) {
 var ReportsPage = function(p) {
   var t=p.t;
   var [rPeriod,setRPeriod]=useState("monthly");
+  var [rYear,setRYear]=useState(new Date().getFullYear());
+  var rYears=[new Date().getFullYear(),new Date().getFullYear()-1,new Date().getFullYear()-2,new Date().getFullYear()-3];
   var [dailyRequests,setDailyRequests]=useState([]);
   useEffect(function(){
     apiFetch("/api/daily-requests","GET",null,p.token)
@@ -3269,13 +3271,38 @@ var ReportsPage = function(p) {
         <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.agentPerf}</h3>
         {(function(){
           var curQR2=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
-          var qStartMs2=(function(){var m=new Date().getMonth();var qStart=m<3?0:m<6?3:m<9?6:9;var d=new Date();d.setMonth(qStart,1);d.setHours(0,0,0,0);return d.getTime();})();
+          var curYearR2=new Date().getFullYear();
+          var qStartMs2=(function(){
+            var qMap={Q1:0,Q2:3,Q3:6,Q4:9};
+            var qStart=qMap[rPeriod]!==undefined?qMap[rPeriod]:null;
+            if(qStart===null) return null;
+            var d=new Date(rYear,qStart,1); d.setHours(0,0,0,0); return d.getTime();
+          })();
+          var qEndMs2=(function(){
+            var qMap={Q1:3,Q2:6,Q3:9,Q4:12};
+            var qEnd=qMap[rPeriod]!==undefined?qMap[rPeriod]:null;
+            if(qEnd===null) return null;
+            var d=new Date(rYear,qEnd,1); d.setHours(0,0,0,0); return d.getTime();
+          })();
           var now2=Date.now();
-          var ms2=rPeriod==="q"?null:{daily:86400000,weekly:604800000,monthly:2592000000}[rPeriod];
-          var inP2=function(dateStr){if(!dateStr)return false;if(rPeriod==="q")return new Date(dateStr).getTime()>=qStartMs2;return (now2-new Date(dateStr).getTime())<ms2;};
+          var ms2=["Q1","Q2","Q3","Q4"].includes(rPeriod)?null:{daily:86400000,weekly:604800000,monthly:2592000000}[rPeriod];
+          var inP2=function(dateStr){
+            if(!dateStr) return false;
+            if(["Q1","Q2","Q3","Q4"].includes(rPeriod)){
+              var t2=new Date(dateStr).getTime();
+              return t2>=qStartMs2&&t2<qEndMs2;
+            }
+            return (now2-new Date(dateStr).getTime())<ms2;
+          };
+          var isQMode=["Q1","Q2","Q3","Q4"].includes(rPeriod);
           return <>
-            <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
-              {["daily","weekly","monthly","q"].map(function(pp){var lbl={daily:"Today",weekly:"This Week",monthly:"This Month",q:curQR2+" 🔵"}[pp];return <button key={pp} onClick={function(){setRPeriod(pp);}} style={{ padding:"4px 10px", borderRadius:7, border:"1px solid", borderColor:rPeriod===pp?C.accent:"#E2E8F0", background:rPeriod===pp?C.accent+"12":"#fff", color:rPeriod===pp?C.accent:C.textLight, fontSize:11, cursor:"pointer" }}>{lbl}</button>;})}
+            <div style={{ display:"flex", gap:6, marginBottom:8, flexWrap:"wrap", alignItems:"center" }}>
+              {["daily","weekly","monthly"].map(function(pp){var lbl={daily:"Today",weekly:"This Week",monthly:"This Month"}[pp];return <button key={pp} onClick={function(){setRPeriod(pp);}} style={{ padding:"4px 10px", borderRadius:7, border:"1px solid", borderColor:rPeriod===pp?C.accent:"#E2E8F0", background:rPeriod===pp?C.accent+"12":"#fff", color:rPeriod===pp?C.accent:C.textLight, fontSize:11, cursor:"pointer" }}>{lbl}</button>;})}
+              <div style={{ width:"1px", height:18, background:"#E2E8F0", margin:"0 2px" }}/>
+              {["Q1","Q2","Q3","Q4"].map(function(pp){var isCur=pp===curQR2&&rYear===curYearR2;return <button key={pp} onClick={function(){setRPeriod(pp);}} style={{ padding:"4px 10px", borderRadius:7, border:"1px solid", borderColor:rPeriod===pp?C.accent:"#E2E8F0", background:rPeriod===pp?C.accent+"12":"#fff", color:rPeriod===pp?C.accent:C.textLight, fontSize:11, fontWeight:600, cursor:"pointer" }}>{pp}{isCur?" 🔵":""}</button>;})}
+              {isQMode&&<select value={rYear} onChange={function(e){setRYear(Number(e.target.value));}} style={{ padding:"3px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:11, background:"#fff", color:C.text }}>
+                {rYears.map(function(y){return <option key={y} value={y}>{y}</option>;})}
+              </select>}
             </div>
             {sales.map(function(a){var uid=gid(a);
               var al=normalLeads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.createdAt&&inP2(l.createdAt);});
