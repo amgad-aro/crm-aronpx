@@ -1235,6 +1235,7 @@ var LeadsPage = function(p) {
                   <td style={{ padding:"10px 12px", textAlign:"left" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                       {lead.isVIP&&<span style={{ fontSize:14 }} title="VIP">⭐</span>}
+                      {(function(){var lockedIds=[];try{lockedIds=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}return lockedIds.includes(gid(lead))?<span style={{ fontSize:12 }} title="Locked">🔒</span>:null;})()}
                       <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
                     </div>
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
@@ -1247,7 +1248,7 @@ var LeadsPage = function(p) {
                     </div>
                   </td>
                   <td style={{ padding:"10px 12px", whiteSpace:"nowrap", textAlign:"left" }}>
-                    <span style={{ fontSize:12, direction:"ltr", display:"inline-block" }}>{lead.phone2 ? <PhoneCell phone={lead.phone2}/> : <span style={{color:"#CBD5E1"}}>-</span>}</span>
+                    <span style={{ fontSize:12, direction:"ltr", display:"inline-block" }}>{lead.phone2?<PhoneCell phone={lead.phone2}/>:<span style={{color:"#CBD5E1"}}>-</span>}</span>
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, textAlign:"left", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{lead.project}</td>
                   <td style={{ padding:"10px 12px", position:"relative" }} onClick={function(e){e.stopPropagation();}}>
@@ -1356,6 +1357,20 @@ var LeadsPage = function(p) {
             <button onClick={async function(){
               try{var newVip=!selected.isVIP;var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{isVIP:newVip},p.token);var merged=Object.assign({},selected,{isVIP:newVip});p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?Object.assign({},l,{isVIP:newVip}):l;});});setSelected(merged);}catch(e){console.error("VIP error",e);}
             }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(selected.isVIP?"#F59E0B":"#E2E8F0"), background:selected.isVIP?"#FEF3C7":"#fff", fontSize:13, cursor:"pointer" }} title={selected.isVIP?t.removeVip:t.markVip}>⭐</button>
+            {(function(){
+              var lid=gid(selected);
+              var lockedIds=[];try{lockedIds=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}
+              var isLocked=lockedIds.includes(lid);
+              return <button onClick={function(){
+                var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}
+                if(isLocked){ids=ids.filter(function(x){return x!==lid;});}else{ids=ids.concat([lid]);}
+                try{localStorage.setItem("crm_locked_leads",JSON.stringify(ids));}catch(e){}
+                p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{_locked:!isLocked}):l;});});
+                setSelected(function(prev){return Object.assign({},prev,{_locked:!isLocked});});
+              }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(isLocked?"#EF4444":"#E2E8F0"), background:isLocked?"#FEE2E2":"#fff", fontSize:13, cursor:"pointer" }} title={isLocked?"Unlock — allow rotation":"Lock — prevent rotation"}>
+                {isLocked?"🔒":"🔓"}
+              </button>;
+            })()}
           </div>
           {/* Log Activity */}
           <div style={{ marginTop:10 }}>
@@ -4208,6 +4223,11 @@ export default function CRMApp() {
       var salesLeads = leads.filter(function(l){
         return !l.archived && l.source!=="Daily Request";
       });
+      // Helper: get locked leads
+      var getLockedLeads = function(){try{return JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){return[];}};
+      var lockedIds = getLockedLeads();
+      // 30-day pool limit
+      var THIRTY_DAYS = 30*24*60*60*1000;
 
       for(var i=0;i<salesLeads.length;i++){
         var l = salesLeads[i];
@@ -4219,6 +4239,16 @@ export default function CRMApp() {
 
         // Skip VIP leads — pinned, never rotate
         if(l.isVIP) continue;
+
+        // 🔒 Skip locked leads — never rotate
+        if(lockedIds.includes(lid)) continue;
+
+        // ⏰ Skip leads older than 30 days (createdAt)
+        var createdAt = new Date(l.createdAt||0).getTime();
+        if((Date.now()-createdAt) > THIRTY_DAYS) continue;
+
+        // 🔢 Skip leads that have been rotated 6+ times — just stop rotating, don't change status
+        if((l.rotationCount||0) >= 6) continue;
 
         // ── RULE 1: NoAnswer x(naCount) → rotate after naHours ──────────
         if(l.status==="NoAnswer"){
