@@ -179,7 +179,7 @@ var STATUSES = function(t) { return [
   { value: "HotCase", label: t.hotCase, bg: "#FEE2E2", color: "#DC2626" },
   { value: "CallBack", label: t.callBack, bg: "#FEF3C7", color: "#B45309" },
   { value: "MeetingDone", label: t.meetingDone, bg: "#F3E8FF", color: "#7C3AED" },
-  { value: "EOI", label: "EOI", bg: "#EEF2FF", color: "#4F46E5" },
+  { value: "EOI", label: "EOI", bg: "#FFF7ED", color: "#EA580C" },
   { value: "NotInterested", label: t.notInterested, bg: "#F1F5F9", color: "#64748B" },
   { value: "NoAnswer", label: t.noAnswer, bg: "#E0E7FF", color: "#4338CA" },
   { value: "DoneDeal", label: t.doneDeal, bg: "#DCFCE7", color: "#15803D" },
@@ -1839,19 +1839,19 @@ var EOIPage = function(p) {
     </div>}
 
     {eoiLeads.length>0&&<Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
-      <thead><tr style={{ background:"#EEF2FF", borderBottom:"2px solid #C7D2FE" }}>
-        {[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:"#4F46E5", whiteSpace:"nowrap" }}>{h}</th>;})}
+      <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+        {[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {eoiLeads.map(function(d){
           var bv=parseBudget(d.budget);
           var eoiDateStr=d.eoiDate?new Date(d.eoiDate).toLocaleDateString("en-GB"):d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB"):"-";
-          return <tr key={gid(d)} style={{ borderBottom:"1px solid #E0E7FF" }}>
+          return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}</td>
             {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}>{d.phone}</td>}
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.notes||"-"}</td>
-            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:"#4F46E5", textAlign:"left" }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success, textAlign:"left" }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.eoiDeposit||"-"}</td>
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>{getAg(d)}</td>}
             <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, textAlign:"left" }}>{eoiDateStr}</td>
