@@ -497,8 +497,8 @@ var Sidebar = function(p) {
       </div>
       <div style={{ padding:"14px 16px", borderTop:"1px solid rgba(255,255,255,0.08)" }}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-          <div style={{ width:34, height:34, borderRadius:8, background:"linear-gradient(135deg,#3B82F6,#1D4ED8)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:13, flexShrink:0 }}>{p.cu.name[0]}</div>
-          <div style={{ flex:1, minWidth:0 }}><div style={{ color:"#fff", fontSize:12, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.cu.name}</div><div style={{ color:"rgba(255,255,255,0.4)", fontSize:10 }}>{p.cu.title}</div></div>
+          <div style={{ width:34, height:34, borderRadius:8, background:"linear-gradient(135deg,#3B82F6,#1D4ED8)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:13, flexShrink:0 }}>{(p.cu.username==="amgad"?"Amgad Mohamed":p.cu.name)[0]}</div>
+          <div style={{ flex:1, minWidth:0 }}><div style={{ color:"#fff", fontSize:12, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.cu.username==="amgad"?"Amgad Mohamed":p.cu.name}</div><div style={{ color:"rgba(255,255,255,0.4)", fontSize:10 }}>{p.cu.title}</div></div>
         </div>
         <button onClick={p.onLogout} style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"8px", background:"rgba(255,255,255,0.07)", border:"none", borderRadius:8, color:"rgba(255,255,255,0.55)", fontSize:12, cursor:"pointer" }}><LogOut size={14}/> {t.logout}</button>
       </div>
@@ -1616,7 +1616,7 @@ var DashboardPage = function(p) {
   })():null;
 
   return <div style={{ padding:"18px 16px 40px" }}>
-    <div style={{ fontSize:14, color:C.textLight, marginBottom:18 }}>{t.welcome}, <b style={{ color:C.text }}>{p.cu.name}</b> 👋</div>
+    <div style={{ fontSize:14, color:C.textLight, marginBottom:18 }}>{t.welcome}, <b style={{ color:C.text }}>{p.cu.username==="amgad"?"Amgad Mohamed":p.cu.name}</b> 👋</div>
 
     {/* Admin KPI Section */}
     {isAdmin&&<div style={{ marginBottom:22 }}>
@@ -3518,9 +3518,9 @@ var KPIsPage = function(p) {
       <Card style={{ width:"100%", maxWidth:420, padding:0, overflow:"hidden" }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:24, textAlign:"center" }}>
           <div style={{ display:"flex", justifyContent:"center", marginBottom:10 }}>
-            <Avatar name={p.cu.name} size={60} online={isOnlineNow}/>
+            <Avatar name={p.cu.username==="amgad"?"Amgad Mohamed":p.cu.name} size={60} online={isOnlineNow}/>
           </div>
-          <div style={{ color:"#fff", fontSize:16, fontWeight:700 }}>{p.cu.name}</div>
+          <div style={{ color:"#fff", fontSize:16, fontWeight:700 }}>{p.cu.username==="amgad"?"Amgad Mohamed":p.cu.name}</div>
           <div style={{ color:"rgba(255,255,255,0.55)", fontSize:12, marginTop:2 }}>{p.cu.title}</div>
           <div style={{ marginTop:6, fontSize:10, color:isOnlineNow?"#86EFAC":"rgba(255,255,255,0.4)", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
             <span style={{ width:7, height:7, borderRadius:"50%", background:isOnlineNow?"#22C55E":"rgba(255,255,255,0.3)", display:"inline-block" }}/>
