@@ -738,10 +738,23 @@ var LeadForm = function(p) {
 
 // ===== BROWSER NOTIFICATIONS =====
 var requestNotifPermission = async function() {
-  if (!("Notification" in window)) return false;
+  if (!("Notification" in window)) {
+    alert("❌ Notifications are not supported on this browser.\n\nOn iPhone: use Safari and add the app to your Home Screen first (Share → Add to Home Screen), then try again.\n\nOn Android: use Chrome browser.");
+    return false;
+  }
   if (Notification.permission === "granted") return true;
-  var perm = await Notification.requestPermission();
-  return perm === "granted";
+  if (Notification.permission === "denied") {
+    alert("❌ Notifications are blocked.\n\nPlease go to your browser settings and allow notifications for this site.");
+    return false;
+  }
+  try {
+    var perm = await Notification.requestPermission();
+    if (perm === "granted") { alert("✅ Notifications enabled successfully!"); return true; }
+    else { alert("❌ Notification permission was denied."); return false; }
+  } catch(e) {
+    alert("❌ Could not request notification permission.\n\nTry opening the site in Chrome.");
+    return false;
+  }
 };
 var showBrowserNotif = function(title, body, onClick) {
   if (Notification.permission !== "granted") return;
@@ -2191,8 +2204,7 @@ var DealsPage = function(p) {
 
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"right", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
-      </tr></thead>
+        {[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}      </tr></thead>
       <tbody>
         {filteredDeals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>No deals yet</td></tr>}
         {filteredDeals.map(function(d){
@@ -2200,11 +2212,11 @@ var DealsPage = function(p) {
           var prog=stagesProgress(gid(d));
           var stages=getStages(gid(d));
           return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
-            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{d.name}</td>
-            {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{d.phone}</td>}
-            {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight }}>{d.phone2||"-"}</td>}
-            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.project||"-"}</td>
-            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success }}>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}</td>
+            {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}>{d.phone}</td>}
+            {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight, textAlign:"left" }}>{d.phone2||"-"}</td>}
+            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success, textAlign:"left" }}>
               {(function(){
                 var split=getDealSplit(gid(d));
                 var displayVal=bv>0?bv.toLocaleString():d.budget||"-";
@@ -2217,8 +2229,8 @@ var DealsPage = function(p) {
                 return displayVal;
               })()}
             </td>
-            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap" }}>{d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB")+" "+new Date(d.updatedAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):"-"}</td>
-            <td style={{ padding:"11px 12px", minWidth:130 }}>
+            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap", textAlign:"left" }}>{d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB")+" "+new Date(d.updatedAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):"-"}</td>
+            <td style={{ padding:"11px 12px", minWidth:130, textAlign:"left" }}>
               <button onClick={function(){openStages(d);}}
                 style={{ background:"none", border:"none", cursor:"pointer", width:"100%", textAlign:"right", padding:0 }}>
                 <div style={{ display:"flex", gap:4, marginBottom:3 }}>
@@ -2274,11 +2286,11 @@ var DealsPage = function(p) {
                 </div>;
               })()}
             </td>}
-            {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>
+            {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>
               <div>{getAg(d)}</div>
               {(function(){var sp=getDealSplit(gid(d));return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
             </td>}
-            {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{d.source}</td>}
+            {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.source}</td>}
             <td style={{ padding:"8px 12px" }}>
               <div style={{ display:"flex", gap:5 }}>
                 {isOnlyAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplit(gid(d));setSplitAgent2(sp?sp.agent2Id:"");}} title="Split Deal"
@@ -4116,6 +4128,13 @@ export default function CRMApp() {
   // Server already filters users by role/hierarchy — p.users IS the team
   var myTeamUsers = users;
 
+  var [showPwaBanner,setShowPwaBanner]=useState(function(){
+    var isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
+    var isStandalone=window.navigator.standalone===true||window.matchMedia("(display-mode: standalone)").matches;
+    var isDismissed=false; try{isDismissed=localStorage.getItem("crm_pwa_dismissed")==="1";}catch(e){}
+    return isIOS&&!isStandalone&&!isDismissed;
+  });
+
   var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
   var renderPage=function(){
@@ -4141,6 +4160,13 @@ export default function CRMApp() {
 
   return <div style={{ display:"flex", minHeight:"100vh", background:C.bg, fontFamily:"'Cairo','Segoe UI',Tahoma,sans-serif", direction:t.dir }}>
     <style>{"* { box-sizing: border-box; margin: 0; padding: 0; } ::-webkit-scrollbar { width: 4px; height: 4px; } ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; } input::placeholder, textarea::placeholder { color: #94A3B8; } @keyframes spin { to { transform: rotate(360deg); } }"}</style>
+    {showPwaBanner&&<div style={{ position:"fixed", bottom:0, left:0, right:0, zIndex:9999, background:C.primary, color:"#fff", padding:"14px 16px", display:"flex", alignItems:"center", gap:10, boxShadow:"0 -4px 20px rgba(0,0,0,0.2)" }}>
+      <div style={{ flex:1 }}>
+        <div style={{ fontSize:13, fontWeight:700, marginBottom:3 }}>📲 Enable Notifications</div>
+        <div style={{ fontSize:11, color:"rgba(255,255,255,0.75)", lineHeight:1.4 }}>Tap <b>Share</b> → <b>Add to Home Screen</b> to install the app and receive notifications.</div>
+      </div>
+      <button onClick={function(){setShowPwaBanner(false);try{localStorage.setItem("crm_pwa_dismissed","1");}catch(e){}}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, color:"#fff", padding:"6px 12px", fontSize:12, cursor:"pointer", flexShrink:0 }}>Got it</button>
+    </div>}
     <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
       <QuickPhoneSearch leads={leads} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}}/>
