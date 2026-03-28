@@ -681,7 +681,15 @@ var Header = function(p) {
 var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
-  var [form, setForm] = useState(p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", downPaymentPct:"", installmentYears:"" });
+  var [form, setForm] = useState((function(){
+    var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", downPaymentPct:"", installmentYears:"" };
+    // Load saved extra fields from localStorage if editing a deal
+    if(p.editId){
+      var extra=getDealExtra(String(p.editId));
+      if(extra) base=Object.assign({},base,{downPaymentPct:extra.downPaymentPct||"",installmentYears:extra.installmentYears||""});
+    }
+    return base;
+  })());
   var [dupWarning, setDupWarning] = useState(null);
   var [saving, setSaving] = useState(false);
   var isReq = p.isReq||false;
@@ -709,8 +717,7 @@ var LeadForm = function(p) {
       // Save extra deal fields to localStorage
       if(result && result._id && (form.downPaymentPct||form.installmentYears)){
         saveDealExtra(String(result._id),{downPaymentPct:form.downPaymentPct||"",installmentYears:form.installmentYears||""});
-      }
-      if (payload.phone2) {
+      }      if (payload.phone2) {
         result.phone2 = payload.phone2;
         // Cache phone2 in localStorage
         try {
@@ -741,7 +748,7 @@ var LeadForm = function(p) {
     <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
     {p.initialStatus==="DoneDeal"&&<Inp label="Deal Date (for old deals)" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
-    {p.initialStatus==="DoneDeal"&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
+    {(p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal"))&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
       <Inp label="Down Payment %" value={form.downPaymentPct||""} onChange={function(e){upd("downPaymentPct",e.target.value.replace(/[^0-9.]/g,""));}} placeholder="e.g. 10"/>
       <Inp label="Installment Years" value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
     </div>}
@@ -2459,6 +2466,22 @@ var TasksPage = function(p) {
 var ArchivePage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager";
   var archived = p.leads.filter(function(l){ return l.archived; });
+  var [archivedDR,setArchivedDR]=useState([]);
+  useEffect(function(){
+    var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_dr_archived")||"[]");}catch(e){}
+    if(!ids.length){setArchivedDR([]);return;}
+    apiFetch("/api/daily-requests","GET",null,p.token)
+      .then(function(data){
+        var all=Array.isArray(data)?data:[];
+        setArchivedDR(all.filter(function(r){return ids.includes(gid(r));}));
+      }).catch(function(){setArchivedDR([]);});
+  },[]);
+  var restoreDR=function(rid){
+    var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_dr_archived")||"[]");}catch(e){}
+    ids=ids.filter(function(x){return x!==rid;});
+    try{localStorage.setItem("crm_dr_archived",JSON.stringify(ids));}catch(e){}
+    setArchivedDR(function(prev){return prev.filter(function(r){return gid(r)!==rid;});});
+  };
   var restore=async function(lid){
     try{
       await apiFetch("/api/leads/"+lid,"PUT",{archived:false},p.token);
@@ -2467,10 +2490,10 @@ var ArchivePage = function(p) {
   };
   return <div style={{ padding:"18px 16px 40px" }}>
     <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.archive} ({archived.length})</h2>
-    {archived.length===0&&<div style={{ textAlign:"center", padding:50, color:C.textLight }}>Archive is empty</div>}
-    <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:480 }}>
+    {archived.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>No archived leads</div>}
+    {archived.length>0&&<Card p={0} style={{ marginBottom:24 }}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:480 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.phone,t.project,t.status,isAdmin&&t.agent,""].filter(Boolean).map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight }}>{h}</th>;})}
+        {[t.name,t.phone,t.project,t.status,isAdmin&&t.agent,""].filter(Boolean).map(function(h){return <th key={h||"x"} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight }}>{h}</th>;})}
       </tr></thead>
       <tbody>{archived.map(function(l){var lid=gid(l);var so=STATUSES(t).find(function(s){return s.value===l.status;})||STATUSES(t)[0];var ag=l.agentId&&l.agentId.name?l.agentId.name:"";
         return <tr key={lid} style={{ borderBottom:"1px solid #F1F5F9", opacity:0.7 }}>
@@ -2482,7 +2505,26 @@ var ArchivePage = function(p) {
           <td style={{ padding:"11px 12px" }}><Btn onClick={function(){restore(lid);}} style={{ padding:"5px 12px", fontSize:11 }}><RotateCcw size={12}/> {t.restore}</Btn></td>
         </tr>;
       })}</tbody>
-    </table></div></Card>
+    </table></div></Card>}
+
+    {archivedDR.length>0&&<div>
+      <h3 style={{ margin:"0 0 12px", fontSize:15, fontWeight:700, color:C.textLight }}>📋 Archived Daily Requests ({archivedDR.length})</h3>
+      <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:400 }}>
+        <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+          {["Name","Phone","Area","Budget","Status",""].map(function(h){return <th key={h||"x"} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight }}>{h}</th>;})}
+        </tr></thead>
+        <tbody>{archivedDR.map(function(r){var rid=gid(r);var so=STATUSES(t).find(function(s){return s.value===r.status;})||STATUSES(t)[0];
+          return <tr key={rid} style={{ borderBottom:"1px solid #F1F5F9", opacity:0.7 }}>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600 }}>{r.name}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{r.phone}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{r.area||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, color:C.success, fontWeight:600 }}>{r.budget||"-"}</td>
+            <td style={{ padding:"11px 12px" }}><Badge bg={so.bg} color={so.color}>{so.label}</Badge></td>
+            <td style={{ padding:"11px 12px" }}><Btn onClick={function(){restoreDR(rid);}} style={{ padding:"5px 12px", fontSize:11 }}><RotateCcw size={12}/> Restore</Btn></td>
+          </tr>;
+        })}</tbody>
+      </table></div></Card>
+    </div>}
   </div>;
 };
 
