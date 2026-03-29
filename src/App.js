@@ -929,7 +929,7 @@ var LeadsPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
   var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
-  var isManager = p.cu.role==="manager";
+  var isManager = p.cu.role==="manager"||p.cu.role==="team_leader";
   var myTeamUsers = p.myTeamUsers || salesUsers;
   var isReq = !!p.isRequest;
 
@@ -967,7 +967,7 @@ var LeadsPage = function(p) {
     var matchSource = isReq?l.source==="Daily Request":l.source!=="Daily Request";
     if(!matchSource) return false;
     // Manager: hide leads with no agent in daily request
-    if(isReq && p.cu.role==="manager" && !l.agentId) return false;
+    if(isReq && (p.cu.role==="manager"||p.cu.role==="team_leader") && !l.agentId) return false;
     return true;
   });
   var filtered = p.leadFilter==="all"?allVisible:allVisible.filter(function(l){return l.status===p.leadFilter;});
@@ -1336,7 +1336,7 @@ var LeadsPage = function(p) {
             <div style={{ fontSize:11, color:C.textLight, marginBottom:6, fontWeight:600 }}>{t.assignTo}</div>
             <select value={selected.agentId&&selected.agentId._id?selected.agentId._id:(selected.agentId||"")} onChange={async function(e){
               var newAgent=e.target.value;
-              var isManagerUser=p.cu.role==="manager";
+              var isManagerUser=p.cu.role==="manager"||p.cu.role==="team_leader";
               if(isManagerUser&&p.cu.teamId){var tgt=p.users.find(function(u){return gid(u)===newAgent;});if(tgt&&tgt.teamId!==p.cu.teamId)return;}
               try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{agentId:newAgent||null,status:"NewLead",reassignedAt:new Date().toISOString()},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
@@ -1529,7 +1529,7 @@ var LeadsPage = function(p) {
 // ===== MY DAY PAGE =====
 var MyDayPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
-  var isManager = p.cu.role==="manager";
+  var isManager = p.cu.role==="manager"||p.cu.role==="team_leader";
   var getAgName = function(l){ if(!l.agentId) return ""; var a=l.agentId; if(a.name) return a.name; var u=p.users.find(function(x){return String(gid(x))===String(a);}); return u?u.name:""; };
   var [activeTab, setActiveTab] = useState("callbacks");
   var myLeads = p.leads.filter(function(l){
@@ -1883,7 +1883,7 @@ var getEffectiveQTarget = function(user, allUsers, forQ) {
   var userObj = typeof user === "object" ? user : (allUsers||[]).find(function(u){return String(gid(u))===uid;}) || {};
   var curQ = forQ || (function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
 
-  if(userObj.role === "manager" && allUsers) {
+  if((userObj.role === "manager"||userObj.role === "team_leader") && allUsers) {
     // Find team members by reportsTo (primary) or teamId (fallback)
     var teamMembers = allUsers.filter(function(u){
       if(u.role !== "sales") return false;
@@ -1936,7 +1936,7 @@ var calcCommission = function(user, allDeals, allUsers, forQ) {
   var getQ = function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
   var curQ = forQ || (function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
   // For team leader: use sum of team targets
-  var qTarget = (qtUser && qtUser.role === "manager" && qtUser.reportsTo && allUsers)
+  var qTarget = (qtUser && (qtUser.role === "manager"||qtUser.role === "team_leader") && qtUser.reportsTo && allUsers)
     ? getEffectiveQTarget(qtUser, allUsers, curQ)
     : (qt[curQ] || 0);
 
@@ -2421,7 +2421,7 @@ var TasksPage = function(p) {
   var myLeads=p.leads.filter(function(l){
     if(l.archived)return false;
     var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
-    return p.cu.role==="admin"||p.cu.role==="manager"||aid===p.cu.id;
+    return p.cu.role==="admin"||p.cu.role==="manager"||p.cu.role==="team_leader"||aid===p.cu.id;
   });
 
   var callbacksToday=myLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).toDateString()===today;}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
@@ -2431,7 +2431,7 @@ var TasksPage = function(p) {
   var myTasks=p.tasks.filter(function(tk){
     if(tk.done) return false;
     if(p.cu.role==="admin") return true;
-    if(p.cu.role==="manager"){
+    if(p.cu.role==="manager"||p.cu.role==="team_leader"){
       var taskUid=tk.userId&&tk.userId._id?String(tk.userId._id):String(tk.userId||"");
       return (p.myTeamUsers||[]).some(function(u){return String(u._id)===taskUid;});
     }
@@ -3101,7 +3101,7 @@ var UsersPage = function(p) {
         <Inp label={t.email} value={nU.email} onChange={function(e){setNU(Object.assign({},nU,{email:e.target.value}));}}/>
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.phone} value={nU.phone} onChange={function(e){setNU(Object.assign({},nU,{phone:e.target.value}));}}/></div>
         <Inp label={t.monthlyTarget} type="number" value={nU.monthlyTarget} onChange={function(e){setNU(Object.assign({},nU,{monthlyTarget:Number(e.target.value)}));}}/>
-      {(nU.role==="sales"||nU.role==="manager")&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
+      {(nU.role==="sales"||nU.role==="manager"||nU.role==="team_leader")&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
         <Inp label={"Team Name"} value={nU.teamName||""} onChange={function(e){setNU(Object.assign({},nU,{teamName:e.target.value}));}} placeholder="e.g. Team A"/>
         <Inp label={"Team Code"} value={nU.teamId||""} onChange={function(e){setNU(Object.assign({},nU,{teamId:e.target.value}));}} placeholder="team-a"/>
       </div>}
@@ -3419,7 +3419,7 @@ var ReportsPage = function(p) {
       .then(function(d){setDailyRequests(Array.isArray(d)?d:[]);})
       .catch(function(){setDailyRequests([]);});
   },[]);
-  var sales=p.users.filter(function(u){return u.role==="sales"||u.role==="manager";});
+  var sales=p.users.filter(function(u){return u.role==="sales"||u.role==="manager"||u.role==="team_leader";});
   var normalLeads=p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   var convRate=normalLeads.length>0?Math.round(normalLeads.filter(function(l){return l.status==="DoneDeal";}).length/normalLeads.length*100):0;
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -3658,7 +3658,7 @@ var SettingsPage = function(p) {
 var KPIsPage = function(p) {
   var uid = String(p.cu.id);
   var parseBudget = function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
-  var isTeamLeader = p.cu.role==="manager";
+  var isTeamLeader = p.cu.role==="manager"||p.cu.role==="team_leader";
   // For manager/team leader: include all team deals in revenue calc
   var teamUids = isTeamLeader ? new Set((p.myTeamUsers||[]).map(function(u){return String(u._id);})) : null;
   var myLeads = p.leads.filter(function(l){
@@ -4075,7 +4075,7 @@ export default function CRMApp() {
   // ===== NOTIFICATIONS SYSTEM =====
   useEffect(function(){
     if(!token||!currentUser) return;
-    var isAgent = currentUser.role==="sales"||currentUser.role==="manager";
+    var isAgent = currentUser.role==="sales"||currentUser.role==="manager"||currentUser.role==="team_leader";
     if(!isAgent) return;
     var uid = String(currentUser.id||"");
 
@@ -4247,7 +4247,7 @@ export default function CRMApp() {
     var pickAgent = function(excludeId){
       var savedIds = getSavedAgents();
       if(!savedIds.length) return null; // no agents = no rotation
-      var agents = users.filter(function(u){return savedIds.includes(gid(u))&&(u.role==="sales"||u.role==="manager")&&u.active;});
+      var agents = users.filter(function(u){return savedIds.includes(gid(u))&&(u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
       if(!agents.length) return null;
       var loads = agents.map(function(u){
         return {agent:u, cnt:leads.filter(function(l){
