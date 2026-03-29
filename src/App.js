@@ -2724,26 +2724,18 @@ var DailyRequestsPage = function(p) {
   var openDrHistory=async function(r){
     setDrHistoryReq(r); setShowDrHistory(true); setDrHistoryList([]); setDrHistoryLoading(true);
     try{
-      var acts=await apiFetch("/api/activities","GET",null,p.token);
+      var acts=await apiFetch("/api/daily-requests/"+gid(r)+"/history","GET",null,p.token);
+      setDrHistoryList(acts||[]);
       var rid=gid(r);
-      var filtered=(acts||[]).filter(function(a){
-        var lid=a.leadId&&a.leadId._id?String(a.leadId._id):String(a.leadId||"");
-        return lid===rid;
-      }).sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
-      setDrHistoryList(filtered);
-      setDrHistory(function(prev){var upd={};upd[rid]=filtered;return Object.assign({},prev,upd);});
+      setDrHistory(function(prev){var upd={};upd[rid]=acts||[];return Object.assign({},prev,upd);});
     }catch(e){setDrHistoryList([]);}
     setDrHistoryLoading(false);
   };
 
   var loadDrHistory=async function(rid){
     try{
-      var acts=await apiFetch("/api/activities","GET",null,p.token);
-      var filtered=(acts||[]).filter(function(a){
-        var lid=a.leadId&&a.leadId._id?String(a.leadId._id):String(a.leadId||"");
-        return lid===rid;
-      }).sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
-      setDrHistory(function(prev){return Object.assign({},prev,{[rid]:filtered});});
+      var acts=await apiFetch("/api/daily-requests/"+rid+"/history","GET",null,p.token);
+      setDrHistory(function(prev){var upd={};upd[rid]=acts||[];return Object.assign({},prev,upd);});
     }catch(e){}
   };
 
