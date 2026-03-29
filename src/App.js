@@ -4432,30 +4432,9 @@ export default function CRMApp() {
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
   var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
-  // For team_leader: myTeamUsers = only their direct sales
+  // Server already filters users by role — p.users IS the team
   var myId = String(currentUser.id||currentUser._id||"");
-  var myTeamUsers = (currentUser.role==="team_leader")
-    ? users.filter(function(u){
-        var rt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
-        return rt===myId && u.role==="sales";
-      })
-    : (currentUser.role==="manager")
-    ? users.filter(function(u){
-        var rt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
-        if(rt===myId) return true;
-        if(u.role==="sales"){
-          var myTLs=users.filter(function(tl){
-            var tlRt=tl.reportsTo&&tl.reportsTo._id?String(tl.reportsTo._id):String(tl.reportsTo||"");
-            return tlRt===myId&&tl.role==="team_leader";
-          });
-          return myTLs.some(function(tl){
-            var sRt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
-            return sRt===String(gid(tl));
-          });
-        }
-        return false;
-      })
-    : users;
+  var myTeamUsers = users; // server handles all filtering per role
 
   var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
