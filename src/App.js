@@ -3069,7 +3069,7 @@ var UsersPage = function(p) {
         <select value={teamModal.reportsTo||""} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{reportsTo:e.target.value||null});});}}
           style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:13,background:"#fff",boxSizing:"border-box"}}>
           <option value="">— No (Top Manager) —</option>
-          {p.users.filter(function(u){return u.role==="manager"&&gid(u)!==teamModal.userId;}).map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name} ({u.title||"Manager"})</option>;})}
+          {p.users.filter(function(u){return (u.role==="manager"||u.role==="team_leader")&&gid(u)!==teamModal.userId;}).map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name} ({u.title||u.role})</option>;})}
         </select>
         <div style={{fontSize:10,color:"#8B5CF6",marginTop:4}}>Empty = Top Manager. Set = Team Leader sees only direct team.</div>
       </div>
