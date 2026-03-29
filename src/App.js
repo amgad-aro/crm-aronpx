@@ -1016,7 +1016,7 @@ var LeadsPage = function(p) {
       if(pendingStatus.newStatus === "EOI") upData.eoiDate = new Date().toISOString();
       // Notify admin when DoneDeal or EOI
       if(pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI"){
-        var notifEntry={id:Date.now(),leadName:selected?selected.name:"leads",agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:"",time:new Date().toISOString()};
+        var notifEntry={id:Date.now(),leadName:selected?selected.name:"leads",leadPhone:selected?selected.phone:"",agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:"",time:new Date().toISOString()};
         if(p.addDealNotif) p.addDealNotif(notifEntry);
       }
       var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
@@ -4338,6 +4338,9 @@ export default function CRMApp() {
     var doRotate = async function(lead, reason){
       var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
       var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"Agent";
+      // If current agent is team_leader, skip rotation — they keep the lead until they reassign
+      var currentAgentUser = users.find(function(u){return String(gid(u))===String(currentAgentId);});
+      if(currentAgentUser&&currentAgentUser.role==="team_leader") return;
       var targetAgent = pickAgent(currentAgentId);
       if(!targetAgent) return; // no valid target agent
       var targetAgentId = gid(targetAgent);
