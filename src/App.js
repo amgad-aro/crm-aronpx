@@ -724,8 +724,8 @@ var LeadForm = function(p) {
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
       // Save extra deal fields to localStorage
-      if(result && result._id && (form.downPaymentPct||form.installmentYears)){
-        saveDealExtra(String(result._id),{downPaymentPct:form.downPaymentPct||"",installmentYears:form.installmentYears||""});
+      if(result && result._id && (form.downPaymentPct||form.installmentYears||form.dealDate)){
+        saveDealExtra(String(result._id),{downPaymentPct:form.downPaymentPct||"",installmentYears:form.installmentYears||"",dealDate:form.dealDate||""});
       }
       if (payload.phone2) {
         result.phone2 = payload.phone2;
@@ -1679,7 +1679,11 @@ var DashboardPage = function(p) {
   var allDeals=myLeads.filter(function(l){return l.status==="DoneDeal";});
   // Use eoiDate/dealDate if available, otherwise createdAt for DoneDeal
   var getDealTime=function(d){
-    // For recent date calculation, updatedAt is most reliable when status just changed to DoneDeal
+    // Check localStorage for custom deal date first
+    try{
+      var extra=getDealExtra(String(d._id||gid(d)));
+      if(extra&&extra.dealDate) return new Date(extra.dealDate).getTime();
+    }catch(e){}
     if(d.eoiDate) return new Date(d.eoiDate).getTime();
     if(d.updatedAt) return new Date(d.updatedAt).getTime();
     return new Date(d.createdAt||0).getTime();
@@ -1953,6 +1957,16 @@ var getDealSplit = function(lid){ try{return JSON.parse(localStorage.getItem("cr
 var saveDealSplit = function(lid,split){ try{localStorage.setItem("crm_deal_split_"+lid,JSON.stringify(split));}catch(e){}};
 var getDealExtra = function(lid){ try{return JSON.parse(localStorage.getItem("crm_deal_extra_"+lid)||"null");}catch(e){return null;}};
 var saveDealExtra = function(lid,extra){ try{localStorage.setItem("crm_deal_extra_"+lid,JSON.stringify(extra));}catch(e){}};
+// Get the effective date for a deal — checks custom dealDate first
+var getDealDate = function(d){
+  try{
+    var extra=getDealExtra(String(d._id||""));
+    if(extra&&extra.dealDate) return new Date(extra.dealDate);
+  }catch(e){}
+  if(d.eoiDate) return new Date(d.eoiDate);
+  if(d.updatedAt) return new Date(d.updatedAt);
+  return new Date(d.createdAt||0);
+};
 
 // Calculate commission for a user based on their deals
 var calcCommission = function(user, allDeals, allUsers, forQ) {
@@ -2370,7 +2384,7 @@ var DealsPage = function(p) {
                   var agentRev=allDealsNow.reduce(function(s,dd){
                     var aid=dd.agentId&&dd.agentId._id?dd.agentId._id:dd.agentId;
                     if(aid!==ag) return s;
-                    var ddate=dd.updatedAt||dd.createdAt;
+                    var ddate=getDealDate(dd);
                     if(!ddate||getQNow(ddate)!==curQNow) return s;
                     var w=getProjectWeight(dd.project);
                     var sp=getDealSplit(gid(dd));
@@ -3291,7 +3305,7 @@ var TeamPage = function(p) {
     var calls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return String(auid)===uid&&ac.type==="call";}).length;
     var qt=getQTargets(uid);
     var qTarget=getEffectiveQTarget(a,p.users,viewQ);
-    var qDeals=allDeals.filter(function(d){if(!matchesAgent(d))return false;var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;});
+    var qDeals=allDeals.filter(function(d){if(!matchesAgent(d))return false;var dd=getDealDate(d);return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;});
     var qRevenue=qDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
     var qProg=qTarget>0?Math.min(100,Math.round((qRevenue/qTarget)*100)):0;
     var allAgentDeals=allDeals.filter(function(d){return matchesAgent(d);});
