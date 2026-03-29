@@ -680,7 +680,7 @@ var Header = function(p) {
 // ===== LEAD FORM (shared for add/edit) =====
 var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager";
-  var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+  var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [form, setForm] = useState((function(){
     var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", downPaymentPct:"", installmentYears:"" };
     // Load saved extra fields from localStorage if editing a deal
@@ -928,7 +928,7 @@ var PhoneCell = function(p) {
 var LeadsPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
   var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
-  var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+  var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var isManager = p.cu.role==="manager";
   var myTeamUsers = p.myTeamUsers || salesUsers;
   var isReq = !!p.isRequest;
@@ -1114,7 +1114,7 @@ var LeadsPage = function(p) {
     {/* Bulk Reassign Modal */}
     <Modal show={showBulk} onClose={function(){setShowBulk(false);}} title={t.bulkReassign}>
       <div style={{ marginBottom:14, padding:"10px 14px", background:"#F0F9FF", borderRadius:10, fontSize:13 }}>{selected2.length} leads selected</div>
-      <Inp label={t.reassignTo} type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- Select Agent -"}].concat((isOnlyAdmin?p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;}):myTeamUsers).map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>
+      <Inp label={t.reassignTo} type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- Select Agent -"}].concat((isOnlyAdmin?p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;}):myTeamUsers).map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowBulk(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={doBulkReassign} style={{ flex:1 }}>{t.bulkReassign}</Btn></div>
     </Modal>
 
@@ -1503,7 +1503,7 @@ var LeadsPage = function(p) {
           if(!quickForm.name||!quickForm.phone)return;
           setQuickSaving(true);
           try{
-            var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+            var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
             var lead=await apiFetch("/api/leads","POST",Object.assign({},quickForm,{agentId:quickForm.agentId||""}),p.token);
             p.setLeads(function(prev){return [lead].concat(prev);});
             setShowQuickAdd(false);
@@ -1672,7 +1672,7 @@ var DashboardPage = function(p) {
   var weekRev=weekDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var monthRev=monthDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var todayLeads=normalLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;});
-  var salesUsers=p.myTeamUsers||p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+  var salesUsers=p.myTeamUsers||p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var topAgent=isAdmin?(function(){
     var stats=salesUsers.map(function(u){var uid=gid(u);var rev=monthDeals.filter(function(d){var a=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return a===uid;}).reduce(function(s,d){return s+parseBudget(d.budget);},0);return{u:u,rev:rev};});
     stats.sort(function(a,b){return b.rev-a.rev;});
@@ -1996,7 +1996,7 @@ var DealsPage = function(p) {
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var total=deals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
-  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [showAdd,setShowAdd]=useState(false);
   var [editDeal,setEditDeal]=useState(null);
   var [selectedDeal,setSelectedDeal]=useState(null);
@@ -2189,7 +2189,7 @@ var DealsPage = function(p) {
         {["Q1","Q2","Q3","Q4"].map(function(q){return <button key={q} onClick={function(){setCommQ(q);}}
           style={{ flex:1, padding:"6px", borderRadius:8, border:"1px solid", borderColor:commQ===q?C.accent:"#E2E8F0", background:commQ===q?C.accent+"12":"#fff", color:commQ===q?C.accent:C.textLight, fontSize:12, fontWeight:600, cursor:"pointer" }}>{q}</button>;})}
       </div>
-      {p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;}).map(function(u){
+      {p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;}).map(function(u){
         var res = calcCommission(u, deals, p.users, commQ);
         return <div key={gid(u)} style={{ padding:"12px 0", borderBottom:"1px solid #F1F5F9" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -2530,7 +2530,20 @@ var ArchivePage = function(p) {
     }catch(e){alert(e.message);}
   };
   return <div style={{ padding:"18px 16px 40px" }}>
-    <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.archive} ({archived.length})</h2>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
+      <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.archive} ({archived.length})</h2>
+      {isAdmin&&(archived.length>0||archivedDR.length>0)&&<Btn outline onClick={async function(){
+        if(!window.confirm("Clear all archived items? This cannot be undone.")) return;
+        // Clear archived leads from DB
+        for(var i=0;i<archived.length;i++){
+          try{await apiFetch("/api/leads/"+gid(archived[i]),"DELETE",null,p.token);}catch(e){}
+        }
+        p.setLeads(function(prev){return prev.filter(function(l){return !l.archived;});});
+        // Clear DR archive from localStorage
+        try{localStorage.removeItem("crm_dr_archived");}catch(e){}
+        setArchivedDR([]);
+      }} style={{ padding:"7px 13px", fontSize:12, color:C.danger, borderColor:C.danger }}>🗑 Clear All</Btn>}
+    </div>
     {archived.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>No archived leads</div>}
     {archived.length>0&&<Card p={0} style={{ marginBottom:24 }}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:480 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
@@ -2573,7 +2586,7 @@ var ArchivePage = function(p) {
 var DailyRequestsPage = function(p) {
   var t=p.t; var sc=STATUSES(t);
   var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
-  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [requests,setRequests]=useState([]);
   var [loading,setLoading]=useState(true);
   var [showAdd,setShowAdd]=useState(false);
@@ -2969,10 +2982,10 @@ var UsersPage = function(p) {
       setTeamModal(null);
     }catch(e){alert(e.message);} setTeamSaving(false);
   };
-  var rc={admin:"#EF4444",sales_admin:"#E8A838",manager:"#8B5CF6",sales:"#3B82F6",viewer:"#94A3B8"};
+  var rc={admin:"#EF4444",sales_admin:"#E8A838",manager:"#8B5CF6",team_leader:"#0EA5E9",sales:"#3B82F6",viewer:"#94A3B8"};
   var getManagerName=function(uid){var u=p.users.find(function(x){return gid(x)===String(uid||"");});return u?u.name:"";};
   var getRoleLabel=function(u){if(u.role==="manager"&&u.reportsTo)return "Team Leader";if(u.role==="manager")return "Manager";return u.role==="admin"?"Admin":"Sales";};
-  var rl={admin:t.admin,sales_admin:"Sales Admin",manager:t.salesManager,sales:t.salesAgent,viewer:t.viewer};
+  var rl={admin:t.admin,sales_admin:"Sales Admin",manager:t.salesManager,team_leader:"Team Leader",sales:t.salesAgent,viewer:t.viewer};
   var changePassword=async function(){if(!pwForm.newPass||!pwForm.confirmPass)return;if(pwForm.newPass!==pwForm.confirmPass){setPwMsg(t.passwordMismatch);return;}setPwSaving(true);try{await apiFetch("/api/users/"+pwModal.userId,"PUT",{password:pwForm.newPass},p.token);setPwMsg(t.passwordSuccess);setTimeout(function(){setPwModal(null);setPwMsg("");setPwForm({newPass:"",confirmPass:""});},1500);}catch(e){setPwMsg(t.passwordError);}setPwSaving(false);};
   var add=async function(){if(!nU.name||!nU.username)return;setSaving(true);try{var user=await apiFetch("/api/users","POST",nU,p.token);p.setUsers(function(prev){return prev.concat([user]);});setShowAdd(false);setNU({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15});}catch(e){alert(e.message);}setSaving(false);};
   var toggleActive=async function(u){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid,"PUT",{active:!u.active},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?upd:x;});});}catch(e){}};
@@ -3092,7 +3105,7 @@ var UsersPage = function(p) {
         <Inp label={"Team Name"} value={nU.teamName||""} onChange={function(e){setNU(Object.assign({},nU,{teamName:e.target.value}));}} placeholder="e.g. Team A"/>
         <Inp label={"Team Code"} value={nU.teamId||""} onChange={function(e){setNU(Object.assign({},nU,{teamId:e.target.value}));}} placeholder="team-a"/>
       </div>}
-        <div style={{ gridColumn:"1/-1" }}><Inp label={t.role} type="select" value={nU.role} onChange={function(e){setNU(Object.assign({},nU,{role:e.target.value}));}} options={[{value:"admin",label:t.admin},{value:"sales_admin",label:"Sales Admin"},{value:"manager",label:t.salesManager},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/></div>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={t.role} type="select" value={nU.role} onChange={function(e){setNU(Object.assign({},nU,{role:e.target.value}));}} options={[{value:"admin",label:t.admin},{value:"sales_admin",label:"Sales Admin"},{value:"manager",label:t.salesManager},{value:"team_leader",label:"Team Leader"},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/></div>
       </div>
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={add} loading={saving} style={{ flex:1 }}>{t.add}</Btn></div>
     </Modal>
@@ -3118,7 +3131,7 @@ var ReportsPage = function(p) {
   };
   var periodLeads=allLeads.filter(function(l){return l.createdAt&&inPeriod(l.createdAt);});
   var periodDeals=allLeads.filter(function(l){return l.status==="DoneDeal"&&l.updatedAt&&inPeriod(l.updatedAt);});
-  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;});
+  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var parseBudgetR=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var getQTargetsR=function(uid){var u=p.users.find(function(x){return gid(x)===uid;});if(u&&u.qTargets&&Object.keys(u.qTargets).length>0)return u.qTargets;try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}}
   var agentStats=salesUsers.map(function(u){
@@ -3352,7 +3365,7 @@ var TeamPage = function(p) {
 
     {/* Old fallback if no managers defined */}
     {visibleManagers.length===0&&<div style={{ display:"flex", gap:14, flexWrap:"wrap" }}>
-      {p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;}).map(function(a){
+      {p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;}).map(function(a){
         return <MemberCard key={gid(a)} user={a}/>;
       })}
     </div>}
@@ -3551,7 +3564,7 @@ var ProjectsPage = function(p) {
 var SettingsPage = function(p) {
   var t=p.t;
   var getSaved = function(k,def){ try{ return localStorage.getItem('crm_set_'+k)||def; }catch(e){return def;} };
-  var salesAgentsForSetting = p.users ? p.users.filter(function(u){return (u.role==="sales"||u.role==="manager")&&u.active;}) : [];
+  var salesAgentsForSetting = p.users ? p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;}) : [];
   var [company,setCompany]=useState(function(){return getSaved('company','شركة ARO العقارية');});
   var [em,setEm]=useState(function(){return getSaved('email','admin@aro.com');});
   var [ph,setPh]=useState(function(){return getSaved('phone','01012345678');});
