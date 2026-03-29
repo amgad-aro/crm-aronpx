@@ -468,14 +468,16 @@ var LoginPage = function(p) {
 var Sidebar = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var isSales = p.cu.role==="sales";
+  var isSalesOrTL = p.cu.role==="sales"||p.cu.role==="team_leader";
   var items = [
     {id:"dashboard",icon:Home,label:t.dashboard},
+    isSalesOrTL&&{id:"myday",icon:CheckCircle,label:t.myDay},
     {id:"leads",icon:Users,label:t.leads},
     {id:"dailyReq",icon:ClipboardList,label:t.dailyReq},
     {id:"deals",icon:Briefcase,label:t.deals},
     {id:"eoi",icon:Target,label:"EOI"},
     {id:"tasks",icon:CheckCircle,label:t.tasks},
-    isSales&&{id:"kpis",icon:TrendingUp,label:"KPIs"},
+    isSalesOrTL&&{id:"kpis",icon:TrendingUp,label:"KPIs"},
     isSales&&{id:"calendar",icon:Calendar,label:"Calendar"},
     isAdmin&&{id:"reports",icon:BarChart3,label:t.reports},
     isAdmin&&{id:"team",icon:UserPlus,label:t.team},
@@ -1540,7 +1542,12 @@ var MyDayPage = function(p) {
   var [activeTab, setActiveTab] = useState("callbacks");
   var myLeads = p.leads.filter(function(l){
     if(l.archived) return false;
-    var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
+    var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
+    if(isManager){
+      var teamUids=new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
+      teamUids.add(String(p.cu.id));
+      return teamUids.has(aid);
+    }
     return aid===p.cu.id;
   });
   var myTasks = p.tasks.filter(function(tk){var uid=tk.userId&&tk.userId._id?tk.userId._id:tk.userId;return uid===p.cu.id&&!tk.done;});
@@ -4120,7 +4127,7 @@ export default function CRMApp() {
 
   var handleLogin=function(user,tok){
     setCurrentUser(user); setToken(tok); loadData(tok, user);
-    var defaultPage = (user.role==="sales") ? "myday" : "dashboard";
+    var defaultPage = (user.role==="sales"||user.role==="team_leader") ? "myday" : "dashboard";
     setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok})); } catch(e){}
   };
