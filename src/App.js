@@ -562,8 +562,8 @@ var Header = function(p) {
         <input placeholder={t.search} value={p.search} onChange={function(e){p.setSearch(e.target.value);}} style={{ border:"none", background:"transparent", outline:"none", fontSize:13, color:C.text, width:"100%" }}/>
       </div>}
       
-      {/* Deal notifications bell - admin only */}
-      {(p.isAdmin||p.cu&&p.cu.role==="sales_admin")&&<div ref={dealNotifRef} style={{ position:"relative" }}>
+      {/* Deal notifications bell - admin + team_leader */}
+      {(p.isAdmin||p.cu&&(p.cu.role==="sales_admin"||p.cu.role==="team_leader"))&&<div ref={dealNotifRef} style={{ position:"relative" }}>
         <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening){p.setShowNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);if(p.onDealNotifSeen)p.onDealNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <DollarSign size={16} color={p.unseenDeals>0&&!p.showDealNotif?"#15803D":C.textLight}/>
           {p.unseenDeals>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:"#15803D", color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.unseenDeals}</span>}
@@ -577,7 +577,13 @@ var Header = function(p) {
             </div>
           </div>
           {(!p.dealNotifs||p.dealNotifs.length===0)&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No new deals</div>}
-          {p.dealNotifs&&p.dealNotifs.map(function(n){return <div key={n.id} style={{ padding:"12px 16px", borderBottom:"1px solid #F8FAFC" }}>
+          {p.dealNotifs&&p.dealNotifs.filter(function(n){
+            if(p.cu.role!=="team_leader") return true;
+            // team_leader only sees their team's deals
+            var teamNames=new Set((p.myTeamUsers||[]).map(function(u){return u.name;}));
+            teamNames.add(p.cu.name);
+            return teamNames.has(n.agentName);
+          }).map(function(n){return <div key={n.id} style={{ padding:"12px 16px", borderBottom:"1px solid #F8FAFC" }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <div style={{ width:32, height:32, borderRadius:8, background:n.status==="DoneDeal"?"#DCFCE7":"#FFF7ED", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{n.status==="DoneDeal"?"🎉":"🎯"}</div>
               <div style={{ flex:1, minWidth:0 }}>
@@ -590,8 +596,8 @@ var Header = function(p) {
         </div>}
       </div>}
 
-      {/* Rotation notifications bell - admin only */}
-      {(p.isAdmin||p.cu&&p.cu.role==="sales_admin")&&(!p.cu||p.cu.role!=="manager")&&(function(){
+      {/* Rotation notifications bell - admin only, not team_leader */}
+      {(p.isAdmin||p.cu&&p.cu.role==="sales_admin")&&(!p.cu||p.cu.role!=="manager")&&(!p.cu||p.cu.role!=="team_leader")&&(function(){
         var rotNotifs=[];
         try{rotNotifs=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}
         var unseenRot=0;
