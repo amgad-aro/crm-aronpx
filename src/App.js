@@ -1656,11 +1656,18 @@ var DashboardPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
   var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var normalLeads = p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
-  var myLeads = isAdmin?normalLeads:normalLeads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===p.cu.id;});
+  var uid = String(p.cu.id||"");
+  var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
+  teamUids.add(uid);
+  var myLeads = (p.cu.role==="sales")
+    ? normalLeads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid;})
+    : (p.cu.role==="team_leader")
+    ? normalLeads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return teamUids.has(aid);})
+    : normalLeads; // admin/sales_admin/manager sees all
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var now=Date.now();
   var DAY=86400000; var WEEK=7*DAY; var MONTH=30*DAY;
-  var allDeals=normalLeads.filter(function(l){return l.status==="DoneDeal";});
+  var allDeals=myLeads.filter(function(l){return l.status==="DoneDeal";});
   // Use eoiDate/dealDate if available, otherwise createdAt for DoneDeal
   var getDealTime=function(d){
     // For recent date calculation, updatedAt is most reliable when status just changed to DoneDeal
@@ -1677,7 +1684,7 @@ var DashboardPage = function(p) {
   var todayRev=todayDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var weekRev=weekDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var monthRev=monthDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
-  var todayLeads=normalLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;});
+  var todayLeads=myLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;});
   var salesUsers=p.myTeamUsers||p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var topAgent=isAdmin?(function(){
     var stats=salesUsers.map(function(u){var uid=gid(u);var rev=monthDeals.filter(function(d){var a=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return a===uid;}).reduce(function(s,d){return s+parseBudget(d.budget);},0);return{u:u,rev:rev};});
