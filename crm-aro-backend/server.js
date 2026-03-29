@@ -600,6 +600,7 @@ app.post("/api/daily-requests", auth, async function(req, res) {
       area: req.body.area || "", notes: req.body.notes || "",
       agentId: req.body.agentId || req.user.id,
       callbackTime: req.body.callbackTime || "",
+      status: req.body.status || "NewLead",
       lastActivityTime: new Date(),
     });
     r = await DailyRequest.findById(r._id).populate("agentId", "name title");
