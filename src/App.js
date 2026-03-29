@@ -1654,7 +1654,9 @@ var MyDayPage = function(p) {
 // ===== DASHBOARD =====
 var DashboardPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
-  var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; 
+  var isTeamLeader = p.cu.role==="team_leader";
+  var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var normalLeads = p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   var uid = String(p.cu.id||"");
   var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
@@ -1727,8 +1729,8 @@ var DashboardPage = function(p) {
       </div>
     </div>}
 
-    {/* Sales colorful cards */}
-    {!isAdmin&&(function(){
+    {/* Sales colorful cards + team_leader */}
+    {(!isAdmin)&&(function(){
       var uid=String(p.cu.id);
       var myU=p.users.find(function(u){return String(gid(u))===uid;})||{};
       var qt=(myU.qTargets&&Object.keys(myU.qTargets).length>0)?myU.qTargets:(function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){return {};}})();
@@ -1741,12 +1743,14 @@ var DashboardPage = function(p) {
       var callbackSoon=myLeads.filter(function(l){return l.callbackTime&&!l.archived&&(new Date(l.callbackTime).getTime()-Date.now())<2*60*60*1000&&new Date(l.callbackTime).getTime()>Date.now();});
       var noAct=myLeads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>2*DAY;});
       var todayCallsCount=p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return String(auid)===uid&&a.type==="call"&&a.createdAt&&(Date.now()-new Date(a.createdAt).getTime())<DAY;}).length;
+      var leadsLabel=isTeamLeader?"Team Leads":"My Leads";
+      var dealsLabel=isTeamLeader?"Team Deals":"My Deals";
       var cards=[
-        {label:"My Leads",value:myLeads.length+"",bg:"linear-gradient(135deg,#3B82F6,#1D4ED8)",icon:"👥",onClick:function(){p.nav("leads");}},
+        {label:leadsLabel,value:myLeads.length+"",bg:"linear-gradient(135deg,#3B82F6,#1D4ED8)",icon:"👥",onClick:function(){p.nav("leads");}},
         {label:"Today's Calls",value:todayCallsCount+"",bg:"linear-gradient(135deg,#10B981,#059669)",icon:"📞",onClick:function(){p.nav("myday");}},
-        {label:p.lang==="en"?"CallBack Soon":"CallBack Soon",value:callbackSoon.length+"",bg:"linear-gradient(135deg,#F59E0B,#D97706)",icon:"🔔",onClick:function(){p.nav("leads");p.setFilter("CallBack");}},
-        {label:p.lang==="en"?"No Contact":"No Contact",value:noAct.length+"",bg:"linear-gradient(135deg,#EF4444,#DC2626)",icon:"⚠️",onClick:function(){p.nav("leads");}},
-        {label:p.lang==="en"?"My Deals":"My Deals",value:myDeals.length+"",bg:"linear-gradient(135deg,#8B5CF6,#7C3AED)",icon:"🏆",onClick:function(){p.nav("deals");}},
+        {label:"CallBack Soon",value:callbackSoon.length+"",bg:"linear-gradient(135deg,#F59E0B,#D97706)",icon:"🔔",onClick:function(){p.nav("leads");p.setFilter("CallBack");}},
+        {label:"No Contact",value:noAct.length+"",bg:"linear-gradient(135deg,#EF4444,#DC2626)",icon:"⚠️",onClick:function(){p.nav("leads");}},
+        {label:dealsLabel,value:myDeals.length+"",bg:"linear-gradient(135deg,#8B5CF6,#7C3AED)",icon:"🏆",onClick:function(){p.nav("deals");}},
       ];
       return <div style={{ marginBottom:22 }}>
         <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10, textTransform:"uppercase", letterSpacing:1 }}>{p.lang==="en"?"OVERVIEW":"OVERVIEW"}</div>
