@@ -1243,8 +1243,8 @@ var LeadsPage = function(p) {
                   <td style={{ padding:"10px 12px", whiteSpace:"nowrap", textAlign:"left" }}>
                     <div style={{ fontSize:12, direction:"ltr", display:"inline-block" }}><PhoneCell phone={lead.phone}/></div>
                     <div style={{ display:"flex", gap:6, marginTop:3, justifyContent:"flex-start" }}>
-                      <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:p.isMobile?10:12, color:"#60A5FA", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:p.isMobile?"0":"2px 6px", borderRadius:6, background:p.isMobile?"transparent":"#EFF6FF" }}><Phone size={p.isMobile?9:12}/>{!p.isMobile&&" "+t.call}</a>
-                      <a href={"https://wa.me/"+waPhone(lead.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:p.isMobile?10:12, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:p.isMobile?"0":"2px 6px", borderRadius:6, background:p.isMobile?"transparent":"#DCFCE720" }}><svg viewBox="0 0 24 24" width={p.isMobile?14:16} height={p.isMobile?14:16} fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>{!p.isMobile&&" "+t.whatsapp}</a>
+                      <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:12, color:"#60A5FA", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:"2px 6px", borderRadius:6, background:"#EFF6FF" }}><Phone size={12}/> {t.call}</a>
+                      <a href={"https://wa.me/"+waPhone(lead.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:12, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:"2px 6px", borderRadius:6, background:"#DCFCE720" }}><svg viewBox="0 0 24 24" width="16" height="16" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> {t.whatsapp}</a>
                     </div>
                   </td>
                   <td style={{ padding:"10px 12px", whiteSpace:"nowrap", textAlign:"left" }}>
@@ -3966,6 +3966,8 @@ export default function CRMApp() {
   // ===== POLLING BACKUP (every 15 seconds) =====
   useEffect(function(){
     if(!token) return;
+    var knownLeadIds = null;
+    var knownActivityIds = null;
     var interval = setInterval(async function(){
       try{
         var results = await Promise.all([
@@ -3973,12 +3975,37 @@ export default function CRMApp() {
           apiFetch("/api/activities","GET",null,token)
         ]);
         var leadsData = results[0]||[];
+        var activitiesData = results[1]||[];
         try{
           var cache=JSON.parse(localStorage.getItem('phone2_cache')||'{}');
           leadsData=leadsData.map(function(l){var id=l._id?String(l._id):null;if(id&&cache[id]&&!l.phone2)return Object.assign({},l,{phone2:cache[id]});return l;});
         }catch(e){}
+
+        // Detect new leads
+        if(knownLeadIds !== null){
+          var newLeads = leadsData.filter(function(l){return !knownLeadIds.has(String(l._id));});
+          newLeads.forEach(function(l){
+            var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
+            showBrowserNotif("🆕 New Lead", l.name+(agName?" → "+agName:""));
+          });
+        }
+        knownLeadIds = new Set(leadsData.map(function(l){return String(l._id);}));
+
+        // Detect new activities
+        if(knownActivityIds !== null){
+          var newActs = activitiesData.filter(function(a){return !knownActivityIds.has(String(a._id));});
+          newActs.forEach(function(a){
+            var who = a.userId&&a.userId.name?a.userId.name:"";
+            var lead = a.leadId&&a.leadId.name?a.leadId.name:"";
+            if(a.type==="call") showBrowserNotif("📞 Call logged", (who?who+" — ":"")+(lead||a.note||""));
+            else if(a.type==="status_change") showBrowserNotif("🔄 Status changed", (lead?lead+" — ":"")+a.note);
+            else if(a.type==="reassign") showBrowserNotif("👤 Lead reassigned", (lead||"")+(a.note?" — "+a.note:""));
+          });
+        }
+        knownActivityIds = new Set(activitiesData.map(function(a){return String(a._id);}));
+
         setLeads(leadsData);
-        setActivities(results[1]||[]);
+        setActivities(activitiesData);
       }catch(e){}
     }, 15000);
     return function(){ clearInterval(interval); };
