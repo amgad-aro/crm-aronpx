@@ -181,6 +181,15 @@ app.get("/api/users", auth, async function(req, res) {
       users = await User.find({ _id: { $in: visibleIds } }).select("-password").sort({ createdAt: -1 });
       users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
 
+    } else if (role === "team_leader") {
+      // Team leader: sees themselves + their direct sales
+      var tlUser = await User.findById(uid).lean();
+      var tlVisibleIds = [tlUser._id];
+      var tlDirectSales = await User.find({ reportsTo: tlUser._id, role: "sales" }).lean();
+      tlDirectSales.forEach(function(s) { tlVisibleIds.push(s._id); });
+      users = await User.find({ _id: { $in: tlVisibleIds } }).select("-password").sort({ createdAt: -1 });
+      users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
+
     } else {
       // Sales/viewer: only themselves
       users = await User.find({ _id: uid }).select("-password");
