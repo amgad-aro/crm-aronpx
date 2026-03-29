@@ -2715,12 +2715,28 @@ var DailyRequestsPage = function(p) {
     setShowStatusComment(false);setPendingStatus(null);setStatusDrop(null);
   };
 
+  var [drHistory,setDrHistory]=useState({});
+
+  var loadDrHistory=async function(rid){
+    try{
+      var acts=await apiFetch("/api/activities","GET",null,p.token);
+      var filtered=(acts||[]).filter(function(a){
+        var lid=a.leadId&&a.leadId._id?String(a.leadId._id):String(a.leadId||"");
+        return lid===rid;
+      }).sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
+      setDrHistory(function(prev){return Object.assign({},prev,{[rid]:filtered});});
+    }catch(e){}
+  };
+
   var logActivity=async function(){
     if(!actNote.trim()||!selected)return;
     setActSaving(true);
     try{
+      var act=await apiFetch("/api/activities","POST",{leadId:gid(selected),type:actType,note:actNote},p.token);
       await apiFetch("/api/daily-requests/"+gid(selected),"PUT",{lastActivityTime:new Date()},p.token);
       setRequests(function(prev){return prev.map(function(r){return gid(r)===gid(selected)?Object.assign({},r,{lastActivityTime:new Date().toISOString()}):r;});});
+      var rid=gid(selected);
+      setDrHistory(function(prev){var upd={};upd[rid]=[act].concat(prev[rid]||[]);return Object.assign({},prev,upd);});
       setActNote(""); setShowActForm(false);
     }catch(e){}
     setActSaving(false);
@@ -2889,7 +2905,7 @@ var DailyRequestsPage = function(p) {
               {filtered.map(function(r){
                 var rid=gid(r); var so=sc.find(function(s){return s.value===r.status;})||sc[0]; var isSel=selected&&gid(selected)===rid;
                 var ci=callbackColor(r.callbackTime); var isChk=selected2.includes(rid);
-                return <tr key={rid} onClick={function(){setSelected(r);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isChk?"#EFF6FF":isSel?"#EFF6FF":"transparent", borderRight:"3px solid "+(isSel?C.accent:"transparent") }}>
+                return <tr key={rid} onClick={function(){setSelected(r);loadDrHistory(rid);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isChk?"#EFF6FF":isSel?"#EFF6FF":"transparent", borderRight:"3px solid "+(isSel?C.accent:"transparent") }}>
                   {p.cu.role==="admin"&&<td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();}}><input type="checkbox" checked={isChk} onChange={function(e){setSelected2(function(prev){return e.target.checked?prev.concat(rid):prev.filter(function(x){return x!==rid;});});}}/></td>}
                   <td style={{ padding:"10px 12px" }}><div style={{ fontSize:13, fontWeight:600 }}>{r.name}</div><div style={{ fontSize:10, color:C.textLight }}>{r.email}</div></td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr" }}>
@@ -2978,17 +2994,14 @@ var DailyRequestsPage = function(p) {
           {/* Feedback History */}
           {(function(){
             var sid = gid(selected);
-            var history = p.activities.filter(function(a){
-              var lid = a.leadId&&a.leadId._id?String(a.leadId._id):String(a.leadId||"");
-              return lid===sid;
-            }).sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
-            if(!history.length) return null;
+            var history = drHistory[sid]||[];
+            if(!history.length) return <div style={{ marginTop:14, fontSize:11, color:C.textLight, textAlign:"center" }}>No history yet</div>;
             return <div style={{ marginTop:14 }}>
               <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:8, textTransform:"uppercase", letterSpacing:0.5 }}>📋 History ({history.length})</div>
               {history.map(function(a){
-                var who = a.userId&&a.userId.name?a.userId.name:"";
-                var icon = a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":"📝";
-                return <div key={String(a._id)} style={{ padding:"8px 10px", background:"#F8FAFC", borderRadius:9, marginBottom:6, borderLeft:"3px solid "+C.accent }}>
+                var who=a.userId&&a.userId.name?a.userId.name:"";
+                var icon=a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":"📝";
+                return <div key={String(a._id||a.id||Math.random())} style={{ padding:"8px 10px", background:"#F8FAFC", borderRadius:9, marginBottom:6, borderLeft:"3px solid "+C.accent }}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:2 }}>
                     <span style={{ fontSize:10, fontWeight:700, color:C.text }}>{icon} {who}</span>
                     <span style={{ fontSize:9, color:C.textLight }}>{timeAgo(a.createdAt,t)}</span>
