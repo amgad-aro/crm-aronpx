@@ -1779,7 +1779,13 @@ var DashboardPage = function(p) {
       <Card style={{ flex:1, minWidth:230 }}>
         <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.todayActivities}</h3>
         {p.activities.length===0&&<div style={{ color:C.textLight, fontSize:13, textAlign:"center", padding:"20px 0" }}>No activity</div>}
-        {p.activities.slice(0,8).map(function(a){
+        {(function(){
+          var teamIds=new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
+          teamIds.add(String(p.cu.id));
+          var filteredActs = (p.cu.role==="team_leader")
+            ? p.activities.filter(function(a){var auid=String(a.userId&&a.userId._id?a.userId._id:a.userId||"");return teamIds.has(auid);})
+            : p.activities;
+          return filteredActs.slice(0,8).map(function(a){
           var lId=a.leadId?(gid(a.leadId)):null; var lName=a.leadId&&a.leadId.name?a.leadId.name:""; var uName=a.userId&&a.userId.name?a.userId.name:"";
           var ml=lId?p.leads.find(function(l){return gid(l)===lId;}):null;
           return <div key={a._id||a.id} onClick={function(){if(ml){p.setInitSelected(ml);p.nav("leads");}}} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderBottom:"1px solid #F8FAFC", cursor:ml?"pointer":"default", borderRadius:4 }}
@@ -1793,7 +1799,7 @@ var DashboardPage = function(p) {
             </div>
             <span style={{ fontSize:9, color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
           </div>;
-        })}
+        });})()}
       </Card>
     </div>
   </div>;
@@ -2871,8 +2877,8 @@ var DailyRequestsPage = function(p) {
                       var newAgent=e.target.value;
                       try{var upd=await apiFetch("/api/daily-requests/"+rid,"PUT",{agentId:newAgent},p.token);setRequests(function(prev){return prev.map(function(x){return gid(x)===rid?upd:x;});});if(selected&&gid(selected)===rid)setSelected(upd);}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", maxWidth:110 }}>
-                      <option value="">— No Agent —</option>
-                      {salesUsers.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
+                      {isOnlyAdmin&&<option value="">— No Agent —</option>}
+                      {(isOnlyAdmin?salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
                     </select>
                   </td>}
                   <td style={{ padding:"10px 12px", fontSize:11, color:C.accent }}>{timeAgo(r.lastActivityTime,t)}</td>
