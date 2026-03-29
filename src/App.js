@@ -530,10 +530,32 @@ var Sidebar = function(p) {
 // ===== HEADER =====
 var Header = function(p) {
   var t = p.t; var isOnlyAdmin = p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin");
-  var upcoming = p.leads.filter(function(l){return l.callbackTime&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&!l.archived;});
-  var overdueCallback = p.leads.filter(function(l){return l.status==="CallBack"&&l.callbackTime&&new Date(l.callbackTime)<new Date()&&!l.archived;});
-  var noActivityLeads = p.leads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>1*24*60*60*1000;});
-  var noActivityDR = (p.dailyRequests||[]).filter(function(r){return !r.archived&&r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>1*24*60*60*1000;});
+  var uid = String(p.cu&&p.cu.id||"");
+  var myLeadsForNotif = (p.cu&&p.cu.role==="sales")
+    ? p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid;})
+    : p.leads;
+  var myDRForNotif = (p.cu&&p.cu.role==="sales")
+    ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return aid===uid;})
+    : (p.dailyRequests||[]);
+  var allItemsForNotif = myLeadsForNotif.concat(myDRForNotif);
+  var now = Date.now();
+  var callbackNow = allItemsForNotif.filter(function(l){
+    if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
+    var diff = new Date(l.callbackTime).getTime() - now;
+    return diff<=0 && diff>-60*60*1000;
+  });
+  var upcoming = allItemsForNotif.filter(function(l){
+    if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
+    var diff = new Date(l.callbackTime).getTime() - now;
+    return diff>0 && diff<=24*60*60*1000;
+  }).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
+  var overdueCallback = allItemsForNotif.filter(function(l){
+    if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
+    var diff = new Date(l.callbackTime).getTime() - now;
+    return diff < -60*60*1000;
+  });
+  var noActivityLeads = myLeadsForNotif.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>1*24*60*60*1000;});
+  var noActivityDR = myDRForNotif.filter(function(r){return r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>1*24*60*60*1000;});
   var allNoActivity = noActivityLeads.concat(noActivityDR);
   var notifRef = useRef(null);
   var [badgeHidden, setBadgeHidden] = useState(function(){
@@ -651,14 +673,24 @@ var Header = function(p) {
 
         <button onClick={function(){p.setShowNotif(!p.showNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <Bell size={16} color={C.textLight}/>
-          {(upcoming.length+allNoActivity.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:4, right:4, width:8, height:8, borderRadius:"50%", background:C.danger }}/>}
+          {(callbackNow.length+upcoming.length+allNoActivity.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:4, right:4, width:8, height:8, borderRadius:"50%", background:C.danger }}/>}
         </button>
-        {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:360, overflowY:"auto" }}>
+        {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder}</span>
             <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
           </div>
-          {upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No notifications</div>}
+          {callbackNow.length===0&&upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No notifications</div>}
+          {callbackNow.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
+            <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Callback Now!</div>
+            {callbackNow.map(function(l){return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
+              <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:11, fontWeight:600 }}>{l.name}</div>
+                <div style={{ fontSize:10, color:C.danger }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
+              </div>
+            </div>;})}
+          </div>}
           {overdueCallback.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
             <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Overdue CallBack</div>
             {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
@@ -4089,6 +4121,7 @@ export default function CRMApp() {
   var [page,setPage]=useState((function(){try{return localStorage.getItem("crm_page")||null;}catch(e){return null;}})());
   var [leads,setLeads]=useState([]); var [users,setUsers]=useState([]);
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
+  var [dailyReqs,setDailyReqs]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
   var [showNotif,setShowNotif]=useState(false);
   var [dealNotifsSeenCount,setDealNotifsSeenCount]=useState(function(){try{return Number(localStorage.getItem("crm_deal_seen_count")||"0");}catch(e){return 0;}});
@@ -4167,10 +4200,13 @@ export default function CRMApp() {
       try{
         var results = await Promise.all([
           apiFetch("/api/leads","GET",null,token),
-          apiFetch("/api/activities","GET",null,token)
+          apiFetch("/api/activities","GET",null,token),
+          apiFetch("/api/daily-requests","GET",null,token)
         ]);
         var leadsData = results[0]||[];
         var activitiesData = results[1]||[];
+        var drData = results[2]||[];
+        setDailyReqs(drData);
         try{
           var cache=JSON.parse(localStorage.getItem('phone2_cache')||'{}');
           leadsData=leadsData.map(function(l){var id=l._id?String(l._id):null;if(id&&cache[id]&&!l.phone2)return Object.assign({},l,{phone2:cache[id]});return l;});
@@ -4302,7 +4338,7 @@ export default function CRMApp() {
       });
     };
 
-    // 2. Overdue callbacks
+    // 2. Callback notifications - at exact time or overdue
     var checkCallbacks = function(){
       var now = Date.now();
       var myLeads = getMyLeads().filter(function(l){return l.callbackTime;});
@@ -4310,13 +4346,14 @@ export default function CRMApp() {
         var cbTime = new Date(l.callbackTime).getTime();
         var diff = cbTime - now;
         var key = "crm_cb_notif_"+gid(l)+"_"+l.callbackTime;
-        if(diff<0&&diff>-30*60*1000){
-          // Overdue within last 30 min
-          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("⏰ Overdue Callback!",l.name+" — callback was at "+l.callbackTime.slice(11,16));}}catch(e){}
-        } else if(diff>0&&diff<=30*60*1000){
-          // Coming up within 30 min
-          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("📞 Callback in "+Math.round(diff/60000)+" min",l.name);}}catch(e){}
-        } else if(diff>30*60*1000){
+        if(diff<=0 && diff>-60*60*1000){
+          // Callback time has arrived or overdue within last hour
+          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("📞 Callback Now!", l.name+" — "+new Date(l.callbackTime).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}));}}catch(e){}
+        } else if(diff>0&&diff<=5*60*1000){
+          // Coming up within 5 minutes
+          var key5 = "crm_cb_5min_"+gid(l)+"_"+l.callbackTime;
+          try{if(!localStorage.getItem(key5)){localStorage.setItem(key5,"1");showBrowserNotif("⏰ Callback in "+Math.round(diff/60000)+" min", l.name);}}catch(e){}
+        } else if(diff>60*60*1000){
           try{localStorage.removeItem(key);}catch(e){}
         }
       });
@@ -4368,7 +4405,7 @@ export default function CRMApp() {
       checkFollowUps();
     }, 60*1000);
     return function(){clearInterval(interval);};
-  },[token, currentUser, leads.length, tasks.length]);
+  },[token, currentUser, leads, tasks]);
 
   // ===== DAILY REPORT NOTIFICATION (9 PM for admin) =====
   useEffect(function(){
@@ -4678,7 +4715,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={[]} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={dailyReqs} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
