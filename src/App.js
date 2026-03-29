@@ -2544,13 +2544,17 @@ var ArchivePage = function(p) {
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.archive} ({archived.length})</h2>
-      {isAdmin&&(archived.length>0||archivedDR.length>0)&&<Btn outline onClick={async function(){
+      {isOnlyAdmin&&(archived.length>0||archivedDR.length>0)&&<Btn outline onClick={async function(){
         if(!window.confirm("Clear all archived items? This cannot be undone.")) return;
         // Clear archived leads from DB
         for(var i=0;i<archived.length;i++){
           try{await apiFetch("/api/leads/"+gid(archived[i]),"DELETE",null,p.token);}catch(e){}
         }
         p.setLeads(function(prev){return prev.filter(function(l){return !l.archived;});});
+        // Delete DR records from DB too
+        for(var j=0;j<archivedDR.length;j++){
+          try{await apiFetch("/api/daily-requests/"+gid(archivedDR[j]),"DELETE",null,p.token);}catch(e){}
+        }
         // Clear DR archive from localStorage
         try{localStorage.removeItem("crm_dr_archived");}catch(e){}
         setArchivedDR([]);
