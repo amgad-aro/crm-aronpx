@@ -425,7 +425,18 @@ app.delete("/api/leads/:id", auth, adminOnly, async function(req, res) {
 app.get("/api/activities", auth, async function(req, res) {
   try {
     var query = {};
-    if (req.user.role === "sales") { query.userId = req.user.id; }
+    var role = req.user.role;
+    var uid = req.user.id;
+    if (role === "sales") {
+      query.userId = uid;
+    } else if (role === "team_leader") {
+      // Team leader sees activities of their direct sales only
+      var directSales = await User.find({ reportsTo: uid }).lean();
+      var teamIds = directSales.map(function(s){ return s._id; });
+      teamIds.push(new mongoose.Types.ObjectId(uid));
+      query.userId = { $in: teamIds };
+    }
+    // manager/admin/sales_admin see all (or server already filtered users)
     var activities = await Activity.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 }).limit(50);
     res.json(activities);
   } catch (e) {
