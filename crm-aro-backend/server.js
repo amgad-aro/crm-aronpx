@@ -552,6 +552,13 @@ app.get("/api/daily-requests", auth, async function(req, res) {
     var query = {};
     if (req.user.role === "sales") {
       query.agentId = req.user.id;
+    } else if (req.user.role === "team_leader") {
+      // Team leader: only see their direct sales' requests
+      var tlUser = await User.findById(req.user.id).lean();
+      var tlVisibleIds = [tlUser._id];
+      var tlSales = await User.find({ reportsTo: tlUser._id }).lean();
+      tlSales.forEach(function(s){ tlVisibleIds.push(s._id); });
+      query.agentId = { $in: tlVisibleIds };
     } else if (req.user.role === "manager") {
       // Manager: only assigned requests (no unassigned), filtered by team
       var managerUser = await User.findById(req.user.id).lean();
