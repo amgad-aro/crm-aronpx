@@ -106,7 +106,7 @@ function auth(req, res, next) {
 }
 
 function adminOnly(req, res, next) {
-  if (req.user.role !== "admin" && req.user.role !== "sales_admin" && req.user.role !== "manager") {
+  if (req.user.role !== "admin" && req.user.role !== "sales_admin" && req.user.role !== "manager" && req.user.role !== "team_leader") {
     return res.status(403).json({ error: "Admin only" });
   }
   next();
@@ -166,16 +166,16 @@ app.get("/api/users", auth, async function(req, res) {
 
       if (!managerUser.reportsTo) {
         // Top-level manager: sees team leaders under him + their sales
-        var teamLeaders = await User.find({ reportsTo: managerUser._id }).lean();
+        var teamLeaders = await User.find({ reportsTo: managerUser._id, role: { $in: ["manager","team_leader"] } }).lean();
         teamLeaders.forEach(function(tl) { visibleIds.push(tl._id); });
         if (teamLeaders.length > 0) {
           var tlIds = teamLeaders.map(function(tl) { return tl._id; });
-          var salesUnder = await User.find({ reportsTo: { $in: tlIds } }).lean();
+          var salesUnder = await User.find({ reportsTo: { $in: tlIds }, role: { $in: ["sales","team_leader"] } }).lean();
           salesUnder.forEach(function(s) { visibleIds.push(s._id); });
         }
       } else {
-        // Team leader: sees only direct sales
-        var directSales = await User.find({ reportsTo: managerUser._id }).lean();
+        // Team leader: sees only direct sales under them
+        var directSales = await User.find({ reportsTo: managerUser._id, role: { $in: ["sales","team_leader"] } }).lean();
         directSales.forEach(function(s) { visibleIds.push(s._id); });
       }
       users = await User.find({ _id: { $in: visibleIds } }).select("-password").sort({ createdAt: -1 });
