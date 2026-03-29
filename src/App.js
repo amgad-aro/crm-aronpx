@@ -4019,6 +4019,20 @@ export default function CRMApp() {
             var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
             showBrowserNotif("🆕 New Lead", l.name+(agName?" → "+agName:""));
           });
+          // Detect new DoneDeal/EOI for team_leader notification bell
+          var prevLeadsMap = {};
+          setLeads(function(prev){ prev.forEach(function(l){ prevLeadsMap[String(l._id)]=l.status; }); return prev; });
+          var newDeals = leadsData.filter(function(l){
+            var prevStatus = prevLeadsMap[String(l._id)];
+            return (l.status==="DoneDeal"||l.status==="EOI") && prevStatus && prevStatus!==l.status;
+          });
+          newDeals.forEach(function(l){
+            var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
+            setDealNotifs(function(prev){
+              return [{id:Date.now(),leadName:l.name,agentName:agName,status:l.status,budget:l.budget||"",time:new Date().toISOString()}].concat(prev).slice(0,50);
+            });
+            showBrowserNotif("🎉 "+(l.status==="DoneDeal"?"Done Deal":"EOI"), l.name+(agName?" — "+agName:""));
+          });
         }
         knownLeadIds = new Set(leadsData.map(function(l){return String(l._id);}));
 
