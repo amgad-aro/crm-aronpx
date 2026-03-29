@@ -2697,6 +2697,12 @@ var DailyRequestsPage = function(p) {
         if(extra.eoiDeposit) updateData.eoiDeposit=extra.eoiDeposit;
       }
       var upd=await apiFetch("/api/daily-requests/"+pendingStatus.leadId,"PUT",updateData,p.token);
+      // Also log separate activity with comment if exists
+      if(comment||cbTime){
+        var actNote2="Status: "+pendingStatus.newStatus;
+        if(comment) actNote2+=" | "+comment;
+        await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:actNote2},p.token);
+      }
       setRequests(function(prev){return prev.map(function(r){return gid(r)===pendingStatus.leadId?upd:r;});});
       if(selected&&gid(selected)===pendingStatus.leadId)setSelected(upd);
       // Notify admin on DoneDeal or EOI
