@@ -623,7 +623,9 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
     if (req.body.status) {
-      await Activity.create({ userId: req.user.id, type: "status_change", note: "DailyReq: " + req.body.status, leadId: r._id });
+      var actNote = "DailyReq: " + req.body.status;
+      if (req.body.notes) actNote += " | " + req.body.notes;
+      await Activity.create({ userId: req.user.id, type: "status_change", note: actNote, leadId: r._id });
       // If status is DoneDeal or EOI — create/update a Lead in the main collection
       if (req.body.status === "DoneDeal" || req.body.status === "EOI") {
         var existingLead = await Lead.findOne({ phone: r.phone, source: "Daily Request" });
@@ -661,6 +663,16 @@ app.delete("/api/daily-requests/:id", auth, adminOnly, async function(req, res) 
   try {
     await DailyRequest.findByIdAndDelete(req.params.id);
     res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== DR HISTORY =====
+app.get("/api/daily-requests/:id/history", auth, async function(req, res) {
+  try {
+    var acts = await Activity.find({ leadId: req.params.id })
+      .populate("userId", "name")
+      .sort({ createdAt: -1 });
+    res.json(acts);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
