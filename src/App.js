@@ -3137,7 +3137,9 @@ var ReportsPage = function(p) {
   };
   var periodLeads=allLeads.filter(function(l){return l.createdAt&&inPeriod(l.createdAt);});
   var periodDeals=allLeads.filter(function(l){return l.status==="DoneDeal"&&l.updatedAt&&inPeriod(l.updatedAt);});
-  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
+  var salesUsers=(p.cu.role==="team_leader"||p.cu.role==="manager")
+    ? (p.myTeamUsers||[]).filter(function(u){return u.active&&(u.role==="sales"||u.role==="team_leader");})
+    : p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var parseBudgetR=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var getQTargetsR=function(uid){var u=p.users.find(function(x){return gid(x)===uid;});if(u&&u.qTargets&&Object.keys(u.qTargets).length>0)return u.qTargets;try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}}
   var agentStats=salesUsers.map(function(u){
@@ -3427,7 +3429,9 @@ var ReportsPage = function(p) {
       .then(function(d){setDailyRequests(Array.isArray(d)?d:[]);})
       .catch(function(){setDailyRequests([]);});
   },[]);
-  var sales=p.users.filter(function(u){return u.role==="sales"||u.role==="manager"||u.role==="team_leader";});
+  var sales=(p.cu.role==="team_leader"||p.cu.role==="manager")
+    ? (p.myTeamUsers||[]).filter(function(u){return u.role==="sales"||u.role==="team_leader";})
+    : p.users.filter(function(u){return u.role==="sales"||u.role==="manager"||u.role==="team_leader";});
   var normalLeads=p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   var convRate=normalLeads.length>0?Math.round(normalLeads.filter(function(l){return l.status==="DoneDeal";}).length/normalLeads.length*100):0;
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -4429,19 +4433,16 @@ export default function CRMApp() {
   var currentPage=page||"dashboard";
   var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
   // For team_leader: myTeamUsers = only their direct sales
+  var myId = String(currentUser.id||currentUser._id||"");
   var myTeamUsers = (currentUser.role==="team_leader")
     ? users.filter(function(u){
         var rt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
-        var myId=String(currentUser.id||currentUser._id||"");
         return rt===myId && u.role==="sales";
       })
     : (currentUser.role==="manager")
     ? users.filter(function(u){
-        // Manager sees direct team_leaders + their sales
         var rt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
-        var myId=String(currentUser.id||currentUser._id||"");
-        if(rt===myId) return true; // direct reports
-        // also include sales under team_leaders who report to this manager
+        if(rt===myId) return true;
         if(u.role==="sales"){
           var myTLs=users.filter(function(tl){
             var tlRt=tl.reportsTo&&tl.reportsTo._id?String(tl.reportsTo._id):String(tl.reportsTo||"");
