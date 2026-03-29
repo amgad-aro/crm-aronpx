@@ -2518,6 +2518,7 @@ var TasksPage = function(p) {
 
 var ArchivePage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
+  var isOnlyAdmin=p.cu.role==="admin";
   var archived = p.leads.filter(function(l){ return l.archived; });
   var [archivedDR,setArchivedDR]=useState([]);
   useEffect(function(){
