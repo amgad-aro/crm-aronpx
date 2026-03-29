@@ -1340,7 +1340,7 @@ var LeadsPage = function(p) {
               if(isManagerUser&&p.cu.teamId){var tgt=p.users.find(function(u){return gid(u)===newAgent;});if(tgt&&tgt.teamId!==p.cu.teamId)return;}
               try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{agentId:newAgent||null,status:"NewLead",reassignedAt:new Date().toISOString()},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
-              <option value="">— No Agent —</option>
+              {isOnlyAdmin&&<option value="">— No Agent —</option>}
               {(isOnlyAdmin?p.myTeamUsers||salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
             </select>
           </div>}
@@ -4417,12 +4417,16 @@ export default function CRMApp() {
   if(loading) return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"#F0F2F5", fontFamily:"Cairo,sans-serif" }}><div style={{ textAlign:"center" }}><div style={{ width:40, height:40, borderRadius:"50%", border:"3px solid #E8ECF1", borderTopColor:C.accent, animation:"spin 0.8s linear infinite", margin:"0 auto 16px" }}/><div style={{ color:C.textLight, fontSize:14 }}>{t.loading}</div></div></div>;
   if(dataError) return <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", minHeight:"100vh", gap:16, fontFamily:"Cairo,sans-serif" }}><AlertCircle size={48} color={C.danger}/><div style={{ fontSize:16, color:C.danger, fontWeight:700 }}>{t.error}</div><div style={{ color:C.textLight }}>{dataError}</div><button onClick={function(){loadData(token);}} style={{ padding:"10px 24px", borderRadius:10, background:C.accent, border:"none", color:"#fff", fontWeight:700, cursor:"pointer" }}>{t.retry}</button></div>;
 
-  var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"; var isOnlyAdmin=currentUser.role==="admin";
+  var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
   var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,settings:t.settings};
-  // Build team-filtered users for manager
-  // Server already filters users by role/hierarchy — p.users IS the team
-  var myTeamUsers = users;
+  // For team_leader: myTeamUsers = only their direct sales
+  var myTeamUsers = (currentUser.role==="team_leader")
+    ? users.filter(function(u){
+        var rt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
+        return rt===String(currentUser.id||"") && u.role==="sales";
+      })
+    : users;
 
   var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
