@@ -347,7 +347,6 @@ app.post("/api/leads", auth, async function(req, res) {
     });
     console.log("SAVED phone2:", lead.phone2);
     lead = await Lead.findById(lead._id).populate("agentId", "name title");
-    req.app.locals.broadcast({ type: "lead_created", data: lead });
     res.json(lead);
   } catch (e) {
     console.error("POST /api/leads error:", e.message);
@@ -398,7 +397,6 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     } catch(actErr) {
       console.error("Activity log error (non-fatal):", actErr.message);
     }
-    req.app.locals.broadcast({ type: "lead_updated", data: lead });
     res.json(lead);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -438,7 +436,6 @@ app.post("/api/activities", auth, async function(req, res) {
       await Lead.findByIdAndUpdate(req.body.leadId, { lastActivityTime: new Date() });
     }
     activity = await Activity.findById(activity._id).populate("userId", "name").populate("leadId", "name");
-    req.app.locals.broadcast({ type: "activity_created", data: activity });
     res.json(activity);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -570,7 +567,6 @@ app.post("/api/daily-requests", auth, async function(req, res) {
       lastActivityTime: new Date(),
     });
     r = await DailyRequest.findById(r._id).populate("agentId", "name title");
-    req.app.locals.broadcast({ type: "dr_created", data: r });
     res.json(r);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -738,29 +734,6 @@ var sendDealEmail = async function(lead, agentName) {
 
 // ===== START SERVER =====
 var PORT = process.env.PORT || 5000;
-var http = require("http");
-var WebSocket = require("ws");
-
-var server = http.createServer(app);
-var wss = new WebSocket.Server({ server });
-
-// Broadcast to all connected clients
-function broadcast(data) {
-  var msg = JSON.stringify(data);
-  wss.clients.forEach(function(client) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(msg);
-    }
-  });
-}
-
-// Make broadcast available globally
-app.locals.broadcast = broadcast;
-
-wss.on("connection", function(ws) {
-  ws.on("error", function(e) { console.error("WS error:", e.message); });
-});
-
-server.listen(PORT, function() {
+app.listen(PORT, function() {
   console.log("CRM ARO Server running on port " + PORT);
 });
