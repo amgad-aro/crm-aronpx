@@ -1821,7 +1821,7 @@ var EOIPage = function(p) {
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>🎯 EOI ({eoiLeads.length})</h2>
-        {total>0&&<div style={{ fontSize:13, fontWeight:700, color:"#EA580C", background:"#FFF7ED", padding:"5px 14px", borderRadius:20 }}>Total: {total.toLocaleString()} EGP</div>}
+        {total>0&&<div style={{ fontSize:13, fontWeight:700, color:"#9333EA", background:"#F3E8FF", padding:"5px 14px", borderRadius:20 }}>Total: {total.toLocaleString()} EGP</div>}
       </div>
     </div>
 
@@ -3025,7 +3025,7 @@ var UsersPage = function(p) {
           })()}
         </td>
         <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(u.role!=="admin")toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
-        <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:u.name});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button>
+        <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:displayName});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} disabled={p.cu.role==="sales_admin"&&u.role==="admin"} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:p.cu.role==="sales_admin"&&u.role==="admin"?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", opacity:p.cu.role==="sales_admin"&&u.role==="admin"?0.3:1 }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button>
               <button onClick={function(){setTeamModal({userId:uid,userName:u.name,teamId:u.teamId||"",teamName:u.teamName||"",reportsTo:u.reportsTo||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Edit Team"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(u.username!=="amgad")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.username!=="amgad"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.username==="amgad"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
       </tr>;})}
       </tbody>
