@@ -15,7 +15,7 @@ delete mongoose.models["DailyRequest"];
 var User = mongoose.model("User", new mongoose.Schema({
   name:{type:String,required:true}, username:{type:String,required:true,unique:true},
   password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
-  role:{type:String,enum:["admin","sales_admin","manager","sales","viewer"],default:"sales"},
+  role:{type:String,enum:["admin","sales_admin","manager","team_leader","sales","viewer"],default:"sales"},
   title:{type:String,default:""}, active:{type:Boolean,default:true},
   monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, lastActive:{type:Date,default:null}, qTargets:{type:Object,default:{}}, reportsTo:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null}
 },{timestamps:true}));
