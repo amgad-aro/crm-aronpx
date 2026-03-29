@@ -673,7 +673,8 @@ app.delete("/api/daily-requests/:id", auth, adminOnly, async function(req, res) 
 // ===== DR HISTORY =====
 app.get("/api/daily-requests/:id/history", auth, async function(req, res) {
   try {
-    var acts = await Activity.find({ leadId: req.params.id })
+    var oid = new mongoose.Types.ObjectId(req.params.id);
+    var acts = await Activity.find({ leadId: oid })
       .populate("userId", "name")
       .sort({ createdAt: -1 });
     res.json(acts);
