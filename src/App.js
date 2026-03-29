@@ -3231,11 +3231,13 @@ var TeamPage = function(p) {
   var managers = p.users.filter(function(u){return (u.role==="manager"||u.role==="team_leader")&&u.active;});
   var getSalesUnder = function(muid){
     return p.users.filter(function(u){
-      return u.active && (u.role==="sales"||u.role==="manager"||u.role==="team_leader") && String(u.reportsTo||"")===muid;
+      var rt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
+      return u.active && (u.role==="sales"||u.role==="team_leader") && rt===muid;
     });
   };
 
-  // For non-admin manager/team_leader: show only their own team
+  // For team_leader: show only themselves (their card shows their team)
+  // For manager: show themselves + their team_leaders
   var visibleManagers = isAdmin ? managers : managers.filter(function(m){return gid(m)===String(p.cu.id||"");});
   // Also show sales not under any manager (top-level sales)
   var topLevelSales = isAdmin ? p.users.filter(function(u){return u.role==="sales"&&u.active&&!u.reportsTo;}) : [];
@@ -4430,7 +4432,27 @@ export default function CRMApp() {
   var myTeamUsers = (currentUser.role==="team_leader")
     ? users.filter(function(u){
         var rt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
-        return rt===String(currentUser.id||"") && u.role==="sales";
+        var myId=String(currentUser.id||currentUser._id||"");
+        return rt===myId && u.role==="sales";
+      })
+    : (currentUser.role==="manager")
+    ? users.filter(function(u){
+        // Manager sees direct team_leaders + their sales
+        var rt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
+        var myId=String(currentUser.id||currentUser._id||"");
+        if(rt===myId) return true; // direct reports
+        // also include sales under team_leaders who report to this manager
+        if(u.role==="sales"){
+          var myTLs=users.filter(function(tl){
+            var tlRt=tl.reportsTo&&tl.reportsTo._id?String(tl.reportsTo._id):String(tl.reportsTo||"");
+            return tlRt===myId&&tl.role==="team_leader";
+          });
+          return myTLs.some(function(tl){
+            var sRt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
+            return sRt===String(gid(tl));
+          });
+        }
+        return false;
       })
     : users;
 
