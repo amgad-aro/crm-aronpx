@@ -3963,7 +3963,26 @@ export default function CRMApp() {
     setLoading(false);
   },[]);
 
-  // ===== WEBSOCKET =====
+  // ===== POLLING BACKUP (every 15 seconds) =====
+  useEffect(function(){
+    if(!token) return;
+    var interval = setInterval(async function(){
+      try{
+        var results = await Promise.all([
+          apiFetch("/api/leads","GET",null,token),
+          apiFetch("/api/activities","GET",null,token)
+        ]);
+        var leadsData = results[0]||[];
+        try{
+          var cache=JSON.parse(localStorage.getItem('phone2_cache')||'{}');
+          leadsData=leadsData.map(function(l){var id=l._id?String(l._id):null;if(id&&cache[id]&&!l.phone2)return Object.assign({},l,{phone2:cache[id]});return l;});
+        }catch(e){}
+        setLeads(leadsData);
+        setActivities(results[1]||[]);
+      }catch(e){}
+    }, 15000);
+    return function(){ clearInterval(interval); };
+  }, [token]);
   useEffect(function(){
     if(!token) return;
     var wsUrl = (process.env.REACT_APP_API_URL||"https://crm-aro-api-production.up.railway.app").replace("https://","wss://").replace("http://","ws://");
