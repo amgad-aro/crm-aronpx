@@ -4395,6 +4395,17 @@ export default function CRMApp() {
         // 🔒 Skip locked leads — never rotate
         if(lockedIds.includes(lid)) continue;
 
+        // 👤 Skip leads assigned to team_leader — they keep the lead until they reassign
+        var lAgentId = String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
+        var lAgentRole = (function(){
+          var savedIds = getSavedAgents();
+          // Check if agent is team_leader by checking if NOT in saved rotation agents
+          // and their role — we check from all users including admins
+          var allU = users.find(function(u){return String(gid(u))===lAgentId;});
+          return allU?allU.role:"sales";
+        })();
+        if(lAgentRole==="team_leader") continue;
+
         // ⏰ Skip leads older than 30 days (createdAt)
         var createdAt = new Date(l.createdAt||0).getTime();
         if((Date.now()-createdAt) > THIRTY_DAYS) continue;
