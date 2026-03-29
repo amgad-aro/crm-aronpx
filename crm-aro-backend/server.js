@@ -604,6 +604,10 @@ app.post("/api/daily-requests", auth, async function(req, res) {
       lastActivityTime: new Date(),
     });
     r = await DailyRequest.findById(r._id).populate("agentId", "name title");
+    // Log creation as activity
+    var createNote = "Added — Status: " + (req.body.status||"NewLead");
+    if(req.body.notes) createNote += " | " + req.body.notes;
+    await Activity.create({ userId: req.user.id, type: "note", note: createNote, leadId: r._id });
     res.json(r);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
