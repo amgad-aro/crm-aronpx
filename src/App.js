@@ -2730,6 +2730,7 @@ var DailyRequestsPage = function(p) {
     if(!form.area.trim()){alert("Area is required");return;}
     if(!form.budget.trim()){alert("Budget is required");return;}
     if(!form.callbackTime){alert("Callback is required");return;}
+    if(!form.notes.trim()){alert("Feedback is required");return;}
     setSaving(true);
     try{
       var drAgentId=form.agentId||"";
@@ -2986,9 +2987,9 @@ var DailyRequestsPage = function(p) {
         <div style={{ gridColumn:"1/-1" }}><Inp label={"Budget"} req value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>
       </div>
       {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
-      <Inp label={t.status} type="select" value={form.status||"NewLead"} onChange={function(e){setForm(function(f){return Object.assign({},f,{status:e.target.value});})}} options={sc.map(function(s){return{value:s.value,label:s.label};})}/>
-      <Inp label={t.callbackTime} req type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/> 
-      <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/> 
+      <Inp label={t.status+" *"} req type="select" value={form.status||"NewLead"} onChange={function(e){setForm(function(f){return Object.assign({},f,{status:e.target.value});})}} options={sc.map(function(s){return{value:s.value,label:s.label};})}/>
+      <Inp label={t.callbackTime} req type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/>
+      <Inp label={"Feedback *"} req type="textarea" value={form.notes} onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/> 
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addReq} loading={saving} style={{ flex:1 }}>Add Number</Btn></div>
     </Modal>
     <Modal show={showBulk} onClose={function(){setShowBulk(false);}} title={"Bulk Reassign"}>
