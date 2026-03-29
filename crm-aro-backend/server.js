@@ -270,6 +270,15 @@ app.get("/api/leads", auth, async function(req, res) {
     if (role === "sales") {
       query.agentId = new mongoose.Types.ObjectId(uid);
 
+    } else if (role === "team_leader") {
+      // Team leader sees only their direct sales
+      var tlUser = await User.findById(uid).lean();
+      if (!tlUser) return res.status(404).json({ error: "User not found" });
+      var visibleAgentIds = [tlUser._id];
+      var directSales = await User.find({ reportsTo: tlUser._id }).lean();
+      directSales.forEach(function(s) { visibleAgentIds.push(s._id); });
+      query.agentId = { $in: visibleAgentIds };
+
     } else if (role === "manager") {
       var managerUser = await User.findById(uid).lean();
       if (!managerUser) return res.status(404).json({ error: "User not found" });
