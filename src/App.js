@@ -2646,6 +2646,10 @@ var DailyRequestsPage = function(p) {
   var [pendingStatus,setPendingStatus]=useState(null);
   var [actNote,setActNote]=useState(""); var [actType,setActType]=useState("call"); var [showActForm,setShowActForm]=useState(false);
   var [actSaving,setActSaving]=useState(false);
+  var [showDrHistory,setShowDrHistory]=useState(false);
+  var [drHistoryReq,setDrHistoryReq]=useState(null);
+  var [drHistoryList,setDrHistoryList]=useState([]);
+  var [drHistoryLoading,setDrHistoryLoading]=useState(false);
   var [filterStatus,setFilterStatus]=useState("all");
   var [sortBy,setSortBy]=useState("lastActivity");
   var [agentFilter,setAgentFilter]=useState("");
@@ -2716,6 +2720,21 @@ var DailyRequestsPage = function(p) {
   };
 
   var [drHistory,setDrHistory]=useState({});
+
+  var openDrHistory=async function(r){
+    setDrHistoryReq(r); setShowDrHistory(true); setDrHistoryList([]); setDrHistoryLoading(true);
+    try{
+      var acts=await apiFetch("/api/activities","GET",null,p.token);
+      var rid=gid(r);
+      var filtered=(acts||[]).filter(function(a){
+        var lid=a.leadId&&a.leadId._id?String(a.leadId._id):String(a.leadId||"");
+        return lid===rid;
+      }).sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
+      setDrHistoryList(filtered);
+      setDrHistory(function(prev){var upd={};upd[rid]=filtered;return Object.assign({},prev,upd);});
+    }catch(e){setDrHistoryList([]);}
+    setDrHistoryLoading(false);
+  };
 
   var loadDrHistory=async function(rid){
     try{
@@ -2991,7 +3010,10 @@ var DailyRequestsPage = function(p) {
       {/* Side Panel */}
       {selected&&<Card style={{ flex:"0 0 280px", maxHeight:"calc(100vh - 120px)", overflowY:"auto", padding:0 }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
-          <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", marginBottom:8 }}><X size={11}/></button>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+            <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
+            <button onClick={function(){openDrHistory(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title="History">📋</button>
+          </div>
           <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selected.name}</div>
           <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}>{selected.phone}{selected.phone2?" / "+selected.phone2:""}</div>
           <div style={{ display:"flex", gap:6, marginTop:10 }}>
@@ -3049,6 +3071,29 @@ var DailyRequestsPage = function(p) {
         </div>
       </Card>}
     </div>
+
+    {/* DR History Modal */}
+    {showDrHistory&&drHistoryReq&&<Modal show={true} onClose={function(){setShowDrHistory(false);setDrHistoryReq(null);}} title={"📋 History — "+drHistoryReq.name} w={520}>
+      {drHistoryLoading&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>Loading...</div>}
+      {!drHistoryLoading&&drHistoryList.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>No history yet</div>}
+      {!drHistoryLoading&&drHistoryList.length>0&&<div style={{ maxHeight:400, overflowY:"auto" }}>
+        {drHistoryList.map(function(a,i){
+          var uname=a.userId&&a.userId.name?a.userId.name:"";
+          return <div key={a._id||i} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
+            <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
+              <span style={{ fontSize:16, flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="note"?"📝":"🔔"}</span>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:12, fontWeight:500, color:C.text }}>{a.note}</div>
+                <div style={{ fontSize:10, color:C.textLight, marginTop:3, display:"flex", gap:8 }}>
+                  {uname&&<span style={{ fontWeight:600, color:C.accent }}>{uname}</span>}
+                  <span>{a.createdAt?new Date(a.createdAt).toLocaleDateString("en-GB")+" — "+new Date(a.createdAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):""}</span>
+                </div>
+              </div>
+            </div>
+          </div>;
+        })}
+      </div>}
+    </Modal>}
 
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ Add New Number"}>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
