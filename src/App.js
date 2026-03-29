@@ -197,7 +197,7 @@ var PROP_TYPES = ["Apartment","Duplex","Townhouse","Twinhouse","Standalone","Com
 var AVATAR_COLORS = ["#6366F1","#EC4899","#F59E0B","#10B981","#3B82F6","#8B5CF6","#EF4444","#14B8A6","#F97316","#06B6D4"];
 var avatarColor = function(name){ var i=0; if(name)for(var j=0;j<name.length;j++)i+=name.charCodeAt(j); return AVATAR_COLORS[i%AVATAR_COLORS.length]; };
 var Avatar = function(p){ var color=avatarColor(p.name); var size=p.size||36; return <div style={{ width:size, height:size, borderRadius:p.round?"50%":Math.round(size*0.28), background:color, display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:Math.round(size*0.38), flexShrink:0, position:"relative" }}>{p.name?(p.name[0]+( p.name.split(" ")[1]?p.name.split(" ")[1][0]:"")).toUpperCase():""}{p.online!==undefined&&<span style={{ position:"absolute", bottom:1, right:1, width:Math.round(size*0.28), height:Math.round(size*0.28), borderRadius:"50%", background:p.online?"#22C55E":"#94A3B8", border:"2px solid #fff" }}/>}</div>; };
-var gid = function(o) { return o && (o._id || o.id); };
+var gid = function(o) { if(!o) return null; return String(o._id || o.id || ""); };
 var waPhone = function(phone) {
   if (!phone) return "";
   var p = phone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
@@ -2680,6 +2680,7 @@ var DailyRequestsPage = function(p) {
   };
   var confirmStatus=async function(comment,cbTime,extra){
     if(!pendingStatus)return;
+    if(!pendingStatus.leadId){alert("Error: request ID not found. Please refresh.");return;}
     try{
       var updateData={status:pendingStatus.newStatus};
       if(cbTime) updateData.callbackTime=cbTime;
