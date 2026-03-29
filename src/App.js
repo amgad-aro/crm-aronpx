@@ -2974,6 +2974,30 @@ var DailyRequestsPage = function(p) {
               </div>
             </div>}
           </div>
+
+          {/* Feedback History */}
+          {(function(){
+            var sid = gid(selected);
+            var history = p.activities.filter(function(a){
+              var lid = a.leadId&&a.leadId._id?String(a.leadId._id):String(a.leadId||"");
+              return lid===sid;
+            }).sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
+            if(!history.length) return null;
+            return <div style={{ marginTop:14 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:8, textTransform:"uppercase", letterSpacing:0.5 }}>📋 History ({history.length})</div>
+              {history.map(function(a){
+                var who = a.userId&&a.userId.name?a.userId.name:"";
+                var icon = a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":"📝";
+                return <div key={String(a._id)} style={{ padding:"8px 10px", background:"#F8FAFC", borderRadius:9, marginBottom:6, borderLeft:"3px solid "+C.accent }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:2 }}>
+                    <span style={{ fontSize:10, fontWeight:700, color:C.text }}>{icon} {who}</span>
+                    <span style={{ fontSize:9, color:C.textLight }}>{timeAgo(a.createdAt,t)}</span>
+                  </div>
+                  {a.note&&<div style={{ fontSize:11, color:C.textLight }}>{a.note}</div>}
+                </div>;
+              })}
+            </div>;
+          })()}
         </div>
       </Card>}
     </div>
