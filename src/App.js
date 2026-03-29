@@ -3199,7 +3199,7 @@ var ReportsPage = function(p) {
 
 var TeamPage = function(p) {
   var t=p.t;
-  var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
   var allDeals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
   var getQ=function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
   var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
@@ -3221,15 +3221,15 @@ var TeamPage = function(p) {
   var [editQModal,setEditQModal]=useState(null);
   var [expandedManager,setExpandedManager]=useState(null); // uid of expanded manager
 
-  // Build hierarchy: managers + their teams
-  var managers = p.users.filter(function(u){return u.role==="manager"&&u.active;});
+  // Build hierarchy: managers + team leaders + their teams
+  var managers = p.users.filter(function(u){return (u.role==="manager"||u.role==="team_leader")&&u.active;});
   var getSalesUnder = function(muid){
     return p.users.filter(function(u){
-      return u.active && (u.role==="sales"||u.role==="manager") && String(u.reportsTo||"")===muid;
+      return u.active && (u.role==="sales"||u.role==="manager"||u.role==="team_leader") && String(u.reportsTo||"")===muid;
     });
   };
 
-  // For non-admin manager: show only their own team
+  // For non-admin manager/team_leader: show only their own team
   var visibleManagers = isAdmin ? managers : managers.filter(function(m){return gid(m)===String(p.cu.id||"");});
   // Also show sales not under any manager (top-level sales)
   var topLevelSales = isAdmin ? p.users.filter(function(u){return u.role==="sales"&&u.active&&!u.reportsTo;}) : [];
@@ -3237,7 +3237,7 @@ var TeamPage = function(p) {
   // Card for one member
   var MemberCard = function(mp){
     var a=mp.user; var uid=String(gid(a));
-    var isManagerCard = a.role==="manager";
+    var isManagerCard = a.role==="manager"||a.role==="team_leader";
     // For manager card: get all team member IDs
     var teamUids = isManagerCard ? new Set(p.users.filter(function(u){
       var rt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
