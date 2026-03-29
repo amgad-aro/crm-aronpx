@@ -587,8 +587,8 @@ var Header = function(p) {
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <div style={{ width:32, height:32, borderRadius:8, background:n.status==="DoneDeal"?"#DCFCE7":"#FFF7ED", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{n.status==="DoneDeal"?"🎉":"🎯"}</div>
               <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:12, fontWeight:700 }}>{n.status==="DoneDeal"?"Done Deal":"EOI"} — {n.leadName}</div>
-                <div style={{ fontSize:11, color:C.textLight }}>By {n.agentName}{n.budget?" · "+n.budget+" EGP":""}</div>
+                <div style={{ fontSize:12, fontWeight:700 }}>{n.status==="DoneDeal"?"🎉 Done Deal":"🎯 EOI"}{n.leadName?" — "+n.leadName:""}</div>
+                <div style={{ fontSize:11, color:C.textLight }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
                 <div style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.time,p.t)}</div>
               </div>
             </div>
@@ -4019,19 +4019,19 @@ export default function CRMApp() {
             var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
             showBrowserNotif("🆕 New Lead", l.name+(agName?" → "+agName:""));
           });
-          // Detect new DoneDeal/EOI for team_leader notification bell
-          var prevLeadsMap = {};
-          setLeads(function(prev){ prev.forEach(function(l){ prevLeadsMap[String(l._id)]=l.status; }); return prev; });
-          var newDeals = leadsData.filter(function(l){
-            var prevStatus = prevLeadsMap[String(l._id)];
-            return (l.status==="DoneDeal"||l.status==="EOI") && prevStatus && prevStatus!==l.status;
-          });
-          newDeals.forEach(function(l){
-            var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
-            setDealNotifs(function(prev){
-              return [{id:Date.now(),leadName:l.name,agentName:agName,status:l.status,budget:l.budget||"",time:new Date().toISOString()}].concat(prev).slice(0,50);
+          // Detect status changes to DoneDeal/EOI via polling
+          setLeads(function(prevLeads){
+            leadsData.forEach(function(l){
+              var prev = prevLeads.find(function(p2){return String(p2._id)===String(l._id);});
+              if(prev && prev.status!==l.status && (l.status==="DoneDeal"||l.status==="EOI")){
+                var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
+                setDealNotifs(function(dn){
+                  return [{id:Date.now(),leadName:l.name,agentName:agName,status:l.status,budget:l.budget||"",time:new Date().toISOString()}].concat(dn).slice(0,50);
+                });
+                showBrowserNotif("🎉 "+(l.status==="DoneDeal"?"Done Deal":"EOI"), l.name+(agName?" — "+agName:""));
+              }
             });
-            showBrowserNotif("🎉 "+(l.status==="DoneDeal"?"Done Deal":"EOI"), l.name+(agName?" — "+agName:""));
+            return prevLeads;
           });
         }
         knownLeadIds = new Set(leadsData.map(function(l){return String(l._id);}));
@@ -4042,8 +4042,14 @@ export default function CRMApp() {
           newActs.forEach(function(a){
             var who = a.userId&&a.userId.name?a.userId.name:"";
             var lead = a.leadId&&a.leadId.name?a.leadId.name:"";
+            // For team_leader: only notify for their team's activities
+            if(currentUser.role==="team_leader"){
+              var teamNames=new Set((users||[]).filter(function(u){return u.role==="sales";}).map(function(u){return u.name;}));
+              teamNames.add(currentUser.name);
+              if(!teamNames.has(who)) return;
+            }
             if(a.type==="call") showBrowserNotif("📞 Call logged", (who?who+" — ":"")+(lead||a.note||""));
-            else if(a.type==="status_change") showBrowserNotif("🔄 Status changed", (lead?lead+" — ":"")+a.note);
+            else if(a.type==="status_change"&&(a.note||"").includes("DoneDeal")) showBrowserNotif("🎉 Done Deal", (lead?lead+" — ":"")+who);
             else if(a.type==="reassign") showBrowserNotif("👤 Lead reassigned", (lead||"")+(a.note?" — "+a.note:""));
           });
         }
