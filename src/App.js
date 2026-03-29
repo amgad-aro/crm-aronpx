@@ -2058,8 +2058,8 @@ var DealsPage = function(p) {
   var dealYears=[curYear,curYear-1,curYear-2,curYear-3];
   var [dealQ,setDealQ]=useState("all"); var [dealYear,setDealYear]=useState(curYear);
   var filteredDeals=deals.filter(function(d){
-    if(dealQ!=="all"){var dd=d.updatedAt||d.createdAt;if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
-    if(dealQ!=="all"&&new Date(d.updatedAt||d.createdAt||0).getFullYear()!==dealYear) return false;
+    if(dealQ!=="all"){var dd=getDealDate(d);if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
+    if(dealQ!=="all"&&new Date(getDealDate(d)||0).getFullYear()!==dealYear) return false;
     if(dateFrom&&new Date(d.updatedAt||d.createdAt)<new Date(dateFrom)) return false;
     if(dateTo&&new Date(d.updatedAt||d.createdAt)>new Date(dateTo+"T23:59:59")) return false;
     if(dealSearch){var q2=dealSearch.toLowerCase();var nm=d.name?d.name.toLowerCase():"";var pr=d.project?d.project.toLowerCase():"";var ph=d.phone||"";if(!nm.includes(q2)&&!pr.includes(q2)&&!ph.includes(q2))return false;}
@@ -2344,7 +2344,7 @@ var DealsPage = function(p) {
                 return displayVal;
               })()}
             </td>
-            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap", textAlign:"left" }}>{d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB")+" "+new Date(d.updatedAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap", textAlign:"left" }}>{(function(){var dd=getDealDate(d);return dd?new Date(dd).toLocaleDateString("en-GB")+" "+new Date(dd).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):"-";})()}</td>
             <td style={{ padding:"11px 12px", minWidth:130, textAlign:"left" }}>
               <button onClick={function(){openStages(d);}}
                 style={{ background:"none", border:"none", cursor:"pointer", width:"100%", textAlign:"right", padding:0 }}>
@@ -2441,7 +2441,7 @@ var DealsPage = function(p) {
           {l:"Installment Years", v:extra.installmentYears?extra.installmentYears+" yrs":"-", icon:"📅"},
           {l:"Agent", v:getAg(selectedDeal), icon:"👤"},
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
-          {l:"Deal Date", v:selectedDeal.updatedAt?new Date(selectedDeal.updatedAt).toLocaleDateString("en-GB"):"-", icon:"🗓"},
+          {l:"Deal Date", v:(function(){var dd=getDealDate(selectedDeal);return dd?new Date(dd).toLocaleDateString("en-GB"):"-";})(), icon:"🗓"},
           {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
         ].map(function(f){return <div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
           <span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.icon} {f.l}</span>
