@@ -466,7 +466,7 @@ var LoginPage = function(p) {
 
 // ===== SIDEBAR =====
 var Sidebar = function(p) {
-  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var isSales = p.cu.role==="sales";
   var items = [
     {id:"dashboard",icon:Home,label:t.dashboard},
@@ -679,7 +679,7 @@ var Header = function(p) {
 
 // ===== LEAD FORM (shared for add/edit) =====
 var LeadForm = function(p) {
-  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager";
+  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [form, setForm] = useState((function(){
     var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", downPaymentPct:"", installmentYears:"" };
@@ -927,7 +927,7 @@ var PhoneCell = function(p) {
 // ===== LEADS PAGE =====
 var LeadsPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
-  var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var isManager = p.cu.role==="manager";
   var myTeamUsers = p.myTeamUsers || salesUsers;
@@ -1034,7 +1034,7 @@ var LeadsPage = function(p) {
 
   var openHistory = async function(lead) {
     setHistoryLead(lead); setShowHistory(true); setFullHistory([]); setHistoryLoading(true);
-    var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager";
+    var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
     try {
       if(isAdmin) {
         var hist = await apiFetch("/api/leads/"+gid(lead)+"/full-history","GET",null,p.token);
@@ -1648,7 +1648,7 @@ var MyDayPage = function(p) {
 // ===== DASHBOARD =====
 var DashboardPage = function(p) {
   var t = p.t; var sc = STATUSES(t);
-  var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var normalLeads = p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   var myLeads = isAdmin?normalLeads:normalLeads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return aid===p.cu.id;});
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
@@ -1802,7 +1802,7 @@ var DashboardPage = function(p) {
 
 // ===== EOI PAGE =====
 var EOIPage = function(p) {
-  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var eoiLeads=p.leads.filter(function(l){return l.status==="EOI"&&!l.archived;});
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
@@ -1991,7 +1991,7 @@ var calcCommission = function(user, allDeals, allUsers, forQ) {
 };
 
 var DealsPage = function(p) {
-  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
@@ -2505,7 +2505,7 @@ var TasksPage = function(p) {
 
 
 var ArchivePage = function(p) {
-  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager";
+  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
   var archived = p.leads.filter(function(l){ return l.archived; });
   var [archivedDR,setArchivedDR]=useState([]);
   useEffect(function(){
@@ -2585,7 +2585,7 @@ var ArchivePage = function(p) {
 // ===== DAILY REQUESTS =====
 var DailyRequestsPage = function(p) {
   var t=p.t; var sc=STATUSES(t);
-  var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [requests,setRequests]=useState([]);
   var [loading,setLoading]=useState(true);
