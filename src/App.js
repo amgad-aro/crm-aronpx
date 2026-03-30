@@ -2538,14 +2538,16 @@ var DealsPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success, textAlign:"left" }}>
               {(function(){
                 var split=getDealSplit(gid(d));
-                var displayVal=bv>0?bv.toLocaleString():d.budget||"-";
-                if(split&&bv>0){
-                  return <div>
-                    <div>{(bv/2).toLocaleString()}</div>
-                    <div style={{ fontSize:10, color:"#8B5CF6", fontWeight:600 }}>🤝 50% — {split.agent2Name||"Shared"}</div>
-                  </div>;
-                }
-                return displayVal;
+                var weight=getProjectWeight(d.project);
+                var splitFactor=split?0.5:1;
+                var effectiveBv=bv*weight*splitFactor;
+                var showEffective=effectiveBv!==bv&&bv>0;
+                return <div>
+                  <div>{bv>0?bv.toLocaleString():d.budget||"-"}</div>
+                  {showEffective&&<div style={{ fontSize:10, color:"#8B5CF6", fontWeight:600, marginTop:1 }}>
+                    {split?"🤝":"📊"} {effectiveBv.toLocaleString()} {split?"50% — "+(split.agent2Name||"Shared"):weight*100+"% project"}
+                  </div>}
+                </div>;
               })()}
             </td>
             <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap", textAlign:"left" }}>{(function(){var dd=getDealDate(d);return dd?new Date(dd).toLocaleDateString("en-GB")+" "+new Date(dd).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):"-";})()}</td>
@@ -2661,7 +2663,15 @@ var DealsPage = function(p) {
       <div style={{ padding:"14px 16px" }}>
         {[
           {l:"Project", v:selectedDeal.project||"-", icon:"🏠"},
-          {l:"Budget", v:selectedDeal.budget?selectedDeal.budget+" EGP":"-", icon:"💰"},
+          {l:"Budget", v:(function(){
+            var raw=parseBudget(selectedDeal.budget);
+            var weight=getProjectWeight(selectedDeal.project);
+            var split=getDealSplit(gid(selectedDeal));
+            var splitFactor=split?0.5:1;
+            var eff=raw*weight*splitFactor;
+            if(eff!==raw&&raw>0) return selectedDeal.budget+" EGP → "+eff.toLocaleString()+" EGP effective";
+            return selectedDeal.budget?selectedDeal.budget+" EGP":"-";
+          })(), icon:"💰"},
           {l:"Down Payment %", v:downPct?downPct+"%":"-", icon:"📊"},
           {l:"Installment Years", v:instYears?instYears+" yrs":"-", icon:"📅"},
           {l:"Agent", v:getAg(selectedDeal), icon:"👤"},
