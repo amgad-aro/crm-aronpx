@@ -56,7 +56,8 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
 
 var app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 // ===== CONNECT TO MONGODB =====
 mongoose.connect(process.env.MONGODB_URI).then(function() {
