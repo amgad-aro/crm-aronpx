@@ -1963,12 +1963,42 @@ var EOIPage = function(p) {
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var total=eoiLeads.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var [editLead,setEditLead]=useState(null);
+  var [showAdd,setShowAdd]=useState(false);
+  var [selectedEOI,setSelectedEOI]=useState(null);
+  var [imgUploading,setImgUploading]=useState(false);
+  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
 
   var archiveLead=async function(lid){
     if(!window.confirm(t.archiveConfirm))return;
     try{
       await apiFetch("/api/leads/"+lid+"/archive","PUT",null,p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:true}):l;});});
+      if(selectedEOI&&gid(selectedEOI)===lid)setSelectedEOI(null);
+    }catch(e){alert(e.message);}
+  };
+
+  var handleImageUpload=async function(e,lead,imageType){
+    var file=e.target.files[0]; if(!file)return;
+    setImgUploading(true);
+    var reader=new FileReader();
+    reader.onload=async function(ev){
+      try{
+        var base64=ev.target.result;
+        var updated=await apiFetch("/api/leads/"+gid(lead)+"/upload-image","POST",{imageData:base64,imageType:imageType},p.token);
+        p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+        if(selectedEOI&&gid(selectedEOI)===gid(lead))setSelectedEOI(updated);
+      }catch(ex){alert("Upload failed");}
+      setImgUploading(false);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  var toggleApproved=async function(lead,field){
+    try{
+      var update={}; update[field]=!lead[field];
+      var updated=await apiFetch("/api/leads/"+gid(lead),"PUT",update,p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+      if(selectedEOI&&gid(selectedEOI)===gid(lead))setSelectedEOI(updated);
     }catch(e){alert(e.message);}
   };
 
@@ -1978,13 +2008,21 @@ var EOIPage = function(p) {
         <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>🎯 EOI ({eoiLeads.length})</h2>
         {total>0&&<div style={{ fontSize:13, fontWeight:700, color:"#9333EA", background:"#F3E8FF", padding:"5px 14px", borderRadius:20 }}>Total: {total.toLocaleString()} EGP</div>}
       </div>
+      {(isAdmin||p.cu.role==="sales")&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 14px", fontSize:12 }}><Plus size={13}/> Add EOI</Btn>}
     </div>
+
+    {showAdd&&<Modal show={true} onClose={function(){setShowAdd(false);}} title={"➕ Add EOI"}>
+      <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
+        initial={{status:"EOI", source:"Facebook", name:"", phone:"", phone2:"", budget:"", project:"", notes:"", eoiDeposit:""}}
+        onClose={function(){setShowAdd(false);}}
+        onSave={function(added){p.setLeads(function(prev){return [added].concat(prev);});setShowAdd(false);}}/>
+    </Modal>}
 
     {editLead&&<Modal show={true} onClose={function(){setEditLead(null);}} title={t.edit}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
         editId={gid(editLead)} initial={editLead}
         onClose={function(){setEditLead(null);}}
-        onSave={function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(updated)?updated:l;});});setEditLead(null);}}/>
+        onSave={function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(updated)?updated:l;});});setEditLead(null);if(selectedEOI&&gid(selectedEOI)===gid(updated))setSelectedEOI(updated);}}/>
     </Modal>}
 
     {eoiLeads.length===0&&<div style={{ textAlign:"center", padding:"60px 20px", color:C.textLight }}>
@@ -1993,15 +2031,17 @@ var EOIPage = function(p) {
       <div style={{ fontSize:13, marginTop:8 }}>Clients with EOI status will appear here automatically</div>
     </div>}
 
-    {eoiLeads.length>0&&<Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
+    <div style={{ display:"flex", gap:16 }}>
+    {eoiLeads.length>0&&<Card p={0} style={{ flex:1 }}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date","Approved",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {eoiLeads.map(function(d){
           var bv=parseBudget(d.budget);
           var eoiDateStr=d.eoiDate?new Date(d.eoiDate).toLocaleDateString("en-GB"):d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB"):"-";
-          return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
+          var isSel=selectedEOI&&gid(selectedEOI)===gid(d);
+          return <tr key={gid(d)} onClick={function(){setSelectedEOI(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#F0FDF4":"transparent" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}</td>
             {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}>{d.phone}</td>}
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
@@ -2010,22 +2050,65 @@ var EOIPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.eoiDeposit||"-"}</td>
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>{getAg(d)}</td>}
             <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, textAlign:"left" }}>{eoiDateStr}</td>
-            <td style={{ padding:"8px 12px" }}>
+            <td style={{ padding:"11px 12px", textAlign:"left" }}>
+              {d.eoiApproved
+                ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅ Approved</span>
+                :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳ Pending</span>}
+            </td>
+            <td style={{ padding:"8px 12px" }} onClick={function(e){e.stopPropagation();}}>
               <div style={{ display:"flex", gap:5 }}>
-                {p.cu.role==="admin"&&<button onClick={function(){setEditLead(d);}} title={t.edit}
-                  style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <Edit size={13} color={C.info}/>
-                </button>}
-                {isAdmin&&<button onClick={function(){archiveLead(gid(d));}} title={t.archive}
-                  style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <Archive size={13} color={C.warning}/>
-                </button>}
+                {isAdmin&&<button onClick={function(){setEditLead(d);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Edit size={13} color={C.info}/></button>}
+                {isAdmin&&<button onClick={function(){archiveLead(gid(d));}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Archive size={13} color={C.warning}/></button>}
               </div>
             </td>
           </tr>;
         })}
       </tbody>
     </table></div></Card>}
+
+    {/* EOI Side Panel */}
+    {selectedEOI&&<div style={{ flex:"0 0 260px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
+      <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"14px 16px" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+          <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
+          {isOnlyAdmin&&<button onClick={function(){toggleApproved(selectedEOI,"eoiApproved");}} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
+            {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
+          </button>}
+        </div>
+        <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedEOI.name}</div>
+        <div style={{ color:"rgba(255,255,255,0.7)", fontSize:11, marginTop:2 }}>{selectedEOI.phone}</div>
+      </div>
+      <div style={{ padding:"12px 14px" }}>
+        {[
+          {l:"Project",v:selectedEOI.project||"-",icon:"🏠"},
+          {l:"Budget",v:selectedEOI.budget?selectedEOI.budget+" EGP":"-",icon:"💰"},
+          {l:"Deposit",v:selectedEOI.eoiDeposit||"-",icon:"💵"},
+          {l:"Agent",v:getAg(selectedEOI),icon:"👤"},
+          {l:"Notes",v:selectedEOI.notes||"-",icon:"📝"},
+        ].map(function(f){return <div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
+          <span style={{ fontSize:11, color:C.textLight }}>{f.icon} {f.l}</span>
+          <span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span>
+        </div>;})}
+        
+        {/* EOI Image */}
+        <div style={{ marginTop:12 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 EOI Image</div>
+          {selectedEOI.eoiImage
+            ?<div>
+              <img src={selectedEOI.eoiImage} style={{ width:"100%", borderRadius:8, marginBottom:6 }} alt="EOI"/>
+              <label style={{ display:"block", padding:"6px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+                🔄 Replace Image
+                <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
+              </label>
+            </div>
+            :<label style={{ display:"block", padding:"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+              {imgUploading?"Uploading...":"📤 Upload EOI Image"}
+              <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
+            </label>}
+        </div>
+      </div>
+    </div>}
+    </div>
   </div>;
 };
 
@@ -2437,7 +2520,7 @@ var DealsPage = function(p) {
     <div style={{ display:"flex", gap:16, alignItems:"flex-start" }}>
     <Card p={0} style={{ flex:1, overflow:"hidden" }}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}      </tr></thead>
+        {[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,"Approved",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}      </tr></thead>
       <tbody>
         {filteredDeals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>No deals yet</td></tr>}
         {filteredDeals.map(function(d){
@@ -2527,6 +2610,13 @@ var DealsPage = function(p) {
               {(function(){var sp=getDealSplit(gid(d));return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
             </td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.source}</td>}
+            <td style={{ padding:"11px 12px", textAlign:"left" }}>
+              {d.dealApproved
+                ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅</span>
+                :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳</span>}
+              {isOnlyAdmin&&d.commissionClaimDate&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>📋 {new Date(d.commissionClaimDate).toLocaleDateString("en-GB")}</div>}
+              {isOnlyAdmin&&d.commissionClaimed&&<div style={{ fontSize:9, color:C.success, marginTop:1 }}>✅ Claimed</div>}
+            </td>
             <td style={{ padding:"8px 12px" }}>
               <div style={{ display:"flex", gap:5 }}>
                 {isOnlyAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplit(gid(d));setSplitAgent2(sp?sp.agent2Id:"");}} title="Split Deal"
@@ -2547,10 +2637,24 @@ var DealsPage = function(p) {
     </table></div></Card>
 
     {selectedDeal&&(function(){
-      var extra=getDealExtra(gid(selectedDeal))||{};
+      var extra=getDealExtra(String(selectedDeal._id||gid(selectedDeal)))||{};
+      var downPct=extra.downPaymentPct||selectedDeal.downPaymentPct||"";
+      var instYears=extra.installmentYears||selectedDeal.installmentYears||"";
       return <div style={{ flex:"0 0 280px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
       <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
-        <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", marginBottom:8 }}><X size={11}/></button>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+          <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
+          {isOnlyAdmin&&<button onClick={async function(){
+            try{
+              var upd={dealApproved:!selectedDeal.dealApproved};
+              var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",upd,p.token);
+              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+              setSelectedDeal(updated);
+            }catch(e){}
+          }} style={{ background:selectedDeal.dealApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
+            {selectedDeal.dealApproved?"✅ Approved":"⏳ Approve"}
+          </button>}
+        </div>
         <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedDeal.name}</div>
         <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}>{selectedDeal.phone}</div>
       </div>
@@ -2558,16 +2662,69 @@ var DealsPage = function(p) {
         {[
           {l:"Project", v:selectedDeal.project||"-", icon:"🏠"},
           {l:"Budget", v:selectedDeal.budget?selectedDeal.budget+" EGP":"-", icon:"💰"},
-          {l:"Down Payment %", v:extra.downPaymentPct?extra.downPaymentPct+"%":"-", icon:"📊"},
-          {l:"Installment Years", v:extra.installmentYears?extra.installmentYears+" yrs":"-", icon:"📅"},
+          {l:"Down Payment %", v:downPct?downPct+"%":"-", icon:"📊"},
+          {l:"Installment Years", v:instYears?instYears+" yrs":"-", icon:"📅"},
           {l:"Agent", v:getAg(selectedDeal), icon:"👤"},
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
           {l:"Deal Date", v:(function(){var dd=getDealDate(selectedDeal);return dd?new Date(dd).toLocaleDateString("en-GB"):"-";})(), icon:"🗓"},
           {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
-        ].map(function(f){return <div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
+        ].map(function(f){return f.v&&f.v!=="-"?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
           <span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.icon} {f.l}</span>
           <span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span>
-        </div>;})}
+        </div>:null;})}
+
+        {/* Commission Claim Date - sales admin only */}
+        {isOnlyAdmin&&<div style={{ marginTop:12, padding:10, background:"#F8FAFC", borderRadius:10 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📋 Commission Claim</div>
+          <input type="date" value={selectedDeal.commissionClaimDate||""} onChange={async function(e){
+            try{
+              var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{commissionClaimDate:e.target.value},p.token);
+              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+              setSelectedDeal(updated);
+            }catch(ex){}
+          }} style={{ width:"100%", padding:"6px 8px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:6, boxSizing:"border-box" }}/>
+          <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:12 }}>
+            <input type="checkbox" checked={selectedDeal.commissionClaimed||false} onChange={async function(e){
+              try{
+                var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{commissionClaimed:e.target.checked},p.token);
+                p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+                setSelectedDeal(updated);
+              }catch(ex){}
+            }}/>
+            <span style={{ fontWeight:600, color:selectedDeal.commissionClaimed?C.success:C.textLight }}>
+              {selectedDeal.commissionClaimed?"✅ Claimed":"☐ Mark as Claimed"}
+            </span>
+          </label>
+        </div>}
+
+        {/* Deal Image */}
+        <div style={{ marginTop:12 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 Contract Image</div>
+          {selectedDeal.dealImage
+            ?<div>
+              <img src={selectedDeal.dealImage} style={{ width:"100%", borderRadius:8, marginBottom:6 }} alt="Contract"/>
+              <label style={{ display:"block", padding:"6px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+                🔄 Replace Image
+                <input type="file" accept="image/*" style={{ display:"none" }} onChange={async function(e){
+                  var file=e.target.files[0]; if(!file)return;
+                  var reader=new FileReader();
+                  reader.onload=async function(ev){
+                    try{var updated=await apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:ev.target.result,imageType:"deal"},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}catch(ex){}
+                  };reader.readAsDataURL(file);
+                }}/>
+              </label>
+            </div>
+            :<label style={{ display:"block", padding:"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+              📤 Upload Contract Image
+              <input type="file" accept="image/*" style={{ display:"none" }} onChange={async function(e){
+                var file=e.target.files[0]; if(!file)return;
+                var reader=new FileReader();
+                reader.onload=async function(ev){
+                  try{var updated=await apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:ev.target.result,imageType:"deal"},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}catch(ex){}
+                };reader.readAsDataURL(file);
+              }}/>
+            </label>}
+        </div>
       </div>
     </div>;})()}
     </div>
