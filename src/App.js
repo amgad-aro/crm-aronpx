@@ -568,9 +568,12 @@ var Header = function(p) {
     try{return localStorage.getItem("crm_notif_seen")==="1";}catch(e){return false;}
   });
   useEffect(function(){
+    if(callbackNow.length+upcoming.length+overdueCallback.length>0){
+      setBadgeHidden(false);
+    }
+  },[callbackNow.length, upcoming.length, overdueCallback.length]);
+  useEffect(function(){
     if (!p.showNotif) return;
-    setBadgeHidden(true);
-    try{localStorage.setItem("crm_notif_seen","1");}catch(e){}
     var fn=function(e){if(notifRef.current&&!notifRef.current.contains(e.target))p.setShowNotif(false);};
     document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
   },[p.showNotif]);
@@ -677,9 +680,12 @@ var Header = function(p) {
 
       <div style={{ position:"relative" }} ref={notifRef}>
 
-        <button onClick={function(){p.setShowNotif(!p.showNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
+        <button onClick={function(){
+          p.setShowNotif(!p.showNotif);
+          if(!p.showNotif) setBadgeHidden(true);
+        }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <Bell size={16} color={(callbackNow.length+overdueCallback.length)>0?C.danger:C.textLight}/>
-          {(callbackNow.length+upcoming.length+overdueCallback.length)>0&&<span style={{ position:"absolute", top:2, right:2, minWidth:16, height:16, borderRadius:8, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 3px" }}>{callbackNow.length+upcoming.length+overdueCallback.length}</span>}
+          {(callbackNow.length+upcoming.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:2, right:2, minWidth:16, height:16, borderRadius:8, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 3px" }}>{callbackNow.length+upcoming.length+overdueCallback.length}</span>}
         </button>
         {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -4333,32 +4339,40 @@ export default function CRMApp() {
       });
     };
 
-    // 1. New lead assigned
-    var prevLeadIds = new Set(getMyLeads().map(function(l){return gid(l);}));
-    var checkNewLeads = function(){
-      var myLeads = getMyLeads();
-      myLeads.forEach(function(l){
-        var lid = gid(l);
-        if(!prevLeadIds.has(lid)){
-          prevLeadIds.add(lid);
-          showBrowserNotif("👤 New Lead Assigned", l.name+" has been assigned to you");
-        }
+    // Helper: get my DR
+    var getMyDR = function(){
+      return dailyReqs.filter(function(r){
+        var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");
+        return aid===uid;
       });
     };
 
-    // 2. Callback notifications - at exact time or overdue
+    // 1. New lead assigned - track in localStorage
+    var checkNewLeads = function(){
+      var myLeads = getMyLeads();
+      myLeads.forEach(function(l){
+        var lid = String(gid(l));
+        var key = "crm_lead_seen_"+lid;
+        try{
+          if(!localStorage.getItem(key)){
+            localStorage.setItem(key,"1");
+            showBrowserNotif("🆕 New Lead!", l.name+" has been assigned to you");
+          }
+        }catch(e){}
+      });
+    };
+
+    // 2. Callback notifications - all statuses with callbackTime
     var checkCallbacks = function(){
       var now = Date.now();
-      var myLeads = getMyLeads().filter(function(l){return l.callbackTime;});
-      myLeads.forEach(function(l){
+      var allItems = getMyLeads().concat(getMyDR()).filter(function(l){return l.callbackTime;});
+      allItems.forEach(function(l){
         var cbTime = new Date(l.callbackTime).getTime();
         var diff = cbTime - now;
         var key = "crm_cb_notif_"+gid(l)+"_"+l.callbackTime;
         if(diff<=0 && diff>-60*60*1000){
-          // Callback time has arrived or overdue within last hour
           try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("📞 Callback Now!", l.name+" — "+new Date(l.callbackTime).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}));}}catch(e){}
         } else if(diff>0&&diff<=5*60*1000){
-          // Coming up within 5 minutes
           var key5 = "crm_cb_5min_"+gid(l)+"_"+l.callbackTime;
           try{if(!localStorage.getItem(key5)){localStorage.setItem(key5,"1");showBrowserNotif("⏰ Callback in "+Math.round(diff/60000)+" min", l.name);}}catch(e){}
         } else if(diff>60*60*1000){
