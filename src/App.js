@@ -708,9 +708,13 @@ var Header = function(p) {
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder}</span>
             <div style={{ display:"flex", gap:6, alignItems:"center" }}>
-              {p.isAdmin&&(callbackNow.length+upcoming.length+overdueCallback.length)>0&&<button onClick={function(){
+              {p.isAdmin&&(callbackNow.length+upcoming.length+overdueCallback.length)>0&&<button onClick={function(e){
+                e.stopPropagation();
                 setBadgeHidden(true);
-                try{localStorage.setItem("crm_notif_seen_count","9999");}catch(e){}
+                try{
+                  localStorage.setItem("crm_notif_seen_count","9999");
+                  localStorage.setItem("crm_notif_cleared_at", String(Date.now()));
+                }catch(e2){}
                 p.setShowNotif(false);
               }} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger, fontWeight:600 }}>Clear All</button>}
               <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
@@ -719,7 +723,7 @@ var Header = function(p) {
           {callbackNow.length===0&&upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No notifications</div>}
           {callbackNow.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
             <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Callback Now!</div>
-            {callbackNow.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){if(l.source==="Daily Request"||l.propertyType!==undefined){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
+            {callbackNow.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:11, fontWeight:600 }}>{l.name}{agName&&<span style={{ fontSize:10, color:C.accent, fontWeight:400 }}> — {agName}</span>}</div>
@@ -729,7 +733,7 @@ var Header = function(p) {
           </div>}
           {overdueCallback.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
             <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Overdue CallBack</div>
-            {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){if(l.source==="Daily Request"||l.propertyType!==undefined){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
+            {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
@@ -739,7 +743,7 @@ var Header = function(p) {
           </div>}
           {allNoActivity.length>0&&<div style={{ padding:"8px 16px", background:"#FFF7ED", borderBottom:"1px solid #FEF3E2" }}>
             <div style={{ fontSize:11, fontWeight:700, color:"#EA580C", marginBottom:6 }}>😴 No Contact +1 Day</div>
-            {allNoActivity.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){if(l.source==="Daily Request"||l.propertyType!==undefined){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEF3E2" }}>
+            {allNoActivity.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEF3E2" }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"#FED7AA", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>😴</div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
@@ -747,7 +751,7 @@ var Header = function(p) {
               </div>
             </div>;})}
           </div>}
-          {upcoming.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:""; return <div key={gid(l)} onClick={function(){if(l.source==="Daily Request"||l.propertyType!==undefined){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:10, cursor:"pointer" }}
+          {upcoming.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:""; return <div key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:10, cursor:"pointer" }}
             onMouseEnter={function(e){e.currentTarget.style.background="#F8FAFC";}} onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
             <div style={{ width:32, height:32, borderRadius:8, background:C.warning+"15", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Phone size={14} color={C.warning}/></div>
             <div style={{ flex:1, minWidth:0 }}>
@@ -1742,6 +1746,7 @@ var DashboardPage = function(p) {
   var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; 
   var isTeamLeader = p.cu.role==="team_leader";
   var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var [showAllActivities, setShowAllActivities] = useState(false);
   var normalLeads = p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   var uid = String(p.cu.id||"");
   var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
@@ -1885,7 +1890,7 @@ var DashboardPage = function(p) {
       <Card style={{ flex:1, minWidth:230 }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
           <h3 style={{ margin:0, fontSize:14, fontWeight:700 }}>{t.todayActivities}</h3>
-          {p.activities.length>8&&<button onClick={function(){p.nav("reports");}} style={{ fontSize:10, color:C.accent, background:"none", border:"none", cursor:"pointer" }}>View All</button>}
+          {p.activities.length>0&&<button onClick={function(){setShowAllActivities(true);}} style={{ fontSize:10, color:C.accent, background:"none", border:"none", cursor:"pointer" }}>View All ({p.activities.length})</button>}
         </div>
         {p.activities.length===0&&<div style={{ color:C.textLight, fontSize:13, textAlign:"center", padding:"20px 0" }}>No activity</div>}
         <div style={{ maxHeight:320, overflowY:"auto" }}>
@@ -1913,6 +1918,36 @@ var DashboardPage = function(p) {
         </div>
       </Card>
     </div>
+
+    {/* All Activities Modal */}
+    {showAllActivities&&<Modal show={true} onClose={function(){setShowAllActivities(false);}} title={"⚡ Today Activities ("+p.activities.length+")"} w={540}>
+      <div style={{ maxHeight:480, overflowY:"auto" }}>
+        {(function(){
+          var teamIds=new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
+          teamIds.add(String(p.cu.id));
+          var filteredActs = (p.cu.role==="team_leader")
+            ? p.activities.filter(function(a){var auid=String(a.userId&&a.userId._id?a.userId._id:a.userId||"");return teamIds.has(auid);})
+            : p.activities;
+          return filteredActs.map(function(a){
+            var lId=a.leadId?gid(a.leadId):null;
+            var lName=a.leadId&&a.leadId.name?a.leadId.name:"";
+            var uName=a.userId&&a.userId.name?a.userId.name:"";
+            var ml=lId?p.leads.find(function(l){return gid(l)===lId;}):null;
+            return <div key={a._id||a.id} onClick={function(){if(ml){p.setInitSelected(ml);p.nav("leads");setShowAllActivities(false);}}} style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 0", borderBottom:"1px solid #F1F5F9", cursor:ml?"pointer":"default" }}
+              onMouseEnter={function(e){if(ml)e.currentTarget.style.background="#F8FAFC";}} onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
+              <div style={{ width:30, height:30, borderRadius:8, background:(a.type==="call"?C.success:a.type==="status_change"?C.warning:C.info)+"15", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                {a.type==="call"?<Phone size={13} color={C.success}/>:a.type==="meeting"?<Calendar size={13} color={C.info}/>:<Activity size={13} color={C.warning}/>}
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:12, fontWeight:600 }}>{uName}{uName&&lName?" ← ":""}{lName}</div>
+                <div style={{ fontSize:11, color:C.textLight }}>{a.note}</div>
+              </div>
+              <span style={{ fontSize:10, color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
+            </div>;
+          });
+        })()}
+      </div>
+    </Modal>}
   </div>;
 };
 
