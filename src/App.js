@@ -578,14 +578,14 @@ var Header = function(p) {
     }catch(e){return false;}
   });
   useEffect(function(){
-    if(callbackNow.length+upcoming.length+overdueCallback.length>0){
+    if(callbackNow.length+overdueCallback.length>0){
       try{
         var seen = Number(localStorage.getItem("crm_notif_seen_count")||"0");
-        var total = callbackNow.length+upcoming.length+overdueCallback.length;
+        var total = callbackNow.length+overdueCallback.length;
         if(total > seen) setBadgeHidden(false);
       }catch(e){}
     }
-  },[callbackNow.length, upcoming.length, overdueCallback.length]);
+  },[callbackNow.length, overdueCallback.length]);
   useEffect(function(){
     if (!p.showNotif) return;
     var fn=function(e){if(notifRef.current&&!notifRef.current.contains(e.target))p.setShowNotif(false);};
@@ -698,19 +698,19 @@ var Header = function(p) {
           p.setShowNotif(!p.showNotif);
           if(!p.showNotif){
             setBadgeHidden(true);
-            try{localStorage.setItem("crm_notif_seen_count", String(callbackNow.length+upcoming.length+overdueCallback.length));}catch(e){}
+            try{localStorage.setItem("crm_notif_seen_count", String(callbackNow.length+overdueCallback.length));}catch(e){}
           }
         }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <Bell size={16} color={(callbackNow.length+overdueCallback.length)>0?C.danger:C.textLight}/>
-          {(callbackNow.length+upcoming.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:2, right:2, minWidth:16, height:16, borderRadius:8, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 3px" }}>{callbackNow.length+upcoming.length+overdueCallback.length}</span>}
+          {(callbackNow.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:2, right:2, minWidth:16, height:16, borderRadius:8, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 3px" }}>{callbackNow.length+overdueCallback.length}</span>}
         </button>
         {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder}</span>
             <div style={{ display:"flex", gap:6, alignItems:"center" }}>
               {p.isAdmin&&(callbackNow.length+upcoming.length+overdueCallback.length)>0&&<button onClick={function(){
-                // Clear all callback notifications by marking them seen
-                try{localStorage.setItem("crm_notif_seen_count","999");setBadgeHidden(true);}catch(e){}
+                setBadgeHidden(true);
+                try{localStorage.setItem("crm_notif_seen_count","9999");}catch(e){}
                 p.setShowNotif(false);
               }} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger, fontWeight:600 }}>Clear All</button>}
               <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
@@ -1883,15 +1883,19 @@ var DashboardPage = function(p) {
         })}
       </Card>
       <Card style={{ flex:1, minWidth:230 }}>
-        <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.todayActivities}</h3>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+          <h3 style={{ margin:0, fontSize:14, fontWeight:700 }}>{t.todayActivities}</h3>
+          {p.activities.length>8&&<button onClick={function(){p.nav("reports");}} style={{ fontSize:10, color:C.accent, background:"none", border:"none", cursor:"pointer" }}>View All</button>}
+        </div>
         {p.activities.length===0&&<div style={{ color:C.textLight, fontSize:13, textAlign:"center", padding:"20px 0" }}>No activity</div>}
+        <div style={{ maxHeight:320, overflowY:"auto" }}>
         {(function(){
           var teamIds=new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
           teamIds.add(String(p.cu.id));
           var filteredActs = (p.cu.role==="team_leader")
             ? p.activities.filter(function(a){var auid=String(a.userId&&a.userId._id?a.userId._id:a.userId||"");return teamIds.has(auid);})
             : p.activities;
-          return filteredActs.slice(0,8).map(function(a){
+          return filteredActs.map(function(a){
           var lId=a.leadId?(gid(a.leadId)):null; var lName=a.leadId&&a.leadId.name?a.leadId.name:""; var uName=a.userId&&a.userId.name?a.userId.name:"";
           var ml=lId?p.leads.find(function(l){return gid(l)===lId;}):null;
           return <div key={a._id||a.id} onClick={function(){if(ml){p.setInitSelected(ml);p.nav("leads");}}} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderBottom:"1px solid #F8FAFC", cursor:ml?"pointer":"default", borderRadius:4 }}
@@ -1906,6 +1910,7 @@ var DashboardPage = function(p) {
             <span style={{ fontSize:9, color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
           </div>;
         });})()}
+        </div>
       </Card>
     </div>
   </div>;
