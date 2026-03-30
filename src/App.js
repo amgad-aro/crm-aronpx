@@ -2013,6 +2013,7 @@ var EOIPage = function(p) {
 
     {showAdd&&<Modal show={true} onClose={function(){setShowAdd(false);}} title={"➕ Add EOI"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
+        initialStatus="EOI"
         initial={{status:"EOI", source:"Facebook", name:"", phone:"", phone2:"", budget:"", project:"", notes:"", eoiDeposit:""}}
         onClose={function(){setShowAdd(false);}}
         onSave={function(added){p.setLeads(function(prev){return [added].concat(prev);});setShowAdd(false);}}/>
