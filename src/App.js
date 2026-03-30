@@ -565,11 +565,18 @@ var Header = function(p) {
   var allNoActivity = noActivityLeads.concat(noActivityDR);
   var notifRef = useRef(null);
   var [badgeHidden, setBadgeHidden] = useState(function(){
-    try{return localStorage.getItem("crm_notif_seen")==="1";}catch(e){return false;}
+    try{
+      var seen = Number(localStorage.getItem("crm_notif_seen_count")||"0");
+      return seen > 0;
+    }catch(e){return false;}
   });
   useEffect(function(){
     if(callbackNow.length+upcoming.length+overdueCallback.length>0){
-      setBadgeHidden(false);
+      try{
+        var seen = Number(localStorage.getItem("crm_notif_seen_count")||"0");
+        var total = callbackNow.length+upcoming.length+overdueCallback.length;
+        if(total > seen) setBadgeHidden(false);
+      }catch(e){}
     }
   },[callbackNow.length, upcoming.length, overdueCallback.length]);
   useEffect(function(){
@@ -682,7 +689,10 @@ var Header = function(p) {
 
         <button onClick={function(){
           p.setShowNotif(!p.showNotif);
-          if(!p.showNotif) setBadgeHidden(true);
+          if(!p.showNotif){
+            setBadgeHidden(true);
+            try{localStorage.setItem("crm_notif_seen_count", String(callbackNow.length+upcoming.length+overdueCallback.length));}catch(e){}
+          }
         }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <Bell size={16} color={(callbackNow.length+overdueCallback.length)>0?C.danger:C.textLight}/>
           {(callbackNow.length+upcoming.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:2, right:2, minWidth:16, height:16, borderRadius:8, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 3px" }}>{callbackNow.length+upcoming.length+overdueCallback.length}</span>}
