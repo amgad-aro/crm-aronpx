@@ -18,6 +18,12 @@ async function apiFetch(path, method, body, token) {
   if (body) opts.body = JSON.stringify(body);
   var res = await fetch(API + path, opts);
   var data = await res.json();
+  if (res.status === 401) {
+    // Token expired or invalid — clear session and reload
+    try { localStorage.removeItem('crm_aro_session'); } catch(e) {}
+    window.location.reload();
+    return;
+  }
   if (!res.ok) throw new Error(data.error || "API Error");
   return data;
 }
@@ -672,8 +678,8 @@ var Header = function(p) {
       <div style={{ position:"relative" }} ref={notifRef}>
 
         <button onClick={function(){p.setShowNotif(!p.showNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
-          <Bell size={16} color={C.textLight}/>
-          {(callbackNow.length+upcoming.length+allNoActivity.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:4, right:4, width:8, height:8, borderRadius:"50%", background:C.danger }}/>}
+          <Bell size={16} color={(callbackNow.length+overdueCallback.length)>0?C.danger:C.textLight}/>
+          {(callbackNow.length+upcoming.length+overdueCallback.length)>0&&<span style={{ position:"absolute", top:2, right:2, minWidth:16, height:16, borderRadius:8, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 3px" }}>{callbackNow.length+upcoming.length+overdueCallback.length}</span>}
         </button>
         {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -1236,6 +1242,7 @@ var LeadsPage = function(p) {
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:16, fontWeight:700, color:isVIP?C.accent:C.text, marginBottom:3 }}>{isVIP?"⭐ ":""}{lead.name}</div>
                 <div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr" }}><PhoneCell phone={lead.phone}/></div>
+                {(function(){var agName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";return agName?<div style={{ fontSize:11, color:C.accent, fontWeight:600, marginTop:2 }}>👤 {agName}</div>:null;})()}
               </div>
               <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
             </div>
@@ -2856,9 +2863,7 @@ var DailyRequestsPage = function(p) {
         }
         // Store archived IDs in localStorage as backup
         try{
-          var existing=JSON.parse(localStorage.getItem("crm_dr_archived")||"[]");
-          var merged=[...new Set(existing.concat(ids))];
-          localStorage.setItem("crm_dr_archived",JSON.stringify(merged));
+          // DR archived via API - no localStorage needed
         }catch(e){}
         setRequests(function(prev){return prev.filter(function(r){return !ids.includes(gid(r));});});
         setSelected2([]);
@@ -2936,6 +2941,7 @@ var DailyRequestsPage = function(p) {
                   <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:2 }}>{r.name}</div>
                   <div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr" }}><PhoneCell phone={r.phone}/></div>
                   {r.phone2&&<div style={{ fontSize:11, fontWeight:700, color:C.textLight, direction:"ltr" }}><PhoneCell phone={r.phone2}/></div>}
+                  {(function(){var agName=r.agentId&&r.agentId.name?r.agentId.name:"";return agName?<div style={{ fontSize:11, color:C.accent, fontWeight:600, marginTop:2 }}>👤 {agName}</div>:null;})()}
                 </div>
                 <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
               </div>
@@ -4405,7 +4411,7 @@ export default function CRMApp() {
       checkTasks();
       checkNewLeads();
       checkFollowUps();
-    }, 60*1000);
+    }, 30*1000); // every 30 seconds for more accurate callback timing
     return function(){clearInterval(interval);};
   },[token, currentUser, leads, tasks]);
 
