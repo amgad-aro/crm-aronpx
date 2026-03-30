@@ -2556,9 +2556,17 @@ var DealsPage = function(p) {
                 var splitFactor=split?0.5:1;
                 var effectiveBv=bv*weight*splitFactor;
                 var showEffective=effectiveBv!==bv&&bv>0;
+                var isSalesRole=p.cu.role==="sales"||p.cu.role==="team_leader";
+                // Sales sees effective amount only, admin sees both
+                if(isSalesRole&&showEffective){
+                  return <div>
+                    <div style={{ color:C.success }}>{effectiveBv.toLocaleString()}</div>
+                    <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>من {bv.toLocaleString()}</div>
+                  </div>;
+                }
                 return <div>
                   <div>{bv>0?bv.toLocaleString():d.budget||"-"}</div>
-                  {showEffective&&<div style={{ fontSize:10, color:"#8B5CF6", fontWeight:600, marginTop:1 }}>
+                  {!isSalesRole&&showEffective&&<div style={{ fontSize:10, color:"#8B5CF6", fontWeight:600, marginTop:1 }}>
                     {split?"🤝":"📊"} {effectiveBv.toLocaleString()} {split?"50% — "+(split.agent2Name||"Shared"):weight*100+"% project"}
                   </div>}
                 </div>;
@@ -2683,7 +2691,9 @@ var DealsPage = function(p) {
             var split=getDealSplit(gid(selectedDeal));
             var splitFactor=split?0.5:1;
             var eff=raw*weight*splitFactor;
-            if(eff!==raw&&raw>0) return selectedDeal.budget+" EGP → "+eff.toLocaleString()+" EGP effective";
+            var isSalesRole=p.cu.role==="sales"||p.cu.role==="team_leader";
+            if(isSalesRole&&eff!==raw&&raw>0) return eff.toLocaleString()+" EGP";
+            if(!isSalesRole&&eff!==raw&&raw>0) return selectedDeal.budget+" EGP → "+eff.toLocaleString()+" EGP effective";
             return selectedDeal.budget?selectedDeal.budget+" EGP":"-";
           })(), icon:"💰"},
           {l:"Down Payment %", v:downPct?downPct+"%":"-", icon:"📊"},
