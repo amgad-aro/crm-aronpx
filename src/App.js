@@ -1980,17 +1980,30 @@ var EOIPage = function(p) {
   var handleImageUpload=async function(e,lead,imageType){
     var file=e.target.files[0]; if(!file)return;
     setImgUploading(true);
-    var reader=new FileReader();
-    reader.onload=async function(ev){
-      try{
-        var base64=ev.target.result;
-        var updated=await apiFetch("/api/leads/"+gid(lead)+"/upload-image","POST",{imageData:base64,imageType:imageType},p.token);
-        p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
-        if(selectedEOI&&gid(selectedEOI)===gid(lead))setSelectedEOI(updated);
-      }catch(ex){alert("Upload failed");}
-      setImgUploading(false);
-    };
-    reader.readAsDataURL(file);
+    try{
+      var resized=await new Promise(function(resolve){
+        var reader=new FileReader();
+        reader.onload=function(ev){
+          var img=new Image();
+          img.onload=function(){
+            var canvas=document.createElement("canvas");
+            var maxW=1200,maxH=1200;
+            var w=img.width,h=img.height;
+            if(w>maxW){h=h*(maxW/w);w=maxW;}
+            if(h>maxH){w=w*(maxH/h);h=maxH;}
+            canvas.width=w;canvas.height=h;
+            canvas.getContext("2d").drawImage(img,0,0,w,h);
+            resolve(canvas.toDataURL("image/jpeg",0.7));
+          };
+          img.src=ev.target.result;
+        };
+        reader.readAsDataURL(file);
+      });
+      var updated=await apiFetch("/api/leads/"+gid(lead)+"/upload-image","POST",{imageData:resized,imageType:imageType},p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+      if(selectedEOI&&gid(selectedEOI)===gid(lead))setSelectedEOI(updated);
+    }catch(ex){alert("Upload failed");}
+    setImgUploading(false);
   };
 
   var toggleApproved=async function(lead,field){
@@ -2719,8 +2732,14 @@ var DealsPage = function(p) {
                 <input type="file" accept="image/*" style={{ display:"none" }} onChange={async function(e){
                   var file=e.target.files[0]; if(!file)return;
                   var reader=new FileReader();
-                  reader.onload=async function(ev){
-                    try{var updated=await apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:ev.target.result,imageType:"deal"},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}catch(ex){}
+                  reader.onload=function(ev){
+                    var img=new Image();img.onload=function(){
+                      var canvas=document.createElement("canvas");var maxW=1200,maxH=1200;var w=img.width,h=img.height;
+                      if(w>maxW){h=h*(maxW/w);w=maxW;}if(h>maxH){w=w*(maxH/h);h=maxH;}
+                      canvas.width=w;canvas.height=h;canvas.getContext("2d").drawImage(img,0,0,w,h);
+                      var resized=canvas.toDataURL("image/jpeg",0.7);
+                      apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:resized,imageType:"deal"},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Upload failed");});
+                    };img.src=ev.target.result;
                   };reader.readAsDataURL(file);
                 }}/>
               </label>
