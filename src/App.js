@@ -4200,14 +4200,11 @@ export default function CRMApp() {
       try{
         var results = await Promise.all([
           apiFetch("/api/leads","GET",null,token),
-          apiFetch("/api/activities","GET",null,token),
-          apiFetch("/api/users","GET",null,token)
+          apiFetch("/api/activities","GET",null,token)
         ]);
         var leadsData = results[0]||[];
         var activitiesData = results[1]||[];
-        var usersData = results[2]||[];
-        if(usersData.length>0) setUsers(usersData);
-        // Fetch DR separately so failure doesn't block rest
+        // Fetch DR separately
         try{
           var drData = await apiFetch("/api/daily-requests","GET",null,token);
           setDailyReqs(drData||[]);
