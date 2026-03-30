@@ -28,6 +28,9 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   notes:{type:String,default:""}, callbackTime:{type:String,default:""},
   lastActivityTime:{type:Date,default:Date.now}, archived:{type:Boolean,default:false}, isVIP:{type:Boolean,default:false},
   eoiDeposit:{type:String,default:""}, eoiDate:{type:String,default:""},
+  eoiApproved:{type:Boolean,default:false}, eoiImage:{type:String,default:""},
+  dealApproved:{type:Boolean,default:false}, dealImage:{type:String,default:""},
+  commissionClaimDate:{type:String,default:""}, commissionClaimed:{type:Boolean,default:false},
   lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0}
 },{timestamps:true}));
 
@@ -385,6 +388,18 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
 });
 
 // ===== UPDATE LEAD =====
+// ===== IMAGE UPLOAD (base64) =====
+app.post("/api/leads/:id/upload-image", auth, async function(req, res) {
+  try {
+    var { imageData, imageType } = req.body; // imageType: "eoi" or "deal"
+    if (!imageData) return res.status(400).json({ error: "No image data" });
+    var field = imageType === "deal" ? "dealImage" : "eoiImage";
+    var update = {}; update[field] = imageData;
+    var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
+    res.json(lead);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
