@@ -2109,7 +2109,7 @@ var EOIPage = function(p) {
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 EOI Image</div>
           {selectedEOI.eoiImage
             ?<div>
-              <img src={selectedEOI.eoiImage} onClick={function(){window.open(selectedEOI.eoiImage,"_blank");}} style={{ width:"100%", borderRadius:8, marginBottom:6, cursor:"zoom-in" }} alt="EOI" title="Click to view full size"/>
+              <img src={selectedEOI.eoiImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedEOI.eoiImage+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, marginBottom:6, cursor:"zoom-in" }} alt="EOI" title="Click to view full size"/>
               <label style={{ display:"block", padding:"6px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
                 🔄 Replace Image
                 <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
@@ -2726,7 +2726,7 @@ var DealsPage = function(p) {
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 Contract Image</div>
           {selectedDeal.dealImage
             ?<div>
-              <img src={selectedDeal.dealImage} onClick={function(){window.open(selectedDeal.dealImage,"_blank");}} style={{ width:"100%", borderRadius:8, marginBottom:6, cursor:"zoom-in" }} alt="Contract" title="Click to view full size"/>
+              <img src={selectedDeal.dealImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedDeal.dealImage+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, marginBottom:6, cursor:"zoom-in" }} alt="Contract" title="Click to view full size"/>
               <label style={{ display:"block", padding:"6px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
                 🔄 Replace Image
                 <input type="file" accept="image/*" style={{ display:"none" }} onChange={async function(e){
