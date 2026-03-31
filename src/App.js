@@ -4652,7 +4652,13 @@ export default function CRMApp() {
       });
     };
 
-    // 1. New lead assigned - track in localStorage
+    // 1. New lead assigned - track leads present at login time
+    var initialLeadIds = new Set(getMyLeads().map(function(l){return String(gid(l));}));
+    // Mark all current leads as seen so we don't notify for old ones
+    getMyLeads().forEach(function(l){
+      try{localStorage.setItem("crm_lead_seen_"+String(gid(l)),"1");}catch(e){}
+    });
+
     var checkNewLeads = function(){
       var myLeads = getMyLeads();
       myLeads.forEach(function(l){
