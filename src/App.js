@@ -1213,7 +1213,7 @@ var LeadsPage = function(p) {
     </Modal>
 
     {/* Toolbar */}
-    <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:14 }}>
+    <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:14, position:"sticky", top:64, zIndex:90, background:"#F8FAFC", padding:"8px 0 6px", margin:"0 -16px 14px", paddingLeft:16, paddingRight:16 }}>
       <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
         {[{v:"all",l:t.all}].concat(sc.map(function(s){return{v:s.value,l:s.label};})).map(function(s){
           var cnt=s.v==="all"?allVisible.length:allVisible.filter(function(l){return l.status===s.v;}).length;
@@ -1246,7 +1246,7 @@ var LeadsPage = function(p) {
       </div>
     </div>
 
-    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
+    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap", position:"sticky", top:p.isMobile?130:120, zIndex:89, background:"#F8FAFC", padding:"4px 0" }}>
       <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
         <option value="lastActivity">⏱ Last Activity</option>
         <option value="newest">🆕 Newest</option>
