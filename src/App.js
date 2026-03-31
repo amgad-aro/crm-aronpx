@@ -1837,7 +1837,7 @@ var DashboardPage = function(p) {
       var qTarget=qt[curQ]||0;
       var myDeals=myLeads.filter(function(l){return l.status==="DoneDeal";});
       var getQ=function(d){var m=new Date(d).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
-      var qRev=myDeals.filter(function(d){var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===curQ;}).reduce(function(s,d){return s+parseBudget(d.budget);},0);
+      var qRev=myDeals.filter(function(d){var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===curQ;}).reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
       var qProg=qTarget>0?Math.min(100,Math.round(qRev/qTarget*100)):0;
       var callbackSoon=myLeads.filter(function(l){return l.callbackTime&&!l.archived&&(new Date(l.callbackTime).getTime()-Date.now())<2*60*60*1000&&new Date(l.callbackTime).getTime()>Date.now();});
       var noAct=myLeads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>2*DAY;});
@@ -3776,7 +3776,7 @@ var TeamPage = function(p) {
     var qt=getQTargets(uid);
     var qTarget=getEffectiveQTarget(a,p.users,viewQ);
     var qDeals=allDeals.filter(function(d){if(!matchesAgent(d))return false;var dd=getDealDate(d);return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;});
-    var qRevenue=qDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+    var qRevenue=qDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
     var qProg=qTarget>0?Math.min(100,Math.round((qRevenue/qTarget)*100)):0;
     var allAgentDeals=allDeals.filter(function(d){return matchesAgent(d);});
     var totalRevenue=allAgentDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
@@ -4218,7 +4218,7 @@ var KPIsPage = function(p) {
     if(!l.createdAt) return false;
     return getQ(l.createdAt)===selQ && getYear(l.createdAt)===selYear;
   });
-  var qRev = qDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var qRev = qDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
   var qProg = qTarget>0?Math.min(100,Math.round(qRev/qTarget*100)):0;
   var convRate = qLeads.length>0?Math.round(qDeals.length/qLeads.length*100):0;
 
