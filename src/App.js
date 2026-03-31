@@ -1212,8 +1212,9 @@ var LeadsPage = function(p) {
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowBulk(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={doBulkReassign} style={{ flex:1 }}>{t.bulkReassign}</Btn></div>
     </Modal>
 
-    {/* Toolbar */}
-    <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:14, position:"sticky", top:64, zIndex:90, background:"#F8FAFC", padding:"8px 0 6px", margin:"0 -16px 14px", paddingLeft:16, paddingRight:16 }}>
+    {/* Sticky Toolbar */}
+    <div style={{ position:"sticky", top:64, zIndex:90, background:"#F8FAFC", margin:"0 -16px 14px", padding:"8px 16px 8px", borderBottom:"1px solid #E8ECF1", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
+      <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:8 }}>
       <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
         {[{v:"all",l:t.all}].concat(sc.map(function(s){return{v:s.value,l:s.label};})).map(function(s){
           var cnt=s.v==="all"?allVisible.length:allVisible.filter(function(l){return l.status===s.v;}).length;
@@ -1244,20 +1245,20 @@ var LeadsPage = function(p) {
         {!notifGranted&&<Btn outline onClick={async function(){var ok=await requestNotifPermission();setNotifGranted(ok);}} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Bell size={13}/> {t.enableNotif}</Btn>}
         {!p.isMobile&&isOnlyAdmin&&<Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>}
       </div>
-    </div>
-
-    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap", position:"sticky", top:p.isMobile?130:120, zIndex:89, background:"#F8FAFC", padding:"4px 0" }}>
-      <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
-        <option value="lastActivity">⏱ Last Activity</option>
-        <option value="newest">🆕 Newest</option>
-        <option value="oldest">📅 Oldest</option>
-        <option value="name">🔤 Name</option>
-      </select>
-      {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
-        <option value="">👤 All Agents</option>
-        {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
-      </select>}
-      <button onClick={function(){setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP Only {vipFilter?"✓":""}</button>
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+        <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+          <option value="lastActivity">⏱ Last Activity</option>
+          <option value="newest">🆕 Newest</option>
+          <option value="oldest">📅 Oldest</option>
+          <option value="name">🔤 Name</option>
+        </select>
+        {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+          <option value="">👤 All Agents</option>
+          {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
+        </select>}
+        <button onClick={function(){setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP Only {vipFilter?"✓":""}</button>
+      </div>
     </div>
     {importMsg&&<div style={{ marginBottom:10, padding:"9px 14px", background:importMsg.startsWith("✅")?"#DCFCE7":"#FEE2E2", color:importMsg.startsWith("✅")?"#15803D":"#B91C1C", borderRadius:9, fontSize:13 }}>{importMsg}</div>}
 
