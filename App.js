@@ -214,10 +214,10 @@ var WaChooser = function(p) {
   // Android intent URLs to open specific app
   var isAndroid = /android/i.test(navigator.userAgent);
   var waUrl = isAndroid
-    ? "intent://send/"+phone+"#Intent;scheme=smsto;package=com.whatsapp;action=android.intent.action.SENDTO;end"
+    ? "intent://send?phone=+"+phone+"#Intent;scheme=whatsapp;package=com.whatsapp;end"
     : "https://wa.me/"+phone;
   var waBizUrl = isAndroid
-    ? "intent://send/"+phone+"#Intent;scheme=smsto;package=com.whatsapp.w4b;action=android.intent.action.SENDTO;end"
+    ? "intent://send?phone=+"+phone+"#Intent;scheme=whatsapp;package=com.whatsapp.w4b;end"
     : "https://wa.me/"+phone;
   return <div onClick={p.onClose} style={{ position:"fixed", inset:0, zIndex:999, background:"rgba(0,0,0,0.4)", display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
     <div onClick={function(e){e.stopPropagation();}} style={{ background:"#fff", borderRadius:"18px 18px 0 0", padding:"20px 16px 32px", width:"100%", maxWidth:480 }}>
