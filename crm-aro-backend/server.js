@@ -34,6 +34,7 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   splitAgent2Id:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
   splitAgent2Name:{type:String,default:""},
   projectWeight:{type:Number,default:1},
+  dealDate:{type:String,default:""},
   lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0}
 },{timestamps:true}));
 
