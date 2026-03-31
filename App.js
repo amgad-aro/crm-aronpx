@@ -18,6 +18,12 @@ async function apiFetch(path, method, body, token) {
   if (body) opts.body = JSON.stringify(body);
   var res = await fetch(API + path, opts);
   var data = await res.json();
+  if (res.status === 401) {
+    // Token expired or invalid — clear session and reload
+    try { localStorage.removeItem('crm_aro_session'); } catch(e) {}
+    window.location.reload();
+    return;
+  }
   if (!res.ok) throw new Error(data.error || "API Error");
   return data;
 }
@@ -185,6 +191,8 @@ var STATUSES = function(t) { return [
   { value: "DoneDeal", label: t.doneDeal, bg: "#DCFCE7", color: "#15803D" },
 ]; };
 
+var DR_STATUSES = function(t) { return STATUSES(t).filter(function(s){return s.value!=="NewLead";}); };
+
 var PROJECTS = [
   "العاصمة الإدارية", "المستقبل سيتي", "التجمع الخامس", "الشروق", "6 أكتوبر",
   "بالم هيلز", "ماونتن فيو", "سوديك ايست", "الرحاب", "مدينتي"
@@ -201,11 +209,18 @@ var gid = function(o) { if(!o) return null; return String(o._id || o.id || ""); 
 var waPhone = function(phone) {
   if (!phone) return "";
   var p = phone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
-  // Has + prefix → international, just remove +
   if (p.startsWith("+")) return p.slice(1);
-  // Starts with 0 → Egyptian local number, replace 0 with 20
   if (p.startsWith("0")) return "20" + p.slice(1);
-  // Otherwise already has country code or unknown → use as-is
+  return p;
+};
+var cleanPhone = function(phone) {
+  if (!phone) return "";
+  var p = phone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
+  if (!p) return "";
+  if (p.startsWith("+")) return p;
+  if (p.startsWith("20") && p.length > 10) return "+" + p;
+  if (p.startsWith("0")) return p;
+  if (p.length === 10) return "0" + p;
   return p;
 };
 var timeAgo = function(d, t) {
@@ -521,19 +536,58 @@ var Sidebar = function(p) {
 // ===== HEADER =====
 var Header = function(p) {
   var t = p.t; var isOnlyAdmin = p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin");
-  var upcoming = p.leads.filter(function(l){return l.callbackTime&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&!l.archived;});
-  var overdueCallback = p.leads.filter(function(l){return l.status==="CallBack"&&l.callbackTime&&new Date(l.callbackTime)<new Date()&&!l.archived;});
-  var noActivityLeads = p.leads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>1*24*60*60*1000;});
-  var noActivityDR = (p.dailyRequests||[]).filter(function(r){return !r.archived&&r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>1*24*60*60*1000;});
+  var uid = String(p.cu&&p.cu.id||"");
+  var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(u._id||gid(u)||"");}));
+  teamUids.add(uid);
+
+  var myLeadsForNotif = (p.cu&&p.cu.role==="sales")
+    ? p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid;})
+    : (p.cu&&p.cu.role==="team_leader")
+    ? p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return teamUids.has(aid);})
+    : p.leads;
+  var myDRForNotif = (p.cu&&p.cu.role==="sales")
+    ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return aid===uid;})
+    : (p.cu&&p.cu.role==="team_leader")
+    ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return teamUids.has(aid);})
+    : (p.dailyRequests||[]);
+  var allItemsForNotif = myLeadsForNotif.concat(myDRForNotif);
+  var now = Date.now();
+  var callbackNow = allItemsForNotif.filter(function(l){
+    if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
+    var diff = new Date(l.callbackTime).getTime() - now;
+    return diff<=0 && diff>-60*60*1000;
+  });
+  var upcoming = allItemsForNotif.filter(function(l){
+    if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
+    var diff = new Date(l.callbackTime).getTime() - now;
+    return diff>0 && diff<=24*60*60*1000;
+  }).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
+  var overdueCallback = allItemsForNotif.filter(function(l){
+    if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
+    var diff = new Date(l.callbackTime).getTime() - now;
+    return diff < -60*60*1000;
+  });
+  var noActivityLeads = myLeadsForNotif.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>1*24*60*60*1000;});
+  var noActivityDR = myDRForNotif.filter(function(r){return r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>1*24*60*60*1000;});
   var allNoActivity = noActivityLeads.concat(noActivityDR);
   var notifRef = useRef(null);
   var [badgeHidden, setBadgeHidden] = useState(function(){
-    try{return localStorage.getItem("crm_notif_seen")==="1";}catch(e){return false;}
+    try{
+      var seen = Number(localStorage.getItem("crm_notif_seen_count")||"0");
+      return seen > 0;
+    }catch(e){return false;}
   });
   useEffect(function(){
+    if(callbackNow.length+overdueCallback.length>0){
+      try{
+        var seen = Number(localStorage.getItem("crm_notif_seen_count")||"0");
+        var total = callbackNow.length+overdueCallback.length;
+        if(total > seen) setBadgeHidden(false);
+      }catch(e){}
+    }
+  },[callbackNow.length, overdueCallback.length]);
+  useEffect(function(){
     if (!p.showNotif) return;
-    setBadgeHidden(true);
-    try{localStorage.setItem("crm_notif_seen","1");}catch(e){}
     var fn=function(e){if(notifRef.current&&!notifRef.current.contains(e.target))p.setShowNotif(false);};
     document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
   },[p.showNotif]);
@@ -640,19 +694,46 @@ var Header = function(p) {
 
       <div style={{ position:"relative" }} ref={notifRef}>
 
-        <button onClick={function(){p.setShowNotif(!p.showNotif);}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
-          <Bell size={16} color={C.textLight}/>
-          {(upcoming.length+allNoActivity.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:4, right:4, width:8, height:8, borderRadius:"50%", background:C.danger }}/>}
+        <button onClick={function(){
+          p.setShowNotif(!p.showNotif);
+          if(!p.showNotif){
+            setBadgeHidden(true);
+            try{localStorage.setItem("crm_notif_seen_count", String(callbackNow.length+overdueCallback.length));}catch(e){}
+          }
+        }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
+          <Bell size={16} color={(callbackNow.length+overdueCallback.length)>0?C.danger:C.textLight}/>
+          {(callbackNow.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:2, right:2, minWidth:16, height:16, borderRadius:8, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 3px" }}>{callbackNow.length+overdueCallback.length}</span>}
         </button>
-        {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:360, overflowY:"auto" }}>
+        {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder}</span>
-            <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
+            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+              {p.isAdmin&&(callbackNow.length+upcoming.length+overdueCallback.length)>0&&<button onClick={function(e){
+                e.stopPropagation();
+                setBadgeHidden(true);
+                try{
+                  localStorage.setItem("crm_notif_seen_count","9999");
+                  localStorage.setItem("crm_notif_cleared_at", String(Date.now()));
+                }catch(e2){}
+                p.setShowNotif(false);
+              }} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger, fontWeight:600 }}>Clear All</button>}
+              <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
+            </div>
           </div>
-          {upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No notifications</div>}
+          {callbackNow.length===0&&upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No notifications</div>}
+          {callbackNow.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
+            <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Callback Now!</div>
+            {callbackNow.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
+              <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:11, fontWeight:600 }}>{l.name}{agName&&<span style={{ fontSize:10, color:C.accent, fontWeight:400 }}> — {agName}</span>}</div>
+                <div style={{ fontSize:10, color:C.danger }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
+              </div>
+            </div>;})}
+          </div>}
           {overdueCallback.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
             <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Overdue CallBack</div>
-            {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
+            {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
@@ -662,7 +743,7 @@ var Header = function(p) {
           </div>}
           {allNoActivity.length>0&&<div style={{ padding:"8px 16px", background:"#FFF7ED", borderBottom:"1px solid #FEF3E2" }}>
             <div style={{ fontSize:11, fontWeight:700, color:"#EA580C", marginBottom:6 }}>😴 No Contact +1 Day</div>
-            {allNoActivity.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEF3E2" }}>
+            {allNoActivity.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEF3E2" }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"#FED7AA", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>😴</div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
@@ -670,11 +751,11 @@ var Header = function(p) {
               </div>
             </div>;})}
           </div>}
-          {upcoming.map(function(l){ return <div key={gid(l)} onClick={function(){p.onLeadClick(l);p.setShowNotif(false);}} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:10, cursor:"pointer" }}
+          {upcoming.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:""; return <div key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:10, cursor:"pointer" }}
             onMouseEnter={function(e){e.currentTarget.style.background="#F8FAFC";}} onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
             <div style={{ width:32, height:32, borderRadius:8, background:C.warning+"15", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Phone size={14} color={C.warning}/></div>
             <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontSize:12, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
+              <div style={{ fontSize:12, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontSize:10, color:C.accent, fontWeight:400 }}> — {agName}</span>}</div>
               <div style={{ fontSize:11, color:C.textLight }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
             </div>
             <ChevronRight size={13} color={C.textLight}/>
@@ -904,7 +985,7 @@ var QuickPhoneSearch = function(p) {
           </div>
           <div style={{ fontSize:12, color:"#64748B", marginTop:4, direction:"ltr" }}>{l.phone}</div>
           <div style={{ display:"flex", gap:8, marginTop:8 }}>
-            <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#EFF6FF", color:"#60A5FA", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>📞 Call</a>
+            <a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#EFF6FF", color:"#60A5FA", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>📞 Call</a>
             <a href={"https://wa.me/"+waPhone(l.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#DCFCE7", color:"#25D366", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp</a>
           </div>
         </div>;
@@ -974,6 +1055,8 @@ var LeadsPage = function(p) {
     if(l.archived) return false;
     var matchSource = isReq?l.source==="Daily Request":l.source!=="Daily Request";
     if(!matchSource) return false;
+    // Hide EOI and DoneDeal from Leads page — they have their own pages
+    if(!isReq && (l.status==="EOI"||l.status==="DoneDeal")) return false;
     // Manager: hide leads with no agent in daily request
     if(isReq && (p.cu.role==="manager"||p.cu.role==="team_leader") && !l.agentId) return false;
     return true;
@@ -1195,6 +1278,7 @@ var LeadsPage = function(p) {
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:16, fontWeight:700, color:isVIP?C.accent:C.text, marginBottom:3 }}>{isVIP?"⭐ ":""}{lead.name}</div>
                 <div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr" }}><PhoneCell phone={lead.phone}/></div>
+                {(function(){var agName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";return agName?<div style={{ fontSize:11, color:C.accent, fontWeight:600, marginTop:2 }}>👤 {agName}</div>:null;})()}
               </div>
               <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
             </div>
@@ -1207,7 +1291,7 @@ var LeadsPage = function(p) {
             </div>
             {/* Action buttons */}
             <div style={{ display:"flex", gap:8 }}>
-              <a href={"tel:"+lead.phone} onClick={async function(e){e.stopPropagation();try{await apiFetch("/api/activities","POST",{leadId:gid(lead),type:"call",note:"📞 Call initiated"},p.token);}catch(ex){}}}
+              <a href={"tel:"+cleanPhone(lead.phone)} onClick={async function(e){e.stopPropagation();try{await apiFetch("/api/activities","POST",{leadId:gid(lead),type:"call",note:"📞 Call initiated"},p.token);}catch(ex){}}}
                 style={{ flex:1, padding:"11px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6, border:"1px solid #BFDBFE" }}>
                 <Phone size={14} color="#1D4ED8"/> Call
               </a>
@@ -1215,6 +1299,9 @@ var LeadsPage = function(p) {
                 style={{ flex:1, padding:"11px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6, border:"1px solid #22C55E60" }}>
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="#15803D"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp
               </a>
+              <button onClick={function(e){e.stopPropagation();openHistory(lead);}} style={{ padding:"11px 14px", borderRadius:10, background:"#F3E8FF", color:"#7C3AED", fontSize:13, fontWeight:700, border:"1px solid #DDD6FE", cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
+                📋
+              </button>
             </div>
           </div>;
         })}
@@ -1251,7 +1338,7 @@ var LeadsPage = function(p) {
                   <td style={{ padding:"10px 12px", whiteSpace:"nowrap", textAlign:"left" }}>
                     <div style={{ fontSize:14, fontWeight:600, direction:"ltr", display:"inline-block" }}><PhoneCell phone={lead.phone}/></div>
                     <div style={{ display:"flex", gap:6, marginTop:3, justifyContent:"flex-start" }}>
-                      <a href={"tel:"+lead.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:12, color:"#60A5FA", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:"2px 6px", borderRadius:6, background:"#EFF6FF" }}><Phone size={12}/> {t.call}</a>
+                      <a href={"tel:"+cleanPhone(lead.phone)} onClick={function(e){e.stopPropagation();}} style={{ fontSize:12, color:"#60A5FA", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:"2px 6px", borderRadius:6, background:"#EFF6FF" }}><Phone size={12}/> {t.call}</a>
                       <a href={"https://wa.me/"+waPhone(lead.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:12, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:"2px 6px", borderRadius:6, background:"#DCFCE720" }}><svg viewBox="0 0 24 24" width="16" height="16" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> {t.whatsapp}</a>
                     </div>
                   </td>
@@ -1260,7 +1347,7 @@ var LeadsPage = function(p) {
                       return <div>
                         <div style={{ fontSize:14, fontWeight:600, direction:"ltr" }}><PhoneCell phone={lead.phone2}/></div>
                         <div style={{ display:"flex", gap:6, marginTop:3 }}>
-                          <a href={"tel:"+lead.phone2} onClick={function(e){e.stopPropagation();}} style={{ fontSize:p.isMobile?10:12, color:"#60A5FA", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:p.isMobile?"0":"2px 6px", borderRadius:6, background:p.isMobile?"transparent":"#EFF6FF" }}><Phone size={p.isMobile?9:12}/>{!p.isMobile&&" Call"}</a>
+                          <a href={"tel:"+cleanPhone(lead.phone2)} onClick={function(e){e.stopPropagation();}} style={{ fontSize:p.isMobile?10:12, color:"#60A5FA", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:p.isMobile?"0":"2px 6px", borderRadius:6, background:p.isMobile?"transparent":"#EFF6FF" }}><Phone size={p.isMobile?9:12}/>{!p.isMobile&&" Call"}</a>
                           <a href={"https://wa.me/"+waPhone(lead.phone2)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:p.isMobile?10:12, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:p.isMobile?"0":"2px 6px", borderRadius:6, background:p.isMobile?"transparent":"#DCFCE720" }}><svg viewBox="0 0 24 24" width={p.isMobile?14:16} height={p.isMobile?14:16} fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>{!p.isMobile&&" WhatsApp"}</a>
                         </div>
                       </div>;
@@ -1327,7 +1414,7 @@ var LeadsPage = function(p) {
           </div>
           {/* Quick action buttons */}
           <div style={{ display:"flex", gap:6, marginTop:10 }}>
-            <a href={"tel:"+selected.phone} onClick={async function(){try{await apiFetch("/api/activities","POST",{leadId:gid(selected),type:"call",note:"📞 Call initiated — "+selected.phone},p.token);p.setActivities&&p.setActivities(function(prev){return [{_id:Date.now(),type:"call",note:"📞 Call initiated",leadId:selected,userId:p.cu,createdAt:new Date().toISOString()}].concat(prev);});}catch(ex){}}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#EFF6FF", color:"#60A5FA", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> {t.call}</a>
+            <a href={"tel:"+cleanPhone(selected.phone)} onClick={async function(){try{await apiFetch("/api/activities","POST",{leadId:gid(selected),type:"call",note:"📞 Call initiated — "+selected.phone},p.token);p.setActivities&&p.setActivities(function(prev){return [{_id:Date.now(),type:"call",note:"📞 Call initiated",leadId:selected,userId:p.cu,createdAt:new Date().toISOString()}].concat(prev);});}catch(ex){}}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#EFF6FF", color:"#60A5FA", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> {t.call}</a>
             <a href={"https://wa.me/"+waPhone(selected.phone)} target="_blank" rel="noreferrer" style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(37,211,102,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> {t.whatsapp}</a>
           </div>
         </div>
@@ -1607,7 +1694,7 @@ var MyDayPage = function(p) {
           return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#FEF2F2", border:"1px solid #FECACA", marginBottom:6, cursor:"pointer" }}>
             <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600, color:C.text }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:"#EF4444", fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
             <div style={{ display:"flex", gap:5 }}>
-              <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#EFF6FF", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#60A5FA"/></a>
+              <a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#EFF6FF", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#60A5FA"/></a>
               <a href={"https://wa.me/"+waPhone(l.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#25D366", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:14 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
             </div>
           </div>;})}
@@ -1619,7 +1706,7 @@ var MyDayPage = function(p) {
             <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:ci?ci.color:C.textLight, fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
             <Badge bg={so.bg} color={so.color}>{so.label}</Badge>
             <div style={{ display:"flex", gap:5 }}>
-              <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#EFF6FF", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#60A5FA"/></a>
+              <a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#EFF6FF", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#60A5FA"/></a>
               <a href={"https://wa.me/"+waPhone(l.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#25D366", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:14 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
             </div>
           </div>;})}
@@ -1632,7 +1719,7 @@ var MyDayPage = function(p) {
       {noActivity.map(function(l){return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#FFFBEB", border:"1px solid #FDE68A", marginBottom:6, cursor:"pointer" }}>
         <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:"#B45309", fontWeight:600 }}>Last contact: {timeAgo(l.lastActivityTime,t)}</div></div>
         <div style={{ display:"flex", gap:5 }}>
-          <a href={"tel:"+l.phone} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#EFF6FF", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#60A5FA"/></a>
+          <a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#EFF6FF", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#60A5FA"/></a>
           <a href={"https://wa.me/"+waPhone(l.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#25D366", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:14 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
         </div>
       </div>;})}
@@ -1664,6 +1751,7 @@ var DashboardPage = function(p) {
   var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; 
   var isTeamLeader = p.cu.role==="team_leader";
   var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var [showAllActivities, setShowAllActivities] = useState(false);
   var normalLeads = p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   var uid = String(p.cu.id||"");
   var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
@@ -1805,15 +1893,19 @@ var DashboardPage = function(p) {
         })}
       </Card>
       <Card style={{ flex:1, minWidth:230 }}>
-        <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.todayActivities}</h3>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+          <h3 style={{ margin:0, fontSize:14, fontWeight:700 }}>{t.todayActivities}</h3>
+          {p.activities.length>0&&<button onClick={function(){setShowAllActivities(true);}} style={{ fontSize:10, color:C.accent, background:"none", border:"none", cursor:"pointer" }}>View All ({p.activities.length})</button>}
+        </div>
         {p.activities.length===0&&<div style={{ color:C.textLight, fontSize:13, textAlign:"center", padding:"20px 0" }}>No activity</div>}
+        <div style={{ maxHeight:320, overflowY:"auto" }}>
         {(function(){
           var teamIds=new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
           teamIds.add(String(p.cu.id));
           var filteredActs = (p.cu.role==="team_leader")
             ? p.activities.filter(function(a){var auid=String(a.userId&&a.userId._id?a.userId._id:a.userId||"");return teamIds.has(auid);})
             : p.activities;
-          return filteredActs.slice(0,8).map(function(a){
+          return filteredActs.map(function(a){
           var lId=a.leadId?(gid(a.leadId)):null; var lName=a.leadId&&a.leadId.name?a.leadId.name:""; var uName=a.userId&&a.userId.name?a.userId.name:"";
           var ml=lId?p.leads.find(function(l){return gid(l)===lId;}):null;
           return <div key={a._id||a.id} onClick={function(){if(ml){p.setInitSelected(ml);p.nav("leads");}}} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderBottom:"1px solid #F8FAFC", cursor:ml?"pointer":"default", borderRadius:4 }}
@@ -1828,8 +1920,39 @@ var DashboardPage = function(p) {
             <span style={{ fontSize:9, color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
           </div>;
         });})()}
+        </div>
       </Card>
     </div>
+
+    {/* All Activities Modal */}
+    {showAllActivities&&<Modal show={true} onClose={function(){setShowAllActivities(false);}} title={"⚡ Today Activities ("+p.activities.length+")"} w={540}>
+      <div style={{ maxHeight:480, overflowY:"auto" }}>
+        {(function(){
+          var teamIds=new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
+          teamIds.add(String(p.cu.id));
+          var filteredActs = (p.cu.role==="team_leader")
+            ? p.activities.filter(function(a){var auid=String(a.userId&&a.userId._id?a.userId._id:a.userId||"");return teamIds.has(auid);})
+            : p.activities;
+          return filteredActs.map(function(a){
+            var lId=a.leadId?gid(a.leadId):null;
+            var lName=a.leadId&&a.leadId.name?a.leadId.name:"";
+            var uName=a.userId&&a.userId.name?a.userId.name:"";
+            var ml=lId?p.leads.find(function(l){return gid(l)===lId;}):null;
+            return <div key={a._id||a.id} onClick={function(){if(ml){p.setInitSelected(ml);p.nav("leads");setShowAllActivities(false);}}} style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 0", borderBottom:"1px solid #F1F5F9", cursor:ml?"pointer":"default" }}
+              onMouseEnter={function(e){if(ml)e.currentTarget.style.background="#F8FAFC";}} onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
+              <div style={{ width:30, height:30, borderRadius:8, background:(a.type==="call"?C.success:a.type==="status_change"?C.warning:C.info)+"15", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                {a.type==="call"?<Phone size={13} color={C.success}/>:a.type==="meeting"?<Calendar size={13} color={C.info}/>:<Activity size={13} color={C.warning}/>}
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:12, fontWeight:600 }}>{uName}{uName&&lName?" ← ":""}{lName}</div>
+                <div style={{ fontSize:11, color:C.textLight }}>{a.note}</div>
+              </div>
+              <span style={{ fontSize:10, color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
+            </div>;
+          });
+        })()}
+      </div>
+    </Modal>}
   </div>;
 };
 
@@ -1842,12 +1965,55 @@ var EOIPage = function(p) {
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var total=eoiLeads.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var [editLead,setEditLead]=useState(null);
+  var [showAdd,setShowAdd]=useState(false);
+  var [selectedEOI,setSelectedEOI]=useState(null);
+  var [imgUploading,setImgUploading]=useState(false);
+  var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
 
   var archiveLead=async function(lid){
     if(!window.confirm(t.archiveConfirm))return;
     try{
       await apiFetch("/api/leads/"+lid+"/archive","PUT",null,p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:true}):l;});});
+      if(selectedEOI&&gid(selectedEOI)===lid)setSelectedEOI(null);
+    }catch(e){alert(e.message);}
+  };
+
+  var handleImageUpload=async function(e,lead,imageType){
+    var file=e.target.files[0]; if(!file)return;
+    setImgUploading(true);
+    try{
+      var resized=await new Promise(function(resolve){
+        var reader=new FileReader();
+        reader.onload=function(ev){
+          var img=new Image();
+          img.onload=function(){
+            var canvas=document.createElement("canvas");
+            var maxW=1200,maxH=1200;
+            var w=img.width,h=img.height;
+            if(w>maxW){h=h*(maxW/w);w=maxW;}
+            if(h>maxH){w=w*(maxH/h);h=maxH;}
+            canvas.width=w;canvas.height=h;
+            canvas.getContext("2d").drawImage(img,0,0,w,h);
+            resolve(canvas.toDataURL("image/jpeg",0.7));
+          };
+          img.src=ev.target.result;
+        };
+        reader.readAsDataURL(file);
+      });
+      var updated=await apiFetch("/api/leads/"+gid(lead)+"/upload-image","POST",{imageData:resized,imageType:imageType},p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+      if(selectedEOI&&gid(selectedEOI)===gid(lead))setSelectedEOI(updated);
+    }catch(ex){alert("Upload failed");}
+    setImgUploading(false);
+  };
+
+  var toggleApproved=async function(lead,field){
+    try{
+      var update={}; update[field]=!lead[field];
+      var updated=await apiFetch("/api/leads/"+gid(lead),"PUT",update,p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+      if(selectedEOI&&gid(selectedEOI)===gid(lead))setSelectedEOI(updated);
     }catch(e){alert(e.message);}
   };
 
@@ -1857,13 +2023,22 @@ var EOIPage = function(p) {
         <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>🎯 EOI ({eoiLeads.length})</h2>
         {total>0&&<div style={{ fontSize:13, fontWeight:700, color:"#9333EA", background:"#F3E8FF", padding:"5px 14px", borderRadius:20 }}>Total: {total.toLocaleString()} EGP</div>}
       </div>
+      {(isAdmin||p.cu.role==="sales")&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 14px", fontSize:12 }}><Plus size={13}/> Add EOI</Btn>}
     </div>
+
+    {showAdd&&<Modal show={true} onClose={function(){setShowAdd(false);}} title={"➕ Add EOI"}>
+      <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
+        initialStatus="EOI"
+        initial={{status:"EOI", source:"Facebook", name:"", phone:"", phone2:"", budget:"", project:"", notes:"", eoiDeposit:""}}
+        onClose={function(){setShowAdd(false);}}
+        onSave={function(added){p.setLeads(function(prev){return [added].concat(prev);});setShowAdd(false);}}/>
+    </Modal>}
 
     {editLead&&<Modal show={true} onClose={function(){setEditLead(null);}} title={t.edit}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
         editId={gid(editLead)} initial={editLead}
         onClose={function(){setEditLead(null);}}
-        onSave={function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(updated)?updated:l;});});setEditLead(null);}}/>
+        onSave={function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(updated)?updated:l;});});setEditLead(null);if(selectedEOI&&gid(selectedEOI)===gid(updated))setSelectedEOI(updated);}}/>
     </Modal>}
 
     {eoiLeads.length===0&&<div style={{ textAlign:"center", padding:"60px 20px", color:C.textLight }}>
@@ -1872,15 +2047,17 @@ var EOIPage = function(p) {
       <div style={{ fontSize:13, marginTop:8 }}>Clients with EOI status will appear here automatically</div>
     </div>}
 
-    {eoiLeads.length>0&&<Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
+    <div style={{ display:"flex", gap:16 }}>
+    {eoiLeads.length>0&&<Card p={0} style={{ flex:1 }}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date","Approved",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {eoiLeads.map(function(d){
           var bv=parseBudget(d.budget);
           var eoiDateStr=d.eoiDate?new Date(d.eoiDate).toLocaleDateString("en-GB"):d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB"):"-";
-          return <tr key={gid(d)} style={{ borderBottom:"1px solid #F1F5F9" }}>
+          var isSel=selectedEOI&&gid(selectedEOI)===gid(d);
+          return <tr key={gid(d)} onClick={function(){setSelectedEOI(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#F0FDF4":"transparent" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}</td>
             {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}>{d.phone}</td>}
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
@@ -1889,22 +2066,65 @@ var EOIPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.eoiDeposit||"-"}</td>
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>{getAg(d)}</td>}
             <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, textAlign:"left" }}>{eoiDateStr}</td>
-            <td style={{ padding:"8px 12px" }}>
+            <td style={{ padding:"11px 12px", textAlign:"left" }}>
+              {d.eoiApproved
+                ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅ Approved</span>
+                :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳ Pending</span>}
+            </td>
+            <td style={{ padding:"8px 12px" }} onClick={function(e){e.stopPropagation();}}>
               <div style={{ display:"flex", gap:5 }}>
-                {p.cu.role==="admin"&&<button onClick={function(){setEditLead(d);}} title={t.edit}
-                  style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <Edit size={13} color={C.info}/>
-                </button>}
-                {isAdmin&&<button onClick={function(){archiveLead(gid(d));}} title={t.archive}
-                  style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <Archive size={13} color={C.warning}/>
-                </button>}
+                {isAdmin&&<button onClick={function(){setEditLead(d);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Edit size={13} color={C.info}/></button>}
+                {isAdmin&&<button onClick={function(){archiveLead(gid(d));}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Archive size={13} color={C.warning}/></button>}
               </div>
             </td>
           </tr>;
         })}
       </tbody>
     </table></div></Card>}
+
+    {/* EOI Side Panel */}
+    {selectedEOI&&<div style={{ flex:"0 0 260px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
+      <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"14px 16px" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+          <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
+          {isOnlyAdmin&&<button onClick={function(){toggleApproved(selectedEOI,"eoiApproved");}} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
+            {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
+          </button>}
+        </div>
+        <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedEOI.name}</div>
+        <div style={{ color:"rgba(255,255,255,0.7)", fontSize:11, marginTop:2 }}>{selectedEOI.phone}</div>
+      </div>
+      <div style={{ padding:"12px 14px" }}>
+        {[
+          {l:"Project",v:selectedEOI.project||"-",icon:"🏠"},
+          {l:"Budget",v:selectedEOI.budget?selectedEOI.budget+" EGP":"-",icon:"💰"},
+          {l:"Deposit",v:selectedEOI.eoiDeposit||"-",icon:"💵"},
+          {l:"Agent",v:getAg(selectedEOI),icon:"👤"},
+          {l:"Notes",v:selectedEOI.notes||"-",icon:"📝"},
+        ].map(function(f){return <div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
+          <span style={{ fontSize:11, color:C.textLight }}>{f.icon} {f.l}</span>
+          <span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span>
+        </div>;})}
+        
+        {/* EOI Image */}
+        <div style={{ marginTop:12 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 EOI Image</div>
+          {selectedEOI.eoiImage
+            ?<div>
+              <img src={selectedEOI.eoiImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedEOI.eoiImage+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, marginBottom:6, cursor:"zoom-in" }} alt="EOI" title="Click to view full size"/>
+              <label style={{ display:"block", padding:"6px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+                🔄 Replace Image
+                <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
+              </label>
+            </div>
+            :<label style={{ display:"block", padding:"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+              {imgUploading?"Uploading...":"📤 Upload EOI Image"}
+              <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
+            </label>}
+        </div>
+      </div>
+    </div>}
+    </div>
   </div>;
 };
 
@@ -1946,14 +2166,20 @@ var getEffectiveQTarget = function(user, allUsers, forQ) {
   return qt[curQ]||0;
 };
 
-var getProjectWeight = function(project){
+var getProjectWeight = function(project, lead){
+  // If lead has projectWeight field use it
+  if(lead&&lead.projectWeight&&lead.projectWeight!==1) return lead.projectWeight;
   try{ var w=localStorage.getItem("crm_proj_weight_"+(project||"").replace(/\s/g,"_")); return w?parseFloat(w):1; }catch(e){return 1;}
 };
 var saveProjectWeight = function(project,weight){
   try{localStorage.setItem("crm_proj_weight_"+(project||"").replace(/\s/g,"_"),String(weight));}catch(e){}
 };
 // Deal split stored in localStorage: crm_deal_split_{leadId} = {agent2Id, agent2Name}
-var getDealSplit = function(lid){ try{return JSON.parse(localStorage.getItem("crm_deal_split_"+lid)||"null");}catch(e){return null;}};
+var getDealSplit = function(lid, leads){
+  // Try from leads array first (server data)
+  if(leads){var l=leads.find(function(x){return (x._id?String(x._id):String(x))===String(lid)||String(x._id||x)===String(lid);});if(l&&l.splitAgent2Id){return{agent2Id:String(l.splitAgent2Id._id||l.splitAgent2Id),agent2Name:l.splitAgent2Name||"Shared"};}}
+  try{return JSON.parse(localStorage.getItem("crm_deal_split_"+lid)||"null");}catch(e){return null;}
+};
 var saveDealSplit = function(lid,split){ try{localStorage.setItem("crm_deal_split_"+lid,JSON.stringify(split));}catch(e){}};
 var getDealExtra = function(lid){ try{return JSON.parse(localStorage.getItem("crm_deal_extra_"+lid)||"null");}catch(e){return null;}};
 var saveDealExtra = function(lid,extra){ try{localStorage.setItem("crm_deal_extra_"+lid,JSON.stringify(extra));}catch(e){}};
@@ -1995,15 +2221,15 @@ var calcCommission = function(user, allDeals, allUsers, forQ) {
   // Calculate effective revenue (applying project weight and split)
   var effectiveRevenue = agentDeals.reduce(function(sum, d){
     var raw = parseBudgetC(d.budget);
-    var weight = getProjectWeight(d.project);
-    var split = getDealSplit(gid(d));
+    var weight = getProjectWeight(d.project, d);
+    var split = getDealSplit(gid(d), allDeals);
     var splitFactor = split ? 0.5 : 1;
     return sum + (raw * weight * splitFactor);
   }, 0);
 
   // Also add deals where this agent is agent2 in a split
   allDeals.forEach(function(d){
-    var split = getDealSplit(gid(d));
+    var split = getDealSplit(gid(d), allDeals);
     if(split && split.agent2Id === uid){
       var dd = d.updatedAt||d.createdAt;
       if(dd && getQ(dd) === curQ){
@@ -2294,14 +2520,21 @@ var DealsPage = function(p) {
         </select>
       </div>
       {getDealSplit(gid(splitModal))&&<div style={{ padding:"8px 12px", background:"#FEF3C7", borderRadius:8, fontSize:12, marginBottom:10 }}>
-        Current split: {getDealSplit(gid(splitModal)).agent2Name} — <button onClick={function(){saveDealSplit(gid(splitModal),null);setSplitModal(null);}} style={{ background:"none", border:"none", color:C.danger, cursor:"pointer", fontSize:12 }}>Remove Split</button>
+        Current split: {getDealSplit(gid(splitModal),p.leads).agent2Name} — <button onClick={async function(){
+          try{await apiFetch("/api/leads/"+gid(splitModal),"PUT",{splitAgent2Id:null,splitAgent2Name:""},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(splitModal)?Object.assign({},l,{splitAgent2Id:null,splitAgent2Name:""}):l;});});}catch(e){}
+          saveDealSplit(gid(splitModal),null);setSplitModal(null);
+        }} style={{ background:"none", border:"none", color:C.danger, cursor:"pointer", fontSize:12 }}>Remove Split</button>
       </div>}
       <div style={{ display:"flex", gap:10 }}>
         <Btn outline onClick={function(){setSplitModal(null);setSplitAgent2("");}} style={{ flex:1 }}>Cancel</Btn>
-        <Btn onClick={function(){
+        <Btn onClick={async function(){
           if(!splitAgent2) return;
           var ag2=salesUsers.find(function(u){return gid(u)===splitAgent2;});
-          saveDealSplit(gid(splitModal),{agent2Id:splitAgent2,agent2Name:ag2?ag2.name:"?"});
+          try{
+            var updated=await apiFetch("/api/leads/"+gid(splitModal),"PUT",{splitAgent2Id:splitAgent2,splitAgent2Name:ag2?ag2.name:"?"},p.token);
+            p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(splitModal)?updated:l;});});
+            saveDealSplit(gid(splitModal),{agent2Id:splitAgent2,agent2Name:ag2?ag2.name:"?"});
+          }catch(e){}
           setSplitModal(null); setSplitAgent2("");
         }} style={{ flex:1 }}>✅ Save</Btn>
       </div>
@@ -2316,7 +2549,7 @@ var DealsPage = function(p) {
     <div style={{ display:"flex", gap:16, alignItems:"flex-start" }}>
     <Card p={0} style={{ flex:1, overflow:"hidden" }}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}      </tr></thead>
+        {[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,"Approved",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}      </tr></thead>
       <tbody>
         {filteredDeals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>No deals yet</td></tr>}
         {filteredDeals.map(function(d){
@@ -2333,15 +2566,25 @@ var DealsPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success, textAlign:"left" }}>
               {(function(){
-                var split=getDealSplit(gid(d));
-                var displayVal=bv>0?bv.toLocaleString():d.budget||"-";
-                if(split&&bv>0){
+                var split=getDealSplit(gid(d),p.leads);
+                var weight=getProjectWeight(d.project,d);
+                var splitFactor=split?0.5:1;
+                var effectiveBv=bv*weight*splitFactor;
+                var showEffective=effectiveBv!==bv&&bv>0;
+                var isSalesRole=p.cu.role==="sales"||p.cu.role==="team_leader";
+                // Sales sees effective amount only, admin sees both
+                if(isSalesRole&&showEffective){
                   return <div>
-                    <div>{(bv/2).toLocaleString()}</div>
-                    <div style={{ fontSize:10, color:"#8B5CF6", fontWeight:600 }}>🤝 50% — {split.agent2Name||"Shared"}</div>
+                    <div style={{ color:C.success }}>{effectiveBv.toLocaleString()}</div>
+                    <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>من {bv.toLocaleString()}</div>
                   </div>;
                 }
-                return displayVal;
+                return <div>
+                  <div>{bv>0?bv.toLocaleString():d.budget||"-"}</div>
+                  {!isSalesRole&&showEffective&&<div style={{ fontSize:10, color:"#8B5CF6", fontWeight:600, marginTop:1 }}>
+                    {split?"🤝":"📊"} {effectiveBv.toLocaleString()} {split?"50% — "+(split.agent2Name||"Shared"):weight*100+"% project"}
+                  </div>}
+                </div>;
               })()}
             </td>
             <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap", textAlign:"left" }}>{(function(){var dd=getDealDate(d);return dd?new Date(dd).toLocaleDateString("en-GB")+" "+new Date(dd).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):"-";})()}</td>
@@ -2360,8 +2603,8 @@ var DealsPage = function(p) {
             {isOnlyAdmin&&<td style={{ padding:"11px 12px" }}>
               {(function(){
                 var raw=parseBudget(d.budget);
-                var weight=getProjectWeight(d.project);
-                var split=getDealSplit(gid(d));
+                var weight=getProjectWeight(d.project,d);
+                var split=getDealSplit(gid(d),p.leads);
                 var splitFactor=split?0.5:1;
                 var effRev=raw*weight*splitFactor;
                 var ag=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;
@@ -2403,13 +2646,20 @@ var DealsPage = function(p) {
             </td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>
               <div>{getAg(d)}</div>
-              {(function(){var sp=getDealSplit(gid(d));return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
+              {(function(){var sp=getDealSplit(gid(d),p.leads);return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
             </td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.source}</td>}
+            <td style={{ padding:"11px 12px", textAlign:"left" }}>
+              {d.dealApproved
+                ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅</span>
+                :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳</span>}
+              {isOnlyAdmin&&d.commissionClaimDate&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>📋 {new Date(d.commissionClaimDate).toLocaleDateString("en-GB")}</div>}
+              {isOnlyAdmin&&d.commissionClaimed&&<div style={{ fontSize:9, color:C.success, marginTop:1 }}>✅ Claimed</div>}
+            </td>
             <td style={{ padding:"8px 12px" }}>
               <div style={{ display:"flex", gap:5 }}>
-                {isOnlyAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplit(gid(d));setSplitAgent2(sp?sp.agent2Id:"");}} title="Split Deal"
-                  style={{ width:28, height:28, borderRadius:6, border:"1px solid "+(getDealSplit(gid(d))?"#8B5CF6":"#E2E8F0"), background:getDealSplit(gid(d))?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12 }}>🤝</button>}
+                {isOnlyAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplit(gid(d),p.leads);setSplitAgent2(sp?sp.agent2Id:"");}} title="Split Deal"
+                  style={{ width:28, height:28, borderRadius:6, border:"1px solid "+(getDealSplit(gid(d),p.leads)?"#8B5CF6":"#E2E8F0"), background:getDealSplit(gid(d),p.leads)?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12 }}>🤝</button>}
                 {isOnlyAdmin&&<button onClick={function(){setEditDeal(d);}} title={t.edit}
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <Edit size={13} color={C.info}/>
@@ -2426,27 +2676,110 @@ var DealsPage = function(p) {
     </table></div></Card>
 
     {selectedDeal&&(function(){
-      var extra=getDealExtra(gid(selectedDeal))||{};
+      var extra=getDealExtra(String(selectedDeal._id||gid(selectedDeal)))||{};
+      var downPct=extra.downPaymentPct||selectedDeal.downPaymentPct||"";
+      var instYears=extra.installmentYears||selectedDeal.installmentYears||"";
       return <div style={{ flex:"0 0 280px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
       <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
-        <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", marginBottom:8 }}><X size={11}/></button>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+          <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
+          {isOnlyAdmin&&<button onClick={async function(){
+            try{
+              var upd={dealApproved:!selectedDeal.dealApproved};
+              var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",upd,p.token);
+              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+              setSelectedDeal(updated);
+            }catch(e){}
+          }} style={{ background:selectedDeal.dealApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
+            {selectedDeal.dealApproved?"✅ Approved":"⏳ Approve"}
+          </button>}
+        </div>
         <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedDeal.name}</div>
         <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}>{selectedDeal.phone}</div>
       </div>
       <div style={{ padding:"14px 16px" }}>
         {[
           {l:"Project", v:selectedDeal.project||"-", icon:"🏠"},
-          {l:"Budget", v:selectedDeal.budget?selectedDeal.budget+" EGP":"-", icon:"💰"},
-          {l:"Down Payment %", v:extra.downPaymentPct?extra.downPaymentPct+"%":"-", icon:"📊"},
-          {l:"Installment Years", v:extra.installmentYears?extra.installmentYears+" yrs":"-", icon:"📅"},
+          {l:"Budget", v:(function(){
+            var raw=parseBudget(selectedDeal.budget);
+            var weight=getProjectWeight(selectedDeal.project,selectedDeal);
+            var split=getDealSplit(gid(selectedDeal),p.leads);
+            var splitFactor=split?0.5:1;
+            var eff=raw*weight*splitFactor;
+            var isSalesRole=p.cu.role==="sales"||p.cu.role==="team_leader";
+            if(isSalesRole&&eff!==raw&&raw>0) return eff.toLocaleString()+" EGP";
+            if(!isSalesRole&&eff!==raw&&raw>0) return selectedDeal.budget+" EGP → "+eff.toLocaleString()+" EGP effective";
+            return selectedDeal.budget?selectedDeal.budget+" EGP":"-";
+          })(), icon:"💰"},
+          {l:"Down Payment %", v:downPct?downPct+"%":"-", icon:"📊"},
+          {l:"Installment Years", v:instYears?instYears+" yrs":"-", icon:"📅"},
           {l:"Agent", v:getAg(selectedDeal), icon:"👤"},
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
           {l:"Deal Date", v:(function(){var dd=getDealDate(selectedDeal);return dd?new Date(dd).toLocaleDateString("en-GB"):"-";})(), icon:"🗓"},
           {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
-        ].map(function(f){return <div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
+        ].map(function(f){return f.v&&f.v!=="-"?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
           <span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.icon} {f.l}</span>
           <span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span>
-        </div>;})}
+        </div>:null;})}
+
+        {/* Commission Claim Date - sales admin only */}
+        {isOnlyAdmin&&<div style={{ marginTop:12, padding:10, background:"#F8FAFC", borderRadius:10 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📋 Commission Claim</div>
+          <input type="date" value={selectedDeal.commissionClaimDate||""} onChange={async function(e){
+            try{
+              var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{commissionClaimDate:e.target.value},p.token);
+              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+              setSelectedDeal(updated);
+            }catch(ex){}
+          }} style={{ width:"100%", padding:"6px 8px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:6, boxSizing:"border-box" }}/>
+          <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:12 }}>
+            <input type="checkbox" checked={selectedDeal.commissionClaimed||false} onChange={async function(e){
+              try{
+                var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{commissionClaimed:e.target.checked},p.token);
+                p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+                setSelectedDeal(updated);
+              }catch(ex){}
+            }}/>
+            <span style={{ fontWeight:600, color:selectedDeal.commissionClaimed?C.success:C.textLight }}>
+              {selectedDeal.commissionClaimed?"✅ Claimed":"☐ Mark as Claimed"}
+            </span>
+          </label>
+        </div>}
+
+        {/* Deal Image */}
+        <div style={{ marginTop:12 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 Contract Image</div>
+          {selectedDeal.dealImage
+            ?<div>
+              <img src={selectedDeal.dealImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedDeal.dealImage+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, marginBottom:6, cursor:"zoom-in" }} alt="Contract" title="Click to view full size"/>
+              <label style={{ display:"block", padding:"6px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+                🔄 Replace Image
+                <input type="file" accept="image/*" style={{ display:"none" }} onChange={async function(e){
+                  var file=e.target.files[0]; if(!file)return;
+                  var reader=new FileReader();
+                  reader.onload=function(ev){
+                    var img=new Image();img.onload=function(){
+                      var canvas=document.createElement("canvas");var maxW=1200,maxH=1200;var w=img.width,h=img.height;
+                      if(w>maxW){h=h*(maxW/w);w=maxW;}if(h>maxH){w=w*(maxH/h);h=maxH;}
+                      canvas.width=w;canvas.height=h;canvas.getContext("2d").drawImage(img,0,0,w,h);
+                      var resized=canvas.toDataURL("image/jpeg",0.7);
+                      apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:resized,imageType:"deal"},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Upload failed");});
+                    };img.src=ev.target.result;
+                  };reader.readAsDataURL(file);
+                }}/>
+              </label>
+            </div>
+            :<label style={{ display:"block", padding:"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+              📤 Upload Contract Image
+              <input type="file" accept="image/*" style={{ display:"none" }} onChange={async function(e){
+                var file=e.target.files[0]; if(!file)return;
+                var reader=new FileReader();
+                reader.onload=async function(ev){
+                  try{var updated=await apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:ev.target.result,imageType:"deal"},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}catch(ex){}
+                };reader.readAsDataURL(file);
+              }}/>
+            </label>}
+        </div>
       </div>
     </div>;})()}
     </div>
@@ -2633,7 +2966,7 @@ var ArchivePage = function(p) {
 
 // ===== DAILY REQUESTS =====
 var DailyRequestsPage = function(p) {
-  var t=p.t; var sc=STATUSES(t);
+  var t=p.t; var sc=DR_STATUSES(t);
   var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [requests,setRequests]=useState([]);
@@ -2646,6 +2979,10 @@ var DailyRequestsPage = function(p) {
   var [pendingStatus,setPendingStatus]=useState(null);
   var [actNote,setActNote]=useState(""); var [actType,setActType]=useState("call"); var [showActForm,setShowActForm]=useState(false);
   var [actSaving,setActSaving]=useState(false);
+  var [showDrHistory,setShowDrHistory]=useState(false);
+  var [drHistoryReq,setDrHistoryReq]=useState(null);
+  var [drHistoryList,setDrHistoryList]=useState([]);
+  var [drHistoryLoading,setDrHistoryLoading]=useState(false);
   var [filterStatus,setFilterStatus]=useState("all");
   var [sortBy,setSortBy]=useState("lastActivity");
   var [agentFilter,setAgentFilter]=useState("");
@@ -2693,6 +3030,12 @@ var DailyRequestsPage = function(p) {
         if(extra.eoiDeposit) updateData.eoiDeposit=extra.eoiDeposit;
       }
       var upd=await apiFetch("/api/daily-requests/"+pendingStatus.leadId,"PUT",updateData,p.token);
+      // Also log separate activity with comment if exists
+      if(comment||cbTime){
+        var actNote2="Status: "+pendingStatus.newStatus;
+        if(comment) actNote2+=" | "+comment;
+        await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:actNote2},p.token);
+      }
       setRequests(function(prev){return prev.map(function(r){return gid(r)===pendingStatus.leadId?upd:r;});});
       if(selected&&gid(selected)===pendingStatus.leadId)setSelected(upd);
       // Notify admin on DoneDeal or EOI
@@ -2715,12 +3058,35 @@ var DailyRequestsPage = function(p) {
     setShowStatusComment(false);setPendingStatus(null);setStatusDrop(null);
   };
 
+  var [drHistory,setDrHistory]=useState({});
+
+  var openDrHistory=async function(r){
+    setDrHistoryReq(r); setShowDrHistory(true); setDrHistoryList([]); setDrHistoryLoading(true);
+    try{
+      var acts=await apiFetch("/api/daily-requests/"+gid(r)+"/history","GET",null,p.token);
+      setDrHistoryList(acts||[]);
+      var rid=gid(r);
+      setDrHistory(function(prev){var upd={};upd[rid]=acts||[];return Object.assign({},prev,upd);});
+    }catch(e){setDrHistoryList([]);}
+    setDrHistoryLoading(false);
+  };
+
+  var loadDrHistory=async function(rid){
+    try{
+      var acts=await apiFetch("/api/daily-requests/"+rid+"/history","GET",null,p.token);
+      setDrHistory(function(prev){var upd={};upd[rid]=acts||[];return Object.assign({},prev,upd);});
+    }catch(e){}
+  };
+
   var logActivity=async function(){
     if(!actNote.trim()||!selected)return;
     setActSaving(true);
     try{
+      var act=await apiFetch("/api/activities","POST",{leadId:gid(selected),type:actType,note:actNote},p.token);
       await apiFetch("/api/daily-requests/"+gid(selected),"PUT",{lastActivityTime:new Date()},p.token);
       setRequests(function(prev){return prev.map(function(r){return gid(r)===gid(selected)?Object.assign({},r,{lastActivityTime:new Date().toISOString()}):r;});});
+      var rid=gid(selected);
+      setDrHistory(function(prev){var upd={};upd[rid]=[act].concat(prev[rid]||[]);return Object.assign({},prev,upd);});
       setActNote(""); setShowActForm(false);
     }catch(e){}
     setActSaving(false);
@@ -2782,9 +3148,7 @@ var DailyRequestsPage = function(p) {
         }
         // Store archived IDs in localStorage as backup
         try{
-          var existing=JSON.parse(localStorage.getItem("crm_dr_archived")||"[]");
-          var merged=[...new Set(existing.concat(ids))];
-          localStorage.setItem("crm_dr_archived",JSON.stringify(merged));
+          // DR archived via API - no localStorage needed
         }catch(e){}
         setRequests(function(prev){return prev.filter(function(r){return !ids.includes(gid(r));});});
         setSelected2([]);
@@ -2827,7 +3191,7 @@ var DailyRequestsPage = function(p) {
                 <div style={{ width:32 }}/>
               </div>
               <div style={{ display:"flex", gap:8, marginTop:14 }}>
-                <a href={"tel:"+selected.phone} style={{ flex:1, padding:"10px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}><Phone size={14} color="#1D4ED8"/> Call</a>
+                <a href={"tel:"+cleanPhone(selected.phone)} style={{ flex:1, padding:"10px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}><Phone size={14} color="#1D4ED8"/> Call</a>
                 <a href={"https://wa.me/"+waPhone(selected.phone)} target="_blank" rel="noreferrer" style={{ flex:1, padding:"10px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}><svg viewBox="0 0 24 24" width="13" height="13" fill="#15803D"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp</a>
               </div>
             </div>
@@ -2855,13 +3219,14 @@ var DailyRequestsPage = function(p) {
             var lastAct=r.lastActivityTime?timeAgo(r.lastActivityTime,t):"—";
             var actColor=(Date.now()-new Date(r.lastActivityTime||0).getTime())>3*24*60*60*1000?C.danger:C.accent;
             var borderCol=so.color||"#E8ECF1";
-            return <div key={rid} onClick={function(){setSelected(r);window.scrollTo({top:0,behavior:"smooth"});}}
+            return <div key={rid} onClick={function(){setSelected(r);loadDrHistory(rid);window.scrollTo({top:0,behavior:"smooth"});}}
               style={{ background:"#fff", borderRadius:16, padding:"16px", border:"2px solid "+borderCol, cursor:"pointer", boxShadow:"0 3px 12px "+borderCol+"35" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
                 <div style={{ flex:1 }}>
                   <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:2 }}>{r.name}</div>
                   <div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr" }}><PhoneCell phone={r.phone}/></div>
                   {r.phone2&&<div style={{ fontSize:11, fontWeight:700, color:C.textLight, direction:"ltr" }}><PhoneCell phone={r.phone2}/></div>}
+                  {(function(){var agName=r.agentId&&r.agentId.name?r.agentId.name:"";return agName?<div style={{ fontSize:11, color:C.accent, fontWeight:600, marginTop:2 }}>👤 {agName}</div>:null;})()}
                 </div>
                 <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
               </div>
@@ -2873,9 +3238,45 @@ var DailyRequestsPage = function(p) {
                 <span style={{ fontSize:11, color:actColor, fontWeight:600 }}>🕐 {lastAct}</span>
               </div>
               <div style={{ display:"flex", gap:8 }}>
-                <a href={"tel:"+r.phone} onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"10px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5, border:"1px solid #BFDBFE" }}><Phone size={13} color="#1D4ED8"/> Call</a>
+                <a href={"tel:"+cleanPhone(r.phone)} onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"10px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5, border:"1px solid #BFDBFE" }}><Phone size={13} color="#1D4ED8"/> Call</a>
                 <a href={"https://wa.me/"+waPhone(r.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"10px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5, border:"1px solid #22C55E60" }}><svg viewBox="0 0 24 24" width="13" height="13" fill="#15803D"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp</a>
+                <button onClick={function(e){e.stopPropagation();openDrHistory(r);}} style={{ padding:"10px 14px", borderRadius:10, background:"#F3E8FF", color:"#7C3AED", fontSize:13, fontWeight:700, border:"1px solid #DDD6FE", cursor:"pointer" }}>📋</button>
               </div>
+              {/* Mobile Log Activity + History */}
+              {selected&&gid(selected)===rid&&<div onClick={function(e){e.stopPropagation();}} style={{ marginTop:10 }}>
+                <button onClick={function(){setShowActForm(!showActForm);}} style={{ width:"100%", padding:"8px", borderRadius:9, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><MessageSquare size={12}/> Log Activity</button>
+                {showActForm&&<div style={{ marginTop:9, padding:10, background:"#F8FAFC", borderRadius:10 }}>
+                  <select value={actType} onChange={function(e){setActType(e.target.value);}} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:7, background:"#fff" }}>
+                    <option value="call">📞 Call</option>
+                    <option value="meeting">🤝 Meeting</option>
+                    <option value="followup">🔔 Follow-up</option>
+                    <option value="note">📝 Feedback</option>
+                  </select>
+                  <textarea rows={2} placeholder="Write feedback..." value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
+                  <div style={{ display:"flex", gap:6, marginTop:6 }}>
+                    <Btn onClick={logActivity} loading={actSaving} style={{ flex:1, padding:"6px", fontSize:11 }}>Save</Btn>
+                    <Btn outline onClick={function(){setShowActForm(false);setActNote("");}} style={{ flex:1, padding:"6px", fontSize:11 }}>Cancel</Btn>
+                  </div>
+                </div>}
+                {(function(){
+                  var history=drHistory[rid]||[];
+                  if(!history.length) return null;
+                  return <div style={{ marginTop:10 }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📋 History ({history.length})</div>
+                    {history.map(function(a){
+                      var who=a.userId&&a.userId.name?a.userId.name:"";
+                      var icon=a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":"📝";
+                      return <div key={String(a._id||Math.random())} style={{ padding:"8px 10px", background:"#F8FAFC", borderRadius:9, marginBottom:6, borderLeft:"3px solid "+C.accent }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:2 }}>
+                          <span style={{ fontSize:10, fontWeight:700 }}>{icon} {who}</span>
+                          <span style={{ fontSize:9, color:C.textLight }}>{timeAgo(a.createdAt,t)}</span>
+                        </div>
+                        {a.note&&<div style={{ fontSize:11, color:C.textLight }}>{a.note}</div>}
+                      </div>;
+                    })}
+                  </div>;
+                })()}
+              </div>}
             </div>;
           })}
         </div>:<div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
@@ -2889,13 +3290,13 @@ var DailyRequestsPage = function(p) {
               {filtered.map(function(r){
                 var rid=gid(r); var so=sc.find(function(s){return s.value===r.status;})||sc[0]; var isSel=selected&&gid(selected)===rid;
                 var ci=callbackColor(r.callbackTime); var isChk=selected2.includes(rid);
-                return <tr key={rid} onClick={function(){setSelected(r);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isChk?"#EFF6FF":isSel?"#EFF6FF":"transparent", borderRight:"3px solid "+(isSel?C.accent:"transparent") }}>
+                return <tr key={rid} onClick={function(){setSelected(r);loadDrHistory(rid);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isChk?"#EFF6FF":isSel?"#EFF6FF":"transparent", borderRight:"3px solid "+(isSel?C.accent:"transparent") }}>
                   {p.cu.role==="admin"&&<td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();}}><input type="checkbox" checked={isChk} onChange={function(e){setSelected2(function(prev){return e.target.checked?prev.concat(rid):prev.filter(function(x){return x!==rid;});});}}/></td>}
                   <td style={{ padding:"10px 12px" }}><div style={{ fontSize:13, fontWeight:600 }}>{r.name}</div><div style={{ fontSize:10, color:C.textLight }}>{r.email}</div></td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr" }}>
                     <PhoneCell phone={r.phone}/>{r.phone2&&<div style={{ fontSize:10, color:C.textLight }}><PhoneCell phone={r.phone2}/></div>}
                     <div style={{ display:"flex", gap:6, marginTop:3 }}>
-                      <a href={"tel:"+r.phone} onClick={function(e){e.stopPropagation();}} style={{ fontSize:p.isMobile?10:12, color:"#60A5FA", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:p.isMobile?"0":"2px 6px", borderRadius:6, background:p.isMobile?"transparent":"#EFF6FF" }}><Phone size={p.isMobile?9:12}/>{!p.isMobile&&" Call"}</a>
+                      <a href={"tel:"+cleanPhone(r.phone)} onClick={function(e){e.stopPropagation();}} style={{ fontSize:p.isMobile?10:12, color:"#60A5FA", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:p.isMobile?"0":"2px 6px", borderRadius:6, background:p.isMobile?"transparent":"#EFF6FF" }}><Phone size={p.isMobile?9:12}/>{!p.isMobile&&" Call"}</a>
                       <a href={"https://wa.me/"+waPhone(r.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ fontSize:p.isMobile?10:12, color:"#25D366", textDecoration:"none", display:"flex", alignItems:"center", gap:3, padding:p.isMobile?"0":"2px 6px", borderRadius:6, background:p.isMobile?"transparent":"#DCFCE720" }}><svg viewBox="0 0 24 24" width={p.isMobile?14:16} height={p.isMobile?14:16} fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>{!p.isMobile&&" WhatsApp"}</a>
                     </div>
                   </td>
@@ -2940,11 +3341,14 @@ var DailyRequestsPage = function(p) {
       {/* Side Panel */}
       {selected&&<Card style={{ flex:"0 0 280px", maxHeight:"calc(100vh - 120px)", overflowY:"auto", padding:0 }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
-          <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", marginBottom:8 }}><X size={11}/></button>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+            <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
+            <button onClick={function(){openDrHistory(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title="History">📋</button>
+          </div>
           <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selected.name}</div>
           <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}>{selected.phone}{selected.phone2?" / "+selected.phone2:""}</div>
           <div style={{ display:"flex", gap:6, marginTop:10 }}>
-            <a href={"tel:"+selected.phone} style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(34,197,94,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> Call</a>
+            <a href={"tel:"+cleanPhone(selected.phone)} style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(34,197,94,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> Call</a>
             <a href={"https://wa.me/"+waPhone(selected.phone)} target="_blank" rel="noreferrer" style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(37,211,102,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp</a>
           </div>
         </div>
@@ -2978,17 +3382,14 @@ var DailyRequestsPage = function(p) {
           {/* Feedback History */}
           {(function(){
             var sid = gid(selected);
-            var history = p.activities.filter(function(a){
-              var lid = a.leadId&&a.leadId._id?String(a.leadId._id):String(a.leadId||"");
-              return lid===sid;
-            }).sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
-            if(!history.length) return null;
+            var history = drHistory[sid]||[];
+            if(!history.length) return <div style={{ marginTop:14, fontSize:11, color:C.textLight, textAlign:"center" }}>No history yet</div>;
             return <div style={{ marginTop:14 }}>
               <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:8, textTransform:"uppercase", letterSpacing:0.5 }}>📋 History ({history.length})</div>
               {history.map(function(a){
-                var who = a.userId&&a.userId.name?a.userId.name:"";
-                var icon = a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":"📝";
-                return <div key={String(a._id)} style={{ padding:"8px 10px", background:"#F8FAFC", borderRadius:9, marginBottom:6, borderLeft:"3px solid "+C.accent }}>
+                var who=a.userId&&a.userId.name?a.userId.name:"";
+                var icon=a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":"📝";
+                return <div key={String(a._id||a.id||Math.random())} style={{ padding:"8px 10px", background:"#F8FAFC", borderRadius:9, marginBottom:6, borderLeft:"3px solid "+C.accent }}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:2 }}>
                     <span style={{ fontSize:10, fontWeight:700, color:C.text }}>{icon} {who}</span>
                     <span style={{ fontSize:9, color:C.textLight }}>{timeAgo(a.createdAt,t)}</span>
@@ -3001,6 +3402,29 @@ var DailyRequestsPage = function(p) {
         </div>
       </Card>}
     </div>
+
+    {/* DR History Modal */}
+    {showDrHistory&&drHistoryReq&&<Modal show={true} onClose={function(){setShowDrHistory(false);setDrHistoryReq(null);}} title={"📋 History — "+drHistoryReq.name} w={520}>
+      {drHistoryLoading&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>Loading...</div>}
+      {!drHistoryLoading&&drHistoryList.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>No history yet</div>}
+      {!drHistoryLoading&&drHistoryList.length>0&&<div style={{ maxHeight:400, overflowY:"auto" }}>
+        {drHistoryList.map(function(a,i){
+          var uname=a.userId&&a.userId.name?a.userId.name:"";
+          return <div key={a._id||i} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
+            <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
+              <span style={{ fontSize:16, flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="note"?"📝":"🔔"}</span>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:12, fontWeight:500, color:C.text }}>{a.note}</div>
+                <div style={{ fontSize:10, color:C.textLight, marginTop:3, display:"flex", gap:8 }}>
+                  {uname&&<span style={{ fontWeight:600, color:C.accent }}>{uname}</span>}
+                  <span>{a.createdAt?new Date(a.createdAt).toLocaleDateString("en-GB")+" — "+new Date(a.createdAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):""}</span>
+                </div>
+              </div>
+            </div>
+          </div>;
+        })}
+      </div>}
+    </Modal>}
 
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ Add New Number"}>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
@@ -3989,6 +4413,7 @@ export default function CRMApp() {
   var [page,setPage]=useState((function(){try{return localStorage.getItem("crm_page")||null;}catch(e){return null;}})());
   var [leads,setLeads]=useState([]); var [users,setUsers]=useState([]);
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
+  var [dailyReqs,setDailyReqs]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
   var [showNotif,setShowNotif]=useState(false);
   var [dealNotifsSeenCount,setDealNotifsSeenCount]=useState(function(){try{return Number(localStorage.getItem("crm_deal_seen_count")||"0");}catch(e){return 0;}});
@@ -4071,6 +4496,11 @@ export default function CRMApp() {
         ]);
         var leadsData = results[0]||[];
         var activitiesData = results[1]||[];
+        // Fetch DR separately
+        try{
+          var drData = await apiFetch("/api/daily-requests","GET",null,token);
+          setDailyReqs(drData||[]);
+        }catch(drErr){}
         try{
           var cache=JSON.parse(localStorage.getItem('phone2_cache')||'{}');
           leadsData=leadsData.map(function(l){var id=l._id?String(l._id):null;if(id&&cache[id]&&!l.phone2)return Object.assign({},l,{phone2:cache[id]});return l;});
@@ -4189,34 +4619,43 @@ export default function CRMApp() {
       });
     };
 
-    // 1. New lead assigned
-    var prevLeadIds = new Set(getMyLeads().map(function(l){return gid(l);}));
-    var checkNewLeads = function(){
-      var myLeads = getMyLeads();
-      myLeads.forEach(function(l){
-        var lid = gid(l);
-        if(!prevLeadIds.has(lid)){
-          prevLeadIds.add(lid);
-          showBrowserNotif("👤 New Lead Assigned", l.name+" has been assigned to you");
-        }
+    // Helper: get my DR
+    var getMyDR = function(){
+      return dailyReqs.filter(function(r){
+        var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");
+        return aid===uid;
       });
     };
 
-    // 2. Overdue callbacks
+    // 1. New lead assigned - track in localStorage
+    var checkNewLeads = function(){
+      var myLeads = getMyLeads();
+      myLeads.forEach(function(l){
+        var lid = String(gid(l));
+        var key = "crm_lead_seen_"+lid;
+        try{
+          if(!localStorage.getItem(key)){
+            localStorage.setItem(key,"1");
+            showBrowserNotif("🆕 New Lead!", l.name+" has been assigned to you");
+          }
+        }catch(e){}
+      });
+    };
+
+    // 2. Callback notifications - all statuses with callbackTime
     var checkCallbacks = function(){
       var now = Date.now();
-      var myLeads = getMyLeads().filter(function(l){return l.callbackTime;});
-      myLeads.forEach(function(l){
+      var allItems = getMyLeads().concat(getMyDR()).filter(function(l){return l.callbackTime;});
+      allItems.forEach(function(l){
         var cbTime = new Date(l.callbackTime).getTime();
         var diff = cbTime - now;
         var key = "crm_cb_notif_"+gid(l)+"_"+l.callbackTime;
-        if(diff<0&&diff>-30*60*1000){
-          // Overdue within last 30 min
-          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("⏰ Overdue Callback!",l.name+" — callback was at "+l.callbackTime.slice(11,16));}}catch(e){}
-        } else if(diff>0&&diff<=30*60*1000){
-          // Coming up within 30 min
-          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("📞 Callback in "+Math.round(diff/60000)+" min",l.name);}}catch(e){}
-        } else if(diff>30*60*1000){
+        if(diff<=0 && diff>-60*60*1000){
+          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("📞 Callback Now!", l.name+" — "+new Date(l.callbackTime).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}));}}catch(e){}
+        } else if(diff>0&&diff<=5*60*1000){
+          var key5 = "crm_cb_5min_"+gid(l)+"_"+l.callbackTime;
+          try{if(!localStorage.getItem(key5)){localStorage.setItem(key5,"1");showBrowserNotif("⏰ Callback in "+Math.round(diff/60000)+" min", l.name);}}catch(e){}
+        } else if(diff>60*60*1000){
           try{localStorage.removeItem(key);}catch(e){}
         }
       });
@@ -4266,9 +4705,9 @@ export default function CRMApp() {
       checkTasks();
       checkNewLeads();
       checkFollowUps();
-    }, 60*1000);
+    }, 30*1000); // every 30 seconds for more accurate callback timing
     return function(){clearInterval(interval);};
-  },[token, currentUser, leads.length, tasks.length]);
+  },[token, currentUser, leads, tasks]);
 
   // ===== DAILY REPORT NOTIFICATION (9 PM for admin) =====
   useEffect(function(){
@@ -4578,7 +5017,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={[]} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} onDRClick={function(){setPage("dailyReq");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
