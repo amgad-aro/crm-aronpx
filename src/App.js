@@ -2177,8 +2177,16 @@ var saveProjectWeight = function(project,weight){
 // Deal split stored in localStorage: crm_deal_split_{leadId} = {agent2Id, agent2Name}
 var getDealSplit = function(lid, leads){
   // Try from leads array first (server data)
-  if(leads){var l=leads.find(function(x){return (x._id?String(x._id):String(x))===String(lid)||String(x._id||x)===String(lid);});if(l&&l.splitAgent2Id){return{agent2Id:String(l.splitAgent2Id._id||l.splitAgent2Id),agent2Name:l.splitAgent2Name||"Shared"};}}
+  if(leads){
+    var l=leads.find(function(x){return String(x._id||x)===String(lid);});
+    if(l&&l.splitAgent2Id) return {agent2Id:String(l.splitAgent2Id._id||l.splitAgent2Id),agent2Name:l.splitAgent2Name||"Shared"};
+  }
   try{return JSON.parse(localStorage.getItem("crm_deal_split_"+lid)||"null");}catch(e){return null;}
+};
+// Helper to get split directly from deal object
+var getDealSplitFromObj = function(d){
+  if(d&&d.splitAgent2Id) return {agent2Id:String(d.splitAgent2Id._id||d.splitAgent2Id),agent2Name:d.splitAgent2Name||"Shared"};
+  try{return JSON.parse(localStorage.getItem("crm_deal_split_"+(d._id||d))||"null");}catch(e){return null;}
 };
 var saveDealSplit = function(lid,split){ try{localStorage.setItem("crm_deal_split_"+lid,JSON.stringify(split));}catch(e){}};
 var getDealExtra = function(lid){ try{return JSON.parse(localStorage.getItem("crm_deal_extra_"+lid)||"null");}catch(e){return null;}};
@@ -2520,7 +2528,7 @@ var DealsPage = function(p) {
         </select>
       </div>
       {getDealSplit(gid(splitModal))&&<div style={{ padding:"8px 12px", background:"#FEF3C7", borderRadius:8, fontSize:12, marginBottom:10 }}>
-        Current split: {getDealSplit(gid(splitModal),p.leads).agent2Name} — <button onClick={async function(){
+        Current split: {getDealSplitFromObj(splitModal).agent2Name} — <button onClick={async function(){
           try{await apiFetch("/api/leads/"+gid(splitModal),"PUT",{splitAgent2Id:null,splitAgent2Name:""},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(splitModal)?Object.assign({},l,{splitAgent2Id:null,splitAgent2Name:""}):l;});});}catch(e){}
           saveDealSplit(gid(splitModal),null);setSplitModal(null);
         }} style={{ background:"none", border:"none", color:C.danger, cursor:"pointer", fontSize:12 }}>Remove Split</button>
@@ -2566,7 +2574,7 @@ var DealsPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success, textAlign:"left" }}>
               {(function(){
-                var split=getDealSplit(gid(d),p.leads);
+                var split=getDealSplitFromObj(d);
                 var weight=getProjectWeight(d.project,d);
                 var splitFactor=split?0.5:1;
                 var effectiveBv=bv*weight*splitFactor;
@@ -2604,7 +2612,7 @@ var DealsPage = function(p) {
               {(function(){
                 var raw=parseBudget(d.budget);
                 var weight=getProjectWeight(d.project,d);
-                var split=getDealSplit(gid(d),p.leads);
+                var split=getDealSplitFromObj(d);
                 var splitFactor=split?0.5:1;
                 var effRev=raw*weight*splitFactor;
                 var ag=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;
@@ -2646,7 +2654,7 @@ var DealsPage = function(p) {
             </td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>
               <div>{getAg(d)}</div>
-              {(function(){var sp=getDealSplit(gid(d),p.leads);return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
+              {(function(){var sp=getDealSplitFromObj(d);return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
             </td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.source}</td>}
             <td style={{ padding:"11px 12px", textAlign:"left" }}>
@@ -2658,8 +2666,8 @@ var DealsPage = function(p) {
             </td>
             <td style={{ padding:"8px 12px" }}>
               <div style={{ display:"flex", gap:5 }}>
-                {isOnlyAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplit(gid(d),p.leads);setSplitAgent2(sp?sp.agent2Id:"");}} title="Split Deal"
-                  style={{ width:28, height:28, borderRadius:6, border:"1px solid "+(getDealSplit(gid(d),p.leads)?"#8B5CF6":"#E2E8F0"), background:getDealSplit(gid(d),p.leads)?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12 }}>🤝</button>}
+                {isOnlyAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplitFromObj(d);setSplitAgent2(sp?sp.agent2Id:"");}} title="Split Deal"
+                  style={{ width:28, height:28, borderRadius:6, border:"1px solid "+(getDealSplitFromObj(d)?"#8B5CF6":"#E2E8F0"), background:getDealSplitFromObj(d)?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12 }}>🤝</button>}
                 {isOnlyAdmin&&<button onClick={function(){setEditDeal(d);}} title={t.edit}
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <Edit size={13} color={C.info}/>
@@ -2703,7 +2711,7 @@ var DealsPage = function(p) {
           {l:"Budget", v:(function(){
             var raw=parseBudget(selectedDeal.budget);
             var weight=getProjectWeight(selectedDeal.project,selectedDeal);
-            var split=getDealSplit(gid(selectedDeal),p.leads);
+            var split=getDealSplitFromObj(selectedDeal);
             var splitFactor=split?0.5:1;
             var eff=raw*weight*splitFactor;
             var isSalesRole=p.cu.role==="sales"||p.cu.role==="team_leader";
@@ -2912,16 +2920,16 @@ var ArchivePage = function(p) {
       <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.archive} ({archived.length})</h2>
       {isOnlyAdmin&&(archived.length>0||archivedDR.length>0)&&<Btn outline onClick={async function(){
         if(!window.confirm("Clear all archived items? This cannot be undone.")) return;
-        // Clear archived leads from DB
-        for(var i=0;i<archived.length;i++){
-          try{await apiFetch("/api/leads/"+gid(archived[i]),"DELETE",null,p.token);}catch(e){}
-        }
-        p.setLeads(function(prev){return prev.filter(function(l){return !l.archived;});});
-        // Delete DR records from DB too
-        for(var j=0;j<archivedDR.length;j++){
-          try{await apiFetch("/api/daily-requests/"+gid(archivedDR[j]),"DELETE",null,p.token);}catch(e){}
-        }
-        // Clear DR archive from localStorage
+        // Bulk delete archived leads
+        try{
+          var leadIds=archived.map(function(l){return gid(l);});
+          if(leadIds.length>0) await apiFetch("/api/leads/bulk-delete","POST",{ids:leadIds},p.token);
+          p.setLeads(function(prev){return prev.filter(function(l){return !l.archived;});});
+        }catch(e){}
+        // Bulk delete DR
+        try{
+          await Promise.all(archivedDR.map(function(r){return apiFetch("/api/daily-requests/"+gid(r),"DELETE",null,p.token).catch(function(){});}));
+        }catch(e){}
         try{localStorage.removeItem("crm_dr_archived");}catch(e){}
         setArchivedDR([]);
       }} style={{ padding:"7px 13px", fontSize:12, color:C.danger, borderColor:C.danger }}>🗑 Clear All</Btn>}
