@@ -799,12 +799,13 @@ var LeadForm = function(p) {
     setSaving(true);
     try {
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||null, status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
-      // Remove fields backend doesn't accept
-      delete payload.dealDate; delete payload.downPaymentPct; delete payload.installmentYears;
+      // Remove fields backend doesn't accept directly
+      delete payload.downPaymentPct; delete payload.installmentYears;
+      // Keep dealDate in payload so it saves to DB
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
-      // Save extra deal fields to localStorage
+      // Also save extra deal fields to localStorage as backup
       if(result && result._id && (form.downPaymentPct||form.installmentYears||form.dealDate)){
         saveDealExtra(String(result._id),{downPaymentPct:form.downPaymentPct||"",installmentYears:form.installmentYears||"",dealDate:form.dealDate||""});
       }
@@ -2194,6 +2195,9 @@ var saveDealExtra = function(lid,extra){ try{localStorage.setItem("crm_deal_extr
 // Get the effective date for a deal — checks custom dealDate first
 var getDealDate = function(d){
   try{
+    // Read from lead object first (server data)
+    if(d&&d.dealDate) return new Date(d.dealDate);
+    // Fallback to localStorage
     var extra=getDealExtra(String(d._id||""));
     if(extra&&extra.dealDate) return new Date(extra.dealDate);
   }catch(e){}
