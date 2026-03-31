@@ -1784,11 +1784,11 @@ var DashboardPage = function(p) {
   var monthDeals=allDeals.filter(function(l){var t2=getDealTime(l);return t2>=monthStart.getTime();});
   var todayRev=todayDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var weekRev=weekDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
-  var monthRev=monthDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var monthRev=monthDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
   var todayLeads=myLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;});
   var salesUsers=p.myTeamUsers||p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var topAgent=isAdmin?(function(){
-    var stats=salesUsers.map(function(u){var uid=gid(u);var rev=monthDeals.filter(function(d){var a=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return a===uid;}).reduce(function(s,d){return s+parseBudget(d.budget);},0);return{u:u,rev:rev};});
+    var stats=salesUsers.map(function(u){var uid=gid(u);var rev=monthDeals.filter(function(d){var a=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return a===uid;}).reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);return{u:u,rev:rev};});
     stats.sort(function(a,b){return b.rev-a.rev;});
     return stats[0]&&stats[0].rev>0?stats[0]:null;
   })():null;
@@ -2273,7 +2273,7 @@ var DealsPage = function(p) {
   var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
-  var total=deals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var total=deals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [showAdd,setShowAdd]=useState(false);
   var [editDeal,setEditDeal]=useState(null);
@@ -2300,7 +2300,7 @@ var DealsPage = function(p) {
     if(dealAgent){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;if(aid!==dealAgent)return false;}
     return true;
   });
-  var filteredTotal=filteredDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var filteredTotal=filteredDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
 
   // Get stages from localStorage
   var getStages=function(lid){try{return JSON.parse(localStorage.getItem("crm_stages_"+lid)||"{}");} catch(e){return {};}};
@@ -3661,7 +3661,7 @@ var ReportsPage = function(p) {
     var uDailyReq=periodLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.source==="Daily Request";});
     var uDeals=periodDeals.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid;});
     var uMeetingDone=allLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.status==="MeetingDone"&&l.updatedAt&&inPeriod(l.updatedAt);});
-    var revenue=uDeals.reduce(function(s,d){return s+parseBudgetR(d.budget);},0);
+    var revenue=uDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudgetR(d.budget)*w*(sp?0.5:1);},0);
     var qt=getQTargetsR(uid);
     var qTarget=qt[curQR]||0;
     var target=qTarget>0?qTarget:(u.monthlyTarget||0)*1000000;
@@ -3779,7 +3779,7 @@ var TeamPage = function(p) {
     var qRevenue=qDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
     var qProg=qTarget>0?Math.min(100,Math.round((qRevenue/qTarget)*100)):0;
     var allAgentDeals=allDeals.filter(function(d){return matchesAgent(d);});
-    var totalRevenue=allAgentDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+    var totalRevenue=allAgentDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
     var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<2*60*1000;
     var isIdleNow=!isOnlineNow&&a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<15*60*1000;
     var lastSeenStr=a.lastSeen?("Last seen: "+new Date(a.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" — "+timeAgo(a.lastSeen,p.t)):"Never logged in";
