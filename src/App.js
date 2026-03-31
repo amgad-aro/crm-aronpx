@@ -775,7 +775,9 @@ var LeadForm = function(p) {
     // Load saved extra fields from localStorage if editing a deal
     if(p.editId){
       var extra=getDealExtra(String(p.editId));
-      if(extra) base=Object.assign({},base,{downPaymentPct:extra.downPaymentPct||"",installmentYears:extra.installmentYears||""});
+      if(extra) base=Object.assign({},base,{downPaymentPct:extra.downPaymentPct||"",installmentYears:extra.installmentYears||"",dealDate:extra.dealDate||""});
+      // Also read dealDate from lead object if available
+      if(p.initial&&p.initial.dealDate&&!base.dealDate) base=Object.assign({},base,{dealDate:p.initial.dealDate});
     }
     return base;
   })());
@@ -839,7 +841,7 @@ var LeadForm = function(p) {
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
-    {p.initialStatus==="DoneDeal"&&<Inp label="Deal Date (for old deals)" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
+    {(p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal"))&&<Inp label="Deal Date" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
     {(p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal"))&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
       <Inp label="Down Payment %" value={form.downPaymentPct||""} onChange={function(e){upd("downPaymentPct",e.target.value.replace(/[^0-9.]/g,""));}} placeholder="e.g. 10"/>
       <Inp label="Installment Years" value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
