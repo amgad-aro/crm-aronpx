@@ -1228,7 +1228,8 @@ var LeadsPage = function(p) {
   var leadActs = selected ? p.activities.filter(function(a){ var lid=gid(selected); return a.leadId&&(gid(a.leadId)===lid||a.leadId===lid); }) : [];
 
   return <div style={{ padding:"18px 16px 40px" }}>
-    <WaChooser show={!!waChooser} phone={waChooser} onClose={function(){setWaChooser(null);}}/>&&selected&&!showStatusComment&&<Modal show={true} onClose={function(){setShowStatusPicker(false);}} title={t.changeStatus}>
+    <WaChooser show={!!waChooser} phone={waChooser} onClose={function(){setWaChooser(null);}}/>
+    {showStatusPicker&&selected&&!showStatusComment&&<Modal show={true} onClose={function(){setShowStatusPicker(false);}} title={t.changeStatus}>
       <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:16 }}>
         {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"8px 14px", borderRadius:9, border:"1px solid "+s.color, background:selected.status===s.value?s.bg:"#fff", color:s.color, fontSize:13, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
       </div>
