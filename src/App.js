@@ -1144,6 +1144,8 @@ var LeadsPage = function(p) {
         if(extra.deposit)    upData.notes      = (upData.notes?upData.notes+" | ":"")+"Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
       }
       if(pendingStatus.newStatus === "EOI") upData.eoiDate = new Date().toISOString();
+      // Set dealDate to today when converting to DoneDeal (don't use eoiDate)
+      if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date().toISOString().slice(0,10);
       // Notify admin when DoneDeal or EOI
       if(pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI"){
         var notifEntry={id:Date.now(),leadName:selected?selected.name:"leads",leadPhone:selected?selected.phone:"",agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:"",time:new Date().toISOString()};
@@ -1172,19 +1174,21 @@ var LeadsPage = function(p) {
 
   var openHistory = async function(lead) {
     setHistoryLead(lead); setShowHistory(true); setFullHistory([]); setHistoryLoading(true);
-    var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
+    var isAdminRole = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
     try {
-      if(isAdmin) {
-        var hist = await apiFetch("/api/leads/"+gid(lead)+"/full-history","GET",null,p.token);
-        setFullHistory(hist||[]);
-      } else {
+      var hist = await apiFetch("/api/leads/"+gid(lead)+"/full-history","GET",null,p.token);
+      var all = hist||[];
+      if(!isAdminRole) {
+        // Sales sees only their own activities after last rotation
         var rotTime = lead.lastRotationAt ? new Date(lead.lastRotationAt).getTime() : 0;
-        var acts = p.activities.filter(function(a){
-          var lid=gid(lead); var match=a.leadId&&(gid(a.leadId)===lid||a.leadId===lid);
-          return match && (!rotTime||new Date(a.createdAt).getTime()>=rotTime);
+        all = all.filter(function(a){
+          var auid = String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
+          var matchUser = auid===String(p.cu.id||"");
+          var afterRot = !rotTime||new Date(a.createdAt).getTime()>=rotTime;
+          return matchUser && afterRot;
         });
-        setFullHistory(acts);
       }
+      setFullHistory(all);
     } catch(e){ setFullHistory([]); }
     setHistoryLoading(false);
   };
@@ -2081,7 +2085,28 @@ var EOIPage = function(p) {
     </div>}
 
     <div style={{ display:"flex", gap:16 }}>
-    {eoiLeads.length>0&&<Card p={0} style={{ flex:1 }}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
+    {eoiLeads.length>0&&<Card p={0} style={{ flex:1 }}>
+    {p.isMobile?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:12 }}>
+      {eoiLeads.map(function(d){
+        var bv=parseBudget(d.budget);
+        var isSel=selectedEOI&&gid(selectedEOI)===gid(d);
+        return <div key={gid(d)} onClick={function(){setSelectedEOI(isSel?null:d);}} style={{ background:isSel?"#F0FDF4":"#fff", borderRadius:14, padding:14, border:"2px solid "+(isSel?"#22C55E":"#E8ECF1"), cursor:"pointer" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+            <div style={{ fontSize:15, fontWeight:700 }}>{d.name}</div>
+            {d.eoiApproved
+              ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅</span>
+              :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳</span>}
+          </div>
+          <div style={{ fontSize:12, color:C.textLight, marginBottom:4 }}>{d.phone}</div>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+            {d.project&&<span style={{ fontSize:11, color:"#6D28D9", background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>🏠 {d.project}</span>}
+            {bv>0&&<span style={{ fontSize:11, color:C.success, fontWeight:700 }}>💰 {bv.toLocaleString()}</span>}
+            {d.eoiDeposit&&<span style={{ fontSize:11, color:C.textLight }}>Deposit: {d.eoiDeposit}</span>}
+            {isAdmin&&<span style={{ fontSize:11, color:C.accent }}>👤 {getAg(d)}</span>}
+          </div>
+        </div>;
+      })}
+    </div>:<div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date","Approved",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
@@ -2113,10 +2138,11 @@ var EOIPage = function(p) {
           </tr>;
         })}
       </tbody>
-    </table></div></Card>}
+    </table></div>}
+    </Card>}
 
     {/* EOI Side Panel */}
-    {selectedEOI&&<div style={{ flex:"0 0 260px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
+    {selectedEOI&&<div style={ p.isMobile?{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }:{ flex:"0 0 260px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
       <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"14px 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
