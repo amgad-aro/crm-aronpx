@@ -765,7 +765,7 @@ var Header = function(p) {
                 <div style={{ fontSize:11, fontWeight:600 }}>{l.name}{agName&&<span style={{ fontSize:10, color:C.accent, fontWeight:400 }}> — {agName}</span>}</div>
                 <div style={{ fontSize:10, color:C.danger }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
               </div>
-            </div>;})}
+            </button>;})}  
           </div>}
           {overdueCallback.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
             <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Overdue CallBack</div>
@@ -775,7 +775,7 @@ var Header = function(p) {
                 <div style={{ fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
                 <div style={{ fontSize:10, color:C.danger }}>{agName?agName+" · ":""}{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
               </div>
-            </div>;})}
+            </button>;})}  
           </div>}
           {allNoActivity.length>0&&<div style={{ padding:"8px 16px", background:"#FFF7ED", borderBottom:"1px solid #FEF3E2" }}>
             <div style={{ fontSize:11, fontWeight:700, color:"#EA580C", marginBottom:6 }}>😴 No Contact +1 Day</div>
@@ -785,7 +785,7 @@ var Header = function(p) {
                 <div style={{ fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
                 <div style={{ fontSize:10, color:"#EA580C" }}>{agName?agName+" · ":""}{timeAgo(l.lastActivityTime,p.t)}</div>
               </div>
-            </div>;})}
+            </button>;})}  
           </div>}
           {upcoming.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:""; return <button key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:10, cursor:"pointer", width:"100%", background:"none", border:"none", textAlign:"left" }}>
             <div style={{ width:32, height:32, borderRadius:8, background:C.warning+"15", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Phone size={14} color={C.warning}/></div>
@@ -794,7 +794,7 @@ var Header = function(p) {
               <div style={{ fontSize:11, color:C.textLight }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
             </div>
             <ChevronRight size={13} color={C.textLight}/>
-          </div>;})}
+          </button>;})}  
         </div>}
       </div>
     </div>
