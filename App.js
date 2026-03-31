@@ -206,6 +206,42 @@ var AVATAR_COLORS = ["#6366F1","#EC4899","#F59E0B","#10B981","#3B82F6","#8B5CF6"
 var avatarColor = function(name){ var i=0; if(name)for(var j=0;j<name.length;j++)i+=name.charCodeAt(j); return AVATAR_COLORS[i%AVATAR_COLORS.length]; };
 var Avatar = function(p){ var color=avatarColor(p.name); var size=p.size||36; return <div style={{ width:size, height:size, borderRadius:p.round?"50%":Math.round(size*0.28), background:color, display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:Math.round(size*0.38), flexShrink:0, position:"relative" }}>{p.name?(p.name[0]+( p.name.split(" ")[1]?p.name.split(" ")[1][0]:"")).toUpperCase():""}{p.online!==undefined&&<span style={{ position:"absolute", bottom:1, right:1, width:Math.round(size*0.28), height:Math.round(size*0.28), borderRadius:"50%", background:p.online?"#22C55E":"#94A3B8", border:"2px solid #fff" }}/>}</div>; };
 var gid = function(o) { if(!o) return null; return String(o._id || o.id || ""); };
+
+// WhatsApp chooser — shows popup to pick WhatsApp or WhatsApp Business
+var WaChooser = function(p) {
+  if(!p.show) return null;
+  var phone = waPhone(p.phone);
+  // Android intent URLs to open specific app
+  var isAndroid = /android/i.test(navigator.userAgent);
+  var waUrl = isAndroid
+    ? "intent://send/"+phone+"#Intent;scheme=smsto;package=com.whatsapp;action=android.intent.action.SENDTO;end"
+    : "https://wa.me/"+phone;
+  var waBizUrl = isAndroid
+    ? "intent://send/"+phone+"#Intent;scheme=smsto;package=com.whatsapp.w4b;action=android.intent.action.SENDTO;end"
+    : "https://wa.me/"+phone;
+  return <div onClick={p.onClose} style={{ position:"fixed", inset:0, zIndex:999, background:"rgba(0,0,0,0.4)", display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+    <div onClick={function(e){e.stopPropagation();}} style={{ background:"#fff", borderRadius:"18px 18px 0 0", padding:"20px 16px 32px", width:"100%", maxWidth:480 }}>
+      <div style={{ fontSize:14, fontWeight:700, color:C.text, marginBottom:16, textAlign:"center" }}>Open with WhatsApp</div>
+      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+        <a href={waUrl} target="_blank" rel="noreferrer" onClick={p.onClose} style={{ display:"flex", alignItems:"center", gap:12, padding:"14px 16px", borderRadius:12, background:"#DCFCE7", textDecoration:"none" }}>
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+          <div>
+            <div style={{ fontSize:14, fontWeight:700, color:"#15803D" }}>WhatsApp</div>
+            <div style={{ fontSize:11, color:"#6B7280" }}>WhatsApp Personal</div>
+          </div>
+        </a>
+        <a href={waBizUrl} target="_blank" rel="noreferrer" onClick={p.onClose} style={{ display:"flex", alignItems:"center", gap:12, padding:"14px 16px", borderRadius:12, background:"#E8F5E9", textDecoration:"none" }}>
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="#1B5E20"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+          <div>
+            <div style={{ fontSize:14, fontWeight:700, color:"#1B5E20" }}>WhatsApp Business</div>
+            <div style={{ fontSize:11, color:"#6B7280" }}>WhatsApp for Business</div>
+          </div>
+        </a>
+      </div>
+      <button onClick={p.onClose} style={{ width:"100%", marginTop:12, padding:"12px", borderRadius:12, border:"none", background:"#F1F5F9", cursor:"pointer", fontSize:14, fontWeight:600, color:C.textLight }}>Cancel</button>
+    </div>
+  </div>;
+};
 var waPhone = function(phone) {
   if (!phone) return "";
   var p = phone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
@@ -775,7 +811,9 @@ var LeadForm = function(p) {
     // Load saved extra fields from localStorage if editing a deal
     if(p.editId){
       var extra=getDealExtra(String(p.editId));
-      if(extra) base=Object.assign({},base,{downPaymentPct:extra.downPaymentPct||"",installmentYears:extra.installmentYears||""});
+      if(extra) base=Object.assign({},base,{downPaymentPct:extra.downPaymentPct||"",installmentYears:extra.installmentYears||"",dealDate:extra.dealDate||""});
+      // Also read dealDate from lead object if available
+      if(p.initial&&p.initial.dealDate&&!base.dealDate) base=Object.assign({},base,{dealDate:p.initial.dealDate});
     }
     return base;
   })());
@@ -799,12 +837,13 @@ var LeadForm = function(p) {
     setSaving(true);
     try {
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||null, status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
-      // Remove fields backend doesn't accept
-      delete payload.dealDate; delete payload.downPaymentPct; delete payload.installmentYears;
+      // Remove fields backend doesn't accept directly
+      delete payload.downPaymentPct; delete payload.installmentYears;
+      // Keep dealDate in payload so it saves to DB
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
-      // Save extra deal fields to localStorage
+      // Also save extra deal fields to localStorage as backup
       if(result && result._id && (form.downPaymentPct||form.installmentYears||form.dealDate)){
         saveDealExtra(String(result._id),{downPaymentPct:form.downPaymentPct||"",installmentYears:form.installmentYears||"",dealDate:form.dealDate||""});
       }
@@ -838,7 +877,7 @@ var LeadForm = function(p) {
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
-    {p.initialStatus==="DoneDeal"&&<Inp label="Deal Date (for old deals)" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
+    {(p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal"))&&<Inp label="Deal Date" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
     {(p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal"))&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
       <Inp label="Down Payment %" value={form.downPaymentPct||""} onChange={function(e){upd("downPaymentPct",e.target.value.replace(/[^0-9.]/g,""));}} placeholder="e.g. 10"/>
       <Inp label="Installment Years" value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
@@ -1030,6 +1069,7 @@ var LeadsPage = function(p) {
   var [showStatusPicker, setShowStatusPicker] = useState(false);
   var [showStatusComment, setShowStatusComment] = useState(false);
   var [pendingStatus, setPendingStatus] = useState(null);
+  var [waChooser, setWaChooser] = useState(null); // phone number for WA chooser
   var [actNote, setActNote] = useState(""); var [actType, setActType] = useState("call"); var [showActForm, setShowActForm] = useState(false);
   var [saving, setSaving] = useState(false);
   var [importing, setImporting] = useState(false); var [importMsg, setImportMsg] = useState("");
@@ -1194,6 +1234,7 @@ var LeadsPage = function(p) {
   var leadActs = selected ? p.activities.filter(function(a){ var lid=gid(selected); return a.leadId&&(gid(a.leadId)===lid||a.leadId===lid); }) : [];
 
   return <div style={{ padding:"18px 16px 40px" }}>
+    <WaChooser show={!!waChooser} phone={waChooser} onClose={function(){setWaChooser(null);}}/>
     {showStatusPicker&&selected&&!showStatusComment&&<Modal show={true} onClose={function(){setShowStatusPicker(false);}} title={t.changeStatus}>
       <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:16 }}>
         {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"8px 14px", borderRadius:9, border:"1px solid "+s.color, background:selected.status===s.value?s.bg:"#fff", color:s.color, fontSize:13, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
@@ -1209,8 +1250,9 @@ var LeadsPage = function(p) {
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowBulk(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={doBulkReassign} style={{ flex:1 }}>{t.bulkReassign}</Btn></div>
     </Modal>
 
-    {/* Toolbar */}
-    <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:14 }}>
+    {/* Sticky Toolbar */}
+    <div style={{ position:"sticky", top:64, zIndex:90, background:"#F8FAFC", margin:"0 -16px 14px", padding:"8px 16px 8px", borderBottom:"1px solid #E8ECF1", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
+      <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:8 }}>
       <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
         {[{v:"all",l:t.all}].concat(sc.map(function(s){return{v:s.value,l:s.label};})).map(function(s){
           var cnt=s.v==="all"?allVisible.length:allVisible.filter(function(l){return l.status===s.v;}).length;
@@ -1241,20 +1283,20 @@ var LeadsPage = function(p) {
         {!notifGranted&&<Btn outline onClick={async function(){var ok=await requestNotifPermission();setNotifGranted(ok);}} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Bell size={13}/> {t.enableNotif}</Btn>}
         {!p.isMobile&&isOnlyAdmin&&<Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>}
       </div>
-    </div>
-
-    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
-      <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
-        <option value="lastActivity">⏱ Last Activity</option>
-        <option value="newest">🆕 Newest</option>
-        <option value="oldest">📅 Oldest</option>
-        <option value="name">🔤 Name</option>
-      </select>
-      {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
-        <option value="">👤 All Agents</option>
-        {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
-      </select>}
-      <button onClick={function(){setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP Only {vipFilter?"✓":""}</button>
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+        <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+          <option value="lastActivity">⏱ Last Activity</option>
+          <option value="newest">🆕 Newest</option>
+          <option value="oldest">📅 Oldest</option>
+          <option value="name">🔤 Name</option>
+        </select>
+        {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+          <option value="">👤 All Agents</option>
+          {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
+        </select>}
+        <button onClick={function(){setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP Only {vipFilter?"✓":""}</button>
+      </div>
     </div>
     {importMsg&&<div style={{ marginBottom:10, padding:"9px 14px", background:importMsg.startsWith("✅")?"#DCFCE7":"#FEE2E2", color:importMsg.startsWith("✅")?"#15803D":"#B91C1C", borderRadius:9, fontSize:13 }}>{importMsg}</div>}
 
@@ -1295,10 +1337,10 @@ var LeadsPage = function(p) {
                 style={{ flex:1, padding:"11px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6, border:"1px solid #BFDBFE" }}>
                 <Phone size={14} color="#1D4ED8"/> Call
               </a>
-              <a href={"https://wa.me/"+waPhone(lead.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}}
-                style={{ flex:1, padding:"11px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6, border:"1px solid #22C55E60" }}>
+              <button onClick={function(e){e.stopPropagation();setWaChooser(lead.phone);}}
+                style={{ flex:1, padding:"11px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:13, fontWeight:700, border:"1px solid #22C55E60", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="#15803D"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp
-              </a>
+              </button>
               <button onClick={function(e){e.stopPropagation();openHistory(lead);}} style={{ padding:"11px 14px", borderRadius:10, background:"#F3E8FF", color:"#7C3AED", fontSize:13, fontWeight:700, border:"1px solid #DDD6FE", cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
                 📋
               </button>
@@ -1784,11 +1826,11 @@ var DashboardPage = function(p) {
   var monthDeals=allDeals.filter(function(l){var t2=getDealTime(l);return t2>=monthStart.getTime();});
   var todayRev=todayDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var weekRev=weekDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
-  var monthRev=monthDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var monthRev=monthDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
   var todayLeads=myLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;});
   var salesUsers=p.myTeamUsers||p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var topAgent=isAdmin?(function(){
-    var stats=salesUsers.map(function(u){var uid=gid(u);var rev=monthDeals.filter(function(d){var a=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return a===uid;}).reduce(function(s,d){return s+parseBudget(d.budget);},0);return{u:u,rev:rev};});
+    var stats=salesUsers.map(function(u){var uid=gid(u);var rev=monthDeals.filter(function(d){var a=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return a===uid;}).reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);return{u:u,rev:rev};});
     stats.sort(function(a,b){return b.rev-a.rev;});
     return stats[0]&&stats[0].rev>0?stats[0]:null;
   })():null;
@@ -1837,7 +1879,7 @@ var DashboardPage = function(p) {
       var qTarget=qt[curQ]||0;
       var myDeals=myLeads.filter(function(l){return l.status==="DoneDeal";});
       var getQ=function(d){var m=new Date(d).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
-      var qRev=myDeals.filter(function(d){var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===curQ;}).reduce(function(s,d){return s+parseBudget(d.budget);},0);
+      var qRev=myDeals.filter(function(d){var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===curQ;}).reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
       var qProg=qTarget>0?Math.min(100,Math.round(qRev/qTarget*100)):0;
       var callbackSoon=myLeads.filter(function(l){return l.callbackTime&&!l.archived&&(new Date(l.callbackTime).getTime()-Date.now())<2*60*60*1000&&new Date(l.callbackTime).getTime()>Date.now();});
       var noAct=myLeads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>2*DAY;});
@@ -2177,8 +2219,16 @@ var saveProjectWeight = function(project,weight){
 // Deal split stored in localStorage: crm_deal_split_{leadId} = {agent2Id, agent2Name}
 var getDealSplit = function(lid, leads){
   // Try from leads array first (server data)
-  if(leads){var l=leads.find(function(x){return (x._id?String(x._id):String(x))===String(lid)||String(x._id||x)===String(lid);});if(l&&l.splitAgent2Id){return{agent2Id:String(l.splitAgent2Id._id||l.splitAgent2Id),agent2Name:l.splitAgent2Name||"Shared"};}}
+  if(leads){
+    var l=leads.find(function(x){return String(x._id||x)===String(lid);});
+    if(l&&l.splitAgent2Id) return {agent2Id:String(l.splitAgent2Id._id||l.splitAgent2Id),agent2Name:l.splitAgent2Name||"Shared"};
+  }
   try{return JSON.parse(localStorage.getItem("crm_deal_split_"+lid)||"null");}catch(e){return null;}
+};
+// Helper to get split directly from deal object
+var getDealSplitFromObj = function(d){
+  if(d&&d.splitAgent2Id) return {agent2Id:String(d.splitAgent2Id._id||d.splitAgent2Id),agent2Name:d.splitAgent2Name||"Shared"};
+  try{return JSON.parse(localStorage.getItem("crm_deal_split_"+(d._id||d))||"null");}catch(e){return null;}
 };
 var saveDealSplit = function(lid,split){ try{localStorage.setItem("crm_deal_split_"+lid,JSON.stringify(split));}catch(e){}};
 var getDealExtra = function(lid){ try{return JSON.parse(localStorage.getItem("crm_deal_extra_"+lid)||"null");}catch(e){return null;}};
@@ -2186,6 +2236,9 @@ var saveDealExtra = function(lid,extra){ try{localStorage.setItem("crm_deal_extr
 // Get the effective date for a deal — checks custom dealDate first
 var getDealDate = function(d){
   try{
+    // Read from lead object first (server data)
+    if(d&&d.dealDate) return new Date(d.dealDate);
+    // Fallback to localStorage
     var extra=getDealExtra(String(d._id||""));
     if(extra&&extra.dealDate) return new Date(extra.dealDate);
   }catch(e){}
@@ -2265,7 +2318,7 @@ var DealsPage = function(p) {
   var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
-  var total=deals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var total=deals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [showAdd,setShowAdd]=useState(false);
   var [editDeal,setEditDeal]=useState(null);
@@ -2292,7 +2345,7 @@ var DealsPage = function(p) {
     if(dealAgent){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;if(aid!==dealAgent)return false;}
     return true;
   });
-  var filteredTotal=filteredDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var filteredTotal=filteredDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
 
   // Get stages from localStorage
   var getStages=function(lid){try{return JSON.parse(localStorage.getItem("crm_stages_"+lid)||"{}");} catch(e){return {};}};
@@ -2491,12 +2544,23 @@ var DealsPage = function(p) {
       </div>
       {(function(){var projects=[];deals.forEach(function(d){if(d.project&&!projects.includes(d.project))projects.push(d.project);});return projects.map(function(proj){
         var w=getProjectWeight(proj);
+        var saveWeight=async function(newW){
+          saveProjectWeight(proj,newW);
+          setProjWeights(function(prev){return Object.assign({},prev,{[proj]:newW});});
+          // Update all deals of this project in DB
+          var projDeals=deals.filter(function(d){return d.project===proj;});
+          await Promise.all(projDeals.map(function(d){
+            return apiFetch("/api/leads/"+gid(d),"PUT",{projectWeight:newW},p.token).then(function(updated){
+              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(d)?updated:l;});});
+            }).catch(function(){});
+          }));
+        };
         return <div key={proj} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
           <span style={{ fontSize:13, fontWeight:600 }}>{proj}</span>
           <div style={{ display:"flex", gap:6 }}>
-            <button onClick={function(){saveProjectWeight(proj,1);setProjWeights(function(prev){return Object.assign({},prev,{[proj]:1});});}}
+            <button onClick={function(){saveWeight(1);}}
               style={{ padding:"5px 12px", borderRadius:7, border:"2px solid", borderColor:w===1?C.success:"#E2E8F0", background:w===1?"#DCFCE7":"#fff", color:w===1?C.success:C.textLight, fontSize:12, fontWeight:w===1?700:400, cursor:"pointer" }}>100%</button>
-            <button onClick={function(){saveProjectWeight(proj,0.5);setProjWeights(function(prev){return Object.assign({},prev,{[proj]:0.5});});}}
+            <button onClick={function(){saveWeight(0.5);}}
               style={{ padding:"5px 12px", borderRadius:7, border:"2px solid", borderColor:w===0.5?"#F59E0B":"#E2E8F0", background:w===0.5?"#FEF3C7":"#fff", color:w===0.5?"#B45309":C.textLight, fontSize:12, fontWeight:w===0.5?700:400, cursor:"pointer" }}>50%</button>
           </div>
         </div>;
@@ -2520,7 +2584,7 @@ var DealsPage = function(p) {
         </select>
       </div>
       {getDealSplit(gid(splitModal))&&<div style={{ padding:"8px 12px", background:"#FEF3C7", borderRadius:8, fontSize:12, marginBottom:10 }}>
-        Current split: {getDealSplit(gid(splitModal),p.leads).agent2Name} — <button onClick={async function(){
+        Current split: {getDealSplitFromObj(splitModal).agent2Name} — <button onClick={async function(){
           try{await apiFetch("/api/leads/"+gid(splitModal),"PUT",{splitAgent2Id:null,splitAgent2Name:""},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(splitModal)?Object.assign({},l,{splitAgent2Id:null,splitAgent2Name:""}):l;});});}catch(e){}
           saveDealSplit(gid(splitModal),null);setSplitModal(null);
         }} style={{ background:"none", border:"none", color:C.danger, cursor:"pointer", fontSize:12 }}>Remove Split</button>
@@ -2566,7 +2630,7 @@ var DealsPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success, textAlign:"left" }}>
               {(function(){
-                var split=getDealSplit(gid(d),p.leads);
+                var split=getDealSplitFromObj(d);
                 var weight=getProjectWeight(d.project,d);
                 var splitFactor=split?0.5:1;
                 var effectiveBv=bv*weight*splitFactor;
@@ -2604,7 +2668,7 @@ var DealsPage = function(p) {
               {(function(){
                 var raw=parseBudget(d.budget);
                 var weight=getProjectWeight(d.project,d);
-                var split=getDealSplit(gid(d),p.leads);
+                var split=getDealSplitFromObj(d);
                 var splitFactor=split?0.5:1;
                 var effRev=raw*weight*splitFactor;
                 var ag=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;
@@ -2646,7 +2710,7 @@ var DealsPage = function(p) {
             </td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>
               <div>{getAg(d)}</div>
-              {(function(){var sp=getDealSplit(gid(d),p.leads);return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
+              {(function(){var sp=getDealSplitFromObj(d);return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
             </td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.source}</td>}
             <td style={{ padding:"11px 12px", textAlign:"left" }}>
@@ -2658,8 +2722,8 @@ var DealsPage = function(p) {
             </td>
             <td style={{ padding:"8px 12px" }}>
               <div style={{ display:"flex", gap:5 }}>
-                {isOnlyAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplit(gid(d),p.leads);setSplitAgent2(sp?sp.agent2Id:"");}} title="Split Deal"
-                  style={{ width:28, height:28, borderRadius:6, border:"1px solid "+(getDealSplit(gid(d),p.leads)?"#8B5CF6":"#E2E8F0"), background:getDealSplit(gid(d),p.leads)?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12 }}>🤝</button>}
+                {isOnlyAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplitFromObj(d);setSplitAgent2(sp?sp.agent2Id:"");}} title="Split Deal"
+                  style={{ width:28, height:28, borderRadius:6, border:"1px solid "+(getDealSplitFromObj(d)?"#8B5CF6":"#E2E8F0"), background:getDealSplitFromObj(d)?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12 }}>🤝</button>}
                 {isOnlyAdmin&&<button onClick={function(){setEditDeal(d);}} title={t.edit}
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <Edit size={13} color={C.info}/>
@@ -2703,7 +2767,7 @@ var DealsPage = function(p) {
           {l:"Budget", v:(function(){
             var raw=parseBudget(selectedDeal.budget);
             var weight=getProjectWeight(selectedDeal.project,selectedDeal);
-            var split=getDealSplit(gid(selectedDeal),p.leads);
+            var split=getDealSplitFromObj(selectedDeal);
             var splitFactor=split?0.5:1;
             var eff=raw*weight*splitFactor;
             var isSalesRole=p.cu.role==="sales"||p.cu.role==="team_leader";
@@ -2912,16 +2976,16 @@ var ArchivePage = function(p) {
       <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.archive} ({archived.length})</h2>
       {isOnlyAdmin&&(archived.length>0||archivedDR.length>0)&&<Btn outline onClick={async function(){
         if(!window.confirm("Clear all archived items? This cannot be undone.")) return;
-        // Clear archived leads from DB
-        for(var i=0;i<archived.length;i++){
-          try{await apiFetch("/api/leads/"+gid(archived[i]),"DELETE",null,p.token);}catch(e){}
-        }
-        p.setLeads(function(prev){return prev.filter(function(l){return !l.archived;});});
-        // Delete DR records from DB too
-        for(var j=0;j<archivedDR.length;j++){
-          try{await apiFetch("/api/daily-requests/"+gid(archivedDR[j]),"DELETE",null,p.token);}catch(e){}
-        }
-        // Clear DR archive from localStorage
+        // Bulk delete archived leads
+        try{
+          var leadIds=archived.map(function(l){return gid(l);});
+          if(leadIds.length>0) await apiFetch("/api/leads/bulk-delete","POST",{ids:leadIds},p.token);
+          p.setLeads(function(prev){return prev.filter(function(l){return !l.archived;});});
+        }catch(e){}
+        // Bulk delete DR
+        try{
+          await Promise.all(archivedDR.map(function(r){return apiFetch("/api/daily-requests/"+gid(r),"DELETE",null,p.token).catch(function(){});}));
+        }catch(e){}
         try{localStorage.removeItem("crm_dr_archived");}catch(e){}
         setArchivedDR([]);
       }} style={{ padding:"7px 13px", fontSize:12, color:C.danger, borderColor:C.danger }}>🗑 Clear All</Btn>}
@@ -3642,7 +3706,7 @@ var ReportsPage = function(p) {
     var uDailyReq=periodLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.source==="Daily Request";});
     var uDeals=periodDeals.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid;});
     var uMeetingDone=allLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.status==="MeetingDone"&&l.updatedAt&&inPeriod(l.updatedAt);});
-    var revenue=uDeals.reduce(function(s,d){return s+parseBudgetR(d.budget);},0);
+    var revenue=uDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudgetR(d.budget)*w*(sp?0.5:1);},0);
     var qt=getQTargetsR(uid);
     var qTarget=qt[curQR]||0;
     var target=qTarget>0?qTarget:(u.monthlyTarget||0)*1000000;
@@ -3757,10 +3821,10 @@ var TeamPage = function(p) {
     var qt=getQTargets(uid);
     var qTarget=getEffectiveQTarget(a,p.users,viewQ);
     var qDeals=allDeals.filter(function(d){if(!matchesAgent(d))return false;var dd=getDealDate(d);return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;});
-    var qRevenue=qDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+    var qRevenue=qDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
     var qProg=qTarget>0?Math.min(100,Math.round((qRevenue/qTarget)*100)):0;
     var allAgentDeals=allDeals.filter(function(d){return matchesAgent(d);});
-    var totalRevenue=allAgentDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+    var totalRevenue=allAgentDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
     var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<2*60*1000;
     var isIdleNow=!isOnlineNow&&a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<15*60*1000;
     var lastSeenStr=a.lastSeen?("Last seen: "+new Date(a.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" — "+timeAgo(a.lastSeen,p.t)):"Never logged in";
@@ -4199,7 +4263,7 @@ var KPIsPage = function(p) {
     if(!l.createdAt) return false;
     return getQ(l.createdAt)===selQ && getYear(l.createdAt)===selYear;
   });
-  var qRev = qDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+  var qRev = qDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
   var qProg = qTarget>0?Math.min(100,Math.round(qRev/qTarget*100)):0;
   var convRate = qLeads.length>0?Math.round(qDeals.length/qLeads.length*100):0;
 
@@ -4627,7 +4691,13 @@ export default function CRMApp() {
       });
     };
 
-    // 1. New lead assigned - track in localStorage
+    // 1. New lead assigned - track leads present at login time
+    var initialLeadIds = new Set(getMyLeads().map(function(l){return String(gid(l));}));
+    // Mark all current leads as seen so we don't notify for old ones
+    getMyLeads().forEach(function(l){
+      try{localStorage.setItem("crm_lead_seen_"+String(gid(l)),"1");}catch(e){}
+    });
+
     var checkNewLeads = function(){
       var myLeads = getMyLeads();
       myLeads.forEach(function(l){
