@@ -502,9 +502,10 @@ app.post("/api/activities", auth, async function(req, res) {
 });
 
 // ===== LEAD FULL HISTORY (Admin only) =====
-app.get("/api/leads/:id/full-history", auth, adminOnly, async function(req, res) {
+app.get("/api/leads/:id/full-history", auth, async function(req, res) {
   try {
-    var activities = await Activity.find({ leadId: req.params.id })
+    var oid = new mongoose.Types.ObjectId(req.params.id);
+    var activities = await Activity.find({ leadId: oid })
       .populate("userId", "name title")
       .sort({ createdAt: 1 });
     res.json(activities);
