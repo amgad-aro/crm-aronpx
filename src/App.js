@@ -2499,12 +2499,23 @@ var DealsPage = function(p) {
       </div>
       {(function(){var projects=[];deals.forEach(function(d){if(d.project&&!projects.includes(d.project))projects.push(d.project);});return projects.map(function(proj){
         var w=getProjectWeight(proj);
+        var saveWeight=async function(newW){
+          saveProjectWeight(proj,newW);
+          setProjWeights(function(prev){return Object.assign({},prev,{[proj]:newW});});
+          // Update all deals of this project in DB
+          var projDeals=deals.filter(function(d){return d.project===proj;});
+          await Promise.all(projDeals.map(function(d){
+            return apiFetch("/api/leads/"+gid(d),"PUT",{projectWeight:newW},p.token).then(function(updated){
+              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(d)?updated:l;});});
+            }).catch(function(){});
+          }));
+        };
         return <div key={proj} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
           <span style={{ fontSize:13, fontWeight:600 }}>{proj}</span>
           <div style={{ display:"flex", gap:6 }}>
-            <button onClick={function(){saveProjectWeight(proj,1);setProjWeights(function(prev){return Object.assign({},prev,{[proj]:1});});}}
+            <button onClick={function(){saveWeight(1);}}
               style={{ padding:"5px 12px", borderRadius:7, border:"2px solid", borderColor:w===1?C.success:"#E2E8F0", background:w===1?"#DCFCE7":"#fff", color:w===1?C.success:C.textLight, fontSize:12, fontWeight:w===1?700:400, cursor:"pointer" }}>100%</button>
-            <button onClick={function(){saveProjectWeight(proj,0.5);setProjWeights(function(prev){return Object.assign({},prev,{[proj]:0.5});});}}
+            <button onClick={function(){saveWeight(0.5);}}
               style={{ padding:"5px 12px", borderRadius:7, border:"2px solid", borderColor:w===0.5?"#F59E0B":"#E2E8F0", background:w===0.5?"#FEF3C7":"#fff", color:w===0.5?"#B45309":C.textLight, fontSize:12, fontWeight:w===0.5?700:400, cursor:"pointer" }}>50%</button>
           </div>
         </div>;
