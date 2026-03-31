@@ -31,6 +31,9 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   eoiApproved:{type:Boolean,default:false}, eoiImage:{type:String,default:""},
   dealApproved:{type:Boolean,default:false}, dealImage:{type:String,default:""},
   commissionClaimDate:{type:String,default:""}, commissionClaimed:{type:Boolean,default:false},
+  splitAgent2Id:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+  splitAgent2Name:{type:String,default:""},
+  projectWeight:{type:Number,default:1},
   lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0}
 },{timestamps:true}));
 
@@ -444,6 +447,16 @@ app.delete("/api/leads/:id", auth, adminOnly, async function(req, res) {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Bulk delete archived leads
+app.post("/api/leads/bulk-delete", auth, adminOnly, async function(req, res) {
+  try {
+    var { ids } = req.body;
+    if(!ids||!ids.length) return res.json({ ok: true, count: 0 });
+    await Lead.deleteMany({ _id: { $in: ids }, archived: true });
+    res.json({ ok: true, count: ids.length });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ===== ACTIVITY ROUTES =====
