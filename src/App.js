@@ -2221,15 +2221,15 @@ var calcCommission = function(user, allDeals, allUsers, forQ) {
   // Calculate effective revenue (applying project weight and split)
   var effectiveRevenue = agentDeals.reduce(function(sum, d){
     var raw = parseBudgetC(d.budget);
-    var weight = getProjectWeight(d.project);
-    var split = getDealSplit(gid(d),p.leads);
+    var weight = getProjectWeight(d.project, d);
+    var split = getDealSplit(gid(d), allDeals);
     var splitFactor = split ? 0.5 : 1;
     return sum + (raw * weight * splitFactor);
   }, 0);
 
   // Also add deals where this agent is agent2 in a split
   allDeals.forEach(function(d){
-    var split = getDealSplit(gid(d),p.leads);
+    var split = getDealSplit(gid(d), allDeals);
     if(split && split.agent2Id === uid){
       var dd = d.updatedAt||d.createdAt;
       if(dd && getQ(dd) === curQ){
