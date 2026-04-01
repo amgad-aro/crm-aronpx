@@ -16,10 +16,11 @@ async function apiFetch(path, method, body, token) {
   var opts = { method: method || "GET", headers: { "Content-Type": "application/json" } };
   if (token) opts.headers["Authorization"] = "Bearer " + token;
   if (body) opts.body = JSON.stringify(body);
-  var res = await fetch(API + path, opts);
-  var data = await res.json();
+  var res;
+  try { res = await fetch(API + path, opts); } catch(netErr) { throw new Error("Connection error"); }
+  var data;
+  try { data = await res.json(); } catch(e) { data = {}; }
   if (res.status === 401) {
-    // Token expired or invalid — clear session and reload
     try { localStorage.removeItem('crm_aro_session'); } catch(e) {}
     window.location.reload();
     return;
@@ -4604,7 +4605,7 @@ export default function CRMApp() {
         setLeads(leadsData);
         setActivities(activitiesData);
       }catch(e){}
-    }, 15000);
+    }, 30000);
     return function(){ clearInterval(interval); };
   }, [token]);
   useEffect(function(){
