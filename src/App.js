@@ -1202,6 +1202,8 @@ var LeadsPage = function(p) {
           return matchUser && afterRot;
         });
       }
+      // Sort oldest to newest
+      all = all.slice().sort(function(a,b){return new Date(a.createdAt)-new Date(b.createdAt);});
       setFullHistory(all);
     } catch(e){ setFullHistory([]); }
     setHistoryLoading(false);
@@ -1454,6 +1456,9 @@ var LeadsPage = function(p) {
                       </span>;
                     })() : <span style={{ color:C.textLight }}>-</span>}
                   </td>}
+                  <td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();}}>
+                    <button onClick={function(e){e.stopPropagation();openHistory(lead);}} style={{ padding:"4px 8px", borderRadius:7, background:"#F3E8FF", color:"#7C3AED", fontSize:12, border:"1px solid #DDD6FE", cursor:"pointer" }} title="History">📋</button>
+                  </td>
                 </tr>;
               })}
             </tbody>
@@ -1593,17 +1598,21 @@ var LeadsPage = function(p) {
     {showHistory&&historyLead&&<Modal show={true} onClose={function(){setShowHistory(false);setHistoryLead(null);}} title={"📋 Lead History — "+historyLead.name} w={520}>
       {historyLoading&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>Loading...</div>}
       {!historyLoading&&fullHistory.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>No activity history</div>}
-      {!historyLoading&&fullHistory.length>0&&<div style={{ maxHeight:400, overflowY:"auto" }}>
+      {!historyLoading&&fullHistory.length>0&&<div style={{ maxHeight:500, overflowY:"auto" }}>
+        <div style={{ fontSize:11, color:C.textLight, marginBottom:10, padding:"6px 10px", background:"#F8FAFC", borderRadius:8 }}>
+          {fullHistory.length} activity — من الأحدث للأقدم
+        </div>
         {fullHistory.slice().reverse().map(function(a,i){
           var uname=a.userId&&a.userId.name?a.userId.name:"";
+          var icon=a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔";
           return <div key={a._id||i} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
             <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
-              <span style={{ fontSize:16, flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔"}</span>
+              <span style={{ fontSize:16, flexShrink:0 }}>{icon}</span>
               <div style={{ flex:1 }}>
                 <div style={{ fontSize:12, fontWeight:500, color:C.text }}>{a.note}</div>
-                <div style={{ fontSize:10, color:C.textLight, marginTop:3, display:"flex", gap:8 }}>
-                  {uname&&<span style={{ fontWeight:600, color:C.accent }}>{uname}</span>}
-                  <span>{a.createdAt?new Date(a.createdAt).toLocaleDateString("en-GB")+" — "+new Date(a.createdAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):""}</span>
+                <div style={{ fontSize:10, color:C.textLight, marginTop:3, display:"flex", gap:8, flexWrap:"wrap" }}>
+                  {uname&&<span style={{ fontWeight:700, color:C.accent }}>👤 {uname}</span>}
+                  <span>📅 {a.createdAt?new Date(a.createdAt).toLocaleDateString("en-GB")+" "+new Date(a.createdAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):""}</span>
                 </div>
               </div>
             </div>
