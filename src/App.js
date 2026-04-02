@@ -340,6 +340,7 @@ var StatusModal = function(p) {
   var [dealUnitType, setDealUnitType] = useState("");
   var [dealBudget, setDealBudget] = useState("");
   var [eoiDeposit, setEoiDeposit] = useState("");
+  var [eoiDateInput, setEoiDateInput] = useState("");
   var [potBudget, setPotBudget] = useState("");
   var [potDeposit, setPotDeposit] = useState("");
   var [potInstalment, setPotInstalment] = useState("");
@@ -357,7 +358,7 @@ var StatusModal = function(p) {
   var needsPotFields = st==="Potential"||st==="HotCase";
 
   useEffect(function(){
-    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit("");
+    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit(""); setEoiDateInput("");
     setPotBudget(""); setPotDeposit(""); setPotInstalment(""); setErr("");
   },[p.show]);
 
@@ -374,7 +375,7 @@ var StatusModal = function(p) {
     if (needsPotFields && !potInstalment.trim()){ setErr("Please enter the Installments"); return; }
     setSaving(true);
     var extra = (isDoneDeal||isEOI)
-      ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit }
+      ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput }
       : needsPotFields
         ? { budget: potBudget, deposit: potDeposit, instalment: potInstalment }
         : {};
@@ -467,6 +468,11 @@ var StatusModal = function(p) {
           onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setDealBudget(r?Number(r).toLocaleString():"");setErr("");}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
       </div>
+      {isEOI&&<div style={{ marginBottom:11 }}>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 EOI Date</label>
+        <input type="date" value={eoiDateInput} onChange={function(e){setEoiDateInput(e.target.value);}}
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
+      </div>}
       {isEOI&&<div style={{ marginBottom:11 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💵 Deposit (EGP)</label>
         <input type="text" placeholder="" value={eoiDeposit}
@@ -815,7 +821,7 @@ var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [form, setForm] = useState((function(){
-    var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", downPaymentPct:"", installmentYears:"" };
+    var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", eoiDate:"", eoiDeposit:"", downPaymentPct:"", installmentYears:"" };
     // Load saved extra fields from localStorage if editing a deal
     if(p.editId){
       var extra=getDealExtra(String(p.editId));
@@ -828,6 +834,7 @@ var LeadForm = function(p) {
   var [dupWarning, setDupWarning] = useState(null);
   var [saving, setSaving] = useState(false);
   var isReq = p.isReq||false;
+  var isEOIForm = p.initialStatus==="EOI"||(p.editId&&p.initial&&p.initial.status==="EOI");
 
   var checkDup = async function(phone) {
     if (phone.length < 8) { setDupWarning(null); return; }
@@ -883,7 +890,9 @@ var LeadForm = function(p) {
     <Inp label={t.project} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder=""/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
-    <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
+    {isEOIForm&&<Inp label="📅 EOI Date" type="date" value={form.eoiDate||""} onChange={function(e){upd("eoiDate",e.target.value);}}/>}
+    {isEOIForm&&<Inp label="💵 Deposit (EGP)" value={form.eoiDeposit||""} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("eoiDeposit",r?Number(r).toLocaleString():"");}} placeholder=""/>}
+    {!isEOIForm&&<Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>}
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
     {(p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal"))&&<Inp label="Deal Date" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
     {(p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal"))&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
@@ -1148,7 +1157,7 @@ var LeadsPage = function(p) {
         if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
         if(extra.deposit)    upData.notes      = (upData.notes?upData.notes+" | ":"")+"Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
       }
-      if(pendingStatus.newStatus === "EOI") upData.eoiDate = new Date().toISOString();
+      if(pendingStatus.newStatus === "EOI") upData.eoiDate = extra&&extra.eoiDate ? new Date(extra.eoiDate).toISOString() : new Date().toISOString();
       // Set dealDate to today when converting to DoneDeal (don't use eoiDate)
       if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date().toISOString().slice(0,10);
       // Notify admin when DoneDeal or EOI
@@ -1385,7 +1394,7 @@ var LeadsPage = function(p) {
                   <td style={{ padding:"10px 12px", textAlign:"left" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                       {lead.isVIP&&<span style={{ fontSize:14 }} title="VIP">⭐</span>}
-                      {(function(){var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}return ids.includes(gid(lead))?<span style={{ fontSize:12 }} title="Locked — no rotation">🔒</span>:null;})()}
+                      {lead.locked&&<span style={{ fontSize:12 }} title="Locked — no rotation">🔒</span>}
                       <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
                     </div>
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
@@ -1516,13 +1525,13 @@ var LeadsPage = function(p) {
             }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(selected.isVIP?"#F59E0B":"#E2E8F0"), background:selected.isVIP?"#FEF3C7":"#fff", fontSize:13, cursor:"pointer" }} title={selected.isVIP?t.removeVip:t.markVip}>⭐</button>
             {(function(){
               var lid=gid(selected);
-              var lockedIds=[];try{lockedIds=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}
-              var isLocked=lockedIds.includes(lid);
-              return <button onClick={function(){
-                var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}
-                if(isLocked){ids=ids.filter(function(x){return x!==lid;});}else{ids=ids.concat([lid]);}
-                try{localStorage.setItem("crm_locked_leads",JSON.stringify(ids));}catch(e){}
-                setSelected(function(prev){return Object.assign({},prev,{_locked:!isLocked});});
+              var isLocked=!!selected.locked;
+              return <button onClick={async function(){
+                try{
+                  var updLock=await apiFetch("/api/leads/"+lid,"PUT",{locked:!isLocked},p.token);
+                  p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?updLock:l;});});
+                  setSelected(updLock);
+                }catch(e){console.error("lock error",e);}
               }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(isLocked?"#EF4444":"#E2E8F0"), background:isLocked?"#FEE2E2":"#fff", fontSize:13, cursor:"pointer" }} title={isLocked?"Unlock — allow rotation":"Lock — prevent rotation"}>
                 {isLocked?"🔒":"🔓"}
               </button>;
@@ -4945,10 +4954,6 @@ export default function CRMApp() {
       var salesLeads = leads.filter(function(l){
         return !l.archived && l.source!=="Daily Request";
       });
-      // Helper: get locked leads
-      var getLockedLeads = function(){try{return JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){return[];}};
-      var lockedIds = getLockedLeads();
-      // 30-day pool limit
       var THIRTY_DAYS = 30*24*60*60*1000;
 
       for(var i=0;i<salesLeads.length;i++){
@@ -4962,8 +4967,8 @@ export default function CRMApp() {
         // Skip VIP leads — pinned, never rotate
         if(l.isVIP) continue;
 
-        // 🔒 Skip locked leads — never rotate
-        if(lockedIds.includes(lid)) continue;
+        // 🔒 Skip locked leads — never rotate (now stored in DB via lead.locked)
+        if(l.locked) continue;
 
         // 👤 Skip leads assigned to team_leader — they keep the lead until they reassign
         var lAgentId = String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
