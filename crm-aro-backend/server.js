@@ -35,7 +35,8 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   splitAgent2Name:{type:String,default:""},
   projectWeight:{type:Number,default:1},
   dealDate:{type:String,default:""},
-  lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0}
+  lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0},
+  locked:{type:Boolean,default:false}
 },{timestamps:true}));
 
 var Activity = mongoose.model("Activity", new mongoose.Schema({
