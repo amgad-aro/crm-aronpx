@@ -1094,6 +1094,7 @@ var LeadsPage = function(p) {
   var [quickSaving, setQuickSaving] = useState(false);
   var [notifGranted, setNotifGranted] = useState(typeof Notification!=="undefined"&&Notification.permission==="granted");
   var [vipFilter, setVipFilter] = useState(false);
+  var [noAgentFilter, setNoAgentFilter] = useState(false);
   var [agentFilter, setAgentFilter] = useState("");
   var [sortBy, setSortBy] = useState("lastActivity");
   var fileRef = useRef(null);
@@ -1112,6 +1113,7 @@ var LeadsPage = function(p) {
   var filtered = p.leadFilter==="all"?allVisible:allVisible.filter(function(l){return l.status===p.leadFilter;});
   filtered = filtered.filter(function(l){return matchSearch(l,p.search);});
   if (vipFilter) filtered = filtered.filter(function(l){return l.isVIP;});
+  if (noAgentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return !aid; });
   if (agentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return aid===agentFilter; });
   filtered = filtered.slice().sort(function(a,b){
     if (sortBy==="lastActivity") return new Date(b.lastActivityTime||0)-new Date(a.lastActivityTime||0);
@@ -1285,7 +1287,7 @@ var LeadsPage = function(p) {
         }} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Archive size={13}/> Archive ({selected2.length})</Btn>}
         {selected2.length>0&&<Btn outline onClick={function(){
           var selectedLeads=filtered.filter(function(l){return selected2.includes(gid(l));});
-          var msg=encodeURIComponent("أهلاً، نحن من شركة ARO العقارية\nلدينا عروض مميزة على مشاريعنا\nتواصل معنا للمزيد 🏠");
+          var msg=encodeURIComponent("");
           selectedLeads.forEach(function(l){window.open("https://wa.me/"+waPhone(l.phone)+"?text="+msg,"_blank");});
         }} style={{ padding:"7px 11px", fontSize:12, color:"#25D366", borderColor:"#25D366" }}>💬 {t.bulkWhatsApp} ({selected2.length})</Btn>}
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
@@ -1303,10 +1305,11 @@ var LeadsPage = function(p) {
           <option value="oldest">📅 Oldest</option>
           <option value="name">🔤 Name</option>
         </select>
-        {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+        {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);setNoAgentFilter(false);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
           <option value="">👤 All Agents</option>
           {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
         </select>}
+        {isOnlyAdmin&&<button onClick={function(){setNoAgentFilter(!noAgentFilter);setAgentFilter("");}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:noAgentFilter?"#EF4444":"#E8ECF1", background:noAgentFilter?"#FEE2E2":"#fff", color:noAgentFilter?"#B91C1C":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>🚫 No Agent {noAgentFilter?"✓":""}</button>}
         <button onClick={function(){setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP Only {vipFilter?"✓":""}</button>
       </div>
     </div>
