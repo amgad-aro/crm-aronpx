@@ -1085,6 +1085,8 @@ var LeadsPage = function(p) {
   var [showBulk, setShowBulk] = useState(false); var [bulkAgent, setBulkAgent] = useState("");
   var [showWaTemplates, setShowWaTemplates] = useState(false);
   var [waLead, setWaLead] = useState(null);
+  var [showBulkWa, setShowBulkWa] = useState(false);
+  var [bulkWaTemplate, setBulkWaTemplate] = useState(null);
   var [showQuickAdd, setShowQuickAdd] = useState(false);
   var [showHistory, setShowHistory] = useState(false);
   var [historyLead, setHistoryLead] = useState(null);
@@ -1285,11 +1287,7 @@ var LeadsPage = function(p) {
           setSelected2([]);
           if(selected&&ids.includes(gid(selected)))setSelected(null);
         }} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Archive size={13}/> Archive ({selected2.length})</Btn>}
-        {selected2.length>0&&<Btn outline onClick={function(){
-          var selectedLeads=filtered.filter(function(l){return selected2.includes(gid(l));});
-          var msg=encodeURIComponent("");
-          selectedLeads.forEach(function(l){window.open("https://wa.me/"+waPhone(l.phone)+"?text="+msg,"_blank");});
-        }} style={{ padding:"7px 11px", fontSize:12, color:"#25D366", borderColor:"#25D366" }}>💬 {t.bulkWhatsApp} ({selected2.length})</Btn>}
+        {selected2.length>0&&<Btn outline onClick={function(){setShowBulkWa(true);}} style={{ padding:"7px 11px", fontSize:12, color:"#25D366", borderColor:"#25D366" }}>💬 {t.bulkWhatsApp} ({selected2.length})</Btn>}
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
         {isOnlyAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
         {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 11px", fontSize:12 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
@@ -1603,6 +1601,36 @@ var LeadsPage = function(p) {
           </div>;
         })}
       </div>}
+    </Modal>}
+
+    {/* Bulk WhatsApp Templates Modal */}
+    {showBulkWa&&<Modal show={true} onClose={function(){setShowBulkWa(false);setBulkWaTemplate(null);}} title={"💬 "+t.bulkWhatsApp+" ("+selected2.length+")"}>
+      <div style={{ marginBottom:12, padding:"10px 14px", background:"#F0FDF4", borderRadius:10, fontSize:12, color:"#15803D" }}>
+        اختار رسالة وبعدين اضغط "إرسال للكل"
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:14 }}>
+        {WA_TEMPLATES_AR.map(function(tmpl){
+          var isSelected=bulkWaTemplate&&bulkWaTemplate.id===tmpl.id;
+          var previewLead=filtered.find(function(l){return selected2.includes(gid(l));});
+          var preview=previewLead?fillTemplate(tmpl.text,previewLead,p.cu.name):tmpl.text;
+          return <div key={tmpl.id} onClick={function(){setBulkWaTemplate(tmpl);}} style={{ border:"2px solid", borderColor:isSelected?"#25D366":"#E8ECF1", borderRadius:12, padding:14, cursor:"pointer", background:isSelected?"#F0FDF4":"#fff" }}>
+            <div style={{ fontSize:12, fontWeight:700, marginBottom:6, color:isSelected?"#15803D":C.text }}>{tmpl.label} {isSelected?"✓":""}</div>
+            <div style={{ fontSize:11, color:C.textLight, lineHeight:1.6, whiteSpace:"pre-line" }}>{preview}</div>
+          </div>;
+        })}
+      </div>
+      <div style={{ display:"flex", gap:10 }}>
+        <Btn outline onClick={function(){setShowBulkWa(false);setBulkWaTemplate(null);}} style={{ flex:1 }}>{t.cancel}</Btn>
+        <Btn onClick={function(){
+          if(!bulkWaTemplate){alert("اختار رسالة الأول");return;}
+          var selectedLeads=filtered.filter(function(l){return selected2.includes(gid(l));});
+          selectedLeads.forEach(function(l){
+            var msg=fillTemplate(bulkWaTemplate.text,l,p.cu.name);
+            window.open("https://wa.me/"+waPhone(l.phone)+"?text="+encodeURIComponent(msg),"_blank");
+          });
+          setShowBulkWa(false);setBulkWaTemplate(null);
+        }} style={{ flex:2, background:"#25D366", borderColor:"#25D366" }}>💬 إرسال للكل ({selected2.length})</Btn>
+      </div>
     </Modal>}
 
     {/* WhatsApp Templates Modal */}
