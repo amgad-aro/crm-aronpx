@@ -172,20 +172,17 @@ app.get("/api/users", auth, async function(req, res) {
       var managerUser = await User.findById(uid).lean();
       var visibleIds = [managerUser._id];
 
-      if (!managerUser.reportsTo) {
-        // Top-level manager: sees team leaders under him + their sales
-        var teamLeaders = await User.find({ reportsTo: managerUser._id, role: { $in: ["manager","team_leader"] } }).lean();
-        teamLeaders.forEach(function(tl) { visibleIds.push(tl._id); });
-        if (teamLeaders.length > 0) {
-          var tlIds = teamLeaders.map(function(tl) { return tl._id; });
-          var salesUnder = await User.find({ reportsTo: { $in: tlIds }, role: { $in: ["sales","team_leader"] } }).lean();
-          salesUnder.forEach(function(s) { visibleIds.push(s._id); });
-        }
-      } else {
-        // Team leader: sees only direct sales under them
-        var directSales = await User.find({ reportsTo: managerUser._id, role: { $in: ["sales","team_leader"] } }).lean();
-        directSales.forEach(function(s) { visibleIds.push(s._id); });
+      // Always: sees team leaders under him + their sales
+      var teamLeaders = await User.find({ reportsTo: managerUser._id, role: { $in: ["manager","team_leader"] } }).lean();
+      teamLeaders.forEach(function(tl) { visibleIds.push(tl._id); });
+      if (teamLeaders.length > 0) {
+        var tlIds = teamLeaders.map(function(tl) { return tl._id; });
+        var salesUnder = await User.find({ reportsTo: { $in: tlIds }, role: { $in: ["sales","team_leader"] } }).lean();
+        salesUnder.forEach(function(s) { visibleIds.push(s._id); });
       }
+      // Also direct sales reporting to manager
+      var directSales = await User.find({ reportsTo: managerUser._id, role: "sales" }).lean();
+      directSales.forEach(function(s) { if(!visibleIds.some(function(id){ return String(id)===String(s._id); })) visibleIds.push(s._id); });
       users = await User.find({ _id: { $in: visibleIds } }).select("-password").sort({ createdAt: -1 });
       users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
 
