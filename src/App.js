@@ -942,8 +942,8 @@ var playAlertSound = function() {
 
 // ===== WHATSAPP TEMPLATES =====
 var WA_TEMPLATES_AR = [
-  { id:1, label:"ترحيب", text:"أهلاً {name} 👋\nأنا {agent} من شركة ARO العقارية\nشكراً لاهتمامك بمشروع {project}\nمتى يناسبك نتكلم؟" },
-  { id:2, label:"متابعة", text:"أهلاً {name}\nبتواصل معاكم بخصوص عرضنا على {project}\nهل عندك وقت نتكلم Today؟ 🏠" },
+  { id:1, label:"ترحيب", text:"أهلاً {name} 👋\nأنا {agent} من شركة ARO Investment\nشكراً لاهتمامك بمشروع {project}\nمتى يناسبك نتكلم؟" },
+  { id:2, label:"متابعة", text:"أهلاً {name}\nبتواصل معاكم بخصوص عرضنا على {project}\nهل عندك وقت نتكلم؟ 🏠" },
   { id:3, label:"عرض خاص", text:"🎯 عرض خاص لـ {name}\nلدينا وحدات محدودة في {project}\nبسعر مميز - تواصل معنا الآن! 📞" },
   { id:4, label:"Confirm موعد", text:"أهلاً {name} 😊\nبتذكيرك بموعدنا غداً\nنتطلع لنراك! ✅" },
   { id:5, label:"بعد الاجتماع", text:"شكراً {name} على وقتك الكريم 🙏\nيسعدني خدمتك دائماً\nلو عندك أي استفسار أنا دايماً موجود" },
