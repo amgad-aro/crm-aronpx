@@ -4892,21 +4892,23 @@ export default function CRMApp() {
       };}catch(e){return{naCount:2,naHours:1,niDays:1,noActDays:2,cbDays:1,hotDays:2};}
     };
 
-    // Helper: pick agent from saved list with least active leads
+    // Helper: pick agent using round-robin rotation
     var pickAgent = function(excludeId){
       var savedIds = getSavedAgents();
-      if(!savedIds.length) return null; // no agents = no rotation
+      if(!savedIds.length) return null;
       var agents = users.filter(function(u){return savedIds.includes(gid(u))&&(u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
       if(!agents.length) return null;
-      var loads = agents.map(function(u){
-        return {agent:u, cnt:leads.filter(function(l){
-          var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
-          return a===gid(u)&&!l.archived;
-        }).length};
-      });
-      loads.sort(function(a,b){return a.cnt-b.cnt;});
-      var best = loads.find(function(x){return gid(x.agent)!==excludeId;});
-      return best?best.agent:(loads[0].agent!==excludeId?loads[0].agent:null);
+      // Filter out the current agent
+      var candidates = agents.filter(function(u){return gid(u)!==excludeId;});
+      if(!candidates.length) candidates = agents;
+      // Round-robin: get last index from localStorage
+      var lastIdx = 0;
+      try{lastIdx = Number(localStorage.getItem('crm_rot_last_idx')||'0');}catch(e){}
+      var nextIdx = lastIdx % candidates.length;
+      var picked = candidates[nextIdx];
+      // Save next index
+      try{localStorage.setItem('crm_rot_last_idx', String((nextIdx+1) % candidates.length));}catch(e){}
+      return picked;
     };
 
     // Helper: send in-app notification to admins + browser notif
