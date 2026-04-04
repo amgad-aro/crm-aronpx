@@ -406,6 +406,8 @@ app.post("/api/leads/:id/upload-image", auth, async function(req, res) {
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
+    // Never overwrite agentId with null/empty unless explicitly reassigning
+    if (!update.agentId) delete update.agentId;
     // If agentId is being changed (manual reassign) — reset status to NewLead
     var oldLead = null;
     if (req.body.agentId) {
@@ -654,6 +656,8 @@ app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req
 app.put("/api/daily-requests/:id", auth, async function(req, res) {
   try {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
+    // Never overwrite agentId with null/empty — only update if explicitly provided and valid
+    if (!update.agentId) delete update.agentId;
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
     if (req.body.status) {
       var actNote = "DailyReq: " + req.body.status;
