@@ -156,6 +156,57 @@ function csrfProtection(req, res, next) {
   next();
 }
 
+var leadUploadImageValidation = validate([
+  body("imageType").optional().isIn(["eoi", "deal"]),
+  body("imageData").isString().custom(function(value) {
+    // Accept data URLs and raw base64 payloads.
+    var raw = String(value || "").trim();
+    if (!raw) throw new Error("imageData is required");
+
+    var mime = "";
+    var base64Part = raw;
+    var dataUrlMatch = raw.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (dataUrlMatch) {
+      mime = dataUrlMatch[1].toLowerCase();
+      base64Part = dataUrlMatch[2];
+    }
+
+    if (!/^[A-Za-z0-9+/=]+$/.test(base64Part)) {
+      throw new Error("Invalid base64 image data");
+    }
+
+    var buffer;
+    try {
+      buffer = Buffer.from(base64Part, "base64");
+    } catch (e) {
+      throw new Error("Invalid base64 image data");
+    }
+
+    if (!buffer || !buffer.length) {
+      throw new Error("Invalid base64 image data");
+    }
+
+    // 5MB decoded payload limit for safer storage and DoS resistance.
+    if (buffer.length > 5 * 1024 * 1024) {
+      throw new Error("Image too large (max 5MB)");
+    }
+
+    var isJpeg = buffer.length > 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF;
+    var isPng = buffer.length > 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47 && buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A;
+    var isWebp = buffer.length > 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP";
+
+    if (!isJpeg && !isPng && !isWebp) {
+      throw new Error("Only JPEG, PNG, or WEBP images are allowed");
+    }
+
+    if (mime && ["image/jpeg", "image/jpg", "image/png", "image/webp"].indexOf(mime) === -1) {
+      throw new Error("Unsupported image MIME type");
+    }
+
+    return true;
+  })
+]);
+
 // ===== AUTH ROUTES =====
 app.post("/api/login", async function(req, res) {
   try {
@@ -467,7 +518,7 @@ app.put("/api/leads/bulk-reassign", auth, csrfProtection, adminOnly, async funct
 
 // ===== UPDATE LEAD =====
 // ===== IMAGE UPLOAD (base64) =====
-app.post("/api/leads/:id/upload-image", auth, csrfProtection, async function(req, res) {
+app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async function(req, res) {
   try {
     var { imageData, imageType } = req.body; // imageType: "eoi" or "deal"
     if (!imageData) return res.status(400).json({ error: "No image data" });
