@@ -4,7 +4,6 @@ var mongoose = require("mongoose");
 var cors = require("cors");
 var bcrypt = require("bcryptjs");
 var jwt = require("jsonwebtoken");
-var helmet = require("helmet");
 var crypto = require("crypto");
 
 // ===== CORS OPTIONS =====
@@ -78,19 +77,6 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
 },{timestamps:true}));
 
 var app = express();
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      fontSrc: ["'self'", "https://fonts.gstatic.com"],
-      imgSrc: ["'self'", "data:", "https:"],
-      scriptSrc: ["'self'"],
-      connectSrc: ["'self'", "https://crm-aro-backend-production.up.railway.app"]
-    }
-  },
-  crossOriginEmbedderPolicy: false
-}));
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
