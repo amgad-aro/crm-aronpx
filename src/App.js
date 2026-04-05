@@ -12,9 +12,12 @@ import {
 
 const API = "https://crm-aro-backend-production.up.railway.app";
 
-async function apiFetch(path, method, body, token) {
+async function apiFetch(path, method, body, token, csrfToken) {
   var opts = { method: method || "GET", headers: { "Content-Type": "application/json" } };
   if (token) opts.headers["Authorization"] = "Bearer " + token;
+  if (csrfToken && (method === "POST" || method === "PUT" || method === "DELETE")) {
+    opts.headers["X-CSRF-Token"] = csrfToken;
+  }
   if (body) opts.body = JSON.stringify(body);
   var res;
   try { res = await fetch(API + path, opts); } catch(netErr) { throw new Error("Connection error"); }
@@ -495,7 +498,7 @@ var LoginPage = function(p) {
   var [user, setUser] = useState(""); var [pass, setPass] = useState(""); var [err, setErr] = useState(""); var [showPass, setShowPass] = useState(false); var [loading, setLoading] = useState(false);
   var go = async function() {
     if (!user||!pass) return; setLoading(true); setErr("");
-    try { var data = await apiFetch("/api/login","POST",{username:user,password:pass}); p.onLogin(data.user,data.token); }
+    try { var data = await apiFetch("/api/login","POST",{username:user,password:pass}); p.onLogin(data.user,data.token,data.csrfToken); }
     catch(e) { setErr(t.loginError); } setLoading(false);
   };
   return <div style={{ minHeight:"100vh", background:"linear-gradient(135deg,"+C.primaryDark+" 0%,"+C.primary+" 55%,"+C.primaryLight+" 100%)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Cairo','Segoe UI',sans-serif", padding:16 }}>
@@ -854,8 +857,8 @@ var LeadForm = function(p) {
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||null, status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
       // Keep deal metadata in payload so it saves to DB
       var result = p.editId
-        ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
-        : await apiFetch("/api/leads", "POST", payload, p.token);
+        ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token, p.csrfToken)
+        : await apiFetch("/api/leads", "POST", payload, p.token, p.csrfToken);
       // Also save extra deal fields to localStorage as backup
       if(result && result._id && (form.downPaymentPct||form.installmentYears||form.dealDate)){
         saveDealExtra(String(result._id),{downPaymentPct:form.downPaymentPct||"",installmentYears:form.installmentYears||"",dealDate:form.dealDate||""});
@@ -1210,7 +1213,7 @@ var LeadsPage = function(p) {
   var archiveLead = async function(lid) {
     if(!window.confirm(t.archiveConfirm)) return;
     try {
-      await apiFetch("/api/leads/"+lid+"/archive","PUT",null,p.token);
+      await apiFetch("/api/leads/"+lid+"/archive","PUT",null,p.token,p.csrfToken);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:true}):l;});});
       if(selected&&gid(selected)===lid) setSelected(null);
     } catch(e){alert(e.message);}
@@ -1249,7 +1252,7 @@ var LeadsPage = function(p) {
   var doBulkReassign = async function() {
     if(!bulkAgent||selected2.length===0) return;
     try {
-      await apiFetch("/api/leads/bulk-reassign","PUT",{leadIds:selected2,agentId:bulkAgent},p.token);
+      await apiFetch("/api/leads/bulk-reassign","PUT",{leadIds:selected2,agentId:bulkAgent},p.token,p.csrfToken);
       var updAgent=p.users.find(function(u){return gid(u)===bulkAgent;});
       p.setLeads(function(prev){return prev.map(function(l){return selected2.includes(gid(l))?Object.assign({},l,{agentId:updAgent||bulkAgent}):l;});});
       setSelected2([]); setShowBulk(false);
@@ -1487,7 +1490,7 @@ var LeadsPage = function(p) {
           </div>
           {/* Quick action buttons */}
           <div style={{ display:"flex", gap:6, marginTop:10 }}>
-            <a href={"tel:"+cleanPhone(selected.phone)} onClick={async function(){try{await apiFetch("/api/activities","POST",{leadId:gid(selected),type:"call",note:"📞 Call initiated — "+selected.phone},p.token);p.setActivities&&p.setActivities(function(prev){return [{_id:Date.now(),type:"call",note:"📞 Call initiated",leadId:selected,userId:p.cu,createdAt:new Date().toISOString()}].concat(prev);});}catch(ex){}}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#EFF6FF", color:"#60A5FA", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> {t.call}</a>
+            <a href={"tel:"+cleanPhone(selected.phone)} onClick={async function(){try{await apiFetch("/api/activities","POST",{leadId:gid(selected),type:"call",note:"📞 Call initiated — "+selected.phone},p.token,p.csrfToken);p.setActivities&&p.setActivities(function(prev){return [{_id:Date.now(),type:"call",note:"📞 Call initiated",leadId:selected,userId:p.cu,createdAt:new Date().toISOString()}].concat(prev);});}catch(ex){}}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#EFF6FF", color:"#60A5FA", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> {t.call}</a>
             <a href={"https://wa.me/"+waPhone(selected.phone)} target="_blank" rel="noreferrer" style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(37,211,102,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> {t.whatsapp}</a>
           </div>
         </div>
@@ -3558,7 +3561,7 @@ var DailyRequestsPage = function(p) {
             <Btn onClick={async function(){
               if(!bulkAgent)return;
               try{
-                await apiFetch("/api/daily-requests/bulk-reassign","PUT",{leadIds:selected2,agentId:bulkAgent},p.token);
+                await apiFetch("/api/daily-requests/bulk-reassign","PUT",{leadIds:selected2,agentId:bulkAgent},p.token,p.csrfToken);
                 var agentUser=p.users.find(function(u){return gid(u)===bulkAgent;});
                 setRequests(function(prev){return prev.map(function(r){return selected2.includes(gid(r))?Object.assign({},r,{agentId:{_id:bulkAgent,name:agentUser?agentUser.name:""}}):r;});});
                 setSelected2([]);setShowBulk(false);setBulkAgent("");
@@ -4516,7 +4519,7 @@ var CallCalendarPage = function(p) {
 // ===== MAIN APP =====
 export default function CRMApp() {
   var [lang,setLang]=useState((function(){try{return "en";}catch(e){return "ar";}})());
-  var [currentUser,setCurrentUser]=useState(null); var [token,setToken]=useState(null);
+  var [currentUser,setCurrentUser]=useState(null); var [token,setToken]=useState(null); var [csrfToken,setCsrfToken]=useState(null);
   var [page,setPage]=useState((function(){try{return localStorage.getItem("crm_page")||null;}catch(e){return null;}})());
   var [leads,setLeads]=useState([]); var [users,setUsers]=useState([]);
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
@@ -4712,16 +4715,16 @@ export default function CRMApp() {
       var saved = localStorage.getItem('crm_aro_session');
       if (saved) {
         var s = JSON.parse(saved);
-        if (s.user && s.token) { setCurrentUser(s.user); setToken(s.token); loadData(s.token, s.user); }
+        if (s.user && s.token) { setCurrentUser(s.user); setToken(s.token); if(s.csrfToken) setCsrfToken(s.csrfToken); loadData(s.token, s.user); }
       }
     } catch(e) {}
   }, []);
 
-  var handleLogin=function(user,tok){
-    setCurrentUser(user); setToken(tok); loadData(tok, user);
+  var handleLogin=function(user,tok,csrfTok){
+    setCurrentUser(user); setToken(tok); setCsrfToken(csrfTok); loadData(tok, user);
     var defaultPage = (user.role==="sales"||user.role==="team_leader") ? "myday" : "dashboard";
     setPage(defaultPage);
-    try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok})); } catch(e){}
+    try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok,csrfToken:csrfTok})); } catch(e){}
   };
   // Auto-refresh disabled
 
@@ -5090,7 +5093,7 @@ export default function CRMApp() {
     return function(){clearInterval(rotInterval);};
   },[token, leads.length, users.length]);
 
-  var handleLogout=function(){setCurrentUser(null);setToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
+  var handleLogout=function(){setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
 
   if(!currentUser) return <LoginPage t={t} onLogin={handleLogin}/>;
@@ -5104,7 +5107,7 @@ export default function CRMApp() {
   var myId = String(currentUser.id||currentUser._id||"");
   var myTeamUsers = users; // server handles all filtering per role
 
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
 
   var renderPage=function(){
     switch(currentPage){
