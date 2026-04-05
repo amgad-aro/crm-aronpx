@@ -5,6 +5,23 @@ var cors = require("cors");
 var bcrypt = require("bcryptjs");
 var jwt = require("jsonwebtoken");
 var helmet = require("helmet");
+var crypto = require("crypto");
+
+// ===== CORS OPTIONS =====
+var corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, etc.)
+    if (!origin) return callback(null, true);
+    // Allow localhost for development
+    if (origin.includes("localhost") || origin.includes("127.0.0.1")) return callback(null, true);
+    // Allow Vercel deployment
+    if (origin.includes("vercel.app")) return callback(null, true);
+    // Allow Railway backend itself
+    if (origin.includes("railway.app")) return callback(null, true);
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true
+};
 
 // ===== MODELS =====
 delete mongoose.models["User"];
@@ -135,6 +152,24 @@ function adminOnly(req, res, next) {
   next();
 }
 
+function csrfProtection(req, res, next) {
+  // Skip CSRF check for GET requests and login
+  if (req.method === 'GET' || req.path === '/api/login') {
+    return next();
+  }
+
+  var csrfToken = req.headers['x-csrf-token'] || req.body._csrf;
+  if (!csrfToken) {
+    return res.status(403).json({ error: "CSRF token missing" });
+  }
+
+  if (!req.user.csrfToken || csrfToken !== req.user.csrfToken) {
+    return res.status(403).json({ error: "CSRF token invalid" });
+  }
+
+  next();
+}
+
 // ===== AUTH ROUTES =====
 app.post("/api/login", async function(req, res) {
   try {
@@ -142,9 +177,34 @@ app.post("/api/login", async function(req, res) {
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
     var valid = await bcrypt.compare(req.body.password, user.password);
     if (!valid) return res.status(401).json({ error: "Invalid credentials" });
-    var token = jwt.sign({ id: user._id, role: user.role, name: user.name }, process.env.JWT_SECRET, { expiresIn: "7d" });
+
+    // Generate CSRF token
+    var csrfToken = crypto.randomBytes(32).toString('hex');
+
+    var token = jwt.sign({
+      id: user._id,
+      role: user.role,
+      name: user.name,
+      csrfToken: csrfToken
+    }, process.env.JWT_SECRET, { expiresIn: "7d" });
+
     await User.findByIdAndUpdate(user._id, { lastSeen: new Date() });
-    res.json({ token: token, user: { id: user._id, name: user.name, username: user.username, role: user.role, title: user.title, email: user.email, phone: user.phone, teamId: user.teamId||"", teamName: user.teamName||"", reportsTo: user.reportsTo||null } });
+    res.json({
+      token: token,
+      csrfToken: csrfToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        username: user.username,
+        role: user.role,
+        title: user.title,
+        email: user.email,
+        phone: user.phone,
+        teamId: user.teamId||"",
+        teamName: user.teamName||"",
+        reportsTo: user.reportsTo||null
+      }
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -222,7 +282,7 @@ app.get("/api/users", auth, async function(req, res) {
   }
 });
 
-app.post("/api/users", auth, adminOnly, async function(req, res) {
+app.post("/api/users", auth, adminOnly, csrfProtection, async function(req, res) {
   try {
     var hashed = await bcrypt.hash(req.body.password || "sales123", 10);
     var teamId = req.body.teamId || "";
@@ -258,7 +318,7 @@ app.post("/api/users", auth, adminOnly, async function(req, res) {
   }
 });
 
-app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
+app.put("/api/users/:id", auth, adminOnly, csrfProtection, async function(req, res) {
   try {
     var update = {};
     if (req.body.name) update.name = req.body.name;
@@ -280,7 +340,7 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
   }
 });
 
-app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
+app.delete("/api/users/:id", auth, adminOnly, csrfProtection, async function(req, res) {
   try {
     await User.findByIdAndDelete(req.params.id);
     res.json({ ok: true });
@@ -373,7 +433,7 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
 });
 
 // ===== ADD LEAD =====
-app.post("/api/leads", auth, async function(req, res) {
+app.post("/api/leads", auth, csrfProtection, async function(req, res) {
   try {
     console.log("NEW LEAD body:", JSON.stringify(req.body));
     var agentId = (req.body.agentId && req.body.agentId !== "")
@@ -408,7 +468,7 @@ app.post("/api/leads", auth, async function(req, res) {
 });
 
 // ===== BULK REASSIGN (must be before /:id) =====
-app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
+app.put("/api/leads/bulk-reassign", auth, csrfProtection, adminOnly, async function(req, res) {
   try {
     var { leadIds, agentId } = req.body;
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
@@ -421,7 +481,7 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
 
 // ===== UPDATE LEAD =====
 // ===== IMAGE UPLOAD (base64) =====
-app.post("/api/leads/:id/upload-image", auth, async function(req, res) {
+app.post("/api/leads/:id/upload-image", auth, csrfProtection, async function(req, res) {
   try {
     var { imageData, imageType } = req.body; // imageType: "eoi" or "deal"
     if (!imageData) return res.status(400).json({ error: "No image data" });
@@ -432,7 +492,7 @@ app.post("/api/leads/:id/upload-image", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put("/api/leads/:id", auth, async function(req, res) {
+app.put("/api/leads/:id", auth, csrfProtection, async function(req, res) {
   try {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty unless explicitly reassigning
@@ -470,7 +530,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
   }
 });
 
-app.delete("/api/leads/:id", auth, adminOnly, async function(req, res) {
+app.delete("/api/leads/:id", auth, csrfProtection, adminOnly, async function(req, res) {
   try {
     await Lead.findByIdAndDelete(req.params.id);
     res.json({ ok: true });
@@ -480,7 +540,7 @@ app.delete("/api/leads/:id", auth, adminOnly, async function(req, res) {
 });
 
 // Bulk delete archived leads
-app.post("/api/leads/bulk-delete", auth, adminOnly, async function(req, res) {
+app.post("/api/leads/bulk-delete", auth, csrfProtection, adminOnly, async function(req, res) {
   try {
     var { ids } = req.body;
     if(!ids||!ids.length) return res.json({ ok: true, count: 0 });
@@ -525,7 +585,7 @@ app.get("/api/activities", auth, async function(req, res) {
   }
 });
 
-app.post("/api/activities", auth, async function(req, res) {
+app.post("/api/activities", auth, csrfProtection, async function(req, res) {
   try {
     var activity = await Activity.create({
       userId: req.user.id,
@@ -566,7 +626,7 @@ app.get("/api/tasks", auth, async function(req, res) {
   }
 });
 
-app.post("/api/tasks", auth, async function(req, res) {
+app.post("/api/tasks", auth, csrfProtection, async function(req, res) {
   try {
     var task = await Task.create({
       title: req.body.title,
@@ -583,7 +643,7 @@ app.post("/api/tasks", auth, async function(req, res) {
   }
 });
 
-app.put("/api/tasks/:id", auth, async function(req, res) {
+app.put("/api/tasks/:id", auth, csrfProtection, async function(req, res) {
   try {
     var task = await Task.findByIdAndUpdate(req.params.id, req.body, { new: true }).populate("userId", "name").populate("leadId", "name");
     res.json(task);
@@ -592,7 +652,7 @@ app.put("/api/tasks/:id", auth, async function(req, res) {
   }
 });
 
-app.delete("/api/tasks/:id", auth, async function(req, res) {
+app.delete("/api/tasks/:id", auth, csrfProtection, async function(req, res) {
   try {
     await Task.findByIdAndDelete(req.params.id);
     res.json({ ok: true });
@@ -663,7 +723,7 @@ app.get("/api/daily-requests", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post("/api/daily-requests", auth, async function(req, res) {
+app.post("/api/daily-requests", auth, csrfProtection, async function(req, res) {
   try {
     var r = await DailyRequest.create({
       name: req.body.name, phone: req.body.phone,
@@ -685,7 +745,7 @@ app.post("/api/daily-requests", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req, res) {
+app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, csrfProtection, async function(req, res) {
   try {
     var { leadIds, agentId } = req.body;
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
@@ -695,7 +755,7 @@ app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put("/api/daily-requests/:id", auth, async function(req, res) {
+app.put("/api/daily-requests/:id", auth, csrfProtection, async function(req, res) {
   try {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty — only update if explicitly provided and valid
@@ -738,7 +798,7 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete("/api/daily-requests/:id", auth, adminOnly, async function(req, res) {
+app.delete("/api/daily-requests/:id", auth, adminOnly, csrfProtection, async function(req, res) {
   try {
     await DailyRequest.findByIdAndDelete(req.params.id);
     res.json({ ok: true });
@@ -759,7 +819,7 @@ app.get("/api/daily-requests/:id/history", auth, async function(req, res) {
 // ===== BULK REASSIGN =====
 // ===== FIX MANAGER TEAM IDS =====
 // One-time endpoint to auto-assign teamId to managers based on their sales' teamIds
-app.post("/api/fix-manager-teams", auth, adminOnly, async function(req, res) {
+app.post("/api/fix-manager-teams", auth, adminOnly, csrfProtection, async function(req, res) {
   try {
     var managers = await User.find({ role: "manager", active: true }).lean();
     var fixed = [];
@@ -781,7 +841,7 @@ app.post("/api/fix-manager-teams", auth, adminOnly, async function(req, res) {
 });
 
 // ===== ARCHIVE LEAD =====
-app.put("/api/leads/:id/archive", auth, adminOnly, async function(req, res) {
+app.put("/api/leads/:id/archive", auth, csrfProtection, adminOnly, async function(req, res) {
   try {
     var lead = await Lead.findByIdAndUpdate(req.params.id, { archived: true }, { new: true });
     res.json(lead);
