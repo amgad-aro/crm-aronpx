@@ -8,18 +8,11 @@ var crypto = require("crypto");
 
 // ===== CORS OPTIONS =====
 var corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, etc.)
-    if (!origin) return callback(null, true);
-    // Allow localhost for development
-    if (origin.includes("localhost") || origin.includes("127.0.0.1")) return callback(null, true);
-    // Allow Vercel deployment
-    if (origin.includes("vercel.app")) return callback(null, true);
-    // Allow Railway backend itself
-    if (origin.includes("railway.app")) return callback(null, true);
-    return callback(new Error("Not allowed by CORS"));
-  },
-  credentials: true
+  // Reflect caller origin to avoid blocking Vercel custom domains.
+  origin: true,
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token", "X-API-Key"]
 };
 
 // ===== MODELS =====
