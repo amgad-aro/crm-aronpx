@@ -329,8 +329,20 @@ app.get("/api/leads", auth, async function(req, res) {
     }
     // admin: no filter
 
-    var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").sort({ createdAt: -1 });
-    res.json(leads);
+    // Pagination
+    var page = parseInt(req.query.page) || 1;
+    var limit = parseInt(req.query.limit) || 20;
+    var skip = (page - 1) * limit;
+
+    var total = await Lead.countDocuments(query);
+    var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").sort({ createdAt: -1 }).skip(skip).limit(limit);
+
+    res.json({
+      data: leads,
+      total: total,
+      page: page,
+      totalPages: Math.ceil(total / limit)
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -479,8 +491,21 @@ app.get("/api/activities", auth, async function(req, res) {
       query.userId = { $in: teamIds };
     }
     // manager/admin/sales_admin see all (or server already filtered users)
-    var activities = await Activity.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 }).limit(50);
-    res.json(activities);
+
+    // Pagination
+    var page = parseInt(req.query.page) || 1;
+    var limit = parseInt(req.query.limit) || 20;
+    var skip = (page - 1) * limit;
+
+    var total = await Activity.countDocuments(query);
+    var activities = await Activity.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 }).skip(skip).limit(limit);
+
+    res.json({
+      data: activities,
+      total: total,
+      page: page,
+      totalPages: Math.ceil(total / limit)
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

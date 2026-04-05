@@ -16,11 +16,10 @@ async function apiFetch(path, method, body, token) {
   var opts = { method: method || "GET", headers: { "Content-Type": "application/json" } };
   if (token) opts.headers["Authorization"] = "Bearer " + token;
   if (body) opts.body = JSON.stringify(body);
-  var res;
-  try { res = await fetch(API + path, opts); } catch(netErr) { throw new Error("Connection error"); }
-  var data;
-  try { data = await res.json(); } catch(e) { data = {}; }
+  var res = await fetch(API + path, opts);
+  var data = await res.json();
   if (res.status === 401) {
+    // Token expired or invalid — clear session and reload
     try { localStorage.removeItem('crm_aro_session'); } catch(e) {}
     window.location.reload();
     return;
@@ -340,7 +339,6 @@ var StatusModal = function(p) {
   var [dealUnitType, setDealUnitType] = useState("");
   var [dealBudget, setDealBudget] = useState("");
   var [eoiDeposit, setEoiDeposit] = useState("");
-  var [eoiDateInput, setEoiDateInput] = useState("");
   var [potBudget, setPotBudget] = useState("");
   var [potDeposit, setPotDeposit] = useState("");
   var [potInstalment, setPotInstalment] = useState("");
@@ -358,7 +356,7 @@ var StatusModal = function(p) {
   var needsPotFields = st==="Potential"||st==="HotCase";
 
   useEffect(function(){
-    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit(""); setEoiDateInput("");
+    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit("");
     setPotBudget(""); setPotDeposit(""); setPotInstalment(""); setErr("");
   },[p.show]);
 
@@ -375,7 +373,7 @@ var StatusModal = function(p) {
     if (needsPotFields && !potInstalment.trim()){ setErr("Please enter the Installments"); return; }
     setSaving(true);
     var extra = (isDoneDeal||isEOI)
-      ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput }
+      ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit }
       : needsPotFields
         ? { budget: potBudget, deposit: potDeposit, instalment: potInstalment }
         : {};
@@ -468,11 +466,6 @@ var StatusModal = function(p) {
           onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setDealBudget(r?Number(r).toLocaleString():"");setErr("");}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
       </div>
-      {isEOI&&<div style={{ marginBottom:11 }}>
-        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 EOI Date</label>
-        <input type="date" value={eoiDateInput} onChange={function(e){setEoiDateInput(e.target.value);}}
-          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
-      </div>}
       {isEOI&&<div style={{ marginBottom:11 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💵 Deposit (EGP)</label>
         <input type="text" placeholder="" value={eoiDeposit}
@@ -598,11 +591,7 @@ var Header = function(p) {
   var callbackNow = allItemsForNotif.filter(function(l){
     if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
     var diff = new Date(l.callbackTime).getTime() - now;
-    if(!(diff<=0 && diff>-60*60*1000)) return false;
-    // Hide if had activity after the callback time (already handled)
-    var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
-    if(lastAct > new Date(l.callbackTime).getTime()) return false;
-    return true;
+    return diff<=0 && diff>-60*60*1000;
   });
   var upcoming = allItemsForNotif.filter(function(l){
     if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
@@ -612,11 +601,7 @@ var Header = function(p) {
   var overdueCallback = allItemsForNotif.filter(function(l){
     if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
     var diff = new Date(l.callbackTime).getTime() - now;
-    if(!(diff < -60*60*1000)) return false;
-    // Hide if had activity after the callback time
-    var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
-    if(lastAct > new Date(l.callbackTime).getTime()) return false;
-    return true;
+    return diff < -60*60*1000;
   });
   var noActivityLeads = myLeadsForNotif.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>1*24*60*60*1000;});
   var noActivityDR = myDRForNotif.filter(function(r){return r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>1*24*60*60*1000;});
@@ -774,42 +759,43 @@ var Header = function(p) {
           {callbackNow.length===0&&upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No notifications</div>}
           {callbackNow.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
             <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Callback Now!</div>
-            {callbackNow.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2", width:"100%", background:"none", border:"none", textAlign:"left" }}>
+            {callbackNow.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
               <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:11, fontWeight:400 }}>{l.name}{agName&&<span style={{ fontSize:10, color:C.accent }}> — {agName}</span>}</div>
+                <div style={{ fontSize:11, fontWeight:600 }}>{l.name}{agName&&<span style={{ fontSize:10, color:C.accent, fontWeight:400 }}> — {agName}</span>}</div>
                 <div style={{ fontSize:10, color:C.danger }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
               </div>
-            </button>;})}  
+            </div>;})}
           </div>}
           {overdueCallback.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
             <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Overdue CallBack</div>
-            {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2", width:"100%", background:"none", border:"none", textAlign:"left" }}>
+            {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2" }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
               <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:11, fontWeight:400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
+                <div style={{ fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
                 <div style={{ fontSize:10, color:C.danger }}>{agName?agName+" · ":""}{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
               </div>
-            </button>;})}  
+            </div>;})}
           </div>}
           {allNoActivity.length>0&&<div style={{ padding:"8px 16px", background:"#FFF7ED", borderBottom:"1px solid #FEF3E2" }}>
             <div style={{ fontSize:11, fontWeight:700, color:"#EA580C", marginBottom:6 }}>😴 No Contact +1 Day</div>
-            {allNoActivity.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEF3E2", width:"100%", background:"none", border:"none", textAlign:"left" }}>
+            {allNoActivity.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <div key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEF3E2" }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"#FED7AA", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>😴</div>
               <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:11, fontWeight:400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
+                <div style={{ fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
                 <div style={{ fontSize:10, color:"#EA580C" }}>{agName?agName+" · ":""}{timeAgo(l.lastActivityTime,p.t)}</div>
               </div>
-            </button>;})}  
+            </div>;})}
           </div>}
-          {upcoming.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:""; return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:10, cursor:"pointer", width:"100%", background:"none", border:"none", textAlign:"left" }}>
+          {upcoming.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:""; return <div key={gid(l)} onClick={function(){var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}p.setShowNotif(false);}} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:10, cursor:"pointer" }}
+            onMouseEnter={function(e){e.currentTarget.style.background="#F8FAFC";}} onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
             <div style={{ width:32, height:32, borderRadius:8, background:C.warning+"15", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Phone size={14} color={C.warning}/></div>
             <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontSize:12, fontWeight:400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontSize:10, color:C.accent }}> — {agName}</span>}</div>
+              <div style={{ fontSize:12, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontSize:10, color:C.accent, fontWeight:400 }}> — {agName}</span>}</div>
               <div style={{ fontSize:11, color:C.textLight }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
             </div>
             <ChevronRight size={13} color={C.textLight}/>
-          </button>;})}  
+          </div>;})}
         </div>}
       </div>
     </div>
@@ -821,7 +807,7 @@ var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [form, setForm] = useState((function(){
-    var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", eoiDate:"", eoiDeposit:"", downPaymentPct:"", installmentYears:"" };
+    var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", downPaymentPct:"", installmentYears:"" };
     // Load saved extra fields from localStorage if editing a deal
     if(p.editId){
       var extra=getDealExtra(String(p.editId));
@@ -834,7 +820,6 @@ var LeadForm = function(p) {
   var [dupWarning, setDupWarning] = useState(null);
   var [saving, setSaving] = useState(false);
   var isReq = p.isReq||false;
-  var isEOIForm = p.initialStatus==="EOI"||(p.editId&&p.initial&&p.initial.status==="EOI");
 
   var checkDup = async function(phone) {
     if (phone.length < 8) { setDupWarning(null); return; }
@@ -852,7 +837,9 @@ var LeadForm = function(p) {
     setSaving(true);
     try {
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||null, status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
-      // Keep deal metadata in payload so it saves to DB
+      // Remove fields backend doesn't accept directly
+      delete payload.downPaymentPct; delete payload.installmentYears;
+      // Keep dealDate in payload so it saves to DB
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
         : await apiFetch("/api/leads", "POST", payload, p.token);
@@ -888,9 +875,7 @@ var LeadForm = function(p) {
     <Inp label={t.project} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder=""/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
-    {isEOIForm&&<Inp label="📅 EOI Date" type="date" value={form.eoiDate||""} onChange={function(e){upd("eoiDate",e.target.value);}}/>}
-    {isEOIForm&&<Inp label="💵 Deposit (EGP)" value={form.eoiDeposit||""} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("eoiDeposit",r?Number(r).toLocaleString():"");}} placeholder=""/>}
-    {!isEOIForm&&<Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>}
+    <Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
     {(p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal"))&&<Inp label="Deal Date" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
     {(p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal"))&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
@@ -949,8 +934,8 @@ var playAlertSound = function() {
 
 // ===== WHATSAPP TEMPLATES =====
 var WA_TEMPLATES_AR = [
-  { id:1, label:"ترحيب", text:"أهلاً {name} 👋\nأنا {agent} من شركة ARO Investment\nشكراً لاهتمامك بمشروع {project}\nمتى يناسبك نتكلم؟" },
-  { id:2, label:"متابعة", text:"أهلاً {name}\nبتواصل معاكم بخصوص عرضنا على {project}\nهل عندك وقت نتكلم؟ 🏠" },
+  { id:1, label:"ترحيب", text:"أهلاً {name} 👋\nأنا {agent} من شركة ARO العقارية\nشكراً لاهتمامك بمشروع {project}\nمتى يناسبك نتكلم؟" },
+  { id:2, label:"متابعة", text:"أهلاً {name}\nبتواصل معاكم بخصوص عرضنا على {project}\nهل عندك وقت نتكلم Today؟ 🏠" },
   { id:3, label:"عرض خاص", text:"🎯 عرض خاص لـ {name}\nلدينا وحدات محدودة في {project}\nبسعر مميز - تواصل معنا الآن! 📞" },
   { id:4, label:"Confirm موعد", text:"أهلاً {name} 😊\nبتذكيرك بموعدنا غداً\nنتطلع لنراك! ✅" },
   { id:5, label:"بعد الاجتماع", text:"شكراً {name} على وقتك الكريم 🙏\nيسعدني خدمتك دائماً\nلو عندك أي استفسار أنا دايماً موجود" },
@@ -1092,8 +1077,6 @@ var LeadsPage = function(p) {
   var [showBulk, setShowBulk] = useState(false); var [bulkAgent, setBulkAgent] = useState("");
   var [showWaTemplates, setShowWaTemplates] = useState(false);
   var [waLead, setWaLead] = useState(null);
-  var [showBulkWa, setShowBulkWa] = useState(false);
-  var [bulkWaTemplate, setBulkWaTemplate] = useState(null);
   var [showQuickAdd, setShowQuickAdd] = useState(false);
   var [showHistory, setShowHistory] = useState(false);
   var [historyLead, setHistoryLead] = useState(null);
@@ -1103,7 +1086,6 @@ var LeadsPage = function(p) {
   var [quickSaving, setQuickSaving] = useState(false);
   var [notifGranted, setNotifGranted] = useState(typeof Notification!=="undefined"&&Notification.permission==="granted");
   var [vipFilter, setVipFilter] = useState(false);
-  var [noAgentFilter, setNoAgentFilter] = useState(false);
   var [agentFilter, setAgentFilter] = useState("");
   var [sortBy, setSortBy] = useState("lastActivity");
   var fileRef = useRef(null);
@@ -1122,7 +1104,6 @@ var LeadsPage = function(p) {
   var filtered = p.leadFilter==="all"?allVisible:allVisible.filter(function(l){return l.status===p.leadFilter;});
   filtered = filtered.filter(function(l){return matchSearch(l,p.search);});
   if (vipFilter) filtered = filtered.filter(function(l){return l.isVIP;});
-  if (noAgentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return !aid; });
   if (agentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return aid===agentFilter; });
   filtered = filtered.slice().sort(function(a,b){
     if (sortBy==="lastActivity") return new Date(b.lastActivityTime||0)-new Date(a.lastActivityTime||0);
@@ -1155,9 +1136,7 @@ var LeadsPage = function(p) {
         if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
         if(extra.deposit)    upData.notes      = (upData.notes?upData.notes+" | ":"")+"Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
       }
-      if(pendingStatus.newStatus === "EOI") upData.eoiDate = extra&&extra.eoiDate ? new Date(extra.eoiDate).toISOString() : new Date().toISOString();
-      // Set dealDate to today when converting to DoneDeal (don't use eoiDate)
-      if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date().toISOString().slice(0,10);
+      if(pendingStatus.newStatus === "EOI") upData.eoiDate = new Date().toISOString();
       // Notify admin when DoneDeal or EOI
       if(pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI"){
         var notifEntry={id:Date.now(),leadName:selected?selected.name:"leads",leadPhone:selected?selected.phone:"",agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:"",time:new Date().toISOString()};
@@ -1186,23 +1165,19 @@ var LeadsPage = function(p) {
 
   var openHistory = async function(lead) {
     setHistoryLead(lead); setShowHistory(true); setFullHistory([]); setHistoryLoading(true);
-    var isAdminRole = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
+    var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
     try {
-      var hist = await apiFetch("/api/leads/"+gid(lead)+"/full-history","GET",null,p.token);
-      var all = hist||[];
-      if(!isAdminRole) {
-        // Sales sees only their own activities after last rotation
+      if(isAdmin) {
+        var hist = await apiFetch("/api/leads/"+gid(lead)+"/full-history","GET",null,p.token);
+        setFullHistory(hist||[]);
+      } else {
         var rotTime = lead.lastRotationAt ? new Date(lead.lastRotationAt).getTime() : 0;
-        all = all.filter(function(a){
-          var auid = String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
-          var matchUser = auid===String(p.cu.id||"");
-          var afterRot = !rotTime||new Date(a.createdAt).getTime()>=rotTime;
-          return matchUser && afterRot;
+        var acts = p.activities.filter(function(a){
+          var lid=gid(lead); var match=a.leadId&&(gid(a.leadId)===lid||a.leadId===lid);
+          return match && (!rotTime||new Date(a.createdAt).getTime()>=rotTime);
         });
+        setFullHistory(acts);
       }
-      // Sort oldest to newest
-      all = all.slice().sort(function(a,b){return new Date(a.createdAt)-new Date(b.createdAt);});
-      setFullHistory(all);
     } catch(e){ setFullHistory([]); }
     setHistoryLoading(false);
   };
@@ -1296,7 +1271,11 @@ var LeadsPage = function(p) {
           setSelected2([]);
           if(selected&&ids.includes(gid(selected)))setSelected(null);
         }} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Archive size={13}/> Archive ({selected2.length})</Btn>}
-        {selected2.length>0&&<Btn outline onClick={function(){setShowBulkWa(true);}} style={{ padding:"7px 11px", fontSize:12, color:"#25D366", borderColor:"#25D366" }}>💬 {t.bulkWhatsApp} ({selected2.length})</Btn>}
+        {selected2.length>0&&<Btn outline onClick={function(){
+          var selectedLeads=filtered.filter(function(l){return selected2.includes(gid(l));});
+          var msg=encodeURIComponent("أهلاً، نحن من شركة ARO العقارية\nلدينا عروض مميزة على مشاريعنا\nتواصل معنا للمزيد 🏠");
+          selectedLeads.forEach(function(l){window.open("https://wa.me/"+waPhone(l.phone)+"?text="+msg,"_blank");});
+        }} style={{ padding:"7px 11px", fontSize:12, color:"#25D366", borderColor:"#25D366" }}>💬 {t.bulkWhatsApp} ({selected2.length})</Btn>}
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
         {isOnlyAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
         {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 11px", fontSize:12 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
@@ -1312,11 +1291,10 @@ var LeadsPage = function(p) {
           <option value="oldest">📅 Oldest</option>
           <option value="name">🔤 Name</option>
         </select>
-        {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);setNoAgentFilter(false);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+        {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
           <option value="">👤 All Agents</option>
           {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
         </select>}
-        {isOnlyAdmin&&<button onClick={function(){setNoAgentFilter(!noAgentFilter);setAgentFilter("");}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:noAgentFilter?"#EF4444":"#E8ECF1", background:noAgentFilter?"#FEE2E2":"#fff", color:noAgentFilter?"#B91C1C":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>🚫 No Agent {noAgentFilter?"✓":""}</button>}
         <button onClick={function(){setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP Only {vipFilter?"✓":""}</button>
       </div>
     </div>
@@ -1394,7 +1372,7 @@ var LeadsPage = function(p) {
                   <td style={{ padding:"10px 12px", textAlign:"left" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                       {lead.isVIP&&<span style={{ fontSize:14 }} title="VIP">⭐</span>}
-                      {lead.locked&&<span style={{ fontSize:12 }} title="Locked — no rotation">🔒</span>}
+                      {(function(){var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}return ids.includes(gid(lead))?<span style={{ fontSize:12 }} title="Locked — no rotation">🔒</span>:null;})()}
                       <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
                     </div>
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
@@ -1454,9 +1432,6 @@ var LeadsPage = function(p) {
                       </span>;
                     })() : <span style={{ color:C.textLight }}>-</span>}
                   </td>}
-                  <td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();}}>
-                    <button onClick={function(e){e.stopPropagation();openHistory(lead);}} style={{ padding:"4px 8px", borderRadius:7, background:"#F3E8FF", color:"#7C3AED", fontSize:12, border:"1px solid #DDD6FE", cursor:"pointer" }} title="History">📋</button>
-                  </td>
                 </tr>;
               })}
             </tbody>
@@ -1464,19 +1439,13 @@ var LeadsPage = function(p) {
         </div>
       </Card>}
 
-      {/* Pagination Controls */}
-      {p.leadsTotalPages > 1 && <div style={{ display:"flex", justifyContent:"center", alignItems:"center", gap:10, marginTop:16, padding:"12px 16px", background:"#F8FAFC", borderRadius:12, border:"1px solid #E8ECF1" }}>
-        <button onClick={function(){if(p.leadsPage>1){p.setLeadsPage(p.leadsPage-1);}}} disabled={p.leadsPage<=1} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:p.leadsPage<=1?"#F1F5F9":"#fff", color:p.leadsPage<=1?C.textLight:C.text, fontSize:12, cursor:p.leadsPage<=1?"not-allowed":"pointer" }}>⬅️ Previous</button>
-        <span style={{ fontSize:12, color:C.textLight }}>Page {p.leadsPage} of {p.leadsTotalPages} ({p.leadsTotal} total)</span>
-        <button onClick={function(){if(p.leadsPage<p.leadsTotalPages){p.setLeadsPage(p.leadsPage+1);}}} disabled={p.leadsPage>=p.leadsTotalPages} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:p.leadsPage>=p.leadsTotalPages?"#F1F5F9":"#fff", color:p.leadsPage>=p.leadsTotalPages?C.textLight:C.text, fontSize:12, cursor:p.leadsPage>=p.leadsTotalPages?"not-allowed":"pointer" }}>Next ➡️</button>
-      </div>}
-
       {/* Side Panel */}
       {selected&&<Card style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ flex:"0 0 295px", maxHeight:"calc(100vh - 120px)", overflowY:"auto", padding:0 }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px", position:"sticky", top:0 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
             <div style={{ display:"flex", gap:5 }}>
+              {isOnlyAdmin&&<button onClick={function(){openHistory(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title="Lead History">📋</button>}
               {isOnlyAdmin&&<button onClick={function(){setEditLead(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.edit}><Edit size={11}/></button>}
               {isOnlyAdmin&&<button onClick={function(){archiveLead(gid(selected));}} style={{ background:"rgba(255,165,0,0.3)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.archive}><Archive size={11}/></button>}
             </div>
@@ -1535,20 +1504,35 @@ var LeadsPage = function(p) {
             }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(selected.isVIP?"#F59E0B":"#E2E8F0"), background:selected.isVIP?"#FEF3C7":"#fff", fontSize:13, cursor:"pointer" }} title={selected.isVIP?t.removeVip:t.markVip}>⭐</button>
             {(function(){
               var lid=gid(selected);
-              var isLocked=!!selected.locked;
-              return <button onClick={async function(){
-                try{
-                  var updLock=await apiFetch("/api/leads/"+lid,"PUT",{locked:!isLocked},p.token);
-                  p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?updLock:l;});});
-                  setSelected(updLock);
-                }catch(e){console.error("lock error",e);}
+              var lockedIds=[];try{lockedIds=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}
+              var isLocked=lockedIds.includes(lid);
+              return <button onClick={function(){
+                var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){}
+                if(isLocked){ids=ids.filter(function(x){return x!==lid;});}else{ids=ids.concat([lid]);}
+                try{localStorage.setItem("crm_locked_leads",JSON.stringify(ids));}catch(e){}
+                setSelected(function(prev){return Object.assign({},prev,{_locked:!isLocked});});
               }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(isLocked?"#EF4444":"#E2E8F0"), background:isLocked?"#FEE2E2":"#fff", fontSize:13, cursor:"pointer" }} title={isLocked?"Unlock — allow rotation":"Lock — prevent rotation"}>
                 {isLocked?"🔒":"🔓"}
               </button>;
             })()}
-            <button onClick={function(){openHistory(selected);}} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid #E2E8F0", background:"#F3E8FF", fontSize:13, cursor:"pointer" }} title="History">📋</button>
           </div>
-
+          {/* Log Activity */}
+          <div style={{ marginTop:10 }}>
+            <button onClick={function(){setShowActForm(!showActForm);}} style={{ width:"100%", padding:"8px", borderRadius:9, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><MessageSquare size={12}/> {t.logActivity}</button>
+            {showActForm&&<div style={{ marginTop:9, padding:10, background:"#F8FAFC", borderRadius:10 }}>
+              <select value={actType} onChange={function(e){setActType(e.target.value);}} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:7, background:"#fff" }}>
+                <option value="call">📞 Call</option>
+                <option value="meeting">🤝 Meeting</option>
+                <option value="followup">🔔 Follow-up</option>
+                <option value="note">📝 Feedback</option>
+              </select>
+              <textarea rows={2} placeholder="" value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
+              <div style={{ display:"flex", gap:6, marginTop:6 }}>
+                <Btn onClick={logActivity} loading={saving} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.save}</Btn>
+                <Btn outline onClick={function(){setShowActForm(false);setActNote("");}} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.cancel}</Btn>
+              </div>
+            </div>}
+          </div>
           {/* Activity Log */}
           {(function(){
             var cuRole=p.cu.role;
@@ -1603,57 +1587,23 @@ var LeadsPage = function(p) {
     {showHistory&&historyLead&&<Modal show={true} onClose={function(){setShowHistory(false);setHistoryLead(null);}} title={"📋 Lead History — "+historyLead.name} w={520}>
       {historyLoading&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>Loading...</div>}
       {!historyLoading&&fullHistory.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>No activity history</div>}
-      {!historyLoading&&fullHistory.length>0&&<div style={{ maxHeight:500, overflowY:"auto" }}>
-        <div style={{ fontSize:11, color:C.textLight, marginBottom:10, padding:"6px 10px", background:"#F8FAFC", borderRadius:8 }}>
-          {fullHistory.length} activity — من الأحدث للأقدم
-        </div>
+      {!historyLoading&&fullHistory.length>0&&<div style={{ maxHeight:400, overflowY:"auto" }}>
         {fullHistory.slice().reverse().map(function(a,i){
           var uname=a.userId&&a.userId.name?a.userId.name:"";
-          var icon=a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔";
           return <div key={a._id||i} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
             <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
-              <span style={{ fontSize:16, flexShrink:0 }}>{icon}</span>
+              <span style={{ fontSize:16, flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔"}</span>
               <div style={{ flex:1 }}>
                 <div style={{ fontSize:12, fontWeight:500, color:C.text }}>{a.note}</div>
-                <div style={{ fontSize:10, color:C.textLight, marginTop:3, display:"flex", gap:8, flexWrap:"wrap" }}>
-                  {uname&&<span style={{ fontWeight:700, color:C.accent }}>👤 {uname}</span>}
-                  <span>📅 {a.createdAt?new Date(a.createdAt).toLocaleDateString("en-GB")+" "+new Date(a.createdAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):""}</span>
+                <div style={{ fontSize:10, color:C.textLight, marginTop:3, display:"flex", gap:8 }}>
+                  {uname&&<span style={{ fontWeight:600, color:C.accent }}>{uname}</span>}
+                  <span>{a.createdAt?new Date(a.createdAt).toLocaleDateString("en-GB")+" — "+new Date(a.createdAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):""}</span>
                 </div>
               </div>
             </div>
           </div>;
         })}
       </div>}
-    </Modal>}
-
-    {/* Bulk WhatsApp Templates Modal */}
-    {showBulkWa&&<Modal show={true} onClose={function(){setShowBulkWa(false);setBulkWaTemplate(null);}} title={"💬 "+t.bulkWhatsApp+" ("+selected2.length+")"}>
-      <div style={{ marginBottom:12, padding:"10px 14px", background:"#F0FDF4", borderRadius:10, fontSize:12, color:"#15803D" }}>
-        اختار رسالة وبعدين اضغط "إرسال للكل"
-      </div>
-      <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:14 }}>
-        {WA_TEMPLATES_AR.map(function(tmpl){
-          var isSelected=bulkWaTemplate&&bulkWaTemplate.id===tmpl.id;
-          var previewLead=filtered.find(function(l){return selected2.includes(gid(l));});
-          var preview=previewLead?fillTemplate(tmpl.text,previewLead,p.cu.name):tmpl.text;
-          return <div key={tmpl.id} onClick={function(){setBulkWaTemplate(tmpl);}} style={{ border:"2px solid", borderColor:isSelected?"#25D366":"#E8ECF1", borderRadius:12, padding:14, cursor:"pointer", background:isSelected?"#F0FDF4":"#fff" }}>
-            <div style={{ fontSize:12, fontWeight:700, marginBottom:6, color:isSelected?"#15803D":C.text }}>{tmpl.label} {isSelected?"✓":""}</div>
-            <div style={{ fontSize:11, color:C.textLight, lineHeight:1.6, whiteSpace:"pre-line" }}>{preview}</div>
-          </div>;
-        })}
-      </div>
-      <div style={{ display:"flex", gap:10 }}>
-        <Btn outline onClick={function(){setShowBulkWa(false);setBulkWaTemplate(null);}} style={{ flex:1 }}>{t.cancel}</Btn>
-        <Btn onClick={function(){
-          if(!bulkWaTemplate){alert("اختار رسالة الأول");return;}
-          var selectedLeads=filtered.filter(function(l){return selected2.includes(gid(l));});
-          selectedLeads.forEach(function(l){
-            var msg=fillTemplate(bulkWaTemplate.text,l,p.cu.name);
-            window.open("https://wa.me/"+waPhone(l.phone)+"?text="+encodeURIComponent(msg),"_blank");
-          });
-          setShowBulkWa(false);setBulkWaTemplate(null);
-        }} style={{ flex:2, background:"#25D366", borderColor:"#25D366" }}>💬 إرسال للكل ({selected2.length})</Btn>
-      </div>
     </Modal>}
 
     {/* WhatsApp Templates Modal */}
@@ -2140,28 +2090,7 @@ var EOIPage = function(p) {
     </div>}
 
     <div style={{ display:"flex", gap:16 }}>
-    {eoiLeads.length>0&&<Card p={0} style={{ flex:1 }}>
-    {p.isMobile?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:12 }}>
-      {eoiLeads.map(function(d){
-        var bv=parseBudget(d.budget);
-        var isSel=selectedEOI&&gid(selectedEOI)===gid(d);
-        return <div key={gid(d)} onClick={function(){setSelectedEOI(isSel?null:d);}} style={{ background:isSel?"#F0FDF4":"#fff", borderRadius:14, padding:14, border:"2px solid "+(isSel?"#22C55E":"#E8ECF1"), cursor:"pointer" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
-            <div style={{ fontSize:15, fontWeight:700 }}>{d.name}</div>
-            {d.eoiApproved
-              ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅</span>
-              :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳</span>}
-          </div>
-          <div style={{ fontSize:12, color:C.textLight, marginBottom:4 }}>{d.phone}</div>
-          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-            {d.project&&<span style={{ fontSize:11, color:"#6D28D9", background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>🏠 {d.project}</span>}
-            {bv>0&&<span style={{ fontSize:11, color:C.success, fontWeight:700 }}>💰 {bv.toLocaleString()}</span>}
-            {d.eoiDeposit&&<span style={{ fontSize:11, color:C.textLight }}>Deposit: {d.eoiDeposit}</span>}
-            {isAdmin&&<span style={{ fontSize:11, color:C.accent }}>👤 {getAg(d)}</span>}
-          </div>
-        </div>;
-      })}
-    </div>:<div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
+    {eoiLeads.length>0&&<Card p={0} style={{ flex:1 }}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date","Approved",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
@@ -2193,11 +2122,10 @@ var EOIPage = function(p) {
           </tr>;
         })}
       </tbody>
-    </table></div>}
-    </Card>}
+    </table></div></Card>}
 
     {/* EOI Side Panel */}
-    {selectedEOI&&<div style={ p.isMobile?{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }:{ flex:"0 0 260px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
+    {selectedEOI&&<div style={{ flex:"0 0 260px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
       <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"14px 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
@@ -3378,8 +3306,22 @@ var DailyRequestsPage = function(p) {
                 <a href={"https://wa.me/"+waPhone(r.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"10px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5, border:"1px solid #22C55E60" }}><svg viewBox="0 0 24 24" width="13" height="13" fill="#15803D"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp</a>
                 <button onClick={function(e){e.stopPropagation();openDrHistory(r);}} style={{ padding:"10px 14px", borderRadius:10, background:"#F3E8FF", color:"#7C3AED", fontSize:13, fontWeight:700, border:"1px solid #DDD6FE", cursor:"pointer" }}>📋</button>
               </div>
-              {/* Mobile History */}
+              {/* Mobile Log Activity + History */}
               {selected&&gid(selected)===rid&&<div onClick={function(e){e.stopPropagation();}} style={{ marginTop:10 }}>
+                <button onClick={function(){setShowActForm(!showActForm);}} style={{ width:"100%", padding:"8px", borderRadius:9, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><MessageSquare size={12}/> Log Activity</button>
+                {showActForm&&<div style={{ marginTop:9, padding:10, background:"#F8FAFC", borderRadius:10 }}>
+                  <select value={actType} onChange={function(e){setActType(e.target.value);}} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:7, background:"#fff" }}>
+                    <option value="call">📞 Call</option>
+                    <option value="meeting">🤝 Meeting</option>
+                    <option value="followup">🔔 Follow-up</option>
+                    <option value="note">📝 Feedback</option>
+                  </select>
+                  <textarea rows={2} placeholder="Write feedback..." value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
+                  <div style={{ display:"flex", gap:6, marginTop:6 }}>
+                    <Btn onClick={logActivity} loading={actSaving} style={{ flex:1, padding:"6px", fontSize:11 }}>Save</Btn>
+                    <Btn outline onClick={function(){setShowActForm(false);setActNote("");}} style={{ flex:1, padding:"6px", fontSize:11 }}>Cancel</Btn>
+                  </div>
+                </div>}
                 {(function(){
                   var history=drHistory[rid]||[];
                   if(!history.length) return null;
@@ -3484,7 +3426,22 @@ var DailyRequestsPage = function(p) {
           {[{l:"Property Type",v:selected.propertyType},{l:"Location",v:selected.area},{l:"Budget",v:selected.budget},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:t.lastActivity,v:timeAgo(selected.lastActivityTime,t)},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span></div>:null;
           })}
-
+          <div style={{ marginTop:12 }}>
+            <button onClick={function(){setShowActForm(!showActForm);}} style={{ width:"100%", padding:"8px", borderRadius:9, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><MessageSquare size={12}/> Log Activity</button>
+            {showActForm&&<div style={{ marginTop:9, padding:10, background:"#F8FAFC", borderRadius:10 }}>
+              <select value={actType} onChange={function(e){setActType(e.target.value);}} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:7, background:"#fff" }}>
+                <option value="call">📞 Call</option>
+                <option value="meeting">🤝 Meeting</option>
+                <option value="followup">🔔 Follow-up</option>
+                <option value="note">📝 Feedback</option>
+              </select>
+              <textarea rows={2} placeholder="" value={actNote} onChange={function(e){setActNote(e.target.value);}} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, boxSizing:"border-box", resize:"none", fontFamily:"inherit" }}/>
+              <div style={{ display:"flex", gap:6, marginTop:6 }}>
+                <Btn onClick={logActivity} loading={actSaving} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.save}</Btn>
+                <Btn outline onClick={function(){setShowActForm(false);setActNote("");}} style={{ flex:1, padding:"6px", fontSize:11 }}>{t.cancel}</Btn>
+              </div>
+            </div>}
+          </div>
 
           {/* Feedback History */}
           {(function(){
@@ -4522,8 +4479,6 @@ export default function CRMApp() {
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
   var [dailyReqs,setDailyReqs]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
-  var [leadsPage,setLeadsPage]=useState(1); var [leadsTotal,setLeadsTotal]=useState(0); var [leadsTotalPages,setLeadsTotalPages]=useState(0);
-  var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
   var [dealNotifsSeenCount,setDealNotifsSeenCount]=useState(function(){try{return Number(localStorage.getItem("crm_deal_seen_count")||"0");}catch(e){return 0;}});
   var [dealNotifs,setDealNotifsRaw]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_deal_notifs")||"[]");}catch(e){return[];}});
@@ -4574,16 +4529,11 @@ export default function CRMApp() {
   var loadData=useCallback(async function(tok, userOverride){
     setLoading(true); setDataError(null);
     try {
-      var results=await Promise.all([
-        apiFetch("/api/leads?page="+leadsPage+"&limit=20","GET",null,tok),
-        apiFetch("/api/users","GET",null,tok),
-        apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,tok),
-        apiFetch("/api/tasks","GET",null,tok)
-      ]);
+      var results=await Promise.all([apiFetch("/api/leads","GET",null,tok),apiFetch("/api/users","GET",null,tok),apiFetch("/api/activities","GET",null,tok),apiFetch("/api/tasks","GET",null,tok)]);
       // Use userOverride if passed (avoids React state timing issue)
       var effectiveUser = userOverride || currentUser;
       // Restore phone2 from cache for leads that are missing it
-      var leadsData = results[0].data||[];
+      var leadsData = results[0]||[];
       try {
         var cache = JSON.parse(localStorage.getItem('phone2_cache')||'{}');
         leadsData = leadsData.map(function(l){
@@ -4592,17 +4542,10 @@ export default function CRMApp() {
           return l;
         });
       } catch(e) {}
-      setLeads(getVisibleLeads(leadsData, effectiveUser, results[1]));
-      setLeadsTotal(results[0].total || 0);
-      setLeadsTotalPages(results[0].totalPages || 0);
-      setUsers(results[1]);
-      setActivities(results[2].data || []);
-      setActivitiesTotal(results[2].total || 0);
-      setActivitiesTotalPages(results[2].totalPages || 0);
-      setTasks(results[3]);
+      setLeads(getVisibleLeads(leadsData, effectiveUser, results[1])); setUsers(results[1]); setActivities(results[2]); setTasks(results[3]);
     } catch(e){setDataError(e.message);}
     setLoading(false);
-  },[leadsPage, activitiesPage]);
+  },[]);
 
   // ===== POLLING BACKUP (every 15 seconds) =====
   useEffect(function(){
@@ -4612,11 +4555,11 @@ export default function CRMApp() {
     var interval = setInterval(async function(){
       try{
         var results = await Promise.all([
-          apiFetch("/api/leads?page="+leadsPage+"&limit=20","GET",null,token),
-          apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token)
+          apiFetch("/api/leads","GET",null,token),
+          apiFetch("/api/activities","GET",null,token)
         ]);
-        var leadsData = results[0].data||[];
-        var activitiesData = results[1].data||[];
+        var leadsData = results[0]||[];
+        var activitiesData = results[1]||[];
         // Fetch DR separately
         try{
           var drData = await apiFetch("/api/daily-requests","GET",null,token);
@@ -4673,7 +4616,7 @@ export default function CRMApp() {
         setLeads(leadsData);
         setActivities(activitiesData);
       }catch(e){}
-    }, 30000);
+    }, 15000);
     return function(){ clearInterval(interval); };
   }, [token]);
   useEffect(function(){
@@ -4911,23 +4854,21 @@ export default function CRMApp() {
       };}catch(e){return{naCount:2,naHours:1,niDays:1,noActDays:2,cbDays:1,hotDays:2};}
     };
 
-    // Helper: pick agent using round-robin rotation
+    // Helper: pick agent from saved list with least active leads
     var pickAgent = function(excludeId){
       var savedIds = getSavedAgents();
-      if(!savedIds.length) return null;
+      if(!savedIds.length) return null; // no agents = no rotation
       var agents = users.filter(function(u){return savedIds.includes(gid(u))&&(u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
       if(!agents.length) return null;
-      // Filter out the current agent
-      var candidates = agents.filter(function(u){return gid(u)!==excludeId;});
-      if(!candidates.length) candidates = agents;
-      // Round-robin: get last index from localStorage
-      var lastIdx = 0;
-      try{lastIdx = Number(localStorage.getItem('crm_rot_last_idx')||'0');}catch(e){}
-      var nextIdx = lastIdx % candidates.length;
-      var picked = candidates[nextIdx];
-      // Save next index
-      try{localStorage.setItem('crm_rot_last_idx', String((nextIdx+1) % candidates.length));}catch(e){}
-      return picked;
+      var loads = agents.map(function(u){
+        return {agent:u, cnt:leads.filter(function(l){
+          var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
+          return a===gid(u)&&!l.archived;
+        }).length};
+      });
+      loads.sort(function(a,b){return a.cnt-b.cnt;});
+      var best = loads.find(function(x){return gid(x.agent)!==excludeId;});
+      return best?best.agent:(loads[0].agent!==excludeId?loads[0].agent:null);
     };
 
     // Helper: send in-app notification to admins + browser notif
@@ -4984,6 +4925,10 @@ export default function CRMApp() {
       var salesLeads = leads.filter(function(l){
         return !l.archived && l.source!=="Daily Request";
       });
+      // Helper: get locked leads
+      var getLockedLeads = function(){try{return JSON.parse(localStorage.getItem("crm_locked_leads")||"[]");}catch(e){return[];}};
+      var lockedIds = getLockedLeads();
+      // 30-day pool limit
       var THIRTY_DAYS = 30*24*60*60*1000;
 
       for(var i=0;i<salesLeads.length;i++){
@@ -4997,8 +4942,8 @@ export default function CRMApp() {
         // Skip VIP leads — pinned, never rotate
         if(l.isVIP) continue;
 
-        // 🔒 Skip locked leads — never rotate (now stored in DB via lead.locked)
-        if(l.locked) continue;
+        // 🔒 Skip locked leads — never rotate
+        if(lockedIds.includes(lid)) continue;
 
         // 👤 Skip leads assigned to team_leader — they keep the lead until they reassign
         var lAgentId = String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
@@ -5091,7 +5036,7 @@ export default function CRMApp() {
   },[token, leads.length, users.length]);
 
   var handleLogout=function(){setCurrentUser(null);setToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
-  var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
+  var nav=function(pg){var p2=pg||"dashboard";setPage(p2);setInitSelected(null);try{localStorage.setItem("crm_page",p2);}catch(e){}};
 
   if(!currentUser) return <LoginPage t={t} onLogin={handleLogin}/>;
   if(loading) return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"#F0F2F5", fontFamily:"Cairo,sans-serif" }}><div style={{ textAlign:"center" }}><div style={{ width:40, height:40, borderRadius:"50%", border:"3px solid #E8ECF1", borderTopColor:C.accent, animation:"spin 0.8s linear infinite", margin:"0 auto 16px" }}/><div style={{ color:C.textLight, fontSize:14 }}>{t.loading}</div></div></div>;
@@ -5142,7 +5087,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){setInitSelected(l);setPage("leads");}} onDRClick={function(){setPage("dailyReq");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
