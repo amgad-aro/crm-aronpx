@@ -25,6 +25,25 @@ var corsOptions = {
     }
   }
 };
+var validRoles = ["admin", "sales_admin", "manager", "team_leader", "sales", "viewer"];
+var validLeadStatuses = ["NewLead", "Potential", "HotCase", "CallBack", "MeetingDone", "NotInterested", "NoAnswer", "DoneDeal"];
+var validActivityTypes = ["call", "meeting", "followup", "email", "status_change", "reassign", "note"];
+var validTaskTypes = ["call", "meeting", "followup", "email", "note"];
+var validDailyStatuses = ["NewLead", "Potential", "HotCase", "CallBack", "MeetingDone", "NotInterested", "NoAnswer", "DoneDeal", "EOI"];
+
+function validate(rules) {
+  return async function(req, res, next) {
+    for (const rule of rules) {
+      await rule.run(req);
+    }
+    var errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+    next();
+  };
+}
+
 var loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
@@ -32,6 +51,154 @@ var loginLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Too many login attempts. Please try again later." }
 });
+
+var loginValidation = validate([
+  body("username").exists().withMessage("username required").isString().trim().notEmpty().escape(),
+  body("password").exists().withMessage("password required").isString().trim().notEmpty()
+]);
+
+var userCreateValidation = validate([
+  body("name").exists().withMessage("name required").isString().trim().notEmpty().escape(),
+  body("username").exists().withMessage("username required").isString().trim().notEmpty().escape(),
+  body("password").optional().isString().trim().notEmpty(),
+  body("email").optional().isEmail().normalizeEmail(),
+  body("phone").optional().isString().trim().notEmpty().escape(),
+  body("role").optional().isIn(validRoles),
+  body("title").optional().isString().trim().escape(),
+  body("teamId").optional().isString().trim().escape(),
+  body("teamName").optional().isString().trim().escape(),
+  body("monthlyTarget").optional().isInt({ min: 0 }),
+  body("reportsTo").optional().isMongoId(),
+]);
+
+var userUpdateValidation = validate([
+  param("id").isMongoId().withMessage("Invalid user id"),
+  body("name").optional().isString().trim().notEmpty().escape(),
+  body("email").optional().isEmail().normalizeEmail(),
+  body("phone").optional().isString().trim().notEmpty().escape(),
+  body("role").optional().isIn(validRoles),
+  body("title").optional().isString().trim().escape(),
+  body("active").optional().isBoolean(),
+  body("monthlyTarget").optional().isInt({ min: 0 }),
+  body("password").optional().isString().trim().notEmpty(),
+  body("qTargets").optional().isObject(),
+  body("reportsTo").optional().isMongoId(),
+  body("teamId").optional().isString().trim().escape(),
+  body("teamName").optional().isString().trim().escape(),
+]);
+
+var idParamValidation = validate([
+  param("id").isMongoId().withMessage("Invalid id")
+]);
+
+var duplicatePhoneValidation = validate([
+  param("phone").exists().withMessage("phone required").isString().trim().notEmpty().escape()
+]);
+
+var leadCreateValidation = validate([
+  body("name").exists().withMessage("name required").isString().trim().notEmpty().escape(),
+  body("phone").exists().withMessage("phone required").isString().trim().notEmpty().escape(),
+  body("phone2").optional().isString().trim().escape(),
+  body("email").optional().isEmail().normalizeEmail(),
+  body("status").optional().isIn(validLeadStatuses),
+  body("source").optional().isString().trim().escape(),
+  body("project").optional().isString().trim().escape(),
+  body("agentId").optional({ checkFalsy: true }).isMongoId(),
+  body("budget").optional().isString().trim().escape(),
+  body("notes").optional().isString().trim(),
+  body("callbackTime").optional().isString().trim().escape(),
+  body("isVIP").optional().isBoolean(),
+]);
+
+var leadUpdateValidation = validate([
+  param("id").isMongoId().withMessage("Invalid lead id"),
+  body("name").optional().isString().trim().notEmpty().escape(),
+  body("phone").optional().isString().trim().notEmpty().escape(),
+  body("phone2").optional().isString().trim().escape(),
+  body("email").optional().isEmail().normalizeEmail(),
+  body("status").optional().isIn(validLeadStatuses),
+  body("source").optional().isString().trim().escape(),
+  body("project").optional().isString().trim().escape(),
+  body("agentId").optional({ checkFalsy: true }).isMongoId(),
+  body("budget").optional().isString().trim().escape(),
+  body("notes").optional().isString().trim(),
+  body("callbackTime").optional().isString().trim().escape(),
+  body("archived").optional().isBoolean(),
+  body("isVIP").optional().isBoolean(),
+]);
+
+var leadBulkReassignValidation = validate([
+  body("leadIds").isArray({ min: 1 }).withMessage("leadIds must be a non-empty array"),
+  body("leadIds.*").isMongoId().withMessage("Invalid lead id in leadIds"),
+  body("agentId").exists().withMessage("agentId required").isMongoId().withMessage("Invalid agentId")
+]);
+
+var leadUploadImageValidation = validate([
+  param("id").isMongoId().withMessage("Invalid lead id"),
+  body("imageData").exists().withMessage("imageData required").isString().notEmpty(),
+  body("imageType").optional().isIn(["eoi", "deal"])
+]);
+
+var activityCreateValidation = validate([
+  body("leadId").optional().isMongoId().withMessage("Invalid leadId"),
+  body("type").optional().isIn(validActivityTypes),
+  body("note").optional().isString().trim()
+]);
+
+var taskCreateValidation = validate([
+  body("title").exists().withMessage("title required").isString().trim().notEmpty().escape(),
+  body("type").optional().isIn(validTaskTypes),
+  body("time").optional().isString().trim().escape(),
+  body("leadId").optional().isMongoId().withMessage("Invalid leadId"),
+  body("userId").optional().isMongoId().withMessage("Invalid userId"),
+  body("done").optional().isBoolean()
+]);
+
+var taskUpdateValidation = validate([
+  param("id").isMongoId().withMessage("Invalid task id"),
+  body("title").optional().isString().trim().notEmpty().escape(),
+  body("type").optional().isIn(validTaskTypes),
+  body("time").optional().isString().trim().escape(),
+  body("leadId").optional().isMongoId().withMessage("Invalid leadId"),
+  body("userId").optional().isMongoId().withMessage("Invalid userId"),
+  body("done").optional().isBoolean()
+]);
+
+var dailyRequestCreateValidation = validate([
+  body("name").exists().withMessage("name required").isString().trim().notEmpty().escape(),
+  body("phone").exists().withMessage("phone required").isString().trim().notEmpty().escape(),
+  body("phone2").optional().isString().trim().escape(),
+  body("email").optional().isEmail().normalizeEmail(),
+  body("budget").optional().isString().trim().escape(),
+  body("propertyType").optional().isString().trim().escape(),
+  body("area").optional().isString().trim().escape(),
+  body("notes").optional().isString().trim(),
+  body("agentId").optional().isMongoId().withMessage("Invalid agentId"),
+  body("callbackTime").optional().isString().trim().escape(),
+  body("status").optional().isIn(validDailyStatuses)
+]);
+
+var dailyRequestUpdateValidation = validate([
+  param("id").isMongoId().withMessage("Invalid daily request id"),
+  body("name").optional().isString().trim().notEmpty().escape(),
+  body("phone").optional().isString().trim().notEmpty().escape(),
+  body("phone2").optional().isString().trim().escape(),
+  body("email").optional().isEmail().normalizeEmail(),
+  body("budget").optional().isString().trim().escape(),
+  body("propertyType").optional().isString().trim().escape(),
+  body("area").optional().isString().trim().escape(),
+  body("notes").optional().isString().trim(),
+  body("agentId").optional().isMongoId().withMessage("Invalid agentId"),
+  body("callbackTime").optional().isString().trim().escape(),
+  body("status").optional().isIn(validDailyStatuses)
+]);
+
+var dailyRequestBulkReassignValidation = validate([
+  body("leadIds").isArray({ min: 1 }).withMessage("leadIds must be a non-empty array"),
+  body("leadIds.*").isMongoId().withMessage("Invalid id in leadIds"),
+  body("agentId").exists().withMessage("agentId required").isMongoId().withMessage("Invalid agentId")
+]);
+
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
@@ -94,7 +261,7 @@ function adminOnly(req, res, next) {
 }
 
 // ===== AUTH ROUTES =====
-app.post("/api/login", loginLimiter, async function(req, res) {
+app.post("/api/login", loginLimiter, loginValidation, async function(req, res) {
   try {
     var user = await User.findOne({ username: req.body.username, active: true });
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
@@ -180,7 +347,7 @@ app.get("/api/users", auth, async function(req, res) {
   }
 });
 
-app.post("/api/users", auth, adminOnly, async function(req, res) {
+app.post("/api/users", auth, adminOnly, userCreateValidation, async function(req, res) {
   try {
     var hashed = await bcrypt.hash(req.body.password || "sales123", 10);
     var teamId = req.body.teamId || "";
@@ -216,7 +383,7 @@ app.post("/api/users", auth, adminOnly, async function(req, res) {
   }
 });
 
-app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
+app.put("/api/users/:id", auth, adminOnly, userUpdateValidation, async function(req, res) {
   try {
     var update = {};
     if (req.body.name) update.name = req.body.name;
@@ -238,7 +405,7 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
   }
 });
 
-app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
+app.delete("/api/users/:id", auth, adminOnly, idParamValidation, async function(req, res) {
   try {
     await User.findByIdAndDelete(req.params.id);
     res.json({ ok: true });
@@ -309,7 +476,7 @@ app.get("/api/leads", auth, async function(req, res) {
 });
 
 // ===== CHECK DUPLICATE PHONE =====
-app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
+app.get("/api/leads/check-duplicate/:phone", auth, duplicatePhoneValidation, async function(req, res) {
   try {
     var phone = decodeURIComponent(req.params.phone);
     var lead = await Lead.findOne({ phone: phone, archived: false }).populate("agentId", "name title");
@@ -319,7 +486,7 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
 });
 
 // ===== ADD LEAD =====
-app.post("/api/leads", auth, async function(req, res) {
+app.post("/api/leads", auth, leadCreateValidation, async function(req, res) {
   try {
     console.log("NEW LEAD body:", JSON.stringify(req.body));
     var agentId = (req.body.agentId && req.body.agentId !== "")
@@ -351,7 +518,7 @@ app.post("/api/leads", auth, async function(req, res) {
 });
 
 // ===== BULK REASSIGN (must be before /:id) =====
-app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
+app.put("/api/leads/bulk-reassign", auth, adminOnly, leadBulkReassignValidation, async function(req, res) {
   try {
     var { leadIds, agentId } = req.body;
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
@@ -364,7 +531,7 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
 
 // ===== UPDATE LEAD =====
 // ===== IMAGE UPLOAD (base64) =====
-app.post("/api/leads/:id/upload-image", auth, async function(req, res) {
+app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async function(req, res) {
   try {
     var { imageData, imageType } = req.body; // imageType: "eoi" or "deal"
     if (!imageData) return res.status(400).json({ error: "No image data" });
@@ -375,9 +542,21 @@ app.post("/api/leads/:id/upload-image", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put("/api/leads/:id", auth, async function(req, res) {
+app.put("/api/leads/:id", auth, leadUpdateValidation, async function(req, res) {
   try {
-    var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
+    var allowedFields = [
+      "name", "phone", "phone2", "email", "status", "source", "project",
+      "agentId", "budget", "notes", "callbackTime", "archived", "isVIP",
+      "eoiDeposit", "eoiDate", "eoiApproved", "dealApproved", "eoiImage",
+      "dealImage", "commissionClaimDate", "commissionClaimed", "splitAgent2Id",
+      "splitAgent2Name", "projectWeight", "dealDate"
+    ];
+    var update = { lastActivityTime: new Date() };
+    allowedFields.forEach(function(field) {
+      if (req.body[field] !== undefined) {
+        update[field] = req.body[field];
+      }
+    });
     // Never overwrite agentId with null/empty unless explicitly reassigning
     if (!update.agentId) delete update.agentId;
     // If agentId is being changed (manual reassign) — reset status to NewLead
@@ -455,7 +634,7 @@ app.get("/api/activities", auth, async function(req, res) {
   }
 });
 
-app.post("/api/activities", auth, async function(req, res) {
+app.post("/api/activities", auth, activityCreateValidation, async function(req, res) {
   try {
     var activity = await Activity.create({
       userId: req.user.id,
@@ -496,7 +675,7 @@ app.get("/api/tasks", auth, async function(req, res) {
   }
 });
 
-app.post("/api/tasks", auth, async function(req, res) {
+app.post("/api/tasks", auth, taskCreateValidation, async function(req, res) {
   try {
     var task = await Task.create({
       title: req.body.title,
@@ -513,9 +692,13 @@ app.post("/api/tasks", auth, async function(req, res) {
   }
 });
 
-app.put("/api/tasks/:id", auth, async function(req, res) {
+app.put("/api/tasks/:id", auth, taskUpdateValidation, async function(req, res) {
   try {
-    var task = await Task.findByIdAndUpdate(req.params.id, req.body, { new: true }).populate("userId", "name").populate("leadId", "name");
+    var taskUpdate = {};
+    ["title", "type", "time", "leadId", "userId", "done"].forEach(function(field) {
+      if (req.body[field] !== undefined) taskUpdate[field] = req.body[field];
+    });
+    var task = await Task.findByIdAndUpdate(req.params.id, taskUpdate, { new: true }).populate("userId", "name").populate("leadId", "name");
     res.json(task);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -593,7 +776,7 @@ app.get("/api/daily-requests", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post("/api/daily-requests", auth, async function(req, res) {
+app.post("/api/daily-requests", auth, dailyRequestCreateValidation, async function(req, res) {
   try {
     var r = await DailyRequest.create({
       name: req.body.name, phone: req.body.phone,
@@ -615,7 +798,7 @@ app.post("/api/daily-requests", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req, res) {
+app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, dailyRequestBulkReassignValidation, async function(req, res) {
   try {
     var { leadIds, agentId } = req.body;
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
@@ -625,9 +808,13 @@ app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put("/api/daily-requests/:id", auth, async function(req, res) {
+app.put("/api/daily-requests/:id", auth, dailyRequestUpdateValidation, async function(req, res) {
   try {
-    var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
+    var allowedFields = ["name","phone","phone2","email","budget","propertyType","area","notes","agentId","callbackTime","status"];
+    var update = { lastActivityTime: new Date() };
+    allowedFields.forEach(function(field) {
+      if (req.body[field] !== undefined) update[field] = req.body[field];
+    });
     // Never overwrite agentId with null/empty — only update if explicitly provided and valid
     if (!update.agentId) delete update.agentId;
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
