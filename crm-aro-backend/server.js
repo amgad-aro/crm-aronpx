@@ -156,12 +156,19 @@ function csrfProtection(req, res, next) {
   next();
 }
 
-var leadUploadImageValidation = validate([
-  body("imageType").optional().isIn(["eoi", "deal"]),
-  body("imageData").isString().custom(function(value) {
-    // Accept data URLs and raw base64 payloads.
-    var raw = String(value || "").trim();
-    if (!raw) throw new Error("imageData is required");
+function leadUploadImageValidation(req, res, next) {
+  try {
+    var imageType = req.body && req.body.imageType;
+    var rawValue = req.body && req.body.imageData;
+
+    if (imageType && imageType !== "eoi" && imageType !== "deal") {
+      return res.status(400).json({ error: "Invalid imageType" });
+    }
+
+    var raw = String(rawValue || "").trim();
+    if (!raw) {
+      return res.status(400).json({ error: "imageData is required" });
+    }
 
     var mime = "";
     var base64Part = raw;
@@ -172,23 +179,23 @@ var leadUploadImageValidation = validate([
     }
 
     if (!/^[A-Za-z0-9+/=]+$/.test(base64Part)) {
-      throw new Error("Invalid base64 image data");
+      return res.status(400).json({ error: "Invalid base64 image data" });
     }
 
     var buffer;
     try {
       buffer = Buffer.from(base64Part, "base64");
     } catch (e) {
-      throw new Error("Invalid base64 image data");
+      return res.status(400).json({ error: "Invalid base64 image data" });
     }
 
     if (!buffer || !buffer.length) {
-      throw new Error("Invalid base64 image data");
+      return res.status(400).json({ error: "Invalid base64 image data" });
     }
 
     // 5MB decoded payload limit for safer storage and DoS resistance.
     if (buffer.length > 5 * 1024 * 1024) {
-      throw new Error("Image too large (max 5MB)");
+      return res.status(400).json({ error: "Image too large (max 5MB)" });
     }
 
     var isJpeg = buffer.length > 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF;
@@ -196,16 +203,18 @@ var leadUploadImageValidation = validate([
     var isWebp = buffer.length > 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP";
 
     if (!isJpeg && !isPng && !isWebp) {
-      throw new Error("Only JPEG, PNG, or WEBP images are allowed");
+      return res.status(400).json({ error: "Only JPEG, PNG, or WEBP images are allowed" });
     }
 
     if (mime && ["image/jpeg", "image/jpg", "image/png", "image/webp"].indexOf(mime) === -1) {
-      throw new Error("Unsupported image MIME type");
+      return res.status(400).json({ error: "Unsupported image MIME type" });
     }
 
-    return true;
-  })
-]);
+    next();
+  } catch (e) {
+    return res.status(400).json({ error: "Invalid image payload" });
+  }
+}
 
 // ===== AUTH ROUTES =====
 app.post("/api/login", async function(req, res) {
