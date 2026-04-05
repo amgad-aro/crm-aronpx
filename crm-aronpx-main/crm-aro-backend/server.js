@@ -4,6 +4,7 @@ var mongoose = require("mongoose");
 var cors = require("cors");
 var bcrypt = require("bcryptjs");
 var jwt = require("jsonwebtoken");
+var rateLimit = require("express-rate-limit");
 
 // ===== MODELS (imported from models.js) =====
 var { User, Lead, Activity, Task, DailyRequest } = require("./models.js");
@@ -24,6 +25,13 @@ var corsOptions = {
     }
   }
 };
+var loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many login attempts. Please try again later." }
+});
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
@@ -86,7 +94,7 @@ function adminOnly(req, res, next) {
 }
 
 // ===== AUTH ROUTES =====
-app.post("/api/login", async function(req, res) {
+app.post("/api/login", loginLimiter, async function(req, res) {
   try {
     var user = await User.findOne({ username: req.body.username, active: true });
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
