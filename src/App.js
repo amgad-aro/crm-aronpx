@@ -610,7 +610,10 @@ var Header = function(p) {
   var upcoming = allItemsForNotif.filter(function(l){
     if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
     var diff = new Date(l.callbackTime).getTime() - now;
-    return diff>0 && diff<=24*60*60*1000;
+    if(!(diff>0 && diff<=24*60*60*1000)) return false;
+    var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
+    if(lastAct > new Date(l.callbackTime).getTime()) return false;
+    return true;
   }).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
   var overdueCallback = allItemsForNotif.filter(function(l){
     if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
@@ -1151,6 +1154,7 @@ var LeadsPage = function(p) {
     try {
       var upData = { status: pendingStatus.newStatus };
       if(cbTime) upData.callbackTime = cbTime;
+      else upData.callbackTime = "";
       if(extra) {
         if(extra.budget)     upData.budget     = extra.budget;
         if(extra.project)    upData.project    = extra.project;
@@ -4775,7 +4779,7 @@ export default function CRMApp() {
     // 2. Callback notifications - all statuses with callbackTime
     var checkCallbacks = function(){
       var now = Date.now();
-      var allItems = getMyLeads().concat(getMyDR()).filter(function(l){return l.callbackTime;});
+      var allItems = getMyLeads().concat(getMyDR()).filter(function(l){return l.callbackTime&&l.status!=="DoneDeal"&&l.status!=="NotInterested";});
       allItems.forEach(function(l){
         var cbTime = new Date(l.callbackTime).getTime();
         var diff = cbTime - now;
