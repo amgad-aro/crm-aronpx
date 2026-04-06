@@ -1340,8 +1340,9 @@ var LeadsPage = function(p) {
           var lastAct=lead.lastActivityTime?timeAgo(lead.lastActivityTime,t):"—";
           var actColor=lead.lastActivityTime&&(Date.now()-new Date(lead.lastActivityTime).getTime())>3*24*60*60*1000?C.danger:C.accent;
           var borderCol=isVIP?"#F59E0B":so.color||"#E8ECF1";
+          var isRotated=isOnlyAdmin&&(lead.rotationCount||0)>0;
           return <div key={lid} onClick={function(){setSelected(lead);window.scrollTo({top:0,behavior:"smooth"});}}
-            style={{ background:"#fff", borderRadius:16, padding:"16px",
+            style={{ background:isRotated?"#FFF7ED":"#fff", borderRadius:16, padding:"16px",
               border:"2px solid "+borderCol,
               cursor:"pointer", boxShadow:"0 3px 12px "+borderCol+"35" }}>
             {/* Header row */}
@@ -1396,7 +1397,8 @@ var LeadsPage = function(p) {
               {filtered.map(function(lead){
                 var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0];
                 var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
-                return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
+                var isRotated=isOnlyAdmin&&(lead.rotationCount||0)>0;
+                return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":isRotated?"#FFF7ED":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
                   <td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();setSelected2(function(prev){return prev.includes(lid)?prev.filter(function(x){return x!==lid;}):[...prev,lid];});}}><input type="checkbox" checked={isChk} readOnly/></td>
                   <td style={{ padding:"10px 12px", textAlign:"left" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6 }}>
