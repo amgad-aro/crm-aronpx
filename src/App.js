@@ -1153,6 +1153,7 @@ var LeadsPage = function(p) {
     if(!pendingStatus) return;
     try {
       var upData = { status: pendingStatus.newStatus };
+      if(comment) upData.lastFeedback = comment;
       if(cbTime) upData.callbackTime = cbTime;
       else upData.callbackTime = "";
       if(extra) {
@@ -1445,7 +1446,7 @@ var LeadsPage = function(p) {
                       </div>}
                     </div>
                   </td>
-                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={lead.notes||""}>{lead.notes?lead.notes.length>40?lead.notes.slice(0,40)+"…":lead.notes:<span style={{color:"#CBD5E1"}}>-</span>}</td>}
+                  {!p.isMobile&&(function(){var fb=lead.lastFeedback||"";return <td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={fb}>{fb?fb.length>40?fb.slice(0,40)+"…":fb:<span style={{color:"#CBD5E1"}}>-</span>}</td>;})()}
                   {!p.isMobile&&isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
@@ -3169,6 +3170,7 @@ var DailyRequestsPage = function(p) {
       var updateData={status:pendingStatus.newStatus};
       if(cbTime) updateData.callbackTime=cbTime;
       if(comment) updateData.notes=comment;
+      if(comment) updateData.lastFeedback=comment;
       // Pass deal fields from StatusModal
       if(extra){
         if(extra.budget)    updateData.budget=extra.budget;
@@ -3451,7 +3453,7 @@ var DailyRequestsPage = function(p) {
                       <div style={{ borderTop:"1px solid #F1F5F9", marginTop:4, paddingTop:4 }}><button onClick={function(){setStatusDrop(null);}} style={{ width:"100%", padding:"7px", borderRadius:8, border:"none", background:"#F1F5F9", cursor:"pointer", fontSize:12 }}>{t.cancel}</button></div>
                     </div>}
                   </td>
-                  <td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={r.notes||""}>{r.notes?r.notes.length>40?r.notes.slice(0,40)+"…":r.notes:<span style={{color:"#CBD5E1"}}>-</span>}</td>
+                  {(function(){var fb=r.lastFeedback||"";return <td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={fb}>{fb?fb.length>40?fb.slice(0,40)+"…":fb:<span style={{color:"#CBD5E1"}}>-</span>}</td>;})()}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight }} onClick={function(e){e.stopPropagation();}}>
                     <select value={r.agentId&&r.agentId._id?r.agentId._id:(r.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
