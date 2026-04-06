@@ -1153,7 +1153,8 @@ var LeadsPage = function(p) {
     if(!pendingStatus) return;
     try {
       var upData = { status: pendingStatus.newStatus };
-      if(comment) upData.lastFeedback = comment;
+      var fbParts = [];
+      if(comment) fbParts.push(comment);
       if(cbTime) upData.callbackTime = cbTime;
       else upData.callbackTime = "";
       if(extra) {
@@ -1161,8 +1162,13 @@ var LeadsPage = function(p) {
         if(extra.project)    upData.project    = extra.project;
         if(extra.notes)      upData.notes      = extra.notes;
         if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
-        if(extra.deposit)    upData.notes      = (upData.notes?upData.notes+" | ":"")+"Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
+        if(extra.deposit) {
+          var paymentInfo = "Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
+          upData.notes = (upData.notes?upData.notes+" | ":"")+paymentInfo;
+          fbParts.push(paymentInfo);
+        }
       }
+      if(fbParts.length) upData.lastFeedback = fbParts.join(" | ");
       if(pendingStatus.newStatus === "EOI") upData.eoiDate = extra&&extra.eoiDate ? new Date(extra.eoiDate).toISOString() : new Date().toISOString();
       // Set dealDate to today when converting to DoneDeal (don't use eoiDate)
       if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date().toISOString().slice(0,10);
@@ -3168,16 +3174,23 @@ var DailyRequestsPage = function(p) {
     if(!pendingStatus.leadId){alert("Error: request ID not found. Please refresh.");return;}
     try{
       var updateData={status:pendingStatus.newStatus};
+      var fbParts=[];
+      if(comment) fbParts.push(comment);
       if(cbTime) updateData.callbackTime=cbTime;
       if(comment) updateData.notes=comment;
-      if(comment) updateData.lastFeedback=comment;
       // Pass deal fields from StatusModal
       if(extra){
         if(extra.budget)    updateData.budget=extra.budget;
         if(extra.project)   updateData.project=extra.project;
         if(extra.notes)     updateData.notes=(updateData.notes?updateData.notes+" | ":"")+extra.notes;
         if(extra.eoiDeposit) updateData.eoiDeposit=extra.eoiDeposit;
+        if(extra.deposit){
+          var paymentInfo="Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
+          updateData.notes=(updateData.notes?updateData.notes+" | ":"")+paymentInfo;
+          fbParts.push(paymentInfo);
+        }
       }
+      if(fbParts.length) updateData.lastFeedback=fbParts.join(" | ");
       var upd=await apiFetch("/api/daily-requests/"+pendingStatus.leadId,"PUT",updateData,p.token);
       // Also log separate activity with comment if exists
       if(comment||cbTime){
