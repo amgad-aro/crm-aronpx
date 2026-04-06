@@ -1449,7 +1449,7 @@ var LeadsPage = function(p) {
                       </div>}
                     </div>
                   </td>
-                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{lead.lastFeedback||<span style={{color:"#CBD5E1"}}>-</span>}</td>}
+                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:13, fontWeight:700, color:C.text, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{lead.lastFeedback||<span style={{color:"#CBD5E1", fontWeight:400}}>-</span>}</td>}
                   {!p.isMobile&&isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
@@ -3463,7 +3463,7 @@ var DailyRequestsPage = function(p) {
                       <div style={{ borderTop:"1px solid #F1F5F9", marginTop:4, paddingTop:4 }}><button onClick={function(){setStatusDrop(null);}} style={{ width:"100%", padding:"7px", borderRadius:8, border:"none", background:"#F1F5F9", cursor:"pointer", fontSize:12 }}>{t.cancel}</button></div>
                     </div>}
                   </td>
-                  <td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{r.lastFeedback||r.notes||<span style={{color:"#CBD5E1"}}>-</span>}</td>
+                  <td style={{ padding:"10px 12px", fontSize:13, fontWeight:700, color:C.text, maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{r.lastFeedback||r.notes||<span style={{color:"#CBD5E1", fontWeight:400}}>-</span>}</td>
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight }} onClick={function(e){e.stopPropagation();}}>
                     <select value={r.agentId&&r.agentId._id?r.agentId._id:(r.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
