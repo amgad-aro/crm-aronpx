@@ -45,7 +45,8 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   projectWeight:{type:Number,default:1},
   dealDate:{type:String,default:""},
   lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0},
-  locked:{type:Boolean,default:false}
+  locked:{type:Boolean,default:false},
+  lastFeedback:{type:String,default:""}
 },{timestamps:true}));
 
 var Activity = mongoose.model("Activity", new mongoose.Schema({
@@ -65,7 +66,8 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   email:{type:String,default:""}, budget:{type:String,default:""}, propertyType:{type:String,default:""},
   area:{type:String,default:""}, notes:{type:String,default:""}, status:{type:String,default:"NewLead"},
   agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, callbackTime:{type:String,default:""},
-  lastActivityTime:{type:Date,default:Date.now}, source:{type:String,default:"Daily Request"}
+  lastActivityTime:{type:Date,default:Date.now}, source:{type:String,default:"Daily Request"},
+  lastFeedback:{type:String,default:""}
 },{timestamps:true}));
 
 var app = express();
