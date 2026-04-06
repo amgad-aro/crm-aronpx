@@ -46,7 +46,8 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   dealDate:{type:String,default:""},
   lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0},
   locked:{type:Boolean,default:false},
-  lastFeedback:{type:String,default:""}
+  lastFeedback:{type:String,default:""},
+  rotatedFrom:{type:mongoose.Schema.Types.ObjectId,ref:"Lead",default:null}
 },{timestamps:true}));
 
 var Activity = mongoose.model("Activity", new mongoose.Schema({
@@ -878,6 +879,49 @@ app.get("/api/leads/backfill-feedback", auth, adminOnly, async function(req, res
       }
     }
     res.json({ ok: true, updated: updated, total: leads.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== ROTATE LEAD (create duplicate for new agent) =====
+app.post("/api/leads/:id/rotate", auth, async function(req, res) {
+  try {
+    var { targetAgentId, reason } = req.body;
+    if (!targetAgentId) return res.status(400).json({ error: "targetAgentId required" });
+    var original = await Lead.findById(req.params.id).lean();
+    if (!original) return res.status(404).json({ error: "Lead not found" });
+    // Don't rotate EOI or DoneDeal
+    if (original.status === "EOI" || original.status === "DoneDeal") {
+      return res.json(await Lead.findById(req.params.id).populate("agentId", "name title"));
+    }
+    // Create clean copy for new agent
+    var newLead = await Lead.create({
+      name: original.name,
+      phone: original.phone,
+      phone2: original.phone2 || "",
+      email: original.email || "",
+      source: original.source || "",
+      project: original.project || "",
+      status: "NewLead",
+      agentId: new mongoose.Types.ObjectId(targetAgentId),
+      budget: "",
+      notes: "",
+      callbackTime: "",
+      lastFeedback: "",
+      lastActivityTime: new Date(),
+      rotatedFrom: original._id,
+      rotationCount: (original.rotationCount || 0) + 1
+    });
+    // Lock original so it won't be rotated again
+    await Lead.findByIdAndUpdate(original._id, { $set: { locked: true } });
+    newLead = await Lead.findById(newLead._id).populate("agentId", "name title");
+    // Log activity on new lead
+    await Activity.create({
+      userId: req.user.id,
+      leadId: newLead._id,
+      type: "reassign",
+      note: reason || "Auto Rotation — new copy created"
+    });
+    res.json(newLead);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

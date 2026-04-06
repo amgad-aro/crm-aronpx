@@ -1420,10 +1420,11 @@ var LeadsPage = function(p) {
             </tr></thead>
             <tbody>
               {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No data</td></tr>}
-              {filtered.map(function(lead){
+              {(function(){var phoneCounts={};if(isOnlyAdmin){p.leads.forEach(function(l){if(!l.archived&&l.phone){phoneCounts[l.phone]=(phoneCounts[l.phone]||0)+1;}});}return filtered.map(function(lead){
                 var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0];
                 var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
                 var isRotated=isOnlyAdmin&&(lead.rotationCount||0)>0;
+                var dupeCount=isOnlyAdmin&&phoneCounts[lead.phone]>1?phoneCounts[lead.phone]:0;
                 return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":isRotated?"#FFF7ED":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
                   <td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();setSelected2(function(prev){return prev.includes(lid)?prev.filter(function(x){return x!==lid;}):[...prev,lid];});}}><input type="checkbox" checked={isChk} readOnly/></td>
                   <td style={{ padding:"10px 12px", textAlign:"left" }}>
@@ -1431,6 +1432,7 @@ var LeadsPage = function(p) {
                       {lead.isVIP&&<span style={{ fontSize:14 }} title="VIP">⭐</span>}
                       {lead.locked&&<span style={{ fontSize:12 }} title="Locked — no rotation">🔒</span>}
                       <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
+                      {dupeCount>0&&<span style={{ fontSize:9, background:"#EDE9FE", color:"#7C3AED", padding:"1px 6px", borderRadius:8, fontWeight:700 }}>👥 {dupeCount}</span>}
                     </div>
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
                   </td>
@@ -1494,7 +1496,7 @@ var LeadsPage = function(p) {
                     <button onClick={function(e){e.stopPropagation();openHistory(lead);}} style={{ padding:"4px 8px", borderRadius:7, background:"#F3E8FF", color:"#7C3AED", fontSize:12, border:"1px solid #DDD6FE", cursor:"pointer" }} title="History">📋</button>
                   </td>
                 </tr>;
-              })}
+              });})()}
             </tbody>
           </table>
         </div>
@@ -4969,31 +4971,27 @@ export default function CRMApp() {
       }catch(e){}
     };
 
-    // Helper: do rotation
+    // Helper: do rotation (creates duplicate for new agent, locks original)
     var doRotate = async function(lead, reason){
       var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
       var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"Agent";
-      // If current agent is team_leader, skip rotation — they keep the lead until they reassign
+      // If current agent is team_leader, skip rotation
       var currentAgentUser = users.find(function(u){return String(gid(u))===String(currentAgentId);});
       if(currentAgentUser&&currentAgentUser.role==="team_leader") return;
       var targetAgent = pickAgent(currentAgentId);
-      if(!targetAgent) return; // no valid target agent
+      if(!targetAgent) return;
       var targetAgentId = gid(targetAgent);
       if(targetAgentId===currentAgentId) return;
       var timeStr=new Date().toLocaleString("en-GB");
       try{
-        var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{
-          agentId: targetAgentId,
-          status: "NewLead",
-          callbackTime: "",
-          lastRotationAt: new Date().toISOString(),
-          rotationCount: (lead.rotationCount||0)+1
+        var newLead = await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{
+          targetAgentId: targetAgentId,
+          reason: "🔄 Auto Rotation | From: "+fromName+" → To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
         },token);
-        await apiFetch("/api/activities","POST",{
-          leadId:gid(lead),type:"reassign",
-          note:"🔄 Auto Rotation | From: "+fromName+" ← To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
-        },token);
-        setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+        // Add new lead to array, mark original as locked
+        setLeads(function(prev){
+          return prev.map(function(l){return gid(l)===gid(lead)?Object.assign({},l,{locked:true}):l;}).concat([newLead]);
+        });
         notifyAdmins(lead,fromName,targetAgent.name,reason);
       }catch(e){console.error("Rotation error:",e);}
     };
