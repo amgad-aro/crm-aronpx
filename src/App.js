@@ -359,6 +359,8 @@ var StatusModal = function(p) {
   var needsComment = st==="Potential"||st==="HotCase"||st==="MeetingDone";
   var needsCb      = st==="CallBack"||st==="NoAnswer";
   var needsPotFields = st==="Potential"||st==="HotCase";
+  var hasBudget = p.lead&&p.lead.budget&&p.lead.budget.trim&&p.lead.budget.trim()!=="";
+  var needsBudgetFields = needsPotFields&&!hasBudget;
 
   useEffect(function(){
     setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit(""); setEoiDateInput("");
@@ -373,13 +375,13 @@ var StatusModal = function(p) {
     if (needsCb && !cbTime)              { setErr("Please select a time"); return; }
     if (isReject && !comment.trim())     { setErr("Please select a rejection reason"); return; }
     if ((isDoneDeal||isEOI) && !dealBudget.trim()){ setErr("Please enter the amount"); return; }
-    if (needsPotFields && !potBudget.trim()){ setErr("Please enter the Budget"); return; }
-    if (needsPotFields && !potDeposit.trim()){ setErr("Please enter the Down Payment"); return; }
-    if (needsPotFields && !potInstalment.trim()){ setErr("Please enter the Installments"); return; }
+    if (needsBudgetFields && !potBudget.trim()){ setErr("Please enter the Budget"); return; }
+    if (needsBudgetFields && !potDeposit.trim()){ setErr("Please enter the Down Payment"); return; }
+    if (needsBudgetFields && !potInstalment.trim()){ setErr("Please enter the Installments"); return; }
     setSaving(true);
     var extra = (isDoneDeal||isEOI)
       ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput }
-      : needsPotFields
+      : (needsPotFields && (potBudget||potDeposit||potInstalment))
         ? { budget: potBudget, deposit: potDeposit, instalment: potInstalment }
         : {};
     await p.onConfirm(comment.trim(), cbTime, extra);
@@ -410,8 +412,8 @@ var StatusModal = function(p) {
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
     </div>}
 
-    {/* Potential / HotCase: budget + deposit + instalment */}
-    {needsPotFields&&<div style={{ background:"#F0F9FF", borderRadius:10, padding:"12px 14px", marginBottom:12, border:"1px solid #BAE6FD" }}>
+    {/* Potential / HotCase: budget + deposit + instalment (only when no budget set yet) */}
+    {needsBudgetFields&&<div style={{ background:"#F0F9FF", borderRadius:10, padding:"12px 14px", marginBottom:12, border:"1px solid #BAE6FD" }}>
       <div style={{ fontSize:12, fontWeight:700, color:"#0284C7", marginBottom:10 }}>💰 Budget Details</div>
       <div style={{ marginBottom:9 }}>
         <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Budget (EGP) <span style={{color:C.danger}}>*</span></label>
@@ -1296,7 +1298,7 @@ var LeadsPage = function(p) {
       </div>
       <Btn outline onClick={function(){setShowStatusPicker(false);}} style={{ width:"100%" }}>{t.cancel}</Btn>
     </Modal>}
-    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
+    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} lead={selected} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
 
     {/* Bulk Reassign Modal */}
     <Modal show={showBulk} onClose={function(){setShowBulk(false);}} title={t.bulkReassign}>
@@ -3271,7 +3273,7 @@ var DailyRequestsPage = function(p) {
   var getAgentName=function(r){if(!r.agentId)return"-";if(r.agentId.name)return r.agentId.name;var u=p.users.find(function(x){return gid(x)===r.agentId;});return u?u.name:"-";};
 
   return <div style={{ padding:"18px 16px 40px" }}>
-    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
+    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} lead={selected} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
     {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
 
     {/* Stats */}
