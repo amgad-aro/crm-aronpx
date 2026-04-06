@@ -514,8 +514,13 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     if (!update.agentId) delete update.agentId;
     // If agentId is being changed (manual reassign) — reset status to NewLead
     var oldLead = null;
-    if (req.body.agentId) {
+    if (req.body.agentId || req.body.status) {
       oldLead = await Lead.findById(req.params.id).lean();
+    }
+    // Guard: never downgrade EOI or DoneDeal back to NewLead (prevents stale rotation overwrites)
+    if (oldLead && (oldLead.status === "EOI" || oldLead.status === "DoneDeal") && req.body.status === "NewLead") {
+      var unchanged = await Lead.findById(req.params.id).populate("agentId", "name title");
+      return res.json(unchanged);
     }
     var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
     try {
