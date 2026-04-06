@@ -862,6 +862,25 @@ app.post("/api/fix-manager-teams", auth, adminOnly, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== BACKFILL LAST FEEDBACK =====
+app.get("/api/leads/backfill-feedback", auth, adminOnly, async function(req, res) {
+  try {
+    var leads = await Lead.find({ $or: [{ lastFeedback: "" }, { lastFeedback: { $exists: false } }] }).lean();
+    var updated = 0;
+    for (var i = 0; i < leads.length; i++) {
+      var act = await Activity.findOne({ leadId: leads[i]._id, type: "status_change", note: { $regex: /^\[.*?\]\s*.+/ } }).sort({ createdAt: -1 }).lean();
+      if (act && act.note) {
+        var txt = act.note.replace(/^\[.*?\]\s*/, "").trim();
+        if (txt) {
+          await Lead.findByIdAndUpdate(leads[i]._id, { $set: { lastFeedback: txt } });
+          updated++;
+        }
+      }
+    }
+    res.json({ ok: true, updated: updated, total: leads.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== ARCHIVE LEAD =====
 app.put("/api/leads/:id/archive", auth, adminOnly, async function(req, res) {
   try {

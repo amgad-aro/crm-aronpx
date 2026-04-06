@@ -1153,8 +1153,7 @@ var LeadsPage = function(p) {
     if(!pendingStatus) return;
     try {
       var upData = { status: pendingStatus.newStatus };
-      var fbParts = [];
-      if(comment) fbParts.push(comment);
+      if(comment) upData.lastFeedback = comment;
       if(cbTime) upData.callbackTime = cbTime;
       else upData.callbackTime = "";
       if(extra) {
@@ -1163,12 +1162,9 @@ var LeadsPage = function(p) {
         if(extra.notes)      upData.notes      = extra.notes;
         if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
         if(extra.deposit) {
-          var paymentInfo = "Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
-          upData.notes = (upData.notes?upData.notes+" | ":"")+paymentInfo;
-          fbParts.push(paymentInfo);
+          upData.notes = (upData.notes?upData.notes+" | ":"")+"Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
         }
       }
-      if(fbParts.length) upData.lastFeedback = fbParts.join(" | ");
       if(comment) upData.notes = comment;
       if(pendingStatus.newStatus === "EOI") upData.eoiDate = extra&&extra.eoiDate ? new Date(extra.eoiDate).toISOString() : new Date().toISOString();
       // Set dealDate to today when converting to DoneDeal (don't use eoiDate)
@@ -1403,11 +1399,10 @@ var LeadsPage = function(p) {
             </tr></thead>
             <tbody>
               {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No data</td></tr>}
-              {(function(){var lastActNote={};p.activities.forEach(function(a){if(!a.note||!a.leadId||a.type!=="status_change")return;var txt=a.note.replace(/^\[.*?\]\s*/,"").trim();if(!txt)return;var alid=gid(a.leadId)||String(a.leadId);if(!lastActNote[alid])lastActNote[alid]=txt;});return filtered.map(function(lead){
+              {filtered.map(function(lead){
                 var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0];
                 var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
                 var isRotated=isOnlyAdmin&&(lead.rotationCount||0)>0;
-                var feedbackText=lead.lastFeedback||lastActNote[lid]||"";
                 return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":isRotated?"#FFF7ED":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
                   <td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();setSelected2(function(prev){return prev.includes(lid)?prev.filter(function(x){return x!==lid;}):[...prev,lid];});}}><input type="checkbox" checked={isChk} readOnly/></td>
                   <td style={{ padding:"10px 12px", textAlign:"left" }}>
@@ -1454,7 +1449,7 @@ var LeadsPage = function(p) {
                       </div>}
                     </div>
                   </td>
-                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{feedbackText||<span style={{color:"#CBD5E1"}}>-</span>}</td>}
+                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{lead.lastFeedback||<span style={{color:"#CBD5E1"}}>-</span>}</td>}
                   {!p.isMobile&&isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
@@ -1478,7 +1473,7 @@ var LeadsPage = function(p) {
                     <button onClick={function(e){e.stopPropagation();openHistory(lead);}} style={{ padding:"4px 8px", borderRadius:7, background:"#F3E8FF", color:"#7C3AED", fontSize:12, border:"1px solid #DDD6FE", cursor:"pointer" }} title="History">📋</button>
                   </td>
                 </tr>;
-              });})()}
+              })}
             </tbody>
           </table>
         </div>
@@ -4631,6 +4626,17 @@ export default function CRMApp() {
       setTasks(results[3]);
     } catch(e){setDataError(e.message);}
     setLoading(false);
+    // Backfill lastFeedback for existing leads (once per browser)
+    try{
+      var bfKey="crm_feedback_backfilled";
+      if(!localStorage.getItem(bfKey)){
+        apiFetch("/api/leads/backfill-feedback","GET",null,tok).then(function(){
+          localStorage.setItem(bfKey,"1");
+          // Reload leads to pick up backfilled data
+          apiFetch("/api/leads?page=1&limit=1000","GET",null,tok).then(function(r){if(r&&r.data)setLeads(r.data);}).catch(function(){});
+        }).catch(function(){});
+      }
+    }catch(e){}
   },[leadsPage, activitiesPage]);
 
   // ===== POLLING BACKUP (every 15 seconds) =====
