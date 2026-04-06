@@ -1112,6 +1112,7 @@ var LeadsPage = function(p) {
   var [noAgentFilter, setNoAgentFilter] = useState(false);
   var [agentFilter, setAgentFilter] = useState("");
   var [sortBy, setSortBy] = useState("lastActivity");
+  var [panelHistory, setPanelHistory] = useState([]);
   var fileRef = useRef(null);
 
   // ---- Filter logic (uses state values above) ----
@@ -1139,6 +1140,24 @@ var LeadsPage = function(p) {
   });
 
   useEffect(function(){ if(p.initSelected){setSelected(p.initSelected);} },[p.initSelected]);
+
+  // Fetch full history when a lead is selected
+  useEffect(function(){
+    if(!selected){setPanelHistory([]);return;}
+    var lid=gid(selected);
+    apiFetch("/api/leads/"+lid+"/full-history","GET",null,p.token).then(function(hist){
+      var all=hist||[];
+      var isAdminRole=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
+      if(!isAdminRole){
+        var rotTime=selected.lastRotationAt?new Date(selected.lastRotationAt).getTime():0;
+        all=all.filter(function(a){
+          var auid=String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
+          return auid===String(p.cu.id||"")&&(!rotTime||new Date(a.createdAt).getTime()>=rotTime);
+        });
+      }
+      setPanelHistory(all.slice().sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);}));
+    }).catch(function(){setPanelHistory([]);});
+  },[selected]);
 
   var getAgentName = function(l){ if(!l.agentId)return"-"; if(l.agentId.name)return l.agentId.name; var u=p.users.find(function(x){return gid(x)===l.agentId;}); return u?u.name:"-"; };
 
@@ -1564,52 +1583,22 @@ var LeadsPage = function(p) {
             <button onClick={function(){openHistory(selected);}} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid #E2E8F0", background:"#F3E8FF", fontSize:13, cursor:"pointer" }} title="History">📋</button>
           </div>
 
-          {/* Activity Log */}
-          {(function(){
-            var cuRole=p.cu.role;
-            var isOnlyAdminH=cuRole==="admin";
-            // Admin: sees all history
-            // Manager: sees only activities after last reassign (reassignedAt)
-            // Sales: sees only activities after last reassign (reassignedAt)
-            var visibleActs=leadActs;
-            if(!isOnlyAdminH && selected){
-              var cutoffTime = 0;
-              if(selected.reassignedAt){
-                cutoffTime = new Date(selected.reassignedAt).getTime();
-              } else if(selected.lastRotationAt){
-                cutoffTime = new Date(selected.lastRotationAt).getTime();
-              } else {
-                // No reassign date: show only activities by current agent
-                var curAgentId = selected.agentId && selected.agentId._id
-                  ? String(selected.agentId._id)
-                  : String(selected.agentId||"");
-                visibleActs = leadActs.filter(function(a){
-                  var auid = a.userId && a.userId._id ? String(a.userId._id) : String(a.userId||"");
-                  return auid === curAgentId || auid === String(p.cu.id||"");
-                });
-              }
-              if(cutoffTime>0){
-                visibleActs=leadActs.filter(function(a){return new Date(a.createdAt).getTime()>=cutoffTime;});
-              }
-            }
-            // sort by createdAt ascending then reverse = newest first
-            var displayActs = visibleActs.slice().sort(function(a,b){return new Date(a.createdAt)-new Date(b.createdAt);}).reverse();
-            if(displayActs.length===0&&!isOnlyAdminH) return null;
-            return <div style={{ marginTop:14 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-                <span style={{ fontSize:11, color:C.textLight, fontWeight:600 }}>{t.clientHistory}</span>
-                {isOnlyAdminH&&selected&&(selected.rotationCount||0)>0&&<span style={{ fontSize:9, background:"#FEF3C7", color:"#B45309", padding:"2px 6px", borderRadius:6, fontWeight:600 }}>🔄 {selected.rotationCount} transfers</span>}
+          {/* Activity Log — full history */}
+          <div style={{ marginTop:14 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+              <span style={{ fontSize:11, color:C.textLight, fontWeight:600 }}>{t.clientHistory} ({panelHistory.length})</span>
+              {isOnlyAdmin&&selected&&(selected.rotationCount||0)>0&&<span style={{ fontSize:9, background:"#FEF3C7", color:"#B45309", padding:"2px 6px", borderRadius:6, fontWeight:600 }}>🔄 {selected.rotationCount} transfers</span>}
+            </div>
+            {panelHistory.length===0&&<div style={{ fontSize:11, color:C.textLight, textAlign:"center", padding:12 }}>No history</div>}
+            {panelHistory.map(function(a,i){var uname=a.userId&&a.userId.name?a.userId.name:"";return <div key={a._id||i} style={{ fontSize:10, padding:"8px 0", borderBottom:"1px solid #F8FAFC" }}>
+              <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
+                <span style={{ flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔"}</span>
+                <span style={{ flex:1 }}>{a.note}</span>
+                <span style={{ color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
               </div>
-              {displayActs.map(function(a,i){var uname=a.userId&&a.userId.name?a.userId.name:"";return <div key={a._id||i} style={{ fontSize:10, padding:"8px 0", borderBottom:"1px solid #F8FAFC" }}>
-                <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
-                  <span style={{ flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔"}</span>
-                  <span style={{ flex:1 }}>{a.note}</span>
-                  <span style={{ color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
-                </div>
-                {uname&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{uname} · {new Date(a.createdAt).toLocaleDateString("en-GB")}</div>}
-              </div>;})}
-            </div>;
-          })()}
+              {uname&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{uname} · {new Date(a.createdAt).toLocaleDateString("en-GB")}</div>}
+            </div>;})}
+          </div>
         </div>
       </Card>}
     </div>
@@ -3334,7 +3323,7 @@ var DailyRequestsPage = function(p) {
       </select>
     </div>
 
-    <div style={{ display:"flex", gap:14 }}>
+    <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&selected?330:0, transition:"padding-right 0.25s" }}>
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         {loading?<Loader/>:p.isMobile?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:"12px", maxWidth:500, margin:"0 auto" }}>
           {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>No requests</div>}
@@ -3485,7 +3474,7 @@ var DailyRequestsPage = function(p) {
       </Card>
 
       {/* Side Panel */}
-      {selected&&<Card style={{ flex:"0 0 280px", maxHeight:"calc(100vh - 120px)", overflowY:"auto", padding:0 }}>
+      {selected&&<Card style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
