@@ -4981,9 +4981,9 @@ export default function CRMApp() {
 
     var HOUR = 60*60*1000;
     var DAY  = 24*60*60*1000;
-    var now  = Date.now();
 
     var runChecks = async function(){
+      var now = Date.now();
       var savedIds = getSavedAgents();
       if(!savedIds.length) return; // ← no agents configured = no rotation at all
       var dur = getRotDurations();
@@ -5050,8 +5050,8 @@ export default function CRMApp() {
           }
         }
 
-        // ── RULE 3: No activity +noActDays ─────────────────────────────
-        if(l.status!=="NotInterested"&&l.status!=="DoneDeal"&&l.status!=="EOI"){
+        // ── RULE 3: No activity +noActDays (NewLead only — other statuses have their own rules) ──
+        if(l.status==="NewLead"){
           if((now-lastAct)>=(dur.noActDays*DAY)){
             var noActKey="crm_noact2_"+lid; var noActDone=false;
             try{noActDone=localStorage.getItem(noActKey)==="1";}catch(e){}
@@ -5095,7 +5095,7 @@ export default function CRMApp() {
     runChecks();
     var rotInterval = setInterval(runChecks, 5*60*1000);
     return function(){clearInterval(rotInterval);};
-  },[token, leads.length, users.length]);
+  },[token, leads, users]);
 
   var handleLogout=function(){setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
