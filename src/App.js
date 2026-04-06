@@ -1154,7 +1154,7 @@ var LeadsPage = function(p) {
     try {
       var upData = { status: pendingStatus.newStatus };
       var fbParts = [];
-      if(comment) { fbParts.push(comment); upData.notes = comment; }
+      if(comment) fbParts.push(comment);
       if(cbTime) upData.callbackTime = cbTime;
       else upData.callbackTime = "";
       if(extra) {
@@ -1169,6 +1169,7 @@ var LeadsPage = function(p) {
         }
       }
       if(fbParts.length) upData.lastFeedback = fbParts.join(" | ");
+      if(comment) upData.notes = comment;
       if(pendingStatus.newStatus === "EOI") upData.eoiDate = extra&&extra.eoiDate ? new Date(extra.eoiDate).toISOString() : new Date().toISOString();
       // Set dealDate to today when converting to DoneDeal (don't use eoiDate)
       if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date().toISOString().slice(0,10);
@@ -1452,7 +1453,7 @@ var LeadsPage = function(p) {
                       </div>}
                     </div>
                   </td>
-                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{lead.lastFeedback||<span style={{color:"#CBD5E1"}}>-</span>}</td>}
+                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{lead.lastFeedback||lead.notes||<span style={{color:"#CBD5E1"}}>-</span>}</td>}
                   {!p.isMobile&&isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
