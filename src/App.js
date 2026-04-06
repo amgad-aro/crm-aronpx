@@ -4578,7 +4578,7 @@ export default function CRMApp() {
     setLoading(true); setDataError(null);
     try {
       var results=await Promise.all([
-        apiFetch("/api/leads?page="+leadsPage+"&limit=20","GET",null,tok),
+        apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,tok),
         apiFetch("/api/users","GET",null,tok),
         apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,tok),
         apiFetch("/api/tasks","GET",null,tok)
@@ -4615,7 +4615,7 @@ export default function CRMApp() {
     var interval = setInterval(async function(){
       try{
         var results = await Promise.all([
-          apiFetch("/api/leads?page="+leadsPage+"&limit=20","GET",null,token),
+          apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,token),
           apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token)
         ]);
         var leadsData = results[0].data||[];

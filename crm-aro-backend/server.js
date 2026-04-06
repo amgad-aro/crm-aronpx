@@ -420,7 +420,7 @@ app.get("/api/leads", auth, async function(req, res) {
 
     // Pagination
     var page = parseInt(req.query.page) || 1;
-    var limit = parseInt(req.query.limit) || 20;
+    var limit = parseInt(req.query.limit) || 1000;
     var skip = (page - 1) * limit;
 
     var total = await Lead.countDocuments(query);
