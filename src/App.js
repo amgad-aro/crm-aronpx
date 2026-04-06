@@ -1403,7 +1403,7 @@ var LeadsPage = function(p) {
             </tr></thead>
             <tbody>
               {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No data</td></tr>}
-              {(function(){var lastActNote={};p.activities.forEach(function(a){if(!a.note||!a.leadId)return;var alid=gid(a.leadId)||String(a.leadId);if(!lastActNote[alid])lastActNote[alid]=a.note;});return filtered.map(function(lead){
+              {(function(){var lastActNote={};p.activities.forEach(function(a){if(!a.note||!a.leadId||a.type!=="status_change")return;var txt=a.note.replace(/^\[.*?\]\s*/,"").trim();if(!txt)return;var alid=gid(a.leadId)||String(a.leadId);if(!lastActNote[alid])lastActNote[alid]=txt;});return filtered.map(function(lead){
                 var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0];
                 var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
                 var isRotated=isOnlyAdmin&&(lead.rotationCount||0)>0;
