@@ -1387,6 +1387,7 @@ var LeadsPage = function(p) {
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.phone2}</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.project}</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.status}</th>
+              {!p.isMobile&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>Last Feedback</th>}
               {!p.isMobile&&isAdmin&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90 }}>{t.source}</th>}
               {isAdmin&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.agent}</th>}
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90 }}>{t.lastActivity}</th>
@@ -1444,6 +1445,7 @@ var LeadsPage = function(p) {
                       </div>}
                     </div>
                   </td>
+                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={lead.notes||""}>{lead.notes?lead.notes.length>40?lead.notes.slice(0,40)+"…":lead.notes:<span style={{color:"#CBD5E1"}}>-</span>}</td>}
                   {!p.isMobile&&isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
@@ -3414,7 +3416,7 @@ var DailyRequestsPage = function(p) {
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
               {p.cu.role==="admin"&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(r){return gid(r);}):[]);}}/></th>}
-              {["Name","Phone","Property Type","Location","Budget","Status",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+              {["Name","Phone","Property Type","Location","Budget","Status","Last Feedback",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
             </tr></thead>
             <tbody>
               {filtered.length===0&&<tr><td colSpan={10} style={{ padding:40, textAlign:"center", color:C.textLight }}>No requests</td></tr>}
@@ -3449,6 +3451,7 @@ var DailyRequestsPage = function(p) {
                       <div style={{ borderTop:"1px solid #F1F5F9", marginTop:4, paddingTop:4 }}><button onClick={function(){setStatusDrop(null);}} style={{ width:"100%", padding:"7px", borderRadius:8, border:"none", background:"#F1F5F9", cursor:"pointer", fontSize:12 }}>{t.cancel}</button></div>
                     </div>}
                   </td>
+                  <td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={r.notes||""}>{r.notes?r.notes.length>40?r.notes.slice(0,40)+"…":r.notes:<span style={{color:"#CBD5E1"}}>-</span>}</td>
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight }} onClick={function(e){e.stopPropagation();}}>
                     <select value={r.agentId&&r.agentId._id?r.agentId._id:(r.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
