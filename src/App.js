@@ -1329,7 +1329,7 @@ var LeadsPage = function(p) {
     </div>
     {importMsg&&<div style={{ marginBottom:10, padding:"9px 14px", background:importMsg.startsWith("✅")?"#DCFCE7":"#FEE2E2", color:importMsg.startsWith("✅")?"#15803D":"#B91C1C", borderRadius:9, fontSize:13 }}>{importMsg}</div>}
 
-    <div style={{ display:"flex", gap:14 }}>
+    <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&selected?330:0, transition:"padding-right 0.25s" }}>
       {/* Status dropdown overlay */}
       {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
     {/* Table */}
@@ -1341,7 +1341,7 @@ var LeadsPage = function(p) {
           var actColor=lead.lastActivityTime&&(Date.now()-new Date(lead.lastActivityTime).getTime())>3*24*60*60*1000?C.danger:C.accent;
           var borderCol=isVIP?"#F59E0B":so.color||"#E8ECF1";
           var isRotated=isOnlyAdmin&&(lead.rotationCount||0)>0;
-          return <div key={lid} onClick={function(){setSelected(lead);window.scrollTo({top:0,behavior:"smooth"});}}
+          return <div key={lid} onClick={function(){setSelected(lead);}}
             style={{ background:isRotated?"#FFF7ED":"#fff", borderRadius:16, padding:"16px",
               border:"2px solid "+borderCol,
               cursor:"pointer", boxShadow:"0 3px 12px "+borderCol+"35" }}>
@@ -1481,7 +1481,7 @@ var LeadsPage = function(p) {
       </div>}
 
       {/* Side Panel */}
-      {selected&&<Card style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ flex:"0 0 295px", maxHeight:"calc(100vh - 120px)", overflowY:"auto", padding:0 }}>
+      {selected&&<Card style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px", position:"sticky", top:0 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
