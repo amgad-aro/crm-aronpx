@@ -488,7 +488,7 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
     var { leadIds, agentId } = req.body;
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
     var agentObjId = new mongoose.Types.ObjectId(agentId);
-    await Lead.updateMany({ _id: { $in: leadIds } }, { $set: { agentId: agentObjId, lastActivityTime: new Date() } });
+    await Lead.updateMany({ _id: { $in: leadIds } }, { $set: { agentId: agentObjId, status: "NewLead", callbackTime: "", lastActivityTime: new Date() } });
     await Activity.create({ userId: req.user.id, type: "reassign", note: "Bulk reassign — " + leadIds.length + " leads" });
     res.json({ ok: true, count: leadIds.length });
   } catch(e) { res.status(500).json({ error: e.message }); }
