@@ -638,21 +638,32 @@ var Header = function(p) {
   var noActivityDR = myDRForNotif.filter(function(r){return r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>1*24*60*60*1000;});
   var allNoActivity = noActivityLeads.concat(noActivityDR);
   var notifRef = useRef(null);
-  var [badgeHidden, setBadgeHidden] = useState(function(){
-    try{
-      var seen = Number(localStorage.getItem("crm_notif_seen_count")||"0");
-      return seen > 0;
-    }catch(e){return false;}
+  var [notifTab, setNotifTab] = useState("all");
+  var [readNotifs, setReadNotifs] = useState(function(){
+    try{return new Set(JSON.parse(localStorage.getItem("crm_cb_read")||"[]"));}catch(e){return new Set();}
   });
-  useEffect(function(){
-    if(callbackNow.length+overdueCallback.length>0){
-      try{
-        var seen = Number(localStorage.getItem("crm_notif_seen_count")||"0");
-        var total = callbackNow.length+overdueCallback.length;
-        if(total > seen) setBadgeHidden(false);
-      }catch(e){}
-    }
-  },[callbackNow.length, overdueCallback.length]);
+  var markRead = function(id){
+    setReadNotifs(function(prev){
+      var next=new Set(prev); next.add(id);
+      try{localStorage.setItem("crm_cb_read",JSON.stringify(Array.from(next).slice(-200)));}catch(e){}
+      return next;
+    });
+  };
+  var markAllRead = function(){
+    var allIds = overdueCallback.concat(callbackNow).concat(upcoming).concat(allNoActivity).map(function(l){return gid(l);});
+    setReadNotifs(function(prev){
+      var next=new Set(prev); allIds.forEach(function(id){next.add(id);});
+      try{localStorage.setItem("crm_cb_read",JSON.stringify(Array.from(next).slice(-200)));}catch(e){}
+      return next;
+    });
+  };
+  var allCbItems = overdueCallback.map(function(l){return Object.assign({},l,{_cbType:"overdue"});})
+    .concat(callbackNow.map(function(l){return Object.assign({},l,{_cbType:"now"});}))
+    .concat(upcoming.map(function(l){return Object.assign({},l,{_cbType:"upcoming"});}))
+    .concat(allNoActivity.map(function(l){return Object.assign({},l,{_cbType:"nocontact"});}));
+  var filteredCbItems = notifTab==="all"?allCbItems:allCbItems.filter(function(l){return l._cbType===notifTab;});
+  var unreadCount = allCbItems.filter(function(l){return !readNotifs.has(gid(l));}).length;
+  var cbColors = {overdue:{bg:"#FEF2F2",border:"#EF4444",icon:"#FEE2E2",text:"#DC2626"},now:{bg:"#FFF7ED",border:"#F97316",icon:"#FFEDD5",text:"#EA580C"},upcoming:{bg:"#F0FDF4",border:"#22C55E",icon:"#DCFCE7",text:"#16A34A"},nocontact:{bg:"#FFFBEB",border:"#EAB308",icon:"#FEF3C7",text:"#B45309"}};
   useEffect(function(){
     if (!p.showNotif) return;
     var fn=function(e){if(notifRef.current&&!notifRef.current.contains(e.target))p.setShowNotif(false);};
@@ -763,69 +774,66 @@ var Header = function(p) {
         </div>}
       </div>}
 
-      {/* BELL 1 — Callbacks */}
+      {/* BELL 1 — Callbacks (redesigned) */}
       <div style={{ position:"relative" }} ref={notifRef}>
+        <style dangerouslySetInnerHTML={{__html:"@keyframes cbBellShake{0%,100%{transform:rotate(0)}15%{transform:rotate(12deg)}30%{transform:rotate(-10deg)}45%{transform:rotate(8deg)}60%{transform:rotate(-6deg)}75%{transform:rotate(3deg)}}.cb-bell-shake{animation:cbBellShake 0.6s ease-in-out infinite}.cb-dropdown-enter{animation:cbSlideDown 0.2s ease-out}@keyframes cbSlideDown{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}.cb-card:hover{box-shadow:0 4px 16px rgba(0,0,0,0.08)!important;transform:translateY(-1px)}"}}/>
         <button onClick={function(){
           var opening=!p.showNotif;
           p.setShowNotif(opening);
-          if(opening){p.setShowDealNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);setBadgeHidden(true);try{localStorage.setItem("crm_notif_seen_count",String(callbackNow.length+overdueCallback.length));}catch(e){}}
-        }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:(callbackNow.length+overdueCallback.length)>0&&!badgeHidden?"#FEF2F2":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
-          <Bell size={16} color={(callbackNow.length+overdueCallback.length)>0?C.danger:C.textLight}/>
-          {(callbackNow.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{callbackNow.length+overdueCallback.length}</span>}
+          if(opening){p.setShowDealNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);setNotifTab("all");}
+        }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:unreadCount>0?"#FEF2F2":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+          <Bell size={16} color={unreadCount>0?C.danger:C.textLight} className={unreadCount>0?"cb-bell-shake":""}/>
+          {unreadCount>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{unreadCount>99?"99+":unreadCount}</span>}
         </button>
-        {p.showNotif&&<div style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
-          <div style={{ padding:"14px 18px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <Bell size={16} color={C.danger}/>
-              <span style={{ fontWeight:700, fontSize:14, color:C.text }}>{t.callReminder}</span>
+        {p.showNotif&&<div className="cb-dropdown-enter" style={{ position:"absolute", top:46, right:0, width:380, background:"#fff", borderRadius:16, boxShadow:"0 20px 60px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
+          {/* Header */}
+          <div style={{ padding:"16px 20px 12px", borderBottom:"1px solid #F1F5F9", flexShrink:0 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <span style={{ fontSize:18 }}>🔔</span>
+                <span style={{ fontWeight:700, fontSize:15, color:C.text }}>Callbacks</span>
+                {allCbItems.length>0&&<span style={{ background:"#FEF2F2", color:C.danger, padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:700 }}>{allCbItems.length}</span>}
+              </div>
+              <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+                {unreadCount>0&&<button onClick={markAllRead} style={{ background:"#FEF2F2", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:C.danger, fontWeight:600, padding:"4px 10px" }}>Mark All Read</button>}
+                <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
+              </div>
             </div>
-            <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
+            {/* Tabs */}
+            <div style={{ display:"flex", gap:4, overflowX:"auto", paddingBottom:2 }}>
+              {[{key:"all",label:"All",count:allCbItems.length},{key:"overdue",label:"Overdue",count:overdueCallback.length},{key:"now",label:"Now",count:callbackNow.length},{key:"upcoming",label:"Upcoming",count:upcoming.length},{key:"nocontact",label:"No Contact",count:allNoActivity.length}].map(function(tab){var active=notifTab===tab.key;return <button key={tab.key} onClick={function(){setNotifTab(tab.key);}} style={{ padding:"5px 10px", borderRadius:8, border:"none", background:active?"#1E293B":"#F1F5F9", color:active?"#fff":"#64748B", fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:4, whiteSpace:"nowrap", transition:"all 0.15s" }}>
+                {tab.label}
+                {tab.count>0&&<span style={{ background:active?"rgba(255,255,255,0.2)":"#E2E8F0", color:active?"#fff":"#64748B", padding:"0 5px", borderRadius:6, fontSize:9, fontWeight:700 }}>{tab.count}</span>}
+              </button>;})}
+            </div>
           </div>
-          <div style={{ overflowY:"auto", flex:1 }}>
-            {callbackNow.length===0&&upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}>
-              <div style={{ fontSize:28, marginBottom:8 }}>🔔</div>No notifications
+          {/* Card list */}
+          <div style={{ overflowY:"auto", flex:1, padding:"8px 12px" }}>
+            {allCbItems.length===0&&<div style={{ padding:"40px 20px", textAlign:"center" }}>
+              <div style={{ fontSize:40, marginBottom:12 }}>🎉</div>
+              <div style={{ fontSize:14, fontWeight:600, color:C.text, marginBottom:4 }}>All clear!</div>
+              <div style={{ fontSize:12, color:C.textLight }}>No pending callbacks</div>
             </div>}
-            {overdueCallback.length>0&&<div style={{ padding:"10px 18px", background:"#FEF2F2" }}>
-              <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:8, display:"flex", alignItems:"center", gap:4 }}>🔴 Overdue ({overdueCallback.length})</div>
-              {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2", width:"100%", background:"none", border:"none", borderBottom:"1px solid rgba(239,68,68,0.1)", textAlign:"left" }}>
-                <div style={{ width:32, height:32, borderRadius:8, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:14 }}>📞</div>
+            {filteredCbItems.length===0&&allCbItems.length>0&&<div style={{ padding:"32px 20px", textAlign:"center", color:C.textLight, fontSize:13 }}>No items in this category</div>}
+            {filteredCbItems.map(function(l){
+              var agName=l.agentId&&l.agentId.name?l.agentId.name:"";
+              var cc=cbColors[l._cbType]||cbColors.now;
+              var isRead=readNotifs.has(gid(l));
+              var cbTypeLabel=l._cbType==="overdue"?"Overdue":l._cbType==="now"?"Callback Now":l._cbType==="upcoming"?"Upcoming":"No Contact";
+              var timeStr=l._cbType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?timeAgo(l.callbackTime,p.t):"");
+              return <div key={gid(l)} className="cb-card" onClick={function(){markRead(gid(l));p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:isRead?"#fff":cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"12px 14px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
+                <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{l._cbType==="nocontact"?"😴":"📞"}</div>
                 <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:12, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontWeight:400, color:C.accent }}> — {agName}</span>}</div>
-                  <div style={{ fontSize:10, color:C.danger }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
+                  <div style={{ fontSize:14, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
+                  <div style={{ fontSize:12, fontWeight:500, color:C.textLight, marginTop:2 }}>{agName||"Unassigned"}</div>
+                  <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:3 }}>
+                    <span style={{ fontSize:10, fontWeight:600, color:cc.text, background:cc.icon, padding:"1px 6px", borderRadius:4 }}>{cbTypeLabel}</span>
+                    <span style={{ fontSize:11, color:C.textLight }}>{timeStr}</span>
+                  </div>
                 </div>
-              </button>;})}
-            </div>}
-            {callbackNow.length>0&&<div style={{ padding:"10px 18px", background:"#FEF2F2" }}>
-              <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:8, display:"flex", alignItems:"center", gap:4 }}>📞 Callback Now ({callbackNow.length})</div>
-              {callbackNow.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", cursor:"pointer", width:"100%", background:"none", border:"none", borderBottom:"1px solid rgba(239,68,68,0.1)", textAlign:"left" }}>
-                <div style={{ width:32, height:32, borderRadius:8, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:14 }}>📞</div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:12, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontWeight:400, color:C.accent }}> — {agName}</span>}</div>
-                  <div style={{ fontSize:10, color:C.danger }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
-                </div>
-              </button>;})}
-            </div>}
-            {allNoActivity.length>0&&<div style={{ padding:"10px 18px", background:"#FFFBEB" }}>
-              <div style={{ fontSize:11, fontWeight:700, color:"#B45309", marginBottom:8, display:"flex", alignItems:"center", gap:4 }}>🟡 No Contact +1 Day ({allNoActivity.length})</div>
-              {allNoActivity.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", cursor:"pointer", width:"100%", background:"none", border:"none", borderBottom:"1px solid rgba(180,83,9,0.08)", textAlign:"left" }}>
-                <div style={{ width:32, height:32, borderRadius:8, background:"#FEF3C7", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:14 }}>😴</div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:12, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontWeight:400, color:C.accent }}> — {agName}</span>}</div>
-                  <div style={{ fontSize:10, color:"#B45309" }}>{timeAgo(l.lastActivityTime,p.t)}</div>
-                </div>
-              </button>;})}
-            </div>}
-            {upcoming.length>0&&<div style={{ padding:"10px 18px" }}>
-              <div style={{ fontSize:11, fontWeight:700, color:"#D97706", marginBottom:8, display:"flex", alignItems:"center", gap:4 }}>🟠 Upcoming ({upcoming.length})</div>
-              {upcoming.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", cursor:"pointer", width:"100%", background:"none", border:"none", borderBottom:"1px solid #F1F5F9", textAlign:"left" }}>
-                <div style={{ width:32, height:32, borderRadius:8, background:"#FEF3C7", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Phone size={14} color="#D97706"/></div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:12, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontWeight:400, color:C.accent }}> — {agName}</span>}</div>
-                  <div style={{ fontSize:10, color:C.textLight }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
-                </div>
-                <ChevronRight size={13} color={C.textLight}/>
-              </button>;})}
-            </div>}
+                {l.phone&&<a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();markRead(gid(l));}} style={{ width:32, height:32, borderRadius:8, background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, textDecoration:"none" }} title="Call"><Phone size={14} color={cc.text}/></a>}
+              </div>;
+            })}
           </div>
         </div>}
       </div>
