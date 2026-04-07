@@ -4992,8 +4992,11 @@ export default function CRMApp() {
 
     // Helper: send in-app notification to admins + browser notif
     var notifyAdmins = function(lead, fromName, toName, reason){
+      console.log("🔄 notifyAdmins fired:", lead.name, fromName, "→", toName, reason);
       showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
-      setRotNotifs(function(prev){return [{id:Date.now(),leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason,time:new Date().toISOString()}].concat(prev).slice(0,50);});
+      var entry = {id:Date.now(),leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason,time:new Date().toISOString()};
+      // Update React state
+      setRotNotifsRaw(function(prev){var next=[entry].concat(prev).slice(0,50);try{localStorage.setItem("crm_rot_notifs",JSON.stringify(next));}catch(e){}return next;});
     };
 
     // Helper: do rotation (reassign to new agent, backend tracks agentHistory)
