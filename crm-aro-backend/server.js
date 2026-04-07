@@ -475,6 +475,8 @@ app.post("/api/leads", auth, async function(req, res) {
       lastActivityTime: new Date(),
       archived:         false,
       isVIP:            false,
+      eoiDeposit:       req.body.eoiDeposit || "",
+      eoiDate:          req.body.eoiDate || "",
     });
     console.log("SAVED phone2:", lead.phone2);
     lead = await Lead.findById(lead._id).populate("agentId", "name title");
