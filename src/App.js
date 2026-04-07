@@ -4763,7 +4763,7 @@ export default function CRMApp() {
   }, [token]);
   useEffect(function(){
     if(!token) return;
-    var wsUrl = (process.env.REACT_APP_API_URL||"https://crm-aro-api-production.up.railway.app").replace("https://","wss://").replace("http://","ws://");
+    var wsUrl = (process.env.REACT_APP_API_URL||API).replace("https://","wss://").replace("http://","ws://");
     var ws; var reconnectTimer;
     function connect(){
       ws = new WebSocket(wsUrl);
