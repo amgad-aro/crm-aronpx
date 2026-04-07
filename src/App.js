@@ -785,7 +785,7 @@ var Header = function(p) {
           <Bell size={16} color={unreadCount>0?C.danger:C.textLight} className={unreadCount>0?"cb-bell-shake":""}/>
           {unreadCount>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{unreadCount>99?"99+":unreadCount}</span>}
         </button>
-        {p.showNotif&&<div className="cb-dropdown-enter" style={{ position:"absolute", top:46, right:0, width:380, background:"#fff", borderRadius:16, boxShadow:"0 20px 60px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
+        {p.showNotif&&<div className="cb-dropdown-enter" style={{ position:"absolute", top:46, right:0, width:460,maxWidth:"95vw", background:"#fff", borderRadius:16, boxShadow:"0 20px 60px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
           {/* Header */}
           <div style={{ padding:"16px 20px 12px", borderBottom:"1px solid #F1F5F9", flexShrink:0 }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
@@ -801,7 +801,7 @@ var Header = function(p) {
             </div>
             {/* Tabs */}
             <div style={{ display:"flex", gap:3, overflowX:"auto", paddingBottom:2, scrollbarWidth:"none", msOverflowStyle:"none" }}>
-              {[{key:"all",label:"All",count:allCbItems.length},{key:"overdue",label:"Overdue",count:overdueCallback.length},{key:"now",label:"Now",count:callbackNow.length},{key:"upcoming",label:"Upcoming",count:upcoming.length},{key:"nocontact",label:"No Contact",count:allNoActivity.length}].map(function(tab){var active=notifTab===tab.key;return <button key={tab.key} onClick={function(){setNotifTab(tab.key);}} style={{ padding:"4px 8px", borderRadius:7, border:"none", background:active?"#1E293B":"#F1F5F9", color:active?"#fff":"#64748B", fontSize:10, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:3, whiteSpace:"nowrap", transition:"all 0.15s", flexShrink:0 }}>
+              {[{key:"all",label:"All",count:allCbItems.length},{key:"overdue",label:"Overdue",count:overdueCallback.length},{key:"now",label:"Now",count:callbackNow.length},{key:"upcoming",label:"Upcoming",count:upcoming.length},{key:"nocontact",label:"No Contact",count:allNoActivity.length}].map(function(tab){var active=notifTab===tab.key;return <button key={tab.key} onClick={function(){setNotifTab(tab.key);}} style={{ padding:"3px 7px", borderRadius:7, border:"none", background:active?"#1E293B":"#F1F5F9", color:active?"#fff":"#64748B", fontSize:10, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:3, whiteSpace:"nowrap", transition:"all 0.15s", flexShrink:0 }}>
                 {tab.label}
                 {tab.count>0&&<span style={{ background:active?"rgba(255,255,255,0.2)":"#E2E8F0", color:active?"#fff":"#64748B", padding:"0 5px", borderRadius:6, fontSize:9, fontWeight:700 }}>{tab.count}</span>}
               </button>;})}
