@@ -695,7 +695,7 @@ var Header = function(p) {
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontWeight:700, fontSize:13 }}>🎉 New Deals ({p.dealNotifs?p.dealNotifs.length:0})</span>
             <div style={{ display:"flex", gap:6 }}>
-              {p.dealNotifs&&p.dealNotifs.length>0&&<button onClick={function(){p.setDealNotifs([]);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.textLight }}>Clear All</button>}
+              {p.dealNotifs&&p.dealNotifs.length>0&&<button onClick={function(){p.setDealNotifs([]);try{localStorage.setItem("crm_deal_notifs","[]");}catch(e){}}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.textLight }}>Clear All</button>}
               <button onClick={function(){p.setShowDealNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
             </div>
           </div>
@@ -4575,12 +4575,11 @@ export default function CRMApp() {
   var [leadsPage,setLeadsPage]=useState(1); var [leadsTotal,setLeadsTotal]=useState(0); var [leadsTotalPages,setLeadsTotalPages]=useState(0);
   var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
-  var [dealNotifsSeenCount,setDealNotifsSeenCount]=useState(function(){try{return Number(localStorage.getItem("crm_deal_seen_count")||"0");}catch(e){return 0;}});
-  var [dealNotifs,setDealNotifsRaw]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_deal_notifs")||"[]");}catch(e){return[];}});
-  var setDealNotifs=function(fn){setDealNotifsRaw(function(prev){var next=typeof fn==="function"?fn(prev):fn;try{localStorage.setItem("crm_deal_notifs",JSON.stringify(next));}catch(e){}return next;});};
+  var [dealNotifsSeen,setDealNotifsSeen]=useState(0);
+  var [dealNotifs,setDealNotifs]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_deal_notifs")||"[]");}catch(e){return[];}});
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
-  var [rotNotifsSeenCount,setRotNotifsSeenCount]=useState(0);
+  var [rotNotifsSeen,setRotNotifsSeen]=useState(0);
   var [rotNotifs,setRotNotifs]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){return[];}});
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
@@ -4595,7 +4594,16 @@ export default function CRMApp() {
     return isIOS&&!isStandalone&&!isDismissed;
   });
 
-  // Rotation notification helper — uses functional setState to avoid stale closures
+  // Deal notification helper — functional setState, persists to localStorage
+  var addDealNotif = function(n){
+    setDealNotifs(function(prev){
+      var next = [n].concat(prev).slice(0,50);
+      try{localStorage.setItem("crm_deal_notifs",JSON.stringify(next));}catch(e){}
+      return next;
+    });
+  };
+
+  // Rotation notification helper — functional setState, persists to localStorage
   var notifyRotation = function(lead, fromName, toName, reason){
     var entry = {id:Date.now(),leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason,time:new Date().toISOString()};
     setRotNotifs(function(prev){
@@ -4715,9 +4723,7 @@ export default function CRMApp() {
               var prev = prevLeads.find(function(p2){return String(p2._id)===String(l._id);});
               if(prev && prev.status!==l.status && (l.status==="DoneDeal"||l.status==="EOI")){
                 var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
-                setDealNotifs(function(dn){
-                  return [{id:Date.now(),leadName:l.name,agentName:agName,status:l.status,budget:l.budget||"",time:new Date().toISOString()}].concat(dn).slice(0,50);
-                });
+                addDealNotif({id:Date.now(),leadName:l.name,agentName:agName,status:l.status,budget:l.budget||"",time:new Date().toISOString()});
                 showBrowserNotif("🎉 "+(l.status==="DoneDeal"?"Done Deal":"EOI"), l.name+(agName?" — "+agName:""));
               }
             });
@@ -5164,7 +5170,7 @@ export default function CRMApp() {
   var myId = String(currentUser.id||currentUser._id||"");
   var myTeamUsers = users; // server handles all filtering per role
 
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});},notifyRotation:notifyRotation}; 
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation}; 
 
   var renderPage=function(){
     switch(currentPage){
@@ -5202,7 +5208,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.length-rotNotifsSeenCount>0?rotNotifs.length-rotNotifsSeenCount:0} onRotNotifSeen={function(){setRotNotifsSeenCount(rotNotifs.length);try{localStorage.setItem("crm_rot_seen",String(rotNotifs.length));}catch(e){}}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.length-rotNotifsSeen>0?rotNotifs.length-rotNotifsSeen:0} onRotNotifSeen={function(){setRotNotifsSeen(rotNotifs.length);}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.length-dealNotifsSeen>0?dealNotifs.length-dealNotifsSeen:0} onDealNotifSeen={function(){setDealNotifsSeen(dealNotifs.length);}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
