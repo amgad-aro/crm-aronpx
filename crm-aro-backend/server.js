@@ -527,8 +527,8 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       var unchanged = await Lead.findById(req.params.id).populate("agentId", "name title");
       return res.json(unchanged);
     }
-    // Track agent history when agent changes
-    if (req.body.agentId && oldLead && String(oldLead.agentId) !== String(req.body.agentId)) {
+    // Track agent history when agent changes (skip if first assignment from no agent)
+    if (req.body.agentId && oldLead && oldLead.agentId && String(oldLead.agentId) !== String(req.body.agentId)) {
       var oldAgentUser = oldLead.agentId ? await User.findById(oldLead.agentId).lean() : null;
       var histEntry = {
         agentId: String(oldLead.agentId || ""),
