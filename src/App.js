@@ -785,7 +785,7 @@ var Header = function(p) {
           <Bell size={16} color={unreadCount>0?C.danger:C.textLight} className={unreadCount>0?"cb-bell-shake":""}/>
           {unreadCount>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{unreadCount>99?"99+":unreadCount}</span>}
         </button>
-        {p.showNotif&&<div className="cb-dropdown-enter" style={{ position:"absolute", top:46, right:0, width:520,maxWidth:"95vw", background:"#fff", borderRadius:16, boxShadow:"0 20px 60px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
+        {p.showNotif&&<div className="cb-dropdown-enter" style={{ position:"absolute", top:46, right:0, width:420,maxWidth:"95vw", background:"#fff", borderRadius:16, boxShadow:"0 8px 32px rgba(0,0,0,0.15)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
           {/* Header */}
           <div style={{ padding:"16px 20px 12px", borderBottom:"1px solid #F1F5F9", flexShrink:0 }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
@@ -801,7 +801,7 @@ var Header = function(p) {
             </div>
             {/* Tabs */}
             <div style={{ display:"flex", gap:4 }}>
-              {[{key:"all",label:"All",count:allCbItems.length},{key:"overdue",label:"Overdue",count:overdueCallback.length},{key:"now",label:"Now",count:callbackNow.length},{key:"upcoming",label:"Upcoming",count:upcoming.length},{key:"nocontact",label:"No Contact",count:allNoActivity.length}].map(function(tab){var active=notifTab===tab.key;return <button key={tab.key} onClick={function(){setNotifTab(tab.key);}} style={{ padding:"3px 5px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3 }}>
+              {[{key:"all",label:"All",count:allCbItems.length},{key:"overdue",label:"Overdue",count:overdueCallback.length},{key:"now",label:"Now",count:callbackNow.length},{key:"upcoming",label:"Upcoming",count:upcoming.length},{key:"nocontact",label:"No Contact",count:allNoActivity.length}].map(function(tab){var active=notifTab===tab.key;return <button key={tab.key} onClick={function(){setNotifTab(tab.key);}} style={{ padding:"5px 8px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:12, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3 }}>
                 {tab.label}
                 {tab.count>0&&<span style={{ background:active?"rgba(255,255,255,0.25)":"#E5E7EB", color:active?"#fff":"#374151", padding:"0 4px", borderRadius:5, fontSize:9, fontWeight:700 }}>{tab.count}</span>}
               </button>;})}
@@ -821,17 +821,17 @@ var Header = function(p) {
               var isRead=readNotifs.has(gid(l));
               var cbTypeLabel=l._cbType==="overdue"?"Overdue":l._cbType==="now"?"Callback Now":l._cbType==="upcoming"?"Upcoming":"No Contact";
               var timeStr=l._cbType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?timeAgo(l.callbackTime,p.t):"");
-              return <div key={gid(l)} className="cb-card" onClick={function(){markRead(gid(l));p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:isRead?"#fff":cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"12px 14px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
+              return <div key={gid(l)} className="cb-card" onClick={function(){markRead(gid(l));p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:isRead?"#fff":cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
                 <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{l._cbType==="nocontact"?"😴":"📞"}</div>
                 <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:14, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
-                  <div style={{ fontSize:12, fontWeight:500, color:C.textLight, marginTop:2 }}>{agName||"Unassigned"}</div>
+                  <div style={{ fontSize:15, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
+                  <div style={{ fontSize:13, fontWeight:500, color:C.textLight, marginTop:2 }}>{agName||"Unassigned"}</div>
                   <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:3 }}>
                     <span style={{ fontSize:10, fontWeight:600, color:cc.text, background:cc.icon, padding:"1px 6px", borderRadius:4 }}>{cbTypeLabel}</span>
                     <span style={{ fontSize:11, color:C.textLight }}>{timeStr}</span>
                   </div>
                 </div>
-                {l.phone&&<a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();markRead(gid(l));}} style={{ width:32, height:32, borderRadius:8, background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, textDecoration:"none" }} title="Call"><Phone size={14} color={cc.text}/></a>}
+                {l.phone&&<a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();markRead(gid(l));}} style={{ width:40, height:40, borderRadius:10, background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, textDecoration:"none", boxShadow:"0 2px 8px rgba(0,0,0,0.15)" }} title="Call"><Phone size={16} color={cc.text}/></a>}
               </div>;
             })}
           </div>
