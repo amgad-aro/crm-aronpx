@@ -719,32 +719,26 @@ var Header = function(p) {
         </div>}
       </div>}
 
-      {/* Rotation notifications bell - admin only, not team_leader */}
-      {(p.isAdmin||p.cu&&p.cu.role==="sales_admin")&&(!p.cu||p.cu.role!=="manager")&&(!p.cu||p.cu.role!=="team_leader")&&(function(){
-        var rotNotifs=[];
-        try{rotNotifs=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}
-        var unseenRot=0;
-        try{var seen=Number(localStorage.getItem("crm_rot_seen")||"0");unseenRot=Math.max(0,rotNotifs.length-seen);}catch(e){}
-        var [showRot,setShowRot]=p.rotNotifState||[false,function(){}];
-        return <div ref={rotNotifRef} style={{ position:"relative" }}>
+      {/* Rotation notifications bell - admin/sales_admin only */}
+      {(p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin"))&&p.rotNotifs&&<div ref={rotNotifRef} style={{ position:"relative" }}>
           <button onClick={function(){
             var next=!p.showRotNotif;
             if(p.setShowRotNotif)p.setShowRotNotif(next);
-            if(next){p.setShowNotif(false);p.setShowDealNotif(false);try{localStorage.setItem("crm_rot_seen",String(rotNotifs.length));}catch(e){}}
+            if(next){p.setShowNotif(false);p.setShowDealNotif(false);if(p.onRotNotifSeen)p.onRotNotifSeen();}
           }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", fontSize:15 }}>
             🔄
-            {unseenRot>0&&!p.showRotNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.warning, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{unseenRot}</span>}
+            {p.unseenRot>0&&!p.showRotNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.warning, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.unseenRot}</span>}
           </button>
           {p.showRotNotif&&<div style={{ position:"absolute", top:44, right:0, width:320, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
             <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <span style={{ fontWeight:700, fontSize:13 }}>🔄 Auto Rotation ({rotNotifs.length})</span>
+              <span style={{ fontWeight:700, fontSize:13 }}>🔄 Auto Rotation ({p.rotNotifs.length})</span>
               <div style={{ display:"flex", gap:6 }}>
-                {rotNotifs.length>0&&<button onClick={function(){try{localStorage.setItem("crm_rot_notifs","[]");}catch(e){}if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger }}>Clear All</button>}
+                {p.rotNotifs.length>0&&<button onClick={function(){if(p.setRotNotifs)p.setRotNotifs([]);if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger }}>Clear All</button>}
                 <button onClick={function(){if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
               </div>
             </div>
-            {rotNotifs.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No rotations</div>}
-            {rotNotifs.map(function(n){return <div key={n.id} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC" }}>
+            {p.rotNotifs.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No rotations</div>}
+            {p.rotNotifs.map(function(n){return <div key={n.id} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC" }}>
               <div style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
                 <span style={{ fontSize:16, flexShrink:0 }}>🔄</span>
                 <div style={{ flex:1, minWidth:0 }}>
@@ -756,8 +750,7 @@ var Header = function(p) {
               </div>
             </div>;})}
           </div>}
-        </div>;
-      })()}
+        </div>}
 
       <div style={{ position:"relative" }} ref={notifRef}>
 
@@ -4583,6 +4576,9 @@ export default function CRMApp() {
   var setDealNotifs=function(fn){setDealNotifsRaw(function(prev){var next=typeof fn==="function"?fn(prev):fn;try{localStorage.setItem("crm_deal_notifs",JSON.stringify(next));}catch(e){}return next;});};
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
+  var [rotNotifsSeenCount,setRotNotifsSeenCount]=useState(function(){try{return Number(localStorage.getItem("crm_rot_seen")||"0");}catch(e){return 0;}});
+  var [rotNotifs,setRotNotifsRaw]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){return[];}});
+  var setRotNotifs=function(fn){setRotNotifsRaw(function(prev){var next=typeof fn==="function"?fn(prev):fn;try{localStorage.setItem("crm_rot_notifs",JSON.stringify(next));}catch(e){}return next;});};
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
   var [sidebarOpen,setSidebarOpen]=useState(false);
@@ -4996,15 +4992,8 @@ export default function CRMApp() {
 
     // Helper: send in-app notification to admins + browser notif
     var notifyAdmins = function(lead, fromName, toName, reason){
-      var timeStr = new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"});
-      var dateStr = new Date().toLocaleDateString("en-GB");
       showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
-      // Store in-app notification for admins
-      try{
-        var notifs = JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");
-        notifs.unshift({id:Date.now(),leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason,time:new Date().toISOString()});
-        localStorage.setItem("crm_rot_notifs",JSON.stringify(notifs.slice(0,50)));
-      }catch(e){}
+      setRotNotifs(function(prev){return [{id:Date.now(),leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason,time:new Date().toISOString()}].concat(prev).slice(0,50);});
     };
 
     // Helper: do rotation (reassign to new agent, backend tracks agentHistory)
@@ -5204,7 +5193,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.length-rotNotifsSeenCount>0?rotNotifs.length-rotNotifsSeenCount:0} onRotNotifSeen={function(){setRotNotifsSeenCount(rotNotifs.length);try{localStorage.setItem("crm_rot_seen",String(rotNotifs.length));}catch(e){}}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
