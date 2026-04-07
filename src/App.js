@@ -686,6 +686,7 @@ var Header = function(p) {
       </div>}
       
       {/* Deal notifications bell - admin + team_leader */}
+      {console.log("HEADER RENDER - dealNotifs:", p.dealNotifs&&p.dealNotifs.length, "unseenDeals:", p.unseenDeals, "rotNotifs:", p.rotNotifs&&p.rotNotifs.length, "unseenRot:", p.unseenRot)}
       {(p.isAdmin||p.cu&&(p.cu.role==="sales_admin"||p.cu.role==="team_leader"))&&<div ref={dealNotifRef} style={{ position:"relative" }}>
         <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening){p.setShowNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);if(p.onDealNotifSeen)p.onDealNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <DollarSign size={16} color={p.unseenDeals>0&&!p.showDealNotif?"#15803D":C.textLight}/>
@@ -4600,11 +4601,16 @@ export default function CRMApp() {
 
   // Deal notification helper — functional setState, persists to localStorage
   var addDealNotif = function(n){
+    console.log("addDealNotif CALLED with:", n);
+    console.log("setDealNotifs type:", typeof setDealNotifs);
     setDealNotifs(function(prev){
+      console.log("setDealNotifs updater running, prev.length:", prev.length);
       var next = [n].concat(prev).slice(0,50);
+      console.log("setDealNotifs updater returning, next.length:", next.length);
       try{localStorage.setItem("crm_deal_notifs",JSON.stringify(next));}catch(e){}
       return next;
     });
+    console.log("addDealNotif DONE, dealNotifsSeen:", dealNotifsSeen);
   };
 
   // Rotation notification helper — functional setState, persists to localStorage
