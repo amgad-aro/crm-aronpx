@@ -4580,7 +4580,7 @@ export default function CRMApp() {
   var setDealNotifs=function(fn){setDealNotifsRaw(function(prev){var next=typeof fn==="function"?fn(prev):fn;try{localStorage.setItem("crm_deal_notifs",JSON.stringify(next));}catch(e){}return next;});};
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
-  var [rotNotifsSeenCount,setRotNotifsSeenCount]=useState(function(){try{return Number(localStorage.getItem("crm_rot_seen")||"0");}catch(e){return 0;}});
+  var [rotNotifsSeenCount,setRotNotifsSeenCount]=useState(0);
   var [rotNotifs,setRotNotifsRaw]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){return[];}});
   var setRotNotifs=function(fn){setRotNotifsRaw(function(prev){var next=typeof fn==="function"?fn(prev):fn;try{localStorage.setItem("crm_rot_notifs",JSON.stringify(next));}catch(e){}return next;});};
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
