@@ -785,7 +785,7 @@ var Header = function(p) {
           <Bell size={16} color={unreadCount>0?C.danger:C.textLight} className={unreadCount>0?"cb-bell-shake":""}/>
           {unreadCount>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{unreadCount>99?"99+":unreadCount}</span>}
         </button>
-        {p.showNotif&&<div className="cb-dropdown-enter" style={{ position:"absolute", top:46, right:0, width:420,maxWidth:"95vw", background:"#fff", borderRadius:16, boxShadow:"0 8px 32px rgba(0,0,0,0.15)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
+        {p.showNotif&&<div className="cb-dropdown-enter" style={{ position:"absolute", top:46, right:0, width:440,maxWidth:"95vw", background:"#fff", borderRadius:16, boxShadow:"0 8px 32px rgba(0,0,0,0.15)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
           {/* Header */}
           <div style={{ padding:"16px 20px 12px", borderBottom:"1px solid #F1F5F9", flexShrink:0 }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
@@ -800,9 +800,11 @@ var Header = function(p) {
               </div>
             </div>
             {/* Tabs */}
-            <div style={{ display:"flex", gap:4 }}>
-              {[{key:"all",label:"All"},{key:"overdue",label:"Overdue"},{key:"now",label:"Now"},{key:"upcoming",label:"Upcoming"},{key:"nocontact",label:"No Contact"}].map(function(tab){var active=notifTab===tab.key;return <button key={tab.key} onClick={function(){setNotifTab(tab.key);}} style={{ padding:"5px 8px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:12, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s" }}>
-                {tab.label}
+            <div style={{ display:"flex", gap:3, overflow:"hidden" }}>
+              {[{key:"all",label:"All",icon:"🔔",count:allCbItems.length},{key:"overdue",label:"Overdue",icon:"🔴",count:overdueCallback.length},{key:"now",label:"Now",icon:"📞",count:callbackNow.length},{key:"upcoming",label:"Upcoming",icon:"🟡",count:upcoming.length},{key:"nocontact",label:"No Contact",icon:"😴",count:allNoActivity.length}].map(function(tab){var active=notifTab===tab.key;return <button key={tab.key} onClick={function(){setNotifTab(tab.key);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:2, flexShrink:0 }}>
+                <span style={{ fontSize:10 }}>{tab.icon}</span>
+                <span>{tab.label}</span>
+                {tab.count>0&&<span style={{ background:active?"rgba(255,255,255,0.25)":"#E5E7EB", color:active?"#fff":"#374151", padding:"0 3px", borderRadius:4, fontSize:8, fontWeight:700, lineHeight:"14px" }}>{tab.count}</span>}
               </button>;})}
             </div>
           </div>
