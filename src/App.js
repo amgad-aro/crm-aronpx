@@ -685,140 +685,148 @@ var Header = function(p) {
         <input placeholder={t.search} value={p.search} onChange={function(e){p.setSearch(e.target.value);}} style={{ border:"none", background:"transparent", outline:"none", fontSize:13, color:C.text, width:"100%" }}/>
       </div>}
       
-      {/* Deal notifications bell - admin + team_leader */}
+      {/* BELL 3 — Deal notifications: admin + sales_admin + team_leader */}
       {(p.isAdmin||p.cu&&(p.cu.role==="sales_admin"||p.cu.role==="team_leader"))&&<div ref={dealNotifRef} style={{ position:"relative" }}>
-        <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening){p.setShowNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);if(p.onDealNotifSeen)p.onDealNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
-          <DollarSign size={16} color={p.unseenDeals>0&&!p.showDealNotif?"#15803D":C.textLight}/>
-          {p.unseenDeals>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:"#15803D", color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.unseenDeals}</span>}
+        <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening){p.setShowNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);if(p.onDealNotifSeen)p.onDealNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:p.unseenDeals>0?"#F0FDF4":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+          <DollarSign size={16} color={p.unseenDeals>0?"#15803D":C.textLight}/>
+          {p.unseenDeals>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:"#15803D", color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{p.unseenDeals>9?"9+":p.unseenDeals}</span>}
         </button>
-        {p.showDealNotif&&<div style={{ position:"absolute", top:44, right:0, width:310, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
-          <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <span style={{ fontWeight:700, fontSize:13 }}>🎉 New Deals ({p.dealNotifs?p.dealNotifs.length:0})</span>
-            <div style={{ display:"flex", gap:6 }}>
-              {p.dealNotifs&&p.dealNotifs.length>0&&<button onClick={function(){if(p.onDealNotifSeen)p.onDealNotifSeen();}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.textLight }}>Mark All Read</button>}
-              <button onClick={function(){p.setShowDealNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
+        {p.showDealNotif&&<div style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
+          <div style={{ padding:"14px 18px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ fontSize:16 }}>💰</span>
+              <span style={{ fontWeight:700, fontSize:14, color:C.text }}>Deals & EOI</span>
+              {p.dealNotifs&&p.dealNotifs.length>0&&<span style={{ background:"#F0FDF4", color:"#15803D", padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:600 }}>{p.dealNotifs.length}</span>}
+            </div>
+            <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+              {p.unseenDeals>0&&<button onClick={function(){if(p.onDealNotifSeen)p.onDealNotifSeen();}} style={{ background:"#F0FDF4", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:"#15803D", fontWeight:600, padding:"4px 10px" }}>Mark Read</button>}
+              <button onClick={function(){p.setShowDealNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
             </div>
           </div>
-          {(!p.dealNotifs||p.dealNotifs.length===0)&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No new deals</div>}
-          {p.dealNotifs&&p.dealNotifs.filter(function(n){
-            if(p.cu.role!=="team_leader") return true;
-            // team_leader only sees their team's deals
-            var teamNames=new Set((p.myTeamUsers||[]).map(function(u){return u.name;}));
-            teamNames.add(p.cu.name);
-            return teamNames.has(n.agentName);
-          }).map(function(n){return <div key={n._id||n.id} style={{ padding:"12px 16px", borderBottom:"1px solid #F8FAFC" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <div style={{ width:32, height:32, borderRadius:8, background:n.status==="DoneDeal"?"#DCFCE7":"#FFF7ED", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{n.status==="DoneDeal"?"🎉":"🎯"}</div>
+          <div style={{ overflowY:"auto", flex:1 }}>
+            {(!p.dealNotifs||p.dealNotifs.length===0)&&<div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}>
+              <div style={{ fontSize:28, marginBottom:8 }}>💰</div>No deals yet
+            </div>}
+            {p.dealNotifs&&p.dealNotifs.filter(function(n){
+              if(p.cu.role!=="team_leader") return true;
+              var teamNames=new Set((p.myTeamUsers||[]).map(function(u){return u.name;}));
+              teamNames.add(p.cu.name);
+              return teamNames.has(n.agentName);
+            }).map(function(n){var isDeal=n.status==="DoneDeal";return <div key={n._id||n.id} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#FAFFFE", transition:"background 0.2s" }}>
+              <div style={{ width:38, height:38, borderRadius:10, background:isDeal?"linear-gradient(135deg,#DCFCE7,#BBF7D0)":"linear-gradient(135deg,#FFF7ED,#FED7AA)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:18 }}>{isDeal?"🎉":"🎯"}</div>
               <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:12, fontWeight:700 }}>{n.status==="DoneDeal"?"🎉 Done Deal":"🎯 EOI"}{n.leadName?" — "+n.leadName:""}</div>
-                <div style={{ fontSize:11, color:C.textLight }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
-                <div style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.createdAt||n.time,p.t)}</div>
+                <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{isDeal?"Done Deal":"EOI"}{n.leadName?" — "+n.leadName:""}</div>
+                <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
+                <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{timeAgo(n.createdAt||n.time,p.t)}</div>
               </div>
-            </div>
-          </div>;})}
+              {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#15803D", flexShrink:0 }}/>}
+            </div>;})}
+          </div>
         </div>}
       </div>}
 
-      {/* Rotation notifications bell - admin/sales_admin only */}
-      {(p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin"))&&p.rotNotifs&&<div ref={rotNotifRef} style={{ position:"relative" }}>
-          <button onClick={function(){
-            var next=!p.showRotNotif;
-            if(p.setShowRotNotif)p.setShowRotNotif(next);
-            if(next){p.setShowNotif(false);p.setShowDealNotif(false);if(p.onRotNotifSeen)p.onRotNotifSeen();}
-          }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", fontSize:15 }}>
-            🔄
-            {p.unseenRot>0&&!p.showRotNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.warning, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.unseenRot}</span>}
-          </button>
-          {p.showRotNotif&&<div style={{ position:"absolute", top:44, right:0, width:320, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
-            <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <span style={{ fontWeight:700, fontSize:13 }}>🔄 Auto Rotation ({p.rotNotifs.length})</span>
-              <div style={{ display:"flex", gap:6 }}>
-                {p.rotNotifs.length>0&&<button onClick={function(){if(p.onRotNotifSeen)p.onRotNotifSeen();if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger }}>Mark All Read</button>}
-                <button onClick={function(){if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
-              </div>
-            </div>
-            {p.rotNotifs.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No rotations</div>}
-            {p.rotNotifs.map(function(n){return <div key={n._id||n.id} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC" }}>
-              <div style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
-                <span style={{ fontSize:16, flexShrink:0 }}>🔄</span>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:12, fontWeight:700 }}>{n.leadName}</div>
-                  <div style={{ fontSize:11, color:C.textLight }}>{n.fromName} ← {n.toName}</div>
-                  <div style={{ fontSize:10, color:C.warning, fontWeight:600, marginTop:2 }}>{n.reason}</div>
-                  <div style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.createdAt||n.time,p.t)}</div>
-                </div>
-              </div>
-            </div>;})}
-          </div>}
-        </div>}
-
-      <div style={{ position:"relative" }} ref={notifRef}>
-
-        <button onClick={function(){
-          p.setShowNotif(!p.showNotif);
-          if(!p.showNotif){
-            setBadgeHidden(true);
-            try{localStorage.setItem("crm_notif_seen_count", String(callbackNow.length+overdueCallback.length));}catch(e){}
-          }
-        }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
-          <Bell size={16} color={(callbackNow.length+overdueCallback.length)>0?C.danger:C.textLight}/>
-          {(callbackNow.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:2, right:2, minWidth:16, height:16, borderRadius:8, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 3px" }}>{callbackNow.length+overdueCallback.length}</span>}
+      {/* BELL 2 — Rotation notifications: admin + sales_admin only */}
+      {(p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin"))&&<div ref={rotNotifRef} style={{ position:"relative" }}>
+        <button onClick={function(){var next=!p.showRotNotif;if(p.setShowRotNotif)p.setShowRotNotif(next);if(next){p.setShowNotif(false);p.setShowDealNotif(false);if(p.onRotNotifSeen)p.onRotNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:p.unseenRot>0?"#FFF7ED":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+          <RotateCcw size={15} color={p.unseenRot>0?"#EA580C":C.textLight}/>
+          {p.unseenRot>0&&!p.showRotNotif&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:"#EA580C", color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{p.unseenRot>9?"9+":p.unseenRot}</span>}
         </button>
-        {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
-          <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder}</span>
-            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
-              {p.isAdmin&&(callbackNow.length+upcoming.length+overdueCallback.length)>0&&<button onClick={function(e){
-                e.stopPropagation();
-                setBadgeHidden(true);
-                try{
-                  localStorage.setItem("crm_notif_seen_count","9999");
-                  localStorage.setItem("crm_notif_cleared_at", String(Date.now()));
-                }catch(e2){}
-                p.setShowNotif(false);
-              }} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger, fontWeight:600 }}>Clear All</button>}
-              <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
+        {p.showRotNotif&&<div style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
+          <div style={{ padding:"14px 18px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <RotateCcw size={16} color="#EA580C"/>
+              <span style={{ fontWeight:700, fontSize:14, color:C.text }}>Rotations</span>
+              {p.rotNotifs&&p.rotNotifs.length>0&&<span style={{ background:"#FFF7ED", color:"#EA580C", padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:600 }}>{p.rotNotifs.length}</span>}
+            </div>
+            <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+              {p.unseenRot>0&&<button onClick={function(){if(p.onRotNotifSeen)p.onRotNotifSeen();}} style={{ background:"#FFF7ED", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:"#EA580C", fontWeight:600, padding:"4px 10px" }}>Mark Read</button>}
+              <button onClick={function(){if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
             </div>
           </div>
-          {callbackNow.length===0&&upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No notifications</div>}
-          {callbackNow.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Callback Now!</div>
-            {callbackNow.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2", width:"100%", background:"none", border:"none", textAlign:"left" }}>
-              <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
+          <div style={{ overflowY:"auto", flex:1 }}>
+            {(!p.rotNotifs||p.rotNotifs.length===0)&&<div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}>
+              <div style={{ fontSize:28, marginBottom:8 }}>🔄</div>No rotations
+            </div>}
+            {p.rotNotifs&&p.rotNotifs.map(function(n){return <div key={n._id||n.id} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#FFFBF5", transition:"background 0.2s" }}>
+              <div style={{ width:38, height:38, borderRadius:10, background:"linear-gradient(135deg,#FFF7ED,#FFEDD5)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><RotateCcw size={16} color="#EA580C"/></div>
               <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:11, fontWeight:400 }}>{l.name}{agName&&<span style={{ fontSize:10, color:C.accent }}> — {agName}</span>}</div>
-                <div style={{ fontSize:10, color:C.danger }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
+                <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{n.leadName}</div>
+                <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.fromName} → {n.toName}</div>
+                <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:2 }}>
+                  <span style={{ fontSize:10, color:"#EA580C", fontWeight:600, background:"#FFF7ED", padding:"1px 6px", borderRadius:4 }}>{n.reason}</span>
+                  <span style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.createdAt||n.time,p.t)}</span>
+                </div>
               </div>
-            </button>;})}  
-          </div>}
-          {overdueCallback.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Overdue CallBack</div>
-            {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2", width:"100%", background:"none", border:"none", textAlign:"left" }}>
-              <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:11, fontWeight:400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
-                <div style={{ fontSize:10, color:C.danger }}>{agName?agName+" · ":""}{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
-              </div>
-            </button>;})}  
-          </div>}
-          {allNoActivity.length>0&&<div style={{ padding:"8px 16px", background:"#FFF7ED", borderBottom:"1px solid #FEF3E2" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:"#EA580C", marginBottom:6 }}>😴 No Contact +1 Day</div>
-            {allNoActivity.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEF3E2", width:"100%", background:"none", border:"none", textAlign:"left" }}>
-              <div style={{ width:28, height:28, borderRadius:7, background:"#FED7AA", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>😴</div>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:11, fontWeight:400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
-                <div style={{ fontSize:10, color:"#EA580C" }}>{agName?agName+" · ":""}{timeAgo(l.lastActivityTime,p.t)}</div>
-              </div>
-            </button>;})}  
-          </div>}
-          {upcoming.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:""; return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:10, cursor:"pointer", width:"100%", background:"none", border:"none", textAlign:"left" }}>
-            <div style={{ width:32, height:32, borderRadius:8, background:C.warning+"15", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Phone size={14} color={C.warning}/></div>
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontSize:12, fontWeight:400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontSize:10, color:C.accent }}> — {agName}</span>}</div>
-              <div style={{ fontSize:11, color:C.textLight }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
+              {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#EA580C", flexShrink:0 }}/>}
+            </div>;})}
+          </div>
+        </div>}
+      </div>}
+
+      {/* BELL 1 — Callbacks */}
+      <div style={{ position:"relative" }} ref={notifRef}>
+        <button onClick={function(){
+          var opening=!p.showNotif;
+          p.setShowNotif(opening);
+          if(opening){p.setShowDealNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);setBadgeHidden(true);try{localStorage.setItem("crm_notif_seen_count",String(callbackNow.length+overdueCallback.length));}catch(e){}}
+        }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:(callbackNow.length+overdueCallback.length)>0&&!badgeHidden?"#FEF2F2":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+          <Bell size={16} color={(callbackNow.length+overdueCallback.length)>0?C.danger:C.textLight}/>
+          {(callbackNow.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{callbackNow.length+overdueCallback.length}</span>}
+        </button>
+        {p.showNotif&&<div style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
+          <div style={{ padding:"14px 18px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <Bell size={16} color={C.danger}/>
+              <span style={{ fontWeight:700, fontSize:14, color:C.text }}>{t.callReminder}</span>
             </div>
-            <ChevronRight size={13} color={C.textLight}/>
-          </button>;})}  
+            <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
+          </div>
+          <div style={{ overflowY:"auto", flex:1 }}>
+            {callbackNow.length===0&&upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}>
+              <div style={{ fontSize:28, marginBottom:8 }}>🔔</div>No notifications
+            </div>}
+            {overdueCallback.length>0&&<div style={{ padding:"10px 18px", background:"#FEF2F2" }}>
+              <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:8, display:"flex", alignItems:"center", gap:4 }}>🔴 Overdue ({overdueCallback.length})</div>
+              {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2", width:"100%", background:"none", border:"none", borderBottom:"1px solid rgba(239,68,68,0.1)", textAlign:"left" }}>
+                <div style={{ width:32, height:32, borderRadius:8, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:14 }}>📞</div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:12, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontWeight:400, color:C.accent }}> — {agName}</span>}</div>
+                  <div style={{ fontSize:10, color:C.danger }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
+                </div>
+              </button>;})}
+            </div>}
+            {callbackNow.length>0&&<div style={{ padding:"10px 18px", background:"#FEF2F2" }}>
+              <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:8, display:"flex", alignItems:"center", gap:4 }}>📞 Callback Now ({callbackNow.length})</div>
+              {callbackNow.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", cursor:"pointer", width:"100%", background:"none", border:"none", borderBottom:"1px solid rgba(239,68,68,0.1)", textAlign:"left" }}>
+                <div style={{ width:32, height:32, borderRadius:8, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:14 }}>📞</div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:12, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontWeight:400, color:C.accent }}> — {agName}</span>}</div>
+                  <div style={{ fontSize:10, color:C.danger }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
+                </div>
+              </button>;})}
+            </div>}
+            {allNoActivity.length>0&&<div style={{ padding:"10px 18px", background:"#FFFBEB" }}>
+              <div style={{ fontSize:11, fontWeight:700, color:"#B45309", marginBottom:8, display:"flex", alignItems:"center", gap:4 }}>🟡 No Contact +1 Day ({allNoActivity.length})</div>
+              {allNoActivity.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", cursor:"pointer", width:"100%", background:"none", border:"none", borderBottom:"1px solid rgba(180,83,9,0.08)", textAlign:"left" }}>
+                <div style={{ width:32, height:32, borderRadius:8, background:"#FEF3C7", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:14 }}>😴</div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:12, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontWeight:400, color:C.accent }}> — {agName}</span>}</div>
+                  <div style={{ fontSize:10, color:"#B45309" }}>{timeAgo(l.lastActivityTime,p.t)}</div>
+                </div>
+              </button>;})}
+            </div>}
+            {upcoming.length>0&&<div style={{ padding:"10px 18px" }}>
+              <div style={{ fontSize:11, fontWeight:700, color:"#D97706", marginBottom:8, display:"flex", alignItems:"center", gap:4 }}>🟠 Upcoming ({upcoming.length})</div>
+              {upcoming.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", cursor:"pointer", width:"100%", background:"none", border:"none", borderBottom:"1px solid #F1F5F9", textAlign:"left" }}>
+                <div style={{ width:32, height:32, borderRadius:8, background:"#FEF3C7", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Phone size={14} color="#D97706"/></div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:12, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontWeight:400, color:C.accent }}> — {agName}</span>}</div>
+                  <div style={{ fontSize:10, color:C.textLight }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
+                </div>
+                <ChevronRight size={13} color={C.textLight}/>
+              </button>;})}
+            </div>}
+          </div>
         </div>}
       </div>
     </div>
@@ -2021,7 +2029,7 @@ var DashboardPage = function(p) {
       <StatCard icon={Target} label={t.newLeads} value={myLeads.filter(function(l){return l.status==="Potential";}).length+""} c={C.success} onClick={function(){p.nav("leads");p.setFilter("Potential");}}/>
       <StatCard icon={Briefcase} label={t.activeDeals} value={myLeads.filter(function(l){return["HotCase","CallBack","MeetingDone"].includes(l.status);}).length+""} c={C.accent} onClick={function(){p.nav("leads");p.setFilter("HotCase");}}/>
       <StatCard icon={DollarSign} label={t.doneDeals} value={myLeads.filter(function(l){return l.status==="DoneDeal";}).length+""} c={C.primary} onClick={function(){p.nav("deals");}}/>
-      {(function(){var rots=[];try{rots=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}var todayRots=rots.filter(function(r){return r.time&&(Date.now()-new Date(r.time).getTime())<24*60*60*1000;});return todayRots.length>0?<StatCard icon={RotateCcw} label="Rotations Today" value={todayRots.length+""} c={C.warning}/>:null;})()}
+      {(function(){var todayRots=(p.rotNotifs||[]).filter(function(r){var t2=r.createdAt||r.time;return t2&&(Date.now()-new Date(t2).getTime())<24*60*60*1000;});return todayRots.length>0?<StatCard icon={RotateCcw} label="Rotations Today" value={todayRots.length+""} c={C.warning}/>:null;})()}
     </div>}
 
     <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
@@ -3238,7 +3246,7 @@ var DailyRequestsPage = function(p) {
       if((pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI")&&p.addDealNotif){
         var req=requests.find(function(r){return gid(r)===pendingStatus.leadId;})||{};
         p.addDealNotif({
-          id:Date.now(),
+          leadId:pendingStatus.leadId,
           leadName:req.name||upd.name||"",
           agentName:req.agentId&&req.agentId.name?req.agentId.name:p.cu.name,
           status:pendingStatus.newStatus,
@@ -4734,18 +4742,8 @@ export default function CRMApp() {
             var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
             showBrowserNotif("🆕 New Lead", l.name+(agName?" → "+agName:""));
           });
-          // Detect status changes to DoneDeal/EOI via polling
-          setLeads(function(prevLeads){
-            leadsData.forEach(function(l){
-              var prev = prevLeads.find(function(p2){return String(p2._id)===String(l._id);});
-              if(prev && prev.status!==l.status && (l.status==="DoneDeal"||l.status==="EOI")){
-                var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
-                addDealNotif({id:Date.now(),leadName:l.name,agentName:agName,status:l.status,budget:l.budget||"",time:new Date().toISOString()});
-                showBrowserNotif("🎉 "+(l.status==="DoneDeal"?"Done Deal":"EOI"), l.name+(agName?" — "+agName:""));
-              }
-            });
-            return prevLeads;
-          });
+          // Deal/EOI notifications are created by confirmStatus via addDealNotif (MongoDB)
+          // No duplicate detection needed here — polling just refreshes notification state
         }
         knownLeadIds = new Set(leadsData.map(function(l){return String(l._id);}));
 
@@ -5195,7 +5193,7 @@ export default function CRMApp() {
   var myId = String(currentUser.id||currentUser._id||"");
   var myTeamUsers = users; // server handles all filtering per role
 
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation}; 
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs};
 
   var renderPage=function(){
     switch(currentPage){
