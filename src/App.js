@@ -4591,6 +4591,15 @@ export default function CRMApp() {
     var isDismissed=false; try{isDismissed=localStorage.getItem("crm_pwa_dismissed")==="1";}catch(e){}
     return isIOS&&!isStandalone&&!isDismissed;
   });
+
+  // Rotation notification helper — defined at CRMApp level for stable access to state setters
+  var notifyRotation = function(lead, fromName, toName, reason){
+    console.log("🔄 notifyRotation fired:", lead.name, fromName, "→", toName, reason);
+    showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
+    var entry = {id:Date.now(),leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason,time:new Date().toISOString()};
+    setRotNotifsRaw(function(prev){var next=[entry].concat(prev).slice(0,50);try{localStorage.setItem("crm_rot_notifs",JSON.stringify(next));}catch(e){}return next;});
+  };
+
   useEffect(function(){
     if (!document.getElementById('cairo-font')) {
       var link=document.createElement('link'); link.id='cairo-font'; link.rel='stylesheet';
@@ -4990,15 +4999,6 @@ export default function CRMApp() {
       return picked;
     };
 
-    // Helper: send in-app notification to admins + browser notif
-    var notifyAdmins = function(lead, fromName, toName, reason){
-      console.log("🔄 notifyAdmins fired:", lead.name, fromName, "→", toName, reason);
-      showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
-      var entry = {id:Date.now(),leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason,time:new Date().toISOString()};
-      // Update React state
-      setRotNotifsRaw(function(prev){var next=[entry].concat(prev).slice(0,50);try{localStorage.setItem("crm_rot_notifs",JSON.stringify(next));}catch(e){}return next;});
-    };
-
     // Helper: do rotation (reassign to new agent, backend tracks agentHistory)
     var doRotate = async function(lead, reason){
       var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
@@ -5021,7 +5021,7 @@ export default function CRMApp() {
           leadId:gid(lead),type:"reassign",
           note:"🔄 Auto Rotation | From: "+fromName+" → To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
         },token);
-        notifyAdmins(lead,fromName,targetAgent.name,reason);
+        notifyRotation(lead,fromName,targetAgent.name,reason);
         setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
       }catch(e){console.error("Rotation error:",e);}
     };
