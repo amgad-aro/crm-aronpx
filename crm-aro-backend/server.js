@@ -62,6 +62,19 @@ var Task = mongoose.model("Task", new mongoose.Schema({
   userId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, done:{type:Boolean,default:false}
 },{timestamps:true}));
 
+var Notification = mongoose.model("Notification", new mongoose.Schema({
+  type:{type:String,required:true}, // "deal" or "rotation"
+  leadName:{type:String,default:""},
+  leadId:{type:String,default:""},
+  agentName:{type:String,default:""},
+  fromName:{type:String,default:""},
+  toName:{type:String,default:""},
+  status:{type:String,default:""},
+  budget:{type:String,default:""},
+  reason:{type:String,default:""},
+  seenBy:[{type:String}]
+},{timestamps:true}));
+
 var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
   email:{type:String,default:""}, budget:{type:String,default:""}, propertyType:{type:String,default:""},
@@ -857,6 +870,39 @@ app.get("/api/daily-requests/:id/history", auth, async function(req, res) {
       .populate("userId", "name")
       .sort({ createdAt: -1 });
     res.json(acts);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== NOTIFICATIONS =====
+app.post("/api/notifications", auth, async function(req, res) {
+  try {
+    var n = await Notification.create(req.body);
+    res.json(n);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/notifications", auth, async function(req, res) {
+  try {
+    var uid = req.user.id;
+    var type = req.query.type || null;
+    var query = {};
+    if (type) query.type = type;
+    var notifs = await Notification.find(query).sort({ createdAt: -1 }).limit(50).lean();
+    var result = notifs.map(function(n) {
+      return Object.assign({}, n, { seen: n.seenBy && n.seenBy.indexOf(String(uid)) !== -1 });
+    });
+    res.json(result);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put("/api/notifications/mark-seen", auth, async function(req, res) {
+  try {
+    var uid = String(req.user.id);
+    var type = req.body.type || null;
+    var query = { seenBy: { $ne: uid } };
+    if (type) query.type = type;
+    await Notification.updateMany(query, { $addToSet: { seenBy: uid } });
+    res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

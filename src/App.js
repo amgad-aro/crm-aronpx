@@ -686,7 +686,6 @@ var Header = function(p) {
       </div>}
       
       {/* Deal notifications bell - admin + team_leader */}
-      {console.log("HEADER RENDER - dealNotifs:", p.dealNotifs&&p.dealNotifs.length, "unseenDeals:", p.unseenDeals, "rotNotifs:", p.rotNotifs&&p.rotNotifs.length, "unseenRot:", p.unseenRot)}
       {(p.isAdmin||p.cu&&(p.cu.role==="sales_admin"||p.cu.role==="team_leader"))&&<div ref={dealNotifRef} style={{ position:"relative" }}>
         <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening){p.setShowNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);if(p.onDealNotifSeen)p.onDealNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
           <DollarSign size={16} color={p.unseenDeals>0&&!p.showDealNotif?"#15803D":C.textLight}/>
@@ -696,7 +695,7 @@ var Header = function(p) {
           <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontWeight:700, fontSize:13 }}>🎉 New Deals ({p.dealNotifs?p.dealNotifs.length:0})</span>
             <div style={{ display:"flex", gap:6 }}>
-              {p.dealNotifs&&p.dealNotifs.length>0&&<button onClick={function(){p.setDealNotifs([]);try{localStorage.setItem("crm_deal_notifs","[]");}catch(e){}}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.textLight }}>Clear All</button>}
+              {p.dealNotifs&&p.dealNotifs.length>0&&<button onClick={function(){if(p.onDealNotifSeen)p.onDealNotifSeen();}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.textLight }}>Mark All Read</button>}
               <button onClick={function(){p.setShowDealNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
             </div>
           </div>
@@ -707,13 +706,13 @@ var Header = function(p) {
             var teamNames=new Set((p.myTeamUsers||[]).map(function(u){return u.name;}));
             teamNames.add(p.cu.name);
             return teamNames.has(n.agentName);
-          }).map(function(n){return <div key={n.id} style={{ padding:"12px 16px", borderBottom:"1px solid #F8FAFC" }}>
+          }).map(function(n){return <div key={n._id||n.id} style={{ padding:"12px 16px", borderBottom:"1px solid #F8FAFC" }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <div style={{ width:32, height:32, borderRadius:8, background:n.status==="DoneDeal"?"#DCFCE7":"#FFF7ED", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{n.status==="DoneDeal"?"🎉":"🎯"}</div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:12, fontWeight:700 }}>{n.status==="DoneDeal"?"🎉 Done Deal":"🎯 EOI"}{n.leadName?" — "+n.leadName:""}</div>
                 <div style={{ fontSize:11, color:C.textLight }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
-                <div style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.time,p.t)}</div>
+                <div style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.createdAt||n.time,p.t)}</div>
               </div>
             </div>
           </div>;})}
@@ -734,19 +733,19 @@ var Header = function(p) {
             <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, fontSize:13 }}>🔄 Auto Rotation ({p.rotNotifs.length})</span>
               <div style={{ display:"flex", gap:6 }}>
-                {p.rotNotifs.length>0&&<button onClick={function(){if(p.setRotNotifs){p.setRotNotifs([]);try{localStorage.setItem("crm_rot_notifs","[]");}catch(e){}}if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger }}>Clear All</button>}
+                {p.rotNotifs.length>0&&<button onClick={function(){if(p.onRotNotifSeen)p.onRotNotifSeen();if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger }}>Mark All Read</button>}
                 <button onClick={function(){if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
               </div>
             </div>
             {p.rotNotifs.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No rotations</div>}
-            {p.rotNotifs.map(function(n){return <div key={n.id} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC" }}>
+            {p.rotNotifs.map(function(n){return <div key={n._id||n.id} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC" }}>
               <div style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
                 <span style={{ fontSize:16, flexShrink:0 }}>🔄</span>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontSize:12, fontWeight:700 }}>{n.leadName}</div>
                   <div style={{ fontSize:11, color:C.textLight }}>{n.fromName} ← {n.toName}</div>
                   <div style={{ fontSize:10, color:C.warning, fontWeight:600, marginTop:2 }}>{n.reason}</div>
-                  <div style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.time,p.t)}</div>
+                  <div style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.createdAt||n.time,p.t)}</div>
                 </div>
               </div>
             </div>;})}
@@ -1196,10 +1195,8 @@ var LeadsPage = function(p) {
       // Set dealDate to today when converting to DoneDeal (don't use eoiDate)
       if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date().toISOString().slice(0,10);
       // Notify admin when DoneDeal or EOI
-      console.log("STATUS CHANGE:", pendingStatus.newStatus, "addDealNotif exists:", !!p.addDealNotif);
       if(pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI"){
-        var notifEntry={id:Date.now(),leadName:selected?selected.name:"leads",leadPhone:selected?selected.phone:"",agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:"",time:new Date().toISOString()};
-        console.log("CALLING addDealNotif:", notifEntry);
+        var notifEntry={leadName:selected?selected.name:"",leadId:pendingStatus.leadId,agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:""};
         if(p.addDealNotif) p.addDealNotif(notifEntry);
       }
       var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
@@ -1488,7 +1485,6 @@ var LeadsPage = function(p) {
                       var newAgent=e.target.value;
                       if(!newAgent)return;
                       var oldAgName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";
-                      console.log("MANUAL REASSIGN table - oldAgName:", oldAgName, "agentId:", lead.agentId, "notifyRotation exists:", !!p.notifyRotation);
                       var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
                       try{var upd=await apiFetch("/api/leads/"+gid(lead),"PUT",{agentId:newAgent,status:"NewLead",callbackTime:""},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?upd:l;});});if(selected&&gid(selected)===gid(lead))setSelected(upd);if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"",  "Manual reassign");}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
@@ -1559,7 +1555,6 @@ var LeadsPage = function(p) {
               var isManagerUser=p.cu.role==="manager"||p.cu.role==="team_leader";
               if(isManagerUser&&p.cu.teamId){var tgt=p.users.find(function(u){return gid(u)===newAgent;});if(tgt&&tgt.teamId!==p.cu.teamId)return;}
               var oldAgName=selected.agentId&&selected.agentId.name?selected.agentId.name:"";
-              console.log("MANUAL REASSIGN panel - oldAgName:", oldAgName, "agentId:", selected.agentId, "notifyRotation exists:", !!p.notifyRotation);
               var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
               try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{agentId:newAgent,status:"NewLead",callbackTime:""},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
@@ -4580,12 +4575,10 @@ export default function CRMApp() {
   var [leadsPage,setLeadsPage]=useState(1); var [leadsTotal,setLeadsTotal]=useState(0); var [leadsTotalPages,setLeadsTotalPages]=useState(0);
   var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
-  var [dealNotifsSeen,setDealNotifsSeen]=useState(0);
-  var [dealNotifs,setDealNotifs]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_deal_notifs")||"[]");}catch(e){return[];}});
+  var [dealNotifs,setDealNotifs]=useState([]);
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
-  var [rotNotifsSeen,setRotNotifsSeen]=useState(0);
-  var [rotNotifs,setRotNotifs]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){return[];}});
+  var [rotNotifs,setRotNotifs]=useState([]);
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
   var [sidebarOpen,setSidebarOpen]=useState(false);
@@ -4599,29 +4592,27 @@ export default function CRMApp() {
     return isIOS&&!isStandalone&&!isDismissed;
   });
 
-  // Deal notification helper — functional setState, persists to localStorage
+  // Deal notification helper — saves to DB, updates local state
   var addDealNotif = function(n){
-    console.log("addDealNotif CALLED with:", n);
-    console.log("setDealNotifs type:", typeof setDealNotifs);
-    setDealNotifs(function(prev){
-      console.log("setDealNotifs updater running, prev.length:", prev.length);
-      var next = [n].concat(prev).slice(0,50);
-      console.log("setDealNotifs updater returning, next.length:", next.length);
-      try{localStorage.setItem("crm_deal_notifs",JSON.stringify(next));}catch(e){}
-      return next;
-    });
-    console.log("addDealNotif DONE, dealNotifsSeen:", dealNotifsSeen);
+    var notif = {type:"deal",leadName:n.leadName||"",leadId:n.leadId||"",agentName:n.agentName||"",status:n.status||"",budget:n.budget||""};
+    apiFetch("/api/notifications","POST",notif,token).then(function(saved){
+      if(saved) setDealNotifs(function(prev){return [Object.assign({},saved,{seen:false})].concat(prev).slice(0,50);});
+    }).catch(function(){});
   };
 
-  // Rotation notification helper — functional setState, persists to localStorage
+  // Rotation notification helper — saves to DB, updates local state
   var notifyRotation = function(lead, fromName, toName, reason){
-    var entry = {id:Date.now(),leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason,time:new Date().toISOString()};
-    setRotNotifs(function(prev){
-      var next = [entry].concat(prev).slice(0,50);
-      try{localStorage.setItem("crm_rot_notifs",JSON.stringify(next));}catch(e){}
-      return next;
-    });
+    var notif = {type:"rotation",leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason};
+    apiFetch("/api/notifications","POST",notif,token).then(function(saved){
+      if(saved) setRotNotifs(function(prev){return [Object.assign({},saved,{seen:false})].concat(prev).slice(0,50);});
+    }).catch(function(){});
     showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
+  };
+
+  // Fetch notifications from DB
+  var loadNotifications = function(tok){
+    apiFetch("/api/notifications?type=deal","GET",null,tok).then(function(data){if(data)setDealNotifs(data);}).catch(function(){});
+    apiFetch("/api/notifications?type=rotation","GET",null,tok).then(function(data){if(data)setRotNotifs(data);}).catch(function(){});
   };
 
   useEffect(function(){
@@ -4803,13 +4794,13 @@ export default function CRMApp() {
       var saved = localStorage.getItem('crm_aro_session');
       if (saved) {
         var s = JSON.parse(saved);
-        if (s.user && s.token) { setCurrentUser(s.user); setToken(s.token); if(s.csrfToken) setCsrfToken(s.csrfToken); loadData(s.token, s.user); }
+        if (s.user && s.token) { setCurrentUser(s.user); setToken(s.token); if(s.csrfToken) setCsrfToken(s.csrfToken); loadData(s.token, s.user); loadNotifications(s.token); }
       }
     } catch(e) {}
   }, []);
 
   var handleLogin=function(user,tok,csrfTok){
-    setCurrentUser(user); setToken(tok); setCsrfToken(csrfTok); loadData(tok, user);
+    setCurrentUser(user); setToken(tok); setCsrfToken(csrfTok); loadData(tok, user); loadNotifications(tok);
     var defaultPage = (user.role==="sales"||user.role==="team_leader") ? "myday" : "dashboard";
     setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok,csrfToken:csrfTok})); } catch(e){}
@@ -4979,6 +4970,14 @@ export default function CRMApp() {
       document.removeEventListener("keydown", onAction);
       document.removeEventListener("mousemove", onAction);
     };
+  },[token]);
+
+  // ===== NOTIFICATION POLLING (every 30s) =====
+  useEffect(function(){
+    if(!token) return;
+    var poll = function(){ loadNotifications(token); };
+    var interval = setInterval(poll, 30000);
+    return function(){ clearInterval(interval); };
   },[token]);
 
   // ===== SMART AUTO ROTATION SYSTEM =====
@@ -5218,7 +5217,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.length-rotNotifsSeen>0?rotNotifs.length-rotNotifsSeen:0} onRotNotifSeen={function(){setRotNotifsSeen(rotNotifs.length);}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.length-dealNotifsSeen>0?dealNotifs.length-dealNotifsSeen:0} onDealNotifSeen={function(){setDealNotifsSeen(dealNotifs.length);}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
