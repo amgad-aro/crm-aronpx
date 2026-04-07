@@ -733,7 +733,7 @@ var Header = function(p) {
             <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <span style={{ fontWeight:700, fontSize:13 }}>🔄 Auto Rotation ({p.rotNotifs.length})</span>
               <div style={{ display:"flex", gap:6 }}>
-                {p.rotNotifs.length>0&&<button onClick={function(){if(p.setRotNotifs)p.setRotNotifs([]);if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger }}>Clear All</button>}
+                {p.rotNotifs.length>0&&<button onClick={function(){if(p.setRotNotifs){p.setRotNotifs([]);try{localStorage.setItem("crm_rot_notifs","[]");}catch(e){}}if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger }}>Clear All</button>}
                 <button onClick={function(){if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
               </div>
             </div>
@@ -4581,8 +4581,7 @@ export default function CRMApp() {
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
   var [rotNotifsSeenCount,setRotNotifsSeenCount]=useState(0);
-  var [rotNotifs,setRotNotifsRaw]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){return[];}});
-  var setRotNotifs=function(fn){setRotNotifsRaw(function(prev){var next=typeof fn==="function"?fn(prev):fn;try{localStorage.setItem("crm_rot_notifs",JSON.stringify(next));}catch(e){}return next;});};
+  var [rotNotifs,setRotNotifs]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){return[];}});
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
   var [sidebarOpen,setSidebarOpen]=useState(false);
@@ -4596,12 +4595,15 @@ export default function CRMApp() {
     return isIOS&&!isStandalone&&!isDismissed;
   });
 
-  // Rotation notification helper — defined at CRMApp level for stable access to state setters
+  // Rotation notification helper — uses functional setState to avoid stale closures
   var notifyRotation = function(lead, fromName, toName, reason){
-    console.log("🔄 notifyRotation fired:", lead.name, fromName, "→", toName, reason);
-    showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
     var entry = {id:Date.now(),leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason,time:new Date().toISOString()};
-    setRotNotifsRaw(function(prev){var next=[entry].concat(prev).slice(0,50);try{localStorage.setItem("crm_rot_notifs",JSON.stringify(next));}catch(e){}return next;});
+    setRotNotifs(function(prev){
+      var next = [entry].concat(prev).slice(0,50);
+      try{localStorage.setItem("crm_rot_notifs",JSON.stringify(next));}catch(e){}
+      return next;
+    });
+    showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
   };
 
   useEffect(function(){
