@@ -375,6 +375,7 @@ var StatusModal = function(p) {
     if (needsComment && !comment.trim()) { setErr("A note is required"); return; }
     if (needsCb && !cbTime)              { setErr("Please select a time"); return; }
     if (isReject && !comment.trim())     { setErr("Please select a rejection reason"); return; }
+    if (isReject && !rejectNote.trim())  { setErr("Feedback is required"); return; }
     if ((isDoneDeal||isEOI) && !dealBudget.trim()){ setErr("Please enter the amount"); return; }
     if (needsBudgetFields && !potBudget.trim()){ setErr("Please enter the Budget"); return; }
     if (needsBudgetFields && !potDeposit.trim()){ setErr("Please enter the Down Payment"); return; }
@@ -454,8 +455,8 @@ var StatusModal = function(p) {
         })}
       </div>
       <div style={{ marginTop:10 }}>
-        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 Additional Notes (optional)</label>
-        <textarea rows={2} placeholder="Add more details..." value={rejectNote} onChange={function(e){setRejectNote(e.target.value);}}
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 Feedback <span style={{color:C.danger}}>*</span></label>
+        <textarea rows={2} placeholder="" value={rejectNote} onChange={function(e){setRejectNote(e.target.value);setErr("");}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
       </div>
     </div>}
