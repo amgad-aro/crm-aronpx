@@ -4688,6 +4688,7 @@ export default function CRMApp() {
       setActivitiesTotal(results[2].total || 0);
       setActivitiesTotalPages(results[2].totalPages || 0);
       setTasks(results[3]);
+      try{ var drData = await apiFetch("/api/daily-requests","GET",null,tok); setDailyReqs(drData||[]); }catch(e){}
     } catch(e){setDataError(e.message);}
     setLoading(false);
     // Backfill lastFeedback for existing leads (once per browser)
