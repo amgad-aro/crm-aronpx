@@ -1195,8 +1195,10 @@ var LeadsPage = function(p) {
       // Set dealDate to today when converting to DoneDeal (don't use eoiDate)
       if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date().toISOString().slice(0,10);
       // Notify admin when DoneDeal or EOI
+      console.log("STATUS CHANGE:", pendingStatus.newStatus, "addDealNotif exists:", !!p.addDealNotif);
       if(pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI"){
         var notifEntry={id:Date.now(),leadName:selected?selected.name:"leads",leadPhone:selected?selected.phone:"",agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:"",time:new Date().toISOString()};
+        console.log("CALLING addDealNotif:", notifEntry);
         if(p.addDealNotif) p.addDealNotif(notifEntry);
       }
       var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
@@ -1485,6 +1487,7 @@ var LeadsPage = function(p) {
                       var newAgent=e.target.value;
                       if(!newAgent)return;
                       var oldAgName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";
+                      console.log("MANUAL REASSIGN table - oldAgName:", oldAgName, "agentId:", lead.agentId, "notifyRotation exists:", !!p.notifyRotation);
                       var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
                       try{var upd=await apiFetch("/api/leads/"+gid(lead),"PUT",{agentId:newAgent,status:"NewLead",callbackTime:""},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?upd:l;});});if(selected&&gid(selected)===gid(lead))setSelected(upd);if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"",  "Manual reassign");}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
@@ -1555,6 +1558,7 @@ var LeadsPage = function(p) {
               var isManagerUser=p.cu.role==="manager"||p.cu.role==="team_leader";
               if(isManagerUser&&p.cu.teamId){var tgt=p.users.find(function(u){return gid(u)===newAgent;});if(tgt&&tgt.teamId!==p.cu.teamId)return;}
               var oldAgName=selected.agentId&&selected.agentId.name?selected.agentId.name:"";
+              console.log("MANUAL REASSIGN panel - oldAgName:", oldAgName, "agentId:", selected.agentId, "notifyRotation exists:", !!p.notifyRotation);
               var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
               try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{agentId:newAgent,status:"NewLead",callbackTime:""},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
