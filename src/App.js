@@ -5029,8 +5029,8 @@ export default function CRMApp() {
           leadId:gid(lead),type:"reassign",
           note:"🔄 Auto Rotation | From: "+fromName+" → To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
         },token);
-        setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
         notifyAdmins(lead,fromName,targetAgent.name,reason);
+        setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
       }catch(e){console.error("Rotation error:",e);}
     };
 
