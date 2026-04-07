@@ -801,10 +801,9 @@ var Header = function(p) {
             </div>
             {/* Tabs */}
             <div style={{ display:"flex", gap:3, overflow:"hidden" }}>
-              {[{key:"all",label:"All",icon:"🔔",count:allCbItems.length},{key:"overdue",label:"Overdue",icon:"🔴",count:overdueCallback.length},{key:"now",label:"Now",icon:"📞",count:callbackNow.length},{key:"upcoming",label:"Upcoming",icon:"🟡",count:upcoming.length},{key:"nocontact",label:"No Contact",icon:"😴",count:allNoActivity.length}].map(function(tab){var active=notifTab===tab.key;return <button key={tab.key} onClick={function(){setNotifTab(tab.key);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:2, flexShrink:0 }}>
-                <span style={{ fontSize:10 }}>{tab.icon}</span>
-                <span>{tab.label}</span>
-                {tab.count>0&&<span style={{ background:active?"rgba(255,255,255,0.25)":"#E5E7EB", color:active?"#fff":"#374151", padding:"0 3px", borderRadius:4, fontSize:8, fontWeight:700, lineHeight:"14px" }}>{tab.count}</span>}
+              {[{key:"all",label:"All",count:allCbItems.length},{key:"overdue",label:"Overdue",count:overdueCallback.length},{key:"now",label:"Now",count:callbackNow.length},{key:"upcoming",label:"Upcoming",count:upcoming.length},{key:"nocontact",label:"No Contact",count:allNoActivity.length}].map(function(tab){var active=notifTab===tab.key;return <button key={tab.key} onClick={function(){setNotifTab(tab.key);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3, flexShrink:0 }}>
+                {tab.label}
+                {tab.count>0&&<span style={{ background:active?"rgba(255,255,255,0.25)":"#E5E7EB", color:active?"#fff":"#374151", padding:"0 4px", borderRadius:4, fontSize:8, fontWeight:700, lineHeight:"14px" }}>{tab.count}</span>}
               </button>;})}
             </div>
           </div>
@@ -823,7 +822,7 @@ var Header = function(p) {
               var cbTypeLabel=l._cbType==="overdue"?"Overdue":l._cbType==="now"?"Callback Now":l._cbType==="upcoming"?"Upcoming":"No Contact";
               var timeStr=l._cbType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?timeAgo(l.callbackTime,p.t):"");
               return <div key={gid(l)} className="cb-card" onClick={function(){markRead(gid(l));p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:isRead?"#fff":cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
-                <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{l._cbType==="nocontact"?"😴":"📞"}</div>
+                <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{l._cbType==="overdue"?"🔴":l._cbType==="now"?"📞":l._cbType==="upcoming"?"🟡":"😴"}</div>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontSize:15, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
                   <div style={{ fontSize:13, fontWeight:500, color:C.textLight, marginTop:2 }}>{agName||"Unassigned"}</div>
