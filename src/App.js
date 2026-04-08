@@ -617,14 +617,18 @@ var CallbackBell = function(p) {
   },[p.showNotif]);
 
   var allItems = useMemo(function(){
-    return overdueCallback.map(function(l){return Object.assign({},l,{_cbType:"overdue"});})
+    var r = overdueCallback.map(function(l){return Object.assign({},l,{_cbType:"overdue"});})
       .concat(callbackNow.map(function(l){return Object.assign({},l,{_cbType:"now"});}))
       .concat(upcoming.map(function(l){return Object.assign({},l,{_cbType:"upcoming"});}))
       .concat(allNoActivity.map(function(l){return Object.assign({},l,{_cbType:"nocontact"});}));
+    console.log("[CallbackBell] allItems:", r.length, "overdue:", overdueCallback.length, "now:", callbackNow.length, "upcoming:", upcoming.length, "nocontact:", allNoActivity.length);
+    return r;
   },[overdueCallback,callbackNow,upcoming,allNoActivity]);
 
   var filtered = useMemo(function(){
-    return tab==="all"?allItems:allItems.filter(function(l){return l._cbType===tab;});
+    var r = tab==="all"?allItems:allItems.filter(function(l){return l._cbType===tab;});
+    console.log("[CallbackBell] tab:", tab, "filtered:", r.length, "sample _cbType:", r.length>0?r[0]._cbType:"none");
+    return r;
   },[allItems,tab]);
 
   var unreadCount = useMemo(function(){
@@ -743,8 +747,10 @@ var Header = function(p) {
       }
     });
     upcom.sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
-    myLeads.forEach(function(l){if(!l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>86400000) noAct.push(l);});
-    myDR.forEach(function(r){if(r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>86400000) noAct.push(r);});
+    var cbIds = new Set();
+    cbNow.concat(overdue).concat(upcom).forEach(function(l){cbIds.add(gid(l));});
+    myLeads.forEach(function(l){if(!cbIds.has(gid(l))&&!l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>86400000) noAct.push(l);});
+    myDR.forEach(function(r){if(!cbIds.has(gid(r))&&r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>86400000) noAct.push(r);});
     return {myLeads:myLeads,myDR:myDR,callbackNow:cbNow,upcoming:upcom,overdueCallback:overdue,allNoActivity:noAct};
   },[p.leads,p.dailyRequests,p.cu]);
   var callbackNow=notifData.callbackNow; var upcoming=notifData.upcoming; var overdueCallback=notifData.overdueCallback; var allNoActivity=notifData.allNoActivity;
