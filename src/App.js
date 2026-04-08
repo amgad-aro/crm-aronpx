@@ -1531,7 +1531,7 @@ var LeadsPage = function(p) {
                       if(!newAgent)return;
                       var oldAgName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";
                       var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
-                      try{var upd=await apiFetch("/api/leads/"+gid(lead),"PUT",{agentId:newAgent,status:"NewLead",callbackTime:"",lastFeedback:"",notes:"",budget:"",lastRotationAt:new Date().toISOString()},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?upd:l;});});if(selected&&gid(selected)===gid(lead))setSelected(upd);if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"",  "Manual reassign");}catch(ex){}
+                      try{var copy=await apiFetch("/api/leads","POST",{name:lead.name,phone:lead.phone,phone2:lead.phone2||"",email:lead.email||"",source:lead.source||"",project:lead.project||"",agentId:newAgent,status:"NewLead",callbackTime:"",lastFeedback:"",notes:"",budget:"",lastRotationAt:new Date().toISOString(),rotatedFrom:gid(lead)},p.token);p.setLeads(function(prev){return [copy].concat(prev);});if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"",  "Manual reassign");}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
                       {isOnlyAdmin&&<option value="">— No Agent —</option>}
                       {(isOnlyAdmin?salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
@@ -1601,7 +1601,7 @@ var LeadsPage = function(p) {
               if(isManagerUser&&p.cu.teamId){var tgt=p.users.find(function(u){return gid(u)===newAgent;});if(tgt&&tgt.teamId!==p.cu.teamId)return;}
               var oldAgName=selected.agentId&&selected.agentId.name?selected.agentId.name:"";
               var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
-              try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{agentId:newAgent,status:"NewLead",callbackTime:"",lastFeedback:"",notes:"",budget:"",lastRotationAt:new Date().toISOString()},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
+              try{var copy=await apiFetch("/api/leads","POST",{name:selected.name,phone:selected.phone,phone2:selected.phone2||"",email:selected.email||"",source:selected.source||"",project:selected.project||"",agentId:newAgent,status:"NewLead",callbackTime:"",lastFeedback:"",notes:"",budget:"",lastRotationAt:new Date().toISOString(),rotatedFrom:gid(selected)},p.token);p.setLeads(function(prev){return [copy].concat(prev);});setSelected(null);if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
               {isOnlyAdmin&&<option value="">— No Agent —</option>}
               {(isOnlyAdmin?p.myTeamUsers||salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
@@ -5064,7 +5064,6 @@ export default function CRMApp() {
     var doRotate = async function(lead, reason){
       var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
       var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"Agent";
-      // If current agent is team_leader, skip rotation
       var currentAgentUser = users.find(function(u){return String(gid(u))===String(currentAgentId);});
       if(currentAgentUser&&currentAgentUser.role==="team_leader") return;
       var targetAgent = pickAgent(currentAgentId);
@@ -5073,21 +5072,29 @@ export default function CRMApp() {
       if(targetAgentId===currentAgentId) return;
       var timeStr=new Date().toLocaleString("en-GB");
       try{
-        var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{
+        // Create a clean copy for new agent — original stays untouched
+        var copy = await apiFetch("/api/leads","POST",{
+          name: lead.name,
+          phone: lead.phone,
+          phone2: lead.phone2||"",
+          email: lead.email||"",
+          source: lead.source||"",
+          project: lead.project||"",
           agentId: targetAgentId,
           status: "NewLead",
           callbackTime: "",
           lastFeedback: "",
           notes: "",
           budget: "",
-          lastRotationAt: new Date().toISOString()
+          lastRotationAt: new Date().toISOString(),
+          rotatedFrom: gid(lead)
         },token);
         await apiFetch("/api/activities","POST",{
-          leadId:gid(lead),type:"reassign",
+          leadId:gid(copy),type:"reassign",
           note:"🔄 Auto Rotation | From: "+fromName+" → To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
         },token);
         notifyRotationRef.current(lead,fromName,targetAgent.name,reason);
-        setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+        setLeads(function(prev){return [copy].concat(prev);});
       }catch(e){console.error("Rotation error:",e);}
     };
 
