@@ -1182,34 +1182,13 @@ var LeadsPage = function(p) {
   if (vipFilter) filtered = filtered.filter(function(l){return l.isVIP;});
   if (noAgentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return !aid; });
   if (agentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return aid===agentFilter; });
-  var sortFn = function(a,b){
+  filtered = filtered.slice().sort(function(a,b){
     if (sortBy==="lastActivity") return new Date(b.lastActivityTime||0)-new Date(a.lastActivityTime||0);
     if (sortBy==="newest") return new Date(b.createdAt||0)-new Date(a.createdAt||0);
     if (sortBy==="oldest") return new Date(a.createdAt||0)-new Date(b.createdAt||0);
     if (sortBy==="name") return a.name.localeCompare(b.name,"ar");
     return 0;
-  };
-  filtered = filtered.slice().sort(sortFn);
-
-  // Dedup for admin: group by phone, show one row with _copies badge
-  if(isOnlyAdmin && !isReq){
-    var phoneMap = {};
-    filtered.forEach(function(l){
-      var ph = l.phone;
-      if(!ph){ return; }
-      if(!phoneMap[ph]) phoneMap[ph] = [];
-      phoneMap[ph].push(l);
-    });
-    var deduped = [];
-    Object.keys(phoneMap).forEach(function(ph){
-      var copies = phoneMap[ph];
-      var rep = copies.length>1 ? Object.assign({},copies[0],{_copies:copies}) : copies[0];
-      deduped.push(rep);
-    });
-    // Add leads with no phone as-is
-    filtered.forEach(function(l){ if(!l.phone) deduped.push(l); });
-    filtered = deduped.sort(sortFn);
-  }
+  });
 
   useEffect(function(){ if(p.initSelected){setSelected(p.initSelected);} },[p.initSelected]);
 
@@ -1443,7 +1422,7 @@ var LeadsPage = function(p) {
             {/* Header row */}
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
               <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:16, fontWeight:700, color:isVIP?C.accent:C.text, marginBottom:3 }}>{isVIP?"⭐ ":""}{lead.name}{lead._copies&&lead._copies.length>1?<span style={{ background:"#EFF6FF", color:"#3B82F6", padding:"1px 6px", borderRadius:8, fontSize:9, fontWeight:700, marginLeft:6 }}>👥 {lead._copies.length}</span>:""}</div>
+                <div style={{ fontSize:16, fontWeight:700, color:isVIP?C.accent:C.text, marginBottom:3 }}>{isVIP?"⭐ ":""}{lead.name}</div>
                 <div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr" }}><PhoneCell phone={lead.phone}/></div>
                 {(function(){var agName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";return agName?<div style={{ fontSize:11, color:C.accent, fontWeight:600, marginTop:2 }}>👤 {agName}</div>:null;})()}
               </div>
@@ -1505,7 +1484,6 @@ var LeadsPage = function(p) {
                       {lead.isVIP&&<span style={{ fontSize:14 }} title="VIP">⭐</span>}
                       {lead.locked&&<span style={{ fontSize:12 }} title="Locked — no rotation">🔒</span>}
                       <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
-                      {lead._copies&&lead._copies.length>1&&<span style={{ background:"#EFF6FF", color:"#3B82F6", padding:"1px 6px", borderRadius:8, fontSize:9, fontWeight:700, whiteSpace:"nowrap" }}>👥 {lead._copies.length} agents</span>}
                     </div>
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
                   </td>
@@ -1644,17 +1622,6 @@ var LeadsPage = function(p) {
           </div>:[{l:t.budget,v:selected.budget},{l:t.source,v:isAdmin?selected.source:null},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"Last Contact",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("en-GB")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span></div>:null;
           })}
-          {/* Agent Copies (rotation) */}
-          {selected._copies&&selected._copies.length>1&&<div style={{ marginTop:10, marginBottom:10, background:"#F8FAFC", borderRadius:12, padding:"12px 14px", border:"1px solid #E8ECF1" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:C.text, marginBottom:8 }}>👥 Assigned to {selected._copies.length} Agents</div>
-            {selected._copies.map(function(c){var agName=c.agentId&&c.agentId.name?c.agentId.name:"Unassigned";var cSo=sc.find(function(s){return s.value===c.status;})||sc[0];return <div key={gid(c)} onClick={function(e){e.stopPropagation();setSelected(c);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", borderRadius:8, background:gid(c)===gid(selected)?"#EFF6FF":"#fff", border:"1px solid "+(gid(c)===gid(selected)?"#BFDBFE":"#E8ECF1"), marginBottom:4, cursor:"pointer" }}>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{agName}</div>
-                <div style={{ fontSize:10, color:C.textLight }}>{c.lastActivityTime?timeAgo(c.lastActivityTime,t):"No activity"}{c.budget?" · "+c.budget+" EGP":""}</div>
-              </div>
-              <span style={{ background:cSo.bg, color:cSo.color, padding:"2px 6px", borderRadius:8, fontSize:9, fontWeight:600 }}>{cSo.label}</span>
-            </div>;})}
-          </div>}
           {/* WhatsApp Templates */}
           <div style={{ marginTop:10, display:"flex", gap:6 }}>
             <button onClick={function(){setWaLead(selected);setShowWaTemplates(true);}} style={{ flex:1, padding:"7px 8px", borderRadius:9, border:"1px solid #25D366", background:"#25D36610", color:"#25D366", fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>💬 {t.waTemplates}</button>
