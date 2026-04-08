@@ -599,8 +599,7 @@ var CallbackBell = function(p) {
   var callbackNow=nd.callbackNow; var upcoming=nd.upcoming; var overdueCallback=nd.overdueCallback; var allNoActivity=nd.allNoActivity;
   var [tab, setTab] = useState("all");
   var [limit, setLimit] = useState(30);
-  var prevTabRef = useRef("all");
-  if(tab !== prevTabRef.current){ limit = 30; prevTabRef.current = tab; }
+  useEffect(function(){ setLimit(30); },[tab]);
   var ref = useRef(null);
   var readRef = useRef(function(){try{return new Set(JSON.parse(localStorage.getItem("crm_cb_read")||"[]"));}catch(e){return new Set();}}());
   var [readVer, setReadVer] = useState(0);
