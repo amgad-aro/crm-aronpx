@@ -596,47 +596,40 @@ var Header = function(p) {
   var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(u._id||gid(u)||"");}));
   teamUids.add(uid);
 
-  var myLeadsForNotif = (p.cu&&p.cu.role==="sales")
-    ? p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid;})
-    : (p.cu&&p.cu.role==="team_leader")
-    ? p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return teamUids.has(aid);})
-    : p.leads;
-  var myDRForNotif = (p.cu&&p.cu.role==="sales")
-    ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return aid===uid;})
-    : (p.cu&&p.cu.role==="team_leader")
-    ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return teamUids.has(aid);})
-    : (p.dailyRequests||[]);
-  var allItemsForNotif = myLeadsForNotif.concat(myDRForNotif);
-  var now = Date.now();
-  var callbackNow = allItemsForNotif.filter(function(l){
-    if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
-    var diff = new Date(l.callbackTime).getTime() - now;
-    if(!(diff<=0 && diff>-60*60*1000)) return false;
-    // Hide if had activity after the callback time (already handled)
-    var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
-    if(lastAct > new Date(l.callbackTime).getTime()) return false;
-    return true;
-  });
-  var upcoming = allItemsForNotif.filter(function(l){
-    if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
-    var diff = new Date(l.callbackTime).getTime() - now;
-    if(!(diff>0 && diff<=24*60*60*1000)) return false;
-    var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
-    if(lastAct > new Date(l.callbackTime).getTime()) return false;
-    return true;
-  }).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
-  var overdueCallback = allItemsForNotif.filter(function(l){
-    if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
-    var diff = new Date(l.callbackTime).getTime() - now;
-    if(!(diff < -60*60*1000)) return false;
-    // Hide if had activity after the callback time
-    var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
-    if(lastAct > new Date(l.callbackTime).getTime()) return false;
-    return true;
-  });
-  var noActivityLeads = myLeadsForNotif.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>1*24*60*60*1000;});
-  var noActivityDR = myDRForNotif.filter(function(r){return r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>1*24*60*60*1000;});
-  var allNoActivity = noActivityLeads.concat(noActivityDR);
+  var notifData = useMemo(function(){
+    var myLeads = (p.cu&&p.cu.role==="sales")
+      ? p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid;})
+      : (p.cu&&p.cu.role==="team_leader")
+      ? p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return teamUids.has(aid);})
+      : p.leads;
+    var myDR = (p.cu&&p.cu.role==="sales")
+      ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return aid===uid;})
+      : (p.cu&&p.cu.role==="team_leader")
+      ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return teamUids.has(aid);})
+      : (p.dailyRequests||[]);
+    var all = myLeads.concat(myDR);
+    var now = Date.now();
+    var cbNow = []; var upcom = []; var overdue = []; var noAct = [];
+    all.forEach(function(l){
+      var excluded = !l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested";
+      if(!excluded){
+        var cbT = new Date(l.callbackTime).getTime();
+        var diff = cbT - now;
+        var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
+        var handled = lastAct > cbT;
+        if(!handled){
+          if(diff<=0 && diff>-3600000) cbNow.push(l);
+          else if(diff < -3600000) overdue.push(l);
+          else if(diff>0 && diff<=86400000) upcom.push(l);
+        }
+      }
+    });
+    upcom.sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
+    myLeads.forEach(function(l){if(!l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>86400000) noAct.push(l);});
+    myDR.forEach(function(r){if(r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>86400000) noAct.push(r);});
+    return {myLeads:myLeads,myDR:myDR,callbackNow:cbNow,upcoming:upcom,overdueCallback:overdue,allNoActivity:noAct};
+  },[p.leads,p.dailyRequests,p.cu]);
+  var callbackNow=notifData.callbackNow; var upcoming=notifData.upcoming; var overdueCallback=notifData.overdueCallback; var allNoActivity=notifData.allNoActivity;
   var notifRef = useRef(null);
   var [notifTab, setNotifTab] = useState("all");
   var [readNotifs, setReadNotifs] = useState(function(){
@@ -657,12 +650,20 @@ var Header = function(p) {
       return next;
     });
   };
-  var allCbItems = overdueCallback.map(function(l){return Object.assign({},l,{_cbType:"overdue"});})
-    .concat(callbackNow.map(function(l){return Object.assign({},l,{_cbType:"now"});}))
-    .concat(upcoming.map(function(l){return Object.assign({},l,{_cbType:"upcoming"});}))
-    .concat(allNoActivity.map(function(l){return Object.assign({},l,{_cbType:"nocontact"});}));
-  var filteredCbItems = notifTab==="all"?allCbItems:allCbItems.filter(function(l){return l._cbType===notifTab;});
-  var unreadCount = allCbItems.filter(function(l){return !readNotifs.has(gid(l));}).length;
+  var allCbItems = useMemo(function(){
+    return overdueCallback.map(function(l){return Object.assign({},l,{_cbType:"overdue"});})
+      .concat(callbackNow.map(function(l){return Object.assign({},l,{_cbType:"now"});}))
+      .concat(upcoming.map(function(l){return Object.assign({},l,{_cbType:"upcoming"});}))
+      .concat(allNoActivity.map(function(l){return Object.assign({},l,{_cbType:"nocontact"});}));
+  },[overdueCallback,callbackNow,upcoming,allNoActivity]);
+  var filteredCbItems = useMemo(function(){
+    return notifTab==="all"?allCbItems:allCbItems.filter(function(l){return l._cbType===notifTab;});
+  },[allCbItems,notifTab]);
+  var unreadCount = useMemo(function(){
+    return allCbItems.filter(function(l){return !readNotifs.has(gid(l));}).length;
+  },[allCbItems,readNotifs]);
+  var [cbDisplayLimit, setCbDisplayLimit] = useState(30);
+  var visibleCbItems = filteredCbItems.slice(0, cbDisplayLimit);
   var cbColors = {overdue:{bg:"#FEF2F2",border:"#EF4444",icon:"#FEE2E2",text:"#DC2626"},now:{bg:"#FFF7ED",border:"#F97316",icon:"#FFEDD5",text:"#EA580C"},upcoming:{bg:"#F0FDF4",border:"#22C55E",icon:"#DCFCE7",text:"#16A34A"},nocontact:{bg:"#FFFBEB",border:"#EAB308",icon:"#FEF3C7",text:"#B45309"}};
   useEffect(function(){
     if (!p.showNotif) return;
@@ -801,7 +802,7 @@ var Header = function(p) {
             </div>
             {/* Tabs */}
             <div style={{ display:"flex", gap:3, overflow:"hidden" }}>
-              {[{key:"all",label:"All",count:allCbItems.length},{key:"overdue",label:"Delay",count:overdueCallback.length},{key:"now",label:"Now",count:callbackNow.length},{key:"upcoming",label:"Upcoming",count:upcoming.length},{key:"nocontact",label:"No Contact",count:allNoActivity.length}].map(function(tab){var active=notifTab===tab.key;return <button key={tab.key} onClick={function(){setNotifTab(tab.key);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3, flexShrink:0 }}>
+              {[{key:"all",label:"All",count:allCbItems.length},{key:"overdue",label:"Delay",count:overdueCallback.length},{key:"now",label:"Now",count:callbackNow.length},{key:"upcoming",label:"Upcoming",count:upcoming.length},{key:"nocontact",label:"No Contact",count:allNoActivity.length}].map(function(tab){var active=notifTab===tab.key;return <button key={tab.key} onClick={function(){setNotifTab(tab.key);setCbDisplayLimit(30);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3, flexShrink:0 }}>
                 {tab.label}
                 {tab.count>0&&<span style={{ background:active?"rgba(255,255,255,0.25)":"#E5E7EB", color:active?"#fff":"#374151", padding:"0 4px", borderRadius:4, fontSize:8, fontWeight:700, lineHeight:"14px" }}>{tab.count}</span>}
               </button>;})}
@@ -815,7 +816,7 @@ var Header = function(p) {
               <div style={{ fontSize:12, color:C.textLight }}>No pending callbacks</div>
             </div>}
             {filteredCbItems.length===0&&allCbItems.length>0&&<div style={{ padding:"32px 20px", textAlign:"center", color:C.textLight, fontSize:13 }}>No items in this category</div>}
-            {filteredCbItems.map(function(l){
+            {visibleCbItems.map(function(l){
               var agName=l.agentId&&l.agentId.name?l.agentId.name:"";
               var cc=cbColors[l._cbType]||cbColors.now;
               var isRead=readNotifs.has(gid(l));
@@ -834,6 +835,7 @@ var Header = function(p) {
                 {l.phone&&<a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();markRead(gid(l));}} style={{ width:40, height:40, borderRadius:10, background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, textDecoration:"none", boxShadow:"0 2px 8px rgba(0,0,0,0.15)" }} title="Call"><Phone size={16} color={cc.text}/></a>}
               </div>;
             })}
+            {filteredCbItems.length>cbDisplayLimit&&<button onClick={function(e){e.stopPropagation();setCbDisplayLimit(function(v){return v+30;});}} style={{ width:"100%", padding:"10px", border:"none", borderRadius:8, background:"#F1F5F9", color:"#374151", fontSize:12, fontWeight:600, cursor:"pointer", marginTop:4 }}>Show More ({filteredCbItems.length-cbDisplayLimit} remaining)</button>}
           </div>
         </div>}
       </div>
