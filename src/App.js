@@ -589,6 +589,124 @@ var Sidebar = function(p) {
   </>;
 };
 
+// ===== CALLBACK BELL (isolated for performance) =====
+var CB_COLORS = {overdue:{bg:"#FEF2F2",border:"#EF4444",icon:"#FEE2E2",text:"#DC2626"},now:{bg:"#FFF7ED",border:"#F97316",icon:"#FFEDD5",text:"#EA580C"},upcoming:{bg:"#F0FDF4",border:"#22C55E",icon:"#DCFCE7",text:"#16A34A"},nocontact:{bg:"#FFFBEB",border:"#EAB308",icon:"#FEF3C7",text:"#B45309"}};
+var CB_CSS = "@keyframes cbBellShake{0%,100%{transform:rotate(0)}15%{transform:rotate(12deg)}30%{transform:rotate(-10deg)}45%{transform:rotate(8deg)}60%{transform:rotate(-6deg)}75%{transform:rotate(3deg)}}.cb-bell-shake{animation:cbBellShake 0.6s ease-in-out infinite}.cb-dropdown-enter{animation:cbSlideDown 0.2s ease-out}@keyframes cbSlideDown{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}.cb-card:hover{box-shadow:0 4px 16px rgba(0,0,0,0.08)!important;transform:translateY(-1px)}";
+var cbStyleInjected = false;
+
+var CallbackBell = function(p) {
+  var nd = p.notifData;
+  var callbackNow=nd.callbackNow; var upcoming=nd.upcoming; var overdueCallback=nd.overdueCallback; var allNoActivity=nd.allNoActivity;
+  var [tab, setTab] = useState("all");
+  var [limit, setLimit] = useState(30);
+  var ref = useRef(null);
+  var readRef = useRef(function(){try{return new Set(JSON.parse(localStorage.getItem("crm_cb_read")||"[]"));}catch(e){return new Set();}}());
+  var [readVer, setReadVer] = useState(0);
+
+  // Inject CSS once
+  useEffect(function(){
+    if(cbStyleInjected) return;
+    var s=document.createElement("style"); s.textContent=CB_CSS; document.head.appendChild(s); cbStyleInjected=true;
+  },[]);
+
+  // Outside click
+  useEffect(function(){
+    if(!p.showNotif) return;
+    var fn=function(e){if(ref.current&&!ref.current.contains(e.target))p.setShowNotif(false);};
+    document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
+  },[p.showNotif]);
+
+  var allItems = useMemo(function(){
+    return overdueCallback.map(function(l){return Object.assign({},l,{_cbType:"overdue"});})
+      .concat(callbackNow.map(function(l){return Object.assign({},l,{_cbType:"now"});}))
+      .concat(upcoming.map(function(l){return Object.assign({},l,{_cbType:"upcoming"});}))
+      .concat(allNoActivity.map(function(l){return Object.assign({},l,{_cbType:"nocontact"});}));
+  },[overdueCallback,callbackNow,upcoming,allNoActivity]);
+
+  var filtered = useMemo(function(){
+    return tab==="all"?allItems:allItems.filter(function(l){return l._cbType===tab;});
+  },[allItems,tab]);
+
+  var unreadCount = useMemo(function(){
+    return allItems.filter(function(l){return !readRef.current.has(gid(l));}).length;
+  },[allItems,readVer]);
+
+  var visible = filtered.slice(0, limit);
+
+  var markRead = function(id){
+    readRef.current.add(id);
+    try{localStorage.setItem("crm_cb_read",JSON.stringify(Array.from(readRef.current).slice(-200)));}catch(e){}
+    setReadVer(function(v){return v+1;});
+  };
+  var markAllRead = function(){
+    allItems.forEach(function(l){readRef.current.add(gid(l));});
+    try{localStorage.setItem("crm_cb_read",JSON.stringify(Array.from(readRef.current).slice(-200)));}catch(e){}
+    setReadVer(function(v){return v+1;});
+  };
+
+  var tabs=[{key:"all",label:"All",count:allItems.length},{key:"overdue",label:"Delay",count:overdueCallback.length},{key:"now",label:"Now",count:callbackNow.length},{key:"upcoming",label:"Upcoming",count:upcoming.length},{key:"nocontact",label:"No Contact",count:allNoActivity.length}];
+
+  return <div style={{ position:"relative" }} ref={ref}>
+    <button onClick={function(){
+      var opening=!p.showNotif;
+      p.setShowNotif(opening);
+      if(opening){p.setShowDealNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);setTab("all");setLimit(30);}
+    }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:unreadCount>0?"#FEF2F2":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+      <Bell size={16} color={unreadCount>0?C.danger:C.textLight} className={unreadCount>0?"cb-bell-shake":""}/>
+      {unreadCount>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{unreadCount>99?"99+":unreadCount}</span>}
+    </button>
+    {p.showNotif&&<div className="cb-dropdown-enter" style={{ position:"absolute", top:46, right:0, width:440,maxWidth:"95vw", background:"#fff", borderRadius:16, boxShadow:"0 8px 32px rgba(0,0,0,0.15)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
+      <div style={{ padding:"16px 20px 12px", borderBottom:"1px solid #F1F5F9", flexShrink:0 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <span style={{ fontSize:18 }}>🔔</span>
+            <span style={{ fontWeight:700, fontSize:15, color:C.text }}>Callbacks</span>
+            {allItems.length>0&&<span style={{ background:"#FEF2F2", color:C.danger, padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:700 }}>{allItems.length}</span>}
+          </div>
+          <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+            {unreadCount>0&&<button onClick={markAllRead} style={{ background:"#FEF2F2", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:C.danger, fontWeight:600, padding:"4px 10px" }}>Mark All Read</button>}
+            <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:3, overflow:"hidden" }}>
+          {tabs.map(function(t2){var active=tab===t2.key;return <button key={t2.key} onClick={function(){setTab(t2.key);setLimit(30);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3, flexShrink:0 }}>
+            {t2.label}
+            {t2.count>0&&<span style={{ background:active?"rgba(255,255,255,0.25)":"#E5E7EB", color:active?"#fff":"#374151", padding:"0 4px", borderRadius:4, fontSize:8, fontWeight:700, lineHeight:"14px" }}>{t2.count}</span>}
+          </button>;})}
+        </div>
+      </div>
+      <div style={{ overflowY:"auto", flex:1, padding:"8px 12px" }}>
+        {allItems.length===0&&<div style={{ padding:"40px 20px", textAlign:"center" }}>
+          <div style={{ fontSize:40, marginBottom:12 }}>🎉</div>
+          <div style={{ fontSize:14, fontWeight:600, color:C.text, marginBottom:4 }}>All clear!</div>
+          <div style={{ fontSize:12, color:C.textLight }}>No pending callbacks</div>
+        </div>}
+        {filtered.length===0&&allItems.length>0&&<div style={{ padding:"32px 20px", textAlign:"center", color:C.textLight, fontSize:13 }}>No items in this category</div>}
+        {visible.map(function(l){
+          var agName=l.agentId&&l.agentId.name?l.agentId.name:"";
+          var cc=CB_COLORS[l._cbType]||CB_COLORS.now;
+          var isRead=readRef.current.has(gid(l));
+          var cbTypeLabel=l._cbType==="overdue"?"Overdue":l._cbType==="now"?"Callback Now":l._cbType==="upcoming"?"Upcoming":"No Contact";
+          var timeStr=l._cbType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?timeAgo(l.callbackTime,p.t):"");
+          return <div key={gid(l)} className="cb-card" onClick={function(){markRead(gid(l));p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:isRead?"#fff":cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{l._cbType==="overdue"?"⏰":l._cbType==="now"?"📞":l._cbType==="upcoming"?"🔔":"😴"}</div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:15, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
+              <div style={{ fontSize:13, fontWeight:500, color:C.textLight, marginTop:2 }}>{agName||"Unassigned"}</div>
+              <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:3 }}>
+                <span style={{ fontSize:10, fontWeight:600, color:cc.text, background:cc.icon, padding:"1px 6px", borderRadius:4 }}>{cbTypeLabel}</span>
+                <span style={{ fontSize:11, color:C.textLight }}>{timeStr}</span>
+              </div>
+            </div>
+            {l.phone&&<a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();markRead(gid(l));}} style={{ width:40, height:40, borderRadius:10, background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, textDecoration:"none", boxShadow:"0 2px 8px rgba(0,0,0,0.15)" }} title="Call"><Phone size={16} color={cc.text}/></a>}
+          </div>;
+        })}
+        {filtered.length>limit&&<button onClick={function(e){e.stopPropagation();setLimit(function(v){return v+30;});}} style={{ width:"100%", padding:"10px", border:"none", borderRadius:8, background:"#F1F5F9", color:"#374151", fontSize:12, fontWeight:600, cursor:"pointer", marginTop:4 }}>Show More ({filtered.length-limit} remaining)</button>}
+      </div>
+    </div>}
+  </div>;
+};
+
 // ===== HEADER =====
 var Header = function(p) {
   var t = p.t; var isOnlyAdmin = p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin");
@@ -630,44 +748,6 @@ var Header = function(p) {
     return {myLeads:myLeads,myDR:myDR,callbackNow:cbNow,upcoming:upcom,overdueCallback:overdue,allNoActivity:noAct};
   },[p.leads,p.dailyRequests,p.cu]);
   var callbackNow=notifData.callbackNow; var upcoming=notifData.upcoming; var overdueCallback=notifData.overdueCallback; var allNoActivity=notifData.allNoActivity;
-  var notifRef = useRef(null);
-  var [notifTab, setNotifTab] = useState("all");
-  var readNotifsRef = useRef(function(){
-    try{return new Set(JSON.parse(localStorage.getItem("crm_cb_read")||"[]"));}catch(e){return new Set();}
-  }());
-  var [readVer, setReadVer] = useState(0);
-  var markRead = function(id){
-    readNotifsRef.current.add(id);
-    var arr=Array.from(readNotifsRef.current).slice(-200);
-    try{localStorage.setItem("crm_cb_read",JSON.stringify(arr));}catch(e){}
-    setReadVer(function(v){return v+1;});
-  };
-  var markAllRead = function(){
-    overdueCallback.concat(callbackNow).concat(upcoming).concat(allNoActivity).forEach(function(l){readNotifsRef.current.add(gid(l));});
-    var arr=Array.from(readNotifsRef.current).slice(-200);
-    try{localStorage.setItem("crm_cb_read",JSON.stringify(arr));}catch(e){}
-    setReadVer(function(v){return v+1;});
-  };
-  var allCbItems = useMemo(function(){
-    return overdueCallback.map(function(l){return Object.assign({},l,{_cbType:"overdue"});})
-      .concat(callbackNow.map(function(l){return Object.assign({},l,{_cbType:"now"});}))
-      .concat(upcoming.map(function(l){return Object.assign({},l,{_cbType:"upcoming"});}))
-      .concat(allNoActivity.map(function(l){return Object.assign({},l,{_cbType:"nocontact"});}));
-  },[overdueCallback,callbackNow,upcoming,allNoActivity]);
-  var filteredCbItems = useMemo(function(){
-    return notifTab==="all"?allCbItems:allCbItems.filter(function(l){return l._cbType===notifTab;});
-  },[allCbItems,notifTab]);
-  var unreadCount = useMemo(function(){
-    return allCbItems.filter(function(l){return !readNotifsRef.current.has(gid(l));}).length;
-  },[allCbItems,readVer]);
-  var [cbDisplayLimit, setCbDisplayLimit] = useState(30);
-  var visibleCbItems = filteredCbItems.slice(0, cbDisplayLimit);
-  var cbColors = {overdue:{bg:"#FEF2F2",border:"#EF4444",icon:"#FEE2E2",text:"#DC2626"},now:{bg:"#FFF7ED",border:"#F97316",icon:"#FFEDD5",text:"#EA580C"},upcoming:{bg:"#F0FDF4",border:"#22C55E",icon:"#DCFCE7",text:"#16A34A"},nocontact:{bg:"#FFFBEB",border:"#EAB308",icon:"#FEF3C7",text:"#B45309"}};
-  useEffect(function(){
-    if (!p.showNotif) return;
-    var fn=function(e){if(notifRef.current&&!notifRef.current.contains(e.target))p.setShowNotif(false);};
-    document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
-  },[p.showNotif]);
   // Close deal notif + rot notif on outside click
   var dealNotifRef = useRef(null);
   var rotNotifRef = useRef(null);
@@ -773,70 +853,8 @@ var Header = function(p) {
         </div>}
       </div>}
 
-      {/* BELL 1 — Callbacks (redesigned) */}
-      <div style={{ position:"relative" }} ref={notifRef}>
-        <style dangerouslySetInnerHTML={{__html:"@keyframes cbBellShake{0%,100%{transform:rotate(0)}15%{transform:rotate(12deg)}30%{transform:rotate(-10deg)}45%{transform:rotate(8deg)}60%{transform:rotate(-6deg)}75%{transform:rotate(3deg)}}.cb-bell-shake{animation:cbBellShake 0.6s ease-in-out infinite}.cb-dropdown-enter{animation:cbSlideDown 0.2s ease-out}@keyframes cbSlideDown{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}.cb-card:hover{box-shadow:0 4px 16px rgba(0,0,0,0.08)!important;transform:translateY(-1px)}"}}/>
-        <button onClick={function(){
-          var opening=!p.showNotif;
-          p.setShowNotif(opening);
-          if(opening){p.setShowDealNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);setNotifTab("all");}
-        }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:unreadCount>0?"#FEF2F2":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
-          <Bell size={16} color={unreadCount>0?C.danger:C.textLight} className={unreadCount>0?"cb-bell-shake":""}/>
-          {unreadCount>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{unreadCount>99?"99+":unreadCount}</span>}
-        </button>
-        {p.showNotif&&<div className="cb-dropdown-enter" style={{ position:"absolute", top:46, right:0, width:440,maxWidth:"95vw", background:"#fff", borderRadius:16, boxShadow:"0 8px 32px rgba(0,0,0,0.15)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
-          {/* Header */}
-          <div style={{ padding:"16px 20px 12px", borderBottom:"1px solid #F1F5F9", flexShrink:0 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                <span style={{ fontSize:18 }}>🔔</span>
-                <span style={{ fontWeight:700, fontSize:15, color:C.text }}>Callbacks</span>
-                {allCbItems.length>0&&<span style={{ background:"#FEF2F2", color:C.danger, padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:700 }}>{allCbItems.length}</span>}
-              </div>
-              <div style={{ display:"flex", gap:4, alignItems:"center" }}>
-                {unreadCount>0&&<button onClick={markAllRead} style={{ background:"#FEF2F2", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:C.danger, fontWeight:600, padding:"4px 10px" }}>Mark All Read</button>}
-                <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
-              </div>
-            </div>
-            {/* Tabs */}
-            <div style={{ display:"flex", gap:3, overflow:"hidden" }}>
-              {[{key:"all",label:"All",count:allCbItems.length},{key:"overdue",label:"Delay",count:overdueCallback.length},{key:"now",label:"Now",count:callbackNow.length},{key:"upcoming",label:"Upcoming",count:upcoming.length},{key:"nocontact",label:"No Contact",count:allNoActivity.length}].map(function(tab){var active=notifTab===tab.key;return <button key={tab.key} onClick={function(){setNotifTab(tab.key);setCbDisplayLimit(30);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3, flexShrink:0 }}>
-                {tab.label}
-                {tab.count>0&&<span style={{ background:active?"rgba(255,255,255,0.25)":"#E5E7EB", color:active?"#fff":"#374151", padding:"0 4px", borderRadius:4, fontSize:8, fontWeight:700, lineHeight:"14px" }}>{tab.count}</span>}
-              </button>;})}
-            </div>
-          </div>
-          {/* Card list */}
-          <div style={{ overflowY:"auto", flex:1, padding:"8px 12px" }}>
-            {allCbItems.length===0&&<div style={{ padding:"40px 20px", textAlign:"center" }}>
-              <div style={{ fontSize:40, marginBottom:12 }}>🎉</div>
-              <div style={{ fontSize:14, fontWeight:600, color:C.text, marginBottom:4 }}>All clear!</div>
-              <div style={{ fontSize:12, color:C.textLight }}>No pending callbacks</div>
-            </div>}
-            {filteredCbItems.length===0&&allCbItems.length>0&&<div style={{ padding:"32px 20px", textAlign:"center", color:C.textLight, fontSize:13 }}>No items in this category</div>}
-            {visibleCbItems.map(function(l){
-              var agName=l.agentId&&l.agentId.name?l.agentId.name:"";
-              var cc=cbColors[l._cbType]||cbColors.now;
-              var isRead=readNotifsRef.current.has(gid(l));
-              var cbTypeLabel=l._cbType==="overdue"?"Overdue":l._cbType==="now"?"Callback Now":l._cbType==="upcoming"?"Upcoming":"No Contact";
-              var timeStr=l._cbType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?timeAgo(l.callbackTime,p.t):"");
-              return <div key={gid(l)} className="cb-card" onClick={function(){markRead(gid(l));p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:isRead?"#fff":cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
-                <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{l._cbType==="overdue"?"⏰":l._cbType==="now"?"📞":l._cbType==="upcoming"?"🔔":"😴"}</div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:15, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
-                  <div style={{ fontSize:13, fontWeight:500, color:C.textLight, marginTop:2 }}>{agName||"Unassigned"}</div>
-                  <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:3 }}>
-                    <span style={{ fontSize:10, fontWeight:600, color:cc.text, background:cc.icon, padding:"1px 6px", borderRadius:4 }}>{cbTypeLabel}</span>
-                    <span style={{ fontSize:11, color:C.textLight }}>{timeStr}</span>
-                  </div>
-                </div>
-                {l.phone&&<a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();markRead(gid(l));}} style={{ width:40, height:40, borderRadius:10, background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, textDecoration:"none", boxShadow:"0 2px 8px rgba(0,0,0,0.15)" }} title="Call"><Phone size={16} color={cc.text}/></a>}
-              </div>;
-            })}
-            {filteredCbItems.length>cbDisplayLimit&&<button onClick={function(e){e.stopPropagation();setCbDisplayLimit(function(v){return v+30;});}} style={{ width:"100%", padding:"10px", border:"none", borderRadius:8, background:"#F1F5F9", color:"#374151", fontSize:12, fontWeight:600, cursor:"pointer", marginTop:4 }}>Show More ({filteredCbItems.length-cbDisplayLimit} remaining)</button>}
-          </div>
-        </div>}
-      </div>
+      {/* BELL 1 — Callbacks (isolated component) */}
+      <CallbackBell t={p.t} notifData={notifData} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>
     </div>
   </div>;
 };
