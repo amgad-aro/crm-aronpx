@@ -5094,11 +5094,16 @@ export default function CRMApp() {
     var HOUR = 60*60*1000;
     var DAY  = 24*60*60*1000;
 
+    var isRunning = false;
     var runChecks = async function(){
+      if(isRunning) return;
+      isRunning = true;
+      try{
       var now = Date.now();
       var savedIds = getSavedAgents();
-      if(!savedIds.length) return; // ← no agents configured = no rotation at all
+      if(!savedIds.length){ isRunning=false; return; }
       var dur = getRotDurations();
+      var rotatedThisCycle = new Set();
 
       var salesLeads = leads.filter(function(l){
         return !l.archived && l.source!=="Daily Request";
@@ -5108,6 +5113,7 @@ export default function CRMApp() {
       for(var i=0;i<salesLeads.length;i++){
         var l = salesLeads[i];
         var lid = gid(l);
+        if(rotatedThisCycle.has(lid)) continue;
         var lastAct = new Date(l.lastActivityTime||0).getTime();
 
         // Skip DoneDeal and EOI — never rotate
@@ -5144,7 +5150,7 @@ export default function CRMApp() {
           try{naCount=Number(localStorage.getItem(naKey)||0);}catch(e){}
           try{naTime=Number(localStorage.getItem(naTimeKey)||0);}catch(e){}
           if(naCount>=dur.naCount && naTime>0 && (now-naTime)>=(dur.naHours*HOUR)){
-            await doRotate(l,"No Answer "+dur.naCount+" times");
+            rotatedThisCycle.add(lid); await doRotate(l,"No Answer "+dur.naCount+" times");
             try{localStorage.removeItem(naKey);localStorage.removeItem(naTimeKey);}catch(e){}
             continue;
           }
@@ -5156,7 +5162,7 @@ export default function CRMApp() {
           try{niTime=Number(localStorage.getItem(niKey)||0);}catch(e){}
           if(!niTime){try{localStorage.setItem(niKey,String(lastAct));}catch(e){} continue;}
           if((now-niTime)>=(dur.niDays*DAY)){
-            await doRotate(l,"Not Interested — new opportunity after "+dur.niDays+" days");
+            rotatedThisCycle.add(lid); await doRotate(l,"Not Interested — new opportunity after "+dur.niDays+" days");
             try{localStorage.removeItem(niKey);}catch(e){}
             continue;
           }
@@ -5168,7 +5174,7 @@ export default function CRMApp() {
             var noActKey="crm_noact2_"+lid; var noActDone=false;
             try{noActDone=localStorage.getItem(noActKey)==="1";}catch(e){}
             if(!noActDone){
-              await doRotate(l,"No Contact +"+dur.noActDays+" days");
+              rotatedThisCycle.add(lid); await doRotate(l,"No Contact +"+dur.noActDays+" days");
               try{localStorage.setItem(noActKey,"1");}catch(e){}
               continue;
             }
@@ -5182,7 +5188,7 @@ export default function CRMApp() {
             var cbDoneKey="crm_cbrot_"+lid; var cbDone=false;
             try{cbDone=localStorage.getItem(cbDoneKey)==="1";}catch(e){}
             if(!cbDone){
-              await doRotate(l,"CallBack overdue by "+dur.cbDays+" days");
+              rotatedThisCycle.add(lid); await doRotate(l,"CallBack overdue by "+dur.cbDays+" days");
               try{localStorage.setItem(cbDoneKey,"1");}catch(e){}
               continue;
             }
@@ -5195,13 +5201,14 @@ export default function CRMApp() {
             var hotKey="crm_hotrot_"+lid; var hotDone=false;
             try{hotDone=localStorage.getItem(hotKey)==="1";}catch(e){}
             if(!hotDone){
-              await doRotate(l,l.status+" — no action "+dur.hotDays+" days");
+              rotatedThisCycle.add(lid); await doRotate(l,l.status+" — no action "+dur.hotDays+" days");
               try{localStorage.setItem(hotKey,"1");}catch(e){}
               continue;
             }
           } else { try{localStorage.removeItem("crm_hotrot_"+lid);}catch(e){} }
         }
       }
+      }finally{ isRunning=false; }
     };
 
     runChecks();
