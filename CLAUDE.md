@@ -8,7 +8,7 @@
 ## Important Rules
 - **NEVER change MONGODB_URI** in .env - it points to Atlas cloud, not localhost
 - **NEVER install or suggest local MongoDB** - we use Atlas cloud only
-- **NEVER auto-deploy** - Railway deploys manually via CLI: `railway up` from `/crm-aro-backend`
+- **Railway auto-deploys from GitHub** - just push to main branch, do NOT use `railway up`
 - **NEVER modify .env files** without explicit user approval
 - Backend root directory on Railway is `/crm-aro-backend`
 - Frontend root directory on Vercel is `/` (root of repo)
@@ -86,5 +86,5 @@ PORT=5000
 2. Add new routes in `server.js` following existing patterns
 3. Frontend API calls use Bearer token in Authorization header
 4. Body parser limit is 10MB (for base64 image uploads)
-5. After backend changes: commit to GitHub, then `railway up` from backend folder
+5. After backend changes: commit to GitHub and push — Railway auto-deploys from main branch
 6. After frontend changes: commit to GitHub, Vercel auto-deploys
