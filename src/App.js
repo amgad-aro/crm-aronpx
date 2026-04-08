@@ -595,8 +595,6 @@ var CB_CSS = "@keyframes cbBellShake{0%,100%{transform:rotate(0)}15%{transform:r
 var cbStyleInjected = false;
 
 var CallbackBell = function(p) {
-  var nd = p.notifData;
-  var callbackNow=nd.callbackNow; var upcoming=nd.upcoming; var overdueCallback=nd.overdueCallback; var allNoActivity=nd.allNoActivity;
   var [tab, setTab] = useState("all");
   var [limit, setLimit] = useState(30);
   useEffect(function(){ setLimit(30); },[tab]);
@@ -617,15 +615,53 @@ var CallbackBell = function(p) {
     document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
   },[p.showNotif]);
 
-  // Build allItems directly (no useMemo - avoids stale reference bugs)
-  var allItems = [];
-  overdueCallback.forEach(function(l){ allItems.push(Object.assign({},l,{_cbType:"overdue"})); });
-  callbackNow.forEach(function(l){ allItems.push(Object.assign({},l,{_cbType:"now"})); });
-  upcoming.forEach(function(l){ allItems.push(Object.assign({},l,{_cbType:"upcoming"})); });
-  allNoActivity.forEach(function(l){ allItems.push(Object.assign({},l,{_cbType:"nocontact"})); });
+  // Compute all notification categories from raw data (stable via useMemo)
+  var uid = String(p.cu&&p.cu.id||"");
+  var categories = useMemo(function(){
+    var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(u._id||gid(u)||"");}));
+    teamUids.add(uid);
+    var myLeads = (p.cu&&p.cu.role==="sales")
+      ? (p.leads||[]).filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid;})
+      : (p.cu&&p.cu.role==="team_leader")
+      ? (p.leads||[]).filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return teamUids.has(aid);})
+      : (p.leads||[]);
+    var myDR = (p.cu&&p.cu.role==="sales")
+      ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return aid===uid;})
+      : (p.cu&&p.cu.role==="team_leader")
+      ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return teamUids.has(aid);})
+      : (p.dailyRequests||[]);
+    var all = myLeads.concat(myDR);
+    var now = Date.now();
+    var cbNow=[]; var upcom=[]; var overdue=[]; var noAct=[];
+    all.forEach(function(l){
+      if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return;
+      var cbT=new Date(l.callbackTime).getTime(); var diff=cbT-now;
+      var lastAct=l.lastActivityTime?new Date(l.lastActivityTime).getTime():0;
+      if(lastAct>cbT) return;
+      if(diff<=0&&diff>-3600000) cbNow.push(l);
+      else if(diff<-3600000) overdue.push(l);
+      else if(diff>0&&diff<=86400000) upcom.push(l);
+    });
+    upcom.sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
+    var cbIds=new Set(); cbNow.concat(overdue).concat(upcom).forEach(function(l){cbIds.add(gid(l));});
+    myLeads.forEach(function(l){if(!cbIds.has(gid(l))&&!l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(now-new Date(l.lastActivityTime||0).getTime())>86400000) noAct.push(l);});
+    myDR.forEach(function(r){if(!cbIds.has(gid(r))&&r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(now-new Date(r.lastActivityTime||0).getTime())>86400000) noAct.push(r);});
+    // Build allItems with _cbType
+    var items=[];
+    overdue.forEach(function(l){items.push(Object.assign({},l,{_cbType:"overdue"}));});
+    cbNow.forEach(function(l){items.push(Object.assign({},l,{_cbType:"now"}));});
+    upcom.forEach(function(l){items.push(Object.assign({},l,{_cbType:"upcoming"}));});
+    noAct.forEach(function(l){items.push(Object.assign({},l,{_cbType:"nocontact"}));});
+    return {allItems:items,overdueCount:overdue.length,nowCount:cbNow.length,upcomingCount:upcom.length,nocontactCount:noAct.length};
+  },[p.leads,p.dailyRequests,uid]);
 
-  var filtered = tab==="all"?allItems:allItems.filter(function(l){return l._cbType===tab;});
-  var unreadCount = allItems.filter(function(l){return !readRef.current.has(gid(l));}).length;
+  var allItems=categories.allItems;
+  var filtered = useMemo(function(){
+    return tab==="all"?allItems:allItems.filter(function(l){return l._cbType===tab;});
+  },[allItems,tab]);
+  var unreadCount = useMemo(function(){
+    return allItems.filter(function(l){return !readRef.current.has(gid(l));}).length;
+  },[allItems,readVer]);
   var visible = filtered.slice(0, limit);
 
   var markRead = function(id){
@@ -639,7 +675,7 @@ var CallbackBell = function(p) {
     setReadVer(function(v){return v+1;});
   };
 
-  var tabs=[{key:"all",label:"All",count:allItems.length},{key:"overdue",label:"Delay",count:overdueCallback.length},{key:"now",label:"Now",count:callbackNow.length},{key:"upcoming",label:"Upcoming",count:upcoming.length},{key:"nocontact",label:"No Contact",count:allNoActivity.length}];
+  var tabs=[{key:"all",label:"All",count:allItems.length},{key:"overdue",label:"Delay",count:categories.overdueCount},{key:"now",label:"Now",count:categories.nowCount},{key:"upcoming",label:"Upcoming",count:categories.upcomingCount},{key:"nocontact",label:"No Contact",count:categories.nocontactCount}];
 
   return <div style={{ position:"relative" }} ref={ref}>
     <button onClick={function(){
@@ -705,46 +741,7 @@ var CallbackBell = function(p) {
 // ===== HEADER =====
 var Header = function(p) {
   var t = p.t; var isOnlyAdmin = p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin");
-  var uid = String(p.cu&&p.cu.id||"");
-  var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(u._id||gid(u)||"");}));
-  teamUids.add(uid);
 
-  var notifData = useMemo(function(){
-    var myLeads = (p.cu&&p.cu.role==="sales")
-      ? p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid;})
-      : (p.cu&&p.cu.role==="team_leader")
-      ? p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return teamUids.has(aid);})
-      : p.leads;
-    var myDR = (p.cu&&p.cu.role==="sales")
-      ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return aid===uid;})
-      : (p.cu&&p.cu.role==="team_leader")
-      ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return teamUids.has(aid);})
-      : (p.dailyRequests||[]);
-    var all = myLeads.concat(myDR);
-    var now = Date.now();
-    var cbNow = []; var upcom = []; var overdue = []; var noAct = [];
-    all.forEach(function(l){
-      var excluded = !l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested";
-      if(!excluded){
-        var cbT = new Date(l.callbackTime).getTime();
-        var diff = cbT - now;
-        var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
-        var handled = lastAct > cbT;
-        if(!handled){
-          if(diff<=0 && diff>-3600000) cbNow.push(l);
-          else if(diff < -3600000) overdue.push(l);
-          else if(diff>0 && diff<=86400000) upcom.push(l);
-        }
-      }
-    });
-    upcom.sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
-    var cbIds = new Set();
-    cbNow.concat(overdue).concat(upcom).forEach(function(l){cbIds.add(gid(l));});
-    myLeads.forEach(function(l){if(!cbIds.has(gid(l))&&!l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>86400000) noAct.push(l);});
-    myDR.forEach(function(r){if(!cbIds.has(gid(r))&&r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>86400000) noAct.push(r);});
-    return {myLeads:myLeads,myDR:myDR,callbackNow:cbNow,upcoming:upcom,overdueCallback:overdue,allNoActivity:noAct};
-  },[p.leads,p.dailyRequests,p.cu]);
-  var callbackNow=notifData.callbackNow; var upcoming=notifData.upcoming; var overdueCallback=notifData.overdueCallback; var allNoActivity=notifData.allNoActivity;
   // Close deal notif + rot notif on outside click
   var dealNotifRef = useRef(null);
   var rotNotifRef = useRef(null);
@@ -851,7 +848,7 @@ var Header = function(p) {
       </div>}
 
       {/* BELL 1 — Callbacks (isolated component) */}
-      <CallbackBell t={p.t} notifData={notifData} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>
+      <CallbackBell t={p.t} leads={p.leads} dailyRequests={p.dailyRequests} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>
     </div>
   </div>;
 };
