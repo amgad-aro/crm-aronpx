@@ -596,6 +596,34 @@ app.delete("/api/leads/:id", auth, adminOnly, async function(req, res) {
   }
 });
 
+// Admin cleanup: remove duplicate leads by phone, keep oldest
+app.post("/api/admin/cleanup-duplicates", auth, adminOnly, async function(req, res) {
+  try {
+    var allLeads = await Lead.find({}).lean();
+    var phoneMap = {};
+    allLeads.forEach(function(l) {
+      if (!l.phone) return;
+      if (!phoneMap[l.phone]) phoneMap[l.phone] = [];
+      phoneMap[l.phone].push(l);
+    });
+    var toDelete = [];
+    Object.keys(phoneMap).forEach(function(ph) {
+      var group = phoneMap[ph];
+      if (group.length <= 1) return;
+      group.sort(function(a, b) { return new Date(a.createdAt || 0) - new Date(b.createdAt || 0); });
+      for (var i = 1; i < group.length; i++) {
+        toDelete.push(group[i]._id);
+      }
+    });
+    if (toDelete.length > 0) {
+      await Lead.deleteMany({ _id: { $in: toDelete } });
+    }
+    res.json({ deleted: toDelete.length, kept: allLeads.length - toDelete.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Bulk delete archived leads
 app.post("/api/leads/bulk-delete", auth, adminOnly, async function(req, res) {
   try {
