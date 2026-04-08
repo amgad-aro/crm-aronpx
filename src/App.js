@@ -5061,18 +5061,23 @@ export default function CRMApp() {
     };
 
     // Helper: do rotation (reassign to new agent, backend tracks agentHistory)
+    var rotatingNow = new Set();
     var doRotate = async function(lead, reason){
-      var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
-      var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"Agent";
-      // If current agent is team_leader, skip rotation
-      var currentAgentUser = users.find(function(u){return String(gid(u))===String(currentAgentId);});
-      if(currentAgentUser&&currentAgentUser.role==="team_leader") return;
-      var targetAgent = pickAgent(currentAgentId);
-      if(!targetAgent) return;
-      var targetAgentId = gid(targetAgent);
-      if(targetAgentId===currentAgentId) return;
-      var timeStr=new Date().toLocaleString("en-GB");
+      var lid = gid(lead);
+      if(rotatingNow.has(lid)) return;
+      var lastRot = lead.lastRotationAt ? new Date(lead.lastRotationAt).getTime() : 0;
+      if(Date.now() - lastRot < 5*60*1000) return;
+      rotatingNow.add(lid);
       try{
+        var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
+        var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"Agent";
+        var currentAgentUser = users.find(function(u){return String(gid(u))===String(currentAgentId);});
+        if(currentAgentUser&&currentAgentUser.role==="team_leader") return;
+        var targetAgent = pickAgent(currentAgentId);
+        if(!targetAgent) return;
+        var targetAgentId = gid(targetAgent);
+        if(targetAgentId===currentAgentId) return;
+        var timeStr=new Date().toLocaleString("en-GB");
         var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{
           agentId: targetAgentId,
           status: "NewLead",
@@ -5089,6 +5094,7 @@ export default function CRMApp() {
         notifyRotationRef.current(lead,fromName,targetAgent.name,reason);
         setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
       }catch(e){console.error("Rotation error:",e);}
+      finally{ rotatingNow.delete(lid); }
     };
 
     var HOUR = 60*60*1000;
