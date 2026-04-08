@@ -616,27 +616,16 @@ var CallbackBell = function(p) {
     document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
   },[p.showNotif]);
 
-  var allItems = useMemo(function(){
-    var r = overdueCallback.map(function(l){return Object.assign({},l,{_cbType:"overdue"});})
-      .concat(callbackNow.map(function(l){return Object.assign({},l,{_cbType:"now"});}))
-      .concat(upcoming.map(function(l){return Object.assign({},l,{_cbType:"upcoming"});}))
-      .concat(allNoActivity.map(function(l){return Object.assign({},l,{_cbType:"nocontact"});}));
-    console.log("[CallbackBell] allItems:", r.length, "overdue:", overdueCallback.length, "now:", callbackNow.length, "upcoming:", upcoming.length, "nocontact:", allNoActivity.length);
-    return r;
-  },[overdueCallback,callbackNow,upcoming,allNoActivity]);
+  // Build allItems directly (no useMemo - avoids stale reference bugs)
+  var allItems = [];
+  overdueCallback.forEach(function(l){ allItems.push(Object.assign({},l,{_cbType:"overdue"})); });
+  callbackNow.forEach(function(l){ allItems.push(Object.assign({},l,{_cbType:"now"})); });
+  upcoming.forEach(function(l){ allItems.push(Object.assign({},l,{_cbType:"upcoming"})); });
+  allNoActivity.forEach(function(l){ allItems.push(Object.assign({},l,{_cbType:"nocontact"})); });
 
-  var filtered = useMemo(function(){
-    var r = tab==="all"?allItems:allItems.filter(function(l){return l._cbType===tab;});
-    console.log("[CallbackBell] tab:", tab, "filtered:", r.length, "sample _cbType:", r.length>0?r[0]._cbType:"none");
-    return r;
-  },[allItems,tab]);
-
-  var unreadCount = useMemo(function(){
-    return allItems.filter(function(l){return !readRef.current.has(gid(l));}).length;
-  },[allItems,readVer]);
-
+  var filtered = tab==="all"?allItems:allItems.filter(function(l){return l._cbType===tab;});
+  var unreadCount = allItems.filter(function(l){return !readRef.current.has(gid(l));}).length;
   var visible = filtered.slice(0, limit);
-  console.log("[CallbackBell] RENDER tab:", tab, "allItems:", allItems.length, "filtered:", filtered.length, "visible:", visible.length);
 
   var markRead = function(id){
     readRef.current.add(id);
@@ -674,7 +663,7 @@ var CallbackBell = function(p) {
           </div>
         </div>
         <div style={{ display:"flex", gap:3, overflow:"hidden" }}>
-          {tabs.map(function(t2){var active=tab===t2.key;return <button key={t2.key} onClick={function(){console.log("[CallbackBell] TAB CLICKED:",t2.key,"prev:",tab);setTab(t2.key);setLimit(30);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3, flexShrink:0 }}>
+          {tabs.map(function(t2){var active=tab===t2.key;return <button key={t2.key} onClick={function(){setTab(t2.key);setLimit(30);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3, flexShrink:0 }}>
             {t2.label}
             {t2.count>0&&<span style={{ background:active?"rgba(255,255,255,0.25)":"#E5E7EB", color:active?"#fff":"#374151", padding:"0 4px", borderRadius:4, fontSize:8, fontWeight:700, lineHeight:"14px" }}>{t2.count}</span>}
           </button>;})}
