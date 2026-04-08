@@ -632,23 +632,21 @@ var Header = function(p) {
   var callbackNow=notifData.callbackNow; var upcoming=notifData.upcoming; var overdueCallback=notifData.overdueCallback; var allNoActivity=notifData.allNoActivity;
   var notifRef = useRef(null);
   var [notifTab, setNotifTab] = useState("all");
-  var [readNotifs, setReadNotifs] = useState(function(){
+  var readNotifsRef = useRef(function(){
     try{return new Set(JSON.parse(localStorage.getItem("crm_cb_read")||"[]"));}catch(e){return new Set();}
-  });
+  }());
+  var [readVer, setReadVer] = useState(0);
   var markRead = function(id){
-    setReadNotifs(function(prev){
-      var next=new Set(prev); next.add(id);
-      try{localStorage.setItem("crm_cb_read",JSON.stringify(Array.from(next).slice(-200)));}catch(e){}
-      return next;
-    });
+    readNotifsRef.current.add(id);
+    var arr=Array.from(readNotifsRef.current).slice(-200);
+    try{localStorage.setItem("crm_cb_read",JSON.stringify(arr));}catch(e){}
+    setReadVer(function(v){return v+1;});
   };
   var markAllRead = function(){
-    var allIds = overdueCallback.concat(callbackNow).concat(upcoming).concat(allNoActivity).map(function(l){return gid(l);});
-    setReadNotifs(function(prev){
-      var next=new Set(prev); allIds.forEach(function(id){next.add(id);});
-      try{localStorage.setItem("crm_cb_read",JSON.stringify(Array.from(next).slice(-200)));}catch(e){}
-      return next;
-    });
+    overdueCallback.concat(callbackNow).concat(upcoming).concat(allNoActivity).forEach(function(l){readNotifsRef.current.add(gid(l));});
+    var arr=Array.from(readNotifsRef.current).slice(-200);
+    try{localStorage.setItem("crm_cb_read",JSON.stringify(arr));}catch(e){}
+    setReadVer(function(v){return v+1;});
   };
   var allCbItems = useMemo(function(){
     return overdueCallback.map(function(l){return Object.assign({},l,{_cbType:"overdue"});})
@@ -660,8 +658,8 @@ var Header = function(p) {
     return notifTab==="all"?allCbItems:allCbItems.filter(function(l){return l._cbType===notifTab;});
   },[allCbItems,notifTab]);
   var unreadCount = useMemo(function(){
-    return allCbItems.filter(function(l){return !readNotifs.has(gid(l));}).length;
-  },[allCbItems,readNotifs]);
+    return allCbItems.filter(function(l){return !readNotifsRef.current.has(gid(l));}).length;
+  },[allCbItems,readVer]);
   var [cbDisplayLimit, setCbDisplayLimit] = useState(30);
   var visibleCbItems = filteredCbItems.slice(0, cbDisplayLimit);
   var cbColors = {overdue:{bg:"#FEF2F2",border:"#EF4444",icon:"#FEE2E2",text:"#DC2626"},now:{bg:"#FFF7ED",border:"#F97316",icon:"#FFEDD5",text:"#EA580C"},upcoming:{bg:"#F0FDF4",border:"#22C55E",icon:"#DCFCE7",text:"#16A34A"},nocontact:{bg:"#FFFBEB",border:"#EAB308",icon:"#FEF3C7",text:"#B45309"}};
@@ -819,7 +817,7 @@ var Header = function(p) {
             {visibleCbItems.map(function(l){
               var agName=l.agentId&&l.agentId.name?l.agentId.name:"";
               var cc=cbColors[l._cbType]||cbColors.now;
-              var isRead=readNotifs.has(gid(l));
+              var isRead=readNotifsRef.current.has(gid(l));
               var cbTypeLabel=l._cbType==="overdue"?"Overdue":l._cbType==="now"?"Callback Now":l._cbType==="upcoming"?"Upcoming":"No Contact";
               var timeStr=l._cbType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?timeAgo(l.callbackTime,p.t):"");
               return <div key={gid(l)} className="cb-card" onClick={function(){markRead(gid(l));p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:isRead?"#fff":cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
@@ -4641,6 +4639,8 @@ export default function CRMApp() {
     }).catch(function(){});
     showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
   };
+  var notifyRotationRef = useRef(notifyRotation);
+  notifyRotationRef.current = notifyRotation;
 
   // Fetch notifications from DB
   var loadNotifications = function(tok){
@@ -5066,7 +5066,7 @@ export default function CRMApp() {
           leadId:gid(lead),type:"reassign",
           note:"🔄 Auto Rotation | From: "+fromName+" → To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
         },token);
-        notifyRotation(lead,fromName,targetAgent.name,reason);
+        notifyRotationRef.current(lead,fromName,targetAgent.name,reason);
         setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
       }catch(e){console.error("Rotation error:",e);}
     };
