@@ -636,6 +636,7 @@ var CallbackBell = function(p) {
   },[allItems,readVer]);
 
   var visible = filtered.slice(0, limit);
+  console.log("[CallbackBell] RENDER tab:", tab, "allItems:", allItems.length, "filtered:", filtered.length, "visible:", visible.length);
 
   var markRead = function(id){
     readRef.current.add(id);
@@ -673,7 +674,7 @@ var CallbackBell = function(p) {
           </div>
         </div>
         <div style={{ display:"flex", gap:3, overflow:"hidden" }}>
-          {tabs.map(function(t2){var active=tab===t2.key;return <button key={t2.key} onClick={function(){setTab(t2.key);setLimit(30);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3, flexShrink:0 }}>
+          {tabs.map(function(t2){var active=tab===t2.key;return <button key={t2.key} onClick={function(){console.log("[CallbackBell] TAB CLICKED:",t2.key,"prev:",tab);setTab(t2.key);setLimit(30);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3, flexShrink:0 }}>
             {t2.label}
             {t2.count>0&&<span style={{ background:active?"rgba(255,255,255,0.25)":"#E5E7EB", color:active?"#fff":"#374151", padding:"0 4px", borderRadius:4, fontSize:8, fontWeight:700, lineHeight:"14px" }}>{t2.count}</span>}
           </button>;})}
