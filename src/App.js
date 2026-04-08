@@ -597,94 +597,99 @@ var cbStyleInjected = false;
 var CallbackBell = function(p) {
   var [tab, setTab] = useState("all");
   var [limit, setLimit] = useState(30);
-  useEffect(function(){ setLimit(30); },[tab]);
   var ref = useRef(null);
-  var readRef = useRef(function(){try{return new Set(JSON.parse(localStorage.getItem("crm_cb_read")||"[]"));}catch(e){return new Set();}}());
-  var [readVer, setReadVer] = useState(0);
 
-  // Inject CSS once
+  useEffect(function(){ setLimit(30); },[tab]);
+
+  useEffect(function(){
+    if(!p.showNotif) return;
+    var fn=function(e){if(ref.current&&!ref.current.contains(e.target))p.setShowNotif(false);};
+    document.addEventListener("mousedown",fn);
+    return function(){document.removeEventListener("mousedown",fn);};
+  },[p.showNotif]);
+
   useEffect(function(){
     if(cbStyleInjected) return;
     var s=document.createElement("style"); s.textContent=CB_CSS; document.head.appendChild(s); cbStyleInjected=true;
   },[]);
 
-  // Outside click
-  useEffect(function(){
-    if(!p.showNotif) return;
-    var fn=function(e){if(ref.current&&!ref.current.contains(e.target))p.setShowNotif(false);};
-    document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
-  },[p.showNotif]);
-
-  // Compute all notification categories from raw data (stable via useMemo)
+  // Simple computation - no useMemo, no useRef tricks
+  var now = Date.now();
   var uid = String(p.cu&&p.cu.id||"");
-  var categories = useMemo(function(){
-    var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(u._id||gid(u)||"");}));
-    teamUids.add(uid);
-    var myLeads = (p.cu&&p.cu.role==="sales")
-      ? (p.leads||[]).filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid;})
-      : (p.cu&&p.cu.role==="team_leader")
-      ? (p.leads||[]).filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return teamUids.has(aid);})
-      : (p.leads||[]);
-    var myDR = (p.cu&&p.cu.role==="sales")
-      ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return aid===uid;})
-      : (p.cu&&p.cu.role==="team_leader")
-      ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return teamUids.has(aid);})
-      : (p.dailyRequests||[]);
-    var all = myLeads.concat(myDR);
-    var now = Date.now();
-    var cbNow=[]; var upcom=[]; var overdue=[]; var noAct=[];
-    all.forEach(function(l){
-      if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return;
-      var cbT=new Date(l.callbackTime).getTime(); var diff=cbT-now;
-      var lastAct=l.lastActivityTime?new Date(l.lastActivityTime).getTime():0;
-      if(lastAct>cbT) return;
-      if(diff<=0&&diff>-3600000) cbNow.push(l);
-      else if(diff<-3600000) overdue.push(l);
-      else if(diff>0&&diff<=86400000) upcom.push(l);
-    });
-    upcom.sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
-    var cbIds=new Set(); cbNow.concat(overdue).concat(upcom).forEach(function(l){cbIds.add(gid(l));});
-    myLeads.forEach(function(l){if(!cbIds.has(gid(l))&&!l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(now-new Date(l.lastActivityTime||0).getTime())>86400000) noAct.push(l);});
-    myDR.forEach(function(r){if(!cbIds.has(gid(r))&&r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(now-new Date(r.lastActivityTime||0).getTime())>86400000) noAct.push(r);});
-    // Build allItems with _cbType
-    var items=[];
-    overdue.forEach(function(l){items.push(Object.assign({},l,{_cbType:"overdue"}));});
-    cbNow.forEach(function(l){items.push(Object.assign({},l,{_cbType:"now"}));});
-    upcom.forEach(function(l){items.push(Object.assign({},l,{_cbType:"upcoming"}));});
-    noAct.forEach(function(l){items.push(Object.assign({},l,{_cbType:"nocontact"}));});
-    return {allItems:items,overdueCount:overdue.length,nowCount:cbNow.length,upcomingCount:upcom.length,nocontactCount:noAct.length};
-  },[p.leads,p.dailyRequests,uid]);
+  var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(u._id||gid(u)||"");}));
+  teamUids.add(uid);
 
-  var allItems=categories.allItems;
-  var filtered = useMemo(function(){
-    return tab==="all"?allItems:allItems.filter(function(l){return l._cbType===tab;});
-  },[allItems,tab]);
-  var unreadCount = useMemo(function(){
-    return allItems.filter(function(l){return !readRef.current.has(gid(l));}).length;
-  },[allItems,readVer]);
+  var allLeads = (p.leads||[]).concat(p.dailyRequests||[]);
+
+  var myItems = allLeads.filter(function(l){
+    if(l.archived||l.status==="DoneDeal"||l.status==="NotInterested"||l.status==="EOI") return false;
+    var aid = String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
+    if(p.cu.role==="sales") return aid===uid;
+    if(p.cu.role==="team_leader") return teamUids.has(aid);
+    return true;
+  });
+
+  var overdue = [];
+  var nowItems = [];
+  var upcoming = [];
+  var noContact = [];
+  var cbIds = new Set();
+
+  myItems.forEach(function(l){
+    if(l.callbackTime){
+      var cbT = new Date(l.callbackTime).getTime();
+      var diff = cbT - now;
+      var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
+      if(lastAct > cbT) return;
+      if(diff < -3600000){ overdue.push(l); cbIds.add(gid(l)); }
+      else if(diff <= 0){ nowItems.push(l); cbIds.add(gid(l)); }
+      else if(diff <= 86400000){ upcoming.push(l); cbIds.add(gid(l)); }
+    }
+  });
+
+  upcoming.sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
+
+  myItems.forEach(function(l){
+    if(!cbIds.has(gid(l)) && (now - new Date(l.lastActivityTime||0).getTime()) > 86400000){
+      noContact.push(l);
+    }
+  });
+
+  var allItems = overdue.concat(nowItems).concat(upcoming).concat(noContact);
+
+  var filtered;
+  if(tab==="overdue") filtered = overdue;
+  else if(tab==="now") filtered = nowItems;
+  else if(tab==="upcoming") filtered = upcoming;
+  else if(tab==="nocontact") filtered = noContact;
+  else filtered = allItems;
+
   var visible = filtered.slice(0, limit);
+  var totalCount = allItems.length;
 
-  var markRead = function(id){
-    readRef.current.add(id);
-    try{localStorage.setItem("crm_cb_read",JSON.stringify(Array.from(readRef.current).slice(-200)));}catch(e){}
-    setReadVer(function(v){return v+1;});
-  };
-  var markAllRead = function(){
-    allItems.forEach(function(l){readRef.current.add(gid(l));});
-    try{localStorage.setItem("crm_cb_read",JSON.stringify(Array.from(readRef.current).slice(-200)));}catch(e){}
-    setReadVer(function(v){return v+1;});
-  };
+  var tabs = [
+    {key:"all", label:"All", count:totalCount},
+    {key:"overdue", label:"Delay", count:overdue.length},
+    {key:"now", label:"Now", count:nowItems.length},
+    {key:"upcoming", label:"Upcoming", count:upcoming.length},
+    {key:"nocontact", label:"No Contact", count:noContact.length}
+  ];
 
-  var tabs=[{key:"all",label:"All",count:allItems.length},{key:"overdue",label:"Delay",count:categories.overdueCount},{key:"now",label:"Now",count:categories.nowCount},{key:"upcoming",label:"Upcoming",count:categories.upcomingCount},{key:"nocontact",label:"No Contact",count:categories.nocontactCount}];
+  var getType = function(l){
+    if(overdue.indexOf(l)!==-1) return "overdue";
+    if(nowItems.indexOf(l)!==-1) return "now";
+    if(upcoming.indexOf(l)!==-1) return "upcoming";
+    return "nocontact";
+  };
 
   return <div style={{ position:"relative" }} ref={ref}>
     <button onClick={function(){
       var opening=!p.showNotif;
       p.setShowNotif(opening);
       if(opening){p.setShowDealNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);setTab("all");}
-    }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:unreadCount>0?"#FEF2F2":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
-      <Bell size={16} color={unreadCount>0?C.danger:C.textLight} className={unreadCount>0?"cb-bell-shake":""}/>
-      {unreadCount>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{unreadCount>99?"99+":unreadCount}</span>}
+    }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:totalCount>0?"#FEF2F2":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+      <Bell size={16} color={totalCount>0?C.danger:C.textLight} className={totalCount>0?"cb-bell-shake":""}/>
+      {totalCount>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{totalCount>99?"99+":totalCount}</span>}
     </button>
     {p.showNotif&&<div className="cb-dropdown-enter" style={{ position:"absolute", top:46, right:0, width:440,maxWidth:"95vw", background:"#fff", borderRadius:16, boxShadow:"0 8px 32px rgba(0,0,0,0.15)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
       <div style={{ padding:"16px 20px 12px", borderBottom:"1px solid #F1F5F9", flexShrink:0 }}>
@@ -692,10 +697,9 @@ var CallbackBell = function(p) {
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
             <span style={{ fontSize:18 }}>🔔</span>
             <span style={{ fontWeight:700, fontSize:15, color:C.text }}>Callbacks</span>
-            {allItems.length>0&&<span style={{ background:"#FEF2F2", color:C.danger, padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:700 }}>{allItems.length}</span>}
+            {totalCount>0&&<span style={{ background:"#FEF2F2", color:C.danger, padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:700 }}>{totalCount}</span>}
           </div>
           <div style={{ display:"flex", gap:4, alignItems:"center" }}>
-            {unreadCount>0&&<button onClick={markAllRead} style={{ background:"#FEF2F2", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:C.danger, fontWeight:600, padding:"4px 10px" }}>Mark All Read</button>}
             <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
           </div>
         </div>
@@ -707,20 +711,20 @@ var CallbackBell = function(p) {
         </div>
       </div>
       <div style={{ overflowY:"auto", flex:1, padding:"8px 12px" }}>
-        {allItems.length===0&&<div style={{ padding:"40px 20px", textAlign:"center" }}>
+        {totalCount===0&&<div style={{ padding:"40px 20px", textAlign:"center" }}>
           <div style={{ fontSize:40, marginBottom:12 }}>🎉</div>
           <div style={{ fontSize:14, fontWeight:600, color:C.text, marginBottom:4 }}>All clear!</div>
           <div style={{ fontSize:12, color:C.textLight }}>No pending callbacks</div>
         </div>}
-        {filtered.length===0&&allItems.length>0&&<div style={{ padding:"32px 20px", textAlign:"center", color:C.textLight, fontSize:13 }}>No items in this category</div>}
+        {filtered.length===0&&totalCount>0&&<div style={{ padding:"32px 20px", textAlign:"center", color:C.textLight, fontSize:13 }}>No items in this category</div>}
         {visible.map(function(l){
           var agName=l.agentId&&l.agentId.name?l.agentId.name:"";
-          var cc=CB_COLORS[l._cbType]||CB_COLORS.now;
-          var isRead=readRef.current.has(gid(l));
-          var cbTypeLabel=l._cbType==="overdue"?"Overdue":l._cbType==="now"?"Callback Now":l._cbType==="upcoming"?"Upcoming":"No Contact";
-          var timeStr=l._cbType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?timeAgo(l.callbackTime,p.t):"");
-          return <div key={gid(l)} className="cb-card" onClick={function(){markRead(gid(l));p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:isRead?"#fff":cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
-            <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{l._cbType==="overdue"?"⏰":l._cbType==="now"?"📞":l._cbType==="upcoming"?"🔔":"😴"}</div>
+          var lType=getType(l);
+          var cc=CB_COLORS[lType]||CB_COLORS.now;
+          var cbTypeLabel=lType==="overdue"?"Overdue":lType==="now"?"Callback Now":lType==="upcoming"?"Upcoming":"No Contact";
+          var timeStr=lType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?timeAgo(l.callbackTime,p.t):"");
+          return <div key={gid(l)} className="cb-card" onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{lType==="overdue"?"⏰":lType==="now"?"📞":lType==="upcoming"?"🔔":"😴"}</div>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ fontSize:15, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
               <div style={{ fontSize:13, fontWeight:500, color:C.textLight, marginTop:2 }}>{agName||"Unassigned"}</div>
@@ -729,7 +733,7 @@ var CallbackBell = function(p) {
                 <span style={{ fontSize:11, color:C.textLight }}>{timeStr}</span>
               </div>
             </div>
-            {l.phone&&<a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();markRead(gid(l));}} style={{ width:40, height:40, borderRadius:10, background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, textDecoration:"none", boxShadow:"0 2px 8px rgba(0,0,0,0.15)" }} title="Call"><Phone size={16} color={cc.text}/></a>}
+            {l.phone&&<a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();}} style={{ width:40, height:40, borderRadius:10, background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, textDecoration:"none", boxShadow:"0 2px 8px rgba(0,0,0,0.15)" }} title="Call"><Phone size={16} color={cc.text}/></a>}
           </div>;
         })}
         {filtered.length>limit&&<button onClick={function(e){e.stopPropagation();setLimit(function(v){return v+30;});}} style={{ width:"100%", padding:"10px", border:"none", borderRadius:8, background:"#F1F5F9", color:"#374151", fontSize:12, fontWeight:600, cursor:"pointer", marginTop:4 }}>Show More ({filtered.length-limit} remaining)</button>}
