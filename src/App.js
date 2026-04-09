@@ -5085,12 +5085,7 @@ export default function CRMApp() {
         if(alreadyAssigned) return;
         var timeStr=new Date().toLocaleString("en-GB");
         var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{
-          agentId: targetAgentId,
-          status: "NewLead",
-          callbackTime: "",
-          lastFeedback: "",
-          notes: "",
-          budget: "",
+          addAgent: { agentId: targetAgentId, assignedAt: new Date().toISOString(), feedback: "", status: "NewLead", budget: "" },
           lastRotationAt: new Date().toISOString()
         },token);
         await apiFetch("/api/activities","POST",{
