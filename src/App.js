@@ -5071,8 +5071,6 @@ export default function CRMApp() {
     var doRotate = async function(lead, reason){
       var lid = gid(lead);
       if(rotatingNow.has(lid)) return;
-      var lastRot = lead.lastRotationAt ? new Date(lead.lastRotationAt).getTime() : 0;
-      if(Date.now() - lastRot < 5*60*1000) return;
       rotatingNow.add(lid);
       try{
         var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
