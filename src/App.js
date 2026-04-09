@@ -2966,39 +2966,41 @@ var DealsPage = function(p) {
           </label>
         </div>}
 
-        {/* Deal Image */}
+        {/* Deal Images */}
         <div style={{ marginTop:12 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 Contract Image</div>
-          {selectedDeal.dealImage
-            ?<div>
-              <img src={selectedDeal.dealImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedDeal.dealImage+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, marginBottom:6, cursor:"zoom-in" }} alt="Contract" title="Click to view full size"/>
-              <label style={{ display:"block", padding:"6px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
-                🔄 Replace Image
-                <input type="file" accept="image/*" style={{ display:"none" }} onChange={async function(e){
-                  var file=e.target.files[0]; if(!file)return;
-                  var reader=new FileReader();
-                  reader.onload=function(ev){
-                    var img=new Image();img.onload=function(){
-                      var canvas=document.createElement("canvas");var maxW=1200,maxH=1200;var w=img.width,h=img.height;
-                      if(w>maxW){h=h*(maxW/w);w=maxW;}if(h>maxH){w=w*(maxH/h);h=maxH;}
-                      canvas.width=w;canvas.height=h;canvas.getContext("2d").drawImage(img,0,0,w,h);
-                      var resized=canvas.toDataURL("image/jpeg",0.7);
-                      apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:resized,imageType:"deal"},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Upload failed");});
-                    };img.src=ev.target.result;
-                  };reader.readAsDataURL(file);
-                }}/>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 Contract Images</div>
+          {(function(){
+            var imgs=selectedDeal.dealImages&&selectedDeal.dealImages.length?selectedDeal.dealImages:selectedDeal.dealImage?[selectedDeal.dealImage]:[];
+            var uploadHandler=function(e){
+              var file=e.target.files[0]; if(!file)return; e.target.value="";
+              var reader=new FileReader();
+              reader.onload=function(ev){
+                var img=new Image();img.onload=function(){
+                  var canvas=document.createElement("canvas");var maxW=1200,maxH=1200;var w=img.width,h=img.height;
+                  if(w>maxW){h=h*(maxW/w);w=maxW;}if(h>maxH){w=w*(maxH/h);h=maxH;}
+                  canvas.width=w;canvas.height=h;canvas.getContext("2d").drawImage(img,0,0,w,h);
+                  var resized=canvas.toDataURL("image/jpeg",0.7);
+                  apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:resized,imageType:"deal"},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Upload failed");});
+                };img.src=ev.target.result;
+              };reader.readAsDataURL(file);
+            };
+            var deleteHandler=function(idx){
+              if(!window.confirm("Delete this image?"))return;
+              apiFetch("/api/leads/"+gid(selectedDeal)+"/delete-deal-image","POST",{index:idx},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Delete failed");});
+            };
+            return <div>
+              {imgs.length>0&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, marginBottom:6 }}>
+                {imgs.map(function(src,i){return <div key={i} style={{ position:"relative" }}>
+                  <img src={src} onClick={function(){var w=window.open();w.document.write("<img src='"+src+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, cursor:"zoom-in", display:"block" }} alt={"Contract "+(i+1)} title="Click to view full size"/>
+                  <button onClick={function(){deleteHandler(i);}} style={{ position:"absolute", top:4, right:4, background:"rgba(239,68,68,0.85)", border:"none", borderRadius:"50%", width:20, height:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:12, fontWeight:700, lineHeight:1 }} title="Delete image">×</button>
+                </div>;})}
+              </div>}
+              <label style={{ display:"block", padding:imgs.length>0?"6px":"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:imgs.length>0?11:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+                {imgs.length>0?"➕ Add More":"📤 Upload Contract Image"}
+                <input type="file" accept="image/*" style={{ display:"none" }} onChange={uploadHandler}/>
               </label>
-            </div>
-            :<label style={{ display:"block", padding:"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
-              📤 Upload Contract Image
-              <input type="file" accept="image/*" style={{ display:"none" }} onChange={async function(e){
-                var file=e.target.files[0]; if(!file)return;
-                var reader=new FileReader();
-                reader.onload=async function(ev){
-                  try{var updated=await apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:ev.target.result,imageType:"deal"},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}catch(ex){}
-                };reader.readAsDataURL(file);
-              }}/>
-            </label>}
+            </div>;
+          })()}
         </div>
       </div>
     </div>;})()}

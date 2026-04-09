@@ -38,7 +38,7 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   lastActivityTime:{type:Date,default:Date.now}, archived:{type:Boolean,default:false}, isVIP:{type:Boolean,default:false},
   eoiDeposit:{type:String,default:""}, eoiDate:{type:String,default:""},
   eoiApproved:{type:Boolean,default:false}, eoiImage:{type:String,default:""},
-  dealApproved:{type:Boolean,default:false}, dealImage:{type:String,default:""},
+  dealApproved:{type:Boolean,default:false}, dealImages:[{type:String}],
   commissionClaimDate:{type:String,default:""}, commissionClaimed:{type:Boolean,default:false},
   splitAgent2Id:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
   splitAgent2Name:{type:String,default:""},
@@ -518,10 +518,30 @@ app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async f
   try {
     var { imageData, imageType } = req.body; // imageType: "eoi" or "deal"
     if (!imageData) return res.status(400).json({ error: "No image data" });
-    var field = imageType === "deal" ? "dealImage" : "eoiImage";
+    if (imageType === "deal") {
+      var lead = await Lead.findByIdAndUpdate(req.params.id, { $push: { dealImages: imageData } }, { new: true }).populate("agentId", "name title");
+      return res.json(lead);
+    }
+    var field = "eoiImage";
     var update = {}; update[field] = imageData;
     var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
     res.json(lead);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== DELETE DEAL IMAGE =====
+app.post("/api/leads/:id/delete-deal-image", auth, async function(req, res) {
+  try {
+    var { index } = req.body;
+    var lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    var imgs = lead.dealImages || [];
+    if (index < 0 || index >= imgs.length) return res.status(400).json({ error: "Invalid index" });
+    imgs.splice(index, 1);
+    lead.dealImages = imgs;
+    await lead.save();
+    var populated = await Lead.findById(req.params.id).populate("agentId", "name title");
+    res.json(populated);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
