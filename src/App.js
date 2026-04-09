@@ -4661,6 +4661,7 @@ export default function CRMApp() {
     }).catch(function(){});
     showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
   };
+  var rotatingNow = useRef(new Set()).current;
   var notifyRotationRef = useRef(notifyRotation);
   notifyRotationRef.current = notifyRotation;
 
@@ -5067,7 +5068,6 @@ export default function CRMApp() {
     };
 
     // Helper: do rotation (reassign to new agent, backend tracks agentHistory)
-    var rotatingNow = new Set();
     var doRotate = async function(lead, reason){
       var lid = gid(lead);
       if(rotatingNow.has(lid)) return;
@@ -5083,6 +5083,8 @@ export default function CRMApp() {
         if(!targetAgent) return;
         var targetAgentId = gid(targetAgent);
         if(targetAgentId===currentAgentId) return;
+        var alreadyAssigned = (lead.agents||[]).some(function(a){return String(a.agentId&&a.agentId._id||a.agentId)===String(targetAgentId);});
+        if(alreadyAssigned) return;
         var timeStr=new Date().toLocaleString("en-GB");
         var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{
           agentId: targetAgentId,
