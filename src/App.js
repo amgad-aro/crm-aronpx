@@ -1261,6 +1261,8 @@ var LeadsPage = function(p) {
         // Reset no-activity rotation flags
         try{localStorage.removeItem("crm_noact2_"+pendingStatus.leadId);localStorage.removeItem("crm_hotrot_"+pendingStatus.leadId);localStorage.removeItem("crm_cbrot_"+pendingStatus.leadId);}catch(e){}
       }
+      if(pendingStatus.newStatus==="DoneDeal") p.nav("deals");
+      else if(pendingStatus.newStatus==="EOI") p.nav("eoi");
     } catch(e){alert(e.message);}
     setShowStatusComment(false); setPendingStatus(null); setShowStatusPicker(false);
   };
@@ -3282,6 +3284,8 @@ var DailyRequestsPage = function(p) {
           (req.name||"leads")+" — "+(updateData.budget||req.budget||"")
         );
       }
+      if(pendingStatus.newStatus==="DoneDeal") p.nav("deals");
+      else if(pendingStatus.newStatus==="EOI") p.nav("eoi");
     }catch(e){alert(e.message);}
     setShowStatusComment(false);setPendingStatus(null);setStatusDrop(null);
   };
