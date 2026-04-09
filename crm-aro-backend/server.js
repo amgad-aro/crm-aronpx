@@ -389,10 +389,7 @@ app.get("/api/leads", auth, async function(req, res) {
     var uid = req.user.id;
 
     if (role === "sales") {
-      query.$or = [
-        { agentId: new mongoose.Types.ObjectId(uid) },
-        { "agents.agentId": new mongoose.Types.ObjectId(uid) }
-      ];
+      query.agentId = new mongoose.Types.ObjectId(uid);
 
     } else if (role === "team_leader") {
       // Team leader sees only their direct sales
@@ -583,12 +580,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       update.lastRotationAt = new Date();
       update.rotationCount = (oldLead.rotationCount || 0) + 1;
     }
-    var ops = { $set: update };
-    if (req.body.addAgent) {
-      ops.$push = { agents: req.body.addAgent };
-      delete update.addAgent;
-    }
-    var lead = await Lead.findByIdAndUpdate(req.params.id, ops, { new: true }).populate("agentId", "name title");
+    var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
     try {
       var actType = "note";
       var actNote = "Updated";
@@ -780,7 +772,7 @@ app.get("/api/stats", auth, async function(req, res) {
   try {
     var leadQuery = {};
     var actQuery = {};
-    if (req.user.role === "sales") { leadQuery.$or = [{agentId: req.user.id}, {"agents.agentId": req.user.id}]; actQuery.userId = req.user.id; }
+    if (req.user.role === "sales") { leadQuery.agentId = req.user.id; actQuery.userId = req.user.id; }
     var totalLeads = await Lead.countDocuments(leadQuery);
     var potential = await Lead.countDocuments(Object.assign({ status: "Potential" }, leadQuery));
     var hotCase = await Lead.countDocuments(Object.assign({ status: "HotCase" }, leadQuery));
