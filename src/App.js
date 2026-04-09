@@ -5081,11 +5081,16 @@ export default function CRMApp() {
         if(!targetAgent) return;
         var targetAgentId = gid(targetAgent);
         if(targetAgentId===currentAgentId) return;
-        var alreadyAssigned = (lead.agents||[]).some(function(a){return String(a.agentId&&a.agentId._id||a.agentId)===String(targetAgentId);});
+        var alreadyAssigned = (lead.agentHistory||[]).some(function(a){return String(a.agentId)===String(targetAgentId);});
         if(alreadyAssigned) return;
         var timeStr=new Date().toLocaleString("en-GB");
         var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{
-          addAgent: { agentId: targetAgentId, assignedAt: new Date().toISOString(), feedback: "", status: "NewLead", budget: "" },
+          agentId: targetAgentId,
+          status: "NewLead",
+          budget: "",
+          callbackTime: "",
+          lastFeedback: "",
+          notes: "",
           lastRotationAt: new Date().toISOString()
         },token);
         await apiFetch("/api/activities","POST",{
