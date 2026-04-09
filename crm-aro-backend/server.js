@@ -389,7 +389,10 @@ app.get("/api/leads", auth, async function(req, res) {
     var uid = req.user.id;
 
     if (role === "sales") {
-      query.agentId = new mongoose.Types.ObjectId(uid);
+      query.$or = [
+        { agentId: new mongoose.Types.ObjectId(uid) },
+        { "agentHistory.agentId": uid }
+      ];
 
     } else if (role === "team_leader") {
       // Team leader sees only their direct sales
