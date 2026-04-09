@@ -2538,7 +2538,7 @@ var DealsPage = function(p) {
         <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.deals} ({filteredDeals.length})</h2>
         {filteredTotal>0&&<div style={{ fontSize:13, fontWeight:700, color:C.success, background:"#DCFCE7", padding:"5px 14px", borderRadius:20 }}>Total: {filteredTotal.toLocaleString()} EGP</div>}
       </div>
-      {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {t.addLead}</Btn>}
+      {(isOnlyAdmin||p.cu.role==="team_leader")&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> Add Deal</Btn>}
     </div>
 
     {/* Deals Search + Filter bar */}
