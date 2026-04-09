@@ -47,7 +47,8 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0},
   locked:{type:Boolean,default:false},
   lastFeedback:{type:String,default:""},
-  agentHistory:{type:[mongoose.Schema.Types.Mixed],default:[]}
+  agentHistory:{type:[mongoose.Schema.Types.Mixed],default:[]},
+  agents:[{agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"},assignedAt:{type:Date},feedback:{type:String,default:""},status:{type:String,default:""},budget:{type:String,default:""}}]
 },{timestamps:true}));
 
 var Activity = mongoose.model("Activity", new mongoose.Schema({
