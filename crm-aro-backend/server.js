@@ -117,6 +117,8 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 mongoose.connect(process.env.MONGODB_URI).then(function() {
   console.log("Connected to MongoDB");
   seedAdmin();
+  // Clean up null entries in previousAgentIds from old rotation code
+  Lead.updateMany({ previousAgentIds: null }, { $pull: { previousAgentIds: null } }).catch(function(){});
 }).catch(function(err) {
   console.error("MongoDB connection error:", err);
 });
@@ -499,6 +501,36 @@ app.get("/api/leads", auth, async function(req, res) {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ===== SINGLE LEAD GET (with per-agent overlay) =====
+app.get("/api/leads/:id", auth, async function(req, res) {
+  try {
+    var lead = await Lead.findById(req.params.id).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").lean();
+    if (!lead) return res.status(404).json({ error: "Not found" });
+    var role = req.user.role;
+    var uid = String(req.user.id);
+    if (role === "sales") {
+      var obj = Object.assign({}, lead);
+      var myAssign = (obj.assignments || []).find(function(a) {
+        var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+        return String(aid) === uid;
+      });
+      if (myAssign) {
+        obj.status = myAssign.status || obj.status;
+        obj.notes = myAssign.notes !== undefined ? myAssign.notes : obj.notes;
+        obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+        obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
+        obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : obj.lastFeedback;
+        obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
+        if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
+        if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+        if (myAssign.agentHistory && myAssign.agentHistory.length > 0) obj.agentHistory = myAssign.agentHistory;
+      }
+      return res.json(obj);
+    }
+    res.json(lead);
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ===== CHECK DUPLICATE PHONE =====
