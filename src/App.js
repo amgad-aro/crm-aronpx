@@ -4826,9 +4826,11 @@ export default function CRMApp() {
   useEffect(function(){
     if(!token) return;
     var wsUrl = (process.env.REACT_APP_API_URL||API).replace("https://","wss://").replace("http://","ws://");
-    var ws; var reconnectTimer;
+    var ws; var reconnectTimer; var retries=0; var maxRetries=10;
     function connect(){
-      ws = new WebSocket(wsUrl);
+      if(retries>=maxRetries) return;
+      try{ ws = new WebSocket(wsUrl); }catch(e){ return; }
+      ws.onopen = function(){ retries=0; };
       ws.onmessage = function(e){
         try{
           var msg = JSON.parse(e.data);
@@ -4841,16 +4843,20 @@ export default function CRMApp() {
             setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(msg.data)?msg.data:l;});});
           } else if(msg.type==="activity_created"){
             setActivities(function(prev){return [msg.data].concat(prev).slice(0,50);});
-          } else if(msg.type==="dr_created"){
-            // Daily requests are local state per page, just notify
           }
         }catch(err){}
       };
-      ws.onclose = function(){ reconnectTimer = setTimeout(connect, 5000); };
-      ws.onerror = function(){ ws.close(); };
+      ws.onclose = function(){
+        retries++;
+        if(retries<maxRetries){
+          var delay=Math.min(1000*Math.pow(2,retries),30000);
+          reconnectTimer = setTimeout(connect, delay);
+        }
+      };
+      ws.onerror = function(){ try{ws.close();}catch(e){} };
     }
     connect();
-    return function(){ clearTimeout(reconnectTimer); if(ws) ws.close(); };
+    return function(){ clearTimeout(reconnectTimer); if(ws) try{ws.close();}catch(e){} };
   }, [token]);
 
   // Load saved session on startup
