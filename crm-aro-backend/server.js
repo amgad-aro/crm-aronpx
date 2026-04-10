@@ -717,10 +717,16 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
       // Add new assignment entry
       var newAssignment = {
         agentId: new mongoose.Types.ObjectId(targetAgentId),
-        status: "NewLead",
+        status: "New Lead",
         assignedAt: new Date(),
         lastActionAt: new Date(),
-        rotationTimer: new Date()
+        rotationTimer: new Date(),
+        noRotation: false,
+        notes: "",
+        budget: "",
+        callbackTime: "",
+        lastFeedback: "",
+        nextCallAt: null
       };
 
       await Lead.findByIdAndUpdate(req.params.id, {
