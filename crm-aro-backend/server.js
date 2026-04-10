@@ -458,8 +458,29 @@ app.get("/api/leads", auth, async function(req, res) {
     var total = await Lead.countDocuments(query);
     var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").sort({ createdAt: -1 }).skip(skip).limit(limit);
 
+    // For sales agents: overlay their own assignments[] entry fields on top of each lead
+    var data = leads;
+    if (role === "sales") {
+      data = leads.map(function(l) {
+        var obj = l.toObject();
+        var myAssign = (obj.assignments || []).find(function(a) {
+          var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+          return String(aid) === String(uid);
+        });
+        if (myAssign) {
+          obj.status = myAssign.status || obj.status;
+          obj.notes = myAssign.notes !== undefined ? myAssign.notes : obj.notes;
+          obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+          obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
+          obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : obj.lastFeedback;
+          obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
+        }
+        return obj;
+      });
+    }
+
     res.json({
-      data: leads,
+      data: data,
       total: total,
       page: page,
       totalPages: Math.ceil(total / limit)
