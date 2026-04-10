@@ -785,7 +785,7 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     };
 
     var pushOps = { assignments: newAssignment, agentHistory: rotationLog };
-    if (oldAgentId) {
+    if (oldAgentId && String(oldAgentId) !== "null" && String(oldAgentId) !== "undefined" && String(oldAgentId) !== "") {
       pushOps.previousAgentIds = oldAgentId;
     }
 
