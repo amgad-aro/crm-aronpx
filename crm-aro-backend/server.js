@@ -757,43 +757,46 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
       return res.status(400).json({ error: "already_assigned", message: "Target agent already had this lead" });
     }
 
-    // Add new assignment entry for target agent — do NOT touch agentHistory
+    // Add new assignment entry for target agent
     var oldAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
+    var newAssignment = {
+      agentId: new mongoose.Types.ObjectId(targetAgentId),
+      status: "New Lead",
+      assignedAt: new Date(),
+      lastActionAt: new Date(),
+      rotationTimer: new Date(),
+      noRotation: false,
+      notes: "",
+      budget: "",
+      callbackTime: "",
+      lastFeedback: "",
+      nextCallAt: null,
+      agentHistory: []
+    };
+
+    var oldAgentName = lead.agentId && lead.agentId.name ? lead.agentId.name : "Unassigned";
+    var newAgentUser = await User.findById(targetAgentId).lean();
+    var newAgentName = newAgentUser ? newAgentUser.name : "Unknown";
+    var rotationLog = {
+      action: "Rotation",
+      note: "Rotated from " + oldAgentName + " to " + newAgentName,
+      by: req.user.name || "System",
+      date: new Date()
+    };
+
+    var pushOps = { assignments: newAssignment, agentHistory: rotationLog };
     if (oldAgentId) {
-      var newAssignment = {
-        agentId: new mongoose.Types.ObjectId(targetAgentId),
-        status: "New Lead",
-        assignedAt: new Date(),
-        lastActionAt: new Date(),
-        rotationTimer: new Date(),
-        noRotation: false,
-        notes: "",
-        budget: "",
-        callbackTime: "",
-        lastFeedback: "",
-        nextCallAt: null,
-        agentHistory: []
-      };
-
-      var oldAgentName = lead.agentId && lead.agentId.name ? lead.agentId.name : "Unknown";
-      var newAgentUser = await User.findById(targetAgentId).lean();
-      var newAgentName = newAgentUser ? newAgentUser.name : "Unknown";
-      var rotationLog = {
-        action: "Rotation",
-        note: "Rotated from " + oldAgentName + " to " + newAgentName,
-        by: req.user.name || "System",
-        date: new Date()
-      };
-
-      await Lead.findByIdAndUpdate(req.params.id, {
-        $set: {
-          agentId: new mongoose.Types.ObjectId(targetAgentId),
-          lastRotationAt: new Date(),
-          rotationCount: (lead.rotationCount || 0) + 1
-        },
-        $push: { previousAgentIds: oldAgentId, assignments: newAssignment, agentHistory: rotationLog }
-      });
+      pushOps.previousAgentIds = oldAgentId;
     }
+
+    await Lead.findByIdAndUpdate(req.params.id, {
+      $set: {
+        agentId: new mongoose.Types.ObjectId(targetAgentId),
+        lastRotationAt: new Date(),
+        rotationCount: (lead.rotationCount || 0) + 1
+      },
+      $push: pushOps
+    });
 
     var updated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(updated);
