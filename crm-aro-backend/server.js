@@ -474,6 +474,8 @@ app.get("/api/leads", auth, async function(req, res) {
           obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
           obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : obj.lastFeedback;
           obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
+          if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
+          if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
         }
         return obj;
       });
@@ -634,11 +636,14 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         assignedAt: oldLead.updatedAt || oldLead.createdAt,
         removedAt: new Date()
       };
-      update.agentHistory = (oldLead.agentHistory || []).concat([histEntry]);
       update.lastRotationAt = new Date();
       update.rotationCount = (oldLead.rotationCount || 0) + 1;
+      // Use $push for agentHistory to avoid overwriting (append-only)
+      var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update, $push: { agentHistory: histEntry } }, { new: true }).populate("agentId", "name title").populate("assignments.agentId", "name title");
     }
-    var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    if (!lead) {
+      lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    }
     // Sync agent's own assignments[] entry on any action
     if (req.user.role === "sales" || req.user.role === "team_leader") {
       var assignUpdate = { "assignments.$.lastActionAt": new Date(), "assignments.$.rotationTimer": new Date() };
@@ -732,9 +737,6 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
         assignedAt: lead.updatedAt || lead.createdAt,
         removedAt: new Date()
       };
-      var newHistory = (lead.agentHistory || []).concat([histEntry]);
-      var newPrevIds = (lead.previousAgentIds || []).concat([oldAgentId]);
-
       // Add new assignment entry
       var newAssignment = {
         agentId: new mongoose.Types.ObjectId(targetAgentId),
@@ -754,11 +756,9 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
         $set: {
           agentId: new mongoose.Types.ObjectId(targetAgentId),
           lastRotationAt: new Date(),
-          rotationCount: (lead.rotationCount || 0) + 1,
-          agentHistory: newHistory,
-          previousAgentIds: newPrevIds
+          rotationCount: (lead.rotationCount || 0) + 1
         },
-        $push: { assignments: newAssignment }
+        $push: { agentHistory: histEntry, previousAgentIds: oldAgentId, assignments: newAssignment }
       });
     }
 
