@@ -59,7 +59,8 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
     rotationTimer:{type:Date,default:Date.now},
     noRotation:{type:Boolean,default:false},
     nextCallAt:{type:Date,default:null},
-    assignedAt:{type:Date,default:Date.now}
+    assignedAt:{type:Date,default:Date.now},
+    agentHistory:{type:[mongoose.Schema.Types.Mixed],default:[]}
   }],
   previousAgentIds:[{type:mongoose.Schema.Types.ObjectId,ref:"User"}],
   globalStatus:{type:String,default:"active"},
@@ -476,6 +477,7 @@ app.get("/api/leads", auth, async function(req, res) {
           obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
           if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
           if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+          if (myAssign.agentHistory) obj.agentHistory = myAssign.agentHistory;
         }
         return obj;
       });
@@ -623,27 +625,12 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       var unchanged = await Lead.findById(req.params.id).populate("agentId", "name title");
       return res.json(unchanged);
     }
-    // Track agent history when agent changes (skip if first assignment from no agent)
-    // Note: agent changes should go through /rotate endpoint. This is a fallback safety net.
+    // Track agent history when agent changes (fallback — should go through /rotate)
     if (req.body.agentId && oldLead && oldLead.agentId && String(oldLead.agentId) !== String(req.body.agentId)) {
-      var oldAgentUser = oldLead.agentId ? await User.findById(oldLead.agentId).lean() : null;
-      var histEntry = {
-        agentId: String(oldLead.agentId || ""),
-        agentName: oldAgentUser ? oldAgentUser.name : "",
-        feedback: oldLead.lastFeedback || "",
-        status: oldLead.status || "",
-        budget: oldLead.budget || "",
-        assignedAt: oldLead.updatedAt || oldLead.createdAt,
-        removedAt: new Date()
-      };
       update.lastRotationAt = new Date();
       update.rotationCount = (oldLead.rotationCount || 0) + 1;
-      // Use $push for agentHistory to avoid overwriting (append-only)
-      var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update, $push: { agentHistory: histEntry } }, { new: true }).populate("agentId", "name title").populate("assignments.agentId", "name title");
     }
-    if (!lead) {
-      lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title").populate("assignments.agentId", "name title");
-    }
+    var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title").populate("assignments.agentId", "name title");
     // Sync agent's own assignments[] entry on any action
     if (req.user.role === "sales" || req.user.role === "team_leader") {
       var assignUpdate = { "assignments.$.lastActionAt": new Date(), "assignments.$.rotationTimer": new Date() };
@@ -653,7 +640,18 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       if (req.body.callbackTime !== undefined) assignUpdate["assignments.$.callbackTime"] = req.body.callbackTime;
       if (req.body.lastFeedback !== undefined) assignUpdate["assignments.$.lastFeedback"] = req.body.lastFeedback;
       if (req.body.noRotation !== undefined) assignUpdate["assignments.$.noRotation"] = req.body.noRotation;
-      await Lead.updateOne({ _id: req.params.id, "assignments.agentId": req.user.id }, { $set: assignUpdate });
+      var assignOps = { $set: assignUpdate };
+      // Append to per-agent agentHistory on status change or note
+      if (req.body.status || req.body.notes || req.body.lastFeedback) {
+        var histNote = {};
+        if (req.body.status) histNote.type = "status_change";
+        else if (req.body.notes) histNote.type = "note";
+        else histNote.type = "feedback";
+        histNote.note = req.body.status ? "Status: " + req.body.status : (req.body.notes || req.body.lastFeedback || "");
+        histNote.createdAt = new Date();
+        assignOps.$push = { "assignments.$.agentHistory": histNote };
+      }
+      await Lead.updateOne({ _id: req.params.id, "assignments.agentId": req.user.id }, assignOps);
       lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     }
     try {
@@ -724,20 +722,9 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
       return res.status(400).json({ error: "already_assigned", message: "Target agent already had this lead" });
     }
 
-    // Save current agent to agentHistory
+    // Add new assignment entry for target agent — do NOT touch agentHistory
     var oldAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
     if (oldAgentId) {
-      var oldAgentUser = await User.findById(oldAgentId).lean();
-      var histEntry = {
-        agentId: String(oldAgentId),
-        agentName: oldAgentUser ? oldAgentUser.name : "",
-        feedback: lead.lastFeedback || "",
-        status: lead.status || "",
-        budget: lead.budget || "",
-        assignedAt: lead.updatedAt || lead.createdAt,
-        removedAt: new Date()
-      };
-      // Add new assignment entry
       var newAssignment = {
         agentId: new mongoose.Types.ObjectId(targetAgentId),
         status: "New Lead",
@@ -749,7 +736,8 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
         budget: "",
         callbackTime: "",
         lastFeedback: "",
-        nextCallAt: null
+        nextCallAt: null,
+        agentHistory: []
       };
 
       await Lead.findByIdAndUpdate(req.params.id, {
@@ -758,7 +746,7 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
           lastRotationAt: new Date(),
           rotationCount: (lead.rotationCount || 0) + 1
         },
-        $push: { agentHistory: histEntry, previousAgentIds: oldAgentId, assignments: newAssignment }
+        $push: { previousAgentIds: oldAgentId, assignments: newAssignment }
       });
     }
 
