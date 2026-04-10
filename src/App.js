@@ -1419,7 +1419,7 @@ var LeadsPage = function(p) {
           var lastAct=lead.lastActivityTime?timeAgo(lead.lastActivityTime,t):"—";
           var actColor=lead.lastActivityTime&&(Date.now()-new Date(lead.lastActivityTime).getTime())>3*24*60*60*1000?C.danger:C.accent;
           var borderCol=isVIP?"#F59E0B":so.color||"#E8ECF1";
-          var isRotated=isOnlyAdmin&&lead.previousAgentIds&&lead.previousAgentIds.filter(function(id){return id&&String(id)!=="null"&&String(id)!=="undefined";}).length>0;
+          var isRotated = isOnlyAdmin && lead.previousAgentIds && lead.previousAgentIds.filter(function(x){ return x != null; }).length > 0;
           return <div key={lid} onClick={function(){setSelected(lead);}}
             style={{ background:isRotated?"#FFF7ED":"#fff", borderRadius:16, padding:"16px",
               border:"2px solid "+borderCol,
@@ -1481,7 +1481,7 @@ var LeadsPage = function(p) {
               {filtered.map(function(lead){
                 var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0];
                 var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
-                var isRotated=isOnlyAdmin&&lead.previousAgentIds&&lead.previousAgentIds.filter(function(id){return id&&String(id)!=="null"&&String(id)!=="undefined";}).length>0;
+                var isRotated = isOnlyAdmin && lead.previousAgentIds && lead.previousAgentIds.filter(function(x){ return x != null; }).length > 0;
                 return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":isRotated?"#FFF7ED":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
                   <td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();setSelected2(function(prev){return prev.includes(lid)?prev.filter(function(x){return x!==lid;}):[...prev,lid];});}}><input type="checkbox" checked={isChk} readOnly/></td>
                   <td style={{ padding:"10px 12px", textAlign:"left" }}>
@@ -1536,7 +1536,7 @@ var LeadsPage = function(p) {
                       if(!newAgent)return;
                       var oldAgName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";
                       var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
-                      try{var rotRes=await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);if(fresh&&fresh.data)p.setLeads(fresh.data);var freshLead=(fresh&&fresh.data||[]).find(function(fl){return gid(fl)===gid(lead);});if(selected&&gid(selected)===gid(lead)&&freshLead)setSelected(freshLead);if(!rotRes.firstAssignment&&oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
+                      try{var rotRes=await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);if(fresh&&fresh.data)p.setLeads(fresh.data);var freshLead=(fresh&&fresh.data||[]).find(function(fl){return gid(fl)===gid(lead);});if(selected&&gid(selected)===gid(lead)&&freshLead)setSelected(freshLead);if(rotRes.firstAssignment)return;if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
                       {isOnlyAdmin&&<option value="">— No Agent —</option>}
                       {(isOnlyAdmin?salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
@@ -1606,7 +1606,7 @@ var LeadsPage = function(p) {
               if(isManagerUser&&p.cu.teamId){var tgt=p.users.find(function(u){return gid(u)===newAgent;});if(tgt&&tgt.teamId!==p.cu.teamId)return;}
               var oldAgName=selected.agentId&&selected.agentId.name?selected.agentId.name:"";
               var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
-              try{var rotRes=await apiFetch("/api/leads/"+gid(selected)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);if(fresh&&fresh.data)p.setLeads(fresh.data);var freshLead=(fresh&&fresh.data||[]).find(function(fl){return gid(fl)===gid(selected);});if(freshLead)setSelected(freshLead);if(!rotRes.firstAssignment&&oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
+              try{var rotRes=await apiFetch("/api/leads/"+gid(selected)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);if(fresh&&fresh.data)p.setLeads(fresh.data);var freshLead=(fresh&&fresh.data||[]).find(function(fl){return gid(fl)===gid(selected);});if(freshLead)setSelected(freshLead);if(rotRes.firstAssignment)return;if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
               {isOnlyAdmin&&<option value="">— No Agent —</option>}
               {(isOnlyAdmin?p.myTeamUsers||salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}

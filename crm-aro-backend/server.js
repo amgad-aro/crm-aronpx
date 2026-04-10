@@ -729,28 +729,12 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     if (!lead) return res.status(404).json({ error: "Lead not found" });
 
     // ── FIRST ASSIGNMENT (not a rotation) ──
-    var currentAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
-    if (!currentAgentId) {
-      var firstAssignment = {
-        agentId: new mongoose.Types.ObjectId(targetAgentId),
-        status: "New Lead",
-        assignedAt: new Date(),
-        lastActionAt: new Date(),
-        rotationTimer: new Date(),
-        noRotation: false,
-        notes: "",
-        budget: "",
-        callbackTime: "",
-        lastFeedback: "",
-        nextCallAt: null,
-        agentHistory: []
-      };
-      await Lead.findByIdAndUpdate(req.params.id, {
-        $set: { agentId: new mongoose.Types.ObjectId(targetAgentId) },
-        $push: { assignments: firstAssignment }
-      });
-      var assigned = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
-      return res.json({ success: true, firstAssignment: true, lead: assigned });
+    var isFirstAssignment = !lead.agentId || (!lead.agentId._id && !mongoose.Types.ObjectId.isValid(String(lead.agentId)));
+    if (isFirstAssignment) {
+      lead.agentId = new mongoose.Types.ObjectId(targetAgentId);
+      lead.assignments.push({ agentId: new mongoose.Types.ObjectId(targetAgentId), status: "New Lead", notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [], assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false });
+      await lead.save();
+      return res.json({ success: true, firstAssignment: true, lead: lead });
     }
 
     // ── HARD STOP 1: noRotation flag on any assignment ──
