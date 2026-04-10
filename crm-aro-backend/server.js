@@ -67,6 +67,13 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   expiresAt:{type:Date,default:null}
 },{timestamps:true}));
 
+// Indexes for query performance
+Lead.collection.createIndex({ "assignments.agentId": 1 }).catch(function(){});
+Lead.collection.createIndex({ agentId: 1 }).catch(function(){});
+Lead.collection.createIndex({ createdAt: -1 }).catch(function(){});
+Lead.collection.createIndex({ globalStatus: 1 }).catch(function(){});
+Lead.collection.createIndex({ archived: 1, agentId: 1 }).catch(function(){});
+
 var Activity = mongoose.model("Activity", new mongoose.Schema({
   userId:{type:mongoose.Schema.Types.ObjectId,ref:"User",required:true},
   leadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead"},
@@ -457,13 +464,13 @@ app.get("/api/leads", auth, async function(req, res) {
     var skip = (page - 1) * limit;
 
     var total = await Lead.countDocuments(query);
-    var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").sort({ createdAt: -1 }).skip(skip).limit(limit);
+    var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
 
     // For sales agents: overlay their own assignments[] entry fields on top of each lead
     var data = leads;
     if (role === "sales") {
       data = leads.map(function(l) {
-        var obj = l.toObject();
+        var obj = Object.assign({}, l);
         var myAssign = (obj.assignments || []).find(function(a) {
           var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
           return String(aid) === String(uid);
@@ -652,7 +659,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       update.lastRotationAt = new Date();
       update.rotationCount = (oldLead.rotationCount || 0) + 1;
     }
-    var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    await Lead.findByIdAndUpdate(req.params.id, { $set: update });
     // Sync agent's own assignments[] entry on any action
     if (req.user.role === "sales" || req.user.role === "team_leader") {
       var assignUpdate = { "assignments.$.lastActionAt": new Date(), "assignments.$.rotationTimer": new Date() };
@@ -674,8 +681,9 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         assignOps.$push = { "assignments.$.agentHistory": histNote };
       }
       await Lead.updateOne({ _id: req.params.id, "assignments.agentId": req.user.id }, assignOps);
-      lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     }
+    // Single final read with populate
+    var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     try {
       var actType = "note";
       var actNote = "Updated";
