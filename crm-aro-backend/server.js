@@ -728,11 +728,6 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
       await Lead.findByIdAndUpdate(req.params.id, {
         $set: {
           agentId: new mongoose.Types.ObjectId(targetAgentId),
-          status: "NewLead",
-          budget: "",
-          callbackTime: "",
-          lastFeedback: "",
-          notes: "",
           lastRotationAt: new Date(),
           rotationCount: (lead.rotationCount || 0) + 1,
           agentHistory: newHistory,
