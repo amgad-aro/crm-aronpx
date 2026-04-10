@@ -623,6 +623,10 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty unless explicitly reassigning
     if (!update.agentId) delete update.agentId;
+    // Protect array fields from being overwritten via $set — these are append-only
+    delete update.agentHistory;
+    delete update.assignments;
+    delete update.previousAgentIds;
     // If agentId is being changed (manual reassign) — reset status to NewLead
     var oldLead = null;
     if (req.body.agentId || req.body.status) {
