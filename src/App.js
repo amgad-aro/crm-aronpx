@@ -4767,7 +4767,7 @@ export default function CRMApp() {
     var interval = setInterval(async function(){
       try{
         var results = await Promise.all([
-          apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,token),
+          apiFetch("/api/leads?page="+leadsPage+"&limit=200","GET",null,token),
           apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token)
         ]);
         var leadsData = results[0].data||[];
@@ -4789,8 +4789,6 @@ export default function CRMApp() {
             var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
             showBrowserNotif("🆕 New Lead", l.name+(agName?" → "+agName:""));
           });
-          // Deal/EOI notifications are created by confirmStatus via addDealNotif (MongoDB)
-          // No duplicate detection needed here — polling just refreshes notification state
         }
         knownLeadIds = new Set(leadsData.map(function(l){return String(l._id);}));
 
@@ -4800,7 +4798,6 @@ export default function CRMApp() {
           newActs.forEach(function(a){
             var who = a.userId&&a.userId.name?a.userId.name:"";
             var lead = a.leadId&&a.leadId.name?a.leadId.name:"";
-            // For team_leader: only notify for their team's activities
             if(currentUser.role==="team_leader"){
               var teamNames=new Set((users||[]).filter(function(u){return u.role==="sales";}).map(function(u){return u.name;}));
               teamNames.add(currentUser.name);
@@ -4816,7 +4813,7 @@ export default function CRMApp() {
         setLeads(leadsData);
         setActivities(activitiesData);
       }catch(e){}
-    }, 30000);
+    }, 60000);
     return function(){ clearInterval(interval); };
   }, [token]);
   useEffect(function(){
@@ -5126,9 +5123,8 @@ export default function CRMApp() {
           note:"🔄 Auto Rotation | From: "+fromName+" → To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
         },token);
         notifyRotationRef.current(lead,fromName,targetAgent.name,reason);
-        // Re-fetch leads from server to get correct per-agent overlay
-        var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,token);
-        if(fresh&&fresh.data) setLeads(fresh.data);
+        // Re-fetch single lead to get correct per-agent overlay
+        try{var freshLead=await apiFetch("/api/leads/"+gid(lead),"GET",null,token);if(freshLead&&freshLead._id){setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?freshLead:l;});});}}catch(fe){}
       }catch(e){console.error("Rotation error:",e);}
       finally{ rotatingNow.delete(lid); }
     };

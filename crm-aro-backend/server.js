@@ -683,13 +683,13 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     }
     // Guard: never downgrade EOI or DoneDeal back to NewLead (prevents stale rotation overwrites)
     if (oldLead && (oldLead.status === "EOI" || oldLead.status === "DoneDeal") && req.body.status === "NewLead") {
-      var unchanged = await Lead.findById(req.params.id).populate("agentId", "name title");
-      return res.json(unchanged);
+      return res.json(oldLead);
     }
     // Track agent history when agent changes (fallback — should go through /rotate)
     if (req.body.agentId && oldLead && oldLead.agentId && String(oldLead.agentId) !== String(req.body.agentId)) {
       update.lastRotationAt = new Date();
       update.rotationCount = (oldLead.rotationCount || 0) + 1;
+      update.reassignedAt = new Date();
     }
     await Lead.findByIdAndUpdate(req.params.id, { $set: update });
     // Sync agent's own assignments[] entry on any action
@@ -725,8 +725,6 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       } else if (req.body.agentId && oldLead && String(oldLead.agentId) !== String(req.body.agentId)) {
         actType = "reassign";
         actNote = "تم التحويل اليدوي إلى موظف جديد";
-        // Also log reassignedAt
-        await Lead.findByIdAndUpdate(req.params.id, { $set: { reassignedAt: new Date() } });
       }
       await Activity.create({
         userId: req.user.id,
