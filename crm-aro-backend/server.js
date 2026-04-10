@@ -508,32 +508,10 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
 app.post("/api/leads", auth, async function(req, res) {
   try {
     console.log("NEW LEAD body:", JSON.stringify(req.body));
+    // Admin assigns agent manually — no auto-assignment
     var agentId = (req.body.agentId && req.body.agentId !== "")
       ? new mongoose.Types.ObjectId(req.body.agentId)
       : null;
-    // Auto-assign to least-loaded active sales agent if no agentId provided
-    if (!agentId) {
-      var salesAgents = await User.find({ role: "sales", active: true }).lean();
-      if (salesAgents.length > 0) {
-        // Count current assigned leads per agent
-        var counts = await Lead.aggregate([
-          { $match: { archived: false } },
-          { $group: { _id: "$agentId", count: { $sum: 1 } } }
-        ]);
-        var countMap = {};
-        counts.forEach(function(c) { if (c._id) countMap[String(c._id)] = c.count; });
-        // Pick agent with fewest leads
-        var picked = salesAgents.reduce(function(best, agent) {
-          var agentCount = countMap[String(agent._id)] || 0;
-          var bestCount = countMap[String(best._id)] || 0;
-          return agentCount < bestCount ? agent : best;
-        }, salesAgents[0]);
-        agentId = picked._id;
-        console.log("AUTO-ASSIGN: picked agent", picked.name, "(" + agentId + "), lead counts:", JSON.stringify(countMap));
-      } else {
-        console.log("AUTO-ASSIGN: no active sales agents found");
-      }
-    }
     var lead = await Lead.create({
       name:             req.body.name,
       phone:            req.body.phone,
@@ -603,7 +581,9 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
         var newAgUser = await User.findById(agentId).lean();
         updateOps.$push.agentHistory = {
           action: "Rotation",
-          note: "Rotated from " + (oldAgUser ? oldAgUser.name : "Unknown") + " to " + (newAgUser ? newAgUser.name : "Unknown"),
+          fromAgent: oldAgUser ? oldAgUser.name : "Unknown",
+          toAgent: newAgUser ? newAgUser.name : "Unknown",
+          reason: "manual",
           by: req.user.name || "Admin",
           date: new Date()
         };
@@ -753,10 +733,9 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     if (lead.globalStatus === "donedeal") {
       return res.status(400).json({ error: "donedeal", message: "Rotation blocked — lead is Done Deal" });
     }
-    // ── HARD STOP 4: expired ──
-    if (lead.expiresAt && new Date() > new Date(lead.expiresAt)) {
-      await Lead.findByIdAndUpdate(req.params.id, { $set: { globalStatus: "expired" } });
-      return res.status(400).json({ error: "expired", message: "Rotation blocked — lead expired" });
+    // ── HARD STOP 4: older than 30 days ──
+    if (lead.createdAt && (new Date() - new Date(lead.createdAt)) > 30*24*60*60*1000) {
+      return res.status(400).json({ error: "expired", message: "Rotation blocked — lead older than 30 days" });
     }
     // ── HARD STOP 5: all agents exhausted ──
     var prevIds = (lead.previousAgentIds || []).map(function(id) { return String(id); });
@@ -784,9 +763,12 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     var oldAgentName = lead.agentId && lead.agentId.name ? lead.agentId.name : "Unassigned";
     var newAgentUser = await User.findById(targetAgentId).lean();
     var newAgentName = newAgentUser ? newAgentUser.name : "Unknown";
+    var rotationReason = reason || "manual";
     var rotationLog = {
       action: "Rotation",
-      note: "Rotated from " + oldAgentName + " to " + newAgentName,
+      fromAgent: oldAgentName,
+      toAgent: newAgentName,
+      reason: rotationReason,
       by: req.user.name || "System",
       date: new Date()
     };

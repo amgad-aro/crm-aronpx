@@ -1536,7 +1536,7 @@ var LeadsPage = function(p) {
                       if(!newAgent)return;
                       var oldAgName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";
                       var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
-                      try{await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:newAgent,reason:"Manual reassign"},p.token);var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);if(fresh&&fresh.data)p.setLeads(fresh.data);var freshLead=(fresh&&fresh.data||[]).find(function(fl){return gid(fl)===gid(lead);});if(selected&&gid(selected)===gid(lead)&&freshLead)setSelected(freshLead);if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
+                      try{await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);if(fresh&&fresh.data)p.setLeads(fresh.data);var freshLead=(fresh&&fresh.data||[]).find(function(fl){return gid(fl)===gid(lead);});if(selected&&gid(selected)===gid(lead)&&freshLead)setSelected(freshLead);if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
                       {isOnlyAdmin&&<option value="">— No Agent —</option>}
                       {(isOnlyAdmin?salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
@@ -1606,7 +1606,7 @@ var LeadsPage = function(p) {
               if(isManagerUser&&p.cu.teamId){var tgt=p.users.find(function(u){return gid(u)===newAgent;});if(tgt&&tgt.teamId!==p.cu.teamId)return;}
               var oldAgName=selected.agentId&&selected.agentId.name?selected.agentId.name:"";
               var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
-              try{await apiFetch("/api/leads/"+gid(selected)+"/rotate","POST",{targetAgentId:newAgent,reason:"Manual reassign"},p.token);var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);if(fresh&&fresh.data)p.setLeads(fresh.data);var freshLead=(fresh&&fresh.data||[]).find(function(fl){return gid(fl)===gid(selected);});if(freshLead)setSelected(freshLead);if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
+              try{await apiFetch("/api/leads/"+gid(selected)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);if(fresh&&fresh.data)p.setLeads(fresh.data);var freshLead=(fresh&&fresh.data||[]).find(function(fl){return gid(fl)===gid(selected);});if(freshLead)setSelected(freshLead);if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
               {isOnlyAdmin&&<option value="">— No Agent —</option>}
               {(isOnlyAdmin?p.myTeamUsers||salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
@@ -1651,19 +1651,34 @@ var LeadsPage = function(p) {
 
           {/* Agent History — admin only */}
           {isOnlyAdmin&&selected.agentHistory&&selected.agentHistory.length>0&&<div style={{ marginTop:14, padding:10, background:"#F5F3FF", borderRadius:10, border:"1px solid #DDD6FE" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:"#7C3AED", marginBottom:8 }}>👥 Previous Agents ({selected.agentHistory.length})</div>
-            {selected.agentHistory.slice().reverse().map(function(h,i){return <div key={i} style={{ padding:"8px 0", borderBottom:i<selected.agentHistory.length-1?"1px solid #EDE9FE":"none" }}>
-              <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{h.agentName||"Unknown"}</div>
-              <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>
-                {h.status&&<span style={{ background:"#E0E7FF", color:"#4338CA", padding:"1px 6px", borderRadius:6, fontSize:9, fontWeight:600, marginRight:4 }}>{h.status}</span>}
-                {h.budget&&<span style={{ color:C.success, fontWeight:600 }}>{h.budget} EGP</span>}
-              </div>
-              {h.feedback&&<div style={{ fontSize:11, color:C.text, marginTop:4, padding:"4px 8px", background:"#fff", borderRadius:6 }}>💬 {h.feedback}</div>}
-              <div style={{ fontSize:9, color:C.textLight, marginTop:3 }}>
-                {h.assignedAt?new Date(h.assignedAt).toLocaleDateString("en-GB"):""}
-                {h.removedAt?" → "+new Date(h.removedAt).toLocaleDateString("en-GB"):""}
-              </div>
-            </div>;})}
+            <div style={{ fontSize:11, fontWeight:700, color:"#7C3AED", marginBottom:8 }}>🔄 Rotation History ({selected.agentHistory.filter(function(h){return h.action==="Rotation";}).length})</div>
+            {selected.agentHistory.slice().reverse().map(function(h,i){
+              if(h.action==="Rotation"){
+                var reasonLabel=h.reason==="auto_timeout"?"Auto Timeout":h.reason==="no_rotation_override"?"Admin Override":"Manual";
+                return <div key={i} style={{ padding:"8px 0", borderBottom:"1px solid #EDE9FE" }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{h.fromAgent||"Unassigned"} → {h.toAgent||"Unknown"}</div>
+                  <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>
+                    <span style={{ background:h.reason==="auto_timeout"?"#FEF3C7":h.reason==="no_rotation_override"?"#FEE2E2":"#E0E7FF", color:h.reason==="auto_timeout"?"#B45309":h.reason==="no_rotation_override"?"#DC2626":"#4338CA", padding:"1px 6px", borderRadius:6, fontSize:9, fontWeight:600, marginRight:4 }}>{reasonLabel}</span>
+                    <span>by {h.by||"System"}</span>
+                  </div>
+                  <div style={{ fontSize:9, color:C.textLight, marginTop:3 }}>{h.date?new Date(h.date).toLocaleString("en-GB"):""}</div>
+                </div>;
+              }
+              // Legacy format fallback
+              return <div key={i} style={{ padding:"8px 0", borderBottom:"1px solid #EDE9FE" }}>
+                <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{h.agentName||h.note||"Unknown"}</div>
+                <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>
+                  {h.status&&<span style={{ background:"#E0E7FF", color:"#4338CA", padding:"1px 6px", borderRadius:6, fontSize:9, fontWeight:600, marginRight:4 }}>{h.status}</span>}
+                  {h.budget&&<span style={{ color:C.success, fontWeight:600 }}>{h.budget} EGP</span>}
+                </div>
+                {h.feedback&&<div style={{ fontSize:11, color:C.text, marginTop:4, padding:"4px 8px", background:"#fff", borderRadius:6 }}>💬 {h.feedback}</div>}
+                <div style={{ fontSize:9, color:C.textLight, marginTop:3 }}>
+                  {h.assignedAt?new Date(h.assignedAt).toLocaleDateString("en-GB"):""}
+                  {h.removedAt?" → "+new Date(h.removedAt).toLocaleDateString("en-GB"):""}
+                  {h.date?new Date(h.date).toLocaleString("en-GB"):""}
+                </div>
+              </div>;
+            })}
           </div>}
 
           {/* Activity Log — full history */}
@@ -5085,8 +5100,8 @@ export default function CRMApp() {
       if(lead.globalStatus==="eoi") return;
       // 3. globalStatus donedeal
       if(lead.globalStatus==="donedeal") return;
-      // 4. expired
-      if(lead.expiresAt&&new Date()>new Date(lead.expiresAt)) return;
+      // 4. older than 30 days
+      if(lead.createdAt&&(new Date()-new Date(lead.createdAt))>30*24*60*60*1000) return;
       // 5. Skip team_leader
       var currentAgentUser = users.find(function(u){return String(gid(u))===String(currentAgentId);});
       if(currentAgentUser&&currentAgentUser.role==="team_leader") return;
@@ -5102,7 +5117,7 @@ export default function CRMApp() {
         var timeStr=new Date().toLocaleString("en-GB");
         await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{
           targetAgentId: targetAgentId,
-          reason: reason
+          reason: "auto_timeout"
         },token);
         await apiFetch("/api/activities","POST",{
           leadId:gid(lead),type:"reassign",
@@ -5151,7 +5166,7 @@ export default function CRMApp() {
         // 3. globalStatus donedeal
         if(l.globalStatus==="donedeal") continue;
         // 4. expired
-        if(l.expiresAt&&new Date()>new Date(l.expiresAt)) continue;
+        if(l.createdAt&&(new Date()-new Date(l.createdAt))>30*24*60*60*1000) continue;
         // Also skip old status checks for backwards compat
         if(l.status==="DoneDeal"||l.status==="EOI") continue;
         // Skip VIP leads — pinned, never rotate
