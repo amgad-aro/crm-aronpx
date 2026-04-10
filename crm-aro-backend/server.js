@@ -525,7 +525,28 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
     var { leadIds, agentId } = req.body;
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
     var agentObjId = new mongoose.Types.ObjectId(agentId);
-    await Lead.updateMany({ _id: { $in: leadIds } }, { $set: { agentId: agentObjId, status: "NewLead", callbackTime: "", lastActivityTime: new Date() } });
+    var newAssignment = {
+      agentId: agentObjId,
+      status: "NewLead",
+      assignedAt: new Date(),
+      lastActionAt: new Date(),
+      rotationTimer: new Date()
+    };
+    // Update top-level fields AND push new assignments entry
+    for (var i = 0; i < leadIds.length; i++) {
+      var lead = await Lead.findById(leadIds[i]).lean();
+      if (!lead) continue;
+      var oldAgentId = lead.agentId;
+      var updateOps = {
+        $set: { agentId: agentObjId, status: "NewLead", callbackTime: "", lastFeedback: "", notes: "", budget: "", lastActivityTime: new Date(), lastRotationAt: new Date(), rotationCount: (lead.rotationCount || 0) + 1 },
+        $push: { assignments: newAssignment }
+      };
+      // Add old agent to previousAgentIds if exists
+      if (oldAgentId) {
+        updateOps.$push.previousAgentIds = oldAgentId;
+      }
+      await Lead.findByIdAndUpdate(leadIds[i], updateOps);
+    }
     await Activity.create({ userId: req.user.id, type: "reassign", note: "Bulk reassign — " + leadIds.length + " leads" });
     res.json({ ok: true, count: leadIds.length });
   } catch(e) { res.status(500).json({ error: e.message }); }
