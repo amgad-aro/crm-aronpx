@@ -1244,9 +1244,12 @@ var LeadsPage = function(p) {
         var notifEntry={leadName:selected?selected.name:"",leadId:pendingStatus.leadId,agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:""};
         if(p.addDealNotif) p.addDealNotif(notifEntry);
       }
-      await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
+      var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
+      // Immediate UI update from PUT response
+      if(updated&&updated._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?updated:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(updated);}
       try { await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment},p.token); } catch(actE){ console.error("activity log error:",actE.message); }
-      try{var freshLead=await apiFetch("/api/leads/"+pendingStatus.leadId,"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?freshLead:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(freshLead);}}catch(fe){}
+      // Background re-fetch for correct per-agent overlay
+      apiFetch("/api/leads/"+pendingStatus.leadId,"GET",null,p.token).then(function(freshLead){if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?freshLead:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(freshLead);}}).catch(function(){});
       p.setActivities(function(prev){return [{_id:Date.now(),userId:{name:p.cu.name},leadId:{_id:pendingStatus.leadId,name:selected?selected.name:""},type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment,createdAt:new Date().toISOString()}].concat(prev);});
       // Track NoAnswer count for rotation
       if(pendingStatus.newStatus==="NoAnswer"){
@@ -4813,7 +4816,7 @@ export default function CRMApp() {
         setLeads(leadsData);
         setActivities(activitiesData);
       }catch(e){}
-    }, 30000);
+    }, 15000);
     return function(){ clearInterval(interval); };
   }, [token]);
   useEffect(function(){
