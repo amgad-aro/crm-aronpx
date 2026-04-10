@@ -469,7 +469,6 @@ app.get("/api/leads", auth, async function(req, res) {
           return String(aid) === String(uid);
         });
         if (myAssign) {
-          console.log("OVERLAY lead=" + obj.name + " agent=" + uid + " matched assignmentId=" + myAssign._id + " status=" + myAssign.status);
           obj.status = myAssign.status || obj.status;
           obj.notes = myAssign.notes !== undefined ? myAssign.notes : obj.notes;
           obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
@@ -555,7 +554,7 @@ app.post("/api/leads", auth, async function(req, res) {
       isVIP:            false,
       eoiDeposit:       req.body.eoiDeposit || "",
       eoiDate:          req.body.eoiDate || "",
-      assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "NewLead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date() }] : [],
+      assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "New Lead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: req.body.notes || "", budget: req.body.budget || "", callbackTime: req.body.callbackTime || "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
       expiresAt:        new Date(Date.now() + 30*24*60*60*1000),
       globalStatus:     "active",
     });
@@ -576,10 +575,17 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
     var agentObjId = new mongoose.Types.ObjectId(agentId);
     var newAssignment = {
       agentId: agentObjId,
-      status: "NewLead",
+      status: "New Lead",
       assignedAt: new Date(),
       lastActionAt: new Date(),
-      rotationTimer: new Date()
+      rotationTimer: new Date(),
+      noRotation: false,
+      notes: "",
+      budget: "",
+      callbackTime: "",
+      lastFeedback: "",
+      nextCallAt: null,
+      agentHistory: []
     };
     // Update top-level fields AND push new assignments entry
     for (var i = 0; i < leadIds.length; i++) {
