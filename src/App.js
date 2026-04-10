@@ -895,7 +895,7 @@ var LeadForm = function(p) {
     if (isEOIForm && !form.eoiDeposit) { alert("Please enter the Deposit (EGP)"); return; }
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||gid(p.cu), status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
       // Keep deal metadata in payload so it saves to DB
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token, p.csrfToken)
@@ -1203,7 +1203,7 @@ var LeadsPage = function(p) {
         var rotTime=selected.lastRotationAt?new Date(selected.lastRotationAt).getTime():0;
         all=all.filter(function(a){
           var auid=String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
-          return auid===String(p.cu.id||"")&&(!rotTime||new Date(a.createdAt).getTime()>=rotTime);
+          return auid===String(p.cu.id||"");
         });
       }
       setPanelHistory(all.slice().sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);}));
@@ -4767,7 +4767,7 @@ export default function CRMApp() {
     var interval = setInterval(async function(){
       try{
         var results = await Promise.all([
-          apiFetch("/api/leads?page="+leadsPage+"&limit=200","GET",null,token),
+          apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,token),
           apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token)
         ]);
         var leadsData = results[0].data||[];
@@ -4789,6 +4789,8 @@ export default function CRMApp() {
             var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
             showBrowserNotif("🆕 New Lead", l.name+(agName?" → "+agName:""));
           });
+          // Deal/EOI notifications are created by confirmStatus via addDealNotif (MongoDB)
+          // No duplicate detection needed here — polling just refreshes notification state
         }
         knownLeadIds = new Set(leadsData.map(function(l){return String(l._id);}));
 
@@ -4798,6 +4800,7 @@ export default function CRMApp() {
           newActs.forEach(function(a){
             var who = a.userId&&a.userId.name?a.userId.name:"";
             var lead = a.leadId&&a.leadId.name?a.leadId.name:"";
+            // For team_leader: only notify for their team's activities
             if(currentUser.role==="team_leader"){
               var teamNames=new Set((users||[]).filter(function(u){return u.role==="sales";}).map(function(u){return u.name;}));
               teamNames.add(currentUser.name);
@@ -4813,7 +4816,7 @@ export default function CRMApp() {
         setLeads(leadsData);
         setActivities(activitiesData);
       }catch(e){}
-    }, 60000);
+    }, 30000);
     return function(){ clearInterval(interval); };
   }, [token]);
   useEffect(function(){
@@ -5123,8 +5126,9 @@ export default function CRMApp() {
           note:"🔄 Auto Rotation | From: "+fromName+" → To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
         },token);
         notifyRotationRef.current(lead,fromName,targetAgent.name,reason);
-        // Re-fetch single lead to get correct per-agent overlay
-        try{var freshLead=await apiFetch("/api/leads/"+gid(lead),"GET",null,token);if(freshLead&&freshLead._id){setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?freshLead:l;});});}}catch(fe){}
+        // Re-fetch leads from server to get correct per-agent overlay
+        var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,token);
+        if(fresh&&fresh.data) setLeads(fresh.data);
       }catch(e){console.error("Rotation error:",e);}
       finally{ rotatingNow.delete(lid); }
     };
