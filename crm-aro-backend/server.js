@@ -1262,6 +1262,36 @@ var sendDealEmail = async function(lead, agentName) {
   } catch(e) { console.error("Email error:", e.message); }
 };
 
+// ===== ONE-TIME DATA CLEANUP =====
+app.post("/api/admin/fix-data", auth, async function(req, res) {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  try {
+    // 1. Remove null/undefined from previousAgentIds
+    var r1 = await Lead.updateMany(
+      { previousAgentIds: null },
+      { $pull: { previousAgentIds: null } }
+    );
+    // 2. Fix assignments with missing agentHistory
+    var leadsToFix = await Lead.find({ "assignments.agentHistory": { $exists: false } }).lean();
+    var fixed2 = 0;
+    for (var i = 0; i < leadsToFix.length; i++) {
+      var l = leadsToFix[i];
+      var changed = false;
+      for (var j = 0; j < (l.assignments || []).length; j++) {
+        if (!l.assignments[j].agentHistory) {
+          await Lead.updateOne(
+            { _id: l._id },
+            { $set: { ["assignments." + j + ".agentHistory"]: [] } }
+          );
+          changed = true;
+        }
+      }
+      if (changed) fixed2++;
+    }
+    res.json({ fixed_previousAgentIds: r1.modifiedCount, fixed_agentHistory: fixed2, total: r1.modifiedCount + fixed2 });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== START SERVER =====
 var PORT = process.env.PORT || 5000;
 app.listen(PORT, function() {
