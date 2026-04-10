@@ -469,6 +469,7 @@ app.get("/api/leads", auth, async function(req, res) {
           return String(aid) === String(uid);
         });
         if (myAssign) {
+          console.log("OVERLAY lead=" + obj.name + " agent=" + uid + " matched assignmentId=" + myAssign._id + " status=" + myAssign.status);
           obj.status = myAssign.status || obj.status;
           obj.notes = myAssign.notes !== undefined ? myAssign.notes : obj.notes;
           obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;

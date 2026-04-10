@@ -1533,7 +1533,7 @@ var LeadsPage = function(p) {
                       if(!newAgent)return;
                       var oldAgName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";
                       var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
-                      try{var upd=await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:newAgent,reason:"Manual reassign"},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?upd:l;});});if(selected&&gid(selected)===gid(lead))setSelected(upd);if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
+                      try{await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:newAgent,reason:"Manual reassign"},p.token);var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);if(fresh&&fresh.data)p.setLeads(fresh.data);var freshLead=(fresh&&fresh.data||[]).find(function(fl){return gid(fl)===gid(lead);});if(selected&&gid(selected)===gid(lead)&&freshLead)setSelected(freshLead);if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
                       {isOnlyAdmin&&<option value="">— No Agent —</option>}
                       {(isOnlyAdmin?salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
@@ -1603,7 +1603,7 @@ var LeadsPage = function(p) {
               if(isManagerUser&&p.cu.teamId){var tgt=p.users.find(function(u){return gid(u)===newAgent;});if(tgt&&tgt.teamId!==p.cu.teamId)return;}
               var oldAgName=selected.agentId&&selected.agentId.name?selected.agentId.name:"";
               var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
-              try{var upd=await apiFetch("/api/leads/"+gid(selected)+"/rotate","POST",{targetAgentId:newAgent,reason:"Manual reassign"},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
+              try{await apiFetch("/api/leads/"+gid(selected)+"/rotate","POST",{targetAgentId:newAgent,reason:"Manual reassign"},p.token);var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);if(fresh&&fresh.data)p.setLeads(fresh.data);var freshLead=(fresh&&fresh.data||[]).find(function(fl){return gid(fl)===gid(selected);});if(freshLead)setSelected(freshLead);if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
               {isOnlyAdmin&&<option value="">— No Agent —</option>}
               {(isOnlyAdmin?p.myTeamUsers||salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
@@ -5097,7 +5097,7 @@ export default function CRMApp() {
       try{
         var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"Agent";
         var timeStr=new Date().toLocaleString("en-GB");
-        var updated = await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{
+        await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{
           targetAgentId: targetAgentId,
           reason: reason
         },token);
@@ -5106,7 +5106,9 @@ export default function CRMApp() {
           note:"🔄 Auto Rotation | From: "+fromName+" → To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
         },token);
         notifyRotationRef.current(lead,fromName,targetAgent.name,reason);
-        setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+        // Re-fetch leads from server to get correct per-agent overlay
+        var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,token);
+        if(fresh&&fresh.data) setLeads(fresh.data);
       }catch(e){console.error("Rotation error:",e);}
       finally{ rotatingNow.delete(lid); }
     };
