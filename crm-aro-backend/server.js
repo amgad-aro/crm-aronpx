@@ -566,9 +566,17 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
         $set: { agentId: agentObjId, lastActivityTime: new Date(), lastRotationAt: new Date(), rotationCount: (lead.rotationCount || 0) + 1 },
         $push: { assignments: newAssignment }
       };
-      // Add old agent to previousAgentIds if exists
+      // Add old agent to previousAgentIds and log rotation event
       if (oldAgentId) {
         updateOps.$push.previousAgentIds = oldAgentId;
+        var oldAgUser = await User.findById(oldAgentId).lean();
+        var newAgUser = await User.findById(agentId).lean();
+        updateOps.$push.agentHistory = {
+          action: "Rotation",
+          note: "Rotated from " + (oldAgUser ? oldAgUser.name : "Unknown") + " to " + (newAgUser ? newAgUser.name : "Unknown"),
+          by: req.user.name || "Admin",
+          date: new Date()
+        };
       }
       await Lead.findByIdAndUpdate(leadIds[i], updateOps);
     }
@@ -740,13 +748,23 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
         agentHistory: []
       };
 
+      var oldAgentName = lead.agentId && lead.agentId.name ? lead.agentId.name : "Unknown";
+      var newAgentUser = await User.findById(targetAgentId).lean();
+      var newAgentName = newAgentUser ? newAgentUser.name : "Unknown";
+      var rotationLog = {
+        action: "Rotation",
+        note: "Rotated from " + oldAgentName + " to " + newAgentName,
+        by: req.user.name || "System",
+        date: new Date()
+      };
+
       await Lead.findByIdAndUpdate(req.params.id, {
         $set: {
           agentId: new mongoose.Types.ObjectId(targetAgentId),
           lastRotationAt: new Date(),
           rotationCount: (lead.rotationCount || 0) + 1
         },
-        $push: { previousAgentIds: oldAgentId, assignments: newAssignment }
+        $push: { previousAgentIds: oldAgentId, assignments: newAssignment, agentHistory: rotationLog }
       });
     }
 
