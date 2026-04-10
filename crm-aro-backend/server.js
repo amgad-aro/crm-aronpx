@@ -1188,45 +1188,6 @@ var sendDealEmail = async function(lead, agentName) {
   } catch(e) { console.error("Email error:", e.message); }
 };
 
-// ===== ONE-TIME MIGRATION: populate assignments[] =====
-app.post("/api/admin/run-migration", auth, async function(req, res) {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-  try {
-    var leads = await Lead.find({ $or: [{ assignments: { $exists: false } }, { assignments: { $size: 0 } }] });
-    var migrated = 0, skipped = 0, errors = 0;
-    for (var i = 0; i < leads.length; i++) {
-      var l = leads[i];
-      try {
-        if (l.assignments && l.assignments.length > 0) { skipped++; continue; }
-        var agentId = l.agentId;
-        if (!agentId) { skipped++; continue; }
-        l.assignments = [{
-          agentId: agentId,
-          status: l.status || "NewLead",
-          notes: l.notes || "",
-          budget: l.budget || "",
-          callbackTime: l.callbackTime || "",
-          lastFeedback: l.lastFeedback || "",
-          assignedAt: l.createdAt || new Date(),
-          lastActionAt: l.updatedAt || l.createdAt || new Date(),
-          rotationTimer: l.updatedAt || l.createdAt || new Date(),
-          noRotation: l.locked || false,
-          nextCallAt: null
-        }];
-        if (!l.expiresAt) l.expiresAt = new Date(new Date(l.createdAt).getTime() + 30*24*60*60*1000);
-        if (!l.globalStatus) {
-          if (l.status === "EOI") l.globalStatus = "eoi";
-          else if (l.status === "DoneDeal") l.globalStatus = "donedeal";
-          else l.globalStatus = "active";
-        }
-        await l.save();
-        migrated++;
-      } catch(e) { errors++; }
-    }
-    res.json({ migrated: migrated, skipped: skipped, errors: errors, total: leads.length });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
 // ===== START SERVER =====
 var PORT = process.env.PORT || 5000;
 app.listen(PORT, function() {
