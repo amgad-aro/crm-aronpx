@@ -511,6 +511,29 @@ app.post("/api/leads", auth, async function(req, res) {
     var agentId = (req.body.agentId && req.body.agentId !== "")
       ? new mongoose.Types.ObjectId(req.body.agentId)
       : null;
+    // Auto-assign to least-loaded active sales agent if no agentId provided
+    if (!agentId) {
+      var salesAgents = await User.find({ role: "sales", active: true }).lean();
+      if (salesAgents.length > 0) {
+        // Count current assigned leads per agent
+        var counts = await Lead.aggregate([
+          { $match: { archived: false } },
+          { $group: { _id: "$agentId", count: { $sum: 1 } } }
+        ]);
+        var countMap = {};
+        counts.forEach(function(c) { if (c._id) countMap[String(c._id)] = c.count; });
+        // Pick agent with fewest leads
+        var picked = salesAgents.reduce(function(best, agent) {
+          var agentCount = countMap[String(agent._id)] || 0;
+          var bestCount = countMap[String(best._id)] || 0;
+          return agentCount < bestCount ? agent : best;
+        }, salesAgents[0]);
+        agentId = picked._id;
+        console.log("AUTO-ASSIGN: picked agent", picked.name, "(" + agentId + "), lead counts:", JSON.stringify(countMap));
+      } else {
+        console.log("AUTO-ASSIGN: no active sales agents found");
+      }
+    }
     var lead = await Lead.create({
       name:             req.body.name,
       phone:            req.body.phone,
