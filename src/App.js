@@ -1273,13 +1273,10 @@ var LeadsPage = function(p) {
       var hist = await apiFetch("/api/leads/"+gid(lead)+"/full-history","GET",null,p.token);
       var all = hist||[];
       if(!isAdminRole) {
-        // Sales sees only their own activities after last rotation
-        var rotTime = lead.lastRotationAt ? new Date(lead.lastRotationAt).getTime() : 0;
+        // Sales sees only their own activities
         all = all.filter(function(a){
           var auid = String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
-          var matchUser = auid===String(p.cu.id||"");
-          var afterRot = !rotTime||new Date(a.createdAt).getTime()>=rotTime;
-          return matchUser && afterRot;
+          return auid===String(p.cu.id||"");
         });
       }
       // Sort oldest to newest
