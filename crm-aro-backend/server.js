@@ -484,7 +484,7 @@ app.get("/api/leads", auth, async function(req, res) {
           obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
           if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
           if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
-          if (myAssign.agentHistory) obj.agentHistory = myAssign.agentHistory;
+          if (myAssign.agentHistory && myAssign.agentHistory.length > 0) obj.agentHistory = myAssign.agentHistory;
         }
         return obj;
       });
