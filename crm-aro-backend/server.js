@@ -538,7 +538,7 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
       if (!lead) continue;
       var oldAgentId = lead.agentId;
       var updateOps = {
-        $set: { agentId: agentObjId, status: "NewLead", callbackTime: "", lastFeedback: "", notes: "", budget: "", lastActivityTime: new Date(), lastRotationAt: new Date(), rotationCount: (lead.rotationCount || 0) + 1 },
+        $set: { agentId: agentObjId, lastActivityTime: new Date(), lastRotationAt: new Date(), rotationCount: (lead.rotationCount || 0) + 1 },
         $push: { assignments: newAssignment }
       };
       // Add old agent to previousAgentIds if exists
@@ -601,6 +601,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       return res.json(unchanged);
     }
     // Track agent history when agent changes (skip if first assignment from no agent)
+    // Note: agent changes should go through /rotate endpoint. This is a fallback safety net.
     if (req.body.agentId && oldLead && oldLead.agentId && String(oldLead.agentId) !== String(req.body.agentId)) {
       var oldAgentUser = oldLead.agentId ? await User.findById(oldLead.agentId).lean() : null;
       var histEntry = {
@@ -613,9 +614,6 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         removedAt: new Date()
       };
       update.agentHistory = (oldLead.agentHistory || []).concat([histEntry]);
-      update.budget = update.budget || "";
-      update.callbackTime = update.callbackTime || "";
-      update.lastFeedback = "";
       update.lastRotationAt = new Date();
       update.rotationCount = (oldLead.rotationCount || 0) + 1;
     }
