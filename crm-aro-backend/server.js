@@ -48,7 +48,22 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   locked:{type:Boolean,default:false},
   lastFeedback:{type:String,default:""},
   agentHistory:{type:[mongoose.Schema.Types.Mixed],default:[]},
-  agents:[{agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"},assignedAt:{type:Date},feedback:{type:String,default:""},status:{type:String,default:""},budget:{type:String,default:""}}]
+  assignments:[{
+    agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"},
+    status:{type:String,default:"NewLead"},
+    notes:{type:String,default:""},
+    budget:{type:String,default:""},
+    callbackTime:{type:String,default:""},
+    lastFeedback:{type:String,default:""},
+    lastActionAt:{type:Date,default:Date.now},
+    rotationTimer:{type:Date,default:Date.now},
+    noRotation:{type:Boolean,default:false},
+    nextCallAt:{type:Date,default:null},
+    assignedAt:{type:Date,default:Date.now}
+  }],
+  previousAgentIds:[{type:mongoose.Schema.Types.ObjectId,ref:"User"}],
+  globalStatus:{type:String,default:"active"},
+  expiresAt:{type:Date,default:null}
 },{timestamps:true}));
 
 var Activity = mongoose.model("Activity", new mongoose.Schema({
@@ -389,7 +404,7 @@ app.get("/api/leads", auth, async function(req, res) {
     var uid = req.user.id;
 
     if (role === "sales") {
-      query.agentId = new mongoose.Types.ObjectId(uid);
+      query["assignments.agentId"] = new mongoose.Types.ObjectId(uid);
 
     } else if (role === "team_leader") {
       // Team leader sees only their direct sales
@@ -441,7 +456,7 @@ app.get("/api/leads", auth, async function(req, res) {
     var skip = (page - 1) * limit;
 
     var total = await Lead.countDocuments(query);
-    var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").sort({ createdAt: -1 }).skip(skip).limit(limit);
+    var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").sort({ createdAt: -1 }).skip(skip).limit(limit);
 
     res.json({
       data: leads,
@@ -491,9 +506,12 @@ app.post("/api/leads", auth, async function(req, res) {
       isVIP:            false,
       eoiDeposit:       req.body.eoiDeposit || "",
       eoiDate:          req.body.eoiDate || "",
+      assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "NewLead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date() }] : [],
+      expiresAt:        new Date(Date.now() + 30*24*60*60*1000),
+      globalStatus:     "active",
     });
     console.log("SAVED phone2:", lead.phone2);
-    lead = await Lead.findById(lead._id).populate("agentId", "name title");
+    lead = await Lead.findById(lead._id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(lead);
   } catch (e) {
     console.error("POST /api/leads error:", e.message);
@@ -580,7 +598,19 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       update.lastRotationAt = new Date();
       update.rotationCount = (oldLead.rotationCount || 0) + 1;
     }
-    var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
+    var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    // Sync agent's own assignments[] entry on any action
+    if (req.user.role === "sales" || req.user.role === "team_leader") {
+      var assignUpdate = { "assignments.$.lastActionAt": new Date(), "assignments.$.rotationTimer": new Date() };
+      if (req.body.status) assignUpdate["assignments.$.status"] = req.body.status;
+      if (req.body.notes !== undefined) assignUpdate["assignments.$.notes"] = req.body.notes;
+      if (req.body.budget !== undefined) assignUpdate["assignments.$.budget"] = req.body.budget;
+      if (req.body.callbackTime !== undefined) assignUpdate["assignments.$.callbackTime"] = req.body.callbackTime;
+      if (req.body.lastFeedback !== undefined) assignUpdate["assignments.$.lastFeedback"] = req.body.lastFeedback;
+      if (req.body.noRotation !== undefined) assignUpdate["assignments.$.noRotation"] = req.body.noRotation;
+      await Lead.updateOne({ _id: req.params.id, "assignments.agentId": req.user.id }, { $set: assignUpdate });
+      lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    }
     try {
       var actType = "note";
       var actNote = "Updated";
@@ -615,6 +645,85 @@ app.delete("/api/leads/:id", auth, adminOnly, async function(req, res) {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ===== ROTATE LEAD =====
+app.post("/api/leads/:id/rotate", auth, async function(req, res) {
+  try {
+    var { targetAgentId, reason } = req.body;
+    if (!targetAgentId) return res.status(400).json({ error: "targetAgentId required" });
+    var lead = await Lead.findById(req.params.id).populate("agentId", "name title");
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+
+    // ── HARD STOP 1: noRotation flag on any assignment ──
+    var currentAssignment = (lead.assignments || []).find(function(a) { return String(a.agentId) === String(lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId); });
+    if (currentAssignment && currentAssignment.noRotation && req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(400).json({ error: "noRotation", message: "Rotation blocked — noRotation flag set" });
+    }
+    // ── HARD STOP 2: globalStatus === eoi ──
+    if (lead.globalStatus === "eoi") {
+      return res.status(400).json({ error: "eoi", message: "Rotation blocked — lead is EOI" });
+    }
+    // ── HARD STOP 3: globalStatus === donedeal ──
+    if (lead.globalStatus === "donedeal") {
+      return res.status(400).json({ error: "donedeal", message: "Rotation blocked — lead is Done Deal" });
+    }
+    // ── HARD STOP 4: expired ──
+    if (lead.expiresAt && new Date() > new Date(lead.expiresAt)) {
+      await Lead.findByIdAndUpdate(req.params.id, { $set: { globalStatus: "expired" } });
+      return res.status(400).json({ error: "expired", message: "Rotation blocked — lead expired" });
+    }
+    // ── HARD STOP 5: all agents exhausted ──
+    var prevIds = (lead.previousAgentIds || []).map(function(id) { return String(id); });
+    if (prevIds.includes(String(targetAgentId))) {
+      return res.status(400).json({ error: "already_assigned", message: "Target agent already had this lead" });
+    }
+
+    // Save current agent to agentHistory
+    var oldAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
+    if (oldAgentId) {
+      var oldAgentUser = await User.findById(oldAgentId).lean();
+      var histEntry = {
+        agentId: String(oldAgentId),
+        agentName: oldAgentUser ? oldAgentUser.name : "",
+        feedback: lead.lastFeedback || "",
+        status: lead.status || "",
+        budget: lead.budget || "",
+        assignedAt: lead.updatedAt || lead.createdAt,
+        removedAt: new Date()
+      };
+      var newHistory = (lead.agentHistory || []).concat([histEntry]);
+      var newPrevIds = (lead.previousAgentIds || []).concat([oldAgentId]);
+
+      // Add new assignment entry
+      var newAssignment = {
+        agentId: new mongoose.Types.ObjectId(targetAgentId),
+        status: "NewLead",
+        assignedAt: new Date(),
+        lastActionAt: new Date(),
+        rotationTimer: new Date()
+      };
+
+      await Lead.findByIdAndUpdate(req.params.id, {
+        $set: {
+          agentId: new mongoose.Types.ObjectId(targetAgentId),
+          status: "NewLead",
+          budget: "",
+          callbackTime: "",
+          lastFeedback: "",
+          notes: "",
+          lastRotationAt: new Date(),
+          rotationCount: (lead.rotationCount || 0) + 1,
+          agentHistory: newHistory,
+          previousAgentIds: newPrevIds
+        },
+        $push: { assignments: newAssignment }
+      });
+    }
+
+    var updated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    res.json(updated);
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // Admin cleanup: remove duplicate leads by phone, keep oldest
@@ -772,7 +881,7 @@ app.get("/api/stats", auth, async function(req, res) {
   try {
     var leadQuery = {};
     var actQuery = {};
-    if (req.user.role === "sales") { leadQuery.agentId = req.user.id; actQuery.userId = req.user.id; }
+    if (req.user.role === "sales") { leadQuery["assignments.agentId"] = req.user.id; actQuery.userId = req.user.id; }
     var totalLeads = await Lead.countDocuments(leadQuery);
     var potential = await Lead.countDocuments(Object.assign({ status: "Potential" }, leadQuery));
     var hotCase = await Lead.countDocuments(Object.assign({ status: "HotCase" }, leadQuery));

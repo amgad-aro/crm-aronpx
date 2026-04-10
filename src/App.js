@@ -5049,14 +5049,15 @@ export default function CRMApp() {
     };
 
     // Helper: pick agent using round-robin rotation
-    var pickAgent = function(excludeId){
+    var pickAgent = function(excludeId, previousAgentIds){
       var savedIds = getSavedAgents();
       if(!savedIds.length) return null;
       var agents = users.filter(function(u){return savedIds.includes(gid(u))&&(u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
       if(!agents.length) return null;
-      // Filter out the current agent
-      var candidates = agents.filter(function(u){return gid(u)!==excludeId;});
-      if(!candidates.length) candidates = agents;
+      // Filter out the current agent and all previous agents
+      var prevSet = (previousAgentIds||[]).map(function(id){return String(id);});
+      var candidates = agents.filter(function(u){return gid(u)!==excludeId && !prevSet.includes(String(gid(u)));});
+      if(!candidates.length) return null; // all agents exhausted
       // Round-robin: get last index from localStorage
       var lastIdx = 0;
       try{lastIdx = Number(localStorage.getItem('crm_rot_last_idx')||'0');}catch(e){}
@@ -5067,31 +5068,38 @@ export default function CRMApp() {
       return picked;
     };
 
-    // Helper: do rotation (reassign to new agent, backend tracks agentHistory)
+    // Helper: do rotation via backend /rotate endpoint (all 5 hard stops enforced server-side)
     var doRotate = async function(lead, reason){
       var lid = gid(lead);
       if(rotatingNow.has(lid)) return;
+
+      // ── Frontend hard stop checks (fast fail before API call) ──
+      // 1. noRotation on current assignment
+      var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
+      var curAssign = (lead.assignments||[]).find(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===String(currentAgentId);});
+      if(curAssign&&curAssign.noRotation) return;
+      // 2. globalStatus eoi
+      if(lead.globalStatus==="eoi") return;
+      // 3. globalStatus donedeal
+      if(lead.globalStatus==="donedeal") return;
+      // 4. expired
+      if(lead.expiresAt&&new Date()>new Date(lead.expiresAt)) return;
+      // 5. Skip team_leader
+      var currentAgentUser = users.find(function(u){return String(gid(u))===String(currentAgentId);});
+      if(currentAgentUser&&currentAgentUser.role==="team_leader") return;
+
+      var targetAgent = pickAgent(currentAgentId, lead.previousAgentIds);
+      if(!targetAgent) return; // all agents exhausted (hard stop 5)
+      var targetAgentId = gid(targetAgent);
+      if(targetAgentId===currentAgentId) return;
+
       rotatingNow.add(lid);
       try{
-        var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
         var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"Agent";
-        var currentAgentUser = users.find(function(u){return String(gid(u))===String(currentAgentId);});
-        if(currentAgentUser&&currentAgentUser.role==="team_leader") return;
-        var targetAgent = pickAgent(currentAgentId);
-        if(!targetAgent) return;
-        var targetAgentId = gid(targetAgent);
-        if(targetAgentId===currentAgentId) return;
-        var alreadyAssigned = (lead.agents||[]).some(function(a){return String(a.agentId&&a.agentId._id||a.agentId)===String(targetAgentId);});
-        if(alreadyAssigned) return;
         var timeStr=new Date().toLocaleString("en-GB");
-        var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{
-          agentId: targetAgentId,
-          status: "NewLead",
-          callbackTime: "",
-          lastFeedback: "",
-          notes: "",
-          budget: "",
-          lastRotationAt: new Date().toISOString()
+        var updated = await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{
+          targetAgentId: targetAgentId,
+          reason: reason
         },token);
         await apiFetch("/api/activities","POST",{
           leadId:gid(lead),type:"reassign",
@@ -5128,32 +5136,24 @@ export default function CRMApp() {
         if(rotatedThisCycle.has(lid)) continue;
         var lastAct = new Date(l.lastActivityTime||0).getTime();
 
-        // Skip DoneDeal and EOI — never rotate
+        // ── Hard stops (mirrors backend) ──
+        // 1. noRotation on current assignment
+        var lAgentId = String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
+        var lCurAssign = (l.assignments||[]).find(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===lAgentId;});
+        if(lCurAssign&&lCurAssign.noRotation) continue;
+        // 2. globalStatus eoi
+        if(l.globalStatus==="eoi") continue;
+        // 3. globalStatus donedeal
+        if(l.globalStatus==="donedeal") continue;
+        // 4. expired
+        if(l.expiresAt&&new Date()>new Date(l.expiresAt)) continue;
+        // Also skip old status checks for backwards compat
         if(l.status==="DoneDeal"||l.status==="EOI") continue;
-
         // Skip VIP leads — pinned, never rotate
         if(l.isVIP) continue;
-
-        // 🔒 Skip locked leads — never rotate (now stored in DB via lead.locked)
+        // Skip locked leads
         if(l.locked) continue;
-
-        // 👤 Skip leads assigned to team_leader — they keep the lead until they reassign
-        var lAgentId = String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
-        var lAgentRole = (function(){
-          var savedIds = getSavedAgents();
-          // Check if agent is team_leader by checking if NOT in saved rotation agents
-          // and their role — we check from all users including admins
-          var allU = users.find(function(u){return String(gid(u))===lAgentId;});
-          return allU?allU.role:"sales";
-        })();
-        if(lAgentRole==="team_leader") continue;
-
-        // ⏰ Skip leads older than 30 days (createdAt)
-        var createdAt = new Date(l.createdAt||0).getTime();
-        if((Date.now()-createdAt) > THIRTY_DAYS) continue;
-
-        // 🔢 Skip leads that have been rotated 6+ times — just stop rotating, don't change status
-        if((l.rotationCount||0) >= 6) continue;
+        // 5. all agents exhausted — checked inside doRotate/pickAgent
 
         // ── RULE 1: NoAnswer x(naCount) → rotate after naHours ──────────
         if(l.status==="NoAnswer"){
