@@ -895,7 +895,7 @@ var LeadForm = function(p) {
     if (isEOIForm && !form.eoiDeposit) { alert("Please enter the Deposit (EGP)"); return; }
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||gid(p.cu), status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
       // Keep deal metadata in payload so it saves to DB
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token, p.csrfToken)
@@ -1061,10 +1061,10 @@ var QuickPhoneSearch = function(p) {
   var [show,setShow]=useState(false);
   var [q,setQ]=useState("");
   var leadResults=q.length>=4?p.leads.filter(function(l){
-    return (l.phone&&(l.phone.includes(q)||l.phone.endsWith(q)))||(l.phone2&&(l.phone2.includes(q)||l.phone2.endsWith(q)));
+    return l.phone&&(l.phone.includes(q)||l.phone.endsWith(q));
   }):[];
   var drResults=q.length>=4?(p.dailyReqs||[]).filter(function(r){
-    return (r.phone&&(r.phone.includes(q)||r.phone.endsWith(q)))||(r.phone2&&(r.phone2.includes(q)||r.phone2.endsWith(q)));
+    return r.phone&&(r.phone.includes(q)||r.phone.endsWith(q));
   }):[];
   var sc=STATUSES(p.t);
   var drSc=DR_STATUSES(p.t);
@@ -1203,7 +1203,7 @@ var LeadsPage = function(p) {
         var rotTime=selected.lastRotationAt?new Date(selected.lastRotationAt).getTime():0;
         all=all.filter(function(a){
           var auid=String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
-          return auid===String(p.cu.id||"");
+          return auid===String(p.cu.id||"")&&(!rotTime||new Date(a.createdAt).getTime()>=rotTime);
         });
       }
       setPanelHistory(all.slice().sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);}));
@@ -1244,12 +1244,9 @@ var LeadsPage = function(p) {
         var notifEntry={leadName:selected?selected.name:"",leadId:pendingStatus.leadId,agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:""};
         if(p.addDealNotif) p.addDealNotif(notifEntry);
       }
-      var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
-      // Immediate UI update from PUT response
-      if(updated&&updated._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?updated:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(updated);}
+      await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
       try { await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment},p.token); } catch(actE){ console.error("activity log error:",actE.message); }
-      // Background re-fetch for correct per-agent overlay
-      apiFetch("/api/leads/"+pendingStatus.leadId,"GET",null,p.token).then(function(freshLead){if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?freshLead:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(freshLead);}}).catch(function(){});
+      try{var freshLead=await apiFetch("/api/leads/"+pendingStatus.leadId,"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?freshLead:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(freshLead);}}catch(fe){}
       p.setActivities(function(prev){return [{_id:Date.now(),userId:{name:p.cu.name},leadId:{_id:pendingStatus.leadId,name:selected?selected.name:""},type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment,createdAt:new Date().toISOString()}].concat(prev);});
       // Track NoAnswer count for rotation
       if(pendingStatus.newStatus==="NoAnswer"){
@@ -1276,10 +1273,13 @@ var LeadsPage = function(p) {
       var hist = await apiFetch("/api/leads/"+gid(lead)+"/full-history","GET",null,p.token);
       var all = hist||[];
       if(!isAdminRole) {
-        // Sales sees only their own activities
+        // Sales sees only their own activities after last rotation
+        var rotTime = lead.lastRotationAt ? new Date(lead.lastRotationAt).getTime() : 0;
         all = all.filter(function(a){
           var auid = String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
-          return auid===String(p.cu.id||"");
+          var matchUser = auid===String(p.cu.id||"");
+          var afterRot = !rotTime||new Date(a.createdAt).getTime()>=rotTime;
+          return matchUser && afterRot;
         });
       }
       // Sort oldest to newest
@@ -1523,7 +1523,6 @@ var LeadsPage = function(p) {
                         <div style={{ borderTop:"1px solid #F1F5F9", marginTop:4, paddingTop:4 }}><button onClick={function(e){e.stopPropagation();setStatusDrop(null);}} style={{ width:"100%", padding:"7px", borderRadius:8, border:"none", background:"#F1F5F9", cursor:"pointer", fontSize:12, color:C.textLight }}>{t.cancel}</button></div>
                       </div>}
                     </div>
-                    {(function(){if(!isOnlyAdmin||!lead.assignments||lead.assignments.length<=1)return null;var SP=["MeetingDone","HotCase","Potential","CallBack","NoAnswer","NotInterested","NewLead"];var SL={"MeetingDone":"Meeting Done","HotCase":"Hot Case","Potential":"Potential","CallBack":"Call Back","NoAnswer":"No Answer","NotInterested":"Not Interested","NewLead":"New Lead"};var curIdx=SP.indexOf(lead.status);var bestIdx=SP.length;for(var ai=0;ai<lead.assignments.length;ai++){var si=SP.indexOf(lead.assignments[ai].status);if(si>=0&&si<bestIdx)bestIdx=si;}if(bestIdx>=curIdx||bestIdx>=SP.length)return null;return <span style={{background:"#F1F5F9",color:"#64748B",padding:"2px 6px",borderRadius:8,fontSize:10,fontWeight:500,marginLeft:4,whiteSpace:"nowrap"}}>was: {SL[SP[bestIdx]]||SP[bestIdx]}</span>;})()}
                   </td>
                   {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:13, fontWeight:700, color:C.text, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{lead.lastFeedback||<span style={{color:"#CBD5E1", fontWeight:400}}>-</span>}</td>}
                   {!p.isMobile&&isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{lead.source}</td>}
@@ -1608,26 +1607,6 @@ var LeadsPage = function(p) {
               {isOnlyAdmin&&<option value="">— No Agent —</option>}
               {(isOnlyAdmin?p.myTeamUsers||salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
             </select>
-          </div>}
-          {/* Assigned Agents — admin remove */}
-          {isOnlyAdmin&&selected.assignments&&selected.assignments.length>1&&<div style={{ marginBottom:12, padding:10, background:"#F0F9FF", borderRadius:10, border:"1px solid #BFDBFE" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:"#1D4ED8", marginBottom:6 }}>👥 Assigned Agents ({selected.assignments.length})</div>
-            {selected.assignments.map(function(a,i){
-              var aName=a.agentId&&a.agentId.name?a.agentId.name:"Unknown";
-              var aId=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
-              var isCurrent=String(aId)===String(selected.agentId&&selected.agentId._id?selected.agentId._id:selected.agentId);
-              return <div key={i} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"5px 0", borderBottom:i<selected.assignments.length-1?"1px solid #DBEAFE":"none" }}>
-                <div>
-                  <span style={{ fontSize:12, fontWeight:isCurrent?700:400, color:isCurrent?C.accent:C.text }}>{aName}</span>
-                  {isCurrent&&<span style={{ fontSize:9, background:"#DCFCE7", color:"#15803D", padding:"1px 5px", borderRadius:6, marginLeft:4, fontWeight:600 }}>current</span>}
-                  <span style={{ fontSize:10, color:C.textLight, marginLeft:4 }}>{a.status||""}</span>
-                </div>
-                <button onClick={async function(){
-                  if(!window.confirm("Remove "+aName+" from this lead?"))return;
-                  try{var upd=await apiFetch("/api/leads/"+gid(selected)+"/assignment/"+aId,"DELETE",null,p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){alert(ex.message||"Failed");}
-                }} style={{ background:"none", border:"none", cursor:"pointer", color:"#EF4444", fontSize:14, padding:"2px 6px", borderRadius:6 }} title="Remove agent">🗑</button>
-              </div>;
-            })}
           </div>}
           {/* Details - grid on mobile */}
           {p.isMobile?<div>
@@ -4785,37 +4764,43 @@ export default function CRMApp() {
     if(!token) return;
     var knownLeadIds = null;
     var knownActivityIds = null;
-    // Interval 1 — leads every 15s (skip if tab hidden)
-    var leadsInterval = setInterval(async function(){
-      if(document.visibilityState!=="visible") return;
+    var interval = setInterval(async function(){
       try{
-        var result = await apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,token);
-        var leadsData = result.data||[];
+        var results = await Promise.all([
+          apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,token),
+          apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token)
+        ]);
+        var leadsData = results[0].data||[];
+        var activitiesData = results[1].data||[];
+        // Fetch DR separately
+        try{
+          var drData = await apiFetch("/api/daily-requests","GET",null,token);
+          setDailyReqs(drData||[]);
+        }catch(drErr){}
         try{
           var cache=JSON.parse(localStorage.getItem('phone2_cache')||'{}');
           leadsData=leadsData.map(function(l){var id=l._id?String(l._id):null;if(id&&cache[id]&&!l.phone2)return Object.assign({},l,{phone2:cache[id]});return l;});
         }catch(e){}
+
+        // Detect new leads
         if(knownLeadIds !== null){
           var newLeads = leadsData.filter(function(l){return !knownLeadIds.has(String(l._id));});
           newLeads.forEach(function(l){
             var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
             showBrowserNotif("🆕 New Lead", l.name+(agName?" → "+agName:""));
           });
+          // Deal/EOI notifications are created by confirmStatus via addDealNotif (MongoDB)
+          // No duplicate detection needed here — polling just refreshes notification state
         }
         knownLeadIds = new Set(leadsData.map(function(l){return String(l._id);}));
-        setLeads(leadsData);
-      }catch(e){}
-    }, 15000);
-    // Interval 2 — activities every 15s
-    var actInterval = setInterval(async function(){
-      try{
-        var result = await apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token);
-        var activitiesData = result.data||[];
+
+        // Detect new activities
         if(knownActivityIds !== null){
           var newActs = activitiesData.filter(function(a){return !knownActivityIds.has(String(a._id));});
           newActs.forEach(function(a){
             var who = a.userId&&a.userId.name?a.userId.name:"";
             var lead = a.leadId&&a.leadId.name?a.leadId.name:"";
+            // For team_leader: only notify for their team's activities
             if(currentUser.role==="team_leader"){
               var teamNames=new Set((users||[]).filter(function(u){return u.role==="sales";}).map(function(u){return u.name;}));
               teamNames.add(currentUser.name);
@@ -4827,17 +4812,12 @@ export default function CRMApp() {
           });
         }
         knownActivityIds = new Set(activitiesData.map(function(a){return String(a._id);}));
+
+        setLeads(leadsData);
         setActivities(activitiesData);
       }catch(e){}
-    }, 15000);
-    // Interval 3 — daily requests every 30s
-    var drInterval = setInterval(async function(){
-      try{
-        var drData = await apiFetch("/api/daily-requests","GET",null,token);
-        setDailyReqs(drData||[]);
-      }catch(e){}
     }, 30000);
-    return function(){ clearInterval(leadsInterval); clearInterval(actInterval); clearInterval(drInterval); };
+    return function(){ clearInterval(interval); };
   }, [token]);
   useEffect(function(){
     if(!token) return;
@@ -5268,7 +5248,7 @@ export default function CRMApp() {
     runChecks();
     var rotInterval = setInterval(runChecks, 5*60*1000);
     return function(){clearInterval(rotInterval);};
-  },[token, users]);
+  },[token, leads, users]);
 
   var handleLogout=function(){setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
