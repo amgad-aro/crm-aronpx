@@ -1963,7 +1963,7 @@ var MyDayPage = function(p) {
 
 var DashboardPage = function(p) {
   var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
-  var [filter, setFilter] = useState("month");
+  var [filter, setFilter] = useState("today");
   var [qOpen, setQOpen] = useState(false);
   var now = Date.now();
   var DAY=86400000, WEEK=7*DAY, MONTH=30*DAY;
@@ -2009,6 +2009,9 @@ var DashboardPage = function(p) {
     return {uid:uid,name:u.name,leads:al.length,interested:aint,ip:ip,meetings:ameet,mp:mp,overdue:al.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).length,deals:al.filter(function(l){return l.status==="DoneDeal";}).length,score:Math.min(99,ip+mp*2+(al.length>10?20:10))};
   }).sort(function(a,b){return b.leads-a.leads;});
 
+  var dayNames=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  var todayIdx=new Date().getDay();
+  var weekDays=Array.from({length:7},function(_,i){return dayNames[(todayIdx-6+i+7)%7];});
   var kpiCard=function(label,value,sub,bg,vc,onClick){
     var bars=[30,45,55,40,65,70,85];
     return <div onClick={onClick} style={{background:bg,borderRadius:14,padding:"16px",cursor:onClick?"pointer":"default"}}>
@@ -2018,7 +2021,7 @@ var DashboardPage = function(p) {
       <div style={{display:"flex",alignItems:"flex-end",gap:2,height:20,marginTop:8}}>
         {bars.map(function(h,i){return <div key={i} style={{flex:1,borderRadius:2,height:h+"%",background:vc,opacity:i===6?0.8:0.2}}/>;})}</div>
       <div style={{display:"flex",gap:2,marginTop:3}}>
-        {["S","Su","M","T","W","T","F"].map(function(d,i){return <div key={i} style={{flex:1,fontSize:"6px",textAlign:"center",color:vc,opacity:0.5}}>{d}</div>;})}</div>
+        {weekDays.map(function(d,i){return <div key={i} style={{flex:1,fontSize:"6px",textAlign:"center",color:vc,opacity:0.5}}>{d}</div>;})}</div>
     </div>;
   };
 
@@ -2032,7 +2035,7 @@ var DashboardPage = function(p) {
     </div>;
   };
 
-  var card=function(children,extra){return <div style={Object.assign({background:"#fff",border:"1px solid #E8ECF1",borderRadius:14,padding:"18px 20px"},extra||{})}>{children}</div>;};
+  var card=function(children,extra){return <div style={Object.assign({background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,padding:"20px"},extra||{})}>{children}</div>;};
   var sec=function(label){return <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:"0.1em",textTransform:"uppercase",margin:"24px 0 12px"}}>{label}</div>;};
   var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
 
@@ -2050,7 +2053,7 @@ var DashboardPage = function(p) {
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24,flexWrap:"wrap",gap:8}}>
       <div>
         <div style={{fontSize:22,fontWeight:700,color:"#0F172A"}}>{p.cu.name||"Dashboard"}</div>
-        <div style={{fontSize:12,color:"#94A3B8",marginTop:2}}>ARO CRM &middot; {new Date().toDateString()}</div>
+        <div style={{fontSize:12,color:"#94A3B8",marginTop:2}}>{new Date().toDateString()}</div>
       </div>
       <div style={{display:"flex",gap:6,alignItems:"center"}}>
         {[["today","Today"],["week","This Week"],["month","This Month"]].map(function(f){
@@ -2066,18 +2069,18 @@ var DashboardPage = function(p) {
     </div>
 
     {sec("Key Metrics")}
-    <div style={{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:10,marginBottom:0}}>
-      {kpiCard("Total Leads",total,"all leads","#EFF6FF","#1D4ED8",function(){p.nav("leads");})}
-      {kpiCard("New "+filter,newInRange,"in period","#F0FDF4","#15803D",function(){p.nav("leads");})}
-      {kpiCard("Interested",interested,Math.round(interested/Math.max(total,1)*100)+"%","#FFF7ED","#C2410C",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
-      {kpiCard("Meetings",meetings,Math.round(meetings/Math.max(total,1)*100)+"%","#F5F3FF","#6D28D9",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
-      {kpiCard("Overdue",overdue,"late callbacks","#FFF1F2","#BE123C",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
-      {kpiCard("Deals",deals,total>0?((deals/total)*100).toFixed(1)+"%":"0%","#ECFDF5","#065F46",function(){p.nav("deals");})}
-      {kpiCard("Contacted",contacted,Math.round(contacted/Math.max(total,1)*100)+"%","#F0F9FF","#0369A1",function(){p.nav("leads");})}
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(140px, 1fr))",gap:10,marginBottom:0}}>
+      {kpiCard("Total Leads",total,"all leads","#E8F4FD","#1565C0",function(){p.nav("leads");})}
+      {kpiCard("New "+filter,newInRange,"in period","#E8F8F0","#1B6B3A",function(){p.nav("leads");})}
+      {kpiCard("Interested",interested,Math.round(interested/Math.max(total,1)*100)+"%","#FEF9E7","#B7770D",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
+      {kpiCard("Meetings",meetings,Math.round(meetings/Math.max(total,1)*100)+"%","#F3E8FD","#6A1B9A",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
+      {kpiCard("Overdue",overdue,"late callbacks","#FEECEC","#C0392B",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
+      {kpiCard("Deals",deals,total>0?((deals/total)*100).toFixed(1)+"%":"0%","#E8F8F5","#0E6655",function(){p.nav("deals");})}
+      {kpiCard("Contacted",contacted,Math.round(contacted/Math.max(total,1)*100)+"%","#EAF2FF","#1A5276",function(){p.nav("leads");})}
     </div>
 
     {sec("Campaigns & Pipeline")}
-    <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:14,marginBottom:14}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))",gap:14,marginBottom:14}}>
       {card(<>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
           <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Campaign &amp; Source Performance</div>
@@ -2162,7 +2165,7 @@ var DashboardPage = function(p) {
       })}
     </>,{marginBottom:14})}
 
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:14}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(280px, 1fr))",gap:14}}>
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Leads by Status</div>
         {[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"],["No Answer","NoAnswer","#CBD5E1"]].map(function(s){return bRow(s[0],sc[s[1]]||0,total,s[2]);})}
