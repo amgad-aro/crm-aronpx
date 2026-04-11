@@ -2078,7 +2078,7 @@ var DashboardPage = function(p) {
 
     {sec("Campaigns & Pipeline")}
     <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:14,marginBottom:14}}>
-      {card(<React.Fragment>
+      {card(<>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
           <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Campaign &amp; Source Performance</div>
           <div style={{display:"flex",gap:8}}>
@@ -2105,9 +2105,9 @@ var DashboardPage = function(p) {
             <div style={{textAlign:"center"}}>{qBadge(c.quality)}</div>
           </div>;
         })}
-      </React.Fragment>)}
+      </>)}
       <div style={{display:"flex",flexDirection:"column",gap:14}}>
-        {card(<React.Fragment>
+        {card(<>
           <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Conversion Funnel</div>
           {[{l:"New Lead",v:total,c:"#DBEAFE",tc:"#1E40AF"},{l:"Contacted",v:contacted,c:"#DCFCE7",tc:"#166534"},{l:"Interested",v:interested,c:"#FEF3C7",tc:"#92400E"},{l:"Hot Case",v:sc["HotCase"]||0,c:"#EDE9FE",tc:"#5B21B6"},{l:"Meeting",v:meetings,c:"#D1FAE5",tc:"#065F46"},{l:"Deal",v:deals,c:"#FFE4E6",tc:"#9F1239"}].map(function(row,i){
             var pct=total>0?Math.max(6,Math.round(row.v/total*100)):6;
@@ -2119,8 +2119,8 @@ var DashboardPage = function(p) {
               <div style={{fontSize:10,color:"#94A3B8"}}>{total>0?Math.round(row.v/total*100)+"%":""}</div>
             </div>;
           })}
-        </React.Fragment>)}
-        {card(<React.Fragment>
+        </>)}
+        {card(<>
           <div style={{fontSize:15,fontWeight:700,color:"#92400E",marginBottom:12}}>Urgent Alerts</div>
           {[{dot:"#EF4444",t:untouched+" untouched 48h+",s:"need immediate action",b:"URGENT",bc:"#DC2626"},{dot:"#F59E0B",t:overdue+" overdue callbacks",s:"past scheduled time",b:"LATE",bc:"#B45309"},{dot:"#6366F1",t:leads.filter(function(l){return l.locked;}).length+" leads locked",s:"noRotation flag",b:"",bc:""}].map(function(a,i){
             return <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 0",borderBottom:i<2?"1px solid #FEF3C7":"none"}}>
@@ -2129,12 +2129,12 @@ var DashboardPage = function(p) {
               {a.b&&<span style={{fontSize:11,fontWeight:700,color:a.bc}}>{a.b}</span>}
             </div>;
           })}
-        </React.Fragment>,{background:"#FFFBEB",border:"1px solid #FDE68A"})}
+        </>,{background:"#FFFBEB",border:"1px solid #FDE68A"})}
       </div>
     </div>
 
     {sec("Team Performance")}
-    {card(<React.Fragment>
+    {card(<>
       <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Agent Performance</div>
       <div style={{display:"grid",gridTemplateColumns:"160px 60px 70px 60px 70px 60px 60px 60px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4}}>
         {["Agent","Leads","Interested","Int%","Meetings","Overdue","Deals","Score"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
@@ -2160,14 +2160,14 @@ var DashboardPage = function(p) {
           <div style={{fontSize:12,fontWeight:700,textAlign:"center",color:a.score>=70?"#15803D":a.score>=50?"#92400E":"#94A3B8"}}>{medals[i]||""} {a.score}</div>
         </div>;
       })}
-    </React.Fragment>,{marginBottom:14})}
+    </>,{marginBottom:14})}
 
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:14}}>
-      {card(<React.Fragment>
+      {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Leads by Status</div>
         {[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"],["No Answer","NoAnswer","#CBD5E1"]].map(function(s){return bRow(s[0],sc[s[1]]||0,total,s[2]);})}
-      </React.Fragment>)}
-      {card(<React.Fragment>
+      </>)}
+      {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Lead Aging</div>
         {[{l:"0\u20131 days",sub:"fresh",v:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;}).length,c:"#10B981"},{l:"2\u20133 days",sub:"followup needed",v:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())>=DAY&&(now-new Date(l.createdAt).getTime())<3*DAY;}).length,c:"#F59E0B"},{l:"4\u20137 days",sub:"at risk",v:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())>=3*DAY&&(now-new Date(l.createdAt).getTime())<7*DAY;}).length,c:"#EF4444"},{l:"30+ days",sub:"rotation stopped",v:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())>=MONTH;}).length,c:"#94A3B8"}].map(function(row,i){
           return <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:i<3?"1px solid #F8FAFC":"none"}}>
@@ -2175,16 +2175,16 @@ var DashboardPage = function(p) {
             <div style={{textAlign:"right"}}><div style={{fontSize:18,fontWeight:800,color:row.c}}>{row.v}</div><div style={{fontSize:10,color:"#94A3B8"}}>{total>0?Math.round(row.v/total*100)+"%":"\u2014"}</div></div>
           </div>;
         })}
-      </React.Fragment>)}
-      {card(<React.Fragment>
+      </>)}
+      {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Call Outcomes</div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
           <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{(p.activities||[]).filter(function(a){return a.type==="call"&&a.createdAt&&(now-new Date(a.createdAt).getTime())<DAY;}).length}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>Calls Today</div></div>
           <div style={{background:"#FFF1F2",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#BE123C"}}>{total>0?Math.round((sc["NotInterested"]||0)/total*100):0}%</div><div style={{fontSize:10,fontWeight:600,color:"#F43F5E"}}>Not Interested</div></div>
         </div>
         {[["Interested",interested,"#10B981"],["No Answer",sc["NoAnswer"]||0,"#94A3B8"],["Not Int.",sc["NotInterested"]||0,"#EF4444"],["Call Back",sc["CallBack"]||0,"#F59E0B"]].map(function(s){return bRow(s[0],s[1],total,s[2]);})}
-      </React.Fragment>)}
-      {card(<React.Fragment>
+      </>)}
+      {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Management Alerts</div>
         {[{dot:"#EF4444",t:untouched+" untouched leads",s:"no calls yet"},{dot:"#F59E0B",t:leads.filter(function(l){return !l.lastFeedback&&l.status!=="NewLead";}).length+" missing feedback",s:"no notes"},{dot:"#F97316",t:overdue+" overdue callbacks",s:"past scheduled"},{dot:"#6366F1",t:leads.reduce(function(s2,l){return s2+(l.rotationCount||0);},0)+" total rotations",s:"all time"}].map(function(a,i){
           return <div key={i} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:i<3?"1px solid #F8FAFC":"none"}}>
@@ -2196,7 +2196,7 @@ var DashboardPage = function(p) {
           <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}><span style={{color:"#64748B",fontWeight:500}}>Data quality</span><span style={{fontWeight:700,color:"#0F172A"}}>{Math.max(0,100-Math.round((untouched+overdue)*100/Math.max(total,1)))}%</span></div>
           <div style={{height:4,background:"#E2E8F0",borderRadius:2}}><div style={{height:"100%",width:Math.max(0,100-Math.round((untouched+overdue)*100/Math.max(total,1)))+"%",background:"#10B981",borderRadius:2}}/></div>
         </div>
-      </React.Fragment>)}
+      </>)}
     </div>
   </div>;
 };
