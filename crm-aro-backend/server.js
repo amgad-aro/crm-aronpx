@@ -538,7 +538,7 @@ app.get("/api/leads/:id", auth, async function(req, res) {
 app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
   try {
     var phone = decodeURIComponent(req.params.phone);
-    var lead = await Lead.findOne({ phone: phone, archived: false }).populate("agentId", "name title");
+    var lead = await Lead.findOne({ $or: [{ phone: phone }, { phone2: phone }], archived: false }).populate("agentId", "name title");
     if (lead) res.json({ exists: true, lead: lead });
     else res.json({ exists: false });
   } catch(e) { res.status(500).json({ error: e.message }); }
