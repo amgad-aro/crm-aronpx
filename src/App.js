@@ -1981,66 +1981,76 @@ var DashboardPage = function(p) {
     var days = ["Sat","Sun","Mon","Tue","Wed","Thu","Fri"];
     var bars = barData || [35,55,45,70,50,80,90];
     var maxB = Math.max.apply(null,bars)||1;
-    return React.createElement("div",{style:{borderRadius:12,padding:"0.8rem 0.9rem",overflow:"hidden",minWidth:0,background:color}},
-      React.createElement("div",{style:{fontSize:10,fontWeight:500,color:"rgba(255,255,255,0.85)",marginBottom:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}},label),
-      React.createElement("div",{style:{fontSize:22,fontWeight:500,color:"#fff",lineHeight:1}},value),
-      React.createElement("div",{style:{fontSize:9,color:"rgba(255,255,255,0.7)",marginTop:3,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}},sub),
-      React.createElement("div",{style:{marginTop:8,overflow:"hidden"}},
-        React.createElement("div",{style:{display:"flex",alignItems:"flex-end",gap:2,height:18}},
-          bars.map(function(b,i){return React.createElement("span",{key:i,style:{flex:1,borderRadius:2,height:Math.round(b/maxB*100)+"%",background:i===bars.length-1?"rgba(255,255,255,0.92)":"rgba(255,255,255,0.25)",minWidth:0}});})
-        ),
-        React.createElement("div",{style:{display:"flex",gap:2,marginTop:3}},
-          days.map(function(d,i){return React.createElement("span",{key:i,style:{flex:1,fontSize:"6px",textAlign:"center",color:"rgba(255,255,255,0.6)",minWidth:0,overflow:"hidden"}},d);})
-        )
-      )
+    return (
+      <div style={{borderRadius:12,padding:"0.8rem 0.9rem",overflow:"hidden",minWidth:0,background:color}}>
+        <div style={{fontSize:10,fontWeight:500,color:"rgba(255,255,255,0.85)",marginBottom:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</div>
+        <div style={{fontSize:22,fontWeight:500,color:"#fff",lineHeight:1}}>{value}</div>
+        <div style={{fontSize:9,color:"rgba(255,255,255,0.7)",marginTop:3,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{sub}</div>
+        <div style={{marginTop:8,overflow:"hidden"}}>
+          <div style={{display:"flex",alignItems:"flex-end",gap:2,height:18}}>
+            {bars.map(function(b,i){return <span key={i} style={{flex:1,borderRadius:2,height:Math.round(b/maxB*100)+"%",background:i===bars.length-1?"rgba(255,255,255,0.92)":"rgba(255,255,255,0.25)",minWidth:0}} />;})}
+          </div>
+          <div style={{display:"flex",gap:2,marginTop:3}}>
+            {days.map(function(d,i){return <span key={i} style={{flex:1,fontSize:"6px",textAlign:"center",color:"rgba(255,255,255,0.6)",minWidth:0,overflow:"hidden"}}>{d}</span>;})}
+          </div>
+        </div>
+      </div>
     );
   };
 
   var bRow = function(label, count, total, color){
     var pct = total>0?Math.round(count/total*100):0;
-    return React.createElement("div",{style:{display:"flex",alignItems:"center",gap:5,marginBottom:6}},
-      React.createElement("div",{style:{fontSize:10,color:C2.textLight,width:78,flexShrink:0}},label),
-      React.createElement("div",{style:{flex:1,height:5,background:C2.border,borderRadius:3,overflow:"hidden"}},
-        React.createElement("div",{style:{height:"100%",width:pct+"%",background:color,borderRadius:3}})
-      ),
-      React.createElement("div",{style:{fontSize:10,color:C2.textLight,width:24,textAlign:"right"}},count)
+    return (
+      <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:6}}>
+        <div style={{fontSize:10,color:C2.textLight,width:78,flexShrink:0}}>{label}</div>
+        <div style={{flex:1,height:5,background:C2.border,borderRadius:3,overflow:"hidden"}}>
+          <div style={{height:"100%",width:pct+"%",background:color,borderRadius:3}} />
+        </div>
+        <div style={{fontSize:10,color:C2.textLight,width:24,textAlign:"right"}}>{count}</div>
+      </div>
     );
   };
 
   var aItem = function(dot, title, sub, badge, bdColor){
-    return React.createElement("div",{style:{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 0",borderBottom:"0.5px solid "+C2.border}},
-      React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:dot,flexShrink:0,marginTop:3}}),
-      React.createElement("div",{style:{flex:1}},
-        React.createElement("div",{style:{fontSize:12,fontWeight:500,color:C2.text}},title),
-        React.createElement("div",{style:{fontSize:10,color:C2.textLight}},sub)
-      ),
-      badge&&React.createElement("span",{style:{fontSize:10,color:bdColor,fontWeight:500}},badge)
+    return (
+      <div style={{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 0",borderBottom:"0.5px solid "+C2.border}}>
+        <div style={{width:8,height:8,borderRadius:"50%",background:dot,flexShrink:0,marginTop:3}} />
+        <div style={{flex:1}}>
+          <div style={{fontSize:12,fontWeight:500,color:C2.text}}>{title}</div>
+          <div style={{fontSize:10,color:C2.textLight}}>{sub}</div>
+        </div>
+        {badge&&<span style={{fontSize:10,color:bdColor,fontWeight:500}}>{badge}</span>}
+      </div>
     );
   };
 
   var card = function(children, extra){
-    return React.createElement("div",Object.assign({style:{background:C2.card,border:"0.5px solid "+C2.border,borderRadius:12,padding:"0.9rem 1.1rem"}},extra||{}),children);
+    return (
+      <div style={{background:C2.card,border:"0.5px solid "+C2.border,borderRadius:12,padding:"0.9rem 1.1rem",...(extra&&extra.style?extra.style:{})}}>{children}</div>
+    );
   };
 
-  var filterBar = React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.2rem",flexWrap:"wrap",gap:8}},
-    React.createElement("div",null,
-      React.createElement("div",{style:{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.05em",textTransform:"uppercase",marginBottom:2}},"My Dashboard"),
-      React.createElement("div",{style:{fontSize:18,fontWeight:500,color:C2.text}},p.cu.name),
-      React.createElement("div",{style:{fontSize:11,color:C2.textLight,marginTop:2}},"ARO CRM · "+new Date().toDateString())
-    ),
-    React.createElement("div",{style:{display:"flex",gap:6,alignItems:"center"}},
-      ["today","week","month"].map(function(f){return React.createElement("button",{key:f,onClick:function(){setFilter(f);},style:{fontSize:11,padding:"5px 12px",border:"0.5px solid "+(filter===f?"#B5D4F4":C2.border),borderRadius:8,background:filter===f?"#E6F1FB":C2.card,color:filter===f?"#185FA5":C2.textLight,cursor:"pointer"}},f==="today"?"Today":f==="week"?"This Week":"This Month");})
-      ,React.createElement("div",{style:{position:"relative"}},
-        React.createElement("button",{onClick:function(){setQOpen(!qOpen);},style:{fontSize:11,padding:"5px 12px",border:"0.5px solid "+C2.border,borderRadius:8,background:selectedQ?"#E6F1FB":C2.card,color:selectedQ?"#185FA5":C2.textLight,cursor:"pointer"}},(selectedQ||"Quarter")+" ▾"),
-        qOpen&&React.createElement("div",{style:{position:"absolute",top:"calc(100% + 4px)",right:0,background:C2.card,border:"0.5px solid "+C2.border,borderRadius:8,minWidth:100,zIndex:99}},
-          ["Q1 2026","Q2 2026","Q3 2026","Q4 2025"].map(function(q){return React.createElement("div",{key:q,onClick:function(){setSelectedQ(q);setQOpen(false);setFilter("q");},style:{padding:"6px 12px",fontSize:11,color:C2.textLight,cursor:"pointer"}},q);})
-        )
-      )
-    )
+  var filterBar = (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.2rem",flexWrap:"wrap",gap:8}}>
+      <div>
+        <div style={{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.05em",textTransform:"uppercase",marginBottom:2}}>My Dashboard</div>
+        <div style={{fontSize:18,fontWeight:500,color:C2.text}}>{p.cu.name}</div>
+        <div style={{fontSize:11,color:C2.textLight,marginTop:2}}>{"ARO CRM \u00b7 "+new Date().toDateString()}</div>
+      </div>
+      <div style={{display:"flex",gap:6,alignItems:"center"}}>
+        {["today","week","month"].map(function(f){return <button key={f} onClick={function(){setFilter(f);}} style={{fontSize:11,padding:"5px 12px",border:"0.5px solid "+(filter===f?"#B5D4F4":C2.border),borderRadius:8,background:filter===f?"#E6F1FB":C2.card,color:filter===f?"#185FA5":C2.textLight,cursor:"pointer"}}>{f==="today"?"Today":f==="week"?"This Week":"This Month"}</button>;})}
+        <div style={{position:"relative"}}>
+          <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:11,padding:"5px 12px",border:"0.5px solid "+C2.border,borderRadius:8,background:selectedQ?"#E6F1FB":C2.card,color:selectedQ?"#185FA5":C2.textLight,cursor:"pointer"}}>{(selectedQ||"Quarter")+" \u25be"}</button>
+          {qOpen&&<div style={{position:"absolute",top:"calc(100% + 4px)",right:0,background:C2.card,border:"0.5px solid "+C2.border,borderRadius:8,minWidth:100,zIndex:99}}>
+            {["Q1 2026","Q2 2026","Q3 2026","Q4 2025"].map(function(q){return <div key={q} onClick={function(){setSelectedQ(q);setQOpen(false);setFilter("q");}} style={{padding:"6px 12px",fontSize:11,color:C2.textLight,cursor:"pointer"}}>{q}</div>;})}
+          </div>}
+        </div>
+      </div>
+    </div>
   );
 
-  if(loading) return React.createElement("div",{style:{padding:24,color:C2.textLight}},"Loading dashboard...");
-  if(!data) return React.createElement("div",{style:{padding:24,color:C2.textLight}},"Failed to load dashboard.");
+  if(loading) return <div style={{padding:24,color:C2.textLight}}>Loading dashboard...</div>;
+  if(!data) return <div style={{padding:24,color:C2.textLight}}>Failed to load dashboard.</div>;
 
   // ===== ADMIN DASHBOARD =====
   if(isOnlyAdmin){
@@ -2057,206 +2067,216 @@ var DashboardPage = function(p) {
     var qbColor = function(q){return q==="High"?"#EAF3DE":q==="Medium"?"#FAEEDA":"#FCEBEB";};
     var qbText = function(q){return q==="High"?"#3B6D11":q==="Medium"?"#854F0B":"#A32D2D";};
 
-    return React.createElement("div",{style:{padding:"1.5rem",background:C2.bg,fontFamily:"var(--font-sans)"}},
-      filterBar,
+    return (
+      <div style={{padding:"1.5rem",background:C2.bg,fontFamily:"var(--font-sans)"}}>
+        {filterBar}
 
-      // KPI Row
-      React.createElement("div",{style:{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.07em",textTransform:"uppercase",margin:"0 0 7px"}},"KPIs — Today"),
-      React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:9,marginBottom:9}},
-        kpiCard("Leads Today",kpis.leadsToday||0,"new today","#1565C0"),
-        kpiCard("Interested Today",kpis.interestedToday||0,(kpis.interestedPct||0)+"% rate","#00796B"),
-        kpiCard("Followups Today",kpis.callbacksToday||0,"scheduled","#E65100"),
-        kpiCard("Meetings Today",kpis.meetingsToday||0,"booked","#6A1B9A"),
-        kpiCard("Deals This Month",kpis.dealsMonth||0,"+12% vs last month","#2E7D32"),
-        kpiCard("Conversion Rate",(kpis.convRate||0)+"%","leads → deals","#AD1457"),
-        kpiCard("Contacted %",(kpis.contactedPct||0)+"%","of total leads","#00695C")
-      ),
+        {/* KPI Row */}
+        <div style={{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.07em",textTransform:"uppercase",margin:"0 0 7px"}}>{"KPIs \u2014 Today"}</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:9,marginBottom:9}}>
+          {kpiCard("Leads Today",kpis.leadsToday||0,"new today","#1565C0")}
+          {kpiCard("Interested Today",kpis.interestedToday||0,(kpis.interestedPct||0)+"% rate","#00796B")}
+          {kpiCard("Followups Today",kpis.callbacksToday||0,"scheduled","#E65100")}
+          {kpiCard("Meetings Today",kpis.meetingsToday||0,"booked","#6A1B9A")}
+          {kpiCard("Deals This Month",kpis.dealsMonth||0,"+12% vs last month","#2E7D32")}
+          {kpiCard("Conversion Rate",(kpis.convRate||0)+"%","leads \u2192 deals","#AD1457")}
+          {kpiCard("Contacted %",(kpis.contactedPct||0)+"%","of total leads","#00695C")}
+        </div>
 
-      // Campaign + Funnel + Alerts
-      React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:9,marginBottom:9}},
-        // Campaign table span 2
-        React.createElement("div",{style:{gridColumn:"span 2",background:C2.card,border:"0.5px solid "+C2.border,borderRadius:12,padding:"0.9rem 1.1rem"}},
-          React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-            React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Campaign & Source Performance"),
-            React.createElement("div",{style:{display:"flex",gap:5}},
-              React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},"● Facebook"),
-              React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#EAF3DE",color:"#3B6D11"}},"● Sheets"),
-              React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}},"● Google Ads")
-            )
-          ),
-          React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 40px 70px 70px 40px 44px",gap:3,marginBottom:6}},
-            ["Campaign · Project · Source","Leads","Interested","Meetings","Deals","Quality"].map(function(h){return React.createElement("span",{key:h,style:{fontSize:10,color:C2.textLight,textAlign:h!=="Campaign · Project · Source"?"center":"left"}},h);})
-          ),
-          camps.slice(0,6).map(function(c,i){
-            var srcColor = c.source==="Facebook"?"#378ADD":c.source==="Google Sheets"?"#1D9E75":"#EF9F27";
-            return React.createElement("div",{key:i,style:{display:"grid",gridTemplateColumns:"1fr 40px 70px 70px 40px 44px",gap:3,alignItems:"center",padding:"6px 0",borderBottom:"0.5px solid "+C2.border}},
-              React.createElement("div",null,
-                React.createElement("div",{style:{display:"flex",alignItems:"center",gap:5}},
-                  React.createElement("span",{style:{width:7,height:7,borderRadius:"50%",background:srcColor,display:"inline-block",flexShrink:0}}),
-                  React.createElement("span",{style:{fontSize:11,fontWeight:500,color:C2.text}},c.campaign||"—"," · ",c.project||"—")
-                ),
-                React.createElement("span",{style:{fontSize:10,color:C2.textLight,paddingLeft:12}},c.source||"—")
-              ),
-              React.createElement("span",{style:{fontSize:11,textAlign:"center",color:C2.text}},c.leads),
-              React.createElement("div",{style:{textAlign:"center"}},
-                React.createElement("div",{style:{fontSize:11,fontWeight:500,color:"#1D9E75"}},c.interested),
-                React.createElement("div",{style:{fontSize:10,color:C2.textLight}},c.interestedPct+"%")
-              ),
-              React.createElement("div",{style:{textAlign:"center"}},
-                React.createElement("div",{style:{fontSize:11,fontWeight:500,color:"#7F77DD"}},c.meetings),
-                React.createElement("div",{style:{fontSize:10,color:C2.textLight}},c.meetingPct+"%")
-              ),
-              React.createElement("span",{style:{fontSize:11,textAlign:"center",fontWeight:500,color:C2.text}},c.deals),
-              React.createElement("span",{style:{textAlign:"center"}},
-                React.createElement("span",{style:{display:"inline-block",width:42,textAlign:"center",fontSize:10,fontWeight:500,padding:"2px 3px",borderRadius:3,background:qbColor(c.quality),color:qbText(c.quality)}},c.quality)
-              )
-            );
-          })
-        ),
-        // Funnel + Alerts
-        React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:9}},
-          card(React.createElement(React.Fragment,null,
-            React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-              React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Conversion Funnel"),
-              React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},(funnel.assigned||0)+" leads")
-            ),
-            [
-              {l:"New Lead",v:funnel.assigned,c:"#E6F1FB",tc:"#185FA5"},
-              {l:"Contacted",v:funnel.contacted,c:"#EAF3DE",tc:"#3B6D11"},
-              {l:"Interested",v:funnel.interested,c:"#FAEEDA",tc:"#854F0B"},
-              {l:"Hot Case",v:funnel.hotCase,c:"#EEEDFE",tc:"#534AB7"},
-              {l:"Meeting",v:funnel.meeting,c:"#E1F5EE",tc:"#0F6E56"},
-              {l:"Deal",v:funnel.deal,c:"#FAECE7",tc:"#993C1D"},
-            ].map(function(row,i){
-              var pct = funnel.assigned>0?Math.max(8,Math.round(row.v/funnel.assigned*100)):8;
-              return React.createElement("div",{key:i,style:{display:"flex",alignItems:"center",gap:7,marginBottom:5}},
-                React.createElement("div",{style:{height:17,borderRadius:3,background:row.c,display:"flex",alignItems:"center",padding:"0 8px",width:pct+"%",minWidth:62}},
-                  React.createElement("span",{style:{fontSize:10,fontWeight:500,color:row.tc,whiteSpace:"nowrap"}},row.l+" — "+(row.v||0))
-                )
+        {/* Campaign + Funnel + Alerts */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:9,marginBottom:9}}>
+          {/* Campaign table span 2 */}
+          <div style={{gridColumn:"span 2",background:C2.card,border:"0.5px solid "+C2.border,borderRadius:12,padding:"0.9rem 1.1rem"}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+              <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Campaign &amp; Source Performance</div>
+              <div style={{display:"flex",gap:5}}>
+                <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>{"● Facebook"}</span>
+                <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#EAF3DE",color:"#3B6D11"}}>{"● Sheets"}</span>
+                <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}}>{"● Google Ads"}</span>
+              </div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 40px 70px 70px 40px 44px",gap:3,marginBottom:6}}>
+              {["Campaign \u00b7 Project \u00b7 Source","Leads","Interested","Meetings","Deals","Quality"].map(function(h){return <span key={h} style={{fontSize:10,color:C2.textLight,textAlign:h!=="Campaign \u00b7 Project \u00b7 Source"?"center":"left"}}>{h}</span>;})}
+            </div>
+            {camps.slice(0,6).map(function(c,i){
+              var srcColor = c.source==="Facebook"?"#378ADD":c.source==="Google Sheets"?"#1D9E75":"#EF9F27";
+              return (
+                <div key={i} style={{display:"grid",gridTemplateColumns:"1fr 40px 70px 70px 40px 44px",gap:3,alignItems:"center",padding:"6px 0",borderBottom:"0.5px solid "+C2.border}}>
+                  <div>
+                    <div style={{display:"flex",alignItems:"center",gap:5}}>
+                      <span style={{width:7,height:7,borderRadius:"50%",background:srcColor,display:"inline-block",flexShrink:0}} />
+                      <span style={{fontSize:11,fontWeight:500,color:C2.text}}>{c.campaign||"\u2014"}{" \u00b7 "}{c.project||"\u2014"}</span>
+                    </div>
+                    <span style={{fontSize:10,color:C2.textLight,paddingLeft:12}}>{c.source||"\u2014"}</span>
+                  </div>
+                  <span style={{fontSize:11,textAlign:"center",color:C2.text}}>{c.leads}</span>
+                  <div style={{textAlign:"center"}}>
+                    <div style={{fontSize:11,fontWeight:500,color:"#1D9E75"}}>{c.interested}</div>
+                    <div style={{fontSize:10,color:C2.textLight}}>{c.interestedPct+"%"}</div>
+                  </div>
+                  <div style={{textAlign:"center"}}>
+                    <div style={{fontSize:11,fontWeight:500,color:"#7F77DD"}}>{c.meetings}</div>
+                    <div style={{fontSize:10,color:C2.textLight}}>{c.meetingPct+"%"}</div>
+                  </div>
+                  <span style={{fontSize:11,textAlign:"center",fontWeight:500,color:C2.text}}>{c.deals}</span>
+                  <span style={{textAlign:"center"}}>
+                    <span style={{display:"inline-block",width:42,textAlign:"center",fontSize:10,fontWeight:500,padding:"2px 3px",borderRadius:3,background:qbColor(c.quality),color:qbText(c.quality)}}>{c.quality}</span>
+                  </span>
+                </div>
               );
-            })
-          )),
-          card(React.createElement(React.Fragment,null,
-            React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-              React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Hot Leads Alert"),
-              React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FCEBEB",color:"#A32D2D"}},"urgent")
-            ),
-            aItem("#E24B4A",(alerts.untouched48h||0)+" leads — no contact 48h+","never called since entry","URGENT","#A32D2D"),
-            aItem("#EF9F27",(alerts.overdueCallbacks||0)+" overdue callbacks","past scheduled time","LATE","#854F0B"),
-            aItem("#534AB7",(alerts.noRotationCount||0)+" leads locked","🔒 noRotation flag set","","")
-          ))
-        )
-      ),
+            })}
+          </div>
+          {/* Funnel + Alerts */}
+          <div style={{display:"flex",flexDirection:"column",gap:9}}>
+            {card(<>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+                <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Conversion Funnel</div>
+                <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>{(funnel.assigned||0)+" leads"}</span>
+              </div>
+              {[
+                {l:"New Lead",v:funnel.assigned,c:"#E6F1FB",tc:"#185FA5"},
+                {l:"Contacted",v:funnel.contacted,c:"#EAF3DE",tc:"#3B6D11"},
+                {l:"Interested",v:funnel.interested,c:"#FAEEDA",tc:"#854F0B"},
+                {l:"Hot Case",v:funnel.hotCase,c:"#EEEDFE",tc:"#534AB7"},
+                {l:"Meeting",v:funnel.meeting,c:"#E1F5EE",tc:"#0F6E56"},
+                {l:"Deal",v:funnel.deal,c:"#FAECE7",tc:"#993C1D"},
+              ].map(function(row,i){
+                var pct = funnel.assigned>0?Math.max(8,Math.round(row.v/funnel.assigned*100)):8;
+                return (
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:7,marginBottom:5}}>
+                    <div style={{height:17,borderRadius:3,background:row.c,display:"flex",alignItems:"center",padding:"0 8px",width:pct+"%",minWidth:62}}>
+                      <span style={{fontSize:10,fontWeight:500,color:row.tc,whiteSpace:"nowrap"}}>{row.l+" \u2014 "+(row.v||0)}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </>)}
+            {card(<>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+                <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Hot Leads Alert</div>
+                <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FCEBEB",color:"#A32D2D"}}>urgent</span>
+              </div>
+              {aItem("#E24B4A",(alerts.untouched48h||0)+" leads \u2014 no contact 48h+","never called since entry","URGENT","#A32D2D")}
+              {aItem("#EF9F27",(alerts.overdueCallbacks||0)+" overdue callbacks","past scheduled time","LATE","#854F0B")}
+              {aItem("#534AB7",(alerts.noRotationCount||0)+" leads locked","\ud83d\udd12 noRotation flag set","","")}
+            </>)}
+          </div>
+        </div>
 
-      // Agent Performance Table
-      React.createElement("div",{style:{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.07em",textTransform:"uppercase",margin:"0 0 7px"}},"Team — All Agent Activity"),
-      card(React.createElement(React.Fragment,null,
-        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}},
-          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Complete Agent Performance"),
-          React.createElement("div",{style:{display:"flex",gap:6}},
-            React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},"Leads + DR combined"),
-            React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}},"This Month")
-          )
-        ),
-        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"160px repeat(10,1fr)",gap:3,marginBottom:7}},
-          ["Agent","Leads","DR","Total","Followups","Overdue","Interested","Meetings","Deals","Resp.Time","Score"].map(function(h){return React.createElement("span",{key:h,style:{fontSize:10,color:C2.textLight,textAlign:h==="Agent"?"left":"center"}},h);})
-        ),
-        React.createElement("div",{style:{borderTop:"0.5px solid "+C2.border,marginBottom:7}}),
-        agents.map(function(a,i){
-          var medals=["🥇","🥈","🥉","4️⃣"];
-          var initials=(a.name||"?").split(" ").map(function(x){return x[0];}).slice(0,2).join("").toUpperCase();
-          var avColors=[["#E6F1FB","#185FA5"],["#E1F5EE","#0F6E56"],["#FAEEDA","#854F0B"],["#EEEDFE","#534AB7"],["#FAECE7","#993C1D"]];
-          var avc=avColors[i%avColors.length];
-          return React.createElement("div",{key:a.agentId,style:{display:"grid",gridTemplateColumns:"160px repeat(10,1fr)",gap:3,alignItems:"center",padding:"8px 0",borderBottom:"0.5px solid "+C2.border}},
-            React.createElement("div",{style:{display:"flex",alignItems:"center",gap:6}},
-              React.createElement("div",{style:{width:26,height:26,borderRadius:"50%",background:avc[0],color:avc[1],display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:500,flexShrink:0}},initials),
-              React.createElement("div",null,
-                React.createElement("div",{style:{fontSize:12,fontWeight:500,color:C2.text}},a.name),
-                React.createElement("div",{style:{height:3,borderRadius:2,overflow:"hidden",background:C2.border,width:55,marginTop:3}},
-                  React.createElement("div",{style:{height:"100%",width:Math.min(100,a.score)+"%",background:avc[1],borderRadius:2}})
-                )
-              )
-            ),
-            ...[a.leads,a.dr,a.total,a.followups].map(function(v,j){return React.createElement("span",{key:j,style:{fontSize:11,textAlign:"center",color:C2.text}},v||0);}),
-            React.createElement("span",{style:{fontSize:11,textAlign:"center",color:a.overdue>0?"#E24B4A":C2.text,fontWeight:a.overdue>0?500:400}},a.overdue||0),
-            React.createElement("div",{style:{textAlign:"center"}},
-              React.createElement("div",{style:{fontSize:11,fontWeight:500,color:"#1D9E75"}},a.interested||0),
-              React.createElement("div",{style:{fontSize:9,color:C2.textLight}},(a.interestedPct||0)+"%")
-            ),
-            React.createElement("div",{style:{textAlign:"center"}},
-              React.createElement("div",{style:{fontSize:11,fontWeight:500,color:"#7F77DD"}},a.meetings||0),
-              React.createElement("div",{style:{fontSize:9,color:C2.textLight}},(a.meetingPct||0)+"%")
-            ),
-            React.createElement("span",{style:{fontSize:11,textAlign:"center",fontWeight:500,color:"#1D9E75"}},a.deals||0),
-            React.createElement("span",{style:{fontSize:11,textAlign:"center",color:C2.textLight}},(a.respTime||"—")+(a.respTime?"h":"")),
-            React.createElement("span",{style:{fontSize:11,textAlign:"center",fontWeight:500,color:a.score>=80?"#EF9F27":a.score>=60?"#888780":"#E24B4A"}},(medals[i]||"")+" "+(a.score||0))
-          );
-        }),
-        React.createElement("div",{style:{borderTop:"0.5px solid "+C2.border,marginTop:8,paddingTop:6,fontSize:10,color:"#A32D2D"}},"⚠ Resp.Time = time from lead entry to first agent action (hours)")
-      ),{style:{marginBottom:9}}),
-
-      // Bottom row: Status + Aging + Calls + Alerts
-      React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:9}},
-        card(React.createElement(React.Fragment,null,
-          React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-            React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Leads by Status"),
-            React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},(funnel.assigned||0)+" total")
-          ),
-          statusList.sort(function(a,b){return b.count-a.count;}).slice(0,7).map(function(s){
-            return bRow(s.status.replace("New","New ").replace("Done","Done ").replace("Not","Not "),s.count,funnel.assigned||1,statusColors[s.status]||"#888");
-          })
-        )),
-        card(React.createElement(React.Fragment,null,
-          React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-            React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Lead Aging"),
-            React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}},"by days old")
-          ),
-          [
-            {l:"0–1 days",v:aging.fresh||0,sub:"fresh",c:"#1D9E75"},
-            {l:"2–3 days",v:aging.needsFollowup||0,sub:"needs followup",c:"#EF9F27"},
-            {l:"4–7 days",v:aging.atRisk||0,sub:"at risk",c:"#D85A30"},
-            {l:"30+ days",v:aging.expired||0,sub:"rotation stopped",c:"#888780"},
-          ].map(function(row,i){
-            return React.createElement("div",{key:i,style:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"7px 0",borderBottom:i<3?"0.5px solid "+C2.border:"none"}},
-              React.createElement("div",null,
-                React.createElement("div",{style:{fontSize:11,color:C2.text}},row.l),
-                React.createElement("div",{style:{fontSize:10,color:C2.textLight}},row.sub)
-              ),
-              React.createElement("div",{style:{textAlign:"right"}},
-                React.createElement("div",{style:{fontSize:13,fontWeight:500,color:row.c}},row.v),
-                React.createElement("div",{style:{fontSize:10,color:C2.textLight}},funnel.assigned>0?Math.round(row.v/funnel.assigned*100)+"%":"—")
-              )
+        {/* Agent Performance Table */}
+        <div style={{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.07em",textTransform:"uppercase",margin:"0 0 7px"}}>{"Team \u2014 All Agent Activity"}</div>
+        {card(<>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Complete Agent Performance</div>
+            <div style={{display:"flex",gap:6}}>
+              <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>Leads + DR combined</span>
+              <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}}>This Month</span>
+            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"160px repeat(10,1fr)",gap:3,marginBottom:7}}>
+            {["Agent","Leads","DR","Total","Followups","Overdue","Interested","Meetings","Deals","Resp.Time","Score"].map(function(h){return <span key={h} style={{fontSize:10,color:C2.textLight,textAlign:h==="Agent"?"left":"center"}}>{h}</span>;})}
+          </div>
+          <div style={{borderTop:"0.5px solid "+C2.border,marginBottom:7}} />
+          {agents.map(function(a,i){
+            var medals=["\ud83e\udd47","\ud83e\udd48","\ud83e\udd49","4\ufe0f\u20e3"];
+            var initials=(a.name||"?").split(" ").map(function(x){return x[0];}).slice(0,2).join("").toUpperCase();
+            var avColors=[["#E6F1FB","#185FA5"],["#E1F5EE","#0F6E56"],["#FAEEDA","#854F0B"],["#EEEDFE","#534AB7"],["#FAECE7","#993C1D"]];
+            var avc=avColors[i%avColors.length];
+            return (
+              <div key={a.agentId} style={{display:"grid",gridTemplateColumns:"160px repeat(10,1fr)",gap:3,alignItems:"center",padding:"8px 0",borderBottom:"0.5px solid "+C2.border}}>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <div style={{width:26,height:26,borderRadius:"50%",background:avc[0],color:avc[1],display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:500,flexShrink:0}}>{initials}</div>
+                  <div>
+                    <div style={{fontSize:12,fontWeight:500,color:C2.text}}>{a.name}</div>
+                    <div style={{height:3,borderRadius:2,overflow:"hidden",background:C2.border,width:55,marginTop:3}}>
+                      <div style={{height:"100%",width:Math.min(100,a.score)+"%",background:avc[1],borderRadius:2}} />
+                    </div>
+                  </div>
+                </div>
+                {[a.leads,a.dr,a.total,a.followups].map(function(v,j){return <span key={j} style={{fontSize:11,textAlign:"center",color:C2.text}}>{v||0}</span>;})}
+                <span style={{fontSize:11,textAlign:"center",color:a.overdue>0?"#E24B4A":C2.text,fontWeight:a.overdue>0?500:400}}>{a.overdue||0}</span>
+                <div style={{textAlign:"center"}}>
+                  <div style={{fontSize:11,fontWeight:500,color:"#1D9E75"}}>{a.interested||0}</div>
+                  <div style={{fontSize:9,color:C2.textLight}}>{(a.interestedPct||0)+"%"}</div>
+                </div>
+                <div style={{textAlign:"center"}}>
+                  <div style={{fontSize:11,fontWeight:500,color:"#7F77DD"}}>{a.meetings||0}</div>
+                  <div style={{fontSize:9,color:C2.textLight}}>{(a.meetingPct||0)+"%"}</div>
+                </div>
+                <span style={{fontSize:11,textAlign:"center",fontWeight:500,color:"#1D9E75"}}>{a.deals||0}</span>
+                <span style={{fontSize:11,textAlign:"center",color:C2.textLight}}>{(a.respTime||"\u2014")+(a.respTime?"h":"")}</span>
+                <span style={{fontSize:11,textAlign:"center",fontWeight:500,color:a.score>=80?"#EF9F27":a.score>=60?"#888780":"#E24B4A"}}>{(medals[i]||"")+" "+(a.score||0)}</span>
+              </div>
             );
-          })
-        )),
-        card(React.createElement(React.Fragment,null,
-          React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-            React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Calls & Outcomes"),
-            React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},"Today")
-          ),
-          React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:10}},
-            React.createElement("div",{style:{background:"#E6F1FB",borderRadius:8,padding:"0.55rem",textAlign:"center"}},React.createElement("div",{style:{fontSize:17,fontWeight:500,color:"#185FA5"}},d.calls&&d.calls.today||0),React.createElement("div",{style:{fontSize:10,color:"#0C447C"}},"Total Calls")),
-            React.createElement("div",{style:{background:"#FCEBEB",borderRadius:8,padding:"0.55rem",textAlign:"center"}},React.createElement("div",{style:{fontSize:17,fontWeight:500,color:"#A32D2D"}},(d.calls&&d.calls.invalidPct||0)+"%"),React.createElement("div",{style:{fontSize:10,color:"#791F1F"}},"Invalid Leads"))
-          ),
-          bRow("Interested",Math.round((funnel.assigned||0)*0.31),funnel.assigned||1,"#1D9E75"),
-          bRow("No Answer",Math.round((funnel.assigned||0)*0.20),funnel.assigned||1,"#888780"),
-          bRow("Not Interest",statusList.find(function(s){return s.status==="NotInterested";})?statusList.find(function(s){return s.status==="NotInterested";}).count:0,funnel.assigned||1,"#E24B4A"),
-          bRow("Call Later",Math.round((funnel.assigned||0)*0.10),funnel.assigned||1,"#EF9F27")
-        )),
-        card(React.createElement(React.Fragment,null,
-          React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-            React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Management Alerts"),
-            React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FCEBEB",color:"#A32D2D"}},"issues")
-          ),
-          aItem("#E24B4A",(mgmt.untouched||0)+" untouched leads","no call made yet"),
-          aItem("#D85A30",(mgmt.missingFeedback||0)+" missing feedback","no notes added"),
-          aItem("#EF9F27",(mgmt.stale48h||0)+" stale leads 48h+","no activity"),
-          aItem("#7F77DD",(mgmt.rotationsMonth||0)+" rotations this month","auto + manual"),
-          React.createElement("div",{style:{borderTop:"0.5px solid "+C2.border,margin:"8px 0"}}),
-          React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11}},React.createElement("span",{style:{color:C2.textLight}},"Data quality"),React.createElement("span",{style:{fontWeight:500,color:(mgmt.dataQuality||0)<70?"#D85A30":C2.text}},(mgmt.dataQuality||0)+"%")),
-          React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,marginTop:5}},React.createElement("span",{style:{color:C2.textLight}},"Overloaded agents"),React.createElement("span",{style:{fontWeight:500,color:(mgmt.overloadedAgents||0)>0?"#EF9F27":C2.text}},(mgmt.overloadedAgents||0)>0?"⚠ "+(mgmt.overloadedAgents)+" agents":"✓ Balanced"))
-        ))
-      )
+          })}
+          <div style={{borderTop:"0.5px solid "+C2.border,marginTop:8,paddingTop:6,fontSize:10,color:"#A32D2D"}}>{"⚠ Resp.Time = time from lead entry to first agent action (hours)"}</div>
+        </>,{style:{marginBottom:9}})}
+
+        {/* Bottom row: Status + Aging + Calls + Alerts */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:9}}>
+          {card(<>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+              <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Leads by Status</div>
+              <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>{(funnel.assigned||0)+" total"}</span>
+            </div>
+            {statusList.sort(function(a,b){return b.count-a.count;}).slice(0,7).map(function(s){
+              return bRow(s.status.replace("New","New ").replace("Done","Done ").replace("Not","Not "),s.count,funnel.assigned||1,statusColors[s.status]||"#888");
+            })}
+          </>)}
+          {card(<>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+              <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Lead Aging</div>
+              <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}}>by days old</span>
+            </div>
+            {[
+              {l:"0\u20131 days",v:aging.fresh||0,sub:"fresh",c:"#1D9E75"},
+              {l:"2\u20133 days",v:aging.needsFollowup||0,sub:"needs followup",c:"#EF9F27"},
+              {l:"4\u20137 days",v:aging.atRisk||0,sub:"at risk",c:"#D85A30"},
+              {l:"30+ days",v:aging.expired||0,sub:"rotation stopped",c:"#888780"},
+            ].map(function(row,i){
+              return (
+                <div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"7px 0",borderBottom:i<3?"0.5px solid "+C2.border:"none"}}>
+                  <div>
+                    <div style={{fontSize:11,color:C2.text}}>{row.l}</div>
+                    <div style={{fontSize:10,color:C2.textLight}}>{row.sub}</div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:13,fontWeight:500,color:row.c}}>{row.v}</div>
+                    <div style={{fontSize:10,color:C2.textLight}}>{funnel.assigned>0?Math.round(row.v/funnel.assigned*100)+"%":"\u2014"}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </>)}
+          {card(<>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+              <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Calls &amp; Outcomes</div>
+              <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>Today</span>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:10}}>
+              <div style={{background:"#E6F1FB",borderRadius:8,padding:"0.55rem",textAlign:"center"}}><div style={{fontSize:17,fontWeight:500,color:"#185FA5"}}>{d.calls&&d.calls.today||0}</div><div style={{fontSize:10,color:"#0C447C"}}>Total Calls</div></div>
+              <div style={{background:"#FCEBEB",borderRadius:8,padding:"0.55rem",textAlign:"center"}}><div style={{fontSize:17,fontWeight:500,color:"#A32D2D"}}>{(d.calls&&d.calls.invalidPct||0)+"%"}</div><div style={{fontSize:10,color:"#791F1F"}}>Invalid Leads</div></div>
+            </div>
+            {bRow("Interested",Math.round((funnel.assigned||0)*0.31),funnel.assigned||1,"#1D9E75")}
+            {bRow("No Answer",Math.round((funnel.assigned||0)*0.20),funnel.assigned||1,"#888780")}
+            {bRow("Not Interest",statusList.find(function(s){return s.status==="NotInterested";})?statusList.find(function(s){return s.status==="NotInterested";}).count:0,funnel.assigned||1,"#E24B4A")}
+            {bRow("Call Later",Math.round((funnel.assigned||0)*0.10),funnel.assigned||1,"#EF9F27")}
+          </>)}
+          {card(<>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+              <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Management Alerts</div>
+              <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FCEBEB",color:"#A32D2D"}}>issues</span>
+            </div>
+            {aItem("#E24B4A",(mgmt.untouched||0)+" untouched leads","no call made yet")}
+            {aItem("#D85A30",(mgmt.missingFeedback||0)+" missing feedback","no notes added")}
+            {aItem("#EF9F27",(mgmt.stale48h||0)+" stale leads 48h+","no activity")}
+            {aItem("#7F77DD",(mgmt.rotationsMonth||0)+" rotations this month","auto + manual")}
+            <div style={{borderTop:"0.5px solid "+C2.border,margin:"8px 0"}} />
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}><span style={{color:C2.textLight}}>Data quality</span><span style={{fontWeight:500,color:(mgmt.dataQuality||0)<70?"#D85A30":C2.text}}>{(mgmt.dataQuality||0)+"%"}</span></div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginTop:5}}><span style={{color:C2.textLight}}>Overloaded agents</span><span style={{fontWeight:500,color:(mgmt.overloadedAgents||0)>0?"#EF9F27":C2.text}}>{(mgmt.overloadedAgents||0)>0?"⚠ "+(mgmt.overloadedAgents)+" agents":"✓ Balanced"}</span></div>
+          </>)}
+        </div>
+      </div>
     );
   }
 
@@ -2275,177 +2295,189 @@ var DashboardPage = function(p) {
 
   var rankBar = function(label, pos, total){
     var arr = Array.from({length:total},function(_,i){return i;});
-    return React.createElement("div",{style:{marginBottom:11}},
-      React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:5}},
-        React.createElement("span",{style:{color:C2.textLight}},label),
-        React.createElement("span",{style:{fontWeight:500,color:pos===1?"#185FA5":pos===2?"#534AB7":"#888780"}},pos==="1st"||pos===1?"1st of "+total:pos==="2nd"||pos===2?"2nd of "+total:pos+"th of "+total)
-      ),
-      React.createElement("div",{style:{display:"flex",gap:2}},
-        arr.map(function(_,i){
-          var isMe = i===(pos-1);
-          var colors=["#378ADD","#1D9E75","#9FE1CB","#E1F5EE"];
-          return React.createElement("div",{key:i,style:{flex:1,height:5,background:isMe?colors[0]:i<(pos-1)?colors[2]:colors[3],borderRadius:2}});
-        })
-      )
+    return (
+      <div style={{marginBottom:11}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:5}}>
+          <span style={{color:C2.textLight}}>{label}</span>
+          <span style={{fontWeight:500,color:pos===1?"#185FA5":pos===2?"#534AB7":"#888780"}}>{pos==="1st"||pos===1?"1st of "+total:pos==="2nd"||pos===2?"2nd of "+total:pos+"th of "+total}</span>
+        </div>
+        <div style={{display:"flex",gap:2}}>
+          {arr.map(function(_,i){
+            var isMe = i===(pos-1);
+            var colors=["#378ADD","#1D9E75","#9FE1CB","#E1F5EE"];
+            return <div key={i} style={{flex:1,height:5,background:isMe?colors[0]:i<(pos-1)?colors[2]:colors[3],borderRadius:2}} />;
+          })}
+        </div>
+      </div>
     );
   };
 
-  return React.createElement("div",{style:{padding:"1.5rem",background:C2.bg}},
-    filterBar,
+  return (
+    <div style={{padding:"1.5rem",background:C2.bg}}>
+      {filterBar}
 
-    // 6 KPI Cards
-    React.createElement("div",{style:{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.07em",textTransform:"uppercase",margin:"0 0 7px"}},"My KPIs — Today"),
-    React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(6,minmax(0,1fr))",gap:9,marginBottom:9}},
-      kpiCard("My Leads",sk.myLeads||0,"total assigned","#1565C0",weekly.leads),
-      kpiCard("Daily Requests",sk.myDr||0,"total","#00796B",weekly.dr),
-      kpiCard("Followups Due",sk.followupsDue||0,(sk.overdueFollowups||0)+" overdue","#E65100",weekly.followups),
-      kpiCard("Interested",(sk.interested||0),(sk.interestedPct||0)+"% of leads","#6A1B9A",weekly.interested),
-      kpiCard("Meetings",sk.meetings||0,(sk.meetingRate||0)+"% meeting rate","#2E7D32",weekly.meetings),
-      kpiCard("Target achieved",Math.min(100,Math.round((sk.meetings||0)/Math.max(sk.myLeads||1,1)*100*5))+"%","progress this month","#AD1457")
-    ),
+      {/* 6 KPI Cards */}
+      <div style={{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.07em",textTransform:"uppercase",margin:"0 0 7px"}}>{"My KPIs \u2014 Today"}</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(6,minmax(0,1fr))",gap:9,marginBottom:9}}>
+        {kpiCard("My Leads",sk.myLeads||0,"total assigned","#1565C0",weekly.leads)}
+        {kpiCard("Daily Requests",sk.myDr||0,"total","#00796B",weekly.dr)}
+        {kpiCard("Followups Due",sk.followupsDue||0,(sk.overdueFollowups||0)+" overdue","#E65100",weekly.followups)}
+        {kpiCard("Interested",(sk.interested||0),(sk.interestedPct||0)+"% of leads","#6A1B9A",weekly.interested)}
+        {kpiCard("Meetings",sk.meetings||0,(sk.meetingRate||0)+"% meeting rate","#2E7D32",weekly.meetings)}
+        {kpiCard("Target achieved",Math.min(100,Math.round((sk.meetings||0)/Math.max(sk.myLeads||1,1)*100*5))+"%","progress this month","#AD1457")}
+      </div>
 
-    // Rank + Urgent + Schedule
-    React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:9,marginBottom:9}},
-      card(React.createElement(React.Fragment,null,
-        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"My rank vs team"),
-          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}},"This Month")
-        ),
-        React.createElement("div",{style:{fontSize:11,color:C2.textLight,marginBottom:12}},"Position only — no team numbers"),
-        rankBar("Activity",rank.activity&&rank.activity.position||1,rank.activity&&rank.activity.total||4),
-        rankBar("Followups",rank.followups&&rank.followups.position||1,rank.followups&&rank.followups.total||4),
-        rankBar("Meetings",rank.meetings&&rank.meetings.position||2,rank.meetings&&rank.meetings.total||4),
-        rankBar("Response time",rank.respTime&&rank.respTime.position||1,rank.respTime&&rank.respTime.total||4),
-        rankBar("Target %",rank.target&&rank.target.position||1,rank.target&&rank.target.total||4),
-        React.createElement("div",{style:{borderTop:"0.5px solid "+C2.border,margin:"8px 0"}}),
-        React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8}},
-          React.createElement("div",{style:{fontSize:20}},"🥇"),
-          React.createElement("div",null,
-            React.createElement("div",{style:{fontSize:12,fontWeight:500,color:C2.text}},"Overall rank: 1st"),
-            React.createElement("div",{style:{fontSize:10,color:C2.textLight}},"Score "+Math.min(100,Math.round((sk.interestedPct||0)*0.4+(sk.meetingRate||0)*0.3+30))+"/100")
-          )
-        )
-      )),
+      {/* Rank + Urgent + Schedule */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:9,marginBottom:9}}>
+        {card(<>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>My rank vs team</div>
+            <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}}>This Month</span>
+          </div>
+          <div style={{fontSize:11,color:C2.textLight,marginBottom:12}}>{"Position only \u2014 no team numbers"}</div>
+          {rankBar("Activity",rank.activity&&rank.activity.position||1,rank.activity&&rank.activity.total||4)}
+          {rankBar("Followups",rank.followups&&rank.followups.position||1,rank.followups&&rank.followups.total||4)}
+          {rankBar("Meetings",rank.meetings&&rank.meetings.position||2,rank.meetings&&rank.meetings.total||4)}
+          {rankBar("Response time",rank.respTime&&rank.respTime.position||1,rank.respTime&&rank.respTime.total||4)}
+          {rankBar("Target %",rank.target&&rank.target.position||1,rank.target&&rank.target.total||4)}
+          <div style={{borderTop:"0.5px solid "+C2.border,margin:"8px 0"}} />
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{fontSize:20}}>{"\ud83e\udd47"}</div>
+            <div>
+              <div style={{fontSize:12,fontWeight:500,color:C2.text}}>Overall rank: 1st</div>
+              <div style={{fontSize:10,color:C2.textLight}}>{"Score "+Math.min(100,Math.round((sk.interestedPct||0)*0.4+(sk.meetingRate||0)*0.3+30))+"/100"}</div>
+            </div>
+          </div>
+        </>)}
 
-      card(React.createElement(React.Fragment,null,
-        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Urgent — needs action"),
-          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FCEBEB",color:"#A32D2D"}},"now")
-        ),
-        urgent.length===0
-          ? React.createElement("div",{style:{fontSize:11,color:C2.textLight,padding:"10px 0"}},"No urgent items")
-          : urgent.map(function(u,i){
-              var dot = u.type==="overdue"?"#E24B4A":u.type==="soon"?"#EF9F27":"#378ADD";
-              var badge = u.type==="overdue"?"LATE":u.type==="soon"?"SOON":"NEW";
-              var bc = u.type==="overdue"?"#A32D2D":u.type==="soon"?"#854F0B":"#185FA5";
-              var sub = u.type==="overdue"?"Callback overdue "+u.minutesLate+"min":u.type==="soon"?"Callback in "+u.minutesLate+"min":"New lead — no action "+u.minutesLate+"h old";
-              return React.createElement("div",{key:i,style:{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 0",borderBottom:"0.5px solid "+C2.border}},
-                React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:dot,flexShrink:0,marginTop:3}}),
-                React.createElement("div",{style:{flex:1}},
-                  React.createElement("div",{style:{fontSize:12,fontWeight:500,color:C2.text}},u.name),
-                  React.createElement("div",{style:{fontSize:10,color:C2.textLight}},sub+" · "+u.status)
-                ),
-                React.createElement("span",{style:{fontSize:10,color:bc,fontWeight:500}},badge)
-              );
-            })
-      )),
+        {card(<>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>{"Urgent \u2014 needs action"}</div>
+            <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FCEBEB",color:"#A32D2D"}}>now</span>
+          </div>
+          {urgent.length===0
+            ? <div style={{fontSize:11,color:C2.textLight,padding:"10px 0"}}>No urgent items</div>
+            : urgent.map(function(u,i){
+                var dot = u.type==="overdue"?"#E24B4A":u.type==="soon"?"#EF9F27":"#378ADD";
+                var badge = u.type==="overdue"?"LATE":u.type==="soon"?"SOON":"NEW";
+                var bc = u.type==="overdue"?"#A32D2D":u.type==="soon"?"#854F0B":"#185FA5";
+                var sub = u.type==="overdue"?"Callback overdue "+u.minutesLate+"min":u.type==="soon"?"Callback in "+u.minutesLate+"min":"New lead \u2014 no action "+u.minutesLate+"h old";
+                return (
+                  <div key={i} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 0",borderBottom:"0.5px solid "+C2.border}}>
+                    <div style={{width:8,height:8,borderRadius:"50%",background:dot,flexShrink:0,marginTop:3}} />
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:12,fontWeight:500,color:C2.text}}>{u.name}</div>
+                      <div style={{fontSize:10,color:C2.textLight}}>{sub+" \u00b7 "+u.status}</div>
+                    </div>
+                    <span style={{fontSize:10,color:bc,fontWeight:500}}>{badge}</span>
+                  </div>
+                );
+              })}
+        </>)}
 
-      card(React.createElement(React.Fragment,null,
-        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Today's schedule"),
-          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#EEEDFE",color:"#534AB7"}},schedule.length+" items")
-        ),
-        schedule.length===0
-          ? React.createElement("div",{style:{fontSize:11,color:C2.textLight,padding:"10px 0"}},"No scheduled callbacks today")
-          : schedule.slice(0,7).map(function(s,i){
-              var t2 = s.time?new Date(s.time).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—";
-              var isLate = s.time&&new Date(s.time)<new Date();
-              return React.createElement("div",{key:i,style:{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 0",borderBottom:"0.5px solid "+C2.border}},
-                React.createElement("div",{style:{fontSize:10,color:C2.textLight,width:38,flexShrink:0,textAlign:"center",fontWeight:500}},t2),
-                React.createElement("div",{style:{flex:1}},
-                  React.createElement("div",{style:{fontSize:12,color:C2.text}},s.name),
-                  React.createElement("div",{style:{fontSize:10,color:isLate?"#A32D2D":C2.textLight}},isLate?"Overdue callback":"Callback scheduled")
-                ),
-                React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:isLate?"#E24B4A":"#1D9E75",marginTop:3}})
-              );
-            })
-      ))
-    ),
+        {card(<>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>{"Today's schedule"}</div>
+            <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#EEEDFE",color:"#534AB7"}}>{schedule.length+" items"}</span>
+          </div>
+          {schedule.length===0
+            ? <div style={{fontSize:11,color:C2.textLight,padding:"10px 0"}}>No scheduled callbacks today</div>
+            : schedule.slice(0,7).map(function(s,i){
+                var t2 = s.time?new Date(s.time).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"\u2014";
+                var isLate = s.time&&new Date(s.time)<new Date();
+                return (
+                  <div key={i} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 0",borderBottom:"0.5px solid "+C2.border}}>
+                    <div style={{fontSize:10,color:C2.textLight,width:38,flexShrink:0,textAlign:"center",fontWeight:500}}>{t2}</div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:12,color:C2.text}}>{s.name}</div>
+                      <div style={{fontSize:10,color:isLate?"#A32D2D":C2.textLight}}>{isLate?"Overdue callback":"Callback scheduled"}</div>
+                    </div>
+                    <div style={{width:8,height:8,borderRadius:"50%",background:isLate?"#E24B4A":"#1D9E75",marginTop:3}} />
+                  </div>
+                );
+              })}
+        </>)}
+      </div>
 
-    // Leads status + Activity
-    React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:9}},
-      card(React.createElement(React.Fragment,null,
-        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"My leads — status breakdown"),
-          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},(sk.myLeads||0)+" leads")
-        ),
-        myStatus.sort(function(a,b){return b.count-a.count;}).slice(0,7).map(function(s){
-          return bRow(s.status,s.count,sk.myLeads||1,statusColors2[s.status]||"#888");
-        }),
-        React.createElement("div",{style:{borderTop:"0.5px solid "+C2.border,margin:"8px 0"}}),
-        React.createElement("div",{style:{display:"flex",gap:16,fontSize:11}},
-          React.createElement("span",{style:{color:C2.textLight}},"Overdue: ",React.createElement("span",{style:{color:"#D85A30",fontWeight:500}},sk.overdueFollowups||0))
-        )
-      )),
-      card(React.createElement(React.Fragment,null,
-        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"My activity — recent"),
-          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#EAF3DE",color:"#3B6D11"}},"Today")
-        ),
-        recentActs.length===0
-          ? React.createElement("div",{style:{fontSize:11,color:C2.textLight,padding:"10px 0"}},"No recent activity")
-          : recentActs.map(function(a,i){
-              var stColor = statusColors2[a.status]||"#888";
-              return React.createElement("div",{key:i,style:{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"0.5px solid "+C2.border}},
-                React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:stColor,flexShrink:0}}),
-                React.createElement("div",{style:{flex:1}},
-                  React.createElement("div",{style:{fontSize:12,color:C2.text}},a.name," — ",React.createElement("span",{style:{color:stColor}},a.status)),
-                  React.createElement("div",{style:{fontSize:10,color:C2.textLight}},a.note||"","· ",timeAgo(a.time))
-                )
-              );
-            })
-      ))
-    ),
+      {/* Leads status + Activity */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:9}}>
+        {card(<>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>{"My leads \u2014 status breakdown"}</div>
+            <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>{(sk.myLeads||0)+" leads"}</span>
+          </div>
+          {myStatus.sort(function(a,b){return b.count-a.count;}).slice(0,7).map(function(s){
+            return bRow(s.status,s.count,sk.myLeads||1,statusColors2[s.status]||"#888");
+          })}
+          <div style={{borderTop:"0.5px solid "+C2.border,margin:"8px 0"}} />
+          <div style={{display:"flex",gap:16,fontSize:11}}>
+            <span style={{color:C2.textLight}}>Overdue: <span style={{color:"#D85A30",fontWeight:500}}>{sk.overdueFollowups||0}</span></span>
+          </div>
+        </>)}
+        {card(<>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>{"My activity \u2014 recent"}</div>
+            <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#EAF3DE",color:"#3B6D11"}}>Today</span>
+          </div>
+          {recentActs.length===0
+            ? <div style={{fontSize:11,color:C2.textLight,padding:"10px 0"}}>No recent activity</div>
+            : recentActs.map(function(a,i){
+                var stColor = statusColors2[a.status]||"#888";
+                return (
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"0.5px solid "+C2.border}}>
+                    <div style={{width:8,height:8,borderRadius:"50%",background:stColor,flexShrink:0}} />
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:12,color:C2.text}}>{a.name}{" \u2014 "}<span style={{color:stColor}}>{a.status}</span></div>
+                      <div style={{fontSize:10,color:C2.textLight}}>{a.note||""}{"\u00b7 "}{timeAgo(a.time)}</div>
+                    </div>
+                  </div>
+                );
+              })}
+        </>)}
+      </div>
 
-    // Funnel + Summary
-    React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9}},
-      card(React.createElement(React.Fragment,null,
-        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"My conversion funnel"),
-          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},(sfunnel.assigned||0)+" leads")
-        ),
-        [
-          {l:"Assigned",v:sfunnel.assigned,c:"#E6F1FB",tc:"#185FA5"},
-          {l:"Contacted",v:sfunnel.contacted,c:"#EAF3DE",tc:"#3B6D11"},
-          {l:"Interested",v:sfunnel.interested,c:"#FAEEDA",tc:"#854F0B"},
-          {l:"Hot Case",v:sfunnel.hotCase,c:"#EEEDFE",tc:"#534AB7"},
-          {l:"Meeting",v:sfunnel.meeting,c:"#E1F5EE",tc:"#0F6E56"},
-          {l:"Deal",v:sfunnel.deal,c:"#FAECE7",tc:"#993C1D"},
-        ].map(function(row,i){
-          var pct = sfunnel.assigned>0?Math.max(8,Math.round((row.v||0)/sfunnel.assigned*100)):8;
-          var pctStr = sfunnel.assigned>0?Math.round((row.v||0)/sfunnel.assigned*100)+"%":"—";
-          return React.createElement("div",{key:i,style:{display:"flex",alignItems:"center",gap:10,marginBottom:8}},
-            React.createElement("div",{style:{fontSize:11,color:C2.textLight,width:82,flexShrink:0,textAlign:"right"}},row.l),
-            React.createElement("div",{style:{height:22,borderRadius:3,background:row.c,display:"flex",alignItems:"center",padding:"0 10px",width:pct+"%",minWidth:55}},
-              React.createElement("span",{style:{fontSize:11,fontWeight:500,color:row.tc,whiteSpace:"nowrap"}},row.v||0),
-              React.createElement("span",{style:{fontSize:10,color:C2.textLight,marginLeft:6}},pctStr)
-            )
-          );
-        })
-      )),
-      card(React.createElement(React.Fragment,null,
-        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
-          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"My activity summary"),
-          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}},"This Month")
-        ),
-        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}},
-          React.createElement("div",{style:{background:"#E6F1FB",borderRadius:8,padding:"0.6rem",textAlign:"center"}},React.createElement("div",{style:{fontSize:18,fontWeight:500,color:"#185FA5"}},summary.totalActions||0),React.createElement("div",{style:{fontSize:10,color:"#0C447C"}},"Total actions")),
-          React.createElement("div",{style:{background:"#E1F5EE",borderRadius:8,padding:"0.6rem",textAlign:"center"}},React.createElement("div",{style:{fontSize:18,fontWeight:500,color:"#0F6E56"}},summary.followupsDone||0),React.createElement("div",{style:{fontSize:10,color:"#085041"}},"Followups done")),
-          React.createElement("div",{style:{background:"#EEEDFE",borderRadius:8,padding:"0.6rem",textAlign:"center"}},React.createElement("div",{style:{fontSize:18,fontWeight:500,color:"#534AB7"}},summary.meetings||0),React.createElement("div",{style:{fontSize:10,color:"#3C3489"}},"Meetings")),
-          React.createElement("div",{style:{background:"#EAF3DE",borderRadius:8,padding:"0.6rem",textAlign:"center"}},React.createElement("div",{style:{fontSize:18,fontWeight:500,color:"#3B6D11"}},summary.avgRespTime||"—",summary.avgRespTime?"h":""),React.createElement("div",{style:{fontSize:10,color:"#27500A"}},"Avg response"))
-        )
-      ))
-    )
+      {/* Funnel + Summary */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9}}>
+        {card(<>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>My conversion funnel</div>
+            <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>{(sfunnel.assigned||0)+" leads"}</span>
+          </div>
+          {[
+            {l:"Assigned",v:sfunnel.assigned,c:"#E6F1FB",tc:"#185FA5"},
+            {l:"Contacted",v:sfunnel.contacted,c:"#EAF3DE",tc:"#3B6D11"},
+            {l:"Interested",v:sfunnel.interested,c:"#FAEEDA",tc:"#854F0B"},
+            {l:"Hot Case",v:sfunnel.hotCase,c:"#EEEDFE",tc:"#534AB7"},
+            {l:"Meeting",v:sfunnel.meeting,c:"#E1F5EE",tc:"#0F6E56"},
+            {l:"Deal",v:sfunnel.deal,c:"#FAECE7",tc:"#993C1D"},
+          ].map(function(row,i){
+            var pct = sfunnel.assigned>0?Math.max(8,Math.round((row.v||0)/sfunnel.assigned*100)):8;
+            var pctStr = sfunnel.assigned>0?Math.round((row.v||0)/sfunnel.assigned*100)+"%":"\u2014";
+            return (
+              <div key={i} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                <div style={{fontSize:11,color:C2.textLight,width:82,flexShrink:0,textAlign:"right"}}>{row.l}</div>
+                <div style={{height:22,borderRadius:3,background:row.c,display:"flex",alignItems:"center",padding:"0 10px",width:pct+"%",minWidth:55}}>
+                  <span style={{fontSize:11,fontWeight:500,color:row.tc,whiteSpace:"nowrap"}}>{row.v||0}</span>
+                  <span style={{fontSize:10,color:C2.textLight,marginLeft:6}}>{pctStr}</span>
+                </div>
+              </div>
+            );
+          })}
+        </>)}
+        {card(<>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
+            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>My activity summary</div>
+            <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}}>This Month</span>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+            <div style={{background:"#E6F1FB",borderRadius:8,padding:"0.6rem",textAlign:"center"}}><div style={{fontSize:18,fontWeight:500,color:"#185FA5"}}>{summary.totalActions||0}</div><div style={{fontSize:10,color:"#0C447C"}}>Total actions</div></div>
+            <div style={{background:"#E1F5EE",borderRadius:8,padding:"0.6rem",textAlign:"center"}}><div style={{fontSize:18,fontWeight:500,color:"#0F6E56"}}>{summary.followupsDone||0}</div><div style={{fontSize:10,color:"#085041"}}>Followups done</div></div>
+            <div style={{background:"#EEEDFE",borderRadius:8,padding:"0.6rem",textAlign:"center"}}><div style={{fontSize:18,fontWeight:500,color:"#534AB7"}}>{summary.meetings||0}</div><div style={{fontSize:10,color:"#3C3489"}}>Meetings</div></div>
+            <div style={{background:"#EAF3DE",borderRadius:8,padding:"0.6rem",textAlign:"center"}}><div style={{fontSize:18,fontWeight:500,color:"#3B6D11"}}>{summary.avgRespTime||"\u2014"}{summary.avgRespTime?"h":""}</div><div style={{fontSize:10,color:"#27500A"}}>Avg response</div></div>
+          </div>
+        </>)}
+      </div>
+    </div>
   );
 };
 
