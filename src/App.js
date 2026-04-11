@@ -1981,9 +1981,11 @@ var DashboardPage = function(p) {
   useEffect(function(){
     var endpoint = isOnlyAdmin ? "/api/dashboard/admin" : "/api/dashboard/sales";
     setKpisLoading(true);
+    var timeout = setTimeout(function(){ setKpisLoading(false); }, 10000);
     apiFetch(endpoint,"GET",null,p.token).then(function(d){
+      clearTimeout(timeout);
       setData(d);
-      if(d.kpis){setKpisData(d.kpis);setKpisLoading(false);}
+      if(d.kpis){setKpisData(d.kpis);}
       if(d.campaignPerformance) setCampaignsData(d.campaignPerformance);
       if(d.agentPerformance) setAgentsData(d.agentPerformance);
       if(d.funnel) setFunnelData(d.funnel);
@@ -1991,7 +1993,14 @@ var DashboardPage = function(p) {
       if(d.leadsByStatus) setStatusListData(d.leadsByStatus);
       if(d.leadAging) setAgingData(d.leadAging);
       if(d.managementAlerts) setMgmtData(d.managementAlerts);
-    }).catch(function(){setKpisLoading(false);});
+      setKpisLoading(false);
+    }).catch(function(err){
+      clearTimeout(timeout);
+      console.error("Dashboard fetch error:", err);
+      setKpisLoading(false);
+      setData({error:true});
+    });
+    return function(){ clearTimeout(timeout); };
   },[filter]);
 
   // Helpers
@@ -2069,12 +2078,36 @@ var DashboardPage = function(p) {
     </div>
   );
 
-  if(!kpisData&&kpisLoading) return <div style={{padding:24,color:C2.textLight}}>Loading dashboard...</div>;
+  // Instant fallback KPIs from p.leads while API loads
+  var fallbackKpis = (function(){
+    var leads = p.leads||[];
+    var now = new Date();
+    var todayStart = new Date(now.getFullYear(),now.getMonth(),now.getDate());
+    var monthStart = new Date(now.getFullYear(),now.getMonth(),1);
+    var active = leads.filter(function(l){return !l.archived;});
+    return {
+      leadsToday: active.filter(function(l){return l.createdAt&&new Date(l.createdAt)>=todayStart;}).length,
+      dealsMonth: active.filter(function(l){return l.status==="DoneDeal"&&l.createdAt&&new Date(l.createdAt)>=monthStart;}).length,
+      interestedToday: active.filter(function(l){return ["Potential","HotCase"].includes(l.status)&&l.lastActivityTime&&new Date(l.lastActivityTime)>=todayStart;}).length,
+      callbacksToday: active.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).toDateString()===now.toDateString();}).length,
+      meetingsToday: active.filter(function(l){return l.status==="MeetingDone"&&l.lastActivityTime&&new Date(l.lastActivityTime)>=todayStart;}).length,
+      convRate: active.length>0?Math.round(active.filter(function(l){return l.status==="DoneDeal";}).length/active.length*100):0,
+      contactedPct: active.length>0?Math.round(active.filter(function(l){return l.status!=="NewLead";}).length/active.length*100):0,
+      myLeads: active.length,
+      myDr: active.filter(function(l){return l.source==="Daily Request";}).length,
+      followupsDue: active.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).toDateString()===now.toDateString();}).length,
+      overdueFollowups: active.filter(function(l){return l.callbackTime&&new Date(l.callbackTime)<now&&l.status==="CallBack";}).length,
+      interested: active.filter(function(l){return ["Potential","HotCase","CallBack","MeetingDone"].includes(l.status);}).length,
+      interestedPct: active.length>0?Math.round(active.filter(function(l){return ["Potential","HotCase","CallBack","MeetingDone"].includes(l.status);}).length/active.length*100):0,
+      meetings: active.filter(function(l){return l.status==="MeetingDone"||l.status==="DoneDeal";}).length,
+      meetingRate: active.length>0?Math.round(active.filter(function(l){return l.status==="MeetingDone"||l.status==="DoneDeal";}).length/active.length*100):0
+    };
+  })();
 
   // ===== ADMIN DASHBOARD =====
   if(isOnlyAdmin){
     var d = data||{};
-    var kpis = kpisData||{};
+    var kpis = kpisData||fallbackKpis;
     var agents = agentsData;
     var camps = campaignsData;
     var funnel = funnelData;
@@ -2301,7 +2334,7 @@ var DashboardPage = function(p) {
 
   // ===== SALES DASHBOARD =====
   var sd = data||{};
-  var sk = kpisData||{};
+  var sk = kpisData||fallbackKpis;
   var rank = sd.rank||{};
   var urgent = sd.urgent||[];
   var schedule = sd.schedule||[];
