@@ -2026,7 +2026,7 @@ var DashboardPage = function(p) {
 
   var card = function(children, extra){
     return (
-      <div style={{background:C2.card,border:"0.5px solid "+C2.border,borderRadius:12,padding:"0.9rem 1.1rem",...(extra&&extra.style?extra.style:{})}}>{children}</div>
+      <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:12,padding:"0.9rem 1.1rem",boxShadow:"0 1px 3px rgba(0,0,0,0.08)",...(extra&&extra.style?extra.style:{})}}>{children}</div>
     );
   };
 
@@ -2068,7 +2068,7 @@ var DashboardPage = function(p) {
     var qbText = function(q){return q==="High"?"#3B6D11":q==="Medium"?"#854F0B":"#A32D2D";};
 
     return (
-      <div style={{padding:"1.5rem",background:C2.bg,fontFamily:"var(--font-sans)"}}>
+      <div style={{padding:"1.5rem",background:"#F1F5F9",minHeight:"100vh",fontFamily:"var(--font-sans)"}}>
         {filterBar}
 
         {/* KPI Row */}
@@ -2086,9 +2086,9 @@ var DashboardPage = function(p) {
         {/* Campaign + Funnel + Alerts */}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:9,marginBottom:9}}>
           {/* Campaign table span 2 */}
-          <div style={{gridColumn:"span 2",background:C2.card,border:"0.5px solid "+C2.border,borderRadius:12,padding:"0.9rem 1.1rem"}}>
+          <div style={{gridColumn:"span 2",background:"#fff",border:"1px solid #E2E8F0",borderRadius:12,padding:"0.9rem 1.1rem",boxShadow:"0 1px 3px rgba(0,0,0,0.08)"}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-              <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Campaign &amp; Source Performance</div>
+              <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>Campaign &amp; Source Performance</div>
               <div style={{display:"flex",gap:5}}>
                 <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>{"● Facebook"}</span>
                 <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#EAF3DE",color:"#3B6D11"}}>{"● Sheets"}</span>
@@ -2130,7 +2130,7 @@ var DashboardPage = function(p) {
           <div style={{display:"flex",flexDirection:"column",gap:9}}>
             {card(<>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-                <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Conversion Funnel</div>
+                <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>Conversion Funnel</div>
                 <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>{(funnel.assigned||0)+" leads"}</span>
               </div>
               {[
@@ -2153,7 +2153,7 @@ var DashboardPage = function(p) {
             </>)}
             {card(<>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-                <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Hot Leads Alert</div>
+                <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>Hot Leads Alert</div>
                 <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FCEBEB",color:"#A32D2D"}}>urgent</span>
               </div>
               {aItem("#E24B4A",(alerts.untouched48h||0)+" leads \u2014 no contact 48h+","never called since entry","URGENT","#A32D2D")}
@@ -2167,7 +2167,7 @@ var DashboardPage = function(p) {
         <div style={{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.07em",textTransform:"uppercase",margin:"0 0 7px"}}>{"Team \u2014 All Agent Activity"}</div>
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
-            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Complete Agent Performance</div>
+            <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>Complete Agent Performance</div>
             <div style={{display:"flex",gap:6}}>
               <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>Leads + DR combined</span>
               <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}}>This Month</span>
@@ -2216,7 +2216,7 @@ var DashboardPage = function(p) {
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:9}}>
           {card(<>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-              <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Leads by Status</div>
+              <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>Leads by Status</div>
               <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>{(funnel.assigned||0)+" total"}</span>
             </div>
             {statusList.sort(function(a,b){return b.count-a.count;}).slice(0,7).map(function(s){
@@ -2225,7 +2225,7 @@ var DashboardPage = function(p) {
           </>)}
           {card(<>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-              <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Lead Aging</div>
+              <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>Lead Aging</div>
               <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}}>by days old</span>
             </div>
             {[
@@ -2250,7 +2250,7 @@ var DashboardPage = function(p) {
           </>)}
           {card(<>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-              <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Calls &amp; Outcomes</div>
+              <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>Calls &amp; Outcomes</div>
               <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>Today</span>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:10}}>
@@ -2264,7 +2264,7 @@ var DashboardPage = function(p) {
           </>)}
           {card(<>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-              <div style={{fontSize:13,fontWeight:500,color:C2.text}}>Management Alerts</div>
+              <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>Management Alerts</div>
               <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FCEBEB",color:"#A32D2D"}}>issues</span>
             </div>
             {aItem("#E24B4A",(mgmt.untouched||0)+" untouched leads","no call made yet")}
@@ -2313,7 +2313,7 @@ var DashboardPage = function(p) {
   };
 
   return (
-    <div style={{padding:"1.5rem",background:C2.bg}}>
+    <div style={{padding:"1.5rem",background:"#F1F5F9",minHeight:"100vh"}}>
       {filterBar}
 
       {/* 6 KPI Cards */}
@@ -2331,7 +2331,7 @@ var DashboardPage = function(p) {
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:9,marginBottom:9}}>
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>My rank vs team</div>
+            <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>My rank vs team</div>
             <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}}>This Month</span>
           </div>
           <div style={{fontSize:11,color:C2.textLight,marginBottom:12}}>{"Position only \u2014 no team numbers"}</div>
@@ -2352,7 +2352,7 @@ var DashboardPage = function(p) {
 
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>{"Urgent \u2014 needs action"}</div>
+            <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>{"Urgent \u2014 needs action"}</div>
             <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FCEBEB",color:"#A32D2D"}}>now</span>
           </div>
           {urgent.length===0
@@ -2377,7 +2377,7 @@ var DashboardPage = function(p) {
 
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>{"Today's schedule"}</div>
+            <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>{"Today's schedule"}</div>
             <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#EEEDFE",color:"#534AB7"}}>{schedule.length+" items"}</span>
           </div>
           {schedule.length===0
@@ -2403,7 +2403,7 @@ var DashboardPage = function(p) {
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:9}}>
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>{"My leads \u2014 status breakdown"}</div>
+            <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>{"My leads \u2014 status breakdown"}</div>
             <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>{(sk.myLeads||0)+" leads"}</span>
           </div>
           {myStatus.sort(function(a,b){return b.count-a.count;}).slice(0,7).map(function(s){
@@ -2416,7 +2416,7 @@ var DashboardPage = function(p) {
         </>)}
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>{"My activity \u2014 recent"}</div>
+            <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>{"My activity \u2014 recent"}</div>
             <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#EAF3DE",color:"#3B6D11"}}>Today</span>
           </div>
           {recentActs.length===0
@@ -2440,7 +2440,7 @@ var DashboardPage = function(p) {
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9}}>
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>My conversion funnel</div>
+            <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>My conversion funnel</div>
             <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>{(sfunnel.assigned||0)+" leads"}</span>
           </div>
           {[
@@ -2466,7 +2466,7 @@ var DashboardPage = function(p) {
         </>)}
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
-            <div style={{fontSize:13,fontWeight:500,color:C2.text}}>My activity summary</div>
+            <div style={{fontSize:13,fontWeight:600,color:"#1E293B"}}>My activity summary</div>
             <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}}>This Month</span>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
