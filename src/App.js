@@ -2054,21 +2054,21 @@ var DashboardPage = function(p) {
 
   if((p.leads||[]).length===0) return <div style={{padding:40,textAlign:"center",color:C2.textLight,fontSize:14}}>Loading data...</div>;
   // Helpers
-  var kpiCard = function(label, value, sub, color, barData, onClick){
+  var kpiCard = function(label, value, sub, bg, accent, barData, onClick){
     var days = ["Sat","Sun","Mon","Tue","Wed","Thu","Fri"];
     var bars = barData || [35,55,45,70,50,80,90];
     var maxB = Math.max.apply(null,bars)||1;
     return (
-      <div onClick={onClick} style={{borderRadius:12,padding:"0.8rem 0.9rem",overflow:"hidden",minWidth:0,background:color,cursor:onClick?"pointer":"default"}}>
-        <div style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,0.85)",marginBottom:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</div>
-        <div style={{fontSize:28,fontWeight:800,color:"#fff",lineHeight:1}}>{value}</div>
-        <div style={{fontSize:11,fontWeight:400,color:"rgba(255,255,255,0.7)",marginTop:3,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{sub}</div>
+      <div onClick={onClick} style={{borderRadius:14,padding:"0.9rem 1rem",overflow:"hidden",minWidth:0,background:bg,border:"1px solid #E8ECF1",cursor:onClick?"pointer":"default"}}>
+        <div style={{fontSize:12,fontWeight:600,color:accent,opacity:0.7,marginBottom:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</div>
+        <div style={{fontSize:32,fontWeight:800,color:accent,lineHeight:1}}>{value}</div>
+        <div style={{fontSize:11,fontWeight:400,color:accent,opacity:0.6,marginTop:3,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{sub}</div>
         <div style={{marginTop:8,overflow:"hidden"}}>
           <div style={{display:"flex",alignItems:"flex-end",gap:2,height:18}}>
-            {bars.map(function(b,i){return <span key={i} style={{flex:1,borderRadius:2,height:Math.round(b/maxB*100)+"%",background:i===bars.length-1?"rgba(255,255,255,0.92)":"rgba(255,255,255,0.25)",minWidth:0}} />;})}
+            {bars.map(function(b,i){return <span key={i} style={{flex:1,borderRadius:2,height:Math.round(b/maxB*100)+"%",background:accent,opacity:i===bars.length-1?0.8:0.2,minWidth:0}} />;})}
           </div>
           <div style={{display:"flex",gap:2,marginTop:3}}>
-            {days.map(function(d,i){return <span key={i} style={{flex:1,fontSize:"6px",textAlign:"center",color:"rgba(255,255,255,0.6)",minWidth:0,overflow:"hidden"}}>{d}</span>;})}
+            {days.map(function(d,i){return <span key={i} style={{flex:1,fontSize:"6px",textAlign:"center",color:accent,opacity:0.5,minWidth:0,overflow:"hidden"}}>{d}</span>;})}
           </div>
         </div>
       </div>
@@ -2102,10 +2102,8 @@ var DashboardPage = function(p) {
   };
 
   var card = function(children, extra){
-    var bg = extra&&extra.bg||"#fff";
-    var bd = extra&&extra.bd||"1px solid #E2E8F0";
     return (
-      <div style={{background:bg,border:bd,borderRadius:12,padding:"0.9rem 1.1rem",boxShadow:"0 1px 3px rgba(0,0,0,0.06)",...(extra&&extra.style?extra.style:{})}}>{children}</div>
+      <div style={{background:"#ffffff",border:"1px solid #E8ECF1",borderRadius:14,padding:"1.1rem 1.25rem",...(extra&&extra.style?extra.style:{})}}>{children}</div>
     );
   };
 
@@ -2150,19 +2148,19 @@ var DashboardPage = function(p) {
         {/* KPI Row */}
         <div style={{fontSize:11,fontWeight:700,color:C.textLight,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:10}}>{"KPIs \u2014 Today"}</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:9,marginBottom:9}}>
-          {kpiCard("Leads Today",kpis.leadsToday||0,"new today","#1565C0",null,function(){p.nav("leads");})}
-          {kpiCard("Interested Today",kpis.interestedToday||0,(kpis.interestedPct||0)+"% rate","#00796B",null,function(){p.nav("leads");p.setFilter("Potential");})}
-          {kpiCard("Followups Today",kpis.callbacksToday||0,"scheduled","#E65100",null,function(){p.nav("leads");p.setFilter("CallBack");})}
-          {kpiCard("Meetings Today",kpis.meetingsToday||0,"booked","#6A1B9A",null,function(){p.nav("leads");p.setFilter("MeetingDone");})}
-          {kpiCard("Deals This Month",kpis.dealsMonth||0,"+12% vs last month","#2E7D32",null,function(){p.nav("deals");})}
-          {kpiCard("Conversion Rate",(kpis.convRate||0)+"%","leads \u2192 deals","#AD1457")}
-          {kpiCard("Contacted %",(kpis.contactedPct||0)+"%","of total leads","#00695C")}
+          {kpiCard("Leads Today",kpis.leadsToday||0,"new today","#EFF6FF","#1D4ED8",null,function(){p.nav("leads");})}
+          {kpiCard("Interested Today",kpis.interestedToday||0,(kpis.interestedPct||0)+"% rate","#F0FDF4","#15803D",null,function(){p.nav("leads");p.setFilter("Potential");})}
+          {kpiCard("Followups Today",kpis.callbacksToday||0,"scheduled","#FFF7ED","#C2410C",null,function(){p.nav("leads");p.setFilter("CallBack");})}
+          {kpiCard("Meetings Today",kpis.meetingsToday||0,"booked","#F5F3FF","#6D28D9",null,function(){p.nav("leads");p.setFilter("MeetingDone");})}
+          {kpiCard("Deals This Month",kpis.dealsMonth||0,"+12% vs last month","#ECFDF5","#065F46",null,function(){p.nav("deals");})}
+          {kpiCard("Conversion Rate",(kpis.convRate||0)+"%","leads \u2192 deals","#FDF2F8","#9D174D")}
+          {kpiCard("Contacted %",(kpis.contactedPct||0)+"%","of total leads","#F0F9FF","#0369A1")}
         </div>
 
         {/* Campaign + Funnel + Alerts */}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:9,marginBottom:9}}>
           {/* Campaign table span 2 */}
-          <div style={{gridColumn:"span 2",background:"#F0F7FF",border:"1px solid #BFDBFE",borderRadius:12,padding:"0.9rem 1.1rem",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
+          <div style={{gridColumn:"span 2",background:"#ffffff",border:"1px solid #E8ECF1",borderRadius:14,padding:"1.1rem 1.25rem"}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
               <div style={{fontSize:16,fontWeight:700,color:C.text}}>Campaign &amp; Source Performance</div>
               <div style={{display:"flex",gap:5}}>
@@ -2226,7 +2224,7 @@ var DashboardPage = function(p) {
                   </div>
                 );
               })}
-            </>,{bg:"#F0FFF4",bd:"1px solid #BBF7D0"})}
+            </>)}
             {card(<>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
                 <div style={{fontSize:16,fontWeight:700,color:C.text}}>Hot Leads Alert</div>
@@ -2235,7 +2233,7 @@ var DashboardPage = function(p) {
               {aItem("#E24B4A",(alerts.untouched48h||0)+" leads \u2014 no contact 48h+","never called since entry","URGENT","#A32D2D")}
               {aItem("#EF9F27",(alerts.overdueCallbacks||0)+" overdue callbacks","past scheduled time","LATE","#854F0B")}
               {aItem("#534AB7",(alerts.noRotationCount||0)+" leads locked","\ud83d\udd12 noRotation flag set","","")}
-            </>,{bg:"#FFF7ED",bd:"1px solid #FED7AA"})}
+            </>)}
           </div>
         </div>
 
@@ -2286,7 +2284,7 @@ var DashboardPage = function(p) {
             );
           })}
           <div style={{borderTop:"0.5px solid "+C2.border,marginTop:8,paddingTop:6,fontSize:11,color:"#A32D2D"}}>{"⚠ Resp.Time = time from lead entry to first agent action (hours)"}</div>
-        </>,{bg:"#FAFAFE",bd:"1px solid #E0E7FF",style:{marginBottom:9}})}
+        </>,{style:{marginBottom:9}})}
 
         {/* Bottom row: Status + Aging + Calls + Alerts */}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:9}}>
@@ -2298,7 +2296,7 @@ var DashboardPage = function(p) {
             {statusList.sort(function(a,b){return b.count-a.count;}).slice(0,7).map(function(s){
               return bRow(s.status.replace("New","New ").replace("Done","Done ").replace("Not","Not "),s.count,funnel.assigned||1,statusColors[s.status]||"#888");
             })}
-          </>,{bg:"#F0F7FF",bd:"1px solid #BFDBFE"})}
+          </>)}
           {card(<>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
               <div style={{fontSize:16,fontWeight:700,color:C.text}}>Lead Aging</div>
@@ -2323,7 +2321,7 @@ var DashboardPage = function(p) {
                 </div>
               );
             })}
-          </>,{bg:"#FFFBEB",bd:"1px solid #FDE68A"})}
+          </>)}
           {card(<>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
               <div style={{fontSize:16,fontWeight:700,color:C.text}}>Calls &amp; Outcomes</div>
@@ -2337,7 +2335,7 @@ var DashboardPage = function(p) {
             {bRow("No Answer",Math.round((funnel.assigned||0)*0.20),funnel.assigned||1,"#888780")}
             {bRow("Not Interest",statusList.find(function(s){return s.status==="NotInterested";})?statusList.find(function(s){return s.status==="NotInterested";}).count:0,funnel.assigned||1,"#E24B4A")}
             {bRow("Call Later",Math.round((funnel.assigned||0)*0.10),funnel.assigned||1,"#EF9F27")}
-          </>,{bg:"#F0FFF4",bd:"1px solid #BBF7D0"})}
+          </>)}
           {card(<>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}}>
               <div style={{fontSize:16,fontWeight:700,color:C.text}}>Management Alerts</div>
@@ -2350,7 +2348,7 @@ var DashboardPage = function(p) {
             <div style={{borderTop:"0.5px solid "+C2.border,margin:"8px 0"}} />
             <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}><span style={{color:C2.textLight}}>Data quality</span><span style={{fontWeight:500,color:(mgmt.dataQuality||0)<70?"#D85A30":C2.text}}>{(mgmt.dataQuality||0)+"%"}</span></div>
             <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginTop:5}}><span style={{color:C2.textLight}}>Overloaded agents</span><span style={{fontWeight:500,color:(mgmt.overloadedAgents||0)>0?"#EF9F27":C2.text}}>{(mgmt.overloadedAgents||0)>0?"⚠ "+(mgmt.overloadedAgents)+" agents":"✓ Balanced"}</span></div>
-          </>,{bg:"#FFF1F2",bd:"1px solid #FECDD3"})}
+          </>)}
         </div>
       </div>
     );
@@ -2394,12 +2392,12 @@ var DashboardPage = function(p) {
       {/* 6 KPI Cards */}
       <div style={{fontSize:11,fontWeight:700,color:C.textLight,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:10}}>{"My KPIs \u2014 Today"}</div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(6,minmax(0,1fr))",gap:9,marginBottom:9}}>
-        {kpiCard("My Leads",sk.myLeads||0,"total assigned","#1565C0",weekly.leads)}
-        {kpiCard("Daily Requests",sk.myDr||0,"total","#00796B",weekly.dr)}
-        {kpiCard("Followups Due",sk.followupsDue||0,(sk.overdueFollowups||0)+" overdue","#E65100",weekly.followups)}
-        {kpiCard("Interested",(sk.interested||0),(sk.interestedPct||0)+"% of leads","#6A1B9A",weekly.interested)}
-        {kpiCard("Meetings",sk.meetings||0,(sk.meetingRate||0)+"% meeting rate","#2E7D32",weekly.meetings)}
-        {kpiCard("Target achieved",Math.min(100,Math.round((sk.meetings||0)/Math.max(sk.myLeads||1,1)*100*5))+"%","progress this month","#AD1457")}
+        {kpiCard("My Leads",sk.myLeads||0,"total assigned","#EFF6FF","#1D4ED8",weekly.leads)}
+        {kpiCard("Daily Requests",sk.myDr||0,"total","#F0FDF4","#15803D",weekly.dr)}
+        {kpiCard("Followups Due",sk.followupsDue||0,(sk.overdueFollowups||0)+" overdue","#FFF7ED","#C2410C",weekly.followups)}
+        {kpiCard("Interested",(sk.interested||0),(sk.interestedPct||0)+"% of leads","#F5F3FF","#6D28D9",weekly.interested)}
+        {kpiCard("Meetings",sk.meetings||0,(sk.meetingRate||0)+"% meeting rate","#ECFDF5","#065F46",weekly.meetings)}
+        {kpiCard("Target achieved",Math.min(100,Math.round((sk.meetings||0)/Math.max(sk.myLeads||1,1)*100*5))+"%","progress this month","#FDF2F8","#9D174D")}
       </div>
 
       {/* Rank + Urgent + Schedule */}
