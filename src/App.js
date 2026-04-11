@@ -1061,10 +1061,10 @@ var QuickPhoneSearch = function(p) {
   var [show,setShow]=useState(false);
   var [q,setQ]=useState("");
   var leadResults=q.length>=4?p.leads.filter(function(l){
-    return l.phone&&(l.phone.includes(q)||l.phone.endsWith(q));
+    return (l.phone&&(l.phone.includes(q)||l.phone.endsWith(q)))||(l.phone2&&(l.phone2.includes(q)||l.phone2.endsWith(q)));
   }):[];
   var drResults=q.length>=4?(p.dailyReqs||[]).filter(function(r){
-    return r.phone&&(r.phone.includes(q)||r.phone.endsWith(q));
+    return (r.phone&&(r.phone.includes(q)||r.phone.endsWith(q)))||(r.phone2&&(r.phone2.includes(q)||r.phone2.endsWith(q)));
   }):[];
   var sc=STATUSES(p.t);
   var drSc=DR_STATUSES(p.t);
