@@ -1965,16 +1965,33 @@ var DashboardPage = function(p) {
   var isSales = p.cu.role==="sales";
   var C2 = C;
   var [data, setData] = useState(null);
-  var [loading, setLoading] = useState(true);
+  var [kpisData, setKpisData] = useState(null);
+  var [campaignsData, setCampaignsData] = useState([]);
+  var [agentsData, setAgentsData] = useState([]);
+  var [funnelData, setFunnelData] = useState({});
+  var [alertsData, setAlertsData] = useState({});
+  var [statusListData, setStatusListData] = useState([]);
+  var [agingData, setAgingData] = useState({});
+  var [mgmtData, setMgmtData] = useState({});
+  var [kpisLoading, setKpisLoading] = useState(true);
   var [filter, setFilter] = useState("month");
   var [qOpen, setQOpen] = useState(false);
   var [selectedQ, setSelectedQ] = useState(null);
-  var [showAllAgents, setShowAllAgents] = useState(false);
 
   useEffect(function(){
     var endpoint = isOnlyAdmin ? "/api/dashboard/admin" : "/api/dashboard/sales";
-    setLoading(true);
-    apiFetch(endpoint,"GET",null,p.token).then(function(d){setData(d);setLoading(false);}).catch(function(){setLoading(false);});
+    setKpisLoading(true);
+    apiFetch(endpoint,"GET",null,p.token).then(function(d){
+      setData(d);
+      if(d.kpis){setKpisData(d.kpis);setKpisLoading(false);}
+      if(d.campaignPerformance) setCampaignsData(d.campaignPerformance);
+      if(d.agentPerformance) setAgentsData(d.agentPerformance);
+      if(d.funnel) setFunnelData(d.funnel);
+      if(d.hotAlerts) setAlertsData(d.hotAlerts);
+      if(d.leadsByStatus) setStatusListData(d.leadsByStatus);
+      if(d.leadAging) setAgingData(d.leadAging);
+      if(d.managementAlerts) setMgmtData(d.managementAlerts);
+    }).catch(function(){setKpisLoading(false);});
   },[filter]);
 
   // Helpers
@@ -2052,20 +2069,19 @@ var DashboardPage = function(p) {
     </div>
   );
 
-  if(loading) return <div style={{padding:24,color:C2.textLight}}>Loading dashboard...</div>;
-  if(!data) return <div style={{padding:24,color:C2.textLight}}>Failed to load dashboard.</div>;
+  if(!kpisData&&kpisLoading) return <div style={{padding:24,color:C2.textLight}}>Loading dashboard...</div>;
 
   // ===== ADMIN DASHBOARD =====
   if(isOnlyAdmin){
-    var d = data;
-    var kpis = d.kpis||{};
-    var agents = d.agentPerformance||[];
-    var camps = d.campaignPerformance||[];
-    var funnel = d.funnel||{};
-    var alerts = d.hotAlerts||{};
-    var mgmt = d.managementAlerts||{};
-    var statusList = d.leadsByStatus||[];
-    var aging = d.leadAging||{};
+    var d = data||{};
+    var kpis = kpisData||{};
+    var agents = agentsData;
+    var camps = campaignsData;
+    var funnel = funnelData;
+    var alerts = alertsData;
+    var mgmt = mgmtData;
+    var statusList = statusListData;
+    var aging = agingData;
     var statusColors = {"NewLead":"#378ADD","Potential":"#1D9E75","HotCase":"#EF9F27","CallBack":"#D85A30","MeetingDone":"#7F77DD","NotInterested":"#E24B4A","NoAnswer":"#888780","DoneDeal":"#0F6E56"};
     var qbColor = function(q){return q==="High"?"#EAF3DE":q==="Medium"?"#FAEEDA":"#FCEBEB";};
     var qbText = function(q){return q==="High"?"#3B6D11":q==="Medium"?"#854F0B":"#A32D2D";};
@@ -2284,8 +2300,8 @@ var DashboardPage = function(p) {
   }
 
   // ===== SALES DASHBOARD =====
-  var sd = data;
-  var sk = sd.kpis||{};
+  var sd = data||{};
+  var sk = kpisData||{};
   var rank = sd.rank||{};
   var urgent = sd.urgent||[];
   var schedule = sd.schedule||[];
