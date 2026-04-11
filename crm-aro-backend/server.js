@@ -751,6 +751,33 @@ app.delete("/api/leads/:id", auth, adminOnly, async function(req, res) {
   }
 });
 
+// ===== REMOVE ASSIGNMENT =====
+app.delete("/api/leads/:id/assignment/:agentId", auth, adminOnly, async function(req, res) {
+  try {
+    var lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    if (!lead.assignments || lead.assignments.length <= 1) {
+      return res.status(400).json({ error: "Cannot remove last assignment" });
+    }
+    var removeId = req.params.agentId;
+    var before = lead.assignments.length;
+    lead.assignments = lead.assignments.filter(function(a) { return String(a.agentId) !== String(removeId); });
+    if (lead.assignments.length === before) {
+      return res.status(404).json({ error: "Assignment not found for this agent" });
+    }
+    // Remove from previousAgentIds if present
+    lead.previousAgentIds = (lead.previousAgentIds || []).filter(function(id) { return String(id) !== String(removeId); });
+    // If removed agent was the current agentId, set to most recent remaining
+    if (String(lead.agentId) === String(removeId)) {
+      var latest = lead.assignments[lead.assignments.length - 1];
+      lead.agentId = latest.agentId;
+    }
+    await lead.save();
+    var populated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    res.json(populated);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== ROTATE LEAD =====
 app.post("/api/leads/:id/rotate", auth, async function(req, res) {
   try {
