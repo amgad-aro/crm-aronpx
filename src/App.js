@@ -2070,13 +2070,13 @@ var DashboardPage = function(p) {
 
     {sec("Key Metrics")}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(140px, 1fr))",gap:10,marginBottom:0}}>
-      {kpiCard("Total Leads",total,"all leads","#DBEAFE","#1E40AF",function(){p.nav("leads");})}
-      {kpiCard("New "+filter,newInRange,"in period","#DCFCE7","#166534",function(){p.nav("leads");})}
-      {kpiCard("Interested",interested,Math.round(interested/Math.max(total,1)*100)+"%","#FEF3C7","#92400E",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
-      {kpiCard("Meetings",meetings,Math.round(meetings/Math.max(total,1)*100)+"%","#EDE9FE","#5B21B6",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
-      {kpiCard("Overdue",overdue,"late callbacks","#FEE2E2","#991B1B",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
-      {kpiCard("Deals",deals,total>0?((deals/total)*100).toFixed(1)+"%":"0%","#D1FAE5","#064E3B",function(){p.nav("deals");})}
-      {kpiCard("Contacted",contacted,Math.round(contacted/Math.max(total,1)*100)+"%","#DBEAFE","#1E3A8A",function(){p.nav("leads");})}
+      {kpiCard("Total Leads",total,"all leads","#BFDBFE","#1E40AF",function(){p.nav("leads");})}
+      {kpiCard("New "+filter,newInRange,"in period","#BBF7D0","#166534",function(){p.nav("leads");})}
+      {kpiCard("Interested",interested,Math.round(interested/Math.max(total,1)*100)+"%","#FDE68A","#92400E",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
+      {kpiCard("Meetings",meetings,Math.round(meetings/Math.max(total,1)*100)+"%","#DDD6FE","#5B21B6",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
+      {kpiCard("Overdue",overdue,"late callbacks","#FECACA","#991B1B",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
+      {kpiCard("Deals",deals,total>0?((deals/total)*100).toFixed(1)+"%":"0%","#A7F3D0","#064E3B",function(){p.nav("deals");})}
+      {kpiCard("Contacted",contacted,Math.round(contacted/Math.max(total,1)*100)+"%","#BFDBFE","#1E3A8A",function(){p.nav("leads");})}
     </div>
 
     {sec("Campaigns & Pipeline")}
