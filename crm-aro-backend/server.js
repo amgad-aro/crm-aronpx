@@ -73,6 +73,7 @@ Lead.collection.createIndex({ agentId: 1 }).catch(function(){});
 Lead.collection.createIndex({ createdAt: -1 }).catch(function(){});
 Lead.collection.createIndex({ globalStatus: 1 }).catch(function(){});
 Lead.collection.createIndex({ archived: 1, agentId: 1 }).catch(function(){});
+Lead.collection.createIndex({ "assignments.agentId": 1, createdAt: -1 }).catch(function(){});
 
 var Activity = mongoose.model("Activity", new mongoose.Schema({
   userId:{type:mongoose.Schema.Types.ObjectId,ref:"User",required:true},

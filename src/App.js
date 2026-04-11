@@ -4785,43 +4785,37 @@ export default function CRMApp() {
     if(!token) return;
     var knownLeadIds = null;
     var knownActivityIds = null;
-    var interval = setInterval(async function(){
+    // Interval 1 — leads every 15s (skip if tab hidden)
+    var leadsInterval = setInterval(async function(){
+      if(document.visibilityState!=="visible") return;
       try{
-        var results = await Promise.all([
-          apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,token),
-          apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token)
-        ]);
-        var leadsData = results[0].data||[];
-        var activitiesData = results[1].data||[];
-        // Fetch DR separately
-        try{
-          var drData = await apiFetch("/api/daily-requests","GET",null,token);
-          setDailyReqs(drData||[]);
-        }catch(drErr){}
+        var result = await apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,token);
+        var leadsData = result.data||[];
         try{
           var cache=JSON.parse(localStorage.getItem('phone2_cache')||'{}');
           leadsData=leadsData.map(function(l){var id=l._id?String(l._id):null;if(id&&cache[id]&&!l.phone2)return Object.assign({},l,{phone2:cache[id]});return l;});
         }catch(e){}
-
-        // Detect new leads
         if(knownLeadIds !== null){
           var newLeads = leadsData.filter(function(l){return !knownLeadIds.has(String(l._id));});
           newLeads.forEach(function(l){
             var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
             showBrowserNotif("🆕 New Lead", l.name+(agName?" → "+agName:""));
           });
-          // Deal/EOI notifications are created by confirmStatus via addDealNotif (MongoDB)
-          // No duplicate detection needed here — polling just refreshes notification state
         }
         knownLeadIds = new Set(leadsData.map(function(l){return String(l._id);}));
-
-        // Detect new activities
+        setLeads(leadsData);
+      }catch(e){}
+    }, 15000);
+    // Interval 2 — activities every 15s
+    var actInterval = setInterval(async function(){
+      try{
+        var result = await apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token);
+        var activitiesData = result.data||[];
         if(knownActivityIds !== null){
           var newActs = activitiesData.filter(function(a){return !knownActivityIds.has(String(a._id));});
           newActs.forEach(function(a){
             var who = a.userId&&a.userId.name?a.userId.name:"";
             var lead = a.leadId&&a.leadId.name?a.leadId.name:"";
-            // For team_leader: only notify for their team's activities
             if(currentUser.role==="team_leader"){
               var teamNames=new Set((users||[]).filter(function(u){return u.role==="sales";}).map(function(u){return u.name;}));
               teamNames.add(currentUser.name);
@@ -4833,12 +4827,17 @@ export default function CRMApp() {
           });
         }
         knownActivityIds = new Set(activitiesData.map(function(a){return String(a._id);}));
-
-        setLeads(leadsData);
         setActivities(activitiesData);
       }catch(e){}
     }, 15000);
-    return function(){ clearInterval(interval); };
+    // Interval 3 — daily requests every 30s
+    var drInterval = setInterval(async function(){
+      try{
+        var drData = await apiFetch("/api/daily-requests","GET",null,token);
+        setDailyReqs(drData||[]);
+      }catch(e){}
+    }, 30000);
+    return function(){ clearInterval(leadsInterval); clearInterval(actInterval); clearInterval(drInterval); };
   }, [token]);
   useEffect(function(){
     if(!token) return;
@@ -5269,7 +5268,7 @@ export default function CRMApp() {
     runChecks();
     var rotInterval = setInterval(runChecks, 5*60*1000);
     return function(){clearInterval(rotInterval);};
-  },[token, leads, users]);
+  },[token, users]);
 
   var handleLogout=function(){setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
