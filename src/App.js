@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 import {
   Search, Bell, Plus, Phone, Calendar, Building, Users, BarChart3,
@@ -2330,8 +2330,8 @@ var DashboardPage = function(p) {
               <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}}>Today</span>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:10}}>
-              <div style={{background:"#E6F1FB",borderRadius:8,padding:"0.55rem",textAlign:"center"}}><div style={{fontSize:17,fontWeight:500,color:"#185FA5"}}>{d.calls&&d.calls.today||0}</div><div style={{fontSize:10,color:"#0C447C"}}>Total Calls</div></div>
-              <div style={{background:"#FCEBEB",borderRadius:8,padding:"0.55rem",textAlign:"center"}}><div style={{fontSize:17,fontWeight:500,color:"#A32D2D"}}>{(d.calls&&d.calls.invalidPct||0)+"%"}</div><div style={{fontSize:10,color:"#791F1F"}}>Invalid Leads</div></div>
+              <div style={{background:"#E6F1FB",borderRadius:8,padding:"0.55rem",textAlign:"center"}}><div style={{fontSize:17,fontWeight:500,color:"#185FA5"}}>{(p.activities||[]).filter(function(a){return a.type==="call";}).length}</div><div style={{fontSize:10,color:"#0C447C"}}>Total Calls</div></div>
+              <div style={{background:"#FCEBEB",borderRadius:8,padding:"0.55rem",textAlign:"center"}}><div style={{fontSize:17,fontWeight:500,color:"#A32D2D"}}>{m.totalLeads>0?Math.round((statusList.find(function(s){return s.status==="NotInterested";})?statusList.find(function(s){return s.status==="NotInterested";}).count:0)/m.totalLeads*100):0}%</div><div style={{fontSize:10,color:"#791F1F"}}>Invalid Leads</div></div>
             </div>
             {bRow("Interested",Math.round((funnel.assigned||0)*0.31),funnel.assigned||1,"#1D9E75")}
             {bRow("No Answer",Math.round((funnel.assigned||0)*0.20),funnel.assigned||1,"#888780")}
