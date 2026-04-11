@@ -2070,13 +2070,13 @@ var DashboardPage = function(p) {
 
     {sec("Key Metrics")}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(140px, 1fr))",gap:10,marginBottom:0}}>
-      {kpiCard("Total Leads",total,"all leads","#E8F4FD","#1565C0",function(){p.nav("leads");})}
-      {kpiCard("New "+filter,newInRange,"in period","#E8F8F0","#1B6B3A",function(){p.nav("leads");})}
-      {kpiCard("Interested",interested,Math.round(interested/Math.max(total,1)*100)+"%","#FEF9E7","#B7770D",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
-      {kpiCard("Meetings",meetings,Math.round(meetings/Math.max(total,1)*100)+"%","#F3E8FD","#6A1B9A",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
-      {kpiCard("Overdue",overdue,"late callbacks","#FEECEC","#C0392B",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
-      {kpiCard("Deals",deals,total>0?((deals/total)*100).toFixed(1)+"%":"0%","#E8F8F5","#0E6655",function(){p.nav("deals");})}
-      {kpiCard("Contacted",contacted,Math.round(contacted/Math.max(total,1)*100)+"%","#EAF2FF","#1A5276",function(){p.nav("leads");})}
+      {kpiCard("Total Leads",total,"all leads","#DBEAFE","#1E40AF",function(){p.nav("leads");})}
+      {kpiCard("New "+filter,newInRange,"in period","#DCFCE7","#166534",function(){p.nav("leads");})}
+      {kpiCard("Interested",interested,Math.round(interested/Math.max(total,1)*100)+"%","#FEF3C7","#92400E",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
+      {kpiCard("Meetings",meetings,Math.round(meetings/Math.max(total,1)*100)+"%","#EDE9FE","#5B21B6",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
+      {kpiCard("Overdue",overdue,"late callbacks","#FEE2E2","#991B1B",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
+      {kpiCard("Deals",deals,total>0?((deals/total)*100).toFixed(1)+"%":"0%","#D1FAE5","#064E3B",function(){p.nav("deals");})}
+      {kpiCard("Contacted",contacted,Math.round(contacted/Math.max(total,1)*100)+"%","#DBEAFE","#1E3A8A",function(){p.nav("leads");})}
     </div>
 
     {sec("Campaigns & Pipeline")}
@@ -2137,6 +2137,7 @@ var DashboardPage = function(p) {
     </div>
 
     {sec("Team Performance")}
+    <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:14,marginBottom:14}}>
     {card(<>
       <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Agent Performance</div>
       <div style={{display:"grid",gridTemplateColumns:"160px 60px 70px 60px 70px 60px 60px 60px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4}}>
@@ -2163,7 +2164,23 @@ var DashboardPage = function(p) {
           <div style={{fontSize:12,fontWeight:700,textAlign:"center",color:a.score>=70?"#15803D":a.score>=50?"#92400E":"#94A3B8"}}>{medals[i]||""} {a.score}</div>
         </div>;
       })}
-    </>,{marginBottom:14})}
+    </>,{maxHeight:"320px",overflowY:"auto"})}
+    {card(<>
+      <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Quick Stats</div>
+      {[
+        {l:"Today's New Leads",v:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;}).length,c:"#1E40AF"},
+        {l:"Missing Feedback",v:leads.filter(function(l){return !l.lastFeedback&&l.status!=="NewLead"&&l.status!=="DoneDeal";}).length,c:"#92400E"},
+        {l:"Expiring Soon (7d)",v:leads.filter(function(l){return l.expiresAt&&(new Date(l.expiresAt).getTime()-now)<7*DAY&&(new Date(l.expiresAt).getTime()-now)>0;}).length,c:"#991B1B"},
+        {l:"Top Project",v:(function(){var pm={};leads.forEach(function(l){if(l.project)pm[l.project]=(pm[l.project]||0)+1;});var top=Object.entries(pm).sort(function(a,b){return b[1]-a[1];})[0];return top?top[0]+" ("+top[1]+")":"—";})(),c:"#5B21B6"},
+        {l:"Avg Leads/Agent",v:agentPerf.length>0?Math.round(total/agentPerf.length):0,c:"#064E3B"}
+      ].map(function(s,i){
+        return <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<4?"1px solid #F1F5F9":"none"}}>
+          <div style={{fontSize:13,color:"#334155"}}>{s.l}</div>
+          <div style={{fontSize:16,fontWeight:800,color:s.c}}>{s.v}</div>
+        </div>;
+      })}
+    </>)}
+    </div>
 
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(280px, 1fr))",gap:14}}>
       {card(<>
