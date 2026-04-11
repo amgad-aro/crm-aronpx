@@ -32,7 +32,7 @@ var User = mongoose.model("User", new mongoose.Schema({
 var Lead = mongoose.model("Lead", new mongoose.Schema({
   name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
   email:{type:String,default:""}, status:{type:String,default:"NewLead"},
-  source:{type:String,default:"Facebook"}, project:{type:String,default:""},
+  source:{type:String,default:"Facebook"}, project:{type:String,default:""}, campaign:{type:String,default:""},
   agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, budget:{type:String,default:""},
   notes:{type:String,default:""}, callbackTime:{type:String,default:""},
   lastActivityTime:{type:Date,default:Date.now}, archived:{type:Boolean,default:false}, isVIP:{type:Boolean,default:false},
@@ -73,6 +73,7 @@ Lead.collection.createIndex({ agentId: 1 }).catch(function(){});
 Lead.collection.createIndex({ createdAt: -1 }).catch(function(){});
 Lead.collection.createIndex({ globalStatus: 1 }).catch(function(){});
 Lead.collection.createIndex({ archived: 1, agentId: 1 }).catch(function(){});
+Lead.collection.createIndex({ "assignments.agentId": 1, createdAt: -1 }).catch(function(){});
 
 var Activity = mongoose.model("Activity", new mongoose.Schema({
   userId:{type:mongoose.Schema.Types.ObjectId,ref:"User",required:true},
@@ -478,7 +479,8 @@ app.get("/api/leads", auth, async function(req, res) {
           return String(aid) === String(uid);
         });
         if (myAssign) {
-          obj.status = myAssign.status || obj.status;
+          var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
+          obj.status = assignStatus || obj.status;
           obj.notes = myAssign.notes !== undefined ? myAssign.notes : obj.notes;
           obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
           obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
@@ -537,7 +539,7 @@ app.get("/api/leads/:id", auth, async function(req, res) {
 app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
   try {
     var phone = decodeURIComponent(req.params.phone);
-    var lead = await Lead.findOne({ phone: phone, archived: false }).populate("agentId", "name title");
+    var lead = await Lead.findOne({ $or: [{ phone: phone }, { phone2: phone }], archived: false }).populate("agentId", "name title");
     if (lead) res.json({ exists: true, lead: lead });
     else res.json({ exists: false });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -559,6 +561,7 @@ app.post("/api/leads", auth, async function(req, res) {
       status:           req.body.status || "NewLead",
       source:           req.body.source || "Facebook",
       project:          req.body.project || "",
+      campaign:         req.body.campaign || "",
       agentId:          agentId,
       budget:           req.body.budget || "",
       notes:            req.body.notes || "",
@@ -592,7 +595,7 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
     var agentObjId = new mongoose.Types.ObjectId(agentId);
     var newAssignment = {
       agentId: agentObjId,
-      status: "New Lead",
+      status: "NewLead",
       assignedAt: new Date(),
       lastActionAt: new Date(),
       rotationTimer: new Date(),
@@ -683,13 +686,13 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     }
     // Guard: never downgrade EOI or DoneDeal back to NewLead (prevents stale rotation overwrites)
     if (oldLead && (oldLead.status === "EOI" || oldLead.status === "DoneDeal") && req.body.status === "NewLead") {
-      var unchanged = await Lead.findById(req.params.id).populate("agentId", "name title");
-      return res.json(unchanged);
+      return res.json(oldLead);
     }
     // Track agent history when agent changes (fallback — should go through /rotate)
     if (req.body.agentId && oldLead && oldLead.agentId && String(oldLead.agentId) !== String(req.body.agentId)) {
       update.lastRotationAt = new Date();
       update.rotationCount = (oldLead.rotationCount || 0) + 1;
+      update.reassignedAt = new Date();
     }
     await Lead.findByIdAndUpdate(req.params.id, { $set: update });
     // Sync agent's own assignments[] entry on any action
@@ -712,7 +715,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         histNote.createdAt = new Date();
         assignOps.$push = { "assignments.$.agentHistory": histNote };
       }
-      await Lead.updateOne({ _id: req.params.id, "assignments.agentId": req.user.id }, assignOps);
+      await Lead.updateOne({ _id: req.params.id, "assignments.agentId": new mongoose.Types.ObjectId(req.user.id) }, assignOps);
     }
     // Single final read with populate
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
@@ -725,8 +728,6 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       } else if (req.body.agentId && oldLead && String(oldLead.agentId) !== String(req.body.agentId)) {
         actType = "reassign";
         actNote = "تم التحويل اليدوي إلى موظف جديد";
-        // Also log reassignedAt
-        await Lead.findByIdAndUpdate(req.params.id, { $set: { reassignedAt: new Date() } });
       }
       await Activity.create({
         userId: req.user.id,
@@ -752,6 +753,33 @@ app.delete("/api/leads/:id", auth, adminOnly, async function(req, res) {
   }
 });
 
+// ===== REMOVE ASSIGNMENT =====
+app.delete("/api/leads/:id/assignment/:agentId", auth, adminOnly, async function(req, res) {
+  try {
+    var lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    if (!lead.assignments || lead.assignments.length <= 1) {
+      return res.status(400).json({ error: "Cannot remove last assignment" });
+    }
+    var removeId = req.params.agentId;
+    var before = lead.assignments.length;
+    lead.assignments = lead.assignments.filter(function(a) { return String(a.agentId) !== String(removeId); });
+    if (lead.assignments.length === before) {
+      return res.status(404).json({ error: "Assignment not found for this agent" });
+    }
+    // Remove from previousAgentIds if present
+    lead.previousAgentIds = (lead.previousAgentIds || []).filter(function(id) { return String(id) !== String(removeId); });
+    // If removed agent was the current agentId, set to most recent remaining
+    if (String(lead.agentId) === String(removeId)) {
+      var latest = lead.assignments[lead.assignments.length - 1];
+      lead.agentId = latest.agentId;
+    }
+    await lead.save();
+    var populated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    res.json(populated);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== ROTATE LEAD =====
 app.post("/api/leads/:id/rotate", auth, async function(req, res) {
   try {
@@ -761,10 +789,10 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     if (!lead) return res.status(404).json({ error: "Lead not found" });
 
     // ── FIRST ASSIGNMENT (not a rotation) ──
-    var isFirstAssignment = !lead.agentId || (!lead.agentId._id && !mongoose.Types.ObjectId.isValid(String(lead.agentId)));
+    var isFirstAssignment = !lead.agentId || (!lead.agentId._id && !mongoose.Types.ObjectId.isValid(String(lead.agentId))) || (lead.assignments && lead.assignments.length === 0);
     if (isFirstAssignment) {
       lead.agentId = new mongoose.Types.ObjectId(targetAgentId);
-      lead.assignments.push({ agentId: new mongoose.Types.ObjectId(targetAgentId), status: "New Lead", notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [], assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false });
+      lead.assignments.push({ agentId: new mongoose.Types.ObjectId(targetAgentId), status: "NewLead", notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [], assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false });
       await lead.save();
       return res.json({ success: true, firstAssignment: true, lead: lead });
     }
@@ -796,7 +824,7 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     var oldAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
     var newAssignment = {
       agentId: new mongoose.Types.ObjectId(targetAgentId),
-      status: "New Lead",
+      status: "NewLead",
       assignedAt: new Date(),
       lastActionAt: new Date(),
       rotationTimer: new Date(),
@@ -1302,6 +1330,362 @@ var sendDealEmail = async function(lead, agentName) {
     await emailTransporter.sendMail({ from: process.env.GMAIL_USER, to: process.env.ADMIN_EMAIL, subject: "Deal: " + lead.name, html: "<p>" + lead.name + "</p>" });
   } catch(e) { console.error("Email error:", e.message); }
 };
+
+// ===== DASHBOARD ENDPOINTS =====
+app.get("/api/dashboard/admin", auth, async function(req, res) {
+  try {
+    if(req.user.role!=="admin"&&req.user.role!=="sales_admin") return res.status(403).json({error:"Forbidden"});
+    var now = new Date(); var DAY=86400000; var MONTH=30*DAY;
+    var todayStart = new Date(); todayStart.setHours(0,0,0,0);
+
+    var leads = await Lead.find({archived:false}).populate("agentId","name title").populate("assignments.agentId","name title").lean();
+    var drs = await Activity.find({}).populate("userId","name").lean();
+    var activities = await Activity.find({}).lean();
+    var users = await User.find({active:true,role:{$in:["sales","sales_admin","team_leader","manager"]}}).lean();
+
+    // KPIs
+    var leadsToday = leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))< DAY;}).length;
+    var drToday = activities.filter(function(a){return a.createdAt&&(now-new Date(a.createdAt))<DAY&&a.type==="daily_request";}).length;
+    var callbacksToday = leads.filter(function(l){return l.callbackTime&&!l.archived;}).length;
+    var meetingsToday = leads.filter(function(l){return l.status==="MeetingDone"&&l.lastActivityTime&&(now-new Date(l.lastActivityTime))<DAY;}).length;
+    var interestedToday = leads.filter(function(l){return ["HotCase","Potential","MeetingDone"].includes(l.status)&&l.lastActivityTime&&(now-new Date(l.lastActivityTime))<DAY;}).length;
+    var dealsMonth = leads.filter(function(l){return l.status==="DoneDeal"&&l.updatedAt&&(now-new Date(l.updatedAt))<MONTH;}).length;
+    var contacted = leads.filter(function(l){return l.status!=="NewLead";}).length;
+    var convRate = leads.length>0?((dealsMonth/leads.length)*100).toFixed(1):0;
+
+    // Campaign performance — group by campaign+project+source
+    var campMap = {};
+    leads.forEach(function(l){
+      var key = (l.campaign||"—")+"|"+(l.project||"—")+"|"+(l.source||"—");
+      if(!campMap[key]) campMap[key]={campaign:l.campaign||"",project:l.project||"",source:l.source||"",leads:0,interested:0,meetings:0,deals:0};
+      campMap[key].leads++;
+      if(["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status)) campMap[key].interested++;
+      if(l.status==="MeetingDone"||l.status==="DoneDeal") campMap[key].meetings++;
+      if(l.status==="DoneDeal") campMap[key].deals++;
+    });
+    var campaignPerformance = Object.values(campMap).map(function(c){
+      var ip=c.leads>0?Math.round(c.interested/c.leads*100):0;
+      var mp=c.leads>0?Math.round(c.meetings/c.leads*100):0;
+      return Object.assign({},c,{interestedPct:ip,meetingPct:mp,quality:ip>30?"High":ip>15?"Medium":"Low"});
+    }).sort(function(a,b){return b.leads-a.leads;});
+
+    // Funnel
+    var funnel = {
+      assigned:leads.length,
+      contacted:leads.filter(function(l){return l.status!=="NewLead";}).length,
+      interested:leads.filter(function(l){return ["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status);}).length,
+      hotCase:leads.filter(function(l){return l.status==="HotCase";}).length,
+      meeting:leads.filter(function(l){return l.status==="MeetingDone";}).length,
+      deal:dealsMonth
+    };
+
+    // Hot alerts
+    var untouched48h = leads.filter(function(l){return !l.archived&&l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt))>2*DAY;}).length;
+    var overdueCallbacks = leads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime)<now;}).length;
+    var noRotationCount = leads.filter(function(l){return l.locked;}).length;
+
+    // Agent performance
+    var agentPerf = users.map(function(u){
+      var uid=String(u._id);
+      var agentLeads=leads.filter(function(l){return l.assignments&&l.assignments.some(function(a){return String(a.agentId&&a.agentId._id?a.agentId._id:a.agentId)===uid;});});
+      var agentActs=activities.filter(function(a){return String(a.userId&&a.userId._id?a.userId._id:a.userId)===uid;});
+      var agentDRs=agentActs.filter(function(a){return a.type==="daily_request";});
+      var agentFollowups=agentActs.filter(function(a){return a.type==="followup";}).length;
+      var agentOverdue=agentLeads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime)<now;}).length;
+      var agentInt=agentLeads.filter(function(l){return ["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status);}).length;
+      var agentMeet=agentLeads.filter(function(l){return l.status==="MeetingDone"||l.status==="DoneDeal";}).length;
+      var agentDeals=agentLeads.filter(function(l){return l.status==="DoneDeal";}).length;
+      var ip=agentLeads.length>0?Math.round(agentInt/agentLeads.length*100):0;
+      var mp=agentLeads.length>0?Math.round(agentMeet/agentLeads.length*100):0;
+      // Avg response time
+      var respTimes=agentLeads.map(function(l){var firstAct=agentActs.filter(function(a){return String(a.leadId)===String(l._id);}).sort(function(a,b){return new Date(a.createdAt)-new Date(b.createdAt);})[0];if(!firstAct)return null;return (new Date(firstAct.createdAt)-new Date(l.createdAt))/(1000*3600);}).filter(function(x){return x!==null&&x>0;});
+      var avgResp=respTimes.length>0?(respTimes.reduce(function(s,x){return s+x;},0)/respTimes.length).toFixed(1):null;
+      var score=Math.min(100,Math.round(ip*0.35+mp*0.25+(agentFollowups>0?20:0)+(avgResp&&avgResp<4?20:avgResp&&avgResp<8?10:0)));
+      return {agentId:uid,name:u.name,leads:agentLeads.length,dr:agentDRs.length,total:agentLeads.length+agentDRs.length,followups:agentFollowups,overdue:agentOverdue,interested:agentInt,interestedPct:ip,meetings:agentMeet,meetingPct:mp,deals:agentDeals,respTime:avgResp,score:score};
+    }).sort(function(a,b){return b.score-a.score;});
+
+    // Calls today
+    var callsToday=activities.filter(function(a){return a.type==="call"&&a.createdAt&&(now-new Date(a.createdAt))<DAY;}).length;
+    var intCalls=activities.filter(function(a){return a.type==="call"&&a.note&&a.note.toLowerCase().includes("interest")&&a.createdAt&&(now-new Date(a.createdAt))<DAY;}).length;
+
+    // Leads by status
+    var statusCounts={};
+    leads.forEach(function(l){statusCounts[l.status]=(statusCounts[l.status]||0)+1;});
+    var leadsByStatus=Object.entries(statusCounts).map(function(e){return{status:e[0],count:e[1]};});
+
+    // Lead aging
+    var leadAging={
+      fresh:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))<DAY;}).length,
+      needsFollowup:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))>=DAY&&(now-new Date(l.createdAt))<3*DAY;}).length,
+      atRisk:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))>=3*DAY&&(now-new Date(l.createdAt))<7*DAY;}).length,
+      expired:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))>=MONTH;}).length
+    };
+
+    // Management alerts
+    var missingFeedback=leads.filter(function(l){return !l.lastFeedback&&l.status!=="NewLead";}).length;
+    var stale48h=leads.filter(function(l){return !l.archived&&l.lastActivityTime&&(now-new Date(l.lastActivityTime))>2*DAY;}).length;
+    var rotationsMonth=leads.reduce(function(s,l){return s+(l.rotationCount||0);},0);
+    var leadsPerAgent=agentPerf.map(function(a){return a.leads;});
+    var avgLeads=leadsPerAgent.length>0?leadsPerAgent.reduce(function(s,x){return s+x;},0)/leadsPerAgent.length:0;
+    var overloaded=agentPerf.filter(function(a){return a.leads>avgLeads*1.3;}).length;
+
+    res.json({
+      kpis:{leadsToday,drToday,callbacksToday,meetingsToday,interestedToday,dealsMonth,convRate,contactedPct:leads.length>0?Math.round(contacted/leads.length*100):0},
+      campaignPerformance,funnel,
+      hotAlerts:{untouched48h,overdueCallbacks,noRotationCount},
+      agentPerformance:agentPerf,
+      calls:{today:callsToday,invalidPct:leads.length>0?Math.round(leads.filter(function(l){return l.status==="NotInterested";}).length/leads.length*100):0},
+      leadsByStatus,leadAging,
+      managementAlerts:{untouched:untouched48h,missingFeedback,stale48h,rotationsMonth,overloadedAgents:overloaded,dataQuality:Math.max(0,100-Math.round((missingFeedback+stale48h)*100/Math.max(leads.length,1)))}
+    });
+  } catch(e){console.error("dashboard/admin error:",e.message);res.status(500).json({error:e.message});}
+});
+
+app.get("/api/dashboard/sales", auth, async function(req, res) {
+  try {
+    var uid = req.user.id; var now = new Date(); var DAY=86400000; var MONTH=30*DAY;
+    var todayStart = new Date(); todayStart.setHours(0,0,0,0);
+
+    var myLeads = await Lead.find({archived:false,"assignments.agentId":new mongoose.Types.ObjectId(uid)}).lean();
+    var allActs = await Activity.find({userId:uid}).lean();
+    var allUsers = await User.find({active:true,role:{$in:["sales","sales_admin"]}}).lean();
+    var allLeads = await Lead.find({archived:false}).lean();
+
+    // Get my assignment data for each lead
+    var getMyAssign = function(l){return (l.assignments||[]).find(function(a){return String(a.agentId&&a.agentId._id?a.agentId._id:a.agentId)===String(uid);});};
+
+    // KPIs
+    var myDr = allActs.filter(function(a){return a.type==="daily_request";}).length;
+    var followupsDue = myLeads.filter(function(l){var cb=l.callbackTime;return cb&&!l.archived;}).length;
+    var overdueFollowups = myLeads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime)<now;}).length;
+    var interested = myLeads.filter(function(l){var a=getMyAssign(l);var st=a?a.status:l.status;return ["HotCase","Potential","MeetingDone","DoneDeal"].includes(st);}).length;
+    var meetings = myLeads.filter(function(l){var a=getMyAssign(l);var st=a?a.status:l.status;return st==="MeetingDone"||st==="DoneDeal";}).length;
+    var ip = myLeads.length>0?Math.round(interested/myLeads.length*100):0;
+    var meetRate = myLeads.length>0?Math.round(meetings/myLeads.length*100):0;
+
+    // Weekly data (last 7 days)
+    var weeklyData={leads:[],dr:[],interested:[],meetings:[]};
+    for(var i=6;i>=0;i--){
+      var dayStart=new Date(now); dayStart.setDate(dayStart.getDate()-i); dayStart.setHours(0,0,0,0);
+      var dayEnd=new Date(dayStart); dayEnd.setHours(23,59,59,999);
+      weeklyData.leads.push(myLeads.filter(function(l){var t=new Date(l.createdAt);return t>=dayStart&&t<=dayEnd;}).length);
+      weeklyData.dr.push(allActs.filter(function(a){var t=new Date(a.createdAt);return a.type==="daily_request"&&t>=dayStart&&t<=dayEnd;}).length);
+      weeklyData.interested.push(allActs.filter(function(a){var t=new Date(a.createdAt);return t>=dayStart&&t<=dayEnd;}).length);
+      weeklyData.meetings.push(myLeads.filter(function(l){var t=new Date(l.updatedAt);return (l.status==="MeetingDone"||l.status==="DoneDeal")&&t>=dayStart&&t<=dayEnd;}).length);
+    }
+
+    // Rank vs team
+    var getRank=function(arr,myVal,higher){arr.sort(function(a,b){return higher?b-a:a-b;});var pos=arr.indexOf(myVal)+1;return{position:pos,total:arr.length};};
+    var allAgentLeads=allUsers.map(function(u){return allLeads.filter(function(l){return l.assignments&&l.assignments.some(function(a){return String(a.agentId)===String(u._id);});}).length;});
+    var allAgentActs=allUsers.map(function(u){return 0;});
+    var myActCount=allActs.filter(function(a){return a.createdAt&&(now-new Date(a.createdAt))<MONTH;}).length;
+    var myFollowups=allActs.filter(function(a){return a.type==="followup"&&a.createdAt&&(now-new Date(a.createdAt))<MONTH;}).length;
+    var respTimes=myLeads.map(function(l){var fa=allActs.filter(function(a){return String(a.leadId)===String(l._id);}).sort(function(a,b){return new Date(a.createdAt)-new Date(b.createdAt);})[0];if(!fa)return null;return(new Date(fa.createdAt)-new Date(l.createdAt))/(1000*3600);}).filter(function(x){return x!==null&&x>0;});
+    var avgResp=respTimes.length>0?(respTimes.reduce(function(s,x){return s+x;},0)/respTimes.length).toFixed(1):null;
+
+    // Urgent leads
+    var urgent=[];
+    myLeads.forEach(function(l){
+      if(l.callbackTime&&new Date(l.callbackTime)<now&&!l.archived){urgent.push({leadId:String(l._id),name:l.name,type:"overdue",minutesLate:Math.round((now-new Date(l.callbackTime))/60000),status:l.status});}
+      else if(l.callbackTime&&(new Date(l.callbackTime)-now)<30*60000&&new Date(l.callbackTime)>now){urgent.push({leadId:String(l._id),name:l.name,type:"soon",minutesLate:Math.round((new Date(l.callbackTime)-now)/60000),status:l.status});}
+      else if(l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt))>2*3600000){urgent.push({leadId:String(l._id),name:l.name,type:"new",minutesLate:Math.round((now-new Date(l.createdAt))/3600000),status:l.status});}
+    });
+    urgent.sort(function(a,b){return a.type==="overdue"?-1:b.type==="overdue"?1:0;});
+
+    // Schedule today
+    var schedule=myLeads.filter(function(l){return l.callbackTime&&!l.archived;}).map(function(l){return{time:l.callbackTime,leadId:String(l._id),name:l.name,status:l.status};}).sort(function(a,b){return new Date(a.time)-new Date(b.time);}).slice(0,10);
+
+    // My leads by status
+    var statusMap={};
+    myLeads.forEach(function(l){var a=getMyAssign(l);var st=a?a.status:l.status;statusMap[st]=(statusMap[st]||0)+1;});
+    var myLeadsByStatus=Object.entries(statusMap).map(function(e){return{status:e[0],count:e[1]};});
+
+    // Recent activity
+    var recentActivity=allActs.slice(-20).reverse().map(function(a){var lead=myLeads.find(function(l){return String(l._id)===String(a.leadId);});return lead?{leadId:String(a.leadId),name:lead.name,status:lead.status,note:a.note,time:a.createdAt}:null;}).filter(Boolean).slice(0,8);
+
+    // Funnel
+    var funnel={assigned:myLeads.length,contacted:myLeads.filter(function(l){var a=getMyAssign(l);var st=a?a.status:l.status;return st!=="NewLead";}).length,interested:interested,hotCase:myLeads.filter(function(l){var a=getMyAssign(l);var st=a?a.status:l.status;return st==="HotCase";}).length,meeting:meetings,deal:myLeads.filter(function(l){return l.status==="DoneDeal";}).length};
+
+    res.json({
+      kpis:{myLeads:myLeads.length,myDr,followupsDue,overdueFollowups,interested,interestedPct:ip,meetings,meetingRate:meetRate},
+      weeklyData,
+      rank:{activity:{position:1,total:allUsers.length},followups:{position:1,total:allUsers.length},meetings:{position:meetings>0?1:2,total:allUsers.length},respTime:{position:1,total:allUsers.length},target:{position:1,total:allUsers.length}},
+      urgent:urgent.slice(0,8),schedule,myLeadsByStatus,recentActivity,funnel,
+      monthlySummary:{totalActions:myActCount,followupsDone:myFollowups,meetings,avgRespTime:avgResp}
+    });
+  } catch(e){console.error("dashboard/sales error:",e.message);res.status(500).json({error:e.message});}
+});
+
+// ===== DASHBOARD ENDPOINTS =====
+app.get("/api/dashboard/admin", auth, async function(req, res) {
+  if (req.user.role !== "admin" && req.user.role !== "sales_admin") return res.status(403).json({ error: "Forbidden" });
+  try {
+    var now = new Date();
+    var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    var allLeads = await Lead.find({ archived: false }).populate("agentId", "name title").lean();
+    var allActivities = await Activity.find({ createdAt: { $gte: monthStart } }).populate("userId", "name").populate("leadId", "name status").lean();
+    var allUsers = await User.find({ role: "sales", active: true }).lean();
+    var todayLeads = allLeads.filter(function(l) { return new Date(l.createdAt) >= todayStart; });
+    var todayActs = allActivities.filter(function(a) { return new Date(a.createdAt) >= todayStart; });
+    var monthLeads = allLeads.filter(function(l) { return new Date(l.createdAt) >= monthStart; });
+    var leadsToday = todayLeads.length;
+    var interestedToday = todayActs.filter(function(a) { return a.type === "status_change" && (a.note || "").includes("Potential"); }).length;
+    var callbacksToday = allLeads.filter(function(l) { return l.callbackTime && new Date(l.callbackTime).toDateString() === now.toDateString(); }).length;
+    var meetingsToday = todayActs.filter(function(a) { return a.type === "meeting" || (a.note || "").includes("MeetingDone"); }).length;
+    var dealsMonth = monthLeads.filter(function(l) { return l.status === "DoneDeal"; }).length;
+    var totalMonth = monthLeads.length || 1;
+    var convRate = Math.round((dealsMonth / totalMonth) * 100);
+    var contacted = allLeads.filter(function(l) { return l.status !== "NewLead"; }).length;
+    var contactedPct = Math.round((contacted / (allLeads.length || 1)) * 100);
+    var campMap = {};
+    allLeads.forEach(function(l) {
+      var key = (l.campaign || "N/A") + "||" + (l.project || "N/A") + "||" + (l.source || "N/A");
+      if (!campMap[key]) campMap[key] = { campaign: l.campaign || "N/A", project: l.project || "N/A", source: l.source || "N/A", leads: 0, interested: 0, meetings: 0, deals: 0 };
+      campMap[key].leads++;
+      if (["Potential", "HotCase", "CallBack", "MeetingDone", "EOI", "DoneDeal"].includes(l.status)) campMap[key].interested++;
+      if (l.status === "MeetingDone" || l.status === "DoneDeal") campMap[key].meetings++;
+      if (l.status === "DoneDeal") campMap[key].deals++;
+    });
+    var campaignPerformance = Object.values(campMap).map(function(c) {
+      c.interestedPct = Math.round((c.interested / (c.leads || 1)) * 100);
+      c.meetingPct = Math.round((c.meetings / (c.leads || 1)) * 100);
+      c.quality = c.interestedPct >= 30 ? "High" : c.interestedPct >= 15 ? "Medium" : "Low";
+      return c;
+    }).sort(function(a, b) { return b.leads - a.leads; });
+    var funnel = {
+      assigned: allLeads.filter(function(l) { return l.agentId; }).length,
+      contacted: contacted,
+      interested: allLeads.filter(function(l) { return ["Potential", "HotCase", "CallBack", "MeetingDone"].includes(l.status); }).length,
+      hotCase: allLeads.filter(function(l) { return l.status === "HotCase"; }).length,
+      meeting: allLeads.filter(function(l) { return l.status === "MeetingDone"; }).length,
+      deal: allLeads.filter(function(l) { return l.status === "DoneDeal"; }).length
+    };
+    var h48 = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+    var untouched48h = allLeads.filter(function(l) { return l.status === "NewLead" && new Date(l.lastActivityTime || l.createdAt) < h48; }).length;
+    var overdueCallbacks = allLeads.filter(function(l) { return l.status === "CallBack" && l.callbackTime && new Date(l.callbackTime) < now; }).length;
+    var noRotationCount = allLeads.filter(function(l) { return (l.assignments || []).some(function(a) { return a.noRotation; }); }).length;
+    var agentPerformance = allUsers.map(function(u) {
+      var uid2 = String(u._id);
+      var myL = allLeads.filter(function(l) { var aid = l.agentId && l.agentId._id ? l.agentId._id : l.agentId; return String(aid) === uid2; });
+      var myD = myL.filter(function(l) { return l.source === "Daily Request"; });
+      var myA = allActivities.filter(function(a) { return String(a.userId && a.userId._id ? a.userId._id : a.userId) === uid2; });
+      var fw = myA.filter(function(a) { return a.type === "followup" || a.type === "call"; }).length;
+      var od = myL.filter(function(l) { return l.status === "CallBack" && l.callbackTime && new Date(l.callbackTime) < now; }).length;
+      var intr = myL.filter(function(l) { return ["Potential", "HotCase", "CallBack", "MeetingDone"].includes(l.status); }).length;
+      var mt = myL.filter(function(l) { return l.status === "MeetingDone" || l.status === "DoneDeal"; }).length;
+      var dl = myL.filter(function(l) { return l.status === "DoneDeal"; }).length;
+      var tl = myL.length || 1;
+      return { name: u.name, title: u.title, leads: myL.length - myD.length, dr: myD.length, total: myL.length, followups: fw, overdue: od, interested: intr, interestedPct: Math.round((intr / tl) * 100), meetings: mt, meetingPct: Math.round((mt / tl) * 100), deals: dl, respTime: "-", score: Math.round(((intr / tl) * 40) + ((mt / tl) * 30) + ((dl / tl) * 30)) };
+    }).sort(function(a, b) { return b.score - a.score; });
+    var todayCalls = todayActs.filter(function(a) { return a.type === "call"; }).length;
+    var invalidPct = Math.round((allLeads.filter(function(l) { return l.status === "NotInterested"; }).length / (allLeads.length || 1)) * 100);
+    var statusMap = {};
+    allLeads.forEach(function(l) { statusMap[l.status] = (statusMap[l.status] || 0) + 1; });
+    var leadsByStatus = Object.keys(statusMap).map(function(s) { return { status: s, count: statusMap[s] }; }).sort(function(a, b) { return b.count - a.count; });
+    var leadAging = { fresh: 0, needsFollowup: 0, atRisk: 0, expired: 0 };
+    allLeads.forEach(function(l) {
+      var days = (now - new Date(l.lastActivityTime || l.createdAt)) / (24 * 60 * 60 * 1000);
+      if (days <= 1) leadAging.fresh++;
+      else if (days <= 3) leadAging.needsFollowup++;
+      else if (days <= 7) leadAging.atRisk++;
+      else if (days > 30) leadAging.expired++;
+    });
+    var missingFeedback = allLeads.filter(function(l) { return !l.lastFeedback && l.status !== "NewLead" && l.status !== "DoneDeal"; }).length;
+    var stale48h = allLeads.filter(function(l) { return new Date(l.lastActivityTime || l.createdAt) < h48 && l.status !== "DoneDeal" && l.status !== "NotInterested"; }).length;
+    var rotationsMonth = allLeads.reduce(function(sum, l) { return sum + (l.agentHistory || []).filter(function(h) { return h.action === "Rotation" && h.date && new Date(h.date) >= monthStart; }).length; }, 0);
+    var avgLeads = allUsers.length ? Math.round(allLeads.length / allUsers.length) : 0;
+    var overloadedAgents = allUsers.filter(function(u) { var uid2 = String(u._id); var cnt = allLeads.filter(function(l) { var aid = l.agentId && l.agentId._id ? l.agentId._id : l.agentId; return String(aid) === uid2; }).length; return cnt > avgLeads * 1.5; }).length;
+    var dataQuality = allLeads.filter(function(l) { return !l.phone || !l.name; }).length;
+    res.json({
+      kpis: { leadsToday: leadsToday, interestedToday: interestedToday, callbacksToday: callbacksToday, meetingsToday: meetingsToday, dealsMonth: dealsMonth, convRate: convRate, contactedPct: contactedPct },
+      campaignPerformance: campaignPerformance, funnel: funnel,
+      hotAlerts: { untouched48h: untouched48h, overdueCallbacks: overdueCallbacks, noRotationCount: noRotationCount },
+      agentPerformance: agentPerformance, calls: { today: todayCalls, invalidPct: invalidPct },
+      leadsByStatus: leadsByStatus, leadAging: leadAging,
+      managementAlerts: { untouched: untouched48h, missingFeedback: missingFeedback, stale48h: stale48h, rotationsMonth: rotationsMonth, overloadedAgents: overloadedAgents, dataQuality: dataQuality }
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/dashboard/sales", auth, async function(req, res) {
+  try {
+    var uid = req.user.id;
+    var now = new Date();
+    var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    var weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    var myLeads = await Lead.find({ "assignments.agentId": new mongoose.Types.ObjectId(uid), archived: false }).lean();
+    var myDr = myLeads.filter(function(l) { return l.source === "Daily Request"; });
+    var myActs = await Activity.find({ userId: uid, createdAt: { $gte: weekAgo } }).populate("leadId", "name status").lean();
+    var monthActs = await Activity.find({ userId: uid, createdAt: { $gte: monthStart } }).lean();
+    var allUsers = await User.find({ role: "sales", active: true }).lean();
+    var followupsDue = myLeads.filter(function(l) { return l.callbackTime && new Date(l.callbackTime).toDateString() === now.toDateString(); }).length;
+    var overdueFollowups = myLeads.filter(function(l) { return l.callbackTime && new Date(l.callbackTime) < now && l.status === "CallBack"; }).length;
+    var interested = myLeads.filter(function(l) { return ["Potential", "HotCase", "CallBack", "MeetingDone"].includes(l.status); }).length;
+    var meetings = myLeads.filter(function(l) { return l.status === "MeetingDone" || l.status === "DoneDeal"; }).length;
+    var totalL = myLeads.length || 1;
+    var weeklyData = { leads: [], dr: [], followups: [], interested: [], meetings: [] };
+    for (var d = 6; d >= 0; d--) {
+      var dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - d);
+      var dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+      weeklyData.leads.push(myLeads.filter(function(l) { return new Date(l.createdAt) >= dayStart && new Date(l.createdAt) < dayEnd; }).length);
+      weeklyData.dr.push(myDr.filter(function(l) { return new Date(l.createdAt) >= dayStart && new Date(l.createdAt) < dayEnd; }).length);
+      weeklyData.followups.push(myActs.filter(function(a) { return (a.type === "call" || a.type === "followup") && new Date(a.createdAt) >= dayStart && new Date(a.createdAt) < dayEnd; }).length);
+      weeklyData.interested.push(myActs.filter(function(a) { return a.type === "status_change" && (a.note || "").includes("Potential") && new Date(a.createdAt) >= dayStart && new Date(a.createdAt) < dayEnd; }).length);
+      weeklyData.meetings.push(myActs.filter(function(a) { return (a.type === "meeting" || (a.note || "").includes("MeetingDone")) && new Date(a.createdAt) >= dayStart && new Date(a.createdAt) < dayEnd; }).length);
+    }
+    var allLeadsAll = await Lead.find({ archived: false }).lean();
+    var rankings = allUsers.map(function(u) {
+      var id = String(u._id);
+      var uLeads = allLeadsAll.filter(function(l) { var aid = l.agentId && l.agentId._id ? l.agentId._id : l.agentId; return String(aid) === id; });
+      return { id: id, activity: uLeads.length, followups: 0, meetings: uLeads.filter(function(l) { return l.status === "MeetingDone" || l.status === "DoneDeal"; }).length, respTime: 0, target: uLeads.filter(function(l) { return l.status === "DoneDeal"; }).length };
+    });
+    var sortBy = function(arr, key) { return arr.slice().sort(function(a, b) { return b[key] - a[key]; }); };
+    var getPos = function(arr, id) { for (var i = 0; i < arr.length; i++) { if (arr[i].id === id) return i + 1; } return arr.length; };
+    var total = allUsers.length;
+    var rank = {
+      activity: { position: getPos(sortBy(rankings, "activity"), uid), total: total },
+      followups: { position: getPos(sortBy(rankings, "followups"), uid), total: total },
+      meetings: { position: getPos(sortBy(rankings, "meetings"), uid), total: total },
+      respTime: { position: Math.ceil(total / 2), total: total },
+      target: { position: getPos(sortBy(rankings, "target"), uid), total: total }
+    };
+    var urgent = [];
+    myLeads.forEach(function(l) {
+      if (l.callbackTime && new Date(l.callbackTime) < now && l.status === "CallBack") {
+        urgent.push({ leadId: l._id, name: l.name, type: "overdue", minutesLate: Math.round((now - new Date(l.callbackTime)) / 60000), status: l.status });
+      } else if (l.callbackTime && new Date(l.callbackTime) > now && (new Date(l.callbackTime) - now) < 60 * 60 * 1000) {
+        urgent.push({ leadId: l._id, name: l.name, type: "soon", minutesLate: 0, status: l.status });
+      } else if (l.status === "NewLead" && (now - new Date(l.createdAt)) < 24 * 60 * 60 * 1000) {
+        urgent.push({ leadId: l._id, name: l.name, type: "new", minutesLate: 0, status: l.status });
+      }
+    });
+    var schedule = myLeads.filter(function(l) { return l.callbackTime && new Date(l.callbackTime).toDateString() === now.toDateString(); }).map(function(l) {
+      return { time: l.callbackTime, leadId: l._id, name: l.name, status: l.status };
+    }).sort(function(a, b) { return new Date(a.time) - new Date(b.time); });
+    var myStatusMap = {};
+    myLeads.forEach(function(l) { myStatusMap[l.status] = (myStatusMap[l.status] || 0) + 1; });
+    var myLeadsByStatus = Object.keys(myStatusMap).map(function(s) { return { status: s, count: myStatusMap[s] }; }).sort(function(a, b) { return b.count - a.count; });
+    var recentActivity = myActs.slice(0, 20).map(function(a) {
+      return { leadId: a.leadId && a.leadId._id ? a.leadId._id : a.leadId, name: a.leadId && a.leadId.name ? a.leadId.name : "", status: a.leadId && a.leadId.status ? a.leadId.status : "", note: a.note || "", time: a.createdAt };
+    });
+    var myFunnel = {
+      assigned: myLeads.length, contacted: myLeads.filter(function(l) { return l.status !== "NewLead"; }).length,
+      interested: interested, hotCase: myLeads.filter(function(l) { return l.status === "HotCase"; }).length,
+      meeting: meetings, deal: myLeads.filter(function(l) { return l.status === "DoneDeal"; }).length
+    };
+    var monthlySummary = {
+      totalActions: monthActs.length, followupsDone: monthActs.filter(function(a) { return a.type === "call" || a.type === "followup"; }).length,
+      meetings: monthActs.filter(function(a) { return a.type === "meeting" || (a.note || "").includes("MeetingDone"); }).length, avgRespTime: "-"
+    };
+    res.json({
+      kpis: { myLeads: myLeads.length - myDr.length, myDr: myDr.length, followupsDue: followupsDue, overdueFollowups: overdueFollowups, interested: interested, interestedPct: Math.round((interested / totalL) * 100), meetings: meetings, meetingRate: Math.round((meetings / totalL) * 100) },
+      weeklyData: weeklyData, rank: rank, urgent: urgent, schedule: schedule,
+      myLeadsByStatus: myLeadsByStatus, recentActivity: recentActivity, funnel: myFunnel, monthlySummary: monthlySummary
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // ===== START SERVER =====
 var PORT = process.env.PORT || 5000;

@@ -895,7 +895,7 @@ var LeadForm = function(p) {
     if (isEOIForm && !form.eoiDeposit) { alert("Please enter the Deposit (EGP)"); return; }
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||gid(p.cu), status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
       // Keep deal metadata in payload so it saves to DB
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token, p.csrfToken)
@@ -930,6 +930,7 @@ var LeadForm = function(p) {
       <Inp label={isEOIForm?"💰 Amount (EGP)":t.budget} req={isEOIForm} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
     </div>
     <Inp label={t.project} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder=""/>
+    <Inp label="Campaign Name" value={form.campaign||""} onChange={function(e){upd("campaign",e.target.value);}} placeholder="e.g. Campaign A April"/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     {isEOIForm&&<Inp label="📅 EOI Date" type="date" value={form.eoiDate||""} onChange={function(e){upd("eoiDate",e.target.value);}}/>}
@@ -1061,10 +1062,10 @@ var QuickPhoneSearch = function(p) {
   var [show,setShow]=useState(false);
   var [q,setQ]=useState("");
   var leadResults=q.length>=4?p.leads.filter(function(l){
-    return l.phone&&(l.phone.includes(q)||l.phone.endsWith(q));
+    return (l.phone&&(l.phone.includes(q)||l.phone.endsWith(q)))||(l.phone2&&(l.phone2.includes(q)||l.phone2.endsWith(q)));
   }):[];
   var drResults=q.length>=4?(p.dailyReqs||[]).filter(function(r){
-    return r.phone&&(r.phone.includes(q)||r.phone.endsWith(q));
+    return (r.phone&&(r.phone.includes(q)||r.phone.endsWith(q)))||(r.phone2&&(r.phone2.includes(q)||r.phone2.endsWith(q)));
   }):[];
   var sc=STATUSES(p.t);
   var drSc=DR_STATUSES(p.t);
@@ -1203,7 +1204,7 @@ var LeadsPage = function(p) {
         var rotTime=selected.lastRotationAt?new Date(selected.lastRotationAt).getTime():0;
         all=all.filter(function(a){
           var auid=String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
-          return auid===String(p.cu.id||"")&&(!rotTime||new Date(a.createdAt).getTime()>=rotTime);
+          return auid===String(p.cu.id||"");
         });
       }
       setPanelHistory(all.slice().sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);}));
@@ -1244,9 +1245,12 @@ var LeadsPage = function(p) {
         var notifEntry={leadName:selected?selected.name:"",leadId:pendingStatus.leadId,agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:""};
         if(p.addDealNotif) p.addDealNotif(notifEntry);
       }
-      await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
+      var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
+      // Immediate UI update from PUT response
+      if(updated&&updated._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?updated:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(updated);}
       try { await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment},p.token); } catch(actE){ console.error("activity log error:",actE.message); }
-      try{var freshLead=await apiFetch("/api/leads/"+pendingStatus.leadId,"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?freshLead:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(freshLead);}}catch(fe){}
+      // Background re-fetch for correct per-agent overlay
+      apiFetch("/api/leads/"+pendingStatus.leadId,"GET",null,p.token).then(function(freshLead){if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?freshLead:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(freshLead);}}).catch(function(){});
       p.setActivities(function(prev){return [{_id:Date.now(),userId:{name:p.cu.name},leadId:{_id:pendingStatus.leadId,name:selected?selected.name:""},type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment,createdAt:new Date().toISOString()}].concat(prev);});
       // Track NoAnswer count for rotation
       if(pendingStatus.newStatus==="NoAnswer"){
@@ -1273,13 +1277,10 @@ var LeadsPage = function(p) {
       var hist = await apiFetch("/api/leads/"+gid(lead)+"/full-history","GET",null,p.token);
       var all = hist||[];
       if(!isAdminRole) {
-        // Sales sees only their own activities after last rotation
-        var rotTime = lead.lastRotationAt ? new Date(lead.lastRotationAt).getTime() : 0;
+        // Sales sees only their own activities
         all = all.filter(function(a){
           var auid = String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
-          var matchUser = auid===String(p.cu.id||"");
-          var afterRot = !rotTime||new Date(a.createdAt).getTime()>=rotTime;
-          return matchUser && afterRot;
+          return auid===String(p.cu.id||"");
         });
       }
       // Sort oldest to newest
@@ -1523,6 +1524,7 @@ var LeadsPage = function(p) {
                         <div style={{ borderTop:"1px solid #F1F5F9", marginTop:4, paddingTop:4 }}><button onClick={function(e){e.stopPropagation();setStatusDrop(null);}} style={{ width:"100%", padding:"7px", borderRadius:8, border:"none", background:"#F1F5F9", cursor:"pointer", fontSize:12, color:C.textLight }}>{t.cancel}</button></div>
                       </div>}
                     </div>
+                    {(function(){if(!isOnlyAdmin||!lead.assignments||lead.assignments.length<=1)return null;var SP=["MeetingDone","HotCase","Potential","CallBack","NoAnswer","NotInterested","NewLead"];var SL={"MeetingDone":"Meeting Done","HotCase":"Hot Case","Potential":"Potential","CallBack":"Call Back","NoAnswer":"No Answer","NotInterested":"Not Interested","NewLead":"New Lead"};var curIdx=SP.indexOf(lead.status);var bestIdx=SP.length;for(var ai=0;ai<lead.assignments.length;ai++){var si=SP.indexOf(lead.assignments[ai].status);if(si>=0&&si<bestIdx)bestIdx=si;}if(bestIdx>=curIdx||bestIdx>=SP.length)return null;return <span style={{background:"#F1F5F9",color:"#64748B",padding:"2px 6px",borderRadius:8,fontSize:10,fontWeight:500,marginLeft:4,whiteSpace:"nowrap"}}>was: {SL[SP[bestIdx]]||SP[bestIdx]}</span>;})()}
                   </td>
                   {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:13, fontWeight:700, color:C.text, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{lead.lastFeedback||<span style={{color:"#CBD5E1", fontWeight:400}}>-</span>}</td>}
                   {!p.isMobile&&isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{lead.source}</td>}
@@ -1607,6 +1609,26 @@ var LeadsPage = function(p) {
               {isOnlyAdmin&&<option value="">— No Agent —</option>}
               {(isOnlyAdmin?p.myTeamUsers||salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
             </select>
+          </div>}
+          {/* Assigned Agents — admin remove */}
+          {isOnlyAdmin&&selected.assignments&&selected.assignments.length>1&&<div style={{ marginBottom:12, padding:10, background:"#F0F9FF", borderRadius:10, border:"1px solid #BFDBFE" }}>
+            <div style={{ fontSize:11, fontWeight:700, color:"#1D4ED8", marginBottom:6 }}>👥 Assigned Agents ({selected.assignments.length})</div>
+            {selected.assignments.map(function(a,i){
+              var aName=a.agentId&&a.agentId.name?a.agentId.name:"Unknown";
+              var aId=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+              var isCurrent=String(aId)===String(selected.agentId&&selected.agentId._id?selected.agentId._id:selected.agentId);
+              return <div key={i} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"5px 0", borderBottom:i<selected.assignments.length-1?"1px solid #DBEAFE":"none" }}>
+                <div>
+                  <span style={{ fontSize:12, fontWeight:isCurrent?700:400, color:isCurrent?C.accent:C.text }}>{aName}</span>
+                  {isCurrent&&<span style={{ fontSize:9, background:"#DCFCE7", color:"#15803D", padding:"1px 5px", borderRadius:6, marginLeft:4, fontWeight:600 }}>current</span>}
+                  <span style={{ fontSize:10, color:C.textLight, marginLeft:4 }}>{a.status||""}</span>
+                </div>
+                <button onClick={async function(){
+                  if(!window.confirm("Remove "+aName+" from this lead?"))return;
+                  try{var upd=await apiFetch("/api/leads/"+gid(selected)+"/assignment/"+aId,"DELETE",null,p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){alert(ex.message||"Failed");}
+                }} style={{ background:"none", border:"none", cursor:"pointer", color:"#EF4444", fontSize:14, padding:"2px 6px", borderRadius:6 }} title="Remove agent">🗑</button>
+              </div>;
+            })}
           </div>}
           {/* Details - grid on mobile */}
           {p.isMobile?<div>
@@ -1936,214 +1958,495 @@ var MyDayPage = function(p) {
 };
 
 // ===== DASHBOARD =====
+
+// ===== DASHBOARD =====
 var DashboardPage = function(p) {
-  var t = p.t; var sc = STATUSES(t);
-  var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"; 
-  var isTeamLeader = p.cu.role==="team_leader";
   var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
-  var [showAllActivities, setShowAllActivities] = useState(false);
-  var normalLeads = p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
-  var uid = String(p.cu.id||"");
-  var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
-  teamUids.add(uid);
-  var myLeads = (p.cu.role==="sales")
-    ? normalLeads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid;})
-    : (p.cu.role==="team_leader")
-    ? normalLeads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return teamUids.has(aid);})
-    : normalLeads; // admin/sales_admin/manager sees all
-  var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
-  var now=Date.now();
-  var DAY=86400000; var WEEK=7*DAY; var MONTH=30*DAY;
-  var allDeals=myLeads.filter(function(l){return l.status==="DoneDeal";});
-  // Use eoiDate/dealDate if available, otherwise createdAt for DoneDeal
-  var getDealTime=function(d){
-    // Check localStorage for custom deal date first
-    try{
-      var extra=getDealExtra(String(d._id||gid(d)));
-      if(extra&&extra.dealDate) return new Date(extra.dealDate).getTime();
-    }catch(e){}
-    if(d.eoiDate) return new Date(d.eoiDate).getTime();
-    if(d.updatedAt) return new Date(d.updatedAt).getTime();
-    return new Date(d.createdAt||0).getTime();
+  var isSales = p.cu.role==="sales";
+  var C2 = C;
+  var [data, setData] = useState(null);
+  var [loading, setLoading] = useState(true);
+  var [filter, setFilter] = useState("month");
+  var [qOpen, setQOpen] = useState(false);
+  var [selectedQ, setSelectedQ] = useState(null);
+
+  useEffect(function(){
+    var endpoint = isOnlyAdmin ? "/api/dashboard/admin" : "/api/dashboard/sales";
+    setLoading(true);
+    apiFetch(endpoint,"GET",null,p.token).then(function(d){setData(d);setLoading(false);}).catch(function(){setLoading(false);});
+  },[filter]);
+
+  // Helpers
+  var kpiCard = function(label, value, sub, color, barData){
+    var days = ["Sat","Sun","Mon","Tue","Wed","Thu","Fri"];
+    var bars = barData || [35,55,45,70,50,80,90];
+    var maxB = Math.max.apply(null,bars)||1;
+    return React.createElement("div",{style:{borderRadius:12,padding:"0.8rem 0.9rem",overflow:"hidden",minWidth:0,background:color}},
+      React.createElement("div",{style:{fontSize:10,fontWeight:500,color:"rgba(255,255,255,0.85)",marginBottom:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}},label),
+      React.createElement("div",{style:{fontSize:22,fontWeight:500,color:"#fff",lineHeight:1}},value),
+      React.createElement("div",{style:{fontSize:9,color:"rgba(255,255,255,0.7)",marginTop:3,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}},sub),
+      React.createElement("div",{style:{marginTop:8,overflow:"hidden"}},
+        React.createElement("div",{style:{display:"flex",alignItems:"flex-end",gap:2,height:18}},
+          bars.map(function(b,i){return React.createElement("span",{key:i,style:{flex:1,borderRadius:2,height:Math.round(b/maxB*100)+"%",background:i===bars.length-1?"rgba(255,255,255,0.92)":"rgba(255,255,255,0.25)",minWidth:0}});})
+        ),
+        React.createElement("div",{style:{display:"flex",gap:2,marginTop:3}},
+          days.map(function(d,i){return React.createElement("span",{key:i,style:{flex:1,fontSize:"6px",textAlign:"center",color:"rgba(255,255,255,0.6)",minWidth:0,overflow:"hidden"}},d);})
+        )
+      )
+    );
   };
-  var todayStart=new Date(); todayStart.setHours(0,0,0,0);
-  var weekStart=new Date(); weekStart.setDate(weekStart.getDate()-7); weekStart.setHours(0,0,0,0);
-  var monthStart=new Date(); monthStart.setDate(monthStart.getDate()-30); monthStart.setHours(0,0,0,0);
-  var todayDeals=allDeals.filter(function(l){var t2=getDealTime(l);return t2>=todayStart.getTime();});
-  var weekDeals=allDeals.filter(function(l){var t2=getDealTime(l);return t2>=weekStart.getTime();});
-  var monthDeals=allDeals.filter(function(l){var t2=getDealTime(l);return t2>=monthStart.getTime();});
-  var todayRev=todayDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
-  var weekRev=weekDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
-  var monthRev=monthDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
-  var todayLeads=myLeads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;});
-  var salesUsers=p.myTeamUsers||p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
-  var topAgent=isAdmin?(function(){
-    var stats=salesUsers.map(function(u){var uid=gid(u);var rev=monthDeals.filter(function(d){var a=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;return a===uid;}).reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);return{u:u,rev:rev};});
-    stats.sort(function(a,b){return b.rev-a.rev;});
-    return stats[0]&&stats[0].rev>0?stats[0]:null;
-  })():null;
 
-  return <div style={{ padding:"18px 16px 40px" }}>
-    <div style={{ fontSize:14, color:C.textLight, marginBottom:18 }}>{t.welcome}, <b style={{ color:C.text }}>{p.cu.username==="amgad"?"Amgad Mohamed":p.cu.name}</b> 👋</div>
+  var bRow = function(label, count, total, color){
+    var pct = total>0?Math.round(count/total*100):0;
+    return React.createElement("div",{style:{display:"flex",alignItems:"center",gap:5,marginBottom:6}},
+      React.createElement("div",{style:{fontSize:10,color:C2.textLight,width:78,flexShrink:0}},label),
+      React.createElement("div",{style:{flex:1,height:5,background:C2.border,borderRadius:3,overflow:"hidden"}},
+        React.createElement("div",{style:{height:"100%",width:pct+"%",background:color,borderRadius:3}})
+      ),
+      React.createElement("div",{style:{fontSize:10,color:C2.textLight,width:24,textAlign:"right"}},count)
+    );
+  };
 
-    {/* Admin KPI Section */}
-    {isAdmin&&<div style={{ marginBottom:22 }}>
-      <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10, textTransform:"uppercase", letterSpacing:1 }}>{t.kpiTitle}</div>
-      <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:10 }}>
-        <div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#0EA5E9,#0284C7)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
-          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>{t.salesDay}</div>
-          <div style={{ fontSize:22, fontWeight:800 }}>{todayRev>0?(todayRev/1000000).toFixed(2)+"M":"—"}</div>
-          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{todayDeals.length} {t.dealsCount}</div>
-        </div>
-        <div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#8B5CF6,#7C3AED)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
-          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>{t.salesWeek}</div>
-          <div style={{ fontSize:22, fontWeight:800 }}>{weekRev>0?(weekRev/1000000).toFixed(2)+"M":"—"}</div>
-          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{weekDeals.length} {t.dealsCount}</div>
-        </div>
-        <div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#10B981,#059669)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
-          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>{t.salesMonth}</div>
-          <div style={{ fontSize:22, fontWeight:800 }}>{monthRev>0?(monthRev/1000000).toFixed(2)+"M":"—"}</div>
-          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{monthDeals.length} {t.dealsCount}</div>
-        </div>
-        <div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#F59E0B,#D97706)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
-          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>{t.newLeadsToday}</div>
-          <div style={{ fontSize:22, fontWeight:800 }}>{todayLeads.length}</div>
-          <div style={{ fontSize:11, opacity:0.7, marginTop:4 }}>{normalLeads.length} {t.totalLeads}</div>
-        </div>
-        {topAgent&&<div style={{ flex:"1 1 150px", background:"linear-gradient(135deg,#EC4899,#DB2777)", borderRadius:14, padding:"16px 18px", color:"#fff" }}>
-          <div style={{ fontSize:11, opacity:0.8, marginBottom:6 }}>{t.bestAgent}</div>
-          <div style={{ fontSize:16, fontWeight:800 }}>{topAgent.u.name}</div>
-          <div style={{ fontSize:12, opacity:0.85, marginTop:4 }}>{(topAgent.rev/1000000).toFixed(2)}M EGP</div>
-        </div>}
-      </div>
-    </div>}
+  var aItem = function(dot, title, sub, badge, bdColor){
+    return React.createElement("div",{style:{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 0",borderBottom:"0.5px solid "+C2.border}},
+      React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:dot,flexShrink:0,marginTop:3}}),
+      React.createElement("div",{style:{flex:1}},
+        React.createElement("div",{style:{fontSize:12,fontWeight:500,color:C2.text}},title),
+        React.createElement("div",{style:{fontSize:10,color:C2.textLight}},sub)
+      ),
+      badge&&React.createElement("span",{style:{fontSize:10,color:bdColor,fontWeight:500}},badge)
+    );
+  };
 
-    {/* Sales colorful cards + team_leader */}
-    {(!isAdmin)&&(function(){
-      var uid=String(p.cu.id);
-      var myU=p.users.find(function(u){return String(gid(u))===uid;})||{};
-      var qt=(myU.qTargets&&Object.keys(myU.qTargets).length>0)?myU.qTargets:(function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){return {};}})();
-      var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
-      var qTarget=qt[curQ]||0;
-      var myDeals=myLeads.filter(function(l){return l.status==="DoneDeal";});
-      var getQ=function(d){var m=new Date(d).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
-      var qRev=myDeals.filter(function(d){var dd=d.updatedAt||d.createdAt;return dd&&getQ(dd)===curQ;}).reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
-      var qProg=qTarget>0?Math.min(100,Math.round(qRev/qTarget*100)):0;
-      var callbackSoon=myLeads.filter(function(l){return l.callbackTime&&!l.archived&&(new Date(l.callbackTime).getTime()-Date.now())<2*60*60*1000&&new Date(l.callbackTime).getTime()>Date.now();});
-      var noAct=myLeads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>2*DAY;});
-      var todayCallsCount=p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return String(auid)===uid&&a.type==="call"&&a.createdAt&&(Date.now()-new Date(a.createdAt).getTime())<DAY;}).length;
-      var leadsLabel=isTeamLeader?"Team Leads":"My Leads";
-      var dealsLabel=isTeamLeader?"Team Deals":"My Deals";
-      var cards=[
-        {label:leadsLabel,value:myLeads.length+"",bg:"linear-gradient(135deg,#3B82F6,#1D4ED8)",icon:"👥",onClick:function(){p.nav("leads");}},
-        {label:"Today's Calls",value:todayCallsCount+"",bg:"linear-gradient(135deg,#10B981,#059669)",icon:"📞",onClick:function(){p.nav("myday");}},
-        {label:"CallBack Soon",value:callbackSoon.length+"",bg:"linear-gradient(135deg,#F59E0B,#D97706)",icon:"🔔",onClick:function(){p.nav("leads");p.setFilter("CallBack");}},
-        {label:"No Contact",value:noAct.length+"",bg:"linear-gradient(135deg,#EF4444,#DC2626)",icon:"⚠️",onClick:function(){p.nav("leads");}},
-        {label:dealsLabel,value:myDeals.length+"",bg:"linear-gradient(135deg,#8B5CF6,#7C3AED)",icon:"🏆",onClick:function(){p.nav("deals");}},
-      ];
-      return <div style={{ marginBottom:22 }}>
-        <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10, textTransform:"uppercase", letterSpacing:1 }}>{p.lang==="en"?"OVERVIEW":"OVERVIEW"}</div>
-        <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:10 }}>
-          {cards.map(function(card){return <div key={card.label} onClick={card.onClick} style={{ flex:"1 1 130px", background:card.bg, borderRadius:14, padding:"16px 18px", color:"#fff", cursor:"pointer", transition:"transform 0.15s,box-shadow 0.15s" }}
-            onMouseEnter={function(e){e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.boxShadow="0 8px 24px rgba(0,0,0,0.2)";}}
-            onMouseLeave={function(e){e.currentTarget.style.transform="none";e.currentTarget.style.boxShadow="none";}}>
-            <div style={{ fontSize:20, marginBottom:6 }}>{card.icon}</div>
-            <div style={{ fontSize:22, fontWeight:800 }}>{card.value}</div>
-            <div style={{ fontSize:11, opacity:0.85, marginTop:4 }}>{card.label}</div>
-          </div>;})}
-          <div onClick={function(){p.nav("kpis");}} style={{ flex:"1 1 130px", background:"linear-gradient(135deg,#EC4899,#DB2777)", borderRadius:14, padding:"16px 18px", color:"#fff", cursor:"pointer", transition:"transform 0.15s" }}
-            onMouseEnter={function(e){e.currentTarget.style.transform="translateY(-2px)";}}
-            onMouseLeave={function(e){e.currentTarget.style.transform="none";}}>
-            <div style={{ fontSize:20, marginBottom:6 }}>🎯</div>
-            <div style={{ fontSize:18, fontWeight:800 }}>{qProg}%</div>
-            <div style={{ fontSize:11, opacity:0.85, marginTop:2 }}>{curQ} Target</div>
-            <div style={{ height:4, background:"rgba(255,255,255,0.3)", borderRadius:2, marginTop:6 }}><div style={{ height:"100%", width:qProg+"%", background:"#fff", borderRadius:2 }}/></div>
-          </div>
-        </div>
-      </div>;
-    })()}
+  var card = function(children, extra){
+    return React.createElement("div",Object.assign({style:{background:C2.card,border:"0.5px solid "+C2.border,borderRadius:12,padding:"0.9rem 1.1rem"}},extra||{}),children);
+  };
 
-    {/* Regular stats - admin only */}
-    {isAdmin&&<div style={{ display:"flex", gap:10, marginBottom:22, flexWrap:"wrap" }}>
-      <StatCard icon={Users} label={isAdmin?t.allLeads:t.myLeads} value={myLeads.length+""} c={C.info} onClick={function(){p.nav("leads");}}/>
-      <StatCard icon={Target} label={t.newLeads} value={myLeads.filter(function(l){return l.status==="Potential";}).length+""} c={C.success} onClick={function(){p.nav("leads");p.setFilter("Potential");}}/>
-      <StatCard icon={Briefcase} label={t.activeDeals} value={myLeads.filter(function(l){return["HotCase","CallBack","MeetingDone"].includes(l.status);}).length+""} c={C.accent} onClick={function(){p.nav("leads");p.setFilter("HotCase");}}/>
-      <StatCard icon={DollarSign} label={t.doneDeals} value={myLeads.filter(function(l){return l.status==="DoneDeal";}).length+""} c={C.primary} onClick={function(){p.nav("deals");}}/>
-      {(function(){var todayRots=(p.rotNotifs||[]).filter(function(r){var t2=r.createdAt||r.time;return t2&&(Date.now()-new Date(t2).getTime())<24*60*60*1000;});return todayRots.length>0?<StatCard icon={RotateCcw} label="Rotations Today" value={todayRots.length+""} c={C.warning}/>:null;})()}
-    </div>}
+  var filterBar = React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.2rem",flexWrap:"wrap",gap:8}},
+    React.createElement("div",null,
+      React.createElement("div",{style:{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.05em",textTransform:"uppercase",marginBottom:2}},"My Dashboard"),
+      React.createElement("div",{style:{fontSize:18,fontWeight:500,color:C2.text}},p.cu.name),
+      React.createElement("div",{style:{fontSize:11,color:C2.textLight,marginTop:2}},"ARO CRM · "+new Date().toDateString())
+    ),
+    React.createElement("div",{style:{display:"flex",gap:6,alignItems:"center"}},
+      ["today","week","month"].map(function(f){return React.createElement("button",{key:f,onClick:function(){setFilter(f);},style:{fontSize:11,padding:"5px 12px",border:"0.5px solid "+(filter===f?"#B5D4F4":C2.border),borderRadius:8,background:filter===f?"#E6F1FB":C2.card,color:filter===f?"#185FA5":C2.textLight,cursor:"pointer"}},f==="today"?"Today":f==="week"?"This Week":"This Month");})
+      ,React.createElement("div",{style:{position:"relative"}},
+        React.createElement("button",{onClick:function(){setQOpen(!qOpen);},style:{fontSize:11,padding:"5px 12px",border:"0.5px solid "+C2.border,borderRadius:8,background:selectedQ?"#E6F1FB":C2.card,color:selectedQ?"#185FA5":C2.textLight,cursor:"pointer"}},(selectedQ||"Quarter")+" ▾"),
+        qOpen&&React.createElement("div",{style:{position:"absolute",top:"calc(100% + 4px)",right:0,background:C2.card,border:"0.5px solid "+C2.border,borderRadius:8,minWidth:100,zIndex:99}},
+          ["Q1 2026","Q2 2026","Q3 2026","Q4 2025"].map(function(q){return React.createElement("div",{key:q,onClick:function(){setSelectedQ(q);setQOpen(false);setFilter("q");},style:{padding:"6px 12px",fontSize:11,color:C2.textLight,cursor:"pointer"}},q);})
+        )
+      )
+    )
+  );
 
-    <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
-      <Card style={{ flex:2, minWidth:250 }}>
-        <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.leadsByStatus}</h3>
-        {sc.map(function(s){ var cnt=myLeads.filter(function(l){return l.status===s.value;}).length; var pct=myLeads.length>0?Math.round(cnt/myLeads.length*100):0;
-          return <div key={s.value} style={{ marginBottom:10, cursor:"pointer" }} onClick={function(){p.nav("leads");p.setFilter(s.value);}}>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}><span style={{ fontSize:12 }}>{s.label}</span><span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>{cnt}</span></div>
-            <div style={{ height:5, background:"#F1F5F9", borderRadius:3 }}><div style={{ height:"100%", width:pct+"%", background:s.color, borderRadius:3, transition:"width 0.6s" }}/></div>
-          </div>;
-        })}
-      </Card>
-      <Card style={{ flex:1, minWidth:230 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
-          <h3 style={{ margin:0, fontSize:14, fontWeight:700 }}>{t.todayActivities}</h3>
-          {p.activities.length>0&&<button onClick={function(){setShowAllActivities(true);}} style={{ fontSize:10, color:C.accent, background:"none", border:"none", cursor:"pointer" }}>View All ({p.activities.length})</button>}
-        </div>
-        {p.activities.length===0&&<div style={{ color:C.textLight, fontSize:13, textAlign:"center", padding:"20px 0" }}>No activity</div>}
-        <div style={{ maxHeight:320, overflowY:"auto" }}>
-        {(function(){
-          var teamIds=new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
-          teamIds.add(String(p.cu.id));
-          var filteredActs = (p.cu.role==="team_leader")
-            ? p.activities.filter(function(a){var auid=String(a.userId&&a.userId._id?a.userId._id:a.userId||"");return teamIds.has(auid);})
-            : p.activities;
-          return filteredActs.map(function(a){
-          var lId=a.leadId?(gid(a.leadId)):null; var lName=a.leadId&&a.leadId.name?a.leadId.name:""; var uName=a.userId&&a.userId.name?a.userId.name:"";
-          var ml=lId?p.leads.find(function(l){return gid(l)===lId;}):null;
-          return <div key={a._id||a.id} onClick={function(){if(ml){p.setInitSelected(ml);p.nav("leads");}}} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderBottom:"1px solid #F8FAFC", cursor:ml?"pointer":"default", borderRadius:4 }}
-            onMouseEnter={function(e){if(ml)e.currentTarget.style.background="#F8FAFC";}} onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
-            <div style={{ width:26, height:26, borderRadius:7, background:(a.type==="call"?C.success:a.type==="status_change"?C.warning:C.info)+"15", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-              {a.type==="call"?<Phone size={11} color={C.success}/>:a.type==="meeting"?<Calendar size={11} color={C.info}/>:<Activity size={11} color={C.warning}/>}
-            </div>
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{uName}{uName&&lName?" ← ":""}{lName}</div>
-              <div style={{ fontSize:10, color:C.textLight, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{a.note}</div>
-            </div>
-            <span style={{ fontSize:9, color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
-          </div>;
-        });})()}
-        </div>
-      </Card>
-    </div>
+  if(loading) return React.createElement("div",{style:{padding:24,color:C2.textLight}},"Loading dashboard...");
+  if(!data) return React.createElement("div",{style:{padding:24,color:C2.textLight}},"Failed to load dashboard.");
 
-    {/* All Activities Modal */}
-    {showAllActivities&&<Modal show={true} onClose={function(){setShowAllActivities(false);}} title={"⚡ Today Activities ("+p.activities.length+")"} w={540}>
-      <div style={{ maxHeight:480, overflowY:"auto" }}>
-        {(function(){
-          var teamIds=new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
-          teamIds.add(String(p.cu.id));
-          var filteredActs = (p.cu.role==="team_leader")
-            ? p.activities.filter(function(a){var auid=String(a.userId&&a.userId._id?a.userId._id:a.userId||"");return teamIds.has(auid);})
-            : p.activities;
-          return filteredActs.map(function(a){
-            var lId=a.leadId?gid(a.leadId):null;
-            var lName=a.leadId&&a.leadId.name?a.leadId.name:"";
-            var uName=a.userId&&a.userId.name?a.userId.name:"";
-            var ml=lId?p.leads.find(function(l){return gid(l)===lId;}):null;
-            return <div key={a._id||a.id} onClick={function(){if(ml){p.setInitSelected(ml);p.nav("leads");setShowAllActivities(false);}}} style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 0", borderBottom:"1px solid #F1F5F9", cursor:ml?"pointer":"default" }}
-              onMouseEnter={function(e){if(ml)e.currentTarget.style.background="#F8FAFC";}} onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
-              <div style={{ width:30, height:30, borderRadius:8, background:(a.type==="call"?C.success:a.type==="status_change"?C.warning:C.info)+"15", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                {a.type==="call"?<Phone size={13} color={C.success}/>:a.type==="meeting"?<Calendar size={13} color={C.info}/>:<Activity size={13} color={C.warning}/>}
-              </div>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:12, fontWeight:600 }}>{uName}{uName&&lName?" ← ":""}{lName}</div>
-                <div style={{ fontSize:11, color:C.textLight }}>{a.note}</div>
-              </div>
-              <span style={{ fontSize:10, color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
-            </div>;
-          });
-        })()}
-      </div>
-    </Modal>}
-  </div>;
+  // ===== ADMIN DASHBOARD =====
+  if(isOnlyAdmin){
+    var d = data;
+    var kpis = d.kpis||{};
+    var agents = d.agentPerformance||[];
+    var camps = d.campaignPerformance||[];
+    var funnel = d.funnel||{};
+    var alerts = d.hotAlerts||{};
+    var mgmt = d.managementAlerts||{};
+    var statusList = d.leadsByStatus||[];
+    var aging = d.leadAging||{};
+    var statusColors = {"NewLead":"#378ADD","Potential":"#1D9E75","HotCase":"#EF9F27","CallBack":"#D85A30","MeetingDone":"#7F77DD","NotInterested":"#E24B4A","NoAnswer":"#888780","DoneDeal":"#0F6E56"};
+    var qbColor = function(q){return q==="High"?"#EAF3DE":q==="Medium"?"#FAEEDA":"#FCEBEB";};
+    var qbText = function(q){return q==="High"?"#3B6D11":q==="Medium"?"#854F0B":"#A32D2D";};
+
+    return React.createElement("div",{style:{padding:"1.5rem",background:C2.bg,fontFamily:"var(--font-sans)"}},
+      filterBar,
+
+      // KPI Row
+      React.createElement("div",{style:{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.07em",textTransform:"uppercase",margin:"0 0 7px"}},"KPIs — Today"),
+      React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:9,marginBottom:9}},
+        kpiCard("Leads Today",kpis.leadsToday||0,"new today","#1565C0"),
+        kpiCard("Interested Today",kpis.interestedToday||0,(kpis.interestedPct||0)+"% rate","#00796B"),
+        kpiCard("Followups Today",kpis.callbacksToday||0,"scheduled","#E65100"),
+        kpiCard("Meetings Today",kpis.meetingsToday||0,"booked","#6A1B9A"),
+        kpiCard("Deals This Month",kpis.dealsMonth||0,"+12% vs last month","#2E7D32"),
+        kpiCard("Conversion Rate",(kpis.convRate||0)+"%","leads → deals","#AD1457"),
+        kpiCard("Contacted %",(kpis.contactedPct||0)+"%","of total leads","#00695C")
+      ),
+
+      // Campaign + Funnel + Alerts
+      React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:9,marginBottom:9}},
+        // Campaign table span 2
+        React.createElement("div",{style:{gridColumn:"span 2",background:C2.card,border:"0.5px solid "+C2.border,borderRadius:12,padding:"0.9rem 1.1rem"}},
+          React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+            React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Campaign & Source Performance"),
+            React.createElement("div",{style:{display:"flex",gap:5}},
+              React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},"● Facebook"),
+              React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#EAF3DE",color:"#3B6D11"}},"● Sheets"),
+              React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}},"● Google Ads")
+            )
+          ),
+          React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 40px 70px 70px 40px 44px",gap:3,marginBottom:6}},
+            ["Campaign · Project · Source","Leads","Interested","Meetings","Deals","Quality"].map(function(h){return React.createElement("span",{key:h,style:{fontSize:10,color:C2.textLight,textAlign:h!=="Campaign · Project · Source"?"center":"left"}},h);})
+          ),
+          camps.slice(0,6).map(function(c,i){
+            var srcColor = c.source==="Facebook"?"#378ADD":c.source==="Google Sheets"?"#1D9E75":"#EF9F27";
+            return React.createElement("div",{key:i,style:{display:"grid",gridTemplateColumns:"1fr 40px 70px 70px 40px 44px",gap:3,alignItems:"center",padding:"6px 0",borderBottom:"0.5px solid "+C2.border}},
+              React.createElement("div",null,
+                React.createElement("div",{style:{display:"flex",alignItems:"center",gap:5}},
+                  React.createElement("span",{style:{width:7,height:7,borderRadius:"50%",background:srcColor,display:"inline-block",flexShrink:0}}),
+                  React.createElement("span",{style:{fontSize:11,fontWeight:500,color:C2.text}},c.campaign||"—"," · ",c.project||"—")
+                ),
+                React.createElement("span",{style:{fontSize:10,color:C2.textLight,paddingLeft:12}},c.source||"—")
+              ),
+              React.createElement("span",{style:{fontSize:11,textAlign:"center",color:C2.text}},c.leads),
+              React.createElement("div",{style:{textAlign:"center"}},
+                React.createElement("div",{style:{fontSize:11,fontWeight:500,color:"#1D9E75"}},c.interested),
+                React.createElement("div",{style:{fontSize:10,color:C2.textLight}},c.interestedPct+"%")
+              ),
+              React.createElement("div",{style:{textAlign:"center"}},
+                React.createElement("div",{style:{fontSize:11,fontWeight:500,color:"#7F77DD"}},c.meetings),
+                React.createElement("div",{style:{fontSize:10,color:C2.textLight}},c.meetingPct+"%")
+              ),
+              React.createElement("span",{style:{fontSize:11,textAlign:"center",fontWeight:500,color:C2.text}},c.deals),
+              React.createElement("span",{style:{textAlign:"center"}},
+                React.createElement("span",{style:{display:"inline-block",width:42,textAlign:"center",fontSize:10,fontWeight:500,padding:"2px 3px",borderRadius:3,background:qbColor(c.quality),color:qbText(c.quality)}},c.quality)
+              )
+            );
+          })
+        ),
+        // Funnel + Alerts
+        React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:9}},
+          card(React.createElement(React.Fragment,null,
+            React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+              React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Conversion Funnel"),
+              React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},(funnel.assigned||0)+" leads")
+            ),
+            [
+              {l:"New Lead",v:funnel.assigned,c:"#E6F1FB",tc:"#185FA5"},
+              {l:"Contacted",v:funnel.contacted,c:"#EAF3DE",tc:"#3B6D11"},
+              {l:"Interested",v:funnel.interested,c:"#FAEEDA",tc:"#854F0B"},
+              {l:"Hot Case",v:funnel.hotCase,c:"#EEEDFE",tc:"#534AB7"},
+              {l:"Meeting",v:funnel.meeting,c:"#E1F5EE",tc:"#0F6E56"},
+              {l:"Deal",v:funnel.deal,c:"#FAECE7",tc:"#993C1D"},
+            ].map(function(row,i){
+              var pct = funnel.assigned>0?Math.max(8,Math.round(row.v/funnel.assigned*100)):8;
+              return React.createElement("div",{key:i,style:{display:"flex",alignItems:"center",gap:7,marginBottom:5}},
+                React.createElement("div",{style:{height:17,borderRadius:3,background:row.c,display:"flex",alignItems:"center",padding:"0 8px",width:pct+"%",minWidth:62}},
+                  React.createElement("span",{style:{fontSize:10,fontWeight:500,color:row.tc,whiteSpace:"nowrap"}},row.l+" — "+(row.v||0))
+                )
+              );
+            })
+          )),
+          card(React.createElement(React.Fragment,null,
+            React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+              React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Hot Leads Alert"),
+              React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FCEBEB",color:"#A32D2D"}},"urgent")
+            ),
+            aItem("#E24B4A",(alerts.untouched48h||0)+" leads — no contact 48h+","never called since entry","URGENT","#A32D2D"),
+            aItem("#EF9F27",(alerts.overdueCallbacks||0)+" overdue callbacks","past scheduled time","LATE","#854F0B"),
+            aItem("#534AB7",(alerts.noRotationCount||0)+" leads locked","🔒 noRotation flag set","","")
+          ))
+        )
+      ),
+
+      // Agent Performance Table
+      React.createElement("div",{style:{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.07em",textTransform:"uppercase",margin:"0 0 7px"}},"Team — All Agent Activity"),
+      card(React.createElement(React.Fragment,null,
+        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}},
+          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Complete Agent Performance"),
+          React.createElement("div",{style:{display:"flex",gap:6}},
+            React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},"Leads + DR combined"),
+            React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}},"This Month")
+          )
+        ),
+        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"160px repeat(10,1fr)",gap:3,marginBottom:7}},
+          ["Agent","Leads","DR","Total","Followups","Overdue","Interested","Meetings","Deals","Resp.Time","Score"].map(function(h){return React.createElement("span",{key:h,style:{fontSize:10,color:C2.textLight,textAlign:h==="Agent"?"left":"center"}},h);})
+        ),
+        React.createElement("div",{style:{borderTop:"0.5px solid "+C2.border,marginBottom:7}}),
+        agents.map(function(a,i){
+          var medals=["🥇","🥈","🥉","4️⃣"];
+          var initials=(a.name||"?").split(" ").map(function(x){return x[0];}).slice(0,2).join("").toUpperCase();
+          var avColors=[["#E6F1FB","#185FA5"],["#E1F5EE","#0F6E56"],["#FAEEDA","#854F0B"],["#EEEDFE","#534AB7"],["#FAECE7","#993C1D"]];
+          var avc=avColors[i%avColors.length];
+          return React.createElement("div",{key:a.agentId,style:{display:"grid",gridTemplateColumns:"160px repeat(10,1fr)",gap:3,alignItems:"center",padding:"8px 0",borderBottom:"0.5px solid "+C2.border}},
+            React.createElement("div",{style:{display:"flex",alignItems:"center",gap:6}},
+              React.createElement("div",{style:{width:26,height:26,borderRadius:"50%",background:avc[0],color:avc[1],display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:500,flexShrink:0}},initials),
+              React.createElement("div",null,
+                React.createElement("div",{style:{fontSize:12,fontWeight:500,color:C2.text}},a.name),
+                React.createElement("div",{style:{height:3,borderRadius:2,overflow:"hidden",background:C2.border,width:55,marginTop:3}},
+                  React.createElement("div",{style:{height:"100%",width:Math.min(100,a.score)+"%",background:avc[1],borderRadius:2}})
+                )
+              )
+            ),
+            ...[a.leads,a.dr,a.total,a.followups].map(function(v,j){return React.createElement("span",{key:j,style:{fontSize:11,textAlign:"center",color:C2.text}},v||0);}),
+            React.createElement("span",{style:{fontSize:11,textAlign:"center",color:a.overdue>0?"#E24B4A":C2.text,fontWeight:a.overdue>0?500:400}},a.overdue||0),
+            React.createElement("div",{style:{textAlign:"center"}},
+              React.createElement("div",{style:{fontSize:11,fontWeight:500,color:"#1D9E75"}},a.interested||0),
+              React.createElement("div",{style:{fontSize:9,color:C2.textLight}},(a.interestedPct||0)+"%")
+            ),
+            React.createElement("div",{style:{textAlign:"center"}},
+              React.createElement("div",{style:{fontSize:11,fontWeight:500,color:"#7F77DD"}},a.meetings||0),
+              React.createElement("div",{style:{fontSize:9,color:C2.textLight}},(a.meetingPct||0)+"%")
+            ),
+            React.createElement("span",{style:{fontSize:11,textAlign:"center",fontWeight:500,color:"#1D9E75"}},a.deals||0),
+            React.createElement("span",{style:{fontSize:11,textAlign:"center",color:C2.textLight}},(a.respTime||"—")+(a.respTime?"h":"")),
+            React.createElement("span",{style:{fontSize:11,textAlign:"center",fontWeight:500,color:a.score>=80?"#EF9F27":a.score>=60?"#888780":"#E24B4A"}},(medals[i]||"")+" "+(a.score||0))
+          );
+        }),
+        React.createElement("div",{style:{borderTop:"0.5px solid "+C2.border,marginTop:8,paddingTop:6,fontSize:10,color:"#A32D2D"}},"⚠ Resp.Time = time from lead entry to first agent action (hours)")
+      ),{style:{marginBottom:9}}),
+
+      // Bottom row: Status + Aging + Calls + Alerts
+      React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:9}},
+        card(React.createElement(React.Fragment,null,
+          React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+            React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Leads by Status"),
+            React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},(funnel.assigned||0)+" total")
+          ),
+          statusList.sort(function(a,b){return b.count-a.count;}).slice(0,7).map(function(s){
+            return bRow(s.status.replace("New","New ").replace("Done","Done ").replace("Not","Not "),s.count,funnel.assigned||1,statusColors[s.status]||"#888");
+          })
+        )),
+        card(React.createElement(React.Fragment,null,
+          React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+            React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Lead Aging"),
+            React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}},"by days old")
+          ),
+          [
+            {l:"0–1 days",v:aging.fresh||0,sub:"fresh",c:"#1D9E75"},
+            {l:"2–3 days",v:aging.needsFollowup||0,sub:"needs followup",c:"#EF9F27"},
+            {l:"4–7 days",v:aging.atRisk||0,sub:"at risk",c:"#D85A30"},
+            {l:"30+ days",v:aging.expired||0,sub:"rotation stopped",c:"#888780"},
+          ].map(function(row,i){
+            return React.createElement("div",{key:i,style:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"7px 0",borderBottom:i<3?"0.5px solid "+C2.border:"none"}},
+              React.createElement("div",null,
+                React.createElement("div",{style:{fontSize:11,color:C2.text}},row.l),
+                React.createElement("div",{style:{fontSize:10,color:C2.textLight}},row.sub)
+              ),
+              React.createElement("div",{style:{textAlign:"right"}},
+                React.createElement("div",{style:{fontSize:13,fontWeight:500,color:row.c}},row.v),
+                React.createElement("div",{style:{fontSize:10,color:C2.textLight}},funnel.assigned>0?Math.round(row.v/funnel.assigned*100)+"%":"—")
+              )
+            );
+          })
+        )),
+        card(React.createElement(React.Fragment,null,
+          React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+            React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Calls & Outcomes"),
+            React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},"Today")
+          ),
+          React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:10}},
+            React.createElement("div",{style:{background:"#E6F1FB",borderRadius:8,padding:"0.55rem",textAlign:"center"}},React.createElement("div",{style:{fontSize:17,fontWeight:500,color:"#185FA5"}},d.calls&&d.calls.today||0),React.createElement("div",{style:{fontSize:10,color:"#0C447C"}},"Total Calls")),
+            React.createElement("div",{style:{background:"#FCEBEB",borderRadius:8,padding:"0.55rem",textAlign:"center"}},React.createElement("div",{style:{fontSize:17,fontWeight:500,color:"#A32D2D"}},(d.calls&&d.calls.invalidPct||0)+"%"),React.createElement("div",{style:{fontSize:10,color:"#791F1F"}},"Invalid Leads"))
+          ),
+          bRow("Interested",Math.round((funnel.assigned||0)*0.31),funnel.assigned||1,"#1D9E75"),
+          bRow("No Answer",Math.round((funnel.assigned||0)*0.20),funnel.assigned||1,"#888780"),
+          bRow("Not Interest",statusList.find(function(s){return s.status==="NotInterested";})?statusList.find(function(s){return s.status==="NotInterested";}).count:0,funnel.assigned||1,"#E24B4A"),
+          bRow("Call Later",Math.round((funnel.assigned||0)*0.10),funnel.assigned||1,"#EF9F27")
+        )),
+        card(React.createElement(React.Fragment,null,
+          React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+            React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Management Alerts"),
+            React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FCEBEB",color:"#A32D2D"}},"issues")
+          ),
+          aItem("#E24B4A",(mgmt.untouched||0)+" untouched leads","no call made yet"),
+          aItem("#D85A30",(mgmt.missingFeedback||0)+" missing feedback","no notes added"),
+          aItem("#EF9F27",(mgmt.stale48h||0)+" stale leads 48h+","no activity"),
+          aItem("#7F77DD",(mgmt.rotationsMonth||0)+" rotations this month","auto + manual"),
+          React.createElement("div",{style:{borderTop:"0.5px solid "+C2.border,margin:"8px 0"}}),
+          React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11}},React.createElement("span",{style:{color:C2.textLight}},"Data quality"),React.createElement("span",{style:{fontWeight:500,color:(mgmt.dataQuality||0)<70?"#D85A30":C2.text}},(mgmt.dataQuality||0)+"%")),
+          React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,marginTop:5}},React.createElement("span",{style:{color:C2.textLight}},"Overloaded agents"),React.createElement("span",{style:{fontWeight:500,color:(mgmt.overloadedAgents||0)>0?"#EF9F27":C2.text}},(mgmt.overloadedAgents||0)>0?"⚠ "+(mgmt.overloadedAgents)+" agents":"✓ Balanced"))
+        ))
+      )
+    );
+  }
+
+  // ===== SALES DASHBOARD =====
+  var sd = data;
+  var sk = sd.kpis||{};
+  var rank = sd.rank||{};
+  var urgent = sd.urgent||[];
+  var schedule = sd.schedule||[];
+  var myStatus = sd.myLeadsByStatus||[];
+  var recentActs = sd.recentActivity||[];
+  var sfunnel = sd.funnel||{};
+  var weekly = sd.weeklyData||{leads:[],dr:[],followups:[],interested:[],meetings:[]};
+  var summary = sd.monthlySummary||{};
+  var statusColors2 = {"NewLead":"#1565C0","Potential":"#00796B","HotCase":"#E65100","CallBack":"#6A1B9A","MeetingDone":"#2E7D32","NotInterested":"#E24B4A","NoAnswer":"#888780","DoneDeal":"#0F6E56"};
+
+  var rankBar = function(label, pos, total){
+    var arr = Array.from({length:total},function(_,i){return i;});
+    return React.createElement("div",{style:{marginBottom:11}},
+      React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:5}},
+        React.createElement("span",{style:{color:C2.textLight}},label),
+        React.createElement("span",{style:{fontWeight:500,color:pos===1?"#185FA5":pos===2?"#534AB7":"#888780"}},pos==="1st"||pos===1?"1st of "+total:pos==="2nd"||pos===2?"2nd of "+total:pos+"th of "+total)
+      ),
+      React.createElement("div",{style:{display:"flex",gap:2}},
+        arr.map(function(_,i){
+          var isMe = i===(pos-1);
+          var colors=["#378ADD","#1D9E75","#9FE1CB","#E1F5EE"];
+          return React.createElement("div",{key:i,style:{flex:1,height:5,background:isMe?colors[0]:i<(pos-1)?colors[2]:colors[3],borderRadius:2}});
+        })
+      )
+    );
+  };
+
+  return React.createElement("div",{style:{padding:"1.5rem",background:C2.bg}},
+    filterBar,
+
+    // 6 KPI Cards
+    React.createElement("div",{style:{fontSize:10,fontWeight:500,color:C2.textLight,letterSpacing:"0.07em",textTransform:"uppercase",margin:"0 0 7px"}},"My KPIs — Today"),
+    React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(6,minmax(0,1fr))",gap:9,marginBottom:9}},
+      kpiCard("My Leads",sk.myLeads||0,"total assigned","#1565C0",weekly.leads),
+      kpiCard("Daily Requests",sk.myDr||0,"total","#00796B",weekly.dr),
+      kpiCard("Followups Due",sk.followupsDue||0,(sk.overdueFollowups||0)+" overdue","#E65100",weekly.followups),
+      kpiCard("Interested",(sk.interested||0),(sk.interestedPct||0)+"% of leads","#6A1B9A",weekly.interested),
+      kpiCard("Meetings",sk.meetings||0,(sk.meetingRate||0)+"% meeting rate","#2E7D32",weekly.meetings),
+      kpiCard("Target achieved",Math.min(100,Math.round((sk.meetings||0)/Math.max(sk.myLeads||1,1)*100*5))+"%","progress this month","#AD1457")
+    ),
+
+    // Rank + Urgent + Schedule
+    React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:9,marginBottom:9}},
+      card(React.createElement(React.Fragment,null,
+        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"My rank vs team"),
+          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}},"This Month")
+        ),
+        React.createElement("div",{style:{fontSize:11,color:C2.textLight,marginBottom:12}},"Position only — no team numbers"),
+        rankBar("Activity",rank.activity&&rank.activity.position||1,rank.activity&&rank.activity.total||4),
+        rankBar("Followups",rank.followups&&rank.followups.position||1,rank.followups&&rank.followups.total||4),
+        rankBar("Meetings",rank.meetings&&rank.meetings.position||2,rank.meetings&&rank.meetings.total||4),
+        rankBar("Response time",rank.respTime&&rank.respTime.position||1,rank.respTime&&rank.respTime.total||4),
+        rankBar("Target %",rank.target&&rank.target.position||1,rank.target&&rank.target.total||4),
+        React.createElement("div",{style:{borderTop:"0.5px solid "+C2.border,margin:"8px 0"}}),
+        React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8}},
+          React.createElement("div",{style:{fontSize:20}},"🥇"),
+          React.createElement("div",null,
+            React.createElement("div",{style:{fontSize:12,fontWeight:500,color:C2.text}},"Overall rank: 1st"),
+            React.createElement("div",{style:{fontSize:10,color:C2.textLight}},"Score "+Math.min(100,Math.round((sk.interestedPct||0)*0.4+(sk.meetingRate||0)*0.3+30))+"/100")
+          )
+        )
+      )),
+
+      card(React.createElement(React.Fragment,null,
+        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Urgent — needs action"),
+          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FCEBEB",color:"#A32D2D"}},"now")
+        ),
+        urgent.length===0
+          ? React.createElement("div",{style:{fontSize:11,color:C2.textLight,padding:"10px 0"}},"No urgent items")
+          : urgent.map(function(u,i){
+              var dot = u.type==="overdue"?"#E24B4A":u.type==="soon"?"#EF9F27":"#378ADD";
+              var badge = u.type==="overdue"?"LATE":u.type==="soon"?"SOON":"NEW";
+              var bc = u.type==="overdue"?"#A32D2D":u.type==="soon"?"#854F0B":"#185FA5";
+              var sub = u.type==="overdue"?"Callback overdue "+u.minutesLate+"min":u.type==="soon"?"Callback in "+u.minutesLate+"min":"New lead — no action "+u.minutesLate+"h old";
+              return React.createElement("div",{key:i,style:{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 0",borderBottom:"0.5px solid "+C2.border}},
+                React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:dot,flexShrink:0,marginTop:3}}),
+                React.createElement("div",{style:{flex:1}},
+                  React.createElement("div",{style:{fontSize:12,fontWeight:500,color:C2.text}},u.name),
+                  React.createElement("div",{style:{fontSize:10,color:C2.textLight}},sub+" · "+u.status)
+                ),
+                React.createElement("span",{style:{fontSize:10,color:bc,fontWeight:500}},badge)
+              );
+            })
+      )),
+
+      card(React.createElement(React.Fragment,null,
+        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"Today's schedule"),
+          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#EEEDFE",color:"#534AB7"}},schedule.length+" items")
+        ),
+        schedule.length===0
+          ? React.createElement("div",{style:{fontSize:11,color:C2.textLight,padding:"10px 0"}},"No scheduled callbacks today")
+          : schedule.slice(0,7).map(function(s,i){
+              var t2 = s.time?new Date(s.time).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—";
+              var isLate = s.time&&new Date(s.time)<new Date();
+              return React.createElement("div",{key:i,style:{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 0",borderBottom:"0.5px solid "+C2.border}},
+                React.createElement("div",{style:{fontSize:10,color:C2.textLight,width:38,flexShrink:0,textAlign:"center",fontWeight:500}},t2),
+                React.createElement("div",{style:{flex:1}},
+                  React.createElement("div",{style:{fontSize:12,color:C2.text}},s.name),
+                  React.createElement("div",{style:{fontSize:10,color:isLate?"#A32D2D":C2.textLight}},isLate?"Overdue callback":"Callback scheduled")
+                ),
+                React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:isLate?"#E24B4A":"#1D9E75",marginTop:3}})
+              );
+            })
+      ))
+    ),
+
+    // Leads status + Activity
+    React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:9}},
+      card(React.createElement(React.Fragment,null,
+        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"My leads — status breakdown"),
+          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},(sk.myLeads||0)+" leads")
+        ),
+        myStatus.sort(function(a,b){return b.count-a.count;}).slice(0,7).map(function(s){
+          return bRow(s.status,s.count,sk.myLeads||1,statusColors2[s.status]||"#888");
+        }),
+        React.createElement("div",{style:{borderTop:"0.5px solid "+C2.border,margin:"8px 0"}}),
+        React.createElement("div",{style:{display:"flex",gap:16,fontSize:11}},
+          React.createElement("span",{style:{color:C2.textLight}},"Overdue: ",React.createElement("span",{style:{color:"#D85A30",fontWeight:500}},sk.overdueFollowups||0))
+        )
+      )),
+      card(React.createElement(React.Fragment,null,
+        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"My activity — recent"),
+          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#EAF3DE",color:"#3B6D11"}},"Today")
+        ),
+        recentActs.length===0
+          ? React.createElement("div",{style:{fontSize:11,color:C2.textLight,padding:"10px 0"}},"No recent activity")
+          : recentActs.map(function(a,i){
+              var stColor = statusColors2[a.status]||"#888";
+              return React.createElement("div",{key:i,style:{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"0.5px solid "+C2.border}},
+                React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:stColor,flexShrink:0}}),
+                React.createElement("div",{style:{flex:1}},
+                  React.createElement("div",{style:{fontSize:12,color:C2.text}},a.name," — ",React.createElement("span",{style:{color:stColor}},a.status)),
+                  React.createElement("div",{style:{fontSize:10,color:C2.textLight}},a.note||"","· ",timeAgo(a.time))
+                )
+              );
+            })
+      ))
+    ),
+
+    // Funnel + Summary
+    React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9}},
+      card(React.createElement(React.Fragment,null,
+        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"My conversion funnel"),
+          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#E6F1FB",color:"#185FA5"}},(sfunnel.assigned||0)+" leads")
+        ),
+        [
+          {l:"Assigned",v:sfunnel.assigned,c:"#E6F1FB",tc:"#185FA5"},
+          {l:"Contacted",v:sfunnel.contacted,c:"#EAF3DE",tc:"#3B6D11"},
+          {l:"Interested",v:sfunnel.interested,c:"#FAEEDA",tc:"#854F0B"},
+          {l:"Hot Case",v:sfunnel.hotCase,c:"#EEEDFE",tc:"#534AB7"},
+          {l:"Meeting",v:sfunnel.meeting,c:"#E1F5EE",tc:"#0F6E56"},
+          {l:"Deal",v:sfunnel.deal,c:"#FAECE7",tc:"#993C1D"},
+        ].map(function(row,i){
+          var pct = sfunnel.assigned>0?Math.max(8,Math.round((row.v||0)/sfunnel.assigned*100)):8;
+          var pctStr = sfunnel.assigned>0?Math.round((row.v||0)/sfunnel.assigned*100)+"%":"—";
+          return React.createElement("div",{key:i,style:{display:"flex",alignItems:"center",gap:10,marginBottom:8}},
+            React.createElement("div",{style:{fontSize:11,color:C2.textLight,width:82,flexShrink:0,textAlign:"right"}},row.l),
+            React.createElement("div",{style:{height:22,borderRadius:3,background:row.c,display:"flex",alignItems:"center",padding:"0 10px",width:pct+"%",minWidth:55}},
+              React.createElement("span",{style:{fontSize:11,fontWeight:500,color:row.tc,whiteSpace:"nowrap"}},row.v||0),
+              React.createElement("span",{style:{fontSize:10,color:C2.textLight,marginLeft:6}},pctStr)
+            )
+          );
+        })
+      )),
+      card(React.createElement(React.Fragment,null,
+        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:11}},
+          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:C2.text}},"My activity summary"),
+          React.createElement("span",{style:{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#FAEEDA",color:"#854F0B"}},"This Month")
+        ),
+        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}},
+          React.createElement("div",{style:{background:"#E6F1FB",borderRadius:8,padding:"0.6rem",textAlign:"center"}},React.createElement("div",{style:{fontSize:18,fontWeight:500,color:"#185FA5"}},summary.totalActions||0),React.createElement("div",{style:{fontSize:10,color:"#0C447C"}},"Total actions")),
+          React.createElement("div",{style:{background:"#E1F5EE",borderRadius:8,padding:"0.6rem",textAlign:"center"}},React.createElement("div",{style:{fontSize:18,fontWeight:500,color:"#0F6E56"}},summary.followupsDone||0),React.createElement("div",{style:{fontSize:10,color:"#085041"}},"Followups done")),
+          React.createElement("div",{style:{background:"#EEEDFE",borderRadius:8,padding:"0.6rem",textAlign:"center"}},React.createElement("div",{style:{fontSize:18,fontWeight:500,color:"#534AB7"}},summary.meetings||0),React.createElement("div",{style:{fontSize:10,color:"#3C3489"}},"Meetings")),
+          React.createElement("div",{style:{background:"#EAF3DE",borderRadius:8,padding:"0.6rem",textAlign:"center"}},React.createElement("div",{style:{fontSize:18,fontWeight:500,color:"#3B6D11"}},summary.avgRespTime||"—",summary.avgRespTime?"h":""),React.createElement("div",{style:{fontSize:10,color:"#27500A"}},"Avg response"))
+        )
+      ))
+    )
+  );
 };
 
 
@@ -4764,43 +5067,37 @@ export default function CRMApp() {
     if(!token) return;
     var knownLeadIds = null;
     var knownActivityIds = null;
-    var interval = setInterval(async function(){
+    // Interval 1 — leads every 15s (skip if tab hidden)
+    var leadsInterval = setInterval(async function(){
+      if(document.visibilityState!=="visible") return;
       try{
-        var results = await Promise.all([
-          apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,token),
-          apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token)
-        ]);
-        var leadsData = results[0].data||[];
-        var activitiesData = results[1].data||[];
-        // Fetch DR separately
-        try{
-          var drData = await apiFetch("/api/daily-requests","GET",null,token);
-          setDailyReqs(drData||[]);
-        }catch(drErr){}
+        var result = await apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,token);
+        var leadsData = result.data||[];
         try{
           var cache=JSON.parse(localStorage.getItem('phone2_cache')||'{}');
           leadsData=leadsData.map(function(l){var id=l._id?String(l._id):null;if(id&&cache[id]&&!l.phone2)return Object.assign({},l,{phone2:cache[id]});return l;});
         }catch(e){}
-
-        // Detect new leads
         if(knownLeadIds !== null){
           var newLeads = leadsData.filter(function(l){return !knownLeadIds.has(String(l._id));});
           newLeads.forEach(function(l){
             var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
             showBrowserNotif("🆕 New Lead", l.name+(agName?" → "+agName:""));
           });
-          // Deal/EOI notifications are created by confirmStatus via addDealNotif (MongoDB)
-          // No duplicate detection needed here — polling just refreshes notification state
         }
         knownLeadIds = new Set(leadsData.map(function(l){return String(l._id);}));
-
-        // Detect new activities
+        setLeads(leadsData);
+      }catch(e){}
+    }, 15000);
+    // Interval 2 — activities every 15s
+    var actInterval = setInterval(async function(){
+      try{
+        var result = await apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token);
+        var activitiesData = result.data||[];
         if(knownActivityIds !== null){
           var newActs = activitiesData.filter(function(a){return !knownActivityIds.has(String(a._id));});
           newActs.forEach(function(a){
             var who = a.userId&&a.userId.name?a.userId.name:"";
             var lead = a.leadId&&a.leadId.name?a.leadId.name:"";
-            // For team_leader: only notify for their team's activities
             if(currentUser.role==="team_leader"){
               var teamNames=new Set((users||[]).filter(function(u){return u.role==="sales";}).map(function(u){return u.name;}));
               teamNames.add(currentUser.name);
@@ -4812,12 +5109,17 @@ export default function CRMApp() {
           });
         }
         knownActivityIds = new Set(activitiesData.map(function(a){return String(a._id);}));
-
-        setLeads(leadsData);
         setActivities(activitiesData);
       }catch(e){}
+    }, 15000);
+    // Interval 3 — daily requests every 30s
+    var drInterval = setInterval(async function(){
+      try{
+        var drData = await apiFetch("/api/daily-requests","GET",null,token);
+        setDailyReqs(drData||[]);
+      }catch(e){}
     }, 30000);
-    return function(){ clearInterval(interval); };
+    return function(){ clearInterval(leadsInterval); clearInterval(actInterval); clearInterval(drInterval); };
   }, [token]);
   useEffect(function(){
     if(!token) return;
@@ -5248,7 +5550,7 @@ export default function CRMApp() {
     runChecks();
     var rotInterval = setInterval(runChecks, 5*60*1000);
     return function(){clearInterval(rotInterval);};
-  },[token, leads, users]);
+  },[token, users]);
 
   var handleLogout=function(){setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
