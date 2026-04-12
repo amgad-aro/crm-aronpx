@@ -211,7 +211,15 @@ var PROP_TYPES = ["Apartment","Duplex","Townhouse","Twinhouse","Standalone","Com
 // ===== AVATAR COLORS =====
 var AVATAR_COLORS = ["#6366F1","#EC4899","#F59E0B","#10B981","#3B82F6","#8B5CF6","#EF4444","#14B8A6","#F97316","#06B6D4"];
 var avatarColor = function(name){ var i=0; if(name)for(var j=0;j<name.length;j++)i+=name.charCodeAt(j); return AVATAR_COLORS[i%AVATAR_COLORS.length]; };
-var Avatar = function(p){ var color=avatarColor(p.name); var size=p.size||36; return <div style={{ width:size, height:size, borderRadius:p.round?"50%":Math.round(size*0.28), background:color, display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:Math.round(size*0.38), flexShrink:0, position:"relative" }}>{p.name?(p.name[0]+( p.name.split(" ")[1]?p.name.split(" ")[1][0]:"")).toUpperCase():""}{p.online!==undefined&&<span style={{ position:"absolute", bottom:1, right:1, width:Math.round(size*0.28), height:Math.round(size*0.28), borderRadius:"50%", background:p.online?"#22C55E":"#94A3B8", border:"2px solid #fff" }}/>}</div>; };
+var Avatar = function(p){
+  var size=p.size||36;
+  // `flat` makes the avatar match the sidebar footer style: rgba(255,255,255,0.1) bg, 10px radius, 11px weight-700 text.
+  var flat = !!p.flat;
+  var bg = flat ? "rgba(255,255,255,0.1)" : avatarColor(p.name);
+  var radius = flat ? 10 : (p.round?"50%":Math.round(size*0.28));
+  var fontSize = flat ? 11 : Math.round(size*0.38);
+  return <div style={{ width:size, height:size, borderRadius:radius, background:bg, display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:fontSize, flexShrink:0, position:"relative" }}>{p.name?(p.name[0]+( p.name.split(" ")[1]?p.name.split(" ")[1][0]:"")).toUpperCase():""}{p.online!==undefined&&<span style={{ position:"absolute", bottom:1, right:1, width:Math.round(size*0.28), height:Math.round(size*0.28), borderRadius:"50%", background:p.online?"#22C55E":"#94A3B8", border:"2px solid "+(flat?"rgba(28,30,40,0.95)":"#fff") }}/>}</div>;
+};
 var gid = function(o) { if(!o) return null; return String(o._id || o.id || ""); };
 
 // WhatsApp chooser — shows popup to pick WhatsApp or WhatsApp Business
@@ -5336,7 +5344,7 @@ var TeamPage = function(p) {
     var onlineStatus=isOnlineNow?"🟢 Active now":isIdleNow?"🟡 Idle ("+timeAgo(a.lastSeen,p.t)+")":"⚫ "+lastSeenStr;
     return <Card key={uid} style={{ flex:"1 1 280px", maxWidth:360, overflow:"hidden", padding:0, border:"1px solid rgba(255,255,255,0.07)" }}>
       <div style={{ background:"rgba(28, 30, 40, 0.95)", padding:18, textAlign:"center" }}>
-        <div style={{ margin:"0 auto 8px", display:"inline-block" }}><Avatar name={a.name} size={48} online={isOnlineNow}/></div>
+        <div style={{ margin:"0 auto 8px", display:"inline-block" }}><Avatar name={a.name} size={48} online={isOnlineNow} flat/></div>
         <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{a.name}</div>
         <div style={{ color:"rgba(255,255,255,0.55)", fontSize:11, marginTop:2 }}>{a.title}</div>
         <div style={{ marginTop:4, fontSize:10, color:isOnlineNow?"#86EFAC":"rgba(255,255,255,0.45)", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
@@ -5407,8 +5415,8 @@ var TeamPage = function(p) {
       return <div key={muid} style={{ marginBottom:16 }}>
         {/* Manager row - clickable */}
         <div onClick={function(){setExpandedManager(isExpanded?null:muid);}}
-          style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", borderRadius:12, cursor:"pointer", marginBottom:isExpanded?10:0 }}>
-          <Avatar name={mgr.name} size={40} online={isOnline}/>
+          style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", background:"rgba(28, 30, 40, 0.95)", border:"1px solid rgba(255,255,255,0.07)", borderRadius:12, cursor:"pointer", marginBottom:isExpanded?10:0 }}>
+          <Avatar name={mgr.name} size={40} online={isOnline} flat/>
           <div style={{ flex:1 }}>
             <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{mgr.name}</div>
             <div style={{ color:"rgba(255,255,255,0.6)", fontSize:11 }}>{mgr.title} — {team.length} member</div>
@@ -5555,7 +5563,7 @@ var ReportsPage = function(p) {
               var prog=qTarget2>0?Math.min(100,Math.round(revenue2/qTarget2*100)):0;
               return <div key={uid} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-                  <Avatar name={a.name} size={32}/>
+                  <Avatar name={a.name} size={32} flat/>
                   <div style={{ flex:1 }}><div style={{ fontSize:12, fontWeight:600 }}>{a.name}</div><div style={{ fontSize:10, color:C.textLight }}>{a.title}</div></div>
                   {[{v:al.length,l:t.leads,c:C.text},{v:dailyReqCount,l:"Requests",c:"#8B5CF6"},{v:meetDone,l:"Meeting",c:"#F59E0B"},{v:d,l:t.deals,c:C.success},{v:cl,l:t.calls,c:C.info},{v:rate+"%",l:"Conv.",c:C.accent}].map(function(s){return <div key={s.l} style={{ textAlign:"center", minWidth:32 }}><div style={{ fontSize:12, fontWeight:700, color:s.c }}>{s.v}</div><div style={{ fontSize:9, color:C.textLight }}>{s.l}</div></div>;})}
                 </div>
