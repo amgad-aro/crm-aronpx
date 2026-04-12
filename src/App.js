@@ -5995,141 +5995,143 @@ export default function CRMApp() {
     }catch(e){}
   },[leadsPage, activitiesPage]);
 
-  // ===== POLLING BACKUP (every 15 seconds) =====
-  useEffect(function(){
-    if(!token) return;
-    var knownLeadIds = null;
-    var knownActivityIds = null;
-    // Interval 1 — leads every 15s (skip if tab hidden)
-    var leadsInterval = setInterval(async function(){
-      if(document.visibilityState!=="visible") return;
-      try{
-        var result = await apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,token);
-        var leadsData = result.data||[];
-        try{
-          var cache=JSON.parse(localStorage.getItem('phone2_cache')||'{}');
-          leadsData=leadsData.map(function(l){var id=l._id?String(l._id):null;if(id&&cache[id]&&!l.phone2)return Object.assign({},l,{phone2:cache[id]});return l;});
-        }catch(e){}
-        if(knownLeadIds !== null){
-          var newLeads = leadsData.filter(function(l){return !knownLeadIds.has(String(l._id));});
-          newLeads.forEach(function(l){
-            var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
-            showBrowserNotif("🆕 New Lead", l.name+(agName?" → "+agName:""));
-          });
-        }
-        knownLeadIds = new Set(leadsData.map(function(l){return String(l._id);}));
-        setLeads(leadsData);
-      }catch(e){}
-    }, 15000);
-    // Interval 2 — activities every 15s
-    var actInterval = setInterval(async function(){
-      try{
-        var result = await apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token);
-        var activitiesData = result.data||[];
-        if(knownActivityIds !== null){
-          var newActs = activitiesData.filter(function(a){return !knownActivityIds.has(String(a._id));});
-          newActs.forEach(function(a){
-            var who = a.userId&&a.userId.name?a.userId.name:"";
-            var lead = a.leadId&&a.leadId.name?a.leadId.name:"";
-            if(currentUser.role==="team_leader"){
-              var teamNames=new Set((users||[]).filter(function(u){return u.role==="sales";}).map(function(u){return u.name;}));
-              teamNames.add(currentUser.name);
-              if(!teamNames.has(who)) return;
-            }
-            if(a.type==="call") showBrowserNotif("📞 Call logged", (who?who+" — ":"")+(lead||a.note||""));
-            else if(a.type==="status_change"&&(a.note||"").includes("DoneDeal")) showBrowserNotif("🎉 Done Deal", (lead?lead+" — ":"")+who);
-            else if(a.type==="reassign") showBrowserNotif("👤 Lead reassigned", (lead||"")+(a.note?" — "+a.note:""));
-          });
-        }
-        knownActivityIds = new Set(activitiesData.map(function(a){return String(a._id);}));
-        setActivities(activitiesData);
-      }catch(e){}
-    }, 15000);
-    // Interval 3 — daily requests every 30s
-    var drInterval = setInterval(async function(){
-      try{
-        var drData = await apiFetch("/api/daily-requests","GET",null,token);
-        setDailyReqs(drData||[]);
-      }catch(e){}
-    }, 30000);
-    return function(){ clearInterval(leadsInterval); clearInterval(actInterval); clearInterval(drInterval); };
-  }, [token]);
+  // Data-refresh polling intervals were removed — WebSocket listener below handles real-time updates.
+  // ===== REAL-TIME WEBSOCKET SYNC (single source of truth — replaces all data-refresh polling) =====
   useEffect(function(){
     if(!token) return;
     var wsUrl = (process.env.REACT_APP_API_URL||API).replace("https://","wss://").replace("http://","ws://");
-    var ws; var reconnectTimer; var retries=0; var maxRetries=10;
+    var ws; var reconnectTimer; var retries=0; var maxRetries=20; var hasConnectedBefore=false; var cancelled=false;
+    var fetchAll = function(){
+      try{ loadData(token, currentUser); }catch(e){}
+      try{ loadNotifications(token); }catch(e){}
+    };
+    var fetchNotifications = function(){ try{ loadNotifications(token); }catch(e){} };
+    var fetchUsers = function(){
+      apiFetch("/api/users","GET",null,token).then(function(u){ if(Array.isArray(u)) setUsers(u); }).catch(function(){});
+    };
+    var fetchActivitiesLatest = function(){
+      apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token).then(function(r){
+        if (r && r.data) setActivities(r.data);
+      }).catch(function(){});
+    };
+    var fetchDRs = function(){
+      apiFetch("/api/daily-requests","GET",null,token).then(function(d){ if(Array.isArray(d)) setDailyReqs(d); }).catch(function(){});
+    };
+    var fetchSingleLead = function(leadId){
+      if(!leadId) return;
+      apiFetch("/api/leads/"+leadId,"GET",null,token).then(function(fresh){
+        if(fresh && fresh._id) setLeads(function(prev){
+          var found = prev.some(function(l){return gid(l)===String(fresh._id);});
+          return found ? prev.map(function(l){return gid(l)===String(fresh._id)?fresh:l;}) : [fresh].concat(prev);
+        });
+      }).catch(function(){});
+    };
     function connect(){
-      if(retries>=maxRetries) return;
+      if(cancelled || retries>=maxRetries) return;
       try{ ws = new WebSocket(wsUrl); }catch(e){ return; }
-      ws.onopen = function(){ retries=0; };
+      ws.onopen = function(){
+        retries = 0;
+        // On reconnect (not the first connect), events may have been missed — resync once.
+        if (hasConnectedBefore) fetchAll();
+        hasConnectedBefore = true;
+      };
       ws.onmessage = function(e){
         try{
           var msg = JSON.parse(e.data);
-          if(msg.type==="lead_created"){
-            setLeads(function(prev){
-              if(prev.find(function(l){return gid(l)===gid(msg.data);})) return prev;
-              return [msg.data].concat(prev);
-            });
-          } else if(msg.type==="lead_updated"){
-            setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(msg.data)?msg.data:l;});});
-          } else if(msg.type==="activity_created"){
-            setActivities(function(prev){return [msg.data].concat(prev).slice(0,50);});
+          var data = msg.data || {};
+          switch(msg.type){
+            case "lead_updated":
+              if (data.lead && data.lead._id) {
+                var lead = data.lead;
+                setLeads(function(prev){
+                  var hit = prev.some(function(l){return gid(l)===String(lead._id);});
+                  return hit ? prev.map(function(l){return gid(l)===String(lead._id)?lead:l;}) : [lead].concat(prev);
+                });
+              } else if (data.leadId) {
+                fetchSingleLead(String(data.leadId));
+              }
+              break;
+            case "lead_deleted":
+              if (data.leadId) setLeads(function(prev){return prev.filter(function(l){return gid(l)!==String(data.leadId);});});
+              break;
+            case "dr_updated":
+              if (data.dr && data.dr._id) {
+                var dr = data.dr;
+                setDailyReqs(function(prev){
+                  var hit = prev.some(function(r){return gid(r)===String(dr._id);});
+                  return hit ? prev.map(function(r){return gid(r)===String(dr._id)?dr:r;}) : [dr].concat(prev);
+                });
+              } else {
+                fetchDRs();
+              }
+              break;
+            case "dr_deleted":
+              if (data.drId) setDailyReqs(function(prev){return prev.filter(function(r){return gid(r)!==String(data.drId);});});
+              break;
+            case "activity_created":
+              if (data.activity) setActivities(function(prev){
+                if (prev.some(function(a){return gid(a)===gid(data.activity);})) return prev;
+                return [data.activity].concat(prev).slice(0,50);
+              });
+              else fetchActivitiesLatest();
+              break;
+            case "user_updated":
+              if (data.user && data.user._id) {
+                var u = data.user;
+                setUsers(function(prev){
+                  var hit = prev.some(function(x){return gid(x)===String(u._id);});
+                  return hit ? prev.map(function(x){return gid(x)===String(u._id)?u:x;}) : [u].concat(prev);
+                });
+              } else {
+                fetchUsers();
+              }
+              break;
+            case "user_deleted":
+              if (data.userId) setUsers(function(prev){return prev.filter(function(x){return gid(x)!==String(data.userId);});});
+              break;
+            case "notification_updated":
+              fetchNotifications();
+              break;
+            case "rotation_updated":
+              if (data.leadId) fetchSingleLead(String(data.leadId));
+              fetchNotifications();
+              break;
+            case "task_updated":
+              apiFetch("/api/tasks","GET",null,token).then(function(t){ if(Array.isArray(t)) setTasks(t); }).catch(function(){});
+              break;
+            case "hello": break; // server greeting
+            default: break;
           }
         }catch(err){}
       };
       ws.onclose = function(){
+        if (cancelled) return;
         retries++;
-        if(retries<maxRetries){
-          var delay=Math.min(1000*Math.pow(2,retries),30000);
+        if (retries<maxRetries) {
+          var delay = Math.min(1000*Math.pow(2,retries), 30000);
           reconnectTimer = setTimeout(connect, delay);
         }
       };
       ws.onerror = function(){ try{ws.close();}catch(e){} };
     }
     connect();
-    return function(){ clearTimeout(reconnectTimer); if(ws) try{ws.close();}catch(e){} };
-  }, [token]);
-
-  // Cross-device sync: refresh everything when the tab becomes visible again, and poll users + notifications in the background
-  // so user management / notification changes on one device propagate to others without a manual refresh.
-  useEffect(function(){
-    if(!token) return;
-    var cancelled = false;
-    var lastSyncAt = Date.now();
-    var refresh = function(reason){
-      if (cancelled || !token) return;
-      lastSyncAt = Date.now();
-      // Full refresh — leads/DRs/activities/tasks/users/notifications — reuses the existing loader.
-      try{ loadData(token, currentUser); }catch(e){}
-      try{ loadNotifications(token); }catch(e){}
-    };
-    // Visibility sync: when the admin comes back to the tab after 15s+ away, force a refresh.
+    // Safety net: if the tab was hidden and the socket dropped silently, reconnect or resync on return.
     var onVis = function(){
-      if (document.visibilityState === "visible" && Date.now() - lastSyncAt > 15*1000) refresh("visibilitychange");
+      if (document.visibilityState!=="visible") return;
+      if (!ws || ws.readyState!==1) { retries=0; connect(); } else { fetchAll(); }
     };
-    // Window focus sync: same signal on desktop browsers.
-    var onFocus = function(){
-      if (Date.now() - lastSyncAt > 15*1000) refresh("focus");
-    };
-    // Users + notifications poller (60s) — leads/DR/activities already have their own faster intervals above.
-    var usersInterval = setInterval(async function(){
-      if (cancelled || !token) return;
-      try{
-        var u = await apiFetch("/api/users","GET",null,token);
-        if (Array.isArray(u)) setUsers(u);
-      }catch(e){}
-      try{ loadNotifications(token); }catch(e){}
-    }, 60000);
+    var onFocus = function(){ if (!ws || ws.readyState!==1) { retries=0; connect(); } };
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("focus", onFocus);
     return function(){
       cancelled = true;
-      clearInterval(usersInterval);
+      clearTimeout(reconnectTimer);
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", onFocus);
+      if (ws) try{ws.close();}catch(e){}
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[token]);
+  }, [token]);
 
   // Load saved session on startup
   useEffect(function(){
@@ -6315,13 +6317,7 @@ export default function CRMApp() {
     };
   },[token]);
 
-  // ===== NOTIFICATION POLLING (every 30s) =====
-  useEffect(function(){
-    if(!token) return;
-    var poll = function(){ loadNotifications(token); };
-    var interval = setInterval(poll, 30000);
-    return function(){ clearInterval(interval); };
-  },[token]);
+  // Notification polling removed — the WebSocket "notification_updated" event now triggers loadNotifications in real time.
 
   // ===== SMART AUTO ROTATION SYSTEM =====
   useEffect(function(){

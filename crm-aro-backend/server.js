@@ -4,6 +4,22 @@ var mongoose = require("mongoose");
 var cors = require("cors");
 var bcrypt = require("bcryptjs");
 var jwt = require("jsonwebtoken");
+var http = require("http");
+var WebSocketLib = require("ws");
+
+// ===== REAL-TIME BROADCASTER =====
+// Actual implementation is set below once the WebSocket server is created.
+// Schema hooks (defined a few lines down) call broadcast() — it's a no-op until the server starts.
+var broadcast = function(){};
+var emitLead = function(doc){ try{ if(doc) broadcast("lead_updated", { leadId: String(doc._id), lead: doc }); }catch(e){} };
+var emitLeadDeleted = function(doc){ try{ if(doc) broadcast("lead_deleted", { leadId: String(doc._id) }); }catch(e){} };
+var emitDR = function(doc){ try{ if(doc) broadcast("dr_updated", { drId: String(doc._id), dr: doc }); }catch(e){} };
+var emitDRDeleted = function(doc){ try{ if(doc) broadcast("dr_deleted", { drId: String(doc._id) }); }catch(e){} };
+var emitUser = function(doc){ try{ if(doc) broadcast("user_updated", { userId: String(doc._id), user: doc }); }catch(e){} };
+var emitUserDeleted = function(doc){ try{ if(doc) broadcast("user_deleted", { userId: String(doc._id) }); }catch(e){} };
+var emitActivity = function(doc){ try{ if(doc) broadcast("activity_created", { activity: doc }); }catch(e){} };
+var emitNotification = function(){ try{ broadcast("notification_updated", {}); }catch(e){} };
+var emitTask = function(){ try{ broadcast("task_updated", {}); }catch(e){} };
 
 // ===== CORS OPTIONS =====
 var corsOptions = {
@@ -126,6 +142,60 @@ var app = express();
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+// ===== REAL-TIME BROADCAST MIDDLEWARE =====
+// For every successful mutating request (POST/PUT/DELETE), inspect the path and response body
+// and emit the appropriate WebSocket event to all connected clients. One place, covers every route.
+app.use(function(req, res, next){
+  var method = req.method;
+  if (method !== "POST" && method !== "PUT" && method !== "DELETE") return next();
+  if (!req.path.indexOf("/api/") === 0 && !req.path.startsWith("/api/")) return next();
+  var originalJson = res.json.bind(res);
+  res.json = function(body){
+    try {
+      if (res.statusCode < 400) {
+        var path = req.path || "";
+        var isArchive = path.indexOf("/archive") !== -1;
+        // ----- Users -----
+        if (path.indexOf("/api/users") === 0) {
+          if (method === "DELETE") broadcast("user_deleted", { userId: String(req.params.id||"") });
+          else if (body && body._id) broadcast("user_updated", { userId: String(body._id), user: body });
+        }
+        // ----- Activities -----
+        else if (path.indexOf("/api/activities") === 0 && method === "POST") {
+          if (body && body._id) broadcast("activity_created", { activity: body });
+        }
+        // ----- Notifications -----
+        else if (path.indexOf("/api/notifications") === 0) {
+          broadcast("notification_updated", {});
+        }
+        // ----- Tasks -----
+        else if (path.indexOf("/api/tasks") === 0) {
+          broadcast("task_updated", { taskId: String((body&&body._id)||req.params.id||"") });
+        }
+        // ----- Daily Requests -----
+        else if (path.indexOf("/api/daily-requests") === 0) {
+          if (method === "DELETE") broadcast("dr_deleted", { drId: String(req.params.id||"") });
+          else if (body && body._id) broadcast("dr_updated", { drId: String(body._id), dr: body });
+          else if (body && Array.isArray(body)) broadcast("dr_updated", {}); // bulk
+          else broadcast("dr_updated", {});
+        }
+        // ----- Leads (includes rotate / eoi-cancel / deal-cancel / eoi-to-deal / upload-image / eoi-documents / archive / bulk-*) -----
+        else if (path.indexOf("/api/leads") === 0) {
+          if (method === "DELETE") broadcast("lead_deleted", { leadId: String(req.params.id||"") });
+          else if (body && body.lead && body.lead._id) broadcast("lead_updated", { leadId: String(body.lead._id), lead: body.lead });
+          else if (body && body._id) broadcast("lead_updated", { leadId: String(body._id), lead: body });
+          else broadcast("lead_updated", {}); // bulk / non-doc response
+          // Rotation sub-event so the rotation notifications panel can reload
+          if (path.indexOf("/rotate") !== -1) broadcast("rotation_updated", { leadId: String(req.params.id||"") });
+          if (isArchive) broadcast("lead_updated", { leadId: String(req.params.id||""), lead: body });
+        }
+      }
+    } catch(e){ console.error("broadcast mw error:", e.message); }
+    return originalJson(body);
+  };
+  next();
+});
 
 // ===== CONNECT TO MONGODB =====
 mongoose.connect(process.env.MONGODB_URI).then(function() {
@@ -383,6 +453,7 @@ app.post("/api/users", auth, adminOnly, async function(req, res) {
     });
     var obj = user.toObject();
     delete obj.password;
+    emitUser(obj);
     res.json(obj);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -405,6 +476,7 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     if (req.body.teamId !== undefined) update.teamId = req.body.teamId;
     if (req.body.teamName !== undefined) update.teamName = req.body.teamName;
     var user = await User.findByIdAndUpdate(req.params.id, { $set: update }, { new: true, strict: false }).select("-password");
+    emitUser(user);
     res.json(user);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -413,7 +485,8 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
 
 app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
   try {
-    await User.findByIdAndDelete(req.params.id);
+    var deletedUser = await User.findByIdAndDelete(req.params.id);
+    emitUserDeleted(deletedUser);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2059,8 +2132,33 @@ app.get("/api/dashboard/sales", auth, async function(req, res) {
 });
 
 
-// ===== START SERVER =====
+// ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
-app.listen(PORT, function() {
-  console.log("CRM ARO Server running on port " + PORT);
+var httpServer = http.createServer(app);
+var wss = new WebSocketLib.Server({ server: httpServer });
+wss.on("connection", function(ws){
+  ws.isAlive = true;
+  ws.on("pong", function(){ ws.isAlive = true; });
+  ws.send(JSON.stringify({ type: "hello", ts: Date.now() }));
+});
+// Keepalive ping — drops dead sockets so broadcast() doesn't write to closed connections.
+setInterval(function(){
+  wss.clients.forEach(function(client){
+    if (client.isAlive === false) { try { client.terminate(); } catch(e){} return; }
+    client.isAlive = false;
+    try { client.ping(); } catch(e){}
+  });
+}, 30000);
+// Replace the placeholder broadcaster with the real one.
+broadcast = function(type, data){
+  var payload;
+  try { payload = JSON.stringify({ type: type, data: data || {}, ts: Date.now() }); } catch(e){ return; }
+  wss.clients.forEach(function(client){
+    if (client.readyState === WebSocketLib.OPEN) {
+      try { client.send(payload); } catch(e){}
+    }
+  });
+};
+httpServer.listen(PORT, function() {
+  console.log("CRM ARO Server + WebSocket running on port " + PORT);
 });
