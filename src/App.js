@@ -574,39 +574,109 @@ var LoginPage = function(p) {
 };
 
 // ===== SIDEBAR =====
+var SidebarIcon = function(id, active){
+  var col = active ? "#fff" : "rgba(255,255,255,0.4)";
+  var sw = 1.5;
+  var base = { width:18, height:18, display:"block" };
+  switch(id){
+    case "dashboard":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><rect x="1" y="1" width="7" height="7" rx="2" fill={col}/><rect x="10" y="1" width="7" height="7" rx="2" fill={col} opacity=".4"/><rect x="1" y="10" width="7" height="7" rx="2" fill={col} opacity=".4"/><rect x="10" y="10" width="7" height="7" rx="2" fill={col} opacity=".4"/></svg>;
+    case "leads":
+    case "users":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="6" r="3.5" stroke={col} strokeWidth={sw}/><path d="M2 16c0-3.9 3.1-7 7-7s7 3.1 7 7" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
+    case "dailyReq":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><rect x="2" y="2" width="14" height="14" rx="3" stroke={col} strokeWidth={sw}/><path d="M5 9h8M5 6h8M5 12h5" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
+    case "deals":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M15 6L9 2.5 3 6v7l6 3.5 6-3.5V6z" stroke={col} strokeWidth={sw} strokeLinejoin="round"/></svg>;
+    case "eoi":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7" stroke={col} strokeWidth={sw}/><path d="M9 6v3.5l2.5 2.5" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
+    case "tasks":
+    case "myday":
+    case "calendar":
+    case "kpis":
+      if (id==="kpis") return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M2 14l4-5 3 3 4-7 3 4" stroke={col} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round"/></svg>;
+      if (id==="calendar") return <svg style={base} viewBox="0 0 18 18" fill="none"><rect x="2" y="3" width="14" height="13" rx="2" stroke={col} strokeWidth={sw}/><path d="M2 7h14M6 1v4M12 1v4" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M3 5h12M3 9h8M3 13h10" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
+    case "reports":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M2 14l4-5 3 3 4-7 3 4" stroke={col} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round"/></svg>;
+    case "team":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="5.5" cy="6" r="2.5" stroke={col} strokeWidth={sw}/><circle cx="12.5" cy="6" r="2.5" stroke={col} strokeWidth={sw}/><path d="M1 15c0-2.5 2-4.5 4.5-4.5M17 15c0-2.5-2-4.5-4.5-4.5M9 15c0-2.5 2-4.5 4.5-4.5" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
+    case "archive":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><rect x="2" y="2" width="14" height="14" rx="3" stroke={col} strokeWidth={sw}/><path d="M6 9h6" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
+    case "settings":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="2.5" stroke={col} strokeWidth={sw}/><path d="M9 2v1.5M9 14.5V16M2 9h1.5M14.5 9H16M4.1 4.1l1.1 1.1M12.8 12.8l1.1 1.1M4.1 13.9l1.1-1.1M12.8 5.2l1.1-1.1" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
+    default:
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="3" stroke={col} strokeWidth={sw}/></svg>;
+  }
+};
+
 var Sidebar = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var isSales = p.cu.role==="sales";
   var isSalesOrTL = p.cu.role==="sales"||p.cu.role==="team_leader";
   var items = [
-    {id:"dashboard",icon:Home,label:t.dashboard},
-    p.cu.role==="team_leader"&&{id:"myday",icon:CheckCircle,label:t.myDay},
-    {id:"leads",icon:Users,label:t.leads},
-    {id:"dailyReq",icon:ClipboardList,label:t.dailyReq},
-    {id:"deals",icon:Briefcase,label:t.deals},
-    {id:"eoi",icon:Target,label:"EOI"},
-    {id:"tasks",icon:CheckCircle,label:t.tasks},
-    isSalesOrTL&&{id:"kpis",icon:TrendingUp,label:"KPIs"},
-    isSales&&{id:"calendar",icon:Calendar,label:"Calendar"},
-    isAdmin&&{id:"reports",icon:BarChart3,label:t.reports},
-    isAdmin&&{id:"team",icon:UserPlus,label:t.team},
-    isOnlyAdmin&&{id:"users",icon:Lock,label:t.users},
-    isOnlyAdmin&&{id:"archive",icon:Archive,label:t.archive},
-    isOnlyAdmin&&{id:"settings",icon:Settings,label:t.settings},
+    {id:"dashboard",label:t.dashboard},
+    p.cu.role==="team_leader"&&{id:"myday",label:t.myDay},
+    {id:"leads",label:t.leads},
+    {id:"dailyReq",label:t.dailyReq},
+    {id:"deals",label:t.deals},
+    {id:"eoi",label:"EOI"},
+    {id:"tasks",label:t.tasks},
+    isSalesOrTL&&{id:"kpis",label:"KPIs"},
+    isSales&&{id:"calendar",label:"Calendar"},
+    isAdmin&&{id:"reports",label:t.reports,adminSection:true},
+    isAdmin&&{id:"team",label:t.team,adminSection:true},
+    isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
+    isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
+    isOnlyAdmin&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
-  var st = { width:240, height:"100vh", background:"linear-gradient(180deg,"+C.primaryDark+" 0%,"+C.primary+" 100%)", display:"flex", flexDirection:"column", position:"fixed", top:0, zIndex:150, transition:"transform 0.28s ease" };
-  if (isRTL) st.right=0; else st.left=0;
+  var leadsCount = Array.isArray(p.leads) ? p.leads.filter(function(l){return !l.archived;}).length : 0;
+  var userName = p.cu.username==="amgad" ? "Amgad Mohamed" : p.cu.name;
+  var userInitial = (userName||"?")[0];
+  var userRole = p.cu.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer"}[p.cu.role]||"");
+  var st = {
+    width:240, height:"100vh",
+    background:"rgba(28, 30, 40, 0.95)",
+    borderRight:"1px solid rgba(255,255,255,0.07)",
+    padding:"24px 14px 16px",
+    fontFamily:"-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
+    display:"flex", flexDirection:"column",
+    position:"fixed", top:0, zIndex:150,
+    transition:"transform 0.28s ease",
+    boxSizing:"border-box"
+  };
+  if (isRTL) { st.right=0; st.borderRight="none"; st.borderLeft="1px solid rgba(255,255,255,0.07)"; } else { st.left=0; }
   if (p.isMobile&&!p.open) st.transform=isRTL?"translateX(100%)":"translateX(-100%)";
+  var renderItem = function(item){
+    var act = p.active===item.id;
+    var onClick = function(){ p.setActive(item.id); try{localStorage.setItem("crm_page",item.id);}catch(e){} if(p.isMobile) p.onClose(); };
+    return <button key={item.id} onClick={onClick}
+      onMouseEnter={function(e){ if(!act) e.currentTarget.style.background="rgba(255,255,255,0.05)"; }}
+      onMouseLeave={function(e){ if(!act) e.currentTarget.style.background="transparent"; }}
+      style={{ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:12, border:"none", cursor:"pointer",
+        background: act ? "rgba(255,255,255,0.1)" : "transparent",
+        color: act ? "#fff" : "rgba(255,255,255,0.4)",
+        fontSize:13, fontWeight: act?500:400, marginBottom:2, textAlign:isRTL?"right":"left",
+        fontFamily:"inherit"
+      }}>
+      {SidebarIcon(item.id, act)}
+      <span style={{ flex:1, textAlign:isRTL?"right":"left" }}>{item.label}</span>
+      {item.id==="leads" && leadsCount>0 && <div style={{ marginLeft:"auto", background:"#EF4444", borderRadius:10, padding:"1px 7px", fontSize:10, fontWeight:700, color:"#fff", display:"flex", alignItems:"center", gap:3 }}>
+        <div style={{ width:4, height:4, borderRadius:"50%", background:"#fff" }}/>
+        {leadsCount}
+      </div>}
+    </button>;
+  };
   return <>
     {p.isMobile&&p.open&&<div onClick={p.onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.48)", zIndex:140 }}/>}
     <div style={st}>
-      <div style={{ padding:"18px 18px 18px", paddingBottom:18, borderBottom:"1px solid rgba(255,255,255,0.06)", marginBottom:8 }}>
+      {/* Header */}
+      <div style={{ paddingBottom:18, borderBottom:"1px solid rgba(255,255,255,0.06)", marginBottom:8 }}>
         <div style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between", gap:10 }}>
           <div style={{ minWidth:0 }}>
             <div style={{ color:"rgba(255,255,255,0.7)", fontSize:22, fontWeight:800, letterSpacing:"-1.5px", lineHeight:1 }}>
-              ARO
-              <span style={{ color:"rgba(255,255,255,0.25)", fontSize:14, fontWeight:400, letterSpacing:0 }}> CRM</span>
+              ARO<span style={{ color:"rgba(255,255,255,0.25)", fontSize:14, fontWeight:400, letterSpacing:0 }}> CRM</span>
             </div>
             <div style={{ width:32, height:2, background:"rgba(255,255,255,0.15)", borderRadius:2, marginTop:5 }}/>
           </div>
@@ -616,17 +686,40 @@ var Sidebar = function(p) {
           </div>
         </div>
       </div>
-      <div style={{ flex:1, padding:"8px 6px", overflowY:"auto" }}>
-        {items.map(function(item){ var I=item.icon; var act=p.active===item.id;
-          return <button key={item.id} onClick={function(){p.setActive(item.id);try{localStorage.setItem("crm_page",item.id);}catch(e){}if(p.isMobile)p.onClose();}} style={{ width:"100%", display:"flex", alignItems:"center", gap:11, padding:"10px 14px", background:act?"rgba(232,168,56,0.18)":"transparent", border:"none", borderRadius:8, cursor:"pointer", color:act?C.accent:"rgba(255,255,255,0.62)", fontSize:13, fontWeight:act?600:400, marginBottom:1, textAlign:isRTL?"right":"left" }}><I size={17}/><span>{item.label}</span></button>;
-        })}
+
+      {/* Nav items */}
+      <div style={{ flex:1, overflowY:"auto", display:"flex", flexDirection:"column" }}>
+        {(function(){
+          var out = [];
+          var dividerInserted = false;
+          items.forEach(function(item){
+            if (item.adminSection && !dividerInserted) {
+              out.push(<div key="divider-admin" style={{ height:1, background:"rgba(255,255,255,0.06)", margin:"6px 4px" }}/>);
+              dividerInserted = true;
+            }
+            out.push(renderItem(item));
+          });
+          return out;
+        })()}
       </div>
-      <div style={{ padding:"14px 16px", borderTop:"1px solid rgba(255,255,255,0.08)" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-          <div style={{ width:34, height:34, borderRadius:8, background:"linear-gradient(135deg,#3B82F6,#1D4ED8)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:13, flexShrink:0 }}>{(p.cu.username==="amgad"?"Amgad Mohamed":p.cu.name)[0]}</div>
-          <div style={{ flex:1, minWidth:0 }}><div style={{ color:"#fff", fontSize:12, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.cu.username==="amgad"?"Amgad Mohamed":p.cu.name}</div><div style={{ color:"rgba(255,255,255,0.4)", fontSize:10 }}>{p.cu.title}</div></div>
+
+      {/* Footer */}
+      <div style={{ paddingTop:14, marginTop:8, borderTop:"1px solid rgba(255,255,255,0.06)" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"0 4px", marginBottom:10 }}>
+          <div style={{ width:32, height:32, borderRadius:10, background:"rgba(255,255,255,0.1)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:600, fontSize:13, flexShrink:0 }}>{userInitial}</div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ color:"rgba(255,255,255,0.8)", fontSize:11, fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{userName}</div>
+            <div style={{ color:"rgba(255,255,255,0.25)", fontSize:9, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{userRole}</div>
+          </div>
+          <div style={{ width:7, height:7, borderRadius:"50%", background:"#22C55E", flexShrink:0 }}/>
         </div>
-        <button onClick={p.onLogout} style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"8px", background:"rgba(255,255,255,0.07)", border:"none", borderRadius:8, color:"rgba(255,255,255,0.55)", fontSize:12, cursor:"pointer" }}><LogOut size={14}/> {t.logout}</button>
+        <button onClick={p.onLogout}
+          onMouseEnter={function(e){ e.currentTarget.style.background="rgba(239,68,68,0.08)"; }}
+          onMouseLeave={function(e){ e.currentTarget.style.background="transparent"; }}
+          style={{ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"10px 12px", background:"transparent", border:"none", borderRadius:12, color:"#EF4444", fontSize:13, fontWeight:500, cursor:"pointer", textAlign:isRTL?"right":"left", fontFamily:"inherit" }}>
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{display:"block"}}><path d="M7 3H3a1 1 0 00-1 1v10a1 1 0 001 1h4M12 13l4-4-4-4M16 9H7" stroke="#EF4444" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          <span>{t.logout}</span>
+        </button>
       </div>
     </div>
   </>;
@@ -6588,7 +6681,7 @@ export default function CRMApp() {
       </div>
       <button onClick={function(){setShowPwaBanner(false);try{localStorage.setItem("crm_pwa_dismissed","1");}catch(e){}}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, color:"#fff", padding:"6px 12px", fontSize:12, cursor:"pointer", flexShrink:0 }}>Got it</button>
     </div>}
-    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}}/>
+    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={leads}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
       <QuickPhoneSearch leads={leads} dailyReqs={dailyReqs} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
