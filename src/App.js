@@ -5315,6 +5315,25 @@ var TeamPage = function(p) {
   // Also show sales not under any manager (top-level sales)
   var topLevelSales = isAdmin ? p.users.filter(function(u){return u.role==="sales"&&u.active&&!u.reportsTo;}) : [];
 
+  // Color palette — each agent gets a stable color based on a hash of their _id so the same person always gets the same tile.
+  var agentColors = [
+    { accent:"#6366F1", topBg:"#17192E", bottomBg:"#111328", textColor:"#818CF8" },
+    { accent:"#14B8A6", topBg:"#0F1F1E", bottomBg:"#0A1714", textColor:"#2DD4BF" },
+    { accent:"#F97316", topBg:"#1E150D", bottomBg:"#160E07", textColor:"#FB923C" },
+    { accent:"#EC4899", topBg:"#1E0F18", bottomBg:"#160A11", textColor:"#F472B6" },
+    { accent:"#3B82F6", topBg:"#0F1626", bottomBg:"#0A1020", textColor:"#60A5FA" },
+    { accent:"#A855F7", topBg:"#1A1025", bottomBg:"#12091E", textColor:"#C084FC" },
+    { accent:"#10B981", topBg:"#0D1F19", bottomBg:"#081512", textColor:"#34D399" },
+    { accent:"#F59E0B", topBg:"#1E1709", bottomBg:"#160F04", textColor:"#FCD34D" },
+    { accent:"#EF4444", topBg:"#1E1010", bottomBg:"#160808", textColor:"#F87171" },
+    { accent:"#06B6D4", topBg:"#0A1E22", bottomBg:"#061518", textColor:"#22D3EE" }
+  ];
+  var colorForUid = function(uid){
+    var h = 0; var s = String(uid||"");
+    for (var i=0;i<s.length;i++) { h = (h*31 + s.charCodeAt(i)) & 0x7fffffff; }
+    return agentColors[h % agentColors.length];
+  };
+
   // Card for one member
   var MemberCard = function(mp){
     var a=mp.user; var uid=String(gid(a));
@@ -5331,7 +5350,6 @@ var TeamPage = function(p) {
     };
     var al=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return String(aid)===uid&&!l.archived;});
     var calls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return String(auid)===uid&&ac.type==="call";}).length;
-    var qt=getQTargets(uid);
     var qTarget=getEffectiveQTarget(a,p.users,viewQ);
     var qDeals=allDeals.filter(function(d){if(!matchesAgent(d))return false;var dd=getDealDate(d);return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;});
     var qRevenue=qDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
@@ -5339,43 +5357,49 @@ var TeamPage = function(p) {
     var allAgentDeals=allDeals.filter(function(d){return matchesAgent(d);});
     var totalRevenue=allAgentDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
     var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<2*60*1000;
-    var isIdleNow=!isOnlineNow&&a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<15*60*1000;
     var lastSeenStr=a.lastSeen?("Last seen: "+new Date(a.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" — "+timeAgo(a.lastSeen,p.t)):"Never logged in";
-    var onlineStatus=isOnlineNow?"🟢 Active now":isIdleNow?"🟡 Idle ("+timeAgo(a.lastSeen,p.t)+")":"⚫ "+lastSeenStr;
-    return <Card key={uid} style={{ flex:"1 1 280px", maxWidth:360, overflow:"hidden", padding:0, border:"1px solid rgba(255,255,255,0.07)" }}>
-      <div style={{ background:"rgba(28, 30, 40, 0.95)", padding:18, textAlign:"center" }}>
-        <div style={{ margin:"0 auto 8px", display:"inline-block" }}><Avatar name={a.name} size={48} online={isOnlineNow} flat/></div>
-        <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{a.name}</div>
-        <div style={{ color:"rgba(255,255,255,0.55)", fontSize:11, marginTop:2 }}>{a.title}</div>
-        <div style={{ marginTop:4, fontSize:10, color:isOnlineNow?"#86EFAC":"rgba(255,255,255,0.45)", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
-          <span style={{ width:6, height:6, borderRadius:"50%", background:isOnlineNow?"#22C55E":"rgba(255,255,255,0.3)", display:"inline-block" }}/>
-          {isOnlineNow?"Online now":"Last Seen: "+lastSeenStr}
+    var initials = (a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
+    var col = colorForUid(uid);
+    var roleLabel = a.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer"}[a.role]||"");
+    return <div key={uid} style={{ flex:"1 1 280px", maxWidth:360, borderRadius:16, overflow:"hidden", border:"1px solid "+col.accent+"33", borderTop:"3px solid "+col.accent }}>
+      {/* Top section */}
+      <div style={{ background:col.topBg, padding:"16px 14px 12px", display:"flex", flexDirection:"column", alignItems:"center", gap:5 }}>
+        <div style={{ position:"relative" }}>
+          <div style={{ width:48, height:48, borderRadius:13, background:col.accent, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, fontWeight:700 }}>{initials}</div>
+          <span style={{ position:"absolute", bottom:-1, right:-1, width:9, height:9, borderRadius:"50%", background:isOnlineNow?"#22C55E":"#6B7280", border:"2px solid "+col.topBg }}/>
         </div>
+        <div style={{ color:"#fff", fontSize:13, fontWeight:600, textAlign:"center", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:"100%" }}>{a.name}</div>
+        <div style={{ color:"rgba(255,255,255,0.3)", fontSize:10, textAlign:"center", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:"100%" }}>{roleLabel}</div>
+        <div style={{ color:"rgba(255,255,255,0.18)", fontSize:9, textAlign:"center", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:"100%" }}>{isOnlineNow?"Online now":lastSeenStr}</div>
         {isAdmin&&<button onClick={function(){var qt=getQTargets(uid);setEditQModal({user:a,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
-          style={{ marginTop:8, padding:"4px 12px", borderRadius:6, border:"none", background:"rgba(255,255,255,0.2)", color:"#fff", fontSize:11, fontWeight:600, cursor:"pointer" }}>🎯 Edit Targets</button>}
+          style={{ marginTop:4, padding:"4px 10px", borderRadius:20, border:"none", background:col.accent+"25", color:col.textColor, fontSize:10, fontWeight:600, cursor:"pointer" }}>🎯 Edit Targets</button>}
       </div>
-      <div style={{ padding:"12px 14px" }}>
-        <div style={{ marginBottom:10, padding:"8px 10px", background:"#F8FAFC", borderRadius:8 }}>
-          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
-            <span style={{ fontSize:11, fontWeight:700 }}>{viewQ} Target</span>
-            <span style={{ fontSize:10, color:C.textLight }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"Not set"}</span>
-          </div>
-          <div style={{ height:6, background:"#E2E8F0", borderRadius:3, marginBottom:4 }}>
-            <div style={{ height:"100%", width:qProg+"%", borderRadius:3, background:qProg>=100?C.success:qProg>=50?C.accent:C.warning, transition:"width 0.6s" }}/>
-          </div>
-          <div style={{ display:"flex", justifyContent:"space-between" }}>
-            <span style={{ fontSize:11, color:C.success, fontWeight:700 }}>{(qRevenue/1000000).toFixed(2)}M</span>
-            <span style={{ fontSize:11, fontWeight:700, color:qProg>=100?C.success:C.accent }}>{qProg}%</span>
-          </div>
+      {/* Bottom section */}
+      <div style={{ background:col.bottomBg, padding:"12px 14px" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6 }}>
+          <span style={{ fontSize:10, fontWeight:600, color:"rgba(255,255,255,0.35)" }}>{viewQ} Target</span>
+          <span style={{ fontSize:10, color:"rgba(255,255,255,0.2)" }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"Not set"}</span>
         </div>
-        <div style={{ display:"flex", justifyContent:"space-around" }}>
-          <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700 }}>{al.length}</div><div style={{ fontSize:10, color:C.textLight }}>Leads</div></div>
-          <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700, color:C.success }}>{allAgentDeals.length}</div><div style={{ fontSize:10, color:C.textLight }}>Deals</div></div>
-          <div style={{ textAlign:"center" }}><div style={{ fontSize:12, fontWeight:700, color:C.accent }}>{(totalRevenue/1000000).toFixed(1)}M</div><div style={{ fontSize:10, color:C.textLight }}>Total</div></div>
-          <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700, color:C.info }}>{calls}</div><div style={{ fontSize:10, color:C.textLight }}>Calls</div></div>
+        <div style={{ height:3, background:"rgba(255,255,255,0.07)", borderRadius:2, marginBottom:6 }}>
+          <div style={{ height:"100%", width:qProg+"%", background:col.accent, borderRadius:2, transition:"width 0.6s" }}/>
+        </div>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:10 }}>
+          <span style={{ fontSize:11, fontWeight:700, color:col.textColor }}>{(qRevenue/1000000).toFixed(2)}M</span>
+          <span style={{ fontSize:10, fontWeight:600, color:"#F59E0B" }}>{qProg}%</span>
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:6, paddingTop:8, borderTop:"1px solid rgba(255,255,255,0.05)" }}>
+          {[
+            {v:al.length, c:"rgba(255,255,255,0.9)", l:"Leads"},
+            {v:allAgentDeals.length, c:"#34D399", l:"Deals"},
+            {v:(totalRevenue/1000000).toFixed(1)+"M", c:"#F59E0B", l:"Total"},
+            {v:calls, c:"#60A5FA", l:"Calls"}
+          ].map(function(s,i){return <div key={i} style={{ textAlign:"center" }}>
+            <div style={{ fontSize:13, fontWeight:700, color:s.c }}>{s.v}</div>
+            <div style={{ fontSize:8, color:"rgba(255,255,255,0.22)", marginTop:2, letterSpacing:0.5, textTransform:"uppercase" }}>{s.l}</div>
+          </div>;})}
         </div>
       </div>
-    </Card>;
+    </div>;
   };
 
   // Activity feed - last 20 activities across all team
