@@ -4256,18 +4256,22 @@ var ArchivePage = function(p) {
   var archived = p.leads.filter(function(l){ return l.archived; });
   var [archivedDR,setArchivedDR]=useState([]);
   useEffect(function(){
-    var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_dr_archived")||"[]");}catch(e){}
-    if(!ids.length){setArchivedDR([]);return;}
+    // Load archived DRs from the server (the API returns all DRs regardless of archived flag).
     apiFetch("/api/daily-requests","GET",null,p.token)
       .then(function(data){
         var all=Array.isArray(data)?data:[];
-        setArchivedDR(all.filter(function(r){return ids.includes(gid(r));}));
+        var legacyIds=[]; try{legacyIds=JSON.parse(localStorage.getItem("crm_dr_archived")||"[]");}catch(e){}
+        setArchivedDR(all.filter(function(r){return r.archived || legacyIds.includes(gid(r));}));
       }).catch(function(){setArchivedDR([]);});
   },[]);
-  var restoreDR=function(rid){
-    var ids=[];try{ids=JSON.parse(localStorage.getItem("crm_dr_archived")||"[]");}catch(e){}
-    ids=ids.filter(function(x){return x!==rid;});
-    try{localStorage.setItem("crm_dr_archived",JSON.stringify(ids));}catch(e){}
+  var restoreDR=async function(rid){
+    try{ await apiFetch("/api/daily-requests/"+rid+"/unarchive","PUT",null,p.token); }catch(e){}
+    // Also clean the legacy localStorage list so restored items don't re-disappear
+    try{
+      var ids=JSON.parse(localStorage.getItem("crm_dr_archived")||"[]");
+      ids=ids.filter(function(x){return x!==rid;});
+      localStorage.setItem("crm_dr_archived",JSON.stringify(ids));
+    }catch(e){}
     setArchivedDR(function(prev){return prev.filter(function(r){return gid(r)!==rid;});});
   };
   var restore=async function(lid){
@@ -4363,9 +4367,10 @@ var DailyRequestsPage = function(p) {
   useEffect(function(){
     apiFetch("/api/daily-requests","GET",null,p.token)
       .then(function(data){
+        // Legacy localStorage archive list kept as a safety net for browsers that still have it set.
         var archivedIds=[];
         try{archivedIds=JSON.parse(localStorage.getItem("crm_dr_archived")||"[]");}catch(e){}
-        var filtered2=Array.isArray(data)?data.filter(function(r){return !archivedIds.includes(gid(r));}):[];
+        var filtered2=Array.isArray(data)?data.filter(function(r){return !r.archived && !archivedIds.includes(gid(r));}):[];
         setRequests(filtered2);setLoading(false);
       })
       .catch(function(){setRequests([]);setLoading(false);});
@@ -4520,17 +4525,12 @@ var DailyRequestsPage = function(p) {
       {p.cu.role==="admin"&&selected2.length>0&&<Btn outline onClick={async function(){
         if(!window.confirm("Archive "+selected2.length+" requests?")) return;
         var ids=[...selected2];
-        // Try API first, fallback to localStorage
+        // Archive each selected DR via the dedicated endpoint.
         for(var i=0;i<ids.length;i++){
-          try{await apiFetch("/api/leads/"+ids[i]+"/archive","PUT",null,p.token);}
-          catch(e){
-            try{await apiFetch("/api/daily-requests/"+ids[i],"PUT",{archived:true},p.token);}catch(e2){}
-          }
+          try{ await apiFetch("/api/daily-requests/"+ids[i]+"/archive","PUT",null,p.token); }
+          catch(e){ /* swallow — continue archiving the rest */ }
         }
-        // Store archived IDs in localStorage as backup
-        try{
-          // DR archived via API - no localStorage needed
-        }catch(e){}
+        // Drop archived DRs from the list immediately
         setRequests(function(prev){return prev.filter(function(r){return !ids.includes(gid(r));});});
         setSelected2([]);
         if(selected&&ids.includes(gid(selected)))setSelected(null);

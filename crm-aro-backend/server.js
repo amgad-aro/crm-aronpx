@@ -113,6 +113,7 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, callbackTime:{type:String,default:""},
   lastActivityTime:{type:Date,default:Date.now}, source:{type:String,default:"Daily Request"},
   lastFeedback:{type:String,default:""},
+  archived:{type:Boolean,default:false},
   eoiApproved:{type:Boolean,default:false}, eoiDate:{type:String,default:""}, eoiDeposit:{type:String,default:""},
   eoiDocuments:[{type:mongoose.Schema.Types.Mixed}],
   preEoiStatus:{type:String,default:""},
@@ -1413,6 +1414,23 @@ app.delete("/api/daily-requests/:id", auth, adminOnly, async function(req, res) 
   try {
     await DailyRequest.findByIdAndDelete(req.params.id);
     res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== ARCHIVE DAILY REQUEST =====
+app.put("/api/daily-requests/:id/archive", auth, adminOnly, async function(req, res) {
+  try {
+    var r = await DailyRequest.findByIdAndUpdate(req.params.id, { archived: true, lastActivityTime: new Date() }, { new: true }).populate("agentId", "name title");
+    if (!r) return res.status(404).json({ error: "Daily Request not found" });
+    res.json(r);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put("/api/daily-requests/:id/unarchive", auth, adminOnly, async function(req, res) {
+  try {
+    var r = await DailyRequest.findByIdAndUpdate(req.params.id, { archived: false, lastActivityTime: new Date() }, { new: true }).populate("agentId", "name title");
+    if (!r) return res.status(404).json({ error: "Daily Request not found" });
+    res.json(r);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
