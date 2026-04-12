@@ -1338,19 +1338,70 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
     var now = new Date(); var DAY=86400000; var MONTH=30*DAY;
     var todayStart = new Date(); todayStart.setHours(0,0,0,0);
 
+    // Compute active filter date range from query param (today|week|month|Q1..Q4 YYYY)
+    var filter = (req.query.filter||"today").toString();
+    var rangeStart, rangeEnd = now.getTime();
+    var y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+    if (filter==="week") {
+      var dow = now.getDay(); // 0=Sun..6=Sat
+      var daysSinceSat = (dow - 6 + 7) % 7;
+      var ws = new Date(y,m,d-daysSinceSat,0,0,0,0);
+      rangeStart = ws.getTime();
+      rangeEnd = ws.getTime() + 7*DAY - 1;
+    } else if (filter==="month") {
+      rangeStart = new Date(y,m,1,0,0,0,0).getTime();
+    } else if (/^Q[1-4]\s+\d{4}$/.test(filter)) {
+      var qm = filter.match(/Q(\d)\s+(\d{4})/);
+      var qNum = parseInt(qm[1]), qYear = parseInt(qm[2]);
+      var qStart = (qNum-1)*3;
+      rangeStart = new Date(qYear,qStart,1).getTime();
+      rangeEnd = new Date(qYear,qStart+3,1).getTime()-1;
+    } else {
+      rangeStart = todayStart.getTime();
+    }
+
     var leads = await Lead.find({archived:false}).populate("agentId","name title").populate("assignments.agentId","name title").lean();
-    var drs = await Activity.find({}).populate("userId","name").lean();
+    var drs = await DailyRequest.find({}).lean();
     var activities = await Activity.find({}).lean();
     var users = await User.find({active:true,role:{$in:["sales","sales_admin","team_leader","manager"]}}).lean();
 
-    // KPIs
+    // Helper: parse to ms; returns 0 if invalid
+    var toMs = function(v){ if(!v) return 0; var t=new Date(v).getTime(); return isNaN(t)?0:t; };
+    var inRange = function(t){ return t>=rangeStart && t<=rangeEnd; };
+
+    // Daily Requests in range — counted from actual DailyRequest collection
+    var drCount = drs.filter(function(r){ return inRange(toMs(r.createdAt)); }).length;
+
+    // Deals: leads with globalStatus="donedeal" (dated by dealDate/latest lastActionAt) + DR with DoneDeal status in range
+    var dealsFromLeads = leads.filter(function(l){
+      if (l.globalStatus!=="donedeal" && l.status!=="DoneDeal") return false;
+      var dealT = toMs(l.dealDate);
+      if (!dealT) {
+        (l.assignments||[]).forEach(function(a){ var t=toMs(a.lastActionAt); if(t>dealT) dealT=t; });
+      }
+      if (!dealT) dealT = toMs(l.updatedAt);
+      return inRange(dealT);
+    }).length;
+    var dealsFromDR = drs.filter(function(r){
+      if (r.status!=="DoneDeal" && r.status!=="Done Deal" && r.status!=="Deal") return false;
+      var t = toMs(r.lastActivityTime) || toMs(r.updatedAt) || toMs(r.createdAt);
+      return inRange(t);
+    }).length;
+    var dealsCount = dealsFromLeads + dealsFromDR;
+
+    // Contacted: leads where any assignment.lastActionAt falls inside the active range
+    var contactedCount = leads.filter(function(l){
+      return (l.assignments||[]).some(function(a){ return inRange(toMs(a.lastActionAt)); });
+    }).length;
+
+    // KPIs (legacy fields kept for compatibility)
     var leadsToday = leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))< DAY;}).length;
-    var drToday = activities.filter(function(a){return a.createdAt&&(now-new Date(a.createdAt))<DAY&&a.type==="daily_request";}).length;
+    var drToday = drCount;
     var callbacksToday = leads.filter(function(l){return l.callbackTime&&!l.archived;}).length;
     var meetingsToday = leads.filter(function(l){return l.status==="MeetingDone"&&l.lastActivityTime&&(now-new Date(l.lastActivityTime))<DAY;}).length;
     var interestedToday = leads.filter(function(l){return ["HotCase","Potential","MeetingDone"].includes(l.status)&&l.lastActivityTime&&(now-new Date(l.lastActivityTime))<DAY;}).length;
-    var dealsMonth = leads.filter(function(l){return l.status==="DoneDeal"&&l.updatedAt&&(now-new Date(l.updatedAt))<MONTH;}).length;
-    var contacted = leads.filter(function(l){return l.status!=="NewLead";}).length;
+    var dealsMonth = dealsCount;
+    var contacted = contactedCount;
     var convRate = leads.length>0?((dealsMonth/leads.length)*100).toFixed(1):0;
 
     // Campaign performance — group by campaign+project+source
@@ -1430,7 +1481,8 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
     var overloaded=agentPerf.filter(function(a){return a.leads>avgLeads*1.3;}).length;
 
     res.json({
-      kpis:{leadsToday,drToday,callbacksToday,meetingsToday,interestedToday,dealsMonth,convRate,contactedPct:leads.length>0?Math.round(contacted/leads.length*100):0},
+      filter,rangeStart,rangeEnd,
+      kpis:{leadsToday,drToday,drCount,dealsCount,contactedCount,callbacksToday,meetingsToday,interestedToday,dealsMonth,convRate,contactedPct:leads.length>0?Math.round(contacted/leads.length*100):0},
       campaignPerformance,funnel,
       hotAlerts:{untouched48h,overdueCallbacks,noRotationCount},
       agentPerformance:agentPerf,

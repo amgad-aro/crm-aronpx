@@ -2254,7 +2254,23 @@ var DashboardPage = function(p) {
   var meetingsFiltered = meetingsFromLeads + meetingsFromDR;
   // Interested: any assignment status in [Interested, Hot Case, Potential]
   var interestedFiltered = fLeads.filter(function(l){return (l.assignments||[]).some(function(a){return interestedStatuses.includes(a.status);})||interestedStatuses.includes(l.status);}).length;
-  var dealsFiltered = fLeads.filter(function(l){return l.status==="DoneDeal"||l.globalStatus==="donedeal";}).length;
+  // Deals: leads where globalStatus==="donedeal" dated by dealDate/latest assignment.lastActionAt + DR with DoneDeal status in range
+  var dealsFromLeads = leads.filter(function(l){
+    if (l.globalStatus!=="donedeal" && l.status!=="DoneDeal") return false;
+    var dealT = l.dealDate ? new Date(l.dealDate).getTime() : 0;
+    if (!dealT || isNaN(dealT)) {
+      dealT = 0;
+      (l.assignments||[]).forEach(function(a){ if(a.lastActionAt){ var t=new Date(a.lastActionAt).getTime(); if(!isNaN(t)&&t>dealT) dealT=t; } });
+    }
+    if (!dealT && l.updatedAt) dealT = new Date(l.updatedAt).getTime();
+    return dealT>=rangeStart && dealT<=rangeEnd;
+  }).length;
+  var dealsFromDR = (p.dailyReqs||[]).filter(function(r){
+    if (r.status!=="DoneDeal" && r.status!=="Done Deal" && r.status!=="Deal") return false;
+    var t = r.lastActivityTime ? new Date(r.lastActivityTime).getTime() : (r.updatedAt ? new Date(r.updatedAt).getTime() : (r.createdAt ? new Date(r.createdAt).getTime() : 0));
+    return t>=rangeStart && t<=rangeEnd;
+  }).length;
+  var dealsFiltered = dealsFromLeads + dealsFromDR;
   // Overdue: leads with overdue callback + DR with overdue dueDate not completed
   var overdueLeads = allLeadsUntimed.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now&&!["MeetingDone","DoneDeal","EOI"].includes(l.status);}).length;
   var overdueDR = (p.dailyReqs||[]).filter(function(r){
@@ -2262,10 +2278,17 @@ var DashboardPage = function(p) {
     return d && new Date(d).getTime()<now && r.status!=="Meeting" && r.status!=="MeetingDone" && r.status!=="DoneDeal";
   }).length;
   var overdueFiltered = overdueLeads + overdueDR;
-  var contactedFiltered = fLeads.filter(function(l){return l.status!=="NewLead";}).length;
+  // Contacted: leads where ANY assignment.lastActionAt falls in the active date range
+  var contactedFiltered = leads.filter(function(l){
+    return (l.assignments||[]).some(function(a){
+      if (!a.lastActionAt) return false;
+      var t = new Date(a.lastActionAt).getTime();
+      return !isNaN(t) && t>=rangeStart && t<=rangeEnd;
+    });
+  }).length;
   var callbacksFiltered = fLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).toDateString()===nowD.toDateString();}).length;
-  // Daily Requests created today (count — for the renamed "Daily Requests" card)
-  var drToday = (p.dailyReqs||[]).filter(function(r){var rt=r.createdAt?new Date(r.createdAt).getTime():0;return rt>=todayStart.getTime();}).length;
+  // Daily Requests in the active date range — counted from the actual dailyRequests collection
+  var drFiltered = (p.dailyReqs||[]).filter(function(r){var rt=r.createdAt?new Date(r.createdAt).getTime():0;return rt>=rangeStart&&rt<=rangeEnd;}).length;
 
   // Campaign performance (filtered)
   var fCampMap={};
@@ -2385,7 +2408,7 @@ var DashboardPage = function(p) {
     {sec("Key Metrics")}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:0}}>
       {kpiCard("Leads",fLeads.length,"in period","#1565C0","#ffffff",function(){p.nav("leads");})}
-      {kpiCard("Daily Requests",drToday,"today","#00796B","#ffffff",function(){p.nav("requests");})}
+      {kpiCard("Daily Requests",drFiltered,"in period","#00796B","#ffffff",function(){p.nav("dailyReq");})}
       {kpiCard("Interested",interestedFiltered,Math.round(interestedFiltered/fTotal*100)+"%","#E65100","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
       {kpiCard("Meetings",meetingsFiltered,Math.round(meetingsFiltered/fTotal*100)+"%","#6A1B9A","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
       {kpiCard("Overdue",overdueFiltered,"late callbacks","#2E7D32","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
