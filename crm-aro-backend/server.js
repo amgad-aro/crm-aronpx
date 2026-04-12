@@ -1342,7 +1342,7 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
 
     // Compute active filter date range from query param (today|week|month|Q1..Q4 YYYY)
     var filter = (req.query.filter||"today").toString();
-    var rangeStart, rangeEnd = now.getTime();
+    var rangeStart, rangeEnd = now.getTime(), periodEnd;
     var y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
     if (filter==="week") {
       var dow = now.getDay(); // 0=Sun..6=Sat
@@ -1350,16 +1350,20 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       var ws = new Date(y,m,d-daysSinceSat,0,0,0,0);
       rangeStart = ws.getTime();
       rangeEnd = ws.getTime() + 7*DAY - 1;
+      periodEnd = rangeEnd;
     } else if (filter==="month") {
       rangeStart = new Date(y,m,1,0,0,0,0).getTime();
+      periodEnd = new Date(y,m+1,1,0,0,0,0).getTime()-1;
     } else if (/^Q[1-4]\s+\d{4}$/.test(filter)) {
       var qm = filter.match(/Q(\d)\s+(\d{4})/);
       var qNum = parseInt(qm[1]), qYear = parseInt(qm[2]);
       var qStart = (qNum-1)*3;
       rangeStart = new Date(qYear,qStart,1).getTime();
       rangeEnd = new Date(qYear,qStart+3,1).getTime()-1;
+      periodEnd = rangeEnd;
     } else {
       rangeStart = todayStart.getTime();
+      periodEnd = todayStart.getTime()+DAY-1;
     }
 
     var leads = await Lead.find({archived:false}).populate("agentId","name title").populate("assignments.agentId","name title").lean();
@@ -1490,22 +1494,23 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       });
       var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
       var avgResp = rtCount>0 ? respH.toFixed(1) : null;
-      // Callback compliance per agent — filtered by active date range, covering both Leads and Daily Requests.
-      // Matches the notification-bell logic: missed = callbackTime past AND status still "Call Back".
+      // Callback compliance per agent — current-assignment only (rotated-off assignments carry stale callbackTime).
       var totalCallbacks=0, doneOnTime=0, missed=0;
       var nowMs = now.getTime();
       leads.forEach(function(l){
-        (l.assignments||[]).forEach(function(a){
+        var currentAid = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId||"");
+        if (currentAid!==uid) return;
+        var active = (l.assignments||[]).find(function(a){
           var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
-          if (String(aid)!==uid) return;
-          if (!a.callbackTime) return;
-          var cb = new Date(a.callbackTime).getTime();
-          if (isNaN(cb)) return;
-          if (cb<rangeStart || cb>rangeEnd) return;
-          totalCallbacks++;
-          var stillCallBack = a.status==="CallBack" || a.status==="Call Back";
-          if (cb<nowMs && stillCallBack) missed++;
+          return String(aid||"")===currentAid;
         });
+        if (!active || !active.callbackTime) return;
+        var cb = new Date(active.callbackTime).getTime();
+        if (isNaN(cb)) return;
+        if (cb<rangeStart || cb>periodEnd) return;
+        totalCallbacks++;
+        var stillCallBack = active.status==="CallBack" || active.status==="Call Back";
+        if (cb<nowMs && stillCallBack) missed++;
       });
       drs.forEach(function(r){
         var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;
@@ -1513,7 +1518,7 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
         if (!r.callbackTime) return;
         var cb = new Date(r.callbackTime).getTime();
         if (isNaN(cb)) return;
-        if (cb<rangeStart || cb>rangeEnd) return;
+        if (cb<rangeStart || cb>periodEnd) return;
         totalCallbacks++;
         var drStill = r.status==="CallBack" || r.status==="Call Back";
         if (cb<nowMs && drStill) missed++;
@@ -1537,30 +1542,42 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       return {agentId:uid,name:u.name,leads:agentLeads.length,dr:agentDRs.length,total:agentLeads.length+agentDRs.length,calls:agentCalls,followups:agentFollowups,overdue:agentOverdue,interested:agentInt,interestedPct:ip,meetings:agentMeet,meetingPct:mp,deals:agentDeals,rotOutCount:agentRotOut,rotInCount:agentRotIn,noAnswer:agentNoAnswer,totalCallbacks:totalCallbacks,doneOnTime:doneOnTime,missed:missed,missedRate:missedRate,respTime:avgResp,score:score,quality:quality};
     }).sort(function(a,b){return b.quality-a.quality;});
 
-    // Call outcomes — filtered by the active dashboard range (not only today)
+    // Call outcomes — data source: Activity collection only. Filtered by createdAt in the active range.
     var actInRange = function(a){ if (!a.createdAt) return false; var t=new Date(a.createdAt).getTime(); return t>=rangeStart && t<=rangeEnd; };
     var callsRangeActs = activities.filter(function(a){return a.type==="call" && actInRange(a);});
     var statusRangeActs = activities.filter(function(a){return a.type==="status_change" && actInRange(a);});
-    var callsToday = callsRangeActs.length; // kept name for compatibility with the response
-    var noteContains = function(note,s){return (note||"").toLowerCase().indexOf(s.toLowerCase())>=0;};
-    var hotCaseCount = statusRangeActs.filter(function(a){return noteContains(a.note,"hotcase")||noteContains(a.note,"hot case");}).length;
-    var potentialCount = statusRangeActs.filter(function(a){return noteContains(a.note,"potential");}).length;
-    var interestedLiteral = statusRangeActs.filter(function(a){return noteContains(a.note,"interested") && !noteContains(a.note,"notinterested") && !noteContains(a.note,"not interested");}).length;
-    var callsByOutcome = {
-      interested: hotCaseCount + potentialCount + interestedLiteral,
-      hotCase: hotCaseCount,
-      potential: potentialCount,
-      noAnswer: statusRangeActs.filter(function(a){return noteContains(a.note,"noanswer")||noteContains(a.note,"no answer");}).length,
-      callBack: statusRangeActs.filter(function(a){return noteContains(a.note,"callback")||noteContains(a.note,"call back");}).length,
-      notInterested: statusRangeActs.filter(function(a){return noteContains(a.note,"notinterested")||noteContains(a.note,"not interested");}).length
+    var callsToday = callsRangeActs.length; // kept name for response compatibility
+    // Parse the explicit "[StatusCode]" tag written by the client (see status_change logger)
+    var outcomeOf = function(note){
+      var match = (note||"").match(/^\s*\[([^\]]+)\]/);
+      if (!match) return null;
+      var tag = match[1].trim();
+      if (tag==="Meeting Done") return "MeetingDone";
+      if (tag==="No Answer") return "NoAnswer";
+      if (tag==="Hot Case") return "HotCase";
+      if (tag==="Not Interested") return "NotInterested";
+      if (tag==="Call Back") return "CallBack";
+      return tag;
     };
+    var outcomeCounts = {};
+    statusRangeActs.forEach(function(a){ var o = outcomeOf(a.note); if (o) outcomeCounts[o] = (outcomeCounts[o]||0)+1; });
+    var callsByOutcome = {
+      hotCase: outcomeCounts.HotCase||0,
+      potential: outcomeCounts.Potential||0,
+      interested: (outcomeCounts.HotCase||0)+(outcomeCounts.Potential||0),
+      noAnswer: outcomeCounts.NoAnswer||0,
+      callBack: outcomeCounts.CallBack||0,
+      notInterested: outcomeCounts.NotInterested||0,
+      meetingDone: outcomeCounts.MeetingDone||0
+    };
+    var totalOutcomes = statusRangeActs.length;
     var answered = Math.max(0, callsToday - callsByOutcome.noAnswer);
     var answerRate = callsToday>0 ? Math.round(answered/callsToday*100) : 0;
-    var invalidPct = callsToday>0 ? Math.round(callsByOutcome.notInterested/callsToday*100) : 0;
+    var invalidPct = totalOutcomes>0 ? Math.round(callsByOutcome.notInterested/totalOutcomes*100) : 0;
     var intCalls = callsByOutcome.interested;
 
-    // Leads by status — assignments whose assignedAt falls inside the active date range.
-    // Leads with no assignments fall back to lead.createdAt for inclusion.
+    // Leads by status — ONE status per lead, taken from the current agent's assignment.
+    // Date filter uses that assignment's assignedAt so rotations during the period shift the lead into the new agent's bucket.
     var statusCounts={};
     var normalizeSt = function(st){
       if (st==="Meeting Done") return "MeetingDone";
@@ -1571,21 +1588,21 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       return st;
     };
     leads.forEach(function(l){
-      var countedAny=false;
-      (l.assignments||[]).forEach(function(a){
-        var at = a.assignedAt ? new Date(a.assignedAt).getTime() : (l.createdAt?new Date(l.createdAt).getTime():0);
-        if (at<rangeStart || at>rangeEnd) return;
-        var st = normalizeSt(a.status || l.status || "NewLead");
-        statusCounts[st]=(statusCounts[st]||0)+1;
-        countedAny=true;
-      });
-      if (!countedAny) {
-        var ct = l.createdAt ? new Date(l.createdAt).getTime() : 0;
-        if (ct>=rangeStart && ct<=rangeEnd) {
-          var st2 = normalizeSt(l.status||"NewLead");
-          statusCounts[st2]=(statusCounts[st2]||0)+1;
-        }
+      var currentAid = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId||"");
+      var active = currentAid ? (l.assignments||[]).find(function(a){
+        var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+        return String(aid||"")===currentAid;
+      }) : null;
+      var at, st;
+      if (active) {
+        at = active.assignedAt ? new Date(active.assignedAt).getTime() : (l.createdAt?new Date(l.createdAt).getTime():0);
+        st = normalizeSt(active.status || l.status || "NewLead");
+      } else {
+        at = l.createdAt ? new Date(l.createdAt).getTime() : 0;
+        st = normalizeSt(l.status||"NewLead");
       }
+      if (at<rangeStart || at>rangeEnd) return;
+      statusCounts[st]=(statusCounts[st]||0)+1;
     });
     var leadsByStatus=Object.entries(statusCounts).map(function(e){return{status:e[0],count:e[1]};});
 
@@ -1629,25 +1646,28 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
     var avgLeads=leadsPerAgent.length>0?leadsPerAgent.reduce(function(s,x){return s+x;},0)/leadsPerAgent.length:0;
     var overloaded=agentPerf.filter(function(a){return a.leads>avgLeads*1.3;}).length;
 
-    // Top-level callback compliance summary — respects the active date filter and includes Daily Requests.
-    // Missed = callbackTime in the past AND entity still sitting on "Call Back" (same rule the notification bell uses).
+    // Top-level callback compliance — current-assignment per lead + all DRs, over the full period range.
     var cbScheduled=0, cbMissed=0;
     leads.forEach(function(l){
-      (l.assignments||[]).forEach(function(a){
-        if (!a.callbackTime) return;
-        var cb = new Date(a.callbackTime).getTime();
-        if (isNaN(cb)) return;
-        if (cb<rangeStart || cb>rangeEnd) return;
-        cbScheduled++;
-        var stillCallBack = a.status==="CallBack" || a.status==="Call Back";
-        if (cb<now.getTime() && stillCallBack) cbMissed++;
+      var currentAid = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId||"");
+      if (!currentAid) return;
+      var active = (l.assignments||[]).find(function(a){
+        var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+        return String(aid||"")===currentAid;
       });
+      if (!active || !active.callbackTime) return;
+      var cb = new Date(active.callbackTime).getTime();
+      if (isNaN(cb)) return;
+      if (cb<rangeStart || cb>periodEnd) return;
+      cbScheduled++;
+      var stillCallBack = active.status==="CallBack" || active.status==="Call Back";
+      if (cb<now.getTime() && stillCallBack) cbMissed++;
     });
     drs.forEach(function(r){
       if (!r.callbackTime) return;
       var cb = new Date(r.callbackTime).getTime();
       if (isNaN(cb)) return;
-      if (cb<rangeStart || cb>rangeEnd) return;
+      if (cb<rangeStart || cb>periodEnd) return;
       cbScheduled++;
       var stillCallBack = r.status==="CallBack" || r.status==="Call Back";
       if (cb<now.getTime() && stillCallBack) cbMissed++;
@@ -1664,7 +1684,7 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       campaignPerformance,funnel,
       hotAlerts:{untouched48h,overdueCallbacks,noRotationCount},
       agentPerformance:agentPerf,
-      calls:{today:callsToday,answered,answerRate,invalidPct,byOutcome:callsByOutcome,interested:intCalls},
+      calls:{today:callsToday,answered,answerRate,invalidPct,totalOutcomes,byOutcome:callsByOutcome,interested:intCalls},
       leadsByStatus,leadAging,
       managementAlerts:{untouched:untouchedLeadsCount,missingFeedback,stale48h,rotationsMonth,rotationsAuto:rotAuto,rotationsManual:rotManual,lockedNoRotation,overloadedAgents:overloaded}
     });

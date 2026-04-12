@@ -2329,15 +2329,15 @@ var DashboardPage = function(p) {
   // Compute filter date range [rangeStart, rangeEnd]
   var todayStart = new Date(nowD.getFullYear(),nowD.getMonth(),nowD.getDate(),0,0,0,0);
   var monthStart = new Date(nowD.getFullYear(),nowD.getMonth(),1,0,0,0,0);
-  var rangeStart, rangeEnd = now;
-  if (filter==="today") rangeStart = todayStart.getTime();
-  else if (filter==="week") { rangeStart = weekStart.getTime(); rangeEnd = weekEnd.getTime(); }
-  else if (filter==="month") rangeStart = monthStart.getTime();
+  var rangeStart, rangeEnd = now, periodEnd;
+  if (filter==="today") { rangeStart = todayStart.getTime(); periodEnd = todayStart.getTime()+DAY-1; }
+  else if (filter==="week") { rangeStart = weekStart.getTime(); rangeEnd = weekEnd.getTime(); periodEnd = weekEnd.getTime(); }
+  else if (filter==="month") { rangeStart = monthStart.getTime(); periodEnd = new Date(nowD.getFullYear(),nowD.getMonth()+1,1,0,0,0,0).getTime()-1; }
   else if (typeof filter==="string" && filter.indexOf("Q")===0) {
     var qm = filter.match(/Q(\d)\s+(\d{4})/);
-    if (qm) { var qNum=parseInt(qm[1]); var qYear=parseInt(qm[2]); var qStartMonth=(qNum-1)*3; rangeStart = new Date(qYear,qStartMonth,1).getTime(); rangeEnd = new Date(qYear,qStartMonth+3,1).getTime()-1; }
-    else rangeStart = monthStart.getTime();
-  } else rangeStart = monthStart.getTime();
+    if (qm) { var qNum=parseInt(qm[1]); var qYear=parseInt(qm[2]); var qStartMonth=(qNum-1)*3; rangeStart = new Date(qYear,qStartMonth,1).getTime(); rangeEnd = new Date(qYear,qStartMonth+3,1).getTime()-1; periodEnd = rangeEnd; }
+    else { rangeStart = monthStart.getTime(); periodEnd = rangeEnd; }
+  } else { rangeStart = monthStart.getTime(); periodEnd = rangeEnd; }
 
   // Filter leads by date range
   var fLeads = leads.filter(function(l){var ct=l.createdAt?new Date(l.createdAt).getTime():0;return ct>=rangeStart&&ct<=rangeEnd;});
@@ -2830,31 +2830,35 @@ var DashboardPage = function(p) {
             byAgent[uid] = {uid:uid,name:u.name||"Unknown",total:0,doneOnTime:0,missed:0};
           });
           var sumScheduled=0, sumMissed=0;
-          // Lead assignments
+          // For each lead, only the assignment matching the CURRENT lead.agentId counts as that lead's active callback
+          // (rotated-off assignments carry stale callbackTime and must be ignored).
           leads.forEach(function(l){
-            (l.assignments||[]).forEach(function(a){
-              var cb = parseCb(a.callbackTime);
-              if (!cb) return;
-              if (cb<rangeStart || cb>rangeEnd) return;
-              var aid = a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
-              var auid = String(aid||"");
-              if (!byAgent[auid]) {
-                var aName = a.agentId&&a.agentId.name ? a.agentId.name : (function(){var u=(p.users||[]).find(function(x){return String(x._id||gid(x))===auid;});return u?u.name:"Unknown";})();
-                byAgent[auid] = {uid:auid,name:aName,total:0,doneOnTime:0,missed:0};
-              }
-              byAgent[auid].total++;
-              var stillCallBack = a.status==="CallBack" || a.status==="Call Back";
-              var isMissed = cb<nowMs && stillCallBack;
-              if (isMissed) byAgent[auid].missed++;
-              sumScheduled++;
-              if (isMissed) sumMissed++;
+            var currentAid = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId||"");
+            if (!currentAid) return;
+            var active = (l.assignments||[]).find(function(a){
+              var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+              return String(aid||"")===currentAid;
             });
+            if (!active) return;
+            var cb = parseCb(active.callbackTime);
+            if (!cb) return;
+            if (cb<rangeStart || cb>periodEnd) return;
+            if (!byAgent[currentAid]) {
+              var aName = l.agentId && l.agentId.name ? l.agentId.name : (function(){var u=(p.users||[]).find(function(x){return String(x._id||gid(x))===currentAid;});return u?u.name:"Unknown";})();
+              byAgent[currentAid] = {uid:currentAid,name:aName,total:0,doneOnTime:0,missed:0};
+            }
+            byAgent[currentAid].total++;
+            var stillCallBack = active.status==="CallBack" || active.status==="Call Back";
+            var isMissed = cb<nowMs && stillCallBack;
+            if (isMissed) byAgent[currentAid].missed++;
+            sumScheduled++;
+            if (isMissed) sumMissed++;
           });
-          // Daily Requests — same rule, single agentId per DR
+          // Daily Requests — DR has a single top-level agentId/callbackTime/status (no assignments array)
           (p.dailyReqs||[]).forEach(function(r){
             var cb = parseCb(r.callbackTime);
             if (!cb) return;
-            if (cb<rangeStart || cb>rangeEnd) return;
+            if (cb<rangeStart || cb>periodEnd) return;
             var aid = r.agentId&&r.agentId._id?r.agentId._id:r.agentId;
             var auid = String(aid||"");
             if (!auid) return;
@@ -2914,31 +2918,46 @@ var DashboardPage = function(p) {
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Call Outcomes</div>
         {(function(){
-          // Use todayActivities only when filter is "today" (it only holds today's data). Otherwise use the full activities pool.
+          // Data source: activities collection only (no lead mixing). Use todayActivities when filter is "today", else p.activities.
           var actsPool = (filter==="today" && todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
           var inRange = function(a){ if(!a.createdAt) return false; var t=new Date(a.createdAt).getTime(); return t>=rangeStart && t<=rangeEnd; };
           var callsInRange = actsPool.filter(function(a){return a.type==="call" && inRange(a);});
           var statusInRange = actsPool.filter(function(a){return a.type==="status_change" && inRange(a);});
-          var matchStatus = function(note,s){var lc=(note||"").toLowerCase();return lc.indexOf(s.toLowerCase())>=0;};
-          var noAns = statusInRange.filter(function(a){return matchStatus(a.note,"noanswer")||matchStatus(a.note,"no answer");}).length;
-          var hotCase = statusInRange.filter(function(a){return matchStatus(a.note,"hotcase")||matchStatus(a.note,"hot case");}).length;
-          var potential = statusInRange.filter(function(a){return matchStatus(a.note,"potential");}).length;
-          var intr = statusInRange.filter(function(a){return matchStatus(a.note,"interested") && !matchStatus(a.note,"notinterested") && !matchStatus(a.note,"not interested");}).length;
-          var interestedTotal = hotCase + potential + intr;
-          var cbk = statusInRange.filter(function(a){return matchStatus(a.note,"callback")||matchStatus(a.note,"call back");}).length;
-          var notInt = statusInRange.filter(function(a){return matchStatus(a.note,"notinterested")||matchStatus(a.note,"not interested");}).length;
+          // Parse the bracketed tag that the client writes — format is "[StatusCode] feedback" (see line ~1251)
+          var tagOf = function(note){ var m=(note||"").match(/^\s*\[([^\]]+)\]/); return m?m[1].trim():""; };
+          var outcomeCounts = {};
+          statusInRange.forEach(function(a){
+            var tag = tagOf(a.note);
+            if (!tag) return;
+            if (tag==="Meeting Done") tag="MeetingDone";
+            if (tag==="No Answer") tag="NoAnswer";
+            if (tag==="Hot Case") tag="HotCase";
+            if (tag==="Not Interested") tag="NotInterested";
+            if (tag==="Call Back") tag="CallBack";
+            outcomeCounts[tag] = (outcomeCounts[tag]||0)+1;
+          });
+          var hotCase = outcomeCounts.HotCase || 0;
+          var potential = outcomeCounts.Potential || 0;
+          var interestedTotal = hotCase + potential;
+          var cbk = outcomeCounts.CallBack || 0;
+          var noAns = outcomeCounts.NoAnswer || 0;
+          var notInt = outcomeCounts.NotInterested || 0;
+          var meetingDone = outcomeCounts.MeetingDone || 0;
           var totalCalls = callsInRange.length;
+          var totalOutcomes = statusInRange.length;
+          // Answer rate is call-based (calls - no-answer status_changes, clamped)
           var answered = Math.max(0, totalCalls - noAns);
           var answerRate = totalCalls>0 ? Math.round(answered/totalCalls*100) : 0;
-          var invalidPct = totalCalls>0 ? Math.round(notInt/totalCalls*100) : 0;
-          var denom = Math.max(1,totalCalls);
+          var invalidPct = totalOutcomes>0 ? Math.round(notInt/totalOutcomes*100) : 0;
+          var denom = Math.max(1,totalOutcomes);
           var callsLabel = filter==="today" ? "Calls Today" : filter==="week" ? "Calls this Week" : filter==="month" ? "Calls this Month" : "Calls in Period";
           return <>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
               <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{totalCalls}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>{callsLabel}</div></div>
               <div style={{background:"#F0FDF4",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#15803D"}}>{answerRate}%</div><div style={{fontSize:10,fontWeight:600,color:"#22C55E"}}>Answer Rate</div></div>
             </div>
-            {[["Interested",interestedTotal,"#10B981"],["Hot Case",hotCase,"#F59E0B"],["No Answer",noAns,"#94A3B8"],["Not Int.",notInt,"#EF4444"],["Call Back",cbk,"#F59E0B"]].map(function(s){return bRow(s[0],s[1],denom,s[2]);})}
+            <div style={{fontSize:10,color:"#94A3B8",marginBottom:6}}>Outcomes from {totalOutcomes} status change{totalOutcomes===1?"":"s"} in period</div>
+            {[["Interested",interestedTotal,"#10B981"],["Hot Case",hotCase,"#F59E0B"],["Potential",potential,"#14B8A6"],["No Answer",noAns,"#94A3B8"],["Not Int.",notInt,"#EF4444"],["Call Back",cbk,"#F59E0B"],["Meeting",meetingDone,"#8B5CF6"]].map(function(s){return bRow(s[0],s[1],denom,s[2]);})}
             <div style={{marginTop:10,padding:"8px 10px",background:"#FFF1F2",borderRadius:8,display:"flex",justifyContent:"space-between",fontSize:12}}>
               <span style={{color:"#64748B",fontWeight:500}}>Invalid leads</span><span style={{fontWeight:700,color:"#BE123C"}}>{invalidPct}%</span>
             </div>
@@ -2948,8 +2967,8 @@ var DashboardPage = function(p) {
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Leads by Status</div>
         {(function(){
-          // Count by each assignment's current status, but only assignments with assignedAt in the active range.
-          // Falls back to lead.createdAt-based inclusion for leads with no assignments.
+          // Count ONE status per lead (the current agent's assignment). Historical rotated-off assignments are ignored
+          // so a single lead can never be counted under multiple statuses.
           var assignSc={};
           var assignTotal=0;
           var normalize = function(st){
@@ -2961,23 +2980,19 @@ var DashboardPage = function(p) {
             return st;
           };
           leads.forEach(function(l){
-            var countedAny=false;
-            (l.assignments||[]).forEach(function(a){
-              var at = a.assignedAt ? new Date(a.assignedAt).getTime() : (l.createdAt?new Date(l.createdAt).getTime():0);
-              if (at<rangeStart || at>rangeEnd) return;
-              var st = normalize(a.status || l.status || "NewLead");
-              assignSc[st] = (assignSc[st]||0)+1;
-              assignTotal++;
-              countedAny=true;
-            });
-            if (!countedAny) {
-              var ct = l.createdAt ? new Date(l.createdAt).getTime() : 0;
-              if (ct>=rangeStart && ct<=rangeEnd) {
-                var st2 = normalize(l.status||"NewLead");
-                assignSc[st2]=(assignSc[st2]||0)+1;
-                assignTotal++;
-              }
+            var currentAid = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId||"");
+            var active = currentAid ? (l.assignments||[]).find(function(a){ var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId; return String(aid||"")===currentAid; }) : null;
+            var at = 0, st = "";
+            if (active) {
+              at = active.assignedAt ? new Date(active.assignedAt).getTime() : (l.createdAt?new Date(l.createdAt).getTime():0);
+              st = normalize(active.status || l.status || "NewLead");
+            } else {
+              at = l.createdAt ? new Date(l.createdAt).getTime() : 0;
+              st = normalize(l.status||"NewLead");
             }
+            if (at<rangeStart || at>rangeEnd) return;
+            assignSc[st] = (assignSc[st]||0)+1;
+            assignTotal++;
           });
           var denom = Math.max(1,assignTotal);
           var rows=[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"],["No Answer","NoAnswer","#CBD5E1"],["EOI","EOI","#0EA5E9"],["Done Deal","DoneDeal","#065F46"]];
