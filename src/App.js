@@ -3107,12 +3107,13 @@ var DashboardPage = function(p) {
 var EOIPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [eoiTab,setEoiTab]=useState("approved");
-  // All leads that are currently EOI OR were cancelled from EOI (identified by any EOI artifact).
+  // Scope: anything that has an eoiStatus (Pending / Approved / Deal Cancelled)
+  // OR is currently status=EOI (legacy rows without eoiStatus set yet).
   var wasEOI = function(l){return l.eoiDate || l.eoiImage || l.eoiApproved || (l.eoiDocuments||[]).length>0;};
-  var eoiScope=p.leads.filter(function(l){return !l.archived && (l.status==="EOI" || (l.status==="Deal Cancelled" && wasEOI(l)));});
-  var eoiPending = eoiScope.filter(function(l){return l.status==="EOI" && !l.eoiApproved;});
-  var eoiApprovedList = eoiScope.filter(function(l){return l.status==="EOI" && l.eoiApproved;});
-  var eoiCancelled = eoiScope.filter(function(l){return l.status==="Deal Cancelled";});
+  var eoiScope=p.leads.filter(function(l){return !l.archived && ((l.eoiStatus && l.eoiStatus.length>0) || l.status==="EOI" || (l.status==="Deal Cancelled" && wasEOI(l)));});
+  var eoiPending = eoiScope.filter(function(l){ return l.eoiStatus ? l.eoiStatus==="Pending" : (l.status==="EOI" && !l.eoiApproved); });
+  var eoiApprovedList = eoiScope.filter(function(l){ return l.eoiStatus ? l.eoiStatus==="Approved" : (l.status==="EOI" && l.eoiApproved); });
+  var eoiCancelled = eoiScope.filter(function(l){ return l.eoiStatus==="Deal Cancelled" || l.status==="Deal Cancelled"; });
   var eoiLeads = eoiTab==="pending" ? eoiPending : eoiTab==="approved" ? eoiApprovedList : eoiCancelled;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
@@ -3173,24 +3174,25 @@ var EOIPage = function(p) {
   };
 
   var cancelEOI=async function(lead){
-    if(!isOnlyAdmin) return;
-    // Restore the lead's pre-EOI status (falls back to Hot Case) and rotate to another agent.
+    if(p.cu.role!=="admin") { alert("Only admin can cancel an EOI"); return; }
     var restoredStatus = lead.preEoiStatus || "HotCase";
-    if(!window.confirm("Cancel this EOI? The lead will return to \""+restoredStatus+"\" status and be rotated to another agent.")) return;
+    if(!window.confirm("Cancel this EOI? The lead will return to \""+restoredStatus+"\" status, be rotated to another agent, and stay visible here under Deal Cancelled.")) return;
     setCancelling(true);
     try{
-      var updated=await apiFetch("/api/leads/"+gid(lead),"PUT",{status:restoredStatus, eoiApproved:false, preEoiStatus:"", globalStatus:"active"},p.token);
-      // Rotate to the next active sales agent (skip the current one)
+      // 1) Dedicated EOI-cancel endpoint restores status, sets eoiStatus="Deal Cancelled", syncs the DR mirror.
+      var updated = await apiFetch("/api/leads/"+gid(lead)+"/eoi-cancel","POST",{},p.token);
+      // 2) Rotate to a random other active sales agent (non-blocking if it fails)
       var currentAid = updated&&updated.agentId?(updated.agentId._id?String(updated.agentId._id):String(updated.agentId)) : (lead.agentId&&lead.agentId._id?String(lead.agentId._id):String(lead.agentId||""));
       var pool = (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="sales_admin") && String(u._id||gid(u))!==currentAid;});
       var target = pool.length>0 ? pool[Math.floor(Math.random()*pool.length)] : null;
       if (target) {
         try { updated = await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:String(target._id||gid(target)),reason:"manual"},p.token); }
-        catch(rotErr){ /* rotation failed but status already restored */ }
+        catch(rotErr){ /* rotation failed but status + eoiStatus already updated */ }
       }
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
-      // After cancel the lead is no longer EOI, close the side panel
-      if(selectedEOI&&gid(selectedEOI)===gid(lead)) setSelectedEOI(null);
+      if(selectedEOI&&gid(selectedEOI)===gid(lead)) setSelectedEOI(updated);
+      // Switch to the Deal Cancelled tab so the admin sees where it went
+      setEoiTab("cancelled");
     }catch(e){alert(e.message||"Cancel failed");}
     setCancelling(false);
   };
@@ -3321,14 +3323,14 @@ var EOIPage = function(p) {
       <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"14px 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
-          {isOnlyAdmin&&<div style={{ display:"flex", gap:6 }}>
-            {selectedEOI.status==="EOI"&&<button onClick={function(){toggleApproved(selectedEOI,"eoiApproved");}} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
+          {(p.cu.role==="admin")&&<div style={{ display:"flex", gap:6 }}>
+            {(selectedEOI.eoiStatus!=="Deal Cancelled" && selectedEOI.status!=="Deal Cancelled")&&<button onClick={function(){toggleApproved(selectedEOI,"eoiApproved");}} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
               {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
             </button>}
-            {selectedEOI.status==="EOI"&&<button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
+            {(selectedEOI.eoiStatus!=="Deal Cancelled" && selectedEOI.status!=="Deal Cancelled")&&<button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
               {cancelling?"Cancelling…":"❌ Cancel"}
             </button>}
-            {selectedEOI.status==="Deal Cancelled"&&<span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ Deal Cancelled</span>}
+            {(selectedEOI.eoiStatus==="Deal Cancelled" || selectedEOI.status==="Deal Cancelled")&&<span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ Deal Cancelled</span>}
           </div>}
         </div>
         <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedEOI.name}</div>

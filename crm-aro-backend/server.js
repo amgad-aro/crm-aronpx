@@ -40,6 +40,7 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   eoiApproved:{type:Boolean,default:false}, eoiImage:{type:String,default:""},
   eoiDocuments:[{type:mongoose.Schema.Types.Mixed}],
   preEoiStatus:{type:String,default:""},
+  eoiStatus:{type:String,default:""}, // "" | "Pending" | "Approved" | "Deal Cancelled"
   stages:{type:mongoose.Schema.Types.Mixed,default:{}},
   dealApproved:{type:Boolean,default:false}, dealImages:[{type:String}],
   commissionClaimDate:{type:String,default:""}, commissionClaimed:{type:Boolean,default:false},
@@ -112,7 +113,8 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   lastFeedback:{type:String,default:""},
   eoiApproved:{type:Boolean,default:false}, eoiDate:{type:String,default:""}, eoiDeposit:{type:String,default:""},
   eoiDocuments:[{type:mongoose.Schema.Types.Mixed}],
-  preEoiStatus:{type:String,default:""}
+  preEoiStatus:{type:String,default:""},
+  eoiStatus:{type:String,default:""}
 },{timestamps:true}));
 
 var app = express();
@@ -715,6 +717,53 @@ app.post("/api/leads/:id/delete-deal-image", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== EOI CANCEL (admin) — restores pre-EOI status on the lead, keeps record visible under EOI Deal Cancelled =====
+app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Only admin can cancel an EOI" });
+    var existing = await Lead.findById(req.params.id).lean();
+    if (!existing) return res.status(404).json({ error: "Lead not found" });
+    var restored = existing.preEoiStatus || "HotCase";
+    var update = { status: restored, eoiStatus: "Deal Cancelled", eoiApproved: false, preEoiStatus: "", globalStatus: "active", lastActivityTime: new Date() };
+    await Lead.findByIdAndUpdate(req.params.id, { $set: update });
+    // Also sync the current agent's assignment.status so per-agent views reflect the restored state
+    await Lead.updateOne(
+      { _id: req.params.id, "assignments.agentId": existing.agentId },
+      { $set: { "assignments.$.status": restored, "assignments.$.lastActionAt": new Date() } }
+    );
+    // Mirror back to the originating Daily Request (if any)
+    if (existing.source === "Daily Request" && existing.phone) {
+      try { await DailyRequest.updateOne({ phone: existing.phone }, { $set: { status: restored, eoiStatus: "Deal Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() } }); }
+      catch(syncErr){ console.error("DR sync (eoi-cancel) error:", syncErr.message); }
+    }
+    try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[" + restored + "] EOI cancelled — restored previous status" }); } catch(e){}
+    var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    res.json(lead);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/daily-requests/:id/eoi-cancel", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Only admin can cancel an EOI" });
+    var existing = await DailyRequest.findById(req.params.id).lean();
+    if (!existing) return res.status(404).json({ error: "Daily Request not found" });
+    var restored = existing.preEoiStatus || "HotCase";
+    var update = { status: restored, eoiStatus: "Deal Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() };
+    var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
+    // Mirror the paired Lead record too so the EOI page still sees it under Deal Cancelled
+    if (existing.phone) {
+      try {
+        var mirror = await Lead.findOne({ phone: existing.phone, source: "Daily Request" });
+        if (mirror) {
+          await Lead.findByIdAndUpdate(mirror._id, { status: restored, eoiStatus: "Deal Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() });
+        }
+      } catch(syncErr){ console.error("Lead mirror (eoi-cancel) error:", syncErr.message); }
+    }
+    try { await Activity.create({ userId: req.user.id, leadId: r._id, type: "status_change", note: "[" + restored + "] DR EOI cancelled" }); } catch(e){}
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
     // Admin-only gate: "Deal Cancelled" can only be set by admin users.
@@ -740,7 +789,11 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // Capture previous status when transitioning INTO EOI, so EOI cancel can restore it.
     if (req.body.status === "EOI" && oldLead && oldLead.status && oldLead.status !== "EOI") {
       update.preEoiStatus = oldLead.status;
+      update.eoiStatus = "Pending";
     }
+    // Approve/un-approve toggles from the EOI page — mirror to eoiStatus
+    if (req.body.eoiApproved === true) update.eoiStatus = "Approved";
+    else if (req.body.eoiApproved === false && oldLead && oldLead.eoiStatus === "Approved") update.eoiStatus = "Pending";
     // Track agent history when agent changes (fallback — should go through /rotate)
     if (req.body.agentId && oldLead && oldLead.agentId && String(oldLead.agentId) !== String(req.body.agentId)) {
       update.lastRotationAt = new Date();
@@ -1194,6 +1247,7 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
     if (req.body.status === "EOI") {
       var prevDr = await DailyRequest.findById(req.params.id).lean();
       if (prevDr && prevDr.status && prevDr.status !== "EOI") update.preEoiStatus = prevDr.status;
+      update.eoiStatus = "Pending";
     }
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
     if (req.body.status) {
