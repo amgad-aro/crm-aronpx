@@ -3185,7 +3185,8 @@ var EOIPage = function(p) {
       var updated = await apiFetch("/api/leads/"+gid(lead)+"/eoi-cancel","POST",{},p.token);
       // 2) Rotate to a random other active sales agent (non-blocking if it fails)
       var currentAid = updated&&updated.agentId?(updated.agentId._id?String(updated.agentId._id):String(updated.agentId)) : (lead.agentId&&lead.agentId._id?String(lead.agentId._id):String(lead.agentId||""));
-      var pool = (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="sales_admin") && String(u._id||gid(u))!==currentAid;});
+      // Rotation pool: sales / team_leader / manager only — sales_admin is never rotation-eligible.
+      var pool = (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="team_leader"||u.role==="manager") && String(u._id||gid(u))!==currentAid;});
       var target = pool.length>0 ? pool[Math.floor(Math.random()*pool.length)] : null;
       if (target) {
         try { updated = await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:String(target._id||gid(target)),reason:"manual"},p.token); }
@@ -4021,7 +4022,8 @@ var DealsPage = function(p) {
                     var updated = await apiFetch("/api/leads/"+gid(selectedDeal)+"/deal-cancel","POST",{},p.token);
                     // Rotate to a random other active sales agent (non-blocking on failure)
                     var currentAid = updated&&updated.agentId?(updated.agentId._id?String(updated.agentId._id):String(updated.agentId)) : (selectedDeal.agentId&&selectedDeal.agentId._id?String(selectedDeal.agentId._id):String(selectedDeal.agentId||""));
-                    var pool = (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="sales_admin") && String(u._id||gid(u))!==currentAid;});
+                    // Rotation pool: sales / team_leader / manager only — sales_admin is never rotation-eligible.
+                    var pool = (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="team_leader"||u.role==="manager") && String(u._id||gid(u))!==currentAid;});
                     var target = pool.length>0 ? pool[Math.floor(Math.random()*pool.length)] : null;
                     if (target) {
                       try { updated = await apiFetch("/api/leads/"+gid(selectedDeal)+"/rotate","POST",{targetAgentId:String(target._id||gid(target)),reason:"manual"},p.token); } catch(rotErr){}

@@ -561,10 +561,19 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
 app.post("/api/leads", auth, async function(req, res) {
   try {
     console.log("NEW LEAD body:", JSON.stringify(req.body));
-    // Admin assigns agent manually — no auto-assignment
+    // Admin assigns agent manually — no auto-assignment.
+    // Block sales_admin targets: administrative role must never receive leads (neither on create nor on rotation).
     var agentId = (req.body.agentId && req.body.agentId !== "")
       ? new mongoose.Types.ObjectId(req.body.agentId)
       : null;
+    if (agentId) {
+      var targetOnCreate = await User.findById(agentId).lean();
+      if (!targetOnCreate) return res.status(400).json({ error: "Target agent not found" });
+      if (targetOnCreate.active === false) return res.status(400).json({ error: "Target agent is inactive" });
+      if (["sales","team_leader","manager"].indexOf(targetOnCreate.role) < 0) {
+        return res.status(400).json({ error: "ineligible_role", message: "Target agent role ("+targetOnCreate.role+") cannot be assigned leads" });
+      }
+    }
     var lead = await Lead.create({
       name:             req.body.name,
       phone:            req.body.phone,
@@ -956,6 +965,15 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     if (!targetAgentId) return res.status(400).json({ error: "targetAgentId required" });
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title");
     if (!lead) return res.status(404).json({ error: "Lead not found" });
+
+    // Business rule: sales_admin is an administrative role and must NEVER receive rotated leads.
+    // Only sales / team_leader / manager are eligible; the target must also be active.
+    var targetUser = await User.findById(targetAgentId).lean();
+    if (!targetUser) return res.status(400).json({ error: "Target agent not found" });
+    if (targetUser.active === false) return res.status(400).json({ error: "Target agent is inactive" });
+    if (["sales","team_leader","manager"].indexOf(targetUser.role) < 0) {
+      return res.status(400).json({ error: "ineligible_role", message: "Target agent role ("+targetUser.role+") cannot receive rotated leads" });
+    }
 
     // ── FIRST ASSIGNMENT (not a rotation) ──
     var isFirstAssignment = !lead.agentId || (!lead.agentId._id && !mongoose.Types.ObjectId.isValid(String(lead.agentId))) || (lead.assignments && lead.assignments.length === 0);
@@ -1493,7 +1511,8 @@ app.post("/api/fb-webhook", async function(req, res) {
                 else if (key.includes("email")) leadData.email = val;
               });
               if (leadData.name || leadData.phone) {
-                var agents = await User.find({ role: { $in: ["sales","manager"] }, active: true });
+                // Rotation-eligible roles: sales, team_leader, manager. NEVER sales_admin.
+                var agents = await User.find({ role: { $in: ["sales","team_leader","manager"] }, active: true });
                 var agentId = null;
                 if (agents.length > 0) {
                   var counts = await Promise.all(agents.map(function(a) { return Lead.countDocuments({ agentId: a._id }); }));
