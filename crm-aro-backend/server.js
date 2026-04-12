@@ -108,7 +108,9 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   area:{type:String,default:""}, notes:{type:String,default:""}, status:{type:String,default:"NewLead"},
   agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, callbackTime:{type:String,default:""},
   lastActivityTime:{type:Date,default:Date.now}, source:{type:String,default:"Daily Request"},
-  lastFeedback:{type:String,default:""}
+  lastFeedback:{type:String,default:""},
+  eoiApproved:{type:Boolean,default:false}, eoiDate:{type:String,default:""}, eoiDeposit:{type:String,default:""},
+  eoiDocuments:[{type:mongoose.Schema.Types.Mixed}]
 },{timestamps:true}));
 
 var app = express();
@@ -774,6 +776,19 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     } catch(actErr) {
       console.error("Activity log error (non-fatal):", actErr.message);
     }
+    // Mirror back to the originating Daily Request when this lead came from there.
+    try {
+      if (lead && lead.source === "Daily Request" && lead.phone) {
+        var drSync = {};
+        if (req.body.status !== undefined) drSync.status = req.body.status;
+        if (req.body.eoiApproved !== undefined) drSync.eoiApproved = !!req.body.eoiApproved;
+        if (req.body.eoiDeposit !== undefined) drSync.eoiDeposit = req.body.eoiDeposit;
+        if (req.body.eoiDate !== undefined) drSync.eoiDate = req.body.eoiDate;
+        if (Object.keys(drSync).length>0) {
+          await DailyRequest.updateOne({ phone: lead.phone }, { $set: Object.assign(drSync, { lastActivityTime: new Date() }) });
+        }
+      }
+    } catch(syncErr) { console.error("DR sync error (non-fatal):", syncErr.message); }
     res.json(lead);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1166,7 +1181,7 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
       var actNote = "DailyReq: " + req.body.status;
       if (req.body.notes) actNote += " | " + req.body.notes;
       await Activity.create({ userId: req.user.id, type: "status_change", note: actNote, leadId: r._id });
-      // If status is DoneDeal or EOI — create/update a Lead in the main collection
+      // If status is DoneDeal or EOI — create/update a Lead mirror in the main collection
       if (req.body.status === "DoneDeal" || req.body.status === "EOI") {
         var existingLead = await Lead.findOne({ phone: r.phone, source: "Daily Request" });
         if (existingLead) {
@@ -1192,6 +1207,12 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             lastActivityTime: new Date(),
             eoiDeposit: req.body.eoiDeposit || "",
           });
+        }
+      } else if (req.body.status === "Cancelled") {
+        // DR moved out of EOI/DoneDeal — keep the mirror Lead in sync so the EOI page shows it under Cancelled
+        var mirror = await Lead.findOne({ phone: r.phone, source: "Daily Request" });
+        if (mirror && (mirror.status === "EOI" || mirror.status === "DoneDeal")) {
+          await Lead.findByIdAndUpdate(mirror._id, { status: "Cancelled", eoiApproved: false, lastActivityTime: new Date() });
         }
       }
     }
