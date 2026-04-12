@@ -2174,22 +2174,165 @@ var DashboardPage = function(p) {
 
   var hour = new Date().getHours();
   var greeting = hour<6 ? "Good Night \ud83d\ude34" : hour<12 ? "Good Morning \u2600\ufe0f" : hour<18 ? "Good Afternoon \ud83c\udf24\ufe0f" : hour<24 ? "Good Evening \ud83c\udf06" : "Good Night \ud83d\ude34";
-  var timeStr = new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+
+  // Live ticking clock (updates every second)
+  var [tick, setTick] = useState(0);
+  useEffect(function(){
+    var id = setInterval(function(){ setTick(function(t){return t+1;}); }, 1000);
+    return function(){ clearInterval(id); };
+  },[]);
+  var nowD = new Date();
+  var dayNamesF=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  var monthsF=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  var pad=function(n){return n<10?"0"+n:""+n;};
+  var dateLabel = dayNamesF[nowD.getDay()]+" "+nowD.getDate()+" "+monthsF[nowD.getMonth()]+" "+nowD.getFullYear()+" \u2014 "+pad(nowD.getHours())+":"+pad(nowD.getMinutes())+":"+pad(nowD.getSeconds());
+
+  // Week starts Saturday (sat=0, fri=6). When today is Saturday, that Sat is start of week.
+  var todayDay = nowD.getDay(); // 0=Sun..6=Sat
+  var daysSinceSat = (todayDay - 6 + 7) % 7; // Sat=0, Sun=1, ... Fri=6
+  var weekStart = new Date(nowD.getFullYear(),nowD.getMonth(),nowD.getDate()-daysSinceSat,0,0,0,0);
+  var weekEnd = new Date(weekStart.getTime() + 7*DAY - 1);
+
+  // Compute filter date range [rangeStart, rangeEnd]
+  var todayStart = new Date(nowD.getFullYear(),nowD.getMonth(),nowD.getDate(),0,0,0,0);
+  var monthStart = new Date(nowD.getFullYear(),nowD.getMonth(),1,0,0,0,0);
+  var rangeStart, rangeEnd = now;
+  if (filter==="today") rangeStart = todayStart.getTime();
+  else if (filter==="week") { rangeStart = weekStart.getTime(); rangeEnd = weekEnd.getTime(); }
+  else if (filter==="month") rangeStart = monthStart.getTime();
+  else if (typeof filter==="string" && filter.indexOf("Q")===0) {
+    var qm = filter.match(/Q(\d)\s+(\d{4})/);
+    if (qm) { var qNum=parseInt(qm[1]); var qYear=parseInt(qm[2]); var qStartMonth=(qNum-1)*3; rangeStart = new Date(qYear,qStartMonth,1).getTime(); rangeEnd = new Date(qYear,qStartMonth+3,1).getTime()-1; }
+    else rangeStart = monthStart.getTime();
+  } else rangeStart = monthStart.getTime();
+
+  // Filter leads by date range
+  var fLeads = leads.filter(function(l){var ct=l.createdAt?new Date(l.createdAt).getTime():0;return ct>=rangeStart&&ct<=rangeEnd;});
+  var fTotal = fLeads.length||1;
+  var fSC={}; fLeads.forEach(function(l){fSC[l.status]=(fSC[l.status]||0)+1;});
+  // DR for current filter
+  var fDR = (p.dailyReqs||[]).filter(function(r){var rt=r.createdAt?new Date(r.createdAt).getTime():0;return rt>=rangeStart&&rt<=rangeEnd;});
+
+  // Meetings: "Meeting Done" in any assignment + DR with status "Meeting"
+  var meetingsFiltered = fLeads.filter(function(l){return (l.assignments||[]).some(function(a){return a.status==="Meeting Done"||a.status==="MeetingDone";})||l.status==="MeetingDone";}).length + fDR.filter(function(r){return r.status==="Meeting"||r.status==="MeetingDone";}).length;
+  // Interested: any assignment status in [Interested, Hot Case, Potential]
+  var interestedStatuses = ["Interested","Hot Case","HotCase","Potential"];
+  var interestedFiltered = fLeads.filter(function(l){return (l.assignments||[]).some(function(a){return interestedStatuses.includes(a.status);})||interestedStatuses.includes(l.status);}).length;
+  var dealsFiltered = fLeads.filter(function(l){return l.status==="DoneDeal"||l.globalStatus==="donedeal";}).length;
+  var overdueFiltered = fLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now&&!["MeetingDone","DoneDeal","EOI"].includes(l.status);}).length;
+  var contactedFiltered = fLeads.filter(function(l){return l.status!=="NewLead";}).length;
+  var callbacksFiltered = fLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).toDateString()===nowD.toDateString();}).length;
+
+  // Campaign performance (filtered)
+  var fCampMap={};
+  fLeads.forEach(function(l){
+    var k=(l.campaign||"\u2014")+"|"+(l.project||"\u2014")+"|"+(l.source||"\u2014");
+    if(!fCampMap[k]) fCampMap[k]={campaign:l.campaign||"",project:l.project||"",source:l.source||"",leads:0,int:0,meet:0,deals:0};
+    fCampMap[k].leads++;
+    if((l.assignments||[]).some(function(a){return interestedStatuses.includes(a.status);})||interestedStatuses.includes(l.status)) fCampMap[k].int++;
+    if((l.assignments||[]).some(function(a){return a.status==="Meeting Done"||a.status==="MeetingDone";})||l.status==="MeetingDone"||l.status==="DoneDeal") fCampMap[k].meet++;
+    if(l.status==="DoneDeal") fCampMap[k].deals++;
+  });
+  var fCamps=Object.values(fCampMap).sort(function(a,b){return b.leads-a.leads;}).slice(0,8).map(function(c){
+    var ip=c.leads>0?Math.round(c.int/c.leads*100):0;
+    var mp=c.leads>0?Math.round(c.meet/c.leads*100):0;
+    return Object.assign({},c,{ip:ip,mp:mp,quality:ip>30?"High":ip>15?"Medium":"Low"});
+  });
+
+  // Agent performance — with DR + Resp.Time + new scoring
+  var fAgentPerf=(p.users||[]).filter(function(u){return u.role==="sales"||u.role==="sales_admin";}).map(function(u){
+    var uid=String(u._id||gid(u));
+    var al=fLeads.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid;});});
+    var adr=fDR.filter(function(r){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;return String(aid)===uid;});
+    var aint=al.filter(function(l){return (l.assignments||[]).some(function(a){return interestedStatuses.includes(a.status);})||interestedStatuses.includes(l.status);}).length;
+    var ameet=al.filter(function(l){return (l.assignments||[]).some(function(a){return a.status==="Meeting Done"||a.status==="MeetingDone";})||l.status==="MeetingDone";}).length;
+    var afup=al.filter(function(l){return l.callbackTime;}).length;
+    var aover=al.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now&&!["MeetingDone","DoneDeal","EOI"].includes(l.status);}).length;
+    var adeals=al.filter(function(l){return l.status==="DoneDeal"||l.globalStatus==="donedeal";}).length;
+    // Resp.Time: avg (assignment.lastActionAt - lead.createdAt) for this agent's assignments
+    var rtSum=0, rtCount=0;
+    al.forEach(function(l){
+      (l.assignments||[]).forEach(function(a){
+        var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+        if(String(aid)===uid && a.lastActionAt && l.createdAt){
+          var diff=new Date(a.lastActionAt).getTime()-new Date(l.createdAt).getTime();
+          if(diff>=0){rtSum+=diff;rtCount++;}
+        }
+      });
+    });
+    var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
+    var ip=al.length>0?Math.round(aint/al.length*100):0;
+    var mp=al.length>0?Math.round(ameet/al.length*100):0;
+    // Score: 40% activity + 30% meetings% + 20% interested% + 10% resp.time score (lower is better)
+    var actScore=Math.min(100,(al.length+adr.length)*5);
+    var rtScore=respH>0?Math.max(0,100-respH*2):50;
+    var score=Math.round(actScore*0.4 + mp*0.3 + ip*0.2 + rtScore*0.1);
+    return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,respTime:respH>0?respH.toFixed(1):"\u2014",score:score};
+  }).sort(function(a,b){return b.score-a.score;});
+
+  // Untouched leads — no activity since assignment
+  var untouchedLeads = leads.filter(function(l){
+    if (l.status!=="NewLead") return false;
+    if (l.callbackTime) return false;
+    if (l.notes && l.notes.trim().length>0) return false;
+    if (l.lastFeedback && l.lastFeedback.trim().length>0) return false;
+    return true;
+  }).slice(0,20);
+
+  // Today's activities feed
+  var todayActs = (p.activities||[]).filter(function(a){return a.createdAt&&new Date(a.createdAt).getTime()>=todayStart.getTime();}).sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);}).slice(0,20);
+
+  // Mask phone
+  var maskPh = function(ph){if(!ph)return "";if(ph.length<5)return ph;return ph.slice(0,3)+"****"+ph.slice(-2);};
+
+  // Click lead navigation
+  var openLead = function(l){ if(p.setInitSelected)p.setInitSelected(l); if(p.nav)p.nav("leads",true); };
+  // Click alert navigation to filtered leads
+  var gotoFilter = function(status){ if(p.setFilter)p.setFilter(status||"all"); if(p.nav)p.nav("leads"); };
+
+  // Locked leads count
+  var lockedCount = leads.filter(function(l){return (l.assignments||[]).some(function(a){return a.noRotation;})||l.locked;}).length;
+  var missingFBCount = leads.filter(function(l){return !l.lastFeedback&&l.status!=="NewLead"&&l.status!=="DoneDeal";}).length;
+  var stale48Count = leads.filter(function(l){return new Date(l.lastActivityTime||l.createdAt).getTime()<(now-2*DAY)&&l.status!=="DoneDeal"&&l.status!=="NotInterested";}).length;
+  var rotationsTotal = leads.reduce(function(s,l){return s+(l.rotationCount||0);},0);
+
+  // Action label for activities
+  var actLabel = function(a){
+    if(a.type==="status_change") return "Status change";
+    if(a.type==="note") return "Note added";
+    if(a.type==="call") return "Call logged";
+    if(a.type==="meeting") return "Meeting booked";
+    if(a.type==="reassign") return "Reassign";
+    if((a.note||"").toLowerCase().includes("callback")) return "Callback set";
+    return "Activity";
+  };
+  var timeAgoShort = function(d){
+    var diff=Math.max(0,(now-new Date(d).getTime())/60000);
+    if(diff<1) return "just now";
+    if(diff<60) return Math.round(diff)+" min ago";
+    if(diff<1440) return Math.round(diff/60)+"h ago";
+    return Math.round(diff/1440)+"d ago";
+  };
+  var agentName = function(uid){
+    var u=(p.users||[]).find(function(x){return String(x._id||gid(x))===String(uid);});
+    return u?u.name:"Unknown";
+  };
+  var initialsOf = function(n){return (n||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();};
 
   return <div style={{padding:"16px 12px 40px",background:"#F1F5F9"}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24,flexWrap:"wrap",gap:8}}>
       <div>
         <div style={{fontSize:22,fontWeight:700,color:"#0F172A"}}>{greeting+" "+p.cu.name}</div>
-        <div style={{fontSize:12,color:"#94A3B8",marginTop:2}}>{timeStr+" \u00b7 "+new Date().toDateString()}</div>
+        <div style={{fontSize:12,color:"#94A3B8",marginTop:2,fontVariantNumeric:"tabular-nums"}}>{dateLabel}</div>
       </div>
-      <div style={{display:"flex",gap:6,alignItems:"center"}}>
+      <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
         {[["today","Today"],["week","This Week"],["month","This Month"]].map(function(f){
           return <button key={f[0]} onClick={function(){setFilter(f[0]);}} style={{fontSize:12,padding:"6px 14px",border:filter===f[0]?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:filter===f[0]?"#EFF6FF":"#fff",color:filter===f[0]?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:filter===f[0]?600:500}}>{f[1]}</button>;
         })}
         <div style={{position:"relative"}}>
-          <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:12,padding:"6px 14px",border:"1px solid #E2E8F0",borderRadius:8,background:"#fff",color:"#64748B",cursor:"pointer"}}>Quarter &#9662;</button>
-          {qOpen&&<div style={{position:"absolute",top:"calc(100% + 4px)",right:0,background:"#fff",border:"1px solid #E2E8F0",borderRadius:10,minWidth:110,zIndex:99,boxShadow:"0 4px 16px rgba(0,0,0,0.08)"}}>
-            {["Q1 2026","Q2 2026","Q3 2026","Q4 2025"].map(function(q){return <div key={q} onClick={function(){setFilter(q);setQOpen(false);}} style={{padding:"8px 14px",fontSize:12,color:"#334155",cursor:"pointer"}}>{q}</div>;})}
+          <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:12,padding:"6px 14px",border:(typeof filter==="string"&&filter.indexOf("Q")===0)?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:(typeof filter==="string"&&filter.indexOf("Q")===0)?"#EFF6FF":"#fff",color:(typeof filter==="string"&&filter.indexOf("Q")===0)?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:(typeof filter==="string"&&filter.indexOf("Q")===0)?600:500}}>{(typeof filter==="string"&&filter.indexOf("Q")===0)?filter:"Quarter"} &#9662;</button>
+          {qOpen&&<div style={{position:"absolute",top:"calc(100% + 4px)",right:0,background:"#fff",border:"1px solid #E2E8F0",borderRadius:10,minWidth:120,zIndex:99,boxShadow:"0 4px 16px rgba(0,0,0,0.08)"}}>
+            {["Q1 2026","Q2 2026","Q3 2026","Q4 2026"].map(function(q){return <div key={q} onClick={function(){setFilter(q);setQOpen(false);}} style={{padding:"8px 14px",fontSize:12,color:"#334155",cursor:"pointer"}}>{q}</div>;})}
           </div>}
         </div>
       </div>
@@ -2197,13 +2340,13 @@ var DashboardPage = function(p) {
 
     {sec("Key Metrics")}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:0}}>
-      {kpiCard("Total Leads",total,"all leads","#1565C0","#ffffff",function(){p.nav("leads");})}
-      {kpiCard("New "+filter,newInRange,"in period","#00796B","#ffffff",function(){p.nav("leads");})}
-      {kpiCard("Interested",interested,Math.round(interested/Math.max(total,1)*100)+"%","#E65100","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
-      {kpiCard("Meetings",meetings,Math.round(meetings/Math.max(total,1)*100)+"%","#6A1B9A","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
-      {kpiCard("Overdue",overdue,"late callbacks","#2E7D32","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
-      {kpiCard("Deals",deals,total>0?((deals/total)*100).toFixed(1)+"%":"0%","#AD1457","#ffffff",function(){p.nav("deals");})}
-      {kpiCard("Contacted",contacted,Math.round(contacted/Math.max(total,1)*100)+"%","#00695C","#ffffff",function(){p.nav("leads");})}
+      {kpiCard("Total Leads",fLeads.length,"in period","#1565C0","#ffffff",function(){p.nav("leads");})}
+      {kpiCard("New "+(filter==="today"?"Today":filter==="week"?"Week":filter==="month"?"Month":filter),fLeads.length,"in period","#00796B","#ffffff",function(){p.nav("leads");})}
+      {kpiCard("Interested",interestedFiltered,Math.round(interestedFiltered/fTotal*100)+"%","#E65100","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
+      {kpiCard("Meetings",meetingsFiltered,Math.round(meetingsFiltered/fTotal*100)+"%","#6A1B9A","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
+      {kpiCard("Overdue",overdueFiltered,"late callbacks","#2E7D32","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
+      {kpiCard("Deals",dealsFiltered,fTotal>0?((dealsFiltered/fTotal)*100).toFixed(1)+"%":"0%","#AD1457","#ffffff",function(){p.nav("deals");})}
+      {kpiCard("Contacted",contactedFiltered,Math.round(contactedFiltered/fTotal*100)+"%","#00695C","#ffffff",function(){p.nav("leads");})}
     </div>
 
     {sec("Campaigns & Pipeline")}
@@ -2219,7 +2362,7 @@ var DashboardPage = function(p) {
         <div style={{display:"grid",gridTemplateColumns:"1fr 50px 90px 90px 50px 60px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:500}}>
           {["Campaign \u00b7 Project","Leads","Interested","Meetings","Deals","Quality"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Campaign \u00b7 Project"?"left":"center"}}>{h}</div>;})}
         </div>
-        {camps.map(function(c,i){
+        {fCamps.map(function(c,i){
           var srcC=c.source==="Facebook"?"#1877F2":c.source==="Google Sheets"?"#0F9D58":"#EA4335";
           return <div key={i} style={{display:"grid",gridTemplateColumns:"1fr 50px 90px 90px 50px 60px",gap:4,alignItems:"center",padding:"8px 0",borderBottom:"1px solid #F8FAFC"}}>
             <div>
@@ -2240,28 +2383,44 @@ var DashboardPage = function(p) {
       </>)}
       <div style={{display:"flex",flexDirection:"column",gap:14}}>
         {card(<>
-          <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Conversion Funnel</div>
-          {[{l:"New Lead",v:total,c:"#DBEAFE",tc:"#1E40AF"},{l:"Contacted",v:contacted,c:"#DCFCE7",tc:"#166534"},{l:"Interested",v:interested,c:"#FEF3C7",tc:"#92400E"},{l:"Hot Case",v:sc["HotCase"]||0,c:"#EDE9FE",tc:"#5B21B6"},{l:"Meeting",v:meetings,c:"#D1FAE5",tc:"#065F46"},{l:"Deal",v:deals,c:"#FFE4E6",tc:"#9F1239"}].map(function(row,i){
-            var pct=total>0?Math.max(6,Math.round(row.v/total*100)):6;
-            return <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-              <div style={{fontSize:11,color:"#64748B",width:65,flexShrink:0,textAlign:"right"}}>{row.l}</div>
-              <div style={{height:20,borderRadius:4,background:row.c,display:"flex",alignItems:"center",padding:"0 8px",width:pct+"%",minWidth:45}}>
-                <span style={{fontSize:11,fontWeight:700,color:row.tc,whiteSpace:"nowrap"}}>{row.v}</span>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+            <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Untouched Leads</div>
+            <span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:6,background:"#FEE2E2",color:"#991B1B"}}>{untouchedLeads.length}</span>
+          </div>
+          {untouchedLeads.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>\u2705 All leads have activity</div> : untouchedLeads.map(function(l,i){
+            var hrs = l.createdAt ? Math.round((now-new Date(l.createdAt).getTime())/3600000) : 0;
+            var aName = l.agentId && l.agentId.name ? l.agentId.name : (l.agentId ? agentName(l.agentId) : "\u2014");
+            return <div key={gid(l)} onClick={function(){openLead(l);}} style={{display:"grid",gridTemplateColumns:"1fr auto",gap:6,padding:"8px 0",borderBottom:i<untouchedLeads.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
+              <div>
+                <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{l.name}</div>
+                <div style={{fontSize:11,color:"#94A3B8"}}>{maskPh(l.phone)} \u00b7 {aName} \u00b7 {l.project||"\u2014"}</div>
               </div>
-              <div style={{fontSize:10,color:"#94A3B8"}}>{total>0?Math.round(row.v/total*100)+"%":""}</div>
+              <div style={{fontSize:11,fontWeight:600,color:hrs>48?"#DC2626":"#92400E",alignSelf:"center"}}>{hrs}h</div>
             </div>;
           })}
         </>)}
         {card(<>
-          <div style={{fontSize:15,fontWeight:700,color:"#92400E",marginBottom:12}}>Urgent Alerts</div>
-          {[{dot:"#EF4444",t:untouched+" untouched 48h+",s:"need immediate action",b:"URGENT",bc:"#DC2626"},{dot:"#F59E0B",t:overdue+" overdue callbacks",s:"past scheduled time",b:"LATE",bc:"#B45309"},{dot:"#6366F1",t:leads.filter(function(l){return l.locked;}).length+" leads locked",s:"noRotation flag",b:"",bc:""}].map(function(a,i){
-            return <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 0",borderBottom:i<2?"1px solid #FEF3C7":"none"}}>
-              <div style={{width:8,height:8,borderRadius:"50%",background:a.dot,flexShrink:0}}/>
-              <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{a.t}</div><div style={{fontSize:11,color:"#92400E"}}>{a.s}</div></div>
-              {a.b&&<span style={{fontSize:11,fontWeight:700,color:a.bc}}>{a.b}</span>}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+            <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Today's Activities</div>
+            <span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:6,background:"#DBEAFE",color:"#1E40AF"}}>{todayActs.length}</span>
+          </div>
+          {todayActs.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity yet today</div> : todayActs.map(function(a,i){
+            var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
+            var aName = a.userId&&a.userId.name?a.userId.name:agentName(aid);
+            var lName = a.leadId&&a.leadId.name?a.leadId.name:(a.note||"");
+            var inits = initialsOf(aName);
+            var avColors=[["#DBEAFE","#1D4ED8"],["#DCFCE7","#166534"],["#FEF3C7","#92400E"],["#EDE9FE","#5B21B6"],["#FFE4E6","#9F1239"]];
+            var avc = avColors[i%avColors.length];
+            return <div key={a._id||i} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:i<todayActs.length-1?"1px solid #F8FAFC":"none"}}>
+              <div style={{width:28,height:28,borderRadius:"50%",background:avc[0],color:avc[1],display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{inits}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{aName} \u2014 {actLabel(a)}</div>
+                <div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{lName}</div>
+              </div>
+              <div style={{fontSize:10,color:"#94A3B8",flexShrink:0}}>{timeAgoShort(a.createdAt)}</div>
             </div>;
           })}
-        </>,{background:"#FFFBEB",border:"1px solid #FDE68A"})}
+        </>)}
       </div>
     </div>
 
@@ -2269,16 +2428,16 @@ var DashboardPage = function(p) {
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14,marginBottom:14}}>
     {card(<>
       <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Agent Performance</div>
-      <div style={{overflowX:"auto",overflowY:"auto",maxHeight:280,WebkitOverflowScrolling:"touch",width:"100%"}}>
-      <div style={{display:"grid",gridTemplateColumns:"150px 50px 45px 55px 70px 60px 70px 50px 65px 50px 50px 55px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:800}}>
-        {["Agent","Leads","DR","Total","Followups","Overdue","Interested","Int%","Meetings","Meet%","Deals","Score"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
+      <div style={{overflowX:"auto",overflowY:"auto",maxHeight:320,WebkitOverflowScrolling:"touch",width:"100%"}}>
+      <div style={{display:"grid",gridTemplateColumns:"150px 50px 45px 55px 70px 60px 65px 65px 50px 70px 55px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:850}}>
+        {["Agent","Leads","DR","Total","Followups","Overdue","Int%","Meet%","Deals","Resp.Time","Score"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
       </div>
-      {agentPerf.map(function(a,i){
+      {fAgentPerf.map(function(a,i){
         var medals=["🥇","🥈","🥉"];
         var avBg=["#DBEAFE","#DCFCE7","#FEF3C7","#EDE9FE","#FFE4E6"][i%5];
         var avC=["#1D4ED8","#166534","#92400E","#5B21B6","#9F1239"][i%5];
         var initials=(a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
-        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:"150px 50px 45px 55px 70px 60px 70px 50px 65px 50px 50px 55px",gap:4,alignItems:"center",padding:"9px 0",borderBottom:"1px solid #F8FAFC",minWidth:800}}>
+        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:"150px 50px 45px 55px 70px 60px 65px 65px 50px 70px 55px",gap:4,alignItems:"center",padding:"9px 0",borderBottom:"1px solid #F8FAFC",minWidth:850}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <div style={{width:28,height:28,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{initials}</div>
             <div><div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>{a.name}</div>
@@ -2286,15 +2445,14 @@ var DashboardPage = function(p) {
             </div>
           </div>
           <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{a.leads}</div>
-          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#94A3B8"}}>{"\u2014"}</div>
-          <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{a.leads}</div>
-          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#334155"}}>{a.interested>0?a.interested:0}</div>
+          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#0F172A"}}>{a.dr}</div>
+          <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{a.total}</div>
+          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#334155"}}>{a.followups}</div>
           <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:a.overdue>0?"#DC2626":"#94A3B8"}}>{a.overdue}</div>
-          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#15803D"}}>{a.interested}</div>
           <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.ip>30?"#15803D":a.ip>15?"#92400E":"#94A3B8"}}>{a.ip}%</div>
-          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#6D28D9"}}>{a.meetings}</div>
           <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.mp>20?"#6D28D9":a.mp>10?"#92400E":"#94A3B8"}}>{a.mp}%</div>
           <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#065F46"}}>{a.deals}</div>
+          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:"#334155"}}>{a.respTime!=="\u2014"?a.respTime+"h":"\u2014"}</div>
           <div style={{fontSize:12,fontWeight:700,textAlign:"center",color:a.score>=70?"#15803D":a.score>=50?"#92400E":"#94A3B8"}}>{medals[i]||""} {a.score}</div>
         </div>;
       })}
@@ -2307,7 +2465,7 @@ var DashboardPage = function(p) {
         {l:"Missing Feedback",v:leads.filter(function(l){return !l.lastFeedback&&l.status!=="NewLead"&&l.status!=="DoneDeal";}).length,c:"#92400E"},
         {l:"Expiring Soon (7d)",v:leads.filter(function(l){return l.expiresAt&&(new Date(l.expiresAt).getTime()-now)<7*DAY&&(new Date(l.expiresAt).getTime()-now)>0;}).length,c:"#991B1B"},
         {l:"Top Project",v:(function(){var pm={};leads.forEach(function(l){if(l.project)pm[l.project]=(pm[l.project]||0)+1;});var top=Object.entries(pm).sort(function(a,b){return b[1]-a[1];})[0];return top?top[0]+" ("+top[1]+")":"—";})(),c:"#5B21B6"},
-        {l:"Avg Leads/Agent",v:agentPerf.length>0?Math.round(total/agentPerf.length):0,c:"#064E3B"}
+        {l:"Avg Leads/Agent",v:fAgentPerf.length>0?Math.round(total/fAgentPerf.length):0,c:"#064E3B"}
       ].map(function(s,i){
         return <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<4?"1px solid #F1F5F9":"none"}}>
           <div style={{fontSize:13,color:"#334155"}}>{s.l}</div>
@@ -2341,8 +2499,15 @@ var DashboardPage = function(p) {
       </>)}
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Management Alerts</div>
-        {[{dot:"#EF4444",t:untouched+" untouched leads",s:"no calls yet"},{dot:"#F59E0B",t:leads.filter(function(l){return !l.lastFeedback&&l.status!=="NewLead";}).length+" missing feedback",s:"no notes"},{dot:"#F97316",t:overdue+" overdue callbacks",s:"past scheduled"},{dot:"#6366F1",t:leads.reduce(function(s2,l){return s2+(l.rotationCount||0);},0)+" total rotations",s:"all time"}].map(function(a,i){
-          return <div key={i} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:i<3?"1px solid #F8FAFC":"none"}}>
+        {[
+          {dot:"#EF4444",t:untouched+" untouched leads",s:"no calls yet",onClick:function(){gotoFilter("NewLead");}},
+          {dot:"#F59E0B",t:missingFBCount+" missing feedback",s:"no notes",onClick:function(){gotoFilter("all");}},
+          {dot:"#F97316",t:overdue+" overdue callbacks",s:"past scheduled",onClick:function(){gotoFilter("CallBack");}},
+          {dot:"#DC2626",t:stale48Count+" stale 48h+",s:"no activity",onClick:function(){gotoFilter("all");}},
+          {dot:"#6366F1",t:rotationsTotal+" total rotations",s:"all time",onClick:function(){gotoFilter("all");}},
+          {dot:"#7C3AED",t:lockedCount+" leads locked",s:"noRotation flag",onClick:function(){gotoFilter("all");}}
+        ].map(function(a,i){
+          return <div key={i} onClick={a.onClick} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:i<5?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
             <div style={{width:8,height:8,borderRadius:"50%",background:a.dot,flexShrink:0,marginTop:3}}/>
             <div><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{a.t}</div><div style={{fontSize:11,color:"#94A3B8"}}>{a.s}</div></div>
           </div>;
@@ -5473,7 +5638,7 @@ export default function CRMApp() {
   var myId = String(currentUser.id||currentUser._id||"");
   var myTeamUsers = users; // server handles all filtering per role
 
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs};
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:dailyReqs};
 
   var renderPage=function(){
     switch(currentPage){
