@@ -681,7 +681,6 @@ var Sidebar = function(p) {
             <div style={{ width:32, height:2, background:"rgba(255,255,255,0.15)", borderRadius:2, marginTop:5 }}/>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
-            <div style={{ width:7, height:7, borderRadius:"50%", background:"#22C55E" }}/>
             {p.isMobile&&<button onClick={p.onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"rgba(255,255,255,0.6)", display:"flex", padding:0 }}><X size={18}/></button>}
           </div>
         </div>
@@ -5335,8 +5334,8 @@ var TeamPage = function(p) {
     var isIdleNow=!isOnlineNow&&a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<15*60*1000;
     var lastSeenStr=a.lastSeen?("Last seen: "+new Date(a.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" — "+timeAgo(a.lastSeen,p.t)):"Never logged in";
     var onlineStatus=isOnlineNow?"🟢 Active now":isIdleNow?"🟡 Idle ("+timeAgo(a.lastSeen,p.t)+")":"⚫ "+lastSeenStr;
-    return <Card key={uid} style={{ flex:"1 1 280px", maxWidth:360, overflow:"hidden", padding:0 }}>
-      <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:18, textAlign:"center" }}>
+    return <Card key={uid} style={{ flex:"1 1 280px", maxWidth:360, overflow:"hidden", padding:0, border:"1px solid rgba(255,255,255,0.07)" }}>
+      <div style={{ background:"rgba(28, 30, 40, 0.95)", padding:18, textAlign:"center" }}>
         <div style={{ margin:"0 auto 8px", display:"inline-block" }}><Avatar name={a.name} size={48} online={isOnlineNow}/></div>
         <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{a.name}</div>
         <div style={{ color:"rgba(255,255,255,0.55)", fontSize:11, marginTop:2 }}>{a.title}</div>
