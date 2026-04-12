@@ -5950,8 +5950,12 @@ export default function CRMApp() {
     return allLeads; // server handles all filtering
   };
 
-  var loadData=useCallback(async function(tok, userOverride){
-    setLoading(true); setDataError(null);
+  // Ref flips to false after the first successful data load. Subsequent silent syncs (reconnect, manual refresh) never show the full-screen spinner.
+  var isInitialLoadRef = useRef(true);
+  var loadData=useCallback(async function(tok, userOverride, opts){
+    var silent = opts && opts.silent;
+    if (!silent && isInitialLoadRef.current) setLoading(true);
+    setDataError(null);
     try {
       var results=await Promise.all([
         apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,tok),
@@ -5982,6 +5986,7 @@ export default function CRMApp() {
       try{ var drData = await apiFetch("/api/daily-requests","GET",null,tok); setDailyReqs(drData||[]); }catch(e){}
     } catch(e){setDataError(e.message);}
     setLoading(false);
+    isInitialLoadRef.current = false;
     // Backfill lastFeedback for existing leads (once per browser)
     try{
       var bfKey="crm_feedback_backfilled";
@@ -6001,8 +6006,9 @@ export default function CRMApp() {
     if(!token) return;
     var wsUrl = (process.env.REACT_APP_API_URL||API).replace("https://","wss://").replace("http://","ws://");
     var ws; var reconnectTimer; var retries=0; var maxRetries=20; var hasConnectedBefore=false; var cancelled=false;
+    // Silent background refresh — no spinner, keeps existing state while re-fetching.
     var fetchAll = function(){
-      try{ loadData(token, currentUser); }catch(e){}
+      try{ loadData(token, currentUser, {silent:true}); }catch(e){}
       try{ loadNotifications(token); }catch(e){}
     };
     var fetchNotifications = function(){ try{ loadNotifications(token); }catch(e){} };
@@ -6031,8 +6037,9 @@ export default function CRMApp() {
       try{ ws = new WebSocket(wsUrl); }catch(e){ return; }
       ws.onopen = function(){
         retries = 0;
-        // On reconnect (not the first connect), events may have been missed — resync once.
-        if (hasConnectedBefore) fetchAll();
+        // On reconnect (not the first connect), only refresh lightweight notifications.
+        // Lead/DR/activity/user state is kept as-is and will update via subsequent WS events.
+        if (hasConnectedBefore) { try{ loadNotifications(token); }catch(e){} }
         hasConnectedBefore = true;
       };
       ws.onmessage = function(e){
@@ -6115,10 +6122,11 @@ export default function CRMApp() {
       ws.onerror = function(){ try{ws.close();}catch(e){} };
     }
     connect();
-    // Safety net: if the tab was hidden and the socket dropped silently, reconnect or resync on return.
+    // Tab visibility / focus: only reconnect the socket if it was silently dropped.
+    // NO data re-fetch, NO loading spinner — events from the live socket keep state fresh.
     var onVis = function(){
       if (document.visibilityState!=="visible") return;
-      if (!ws || ws.readyState!==1) { retries=0; connect(); } else { fetchAll(); }
+      if (!ws || ws.readyState!==1) { retries=0; connect(); }
     };
     var onFocus = function(){ if (!ws || ws.readyState!==1) { retries=0; connect(); } };
     document.addEventListener("visibilitychange", onVis);
