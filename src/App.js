@@ -742,6 +742,52 @@ var CallbackBell = function(p) {
   </div>;
 };
 
+// ===== GLOBAL HEADER SEARCH =====
+var HeaderSearch = function(p) {
+  var t = p.t;
+  var wrapRef = useRef(null);
+  var [open, setOpen] = useState(false);
+  useEffect(function(){
+    var onDown = function(e){ if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    return function(){ document.removeEventListener("mousedown", onDown); };
+  },[]);
+  var q = (p.search||"").trim();
+  var results = [];
+  if (q.length>=2) {
+    var lc = q.toLowerCase();
+    results = (p.leads||[]).filter(function(l){
+      if (l.archived) return false;
+      if (l.name && l.name.toLowerCase().indexOf(lc)>=0) return true;
+      if (l.phone && l.phone.indexOf(q)>=0) return true;
+      if (l.phone2 && l.phone2.indexOf(q)>=0) return true;
+      if (l.email && l.email.toLowerCase().indexOf(lc)>=0) return true;
+      return false;
+    }).slice(0,10);
+  }
+  var showDropdown = open && q.length>=2;
+  return <div ref={wrapRef} style={{ position:"relative", width:260 }}>
+    <div style={{ display:"flex", alignItems:"center", gap:7, background:"#F1F5F9", borderRadius:10, padding:"7px 14px", width:"100%", boxSizing:"border-box" }}>
+      <Search size={14} color={C.textLight}/>
+      <input placeholder={t.search} value={p.search||""} onFocus={function(){setOpen(true);}} onChange={function(e){p.setSearch(e.target.value);setOpen(true);}} style={{ border:"none", background:"transparent", outline:"none", fontSize:13, color:C.text, width:"100%" }}/>
+      {q.length>0&&<button onClick={function(){p.setSearch("");setOpen(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, padding:0, display:"flex" }} title="Clear"><X size={14}/></button>}
+    </div>
+    {showDropdown && <div style={{ position:"absolute", top:"calc(100% + 6px)", left:0, right:0, background:"#fff", border:"1px solid #E2E8F0", borderRadius:12, boxShadow:"0 8px 32px rgba(0,0,0,0.12)", zIndex:500, maxHeight:360, overflowY:"auto" }}>
+      {results.length===0 ? <div style={{ padding:"14px 16px", fontSize:12, color:"#94A3B8", textAlign:"center" }}>No matching leads</div> : results.map(function(l){
+        var sc = STATUSES(t);
+        var so = sc.find(function(s){return s.value===l.status;})||sc[0];
+        return <div key={gid(l)} onClick={function(){setOpen(false);if(p.onLeadClick) p.onLeadClick(l);}} style={{ padding:"10px 14px", borderBottom:"1px solid #F1F5F9", cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:13, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name||"\u2014"}</div>
+            <div style={{ fontSize:11, color:C.textLight, direction:"ltr", marginTop:2 }}>{l.phone||""}{l.project?" \u00b7 "+l.project:""}</div>
+          </div>
+          <span style={{ background:so.bg, color:so.color, fontSize:10, fontWeight:700, padding:"2px 7px", borderRadius:6, flexShrink:0 }}>{so.label}</span>
+        </div>;
+      })}
+    </div>}
+  </div>;
+};
+
 // ===== HEADER =====
 var Header = function(p) {
   var t = p.t; var isOnlyAdmin = p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin");
@@ -768,10 +814,7 @@ var Header = function(p) {
       <h1 style={{ fontSize:p.isMobile?15:19, fontWeight:700, color:C.text, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.title}</h1>
     </div>
     <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
-      {!p.isMobile&&<div style={{ display:"flex", alignItems:"center", gap:7, background:"#F1F5F9", borderRadius:10, padding:"7px 14px", width:260 }}>
-        <Search size={14} color={C.textLight}/>
-        <input placeholder={t.search} value={p.search} onChange={function(e){p.setSearch(e.target.value);}} style={{ border:"none", background:"transparent", outline:"none", fontSize:13, color:C.text, width:"100%" }}/>
-      </div>}
+      {!p.isMobile&&<HeaderSearch t={t} search={p.search} setSearch={p.setSearch} leads={p.leads} onLeadClick={p.onLeadClick}/>}
       
       {/* BELL 3 — Deal notifications: admin + sales_admin + team_leader */}
       {(p.isAdmin||p.cu&&(p.cu.role==="sales_admin"||p.cu.role==="team_leader"))&&<div ref={dealNotifRef} style={{ position:"relative" }}>
@@ -2449,10 +2492,30 @@ var DashboardPage = function(p) {
   // Click alert navigation to filtered leads
   var gotoFilter = function(status){ if(p.setFilter)p.setFilter(status||"all"); if(p.nav)p.nav("leads"); };
 
-  // Locked leads count
-  var lockedCount = leads.filter(function(l){return (l.assignments||[]).some(function(a){return a.noRotation;})||l.locked;}).length;
-  var missingFBCount = leads.filter(function(l){return !l.lastFeedback&&l.status!=="NewLead"&&l.status!=="DoneDeal";}).length;
-  var stale48Count = leads.filter(function(l){return new Date(l.lastActivityTime||l.createdAt).getTime()<(now-2*DAY)&&l.status!=="DoneDeal"&&l.status!=="NotInterested";}).length;
+  // Locked leads: any assignment with noRotation === true
+  var lockedCount = leads.filter(function(l){return (l.assignments||[]).some(function(a){return a.noRotation===true;});}).length;
+  // Missing feedback: any assignment whose notes is empty/null
+  var missingFBCount = leads.filter(function(l){return (l.assignments||[]).some(function(a){return !a.notes||String(a.notes).trim()===""})||(!l.lastFeedback&&l.status!=="NewLead"&&l.status!=="DoneDeal");}).length;
+  // Stale 48h+: any assignment's lastActionAt older than 48h (fallback lead.lastActivityTime)
+  var stale48Count = leads.filter(function(l){
+    var latest = 0;
+    (l.assignments||[]).forEach(function(a){ if(a.lastActionAt){ var t=new Date(a.lastActionAt).getTime(); if(t>latest) latest=t; } });
+    if (!latest && l.lastActivityTime) latest = new Date(l.lastActivityTime).getTime();
+    if (!latest && l.createdAt) latest = new Date(l.createdAt).getTime();
+    return latest>0 && latest<(now-2*DAY) && l.status!=="DoneDeal" && l.status!=="NotInterested";
+  }).length;
+  // Rotations this month from agentHistory entries, split auto vs manual
+  var monthStartMs = new Date(nowD.getFullYear(),nowD.getMonth(),1,0,0,0,0).getTime();
+  var rotMonthAuto=0, rotMonthManual=0;
+  leads.forEach(function(l){
+    (l.agentHistory||[]).forEach(function(h){
+      if (!h||h.action!=="Rotation") return;
+      var ht = h.date?new Date(h.date).getTime():0;
+      if (ht<monthStartMs) return;
+      if ((h.reason||"").toString().toLowerCase()==="manual") rotMonthManual++; else rotMonthAuto++;
+    });
+  });
+  var rotationsMonth = rotMonthAuto + rotMonthManual;
   var rotationsTotal = leads.reduce(function(s,l){return s+(l.rotationCount||0);},0);
 
   // Action label for activities
@@ -2629,8 +2692,8 @@ var DashboardPage = function(p) {
         <div style={{fontSize:10,color:"#94A3B8"}} title="Quality = activity + feedback + response time + meetings + callbacks">Quality = activity, feedback, response time, meetings & callbacks</div>
       </div>
       <div style={{overflowX:"auto",overflowY:"auto",maxHeight:360,WebkitOverflowScrolling:"touch",width:"100%"}}>
-      <div style={{display:"grid",gridTemplateColumns:"30px 150px 50px 45px 55px 55px 70px 60px 50px 55px 50px 55px 55px 55px 70px 80px",gap:4,paddingTop:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:1060,position:"sticky",top:0,zIndex:10,background:"#fff"}}>
-        {["","Agent","Leads","DR","Total","Calls","Followups","Overdue","Int","Meet","Deals","Rot OUT","Rot IN","No Ans","Resp.Time","Quality"].map(function(h,idx){return <div key={h+idx} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
+      <div style={{display:"grid",gridTemplateColumns:"36px 160px repeat(14, minmax(0, 1fr))",gap:4,paddingTop:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,width:"100%",position:"sticky",top:0,zIndex:10,background:"#fff"}}>
+        {["","Agent","Leads","DR","Total","Calls","Follow","Overdue","Int","Meet","Deals","Rot OUT","Rot IN","No Ans","Resp.","Quality"].map(function(h,idx){return <div key={h+idx} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
       </div>
       {fAgentPerf.map(function(a,i){
         var medals=["\ud83e\udd47","\ud83e\udd48","\ud83e\udd49"];
@@ -2639,12 +2702,12 @@ var DashboardPage = function(p) {
         var initials=(a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
         var qBg = a.quality>=80?"#DCFCE7":a.quality>=60?"#FEF3C7":"#FEE2E2";
         var qFg = a.quality>=80?"#166534":a.quality>=60?"#92400E":"#991B1B";
-        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:"30px 150px 50px 45px 55px 55px 70px 60px 50px 55px 50px 55px 55px 55px 70px 80px",gap:4,alignItems:"center",padding:"9px 0",borderBottom:"1px solid #F8FAFC",minWidth:1060}}>
+        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:"36px 160px repeat(14, minmax(0, 1fr))",gap:4,alignItems:"center",padding:"10px 0",borderBottom:"1px solid #F8FAFC",width:"100%"}}>
           <div style={{fontSize:11,color:"#888",textAlign:"center",fontWeight:500}}>{i+1}</div>
-          <div style={{display:"flex",alignItems:"center",gap:8}}>
-            <div style={{width:28,height:28,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{initials}</div>
-            <div><div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>{a.name}</div>
-              <div style={{height:3,borderRadius:2,background:"#F1F5F9",width:55,marginTop:3}}><div style={{height:"100%",width:Math.min(100,a.quality)+"%",background:qFg,borderRadius:2}}/></div>
+          <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
+            <div style={{width:30,height:30,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>{initials}</div>
+            <div style={{minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a.name}</div>
+              <div style={{height:3,borderRadius:2,background:"#F1F5F9",width:60,marginTop:3}}><div style={{height:"100%",width:Math.min(100,a.quality)+"%",background:qFg,borderRadius:2}}/></div>
             </div>
           </div>
           <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{a.leads}</div>
@@ -2672,44 +2735,94 @@ var DashboardPage = function(p) {
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))",gap:14}}>
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Management Alerts</div>
-        {[
-          {dot:"#EF4444",t:untouched+" untouched leads",s:"no calls yet",onClick:function(){gotoFilter("NewLead");}},
-          {dot:"#F59E0B",t:missingFBCount+" missing feedback",s:"no notes",onClick:function(){gotoFilter("all");}},
-          {dot:"#F97316",t:overdue+" overdue callbacks",s:"past scheduled",onClick:function(){gotoFilter("CallBack");}},
-          {dot:"#DC2626",t:stale48Count+" stale 48h+",s:"no activity",onClick:function(){gotoFilter("all");}},
-          {dot:"#6366F1",t:rotationsTotal+" total rotations",s:"all time",onClick:function(){gotoFilter("all");}},
-          {dot:"#7C3AED",t:lockedCount+" leads locked",s:"noRotation flag",onClick:function(){gotoFilter("all");}}
-        ].map(function(a,i){
-          return <div key={i} onClick={a.onClick} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:i<5?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
-            <div style={{width:8,height:8,borderRadius:"50%",background:a.dot,flexShrink:0,marginTop:3}}/>
-            <div><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{a.t}</div><div style={{fontSize:11,color:"#94A3B8"}}>{a.s}</div></div>
-          </div>;
-        })}
-        <div style={{marginTop:10,padding:10,background:"#F8FAFC",borderRadius:8}}>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}><span style={{color:"#64748B",fontWeight:500}}>Leads quality</span><span style={{fontWeight:700,color:"#0F172A"}}>{Math.max(0,100-Math.round((untouched+overdue)*100/Math.max(total,1)))}%</span></div>
-          <div style={{height:4,background:"#E2E8F0",borderRadius:2}}><div style={{height:"100%",width:Math.max(0,100-Math.round((untouched+overdue)*100/Math.max(total,1)))+"%",background:"#10B981",borderRadius:2}}/></div>
-        </div>
+        {(function(){
+          var rows=[
+            {dot:"#EF4444",t:untouched+" untouched leads",s:"no calls yet",onClick:function(){gotoFilter("NewLead");}},
+            {dot:"#F59E0B",t:missingFBCount+" missing feedback",s:"no notes",onClick:function(){gotoFilter("all");}},
+            {dot:"#F97316",t:overdue+" overdue callbacks",s:"past scheduled",onClick:function(){gotoFilter("CallBack");}},
+            {dot:"#DC2626",t:stale48Count+" stale 48h+",s:"no activity",onClick:function(){gotoFilter("all");}},
+            {dot:"#6366F1",t:rotationsMonth+" rotations this month",s:rotMonthAuto+" auto \u00b7 "+rotMonthManual+" manual",onClick:function(){gotoFilter("all");}},
+            {dot:"#7C3AED",t:lockedCount+" leads locked",s:"noRotation flag",onClick:function(){gotoFilter("all");}}
+          ];
+          return rows.map(function(a,i){
+            return <div key={i} onClick={a.onClick} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:i<rows.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:a.dot,flexShrink:0,marginTop:3}}/>
+              <div><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{a.t}</div><div style={{fontSize:11,color:"#94A3B8"}}>{a.s}</div></div>
+            </div>;
+          });
+        })()}
       </>)}
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Lead Aging</div>
-        {[{l:"0\u20131 days",sub:"fresh",v:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;}).length,c:"#10B981"},{l:"2\u20133 days",sub:"followup needed",v:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())>=DAY&&(now-new Date(l.createdAt).getTime())<3*DAY;}).length,c:"#F59E0B"},{l:"4\u20137 days",sub:"at risk",v:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())>=3*DAY&&(now-new Date(l.createdAt).getTime())<7*DAY;}).length,c:"#EF4444"},{l:"30+ days",sub:"rotation stopped",v:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())>=MONTH;}).length,c:"#94A3B8"}].map(function(row,i){
-          return <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:i<3?"1px solid #F8FAFC":"none"}}>
-            <div><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{row.l}</div><div style={{fontSize:11,color:"#94A3B8"}}>{row.sub}</div></div>
-            <div style={{textAlign:"right"}}><div style={{fontSize:18,fontWeight:800,color:row.c}}>{row.v}</div><div style={{fontSize:10,color:"#94A3B8"}}>{total>0?Math.round(row.v/total*100)+"%":"\u2014"}</div></div>
-          </div>;
-        })}
+        {(function(){
+          var agingRows=[
+            {l:"0\u20131 days",sub:"fresh",v:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<=DAY;}).length,c:"#10B981"},
+            {l:"2\u20133 days",sub:"followup needed",v:leads.filter(function(l){var t=l.createdAt?(now-new Date(l.createdAt).getTime()):0;return t>DAY && t<=3*DAY;}).length,c:"#F59E0B"},
+            {l:"4\u20137 days",sub:"at risk",v:leads.filter(function(l){var t=l.createdAt?(now-new Date(l.createdAt).getTime()):0;return t>3*DAY && t<=7*DAY;}).length,c:"#EF4444"},
+            {l:"8\u201330 days",sub:"aging",v:leads.filter(function(l){var t=l.createdAt?(now-new Date(l.createdAt).getTime()):0;return t>7*DAY && t<=30*DAY;}).length,c:"#B45309"},
+            {l:"30+ days",sub:"rotation stopped",v:leads.filter(function(l){var t=l.createdAt?(now-new Date(l.createdAt).getTime()):0;return t>30*DAY;}).length,c:"#94A3B8"}
+          ];
+          return agingRows.map(function(row,i){
+            return <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:i<agingRows.length-1?"1px solid #F8FAFC":"none"}}>
+              <div><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{row.l}</div><div style={{fontSize:11,color:"#94A3B8"}}>{row.sub}</div></div>
+              <div style={{textAlign:"right"}}><div style={{fontSize:18,fontWeight:800,color:row.c}}>{row.v}</div><div style={{fontSize:10,color:"#94A3B8"}}>{total>0?Math.round(row.v/total*100)+"%":"\u2014"}</div></div>
+            </div>;
+          });
+        })()}
       </>)}
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Call Outcomes</div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-          <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{(p.activities||[]).filter(function(a){return a.type==="call"&&a.createdAt&&(now-new Date(a.createdAt).getTime())<DAY;}).length}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>Calls Today</div></div>
-          <div style={{background:"#FFF1F2",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#BE123C"}}>{total>0?Math.round((sc["NotInterested"]||0)/total*100):0}%</div><div style={{fontSize:10,fontWeight:600,color:"#F43F5E"}}>Not Interested</div></div>
-        </div>
-        {[["Interested",interested,"#10B981"],["No Answer",sc["NoAnswer"]||0,"#94A3B8"],["Not Int.",sc["NotInterested"]||0,"#EF4444"],["Call Back",sc["CallBack"]||0,"#F59E0B"]].map(function(s){return bRow(s[0],s[1],total,s[2]);})}
+        {(function(){
+          var actsPool = (todayActivities&&todayActivities.length)?todayActivities:(p.activities||[]);
+          var callsToday = actsPool.filter(function(a){return a.type==="call"&&a.createdAt&&new Date(a.createdAt).getTime()>=todayStart.getTime();});
+          var statusToday = actsPool.filter(function(a){return a.type==="status_change"&&a.createdAt&&new Date(a.createdAt).getTime()>=todayStart.getTime();});
+          var matchStatus = function(note,s){var lc=(note||"").toLowerCase();return lc.indexOf(s.toLowerCase())>=0;};
+          var noAns = statusToday.filter(function(a){return matchStatus(a.note,"noanswer")||matchStatus(a.note,"no answer");}).length;
+          var intr = statusToday.filter(function(a){return matchStatus(a.note,"hotcase")||matchStatus(a.note,"hot case")||matchStatus(a.note,"potential")||matchStatus(a.note,"interested");}).length;
+          var cbk = statusToday.filter(function(a){return matchStatus(a.note,"callback");}).length;
+          var notInt = statusToday.filter(function(a){return matchStatus(a.note,"notinterested")||matchStatus(a.note,"not interested");}).length;
+          var totalCalls = callsToday.length;
+          var answered = Math.max(0, totalCalls - noAns);
+          var answerRate = totalCalls>0 ? Math.round(answered/totalCalls*100) : 0;
+          var invalidPct = totalCalls>0 ? Math.round(notInt/totalCalls*100) : 0;
+          var denom = Math.max(1,totalCalls);
+          return <>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+              <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{totalCalls}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>Calls Today</div></div>
+              <div style={{background:"#F0FDF4",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#15803D"}}>{answerRate}%</div><div style={{fontSize:10,fontWeight:600,color:"#22C55E"}}>Answer Rate</div></div>
+            </div>
+            {[["Interested",intr,"#10B981"],["No Answer",noAns,"#94A3B8"],["Not Int.",notInt,"#EF4444"],["Call Back",cbk,"#F59E0B"]].map(function(s){return bRow(s[0],s[1],denom,s[2]);})}
+            <div style={{marginTop:10,padding:"8px 10px",background:"#FFF1F2",borderRadius:8,display:"flex",justifyContent:"space-between",fontSize:12}}>
+              <span style={{color:"#64748B",fontWeight:500}}>Invalid leads</span><span style={{fontWeight:700,color:"#BE123C"}}>{invalidPct}%</span>
+            </div>
+          </>;
+        })()}
       </>)}
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Leads by Status</div>
-        {[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"],["No Answer","NoAnswer","#CBD5E1"]].map(function(s){return bRow(s[0],sc[s[1]]||0,total,s[2]);})}
+        {(function(){
+          // Count by each agent's current assignment status; fall back to lead.status for leads with no assignments
+          var assignSc={};
+          var assignTotal=0;
+          leads.forEach(function(l){
+            var counted=false;
+            (l.assignments||[]).forEach(function(a){
+              var st = a.status || l.status || "NewLead";
+              if (st==="Meeting Done") st = "MeetingDone";
+              if (st==="No Answer") st = "NoAnswer";
+              if (st==="Hot Case") st = "HotCase";
+              if (st==="Not Interested") st = "NotInterested";
+              if (st==="Call Back") st = "CallBack";
+              assignSc[st] = (assignSc[st]||0)+1;
+              assignTotal++;
+              counted=true;
+            });
+            if (!counted) { var st2=l.status||"NewLead"; assignSc[st2]=(assignSc[st2]||0)+1; assignTotal++; }
+          });
+          var denom = Math.max(1,assignTotal);
+          var rows=[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"],["No Answer","NoAnswer","#CBD5E1"],["EOI","EOI","#0EA5E9"],["Done Deal","DoneDeal","#065F46"]];
+          return rows.map(function(s){return bRow(s[0],assignSc[s[1]]||0,denom,s[2]);});
+        })()}
       </>)}
     </div>
     {seeAllOpen && <div onClick={function(){setSeeAllOpen(false);}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(15,23,42,0.55)",zIndex:1000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 16px",overflowY:"auto"}}>

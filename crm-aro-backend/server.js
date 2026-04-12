@@ -1507,27 +1507,76 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       return {agentId:uid,name:u.name,leads:agentLeads.length,dr:agentDRs.length,total:agentLeads.length+agentDRs.length,calls:agentCalls,followups:agentFollowups,overdue:agentOverdue,interested:agentInt,interestedPct:ip,meetings:agentMeet,meetingPct:mp,deals:agentDeals,rotOutCount:agentRotOut,rotInCount:agentRotIn,noAnswer:agentNoAnswer,respTime:avgResp,score:score,quality:quality};
     }).sort(function(a,b){return b.quality-a.quality;});
 
-    // Calls today
-    var callsToday=activities.filter(function(a){return a.type==="call"&&a.createdAt&&(now-new Date(a.createdAt))<DAY;}).length;
-    var intCalls=activities.filter(function(a){return a.type==="call"&&a.note&&a.note.toLowerCase().includes("interest")&&a.createdAt&&(now-new Date(a.createdAt))<DAY;}).length;
+    // Calls today (from activities, not just status)
+    var todayStartMs = todayStart.getTime();
+    var callsTodayActs = activities.filter(function(a){return a.type==="call"&&a.createdAt&&new Date(a.createdAt).getTime()>=todayStartMs;});
+    var callsToday = callsTodayActs.length;
+    var statusTodayActs = activities.filter(function(a){return a.type==="status_change"&&a.createdAt&&new Date(a.createdAt).getTime()>=todayStartMs;});
+    var noteContains = function(note,s){return (note||"").toLowerCase().indexOf(s.toLowerCase())>=0;};
+    var callsByOutcome = {
+      interested: statusTodayActs.filter(function(a){return noteContains(a.note,"hotcase")||noteContains(a.note,"hot case")||noteContains(a.note,"potential")||noteContains(a.note,"interested");}).length,
+      noAnswer: statusTodayActs.filter(function(a){return noteContains(a.note,"noanswer")||noteContains(a.note,"no answer");}).length,
+      callBack: statusTodayActs.filter(function(a){return noteContains(a.note,"callback");}).length,
+      notInterested: statusTodayActs.filter(function(a){return noteContains(a.note,"notinterested")||noteContains(a.note,"not interested");}).length
+    };
+    var answered = Math.max(0, callsToday - callsByOutcome.noAnswer);
+    var answerRate = callsToday>0 ? Math.round(answered/callsToday*100) : 0;
+    var invalidPct = callsToday>0 ? Math.round(callsByOutcome.notInterested/callsToday*100) : 0;
+    var intCalls = callsByOutcome.interested;
 
-    // Leads by status
+    // Leads by status — count per-agent current assignment status (falls back to lead.status)
     var statusCounts={};
-    leads.forEach(function(l){statusCounts[l.status]=(statusCounts[l.status]||0)+1;});
+    leads.forEach(function(l){
+      var counted=false;
+      (l.assignments||[]).forEach(function(a){
+        var st = a.status || l.status || "NewLead";
+        if (st==="Meeting Done") st = "MeetingDone";
+        if (st==="No Answer") st = "NoAnswer";
+        if (st==="Hot Case") st = "HotCase";
+        if (st==="Not Interested") st = "NotInterested";
+        if (st==="Call Back") st = "CallBack";
+        statusCounts[st]=(statusCounts[st]||0)+1; counted=true;
+      });
+      if (!counted) { var st2=l.status||"NewLead"; statusCounts[st2]=(statusCounts[st2]||0)+1; }
+    });
     var leadsByStatus=Object.entries(statusCounts).map(function(e){return{status:e[0],count:e[1]};});
 
-    // Lead aging
+    // Lead aging — 5 buckets
     var leadAging={
-      fresh:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))<DAY;}).length,
-      needsFollowup:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))>=DAY&&(now-new Date(l.createdAt))<3*DAY;}).length,
-      atRisk:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))>=3*DAY&&(now-new Date(l.createdAt))<7*DAY;}).length,
-      expired:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))>=MONTH;}).length
+      fresh:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))<=DAY;}).length,
+      needsFollowup:leads.filter(function(l){var t=l.createdAt?now-new Date(l.createdAt):0;return t>DAY && t<=3*DAY;}).length,
+      atRisk:leads.filter(function(l){var t=l.createdAt?now-new Date(l.createdAt):0;return t>3*DAY && t<=7*DAY;}).length,
+      aging:leads.filter(function(l){var t=l.createdAt?now-new Date(l.createdAt):0;return t>7*DAY && t<=30*DAY;}).length,
+      expired:leads.filter(function(l){var t=l.createdAt?now-new Date(l.createdAt):0;return t>30*DAY;}).length
     };
 
-    // Management alerts
-    var missingFeedback=leads.filter(function(l){return !l.lastFeedback&&l.status!=="NewLead";}).length;
-    var stale48h=leads.filter(function(l){return !l.archived&&l.lastActivityTime&&(now-new Date(l.lastActivityTime))>2*DAY;}).length;
-    var rotationsMonth=leads.reduce(function(s,l){return s+(l.rotationCount||0);},0);
+    // Management alerts — refined per spec
+    var untouchedLeadsCount = leads.filter(function(l){
+      return (l.assignments||[]).length===0 || (l.assignments||[]).every(function(a){
+        if (!a.lastActionAt) return true;
+        if (a.assignedAt && new Date(a.lastActionAt).getTime()===new Date(a.assignedAt).getTime()) return true;
+        return false;
+      });
+    }).length;
+    var missingFeedback=leads.filter(function(l){return (l.assignments||[]).some(function(a){return !a.notes||String(a.notes).trim()==="";});}).length;
+    var stale48h=leads.filter(function(l){
+      var latest=0;
+      (l.assignments||[]).forEach(function(a){ if(a.lastActionAt){ var t=new Date(a.lastActionAt).getTime(); if(t>latest) latest=t; } });
+      if (!latest && l.lastActivityTime) latest = new Date(l.lastActivityTime).getTime();
+      return latest>0 && latest<(now.getTime()-2*DAY) && l.status!=="DoneDeal" && l.status!=="NotInterested";
+    }).length;
+    var lockedNoRotation = leads.filter(function(l){return (l.assignments||[]).some(function(a){return a.noRotation===true;});}).length;
+    var monthStartRot = new Date(now.getFullYear(),now.getMonth(),1,0,0,0,0).getTime();
+    var rotAuto=0, rotManual=0;
+    leads.forEach(function(l){
+      (l.agentHistory||[]).forEach(function(h){
+        if (!h||h.action!=="Rotation") return;
+        var ht = h.date?new Date(h.date).getTime():0;
+        if (ht<monthStartRot) return;
+        if ((h.reason||"").toString().toLowerCase()==="manual") rotManual++; else rotAuto++;
+      });
+    });
+    var rotationsMonth = rotAuto + rotManual;
     var leadsPerAgent=agentPerf.map(function(a){return a.leads;});
     var avgLeads=leadsPerAgent.length>0?leadsPerAgent.reduce(function(s,x){return s+x;},0)/leadsPerAgent.length:0;
     var overloaded=agentPerf.filter(function(a){return a.leads>avgLeads*1.3;}).length;
@@ -1538,9 +1587,9 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       campaignPerformance,funnel,
       hotAlerts:{untouched48h,overdueCallbacks,noRotationCount},
       agentPerformance:agentPerf,
-      calls:{today:callsToday,invalidPct:leads.length>0?Math.round(leads.filter(function(l){return l.status==="NotInterested";}).length/leads.length*100):0},
+      calls:{today:callsToday,answered,answerRate,invalidPct,byOutcome:callsByOutcome,interested:intCalls},
       leadsByStatus,leadAging,
-      managementAlerts:{untouched:untouched48h,missingFeedback,stale48h,rotationsMonth,overloadedAgents:overloaded,dataQuality:Math.max(0,100-Math.round((missingFeedback+stale48h)*100/Math.max(leads.length,1)))}
+      managementAlerts:{untouched:untouchedLeadsCount,missingFeedback,stale48h,rotationsMonth,rotationsAuto:rotAuto,rotationsManual:rotManual,lockedNoRotation,overloadedAgents:overloaded}
     });
   } catch(e){console.error("dashboard/admin error:",e.message);res.status(500).json({error:e.message});}
 });
