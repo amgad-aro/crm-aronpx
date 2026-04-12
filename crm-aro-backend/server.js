@@ -720,21 +720,16 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // Single final read with populate
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     try {
-      var actType = "note";
-      var actNote = "Updated";
-      if (req.body.status) {
-        actType = "status_change";
-        actNote = "Status: " + req.body.status;
-      } else if (req.body.agentId && oldLead && String(oldLead.agentId) !== String(req.body.agentId)) {
-        actType = "reassign";
-        actNote = "تم التحويل اليدوي إلى موظف جديد";
+      // Only auto-log reassign here. status_change is logged explicitly by the client with agent feedback,
+      // and auto-logging it here would produce duplicate activity documents.
+      if (req.body.agentId && oldLead && String(oldLead.agentId) !== String(req.body.agentId)) {
+        await Activity.create({
+          userId: req.user.id,
+          leadId: req.params.id,
+          type: "reassign",
+          note: "\u062a\u0645 \u0627\u0644\u062a\u062d\u0648\u064a\u0644 \u0627\u0644\u064a\u062f\u0648\u064a \u0625\u0644\u0649 \u0645\u0648\u0638\u0641 \u062c\u062f\u064a\u062f",
+        });
       }
-      await Activity.create({
-        userId: req.user.id,
-        leadId: req.params.id,
-        type: actType,
-        note: actNote,
-      });
     } catch(actErr) {
       console.error("Activity log error (non-fatal):", actErr.message);
     }

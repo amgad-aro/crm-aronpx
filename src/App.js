@@ -2405,23 +2405,24 @@ var DashboardPage = function(p) {
   // Today's activities feed — prefer the dedicated fetch (all today's activities), fall back to the paginated p.activities
   var _actsPool = (todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
   var _actsToday = _actsPool.filter(function(a){return a.createdAt&&new Date(a.createdAt).getTime()>=todayStart.getTime();});
-  // Deduplicate: prefer _id; fall back to userId+leadId+type+second-truncated timestamp
-  var _seen = {};
+  _actsToday.sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
+  // Dedupe: first by _id (Map), then collapse near-duplicate legacy entries created by old server auto-log
+  // (same user+lead+type within 10 seconds => keep only one)
+  var _byId = new Map();
+  _actsToday.forEach(function(a){ var k = a._id ? String(a._id) : ("no-id-"+Math.random()); if (!_byId.has(k)) _byId.set(k,a); });
+  var _uniqueById = Array.from(_byId.values());
+  var _seenContent = {};
   var todayActsAll = [];
-  _actsToday.forEach(function(a){
-    var id = a._id ? String(a._id) : null;
-    if (!id) {
-      var uid = String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
-      var lid = String(a.leadId&&a.leadId._id?a.leadId._id:a.leadId||"");
-      var sec = a.createdAt ? Math.floor(new Date(a.createdAt).getTime()/1000) : 0;
-      id = uid+"|"+lid+"|"+(a.type||"")+"|"+sec;
-    }
-    if (_seen[id]) return;
-    _seen[id] = true;
+  _uniqueById.forEach(function(a){
+    var uid = String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
+    var lid = String(a.leadId&&a.leadId._id?a.leadId._id:a.leadId||"");
+    var bucket = a.createdAt ? Math.floor(new Date(a.createdAt).getTime()/10000) : 0;
+    var key = uid+"|"+lid+"|"+(a.type||"")+"|"+bucket;
+    if (_seenContent[key]) return;
+    _seenContent[key] = true;
     todayActsAll.push(a);
   });
   todayActsAll.sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
-  var todayActs = todayActsAll.slice(0,7);
 
   // Mask phone
   var maskPh = function(ph){if(!ph)return "";if(ph.length<5)return ph;return ph.slice(0,3)+"****"+ph.slice(-2);};
@@ -2546,33 +2547,37 @@ var DashboardPage = function(p) {
             <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Today's Activities</div>
             <span style={{fontSize:11,fontWeight:600,color:"#1D4ED8",cursor:"pointer"}} onClick={function(){setSeeAllOpen(true);}}>View All ({todayActsAll.length})</span>
           </div>
-          <div style={{maxHeight:378,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
-          {todayActs.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity yet today</div> : todayActs.map(function(a,i){
+          <div style={{maxHeight:420,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
+          {todayActsAll.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity yet today</div> : todayActsAll.map(function(a,i){
             var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
             var aName = a.userId&&a.userId.name?a.userId.name:agentName(aid);
             var lName = a.leadId&&a.leadId.name?a.leadId.name:"";
-            // Build action label: "Status: X" / "Call initiated" / "DailyReq: X" / "Note added" / etc.
-            var aNote = a.note||"";
+            var aNote = a.note||a.notes||a.feedback||a.details||"";
             var actionLabel = actLabel(a);
             var feedbackText = aNote;
             if (a.type==="status_change") {
-              var m1 = aNote.match(/\[([^\]]+)\]/);
-              var statusName = m1 ? m1[1] : (aNote.split(":")[1]||"").trim().split("|")[0].trim();
+              var bracketM = aNote.match(/^\s*\[([^\]]+)\]\s*([\s\S]*)$/);
+              var colonM = aNote.match(/^\s*Status\s*:\s*([^|]+?)(?:\s*\|\s*([\s\S]*))?$/i);
+              var statusName = "", fb = "";
+              if (bracketM) { statusName = bracketM[1].trim(); fb = (bracketM[2]||"").trim(); }
+              else if (colonM) { statusName = colonM[1].trim(); fb = (colonM[2]||"").trim(); }
+              else { statusName = "changed"; fb = aNote; }
               actionLabel = "Status: "+(statusName||"changed");
-              // Feedback after "|" separator if present
-              var pipeIdx = aNote.indexOf("|");
-              feedbackText = pipeIdx>=0 ? aNote.slice(pipeIdx+1).trim() : "";
+              feedbackText = fb;
             } else if (a.type==="call") {
               actionLabel = "Call initiated";
+              feedbackText = aNote.replace(/^\s*[\ud83d\udcde\ud83d\udcde]+\s*/,"").replace(/^Call initiated\s*[-\u2014:]?\s*/i,"").trim();
             } else if (a.type==="note") {
               actionLabel = "Note added";
             } else if (a.type==="reassign") {
               actionLabel = "Reassign";
               feedbackText = "";
+            } else if (a.type==="meeting") {
+              actionLabel = "Meeting booked";
             } else if (a.type==="daily_request" || (aNote.toLowerCase().indexOf("daily")>=0)) {
               actionLabel = "DailyReq: "+((aNote.split(":")[1]||"").trim().split("|")[0].trim()||"updated");
+              feedbackText = "";
             }
-            // Icon + colors by action type
             var noteLc = aNote.toLowerCase();
             var ic;
             if (a.type==="call") ic={icon:"\ud83d\udcde",bg:"#DCFCE7",fg:"#166534"};
@@ -2582,7 +2587,7 @@ var DashboardPage = function(p) {
             else if (noteLc.indexOf("callback")>=0) ic={icon:"\ud83d\udcc5",bg:"#DBEAFE",fg:"#1D4ED8"};
             else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
             if (feedbackText && feedbackText.length>80) feedbackText = feedbackText.slice(0,80)+"\u2026";
-            return <div key={(a._id||"")+"-"+i} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:i<todayActs.length-1?"1px solid #F1F5F9":"none"}}>
+            return <div key={String(a._id||("k"+i))} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none"}}>
               <div style={{width:34,height:34,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{aName}{lName?" \u2014 "+lName:""}</div>
@@ -2697,18 +2702,22 @@ var DashboardPage = function(p) {
             var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
             var aName = a.userId&&a.userId.name?a.userId.name:agentName(aid);
             var lName = a.leadId&&a.leadId.name?a.leadId.name:"";
-            var aNote = a.note||"";
+            var aNote = a.note||a.notes||a.feedback||a.details||"";
             var actionLabel = actLabel(a);
             var feedbackText = aNote;
             if (a.type==="status_change") {
-              var m1 = aNote.match(/\[([^\]]+)\]/);
-              var statusName = m1 ? m1[1] : (aNote.split(":")[1]||"").trim().split("|")[0].trim();
+              var bracketM = aNote.match(/^\s*\[([^\]]+)\]\s*([\s\S]*)$/);
+              var colonM = aNote.match(/^\s*Status\s*:\s*([^|]+?)(?:\s*\|\s*([\s\S]*))?$/i);
+              var statusName = "", fb = "";
+              if (bracketM) { statusName = bracketM[1].trim(); fb = (bracketM[2]||"").trim(); }
+              else if (colonM) { statusName = colonM[1].trim(); fb = (colonM[2]||"").trim(); }
+              else { statusName = "changed"; fb = aNote; }
               actionLabel = "Status: "+(statusName||"changed");
-              var pipeIdx = aNote.indexOf("|");
-              feedbackText = pipeIdx>=0 ? aNote.slice(pipeIdx+1).trim() : "";
-            } else if (a.type==="call") { actionLabel = "Call initiated"; }
+              feedbackText = fb;
+            } else if (a.type==="call") { actionLabel = "Call initiated"; feedbackText = aNote.replace(/^\s*[\ud83d\udcde\ud83d\udcde]+\s*/,"").replace(/^Call initiated\s*[-\u2014:]?\s*/i,"").trim(); }
             else if (a.type==="note") { actionLabel = "Note added"; }
             else if (a.type==="reassign") { actionLabel = "Reassign"; feedbackText = ""; }
+            else if (a.type==="meeting") { actionLabel = "Meeting booked"; }
             if (feedbackText && feedbackText.length>80) feedbackText = feedbackText.slice(0,80)+"\u2026";
             var noteLc = aNote.toLowerCase();
             var ic;
