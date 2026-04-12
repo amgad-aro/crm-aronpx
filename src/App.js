@@ -3126,6 +3126,7 @@ var EOIPage = function(p) {
   var [imgUploading,setImgUploading]=useState(false);
   var [docUploading,setDocUploading]=useState(false);
   var [cancelling,setCancelling]=useState(false);
+  var [convertingDeal,setConvertingDeal]=useState(false);
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
 
   var archiveLead=async function(lid){
@@ -3198,6 +3199,21 @@ var EOIPage = function(p) {
       setEoiTab("cancelled");
     }catch(e){alert(e.message||"Cancel failed");}
     setCancelling(false);
+  };
+
+  var convertToDeal=async function(lead){
+    if(p.cu.role!=="admin") { alert("Only admin can convert an EOI to a deal"); return; }
+    if(lead.eoiStatus!=="Approved") { alert("EOI must be Approved before converting to a Done Deal"); return; }
+    if(!window.confirm("Convert this EOI into a Done Deal? The lead will move to the Deals page and stay visible here under Approved for history.")) return;
+    setConvertingDeal(true);
+    try{
+      var updated = await apiFetch("/api/leads/"+gid(lead)+"/eoi-to-deal","POST",{},p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+      if(selectedEOI&&gid(selectedEOI)===gid(lead)) setSelectedEOI(updated);
+      // Navigate the admin to the Deals page so the new deal is visible immediately
+      if (p.nav) p.nav("deals");
+    }catch(e){alert(e.message||"Convert failed");}
+    setConvertingDeal(false);
   };
 
   var handleDocUpload=async function(e,lead){
@@ -3326,17 +3342,24 @@ var EOIPage = function(p) {
       <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"14px 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
-          {(p.cu.role==="admin")&&<div style={{ display:"flex", gap:6 }}>
+          {(p.cu.role==="admin")&&<div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
             {(function(){
               var isCancelled = selectedEOI.eoiStatus==="EOI Cancelled" || selectedEOI.eoiStatus==="Deal Cancelled" || selectedEOI.status==="Deal Cancelled";
               if (isCancelled) return <span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ EOI Cancelled</span>;
+              var isDoneDeal = selectedEOI.status==="DoneDeal";
               return <>
-                <button onClick={function(){toggleApproved(selectedEOI,"eoiApproved");}} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
-                  {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
-                </button>
-                <button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
-                  {cancelling?"Cancelling…":"❌ Cancel"}
-                </button>
+                <div style={{ display:"flex", gap:6 }}>
+                  <button onClick={function(){if(!isDoneDeal) toggleApproved(selectedEOI,"eoiApproved");}} disabled={isDoneDeal} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:isDoneDeal?"default":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:isDoneDeal?0.7:1 }}>
+                    {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
+                  </button>
+                  {!isDoneDeal&&<button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
+                    {cancelling?"Cancelling…":"❌ Cancel"}
+                  </button>}
+                </div>
+                {selectedEOI.eoiStatus==="Approved"&&!isDoneDeal&&<button disabled={convertingDeal} onClick={function(){convertToDeal(selectedEOI);}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"5px 12px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
+                  {convertingDeal?"Converting…":"✅ Done Deal"}
+                </button>}
+                {isDoneDeal&&<span style={{ background:"rgba(34,197,94,0.35)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>✅ Converted to Deal</span>}
               </>;
             })()}
           </div>}

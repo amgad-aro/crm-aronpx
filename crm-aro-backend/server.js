@@ -777,6 +777,41 @@ app.post("/api/daily-requests/:id/eoi-cancel", auth, async function(req, res) {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== EOI -> DONE DEAL (admin) — converts an approved EOI to a Done Deal =====
+app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Only admin can convert an EOI to a deal" });
+    var existing = await Lead.findById(req.params.id).lean();
+    if (!existing) return res.status(404).json({ error: "Lead not found" });
+    if (existing.eoiStatus !== "Approved") return res.status(400).json({ error: "EOI must be Approved before it can be converted to a Done Deal" });
+    var todayIso = new Date().toISOString().slice(0,10);
+    var update = {
+      status: "DoneDeal",
+      dealDate: existing.dealDate || todayIso,
+      dealStatus: "",
+      preDealStatus: existing.status || "EOI",
+      globalStatus: "donedeal",
+      lastActivityTime: new Date()
+    };
+    await Lead.findByIdAndUpdate(req.params.id, { $set: update });
+    // Sync current agent's assignment.status so per-agent views reflect the new state
+    if (existing.agentId) {
+      await Lead.updateOne(
+        { _id: req.params.id, "assignments.agentId": existing.agentId },
+        { $set: { "assignments.$.status": "DoneDeal", "assignments.$.lastActionAt": new Date() } }
+      );
+    }
+    // Mirror to the paired Daily Request (if any)
+    if (existing.source === "Daily Request" && existing.phone) {
+      try { await DailyRequest.updateOne({ phone: existing.phone }, { $set: { status: "DoneDeal", lastActivityTime: new Date() } }); }
+      catch(syncErr){ console.error("DR sync (eoi-to-deal) error:", syncErr.message); }
+    }
+    try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[DoneDeal] EOI converted to Done Deal" }); } catch(e){}
+    var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    res.json(lead);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== DEAL CANCEL (admin) — restores pre-DoneDeal status, keeps lead in Deals page's Deal Cancelled tab =====
 app.post("/api/leads/:id/deal-cancel", auth, async function(req, res) {
   try {
