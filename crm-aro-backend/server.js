@@ -39,6 +39,7 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   eoiDeposit:{type:String,default:""}, eoiDate:{type:String,default:""},
   eoiApproved:{type:Boolean,default:false}, eoiImage:{type:String,default:""},
   eoiDocuments:[{type:mongoose.Schema.Types.Mixed}],
+  preEoiStatus:{type:String,default:""},
   stages:{type:mongoose.Schema.Types.Mixed,default:{}},
   dealApproved:{type:Boolean,default:false}, dealImages:[{type:String}],
   commissionClaimDate:{type:String,default:""}, commissionClaimed:{type:Boolean,default:false},
@@ -110,7 +111,8 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   lastActivityTime:{type:Date,default:Date.now}, source:{type:String,default:"Daily Request"},
   lastFeedback:{type:String,default:""},
   eoiApproved:{type:Boolean,default:false}, eoiDate:{type:String,default:""}, eoiDeposit:{type:String,default:""},
-  eoiDocuments:[{type:mongoose.Schema.Types.Mixed}]
+  eoiDocuments:[{type:mongoose.Schema.Types.Mixed}],
+  preEoiStatus:{type:String,default:""}
 },{timestamps:true}));
 
 var app = express();
@@ -715,6 +717,10 @@ app.post("/api/leads/:id/delete-deal-image", auth, async function(req, res) {
 
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
+    // Admin-only gate: "Deal Cancelled" can only be set by admin users.
+    if (req.body.status === "Deal Cancelled" && req.user.role !== "admin") {
+      return res.status(403).json({ error: "Only admin can set Deal Cancelled status" });
+    }
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty unless explicitly reassigning
     if (!update.agentId) delete update.agentId;
@@ -730,6 +736,10 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // Guard: never downgrade EOI or DoneDeal back to NewLead (prevents stale rotation overwrites)
     if (oldLead && (oldLead.status === "EOI" || oldLead.status === "DoneDeal") && req.body.status === "NewLead") {
       return res.json(oldLead);
+    }
+    // Capture previous status when transitioning INTO EOI, so EOI cancel can restore it.
+    if (req.body.status === "EOI" && oldLead && oldLead.status && oldLead.status !== "EOI") {
+      update.preEoiStatus = oldLead.status;
     }
     // Track agent history when agent changes (fallback — should go through /rotate)
     if (req.body.agentId && oldLead && oldLead.agentId && String(oldLead.agentId) !== String(req.body.agentId)) {
@@ -1173,9 +1183,18 @@ app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req
 
 app.put("/api/daily-requests/:id", auth, async function(req, res) {
   try {
+    // Admin-only gate: "Deal Cancelled" can only be set by admin users.
+    if (req.body.status === "Deal Cancelled" && req.user.role !== "admin") {
+      return res.status(403).json({ error: "Only admin can set Deal Cancelled status" });
+    }
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty — only update if explicitly provided and valid
     if (!update.agentId) delete update.agentId;
+    // Capture previous status on EOI transition so EOI cancel can restore it.
+    if (req.body.status === "EOI") {
+      var prevDr = await DailyRequest.findById(req.params.id).lean();
+      if (prevDr && prevDr.status && prevDr.status !== "EOI") update.preEoiStatus = prevDr.status;
+    }
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
     if (req.body.status) {
       var actNote = "DailyReq: " + req.body.status;
@@ -1208,11 +1227,11 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             eoiDeposit: req.body.eoiDeposit || "",
           });
         }
-      } else if (req.body.status === "Cancelled") {
-        // DR moved out of EOI/DoneDeal — keep the mirror Lead in sync so the EOI page shows it under Cancelled
+      } else if (req.body.status === "Deal Cancelled") {
+        // DR moved out of EOI/DoneDeal — keep the mirror Lead in sync so the EOI page shows it under Deal Cancelled
         var mirror = await Lead.findOne({ phone: r.phone, source: "Daily Request" });
         if (mirror && (mirror.status === "EOI" || mirror.status === "DoneDeal")) {
-          await Lead.findByIdAndUpdate(mirror._id, { status: "Cancelled", eoiApproved: false, lastActivityTime: new Date() });
+          await Lead.findByIdAndUpdate(mirror._id, { status: "Deal Cancelled", eoiApproved: false, lastActivityTime: new Date() });
         }
       }
     }

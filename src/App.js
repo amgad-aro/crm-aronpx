@@ -193,10 +193,12 @@ var STATUSES = function(t) { return [
   { value: "NotInterested", label: t.notInterested, bg: "#F1F5F9", color: "#64748B" },
   { value: "NoAnswer", label: t.noAnswer, bg: "#E0E7FF", color: "#4338CA" },
   { value: "DoneDeal", label: t.doneDeal, bg: "#DCFCE7", color: "#15803D" },
-  { value: "Cancelled", label: "Cancelled", bg: "#FEE2E2", color: "#B91C1C" },
+  { value: "Deal Cancelled", label: "Deal Cancelled", bg: "#FEE2E2", color: "#B91C1C", adminOnly: true },
 ]; };
 
 var DR_STATUSES = function(t) { return STATUSES(t).filter(function(s){return s.value!=="NewLead";}); };
+// Filter out statuses flagged adminOnly (e.g. "Deal Cancelled") for non-admin users.
+var visibleStatuses = function(list, role){ return (list||[]).filter(function(s){ return !s.adminOnly || role==="admin"; }); };
 
 var PROJECTS = [
   "العاصمة الإدارية", "المستقبل سيتي", "التجمع الخامس", "الشروق", "6 أكتوبر",
@@ -1236,7 +1238,7 @@ var PhoneCell = function(p) {
 
 // ===== LEADS PAGE =====
 var LeadsPage = function(p) {
-  var t = p.t; var sc = STATUSES(t);
+  var t = p.t; var sc = visibleStatuses(STATUSES(t), p.cu&&p.cu.role);
   var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var isManager = p.cu.role==="manager"||p.cu.role==="team_leader";
@@ -1284,7 +1286,7 @@ var LeadsPage = function(p) {
     // Hide EOI and DoneDeal from Leads page — they have their own pages.
     // Also hide Cancelled leads that came from EOI (they live in the EOI Cancelled tab).
     if(!isReq && (l.status==="EOI"||l.status==="DoneDeal")) return false;
-    if(!isReq && l.status==="Cancelled" && (l.eoiDate||l.eoiImage||l.eoiApproved||(l.eoiDocuments||[]).length>0)) return false;
+    if(!isReq && l.status==="Deal Cancelled" && (l.eoiDate||l.eoiImage||l.eoiApproved||(l.eoiDocuments||[]).length>0)) return false;
     // Manager: hide leads with no agent in daily request
     if(isReq && (p.cu.role==="manager"||p.cu.role==="team_leader") && !l.agentId) return false;
     return true;
@@ -1988,7 +1990,7 @@ var LeadsPage = function(p) {
 
 // ===== MY DAY PAGE =====
 var MyDayPage = function(p) {
-  var t = p.t; var sc = STATUSES(t);
+  var t = p.t; var sc = visibleStatuses(STATUSES(t), p.cu&&p.cu.role);
   var isManager = p.cu.role==="manager"||p.cu.role==="team_leader";
   var getAgName = function(l){ if(!l.agentId) return ""; var a=l.agentId; if(a.name) return a.name; var u=p.users.find(function(x){return String(gid(x))===String(a);}); return u?u.name:""; };
   var [activeTab, setActiveTab] = useState("callbacks");
@@ -3107,10 +3109,10 @@ var EOIPage = function(p) {
   var [eoiTab,setEoiTab]=useState("approved");
   // All leads that are currently EOI OR were cancelled from EOI (identified by any EOI artifact).
   var wasEOI = function(l){return l.eoiDate || l.eoiImage || l.eoiApproved || (l.eoiDocuments||[]).length>0;};
-  var eoiScope=p.leads.filter(function(l){return !l.archived && (l.status==="EOI" || (l.status==="Cancelled" && wasEOI(l)));});
+  var eoiScope=p.leads.filter(function(l){return !l.archived && (l.status==="EOI" || (l.status==="Deal Cancelled" && wasEOI(l)));});
   var eoiPending = eoiScope.filter(function(l){return l.status==="EOI" && !l.eoiApproved;});
   var eoiApprovedList = eoiScope.filter(function(l){return l.status==="EOI" && l.eoiApproved;});
-  var eoiCancelled = eoiScope.filter(function(l){return l.status==="Cancelled";});
+  var eoiCancelled = eoiScope.filter(function(l){return l.status==="Deal Cancelled";});
   var eoiLeads = eoiTab==="pending" ? eoiPending : eoiTab==="approved" ? eoiApprovedList : eoiCancelled;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
@@ -3172,21 +3174,23 @@ var EOIPage = function(p) {
 
   var cancelEOI=async function(lead){
     if(!isOnlyAdmin) return;
-    if(!window.confirm("Cancel this EOI and rotate the lead to another agent?")) return;
+    // Restore the lead's pre-EOI status (falls back to Hot Case) and rotate to another agent.
+    var restoredStatus = lead.preEoiStatus || "HotCase";
+    if(!window.confirm("Cancel this EOI? The lead will return to \""+restoredStatus+"\" status and be rotated to another agent.")) return;
     setCancelling(true);
     try{
-      // 1) Flip status to Cancelled so it moves to the Cancelled tab
-      var updated=await apiFetch("/api/leads/"+gid(lead),"PUT",{status:"Cancelled", eoiApproved:false},p.token);
-      // 2) Rotate to the next active sales agent (skip the current one)
+      var updated=await apiFetch("/api/leads/"+gid(lead),"PUT",{status:restoredStatus, eoiApproved:false, preEoiStatus:"", globalStatus:"active"},p.token);
+      // Rotate to the next active sales agent (skip the current one)
       var currentAid = updated&&updated.agentId?(updated.agentId._id?String(updated.agentId._id):String(updated.agentId)) : (lead.agentId&&lead.agentId._id?String(lead.agentId._id):String(lead.agentId||""));
       var pool = (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="sales_admin") && String(u._id||gid(u))!==currentAid;});
       var target = pool.length>0 ? pool[Math.floor(Math.random()*pool.length)] : null;
       if (target) {
         try { updated = await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:String(target._id||gid(target)),reason:"manual"},p.token); }
-        catch(rotErr){ /* rotation failed but status is cancelled; keep going */ }
+        catch(rotErr){ /* rotation failed but status already restored */ }
       }
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
-      if(selectedEOI&&gid(selectedEOI)===gid(lead)) setSelectedEOI(updated);
+      // After cancel the lead is no longer EOI, close the side panel
+      if(selectedEOI&&gid(selectedEOI)===gid(lead)) setSelectedEOI(null);
     }catch(e){alert(e.message||"Cancel failed");}
     setCancelling(false);
   };
@@ -3228,7 +3232,7 @@ var EOIPage = function(p) {
       {(isAdmin||p.cu.role==="sales")&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 14px", fontSize:12 }}><Plus size={13}/> Add EOI</Btn>}
     </div>
     <div style={{ display:"flex", gap:6, marginBottom:14, flexWrap:"wrap" }}>
-      {[["approved","\u2705 Approved",eoiApprovedList.length,"#15803D","#DCFCE7"],["pending","\u23f3 Pending",eoiPending.length,"#B45309","#FEF3C7"],["cancelled","\u274c Cancelled",eoiCancelled.length,"#B91C1C","#FEE2E2"]].map(function(tab){
+      {[["approved","\u2705 Approved",eoiApprovedList.length,"#15803D","#DCFCE7"],["pending","\u23f3 Pending",eoiPending.length,"#B45309","#FEF3C7"],["cancelled","\u274c Deal Cancelled",eoiCancelled.length,"#B91C1C","#FEE2E2"]].map(function(tab){
         var active = eoiTab===tab[0];
         return <button key={tab[0]} onClick={function(){setSelectedEOI(null);setEoiTab(tab[0]);}} style={{ padding:"7px 14px", borderRadius:9, border:active?"1px solid "+tab[3]:"1px solid #E8ECF1", background:active?tab[4]:"#fff", color:active?tab[3]:C.textLight, fontSize:12, fontWeight:active?700:600, cursor:"pointer" }}>{tab[1]} ({tab[2]})</button>;
       })}
@@ -3324,7 +3328,7 @@ var EOIPage = function(p) {
             {selectedEOI.status==="EOI"&&<button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
               {cancelling?"Cancelling…":"❌ Cancel"}
             </button>}
-            {selectedEOI.status==="Cancelled"&&<span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ Cancelled</span>}
+            {selectedEOI.status==="Deal Cancelled"&&<span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ Deal Cancelled</span>}
           </div>}
         </div>
         <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedEOI.name}</div>
@@ -4258,7 +4262,7 @@ var ArchivePage = function(p) {
 
 // ===== DAILY REQUESTS =====
 var DailyRequestsPage = function(p) {
-  var t=p.t; var sc=DR_STATUSES(t);
+  var t=p.t; var sc=visibleStatuses(DR_STATUSES(t), p.cu&&p.cu.role);
   var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [requests,setRequests]=useState([]);
