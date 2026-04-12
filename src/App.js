@@ -1965,6 +1965,12 @@ var DashboardPage = function(p) {
   var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [filter, setFilter] = useState("today");
   var [qOpen, setQOpen] = useState(false);
+  // eslint-disable-next-line no-unused-vars
+  var [tick, setTick] = useState(0);
+  useEffect(function(){
+    var id = setInterval(function(){ setTick(function(t){return t+1;}); }, 1000);
+    return function(){ clearInterval(id); };
+  },[]);
   var now = Date.now();
   var DAY=86400000, WEEK=7*DAY, MONTH=30*DAY;
   var rangeMs = filter==="today"?DAY:filter==="week"?WEEK:MONTH;
@@ -1972,6 +1978,10 @@ var DashboardPage = function(p) {
   var leads = useMemo(function(){
     return (p.leads||[]).filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   },[p.leads]);
+
+  var timeStr = new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+  var hourNow = new Date().getHours();
+  var greeting = hourNow<6 ? "Good Night \ud83d\ude34" : hourNow<12 ? "Good Morning \u2600\ufe0f" : hourNow<18 ? "Good Afternoon \ud83c\udf24\ufe0f" : hourNow<24 ? "Good Evening \ud83c\udf06" : "Good Night \ud83d\ude34";
 
   if(!leads.length) return <div style={{padding:40,textAlign:"center",color:"#94A3B8",fontSize:14}}>Loading data...</div>;
 
@@ -2172,15 +2182,6 @@ var DashboardPage = function(p) {
     </div>;
   }
 
-  var hour = new Date().getHours();
-  var greeting = hour<6 ? "Good Night \ud83d\ude34" : hour<12 ? "Good Morning \u2600\ufe0f" : hour<18 ? "Good Afternoon \ud83c\udf24\ufe0f" : hour<24 ? "Good Evening \ud83c\udf06" : "Good Night \ud83d\ude34";
-
-  // Live ticking clock (updates every second)
-  var [tick, setTick] = useState(0);
-  useEffect(function(){
-    var id = setInterval(function(){ setTick(function(t){return t+1;}); }, 1000);
-    return function(){ clearInterval(id); };
-  },[]);
   var nowD = new Date();
   var dayNamesF=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
   var monthsF=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
