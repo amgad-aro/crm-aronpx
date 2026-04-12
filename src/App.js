@@ -2822,65 +2822,73 @@ var DashboardPage = function(p) {
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Callback Compliance</div>
         {(function(){
           var nowMs = now;
-          var todayEnd = todayStart.getTime() + DAY;
           var parseCb = function(v){ if(!v) return 0; var t=new Date(v).getTime(); return isNaN(t)?0:t; };
-          // Collect per-agent callback stats across leads.assignments
+          // Seed every active sales/team_leader/manager so the leaderboard never drops an agent
           var byAgent = {};
-          var sumTodayScheduled=0, sumDoneOnTime=0, sumMissed=0;
+          (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="sales_admin"||u.role==="team_leader"||u.role==="manager");}).forEach(function(u){
+            var uid = String(u._id||gid(u));
+            byAgent[uid] = {uid:uid,name:u.name||"Unknown",total:0,doneOnTime:0,missed:0};
+          });
+          var sumScheduled=0, sumDoneOnTime=0, sumMissed=0;
           leads.forEach(function(l){
             (l.assignments||[]).forEach(function(a){
               var cb = parseCb(a.callbackTime);
               if (!cb) return;
+              // Respect the active dashboard date filter (Today/Week/Month/Quarter)
+              if (cb<rangeStart || cb>rangeEnd) return;
               var aid = a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
               var auid = String(aid||"");
-              var aName = a.agentId&&a.agentId.name ? a.agentId.name : (function(){var u=(p.users||[]).find(function(x){return String(x._id||gid(x))===auid;});return u?u.name:"Unknown";})();
-              if (!byAgent[auid]) byAgent[auid] = {uid:auid,name:aName,total:0,doneOnTime:0,missed:0};
+              if (!byAgent[auid]) {
+                var aName = a.agentId&&a.agentId.name ? a.agentId.name : (function(){var u=(p.users||[]).find(function(x){return String(x._id||gid(x))===auid;});return u?u.name:"Unknown";})();
+                byAgent[auid] = {uid:auid,name:aName,total:0,doneOnTime:0,missed:0};
+              }
               byAgent[auid].total++;
               var last = a.lastActionAt ? new Date(a.lastActionAt).getTime() : 0;
               var isDoneOnTime = last>0 && last<=cb;
               var isMissed = cb<nowMs && !isDoneOnTime;
               if (isDoneOnTime) byAgent[auid].doneOnTime++;
               if (isMissed) byAgent[auid].missed++;
-              if (cb>=todayStart.getTime() && cb<todayEnd) {
-                sumTodayScheduled++;
-                if (isDoneOnTime) sumDoneOnTime++;
-                if (isMissed) sumMissed++;
-              }
+              sumScheduled++;
+              if (isDoneOnTime) sumDoneOnTime++;
+              if (isMissed) sumMissed++;
             });
           });
-          var complianceRate = sumTodayScheduled>0 ? Math.round(sumDoneOnTime/sumTodayScheduled*100) : 0;
-          var leaderboard = Object.values(byAgent).filter(function(x){return x.total>0;}).sort(function(a,b){return b.missed-a.missed;}).slice(0,8);
+          var complianceRate = sumScheduled>0 ? Math.round(sumDoneOnTime/sumScheduled*100) : 0;
+          var leaderboard = Object.values(byAgent).sort(function(a,b){ if (b.missed!==a.missed) return b.missed-a.missed; return b.total-a.total; });
           leaderboard.forEach(function(x){ x.rate = x.total>0?Math.round(x.missed/x.total*100):0; });
           var rateColor = function(rate){ return rate>40?"#DC2626":rate>=20?"#F59E0B":"#10B981"; };
           var initialsOfName = function(n){return (n||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();};
+          var filterLabel = filter==="today" ? "Scheduled Today" : filter==="week" ? "Scheduled this Week" : filter==="month" ? "Scheduled this Month" : "Scheduled in Period";
           return <>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
-              <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{sumTodayScheduled}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>Scheduled Today</div></div>
+              <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{sumScheduled}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>{filterLabel}</div></div>
               <div style={{background:"#F0FDF4",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#15803D"}}>{complianceRate}%</div><div style={{fontSize:10,fontWeight:600,color:"#22C55E"}}>On Time</div></div>
             </div>
             <div style={{display:"flex",gap:8,marginBottom:12,fontSize:11}}>
               <div style={{flex:1,padding:"6px 8px",background:"#F0FDF4",borderRadius:8,display:"flex",justifyContent:"space-between"}}><span style={{color:"#15803D"}}>Done on time</span><span style={{fontWeight:700,color:"#15803D"}}>{sumDoneOnTime}</span></div>
               <div style={{flex:1,padding:"6px 8px",background:"#FEF2F2",borderRadius:8,display:"flex",justifyContent:"space-between"}}><span style={{color:"#991B1B"}}>Missed</span><span style={{fontWeight:700,color:"#DC2626"}}>{sumMissed}</span></div>
             </div>
-            <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Leaderboard \u2014 worst first</div>
-            {leaderboard.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0",textAlign:"center"}}>No scheduled callbacks</div> : leaderboard.map(function(x,i){
-              var avBg=["#DBEAFE","#DCFCE7","#FEF3C7","#EDE9FE","#FFE4E6"][i%5];
-              var avC=["#1D4ED8","#166534","#92400E","#5B21B6","#9F1239"][i%5];
-              var rc = rateColor(x.rate);
-              var isWorst = i===0 && x.missed>0;
-              return <div key={x.uid||i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:i<leaderboard.length-1?"1px solid #F8FAFC":"none"}}>
-                <div style={{fontSize:11,color:"#888",width:16,textAlign:"center",fontWeight:600,flexShrink:0}}>{i+1}</div>
-                <div style={{width:28,height:28,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{initialsOfName(x.name)}</div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.name}{isWorst?<span style={{marginLeft:6,fontSize:10,fontWeight:700,color:"#DC2626"}}>\u26a0 Highest risk</span>:null}</div>
-                  <div style={{height:3,borderRadius:2,background:"#F1F5F9",marginTop:3}}><div style={{height:"100%",width:Math.min(100,x.rate)+"%",background:rc,borderRadius:2}}/></div>
-                </div>
-                <div style={{textAlign:"right",flexShrink:0}}>
-                  <div style={{fontSize:13,fontWeight:700,color:x.missed>3?"#DC2626":"#334155"}}>{x.missed}</div>
-                  <div style={{fontSize:10,color:"#94A3B8"}}>of {x.total} \u00b7 <span style={{color:rc,fontWeight:700}}>{x.rate}%</span></div>
-                </div>
-              </div>;
-            })}
+            <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Leaderboard — worst first</div>
+            {leaderboard.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0",textAlign:"center"}}>No agents to show</div> : <div style={{maxHeight:220,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
+              {leaderboard.map(function(x,i){
+                var avBg=["#DBEAFE","#DCFCE7","#FEF3C7","#EDE9FE","#FFE4E6"][i%5];
+                var avC=["#1D4ED8","#166534","#92400E","#5B21B6","#9F1239"][i%5];
+                var rc = rateColor(x.rate);
+                var isWorst = i===0 && x.missed>0;
+                return <div key={x.uid||i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:i<leaderboard.length-1?"1px solid #F8FAFC":"none"}}>
+                  <div style={{fontSize:11,color:"#888",width:16,textAlign:"center",fontWeight:600,flexShrink:0}}>{i+1}</div>
+                  <div style={{width:28,height:28,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{initialsOfName(x.name)}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.name}{isWorst?<span style={{marginLeft:6,fontSize:10,fontWeight:700,color:"#DC2626"}}>⚠ Highest risk</span>:null}</div>
+                    <div style={{height:3,borderRadius:2,background:"#F1F5F9",marginTop:3}}><div style={{height:"100%",width:Math.min(100,x.rate)+"%",background:rc,borderRadius:2}}/></div>
+                  </div>
+                  <div style={{textAlign:"right",flexShrink:0}}>
+                    <div style={{fontSize:13,fontWeight:700,color:x.missed>3?"#DC2626":"#334155"}}>{x.missed}</div>
+                    <div style={{fontSize:10,color:"#94A3B8"}}>of {x.total} · <span style={{color:rc,fontWeight:700}}>{x.rate}%</span></div>
+                  </div>
+                </div>;
+              })}
+            </div>}
           </>;
         })()}
       </>)}

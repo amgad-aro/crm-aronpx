@@ -1490,16 +1490,19 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       });
       var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
       var avgResp = rtCount>0 ? respH.toFixed(1) : null;
-      // Callback compliance per agent
+      // Callback compliance per agent — filtered by active date range
       var totalCallbacks=0, doneOnTime=0, missed=0;
       var nowMs = now.getTime();
-      agentLeads.forEach(function(l){
+      // Count from all leads (not just agentLeads in range) so callbacks outside the lead-assignedAt
+      // window but within the callback date range are still captured.
+      leads.forEach(function(l){
         (l.assignments||[]).forEach(function(a){
           var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
           if (String(aid)!==uid) return;
           if (!a.callbackTime) return;
           var cb = new Date(a.callbackTime).getTime();
           if (isNaN(cb)) return;
+          if (cb<rangeStart || cb>rangeEnd) return;
           totalCallbacks++;
           var last = a.lastActionAt ? new Date(a.lastActionAt).getTime() : 0;
           var onTime = last>0 && last<=cb;
@@ -1599,28 +1602,28 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
     var avgLeads=leadsPerAgent.length>0?leadsPerAgent.reduce(function(s,x){return s+x;},0)/leadsPerAgent.length:0;
     var overloaded=agentPerf.filter(function(a){return a.leads>avgLeads*1.3;}).length;
 
-    // Top-level callback compliance summary (today's scheduled callbacks)
-    var _todayEnd = todayStart.getTime() + DAY;
-    var cbScheduledToday=0, cbDoneOnTime=0, cbMissed=0;
+    // Top-level callback compliance summary — respects the active date filter
+    var cbScheduled=0, cbDoneOnTime=0, cbMissed=0;
     leads.forEach(function(l){
       (l.assignments||[]).forEach(function(a){
         if (!a.callbackTime) return;
         var cb = new Date(a.callbackTime).getTime();
         if (isNaN(cb)) return;
-        if (cb<todayStart.getTime() || cb>=_todayEnd) return;
-        cbScheduledToday++;
+        if (cb<rangeStart || cb>rangeEnd) return;
+        cbScheduled++;
         var last = a.lastActionAt ? new Date(a.lastActionAt).getTime() : 0;
         var onTime = last>0 && last<=cb;
         if (onTime) cbDoneOnTime++;
         else if (cb<now.getTime()) cbMissed++;
       });
     });
-    var cbComplianceRate = cbScheduledToday>0 ? Math.round(cbDoneOnTime/cbScheduledToday*100) : 0;
-    var cbLeaderboard = agentPerf.slice().filter(function(a){return a.totalCallbacks>0;}).sort(function(a,b){return b.missed-a.missed;}).slice(0,10).map(function(a){return {agentId:a.agentId,name:a.name,totalCallbacks:a.totalCallbacks,doneOnTime:a.doneOnTime,missed:a.missed,missedRate:a.missedRate};});
+    var cbComplianceRate = cbScheduled>0 ? Math.round(cbDoneOnTime/cbScheduled*100) : 0;
+    // Leaderboard: include every sales/team_leader/manager agent (even with 0 callbacks), sorted worst-first
+    var cbLeaderboard = agentPerf.slice().sort(function(a,b){ if (b.missed!==a.missed) return b.missed-a.missed; return (b.totalCallbacks||0)-(a.totalCallbacks||0); }).map(function(a){return {agentId:a.agentId,name:a.name,totalCallbacks:a.totalCallbacks||0,doneOnTime:a.doneOnTime||0,missed:a.missed||0,missedRate:a.missedRate||0};});
 
     res.json({
       filter,rangeStart,rangeEnd,
-      callbackCompliance:{scheduledToday:cbScheduledToday,doneOnTime:cbDoneOnTime,missed:cbMissed,complianceRate:cbComplianceRate,leaderboard:cbLeaderboard},
+      callbackCompliance:{scheduled:cbScheduled,scheduledToday:cbScheduled,doneOnTime:cbDoneOnTime,missed:cbMissed,complianceRate:cbComplianceRate,leaderboard:cbLeaderboard},
       kpis:{leadsToday,drToday,drCount,dealsCount,contactedCount,callbacksToday,meetingsToday,interestedToday,dealsMonth,convRate,contactedPct:leads.length>0?Math.round(contacted/leads.length*100):0},
       campaignPerformance,funnel,
       hotAlerts:{untouched48h,overdueCallbacks,noRotationCount},
