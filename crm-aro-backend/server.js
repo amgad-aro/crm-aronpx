@@ -38,6 +38,8 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   lastActivityTime:{type:Date,default:Date.now}, archived:{type:Boolean,default:false}, isVIP:{type:Boolean,default:false},
   eoiDeposit:{type:String,default:""}, eoiDate:{type:String,default:""},
   eoiApproved:{type:Boolean,default:false}, eoiImage:{type:String,default:""},
+  eoiDocuments:[{type:String}],
+  stages:{type:mongoose.Schema.Types.Mixed,default:{}},
   dealApproved:{type:Boolean,default:false}, dealImages:[{type:String}],
   commissionClaimDate:{type:String,default:""}, commissionClaimed:{type:Boolean,default:false},
   splitAgent2Id:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
@@ -651,6 +653,38 @@ app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async f
     var update = {}; update[field] = imageData;
     var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
     res.json(lead);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== EOI DOCUMENTS (images + PDFs) =====
+app.post("/api/leads/:id/eoi-documents", auth, async function(req, res) {
+  try {
+    var raw = (req.body && req.body.fileData) || "";
+    if (!raw || typeof raw !== "string") return res.status(400).json({ error: "fileData is required" });
+    var m = raw.match(/^data:(application\/pdf|image\/(?:jpeg|jpg|png|webp));base64,(.+)$/i);
+    if (!m) return res.status(400).json({ error: "Only PDF/JPEG/PNG/WEBP data URLs allowed" });
+    var buf;
+    try { buf = Buffer.from(m[2], "base64"); } catch(e){ return res.status(400).json({ error: "Invalid base64 data" }); }
+    if (!buf || !buf.length) return res.status(400).json({ error: "Invalid file data" });
+    if (buf.length > 6 * 1024 * 1024) return res.status(400).json({ error: "File too large (max 6MB)" });
+    var lead = await Lead.findByIdAndUpdate(req.params.id, { $push: { eoiDocuments: raw } }, { new: true }).populate("agentId", "name title");
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    res.json(lead);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/leads/:id/delete-eoi-document", auth, async function(req, res) {
+  try {
+    var index = req.body && Number(req.body.index);
+    var lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    var docs = lead.eoiDocuments || [];
+    if (!(index >= 0 && index < docs.length)) return res.status(400).json({ error: "Invalid index" });
+    docs.splice(index, 1);
+    lead.eoiDocuments = docs;
+    await lead.save();
+    var populated = await Lead.findById(req.params.id).populate("agentId", "name title");
+    res.json(populated);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

@@ -193,6 +193,7 @@ var STATUSES = function(t) { return [
   { value: "NotInterested", label: t.notInterested, bg: "#F1F5F9", color: "#64748B" },
   { value: "NoAnswer", label: t.noAnswer, bg: "#E0E7FF", color: "#4338CA" },
   { value: "DoneDeal", label: t.doneDeal, bg: "#DCFCE7", color: "#15803D" },
+  { value: "Cancelled", label: "Cancelled", bg: "#FEE2E2", color: "#B91C1C" },
 ]; };
 
 var DR_STATUSES = function(t) { return STATUSES(t).filter(function(s){return s.value!=="NewLead";}); };
@@ -542,7 +543,7 @@ var Sidebar = function(p) {
   var isSalesOrTL = p.cu.role==="sales"||p.cu.role==="team_leader";
   var items = [
     {id:"dashboard",icon:Home,label:t.dashboard},
-    isSalesOrTL&&{id:"myday",icon:CheckCircle,label:t.myDay},
+    p.cu.role==="team_leader"&&{id:"myday",icon:CheckCircle,label:t.myDay},
     {id:"leads",icon:Users,label:t.leads},
     {id:"dailyReq",icon:ClipboardList,label:t.dailyReq},
     {id:"deals",icon:Briefcase,label:t.deals},
@@ -1245,8 +1246,10 @@ var LeadsPage = function(p) {
     if(l.archived) return false;
     var matchSource = isReq?l.source==="Daily Request":l.source!=="Daily Request";
     if(!matchSource) return false;
-    // Hide EOI and DoneDeal from Leads page — they have their own pages
+    // Hide EOI and DoneDeal from Leads page — they have their own pages.
+    // Also hide Cancelled leads that came from EOI (they live in the EOI Cancelled tab).
     if(!isReq && (l.status==="EOI"||l.status==="DoneDeal")) return false;
+    if(!isReq && l.status==="Cancelled" && (l.eoiDate||l.eoiImage||l.eoiApproved||(l.eoiDocuments||[]).length>0)) return false;
     // Manager: hide leads with no agent in daily request
     if(isReq && (p.cu.role==="manager"||p.cu.role==="team_leader") && !l.agentId) return false;
     return true;
@@ -2113,7 +2116,7 @@ var DashboardPage = function(p) {
 
   var timeStr = new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
   var hourNow = new Date().getHours();
-  var greeting = hourNow<6 ? "Good Night \ud83d\ude34" : hourNow<12 ? "Good Morning \u2600\ufe0f" : hourNow<18 ? "Good Afternoon \ud83c\udf24\ufe0f" : hourNow<24 ? "Good Evening \ud83c\udf06" : "Good Night \ud83d\ude34";
+  var greeting = hourNow<6 ? "Good Night \ud83d\ude34" : hourNow<12 ? "Good Morning \u2600\ufe0f" : hourNow<18 ? "Good Afternoon \ud83c\udf24\ufe0f" : hourNow<24 ? "Good Evening \ud83c\udf19" : "Good Night \ud83d\ude34";
 
   if(!leads.length) return <div style={{padding:40,textAlign:"center",color:"#94A3B8",fontSize:14}}>Loading data...</div>;
 
@@ -2803,17 +2806,17 @@ var DashboardPage = function(p) {
             if (p.nav) p.nav("leads");
           };
           var rows=[
-            {dot:"#EF4444",t:untouched+" untouched leads",s:"no calls yet",onClick:function(){gotoSpecial("untouched");}},
-            {dot:"#F59E0B",t:missingFBCount+" missing feedback",s:"no notes",onClick:function(){gotoSpecial("missingFeedback");}},
-            {dot:"#F97316",t:overdue+" overdue callbacks",s:"past scheduled",onClick:function(){gotoFilter("CallBack");}},
-            {dot:"#DC2626",t:stale48Count+" stale 48h+",s:"no activity",onClick:function(){gotoSpecial("stale48h");}},
-            {dot:"#6366F1",t:rotationsMonth+" rotations this month",s:rotMonthAuto+" auto \u00b7 "+rotMonthManual+" manual",onClick:function(){gotoSpecial("rotatedThisMonth");}},
-            {dot:"#7C3AED",t:lockedCount+" leads locked",s:"noRotation flag",onClick:function(){gotoSpecial("noRotation");}}
+            {dot:"#EF4444",n:untouched,t:"untouched leads",s:"no action taken",onClick:function(){gotoSpecial("untouched");}},
+            {dot:"#F59E0B",n:missingFBCount,t:"missing feedback",s:"no notes",onClick:function(){gotoSpecial("missingFeedback");}},
+            {dot:"#F97316",n:overdue,t:"overdue callbacks",s:"past scheduled",onClick:function(){gotoFilter("CallBack");}},
+            {dot:"#DC2626",n:stale48Count,t:"stale 48h+",s:"no activity",onClick:function(){gotoSpecial("stale48h");}},
+            {dot:"#6366F1",n:rotationsMonth,t:"rotations this month",s:rotMonthAuto+" auto \u00b7 "+rotMonthManual+" manual",onClick:function(){gotoSpecial("rotatedThisMonth");}},
+            {dot:"#7C3AED",n:lockedCount,t:"leads locked",s:"noRotation flag",onClick:function(){gotoSpecial("noRotation");}}
           ];
           return rows.map(function(a,i){
-            return <div key={i} onClick={a.onClick} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:i<rows.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
-              <div style={{width:8,height:8,borderRadius:"50%",background:a.dot,flexShrink:0,marginTop:3}}/>
-              <div><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{a.t}</div><div style={{fontSize:11,color:"#94A3B8"}}>{a.s}</div></div>
+            return <div key={i} onClick={a.onClick} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:i<rows.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:a.dot,flexShrink:0}}/>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}><span style={{fontSize:18,fontWeight:800,color:a.dot,marginRight:6}}>{a.n}</span>{a.t}</div><div style={{fontSize:11,color:"#94A3B8"}}>{a.s}</div></div>
             </div>;
           });
         })()}
@@ -3055,7 +3058,14 @@ var DashboardPage = function(p) {
 // ===== EOI PAGE =====
 var EOIPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
-  var eoiLeads=p.leads.filter(function(l){return l.status==="EOI"&&!l.archived;});
+  var [eoiTab,setEoiTab]=useState("pending");
+  // All leads that are currently EOI OR were cancelled from EOI (identified by any EOI artifact).
+  var wasEOI = function(l){return l.eoiDate || l.eoiImage || l.eoiApproved || (l.eoiDocuments||[]).length>0;};
+  var eoiScope=p.leads.filter(function(l){return !l.archived && (l.status==="EOI" || (l.status==="Cancelled" && wasEOI(l)));});
+  var eoiPending = eoiScope.filter(function(l){return l.status==="EOI" && !l.eoiApproved;});
+  var eoiApprovedList = eoiScope.filter(function(l){return l.status==="EOI" && l.eoiApproved;});
+  var eoiCancelled = eoiScope.filter(function(l){return l.status==="Cancelled";});
+  var eoiLeads = eoiTab==="pending" ? eoiPending : eoiTab==="approved" ? eoiApprovedList : eoiCancelled;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var total=eoiLeads.reduce(function(s,d){return s+parseBudget(d.budget);},0);
@@ -3063,6 +3073,8 @@ var EOIPage = function(p) {
   var [showAdd,setShowAdd]=useState(false);
   var [selectedEOI,setSelectedEOI]=useState(null);
   var [imgUploading,setImgUploading]=useState(false);
+  var [docUploading,setDocUploading]=useState(false);
+  var [cancelling,setCancelling]=useState(false);
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
 
   var archiveLead=async function(lid){
@@ -3112,6 +3124,55 @@ var EOIPage = function(p) {
     }catch(e){alert(e.message);}
   };
 
+  var cancelEOI=async function(lead){
+    if(!isOnlyAdmin) return;
+    if(!window.confirm("Cancel this EOI and rotate the lead to another agent?")) return;
+    setCancelling(true);
+    try{
+      // 1) Flip status to Cancelled so it moves to the Cancelled tab
+      var updated=await apiFetch("/api/leads/"+gid(lead),"PUT",{status:"Cancelled", eoiApproved:false},p.token);
+      // 2) Rotate to the next active sales agent (skip the current one)
+      var currentAid = updated&&updated.agentId?(updated.agentId._id?String(updated.agentId._id):String(updated.agentId)) : (lead.agentId&&lead.agentId._id?String(lead.agentId._id):String(lead.agentId||""));
+      var pool = (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="sales_admin") && String(u._id||gid(u))!==currentAid;});
+      var target = pool.length>0 ? pool[Math.floor(Math.random()*pool.length)] : null;
+      if (target) {
+        try { updated = await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:String(target._id||gid(target)),reason:"manual"},p.token); }
+        catch(rotErr){ /* rotation failed but status is cancelled; keep going */ }
+      }
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+      if(selectedEOI&&gid(selectedEOI)===gid(lead)) setSelectedEOI(updated);
+    }catch(e){alert(e.message||"Cancel failed");}
+    setCancelling(false);
+  };
+
+  var handleDocUpload=async function(e,lead){
+    var file=e.target.files[0]; if(!file) return;
+    if (file.size>6*1024*1024) { alert("File too large (max 6MB)"); return; }
+    setDocUploading(true);
+    try{
+      var dataUrl = await new Promise(function(resolve,reject){
+        var reader=new FileReader();
+        reader.onload=function(ev){resolve(ev.target.result);};
+        reader.onerror=function(){reject(new Error("Read failed"));};
+        reader.readAsDataURL(file);
+      });
+      var updated=await apiFetch("/api/leads/"+gid(lead)+"/eoi-documents","POST",{fileData:dataUrl},p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+      if(selectedEOI&&gid(selectedEOI)===gid(lead)) setSelectedEOI(updated);
+    }catch(ex){alert("Upload failed: "+(ex.message||ex));}
+    setDocUploading(false);
+    try{ e.target.value=""; }catch(er){}
+  };
+
+  var deleteDoc=async function(lead,index){
+    if(!window.confirm("Remove this document?")) return;
+    try{
+      var updated=await apiFetch("/api/leads/"+gid(lead)+"/delete-eoi-document","POST",{index:index},p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+      if(selectedEOI&&gid(selectedEOI)===gid(lead)) setSelectedEOI(updated);
+    }catch(e){alert(e.message||"Delete failed");}
+  };
+
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
@@ -3119,6 +3180,12 @@ var EOIPage = function(p) {
         {total>0&&<div style={{ fontSize:13, fontWeight:700, color:"#9333EA", background:"#F3E8FF", padding:"5px 14px", borderRadius:20 }}>Total: {total.toLocaleString()} EGP</div>}
       </div>
       {(isAdmin||p.cu.role==="sales")&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 14px", fontSize:12 }}><Plus size={13}/> Add EOI</Btn>}
+    </div>
+    <div style={{ display:"flex", gap:6, marginBottom:14, flexWrap:"wrap" }}>
+      {[["pending","\u23f3 Pending",eoiPending.length,"#B45309","#FEF3C7"],["approved","\u2705 Approved",eoiApprovedList.length,"#15803D","#DCFCE7"],["cancelled","\u274c Cancelled",eoiCancelled.length,"#B91C1C","#FEE2E2"]].map(function(tab){
+        var active = eoiTab===tab[0];
+        return <button key={tab[0]} onClick={function(){setSelectedEOI(null);setEoiTab(tab[0]);}} style={{ padding:"7px 14px", borderRadius:9, border:active?"1px solid "+tab[3]:"1px solid #E8ECF1", background:active?tab[4]:"#fff", color:active?tab[3]:C.textLight, fontSize:12, fontWeight:active?700:600, cursor:"pointer" }}>{tab[1]} ({tab[2]})</button>;
+      })}
     </div>
 
     {showAdd&&<Modal show={true} onClose={function(){setShowAdd(false);}} title={"➕ Add EOI"}>
@@ -3204,9 +3271,15 @@ var EOIPage = function(p) {
       <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"14px 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
-          {isOnlyAdmin&&<button onClick={function(){toggleApproved(selectedEOI,"eoiApproved");}} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
-            {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
-          </button>}
+          {isOnlyAdmin&&<div style={{ display:"flex", gap:6 }}>
+            {selectedEOI.status==="EOI"&&<button onClick={function(){toggleApproved(selectedEOI,"eoiApproved");}} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
+              {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
+            </button>}
+            {selectedEOI.status==="EOI"&&<button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
+              {cancelling?"Cancelling…":"❌ Cancel"}
+            </button>}
+            {selectedEOI.status==="Cancelled"&&<span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ Cancelled</span>}
+          </div>}
         </div>
         <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedEOI.name}</div>
         <div style={{ color:"rgba(255,255,255,0.7)", fontSize:11, marginTop:2 }}>{selectedEOI.phone}</div>
@@ -3238,6 +3311,26 @@ var EOIPage = function(p) {
               {imgUploading?"Uploading...":"📤 Upload EOI Image"}
               <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
             </label>}
+        </div>
+
+        {/* EOI Documents (images + PDFs) */}
+        <div style={{ marginTop:12 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📄 EOI Documents ({(selectedEOI.eoiDocuments||[]).length})</div>
+          {(selectedEOI.eoiDocuments||[]).length>0&&<div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:6, marginBottom:8 }}>
+            {(selectedEOI.eoiDocuments||[]).map(function(doc,idx){
+              var isPdf = typeof doc==="string" && doc.indexOf("application/pdf")>=0;
+              return <div key={idx} style={{ position:"relative", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#F8FAFC", aspectRatio:"1/1" }}>
+                {isPdf
+                  ? <a href={doc} target="_blank" rel="noreferrer" style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", textDecoration:"none", color:"#DC2626", fontSize:10, fontWeight:700, padding:4, textAlign:"center" }}><span style={{ fontSize:22 }}>📕</span>PDF {idx+1}</a>
+                  : <img src={doc} alt={"doc-"+idx} onClick={function(){var w=window.open();w.document.write("<img src='"+doc+"' style='max-width:100%;'>");}} style={{ width:"100%", height:"100%", objectFit:"cover", cursor:"zoom-in" }}/>}
+                {isOnlyAdmin&&<button onClick={function(){deleteDoc(selectedEOI,idx);}} title="Remove" style={{ position:"absolute", top:2, right:2, width:18, height:18, borderRadius:"50%", border:"none", background:"rgba(220,38,38,0.9)", color:"#fff", fontSize:10, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>×</button>}
+              </div>;
+            })}
+          </div>}
+          <label style={{ display:"block", padding:"8px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+            {docUploading?"Uploading…":"📎 Upload EOI Document (image or PDF)"}
+            <input type="file" accept="image/*,application/pdf" style={{ display:"none" }} onChange={function(e){handleDocUpload(e,selectedEOI);}}/>
+          </label>
         </div>
       </div>
     </div>}
@@ -3422,9 +3515,19 @@ var DealsPage = function(p) {
   });
   var filteredTotal=filteredDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
 
-  // Get stages from localStorage
-  var getStages=function(lid){try{return JSON.parse(localStorage.getItem("crm_stages_"+lid)||"{}");} catch(e){return {};}};
-  var saveStages=function(lid,stages){try{localStorage.setItem("crm_stages_"+lid,JSON.stringify(stages));}catch(e){}};
+  // Get stages from the lead document (server-side, shared across admins). Falls back to legacy localStorage if the lead doesn't have one yet.
+  var getStages=function(lid){
+    var lead = (p.leads||[]).find(function(l){return gid(l)===lid;});
+    if (lead && lead.stages && typeof lead.stages==="object" && Object.keys(lead.stages).length>0) return lead.stages;
+    try{return JSON.parse(localStorage.getItem("crm_stages_"+lid)||"{}");}catch(e){return {};}
+  };
+  var saveStages=async function(lid,stages){
+    try{localStorage.setItem("crm_stages_"+lid,JSON.stringify(stages));}catch(e){}
+    try{
+      var updated=await apiFetch("/api/leads/"+lid,"PUT",{stages:stages},p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?updated:l;});});
+    }catch(e){ /* keep local copy on failure */ }
+  };
   var [stagesForm,setStagesForm]=useState({contract:false,contractDate:"",payment1:false,payment1Date:"",payment1Amount:"",payment2:false,payment2Date:"",payment2Amount:""});
 
   var archiveDeal=async function(lid){
@@ -5774,7 +5877,7 @@ export default function CRMApp() {
 
   var handleLogin=function(user,tok,csrfTok){
     setCurrentUser(user); setToken(tok); setCsrfToken(csrfTok); loadData(tok, user); loadNotifications(tok);
-    var defaultPage = (user.role==="sales"||user.role==="team_leader") ? "myday" : "dashboard";
+    var defaultPage = user.role==="team_leader" ? "myday" : "dashboard";
     setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok,csrfToken:csrfTok})); } catch(e){}
   };
