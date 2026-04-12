@@ -911,15 +911,27 @@ var Header = function(p) {
               var teamNames=new Set((p.myTeamUsers||[]).map(function(u){return u.name;}));
               teamNames.add(p.cu.name);
               return teamNames.has(n.agentName);
-            }).map(function(n){var isDeal=n.status==="DoneDeal";return <div key={n._id||n.id} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#FAFFFE", transition:"background 0.2s" }}>
-              <div style={{ width:38, height:38, borderRadius:10, background:isDeal?"linear-gradient(135deg,#DCFCE7,#BBF7D0)":"linear-gradient(135deg,#FFF7ED,#FED7AA)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:18 }}>{isDeal?"🎉":"🎯"}</div>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{isDeal?"Done Deal":"EOI"}{n.leadName?" — "+n.leadName:""}</div>
-                <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
-                <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{timeAgo(n.createdAt||n.time,p.t)}</div>
-              </div>
-              {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#15803D", flexShrink:0 }}/>}
-            </div>;})}
+            }).map(function(n){
+              var isDeal=n.status==="DoneDeal";
+              var canNav = !!(n.leadId && p.leads);
+              var openItem = function(){
+                p.setShowDealNotif(false);
+                if (!canNav) return;
+                var target = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);});
+                if (!target) return;
+                var page = isDeal ? "deals" : "eoi";
+                if (p.onDealNotifClick) p.onDealNotifClick(page, target);
+              };
+              return <div key={n._id||n.id} onClick={canNav?openItem:undefined} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#FAFFFE", transition:"background 0.2s", cursor:canNav?"pointer":"default" }}>
+                <div style={{ width:38, height:38, borderRadius:10, background:isDeal?"linear-gradient(135deg,#DCFCE7,#BBF7D0)":"linear-gradient(135deg,#FFF7ED,#FED7AA)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:18 }}>{isDeal?"🎉":"🎯"}</div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{isDeal?"Done Deal":"EOI"}{n.leadName?" — "+n.leadName:""}</div>
+                  <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
+                  <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{timeAgo(n.createdAt||n.time,p.t)}</div>
+                </div>
+                {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#15803D", flexShrink:0 }}/>}
+              </div>;
+            })}
           </div>
         </div>}
       </div>}
@@ -3129,6 +3141,20 @@ var EOIPage = function(p) {
   var [convertingDeal,setConvertingDeal]=useState(false);
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
 
+  // Deep-link: open the side panel when a caller (e.g. the Deals & EOI notifications bell) navigated here with a lead.
+  useEffect(function(){
+    if (!p.initSelected) return;
+    var target = (p.leads||[]).find(function(l){return gid(l)===gid(p.initSelected);}) || p.initSelected;
+    setSelectedEOI(target);
+    // Jump to whichever tab the row lives in
+    var t1 = target.eoiStatus || "";
+    if (t1==="Pending" || (target.status==="EOI" && !target.eoiApproved)) setEoiTab("pending");
+    else if (t1==="EOI Cancelled" || t1==="Deal Cancelled" || target.status==="Deal Cancelled") setEoiTab("cancelled");
+    else setEoiTab("approved");
+    if (p.setInitSelected) p.setInitSelected(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.initSelected]);
+
   var archiveLead=async function(lid){
     if(!window.confirm(t.archiveConfirm))return;
     try{
@@ -3579,6 +3605,16 @@ var DealsPage = function(p) {
   var [showAdd,setShowAdd]=useState(false);
   var [editDeal,setEditDeal]=useState(null);
   var [selectedDeal,setSelectedDeal]=useState(null);
+  // Deep-link: open the side panel when navigated here with a lead (e.g. from the Deals & EOI notifications bell).
+  useEffect(function(){
+    if (!p.initSelected) return;
+    var target = (p.leads||[]).find(function(l){return gid(l)===gid(p.initSelected);}) || p.initSelected;
+    setSelectedDeal(target);
+    var isCancelled = target.dealStatus==="Deal Cancelled" || target.status==="Deal Cancelled";
+    setDealTab(isCancelled ? "cancelled" : "active");
+    if (p.setInitSelected) p.setInitSelected(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.initSelected]);
   var [stagesModal,setStagesModal]=useState(null);
   var [splitModal,setSplitModal]=useState(null); // lead for split
   var [splitAgent2,setSplitAgent2]=useState("");
@@ -6436,7 +6472,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;

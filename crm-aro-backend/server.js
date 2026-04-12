@@ -1460,9 +1460,28 @@ app.get("/api/notifications", auth, async function(req, res) {
     var query = {};
     if (type) query.type = type;
     var notifs = await Notification.find(query).sort({ createdAt: -1 }).limit(50).lean();
-    var result = notifs.map(function(n) {
-      return Object.assign({}, n, { seen: n.seenBy && n.seenBy.indexOf(String(uid)) !== -1 });
-    });
+    // For deal/EOI notifications, drop entries whose referenced lead no longer exists or was archived.
+    // Rotation notifications don't require this check.
+    var dealIds = notifs.filter(function(n){ return n.type === "deal" && n.leadId; }).map(function(n){ return n.leadId; });
+    var aliveLeadIds = new Set();
+    if (dealIds.length > 0) {
+      var objectIds = dealIds.map(function(id){
+        try { return mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : null; } catch(e){ return null; }
+      }).filter(Boolean);
+      if (objectIds.length > 0) {
+        var alive = await Lead.find({ _id: { $in: objectIds }, archived: { $ne: true } }, { _id: 1 }).lean();
+        alive.forEach(function(l){ aliveLeadIds.add(String(l._id)); });
+      }
+    }
+    var result = notifs
+      .filter(function(n){
+        if (n.type !== "deal") return true;
+        if (!n.leadId) return true; // legacy entries without a leadId — leave visible
+        return aliveLeadIds.has(String(n.leadId));
+      })
+      .map(function(n) {
+        return Object.assign({}, n, { seen: n.seenBy && n.seenBy.indexOf(String(uid)) !== -1 });
+      });
     res.json(result);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
