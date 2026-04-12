@@ -2306,10 +2306,17 @@ var DashboardPage = function(p) {
     return Object.assign({},c,{ip:ip,mp:mp,quality:ip>30?"High":ip>15?"Medium":"Low"});
   });
 
-  // Agent performance — with DR + Resp.Time + new scoring
+  // Agent performance — count leads by assignments[].assignedAt in active range (not lead.createdAt)
   var fAgentPerf=(p.users||[]).filter(function(u){return u.role==="sales"||u.role==="sales_admin";}).map(function(u){
     var uid=String(u._id||gid(u));
-    var al=fLeads.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid;});});
+    var al=leads.filter(function(l){
+      return (l.assignments||[]).some(function(a){
+        var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+        if (String(aid)!==uid) return false;
+        var t = a.assignedAt ? new Date(a.assignedAt).getTime() : 0;
+        return !isNaN(t) && t>=rangeStart && t<=rangeEnd;
+      });
+    });
     var adr=fDR.filter(function(r){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;return String(aid)===uid;});
     var aint=al.filter(function(l){return (l.assignments||[]).some(function(a){return interestedStatuses.includes(a.status);})||interestedStatuses.includes(l.status);}).length;
     var ameet=al.filter(function(l){return (l.assignments||[]).some(function(a){return a.status==="Meeting Done"||a.status==="MeetingDone";})||l.status==="MeetingDone";}).length;
@@ -2454,13 +2461,14 @@ var DashboardPage = function(p) {
             <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Untouched Leads</div>
             <span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:6,background:"#FEE2E2",color:"#991B1B"}}>{untouchedLeads.length}</span>
           </div>
-          {untouchedLeads.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>\u2705 All leads have activity</div> : untouchedLeads.map(function(l,i){
+          {untouchedLeads.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} All leads have activity</div> : untouchedLeads.map(function(l,i){
             var hrs = l.createdAt ? Math.round((now-new Date(l.createdAt).getTime())/3600000) : 0;
             var aName = l.agentId && l.agentId.name ? l.agentId.name : (l.agentId ? agentName(l.agentId) : "\u2014");
+            var projectName = (l.project||"\u2014").replace(/_/g," ");
             return <div key={gid(l)} onClick={function(){openLead(l);}} style={{display:"grid",gridTemplateColumns:"1fr auto",gap:6,padding:"8px 0",borderBottom:i<untouchedLeads.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
               <div>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{l.name}</div>
-                <div style={{fontSize:11,color:"#94A3B8"}}>{maskPh(l.phone)} \u00b7 {aName} \u00b7 {l.project||"\u2014"}</div>
+                <div style={{fontSize:11,color:"#94A3B8"}}>{maskPh(l.phone)} {"\u00b7"} {aName} {"\u00b7"} {projectName}</div>
               </div>
               <div style={{fontSize:11,fontWeight:600,color:hrs>48?"#DC2626":"#92400E",alignSelf:"center"}}>{hrs}h</div>
             </div>;
@@ -2476,30 +2484,45 @@ var DashboardPage = function(p) {
             var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
             var aName = a.userId&&a.userId.name?a.userId.name:agentName(aid);
             var lName = a.leadId&&a.leadId.name?a.leadId.name:"";
-            var inits = initialsOf(aName);
-            var avColors=[["#DBEAFE","#1D4ED8"],["#DCFCE7","#166534"],["#FEF3C7","#92400E"],["#EDE9FE","#5B21B6"],["#FFE4E6","#9F1239"],["#CCFBF1","#0F766E"],["#FEE2E2","#991B1B"]];
-            var avc = avColors[Math.abs((aName||"").charCodeAt(0)||0)%avColors.length];
             // Build action label: "Status: X" / "Call initiated" / "DailyReq: X" / "Note added" / etc.
             var aNote = a.note||"";
             var actionLabel = actLabel(a);
+            var feedbackText = aNote;
             if (a.type==="status_change") {
               var m1 = aNote.match(/\[([^\]]+)\]/);
               var statusName = m1 ? m1[1] : (aNote.split(":")[1]||"").trim().split("|")[0].trim();
               actionLabel = "Status: "+(statusName||"changed");
+              // Feedback after "|" separator if present
+              var pipeIdx = aNote.indexOf("|");
+              feedbackText = pipeIdx>=0 ? aNote.slice(pipeIdx+1).trim() : "";
             } else if (a.type==="call") {
               actionLabel = "Call initiated";
             } else if (a.type==="note") {
               actionLabel = "Note added";
             } else if (a.type==="reassign") {
               actionLabel = "Reassign";
+              feedbackText = "";
             } else if (a.type==="daily_request" || (aNote.toLowerCase().indexOf("daily")>=0)) {
               actionLabel = "DailyReq: "+((aNote.split(":")[1]||"").trim().split("|")[0].trim()||"updated");
             }
+            // Icon + colors by action type
+            var noteLc = aNote.toLowerCase();
+            var ic;
+            if (a.type==="call") ic={icon:"\ud83d\udcde",bg:"#DCFCE7",fg:"#166534"};
+            else if (a.type==="meeting" || noteLc.indexOf("deal")>=0) ic={icon:"\ud83c\udfc6",bg:"#FEF3C7",fg:"#92400E"};
+            else if (a.type==="status_change") ic={icon:"\u2197",bg:"#EDE9FE",fg:"#5B21B6"};
+            else if (a.type==="note") ic={icon:"\ud83d\udcdd",bg:"#FFE4E6",fg:"#9F1239"};
+            else if (noteLc.indexOf("callback")>=0) ic={icon:"\ud83d\udcc5",bg:"#DBEAFE",fg:"#1D4ED8"};
+            else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
+            if (feedbackText && feedbackText.length>60) feedbackText = feedbackText.slice(0,60)+"\u2026";
             return <div key={a._id||i} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:i<todayActs.length-1?"1px solid #F1F5F9":"none"}}>
-              <div style={{width:34,height:34,borderRadius:"50%",background:avc[0],color:avc[1],display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>{inits}</div>
+              <div style={{width:34,height:34,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{aName}{lName?" \u2014 "+lName:""}</div>
-                <div style={{fontSize:11,color:"#64748B",marginTop:1}}>{actionLabel}</div>
+                <div style={{fontSize:11,color:"#64748B",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  <span style={{fontWeight:600,color:ic.fg}}>{actionLabel}</span>
+                  {feedbackText?<span style={{color:"#94A3B8"}}>{" \u2014 "+feedbackText}</span>:null}
+                </div>
               </div>
               <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:500}}>{timeAgoShort(a.createdAt)}</div>
             </div>;

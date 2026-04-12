@@ -1435,10 +1435,17 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
     var overdueCallbacks = leads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime)<now;}).length;
     var noRotationCount = leads.filter(function(l){return l.locked;}).length;
 
-    // Agent performance
+    // Agent performance — count leads by assignments[].assignedAt in active range (not lead.createdAt)
     var agentPerf = users.map(function(u){
       var uid=String(u._id);
-      var agentLeads=leads.filter(function(l){return l.assignments&&l.assignments.some(function(a){return String(a.agentId&&a.agentId._id?a.agentId._id:a.agentId)===uid;});});
+      var agentLeads=leads.filter(function(l){
+        return (l.assignments||[]).some(function(a){
+          var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+          if (String(aid)!==uid) return false;
+          var t = toMs(a.assignedAt);
+          return inRange(t);
+        });
+      });
       var agentActs=activities.filter(function(a){return String(a.userId&&a.userId._id?a.userId._id:a.userId)===uid;});
       var agentDRs=agentActs.filter(function(a){return a.type==="daily_request";});
       var agentFollowups=agentActs.filter(function(a){return a.type==="followup";}).length;
