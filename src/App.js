@@ -2337,8 +2337,10 @@ var DashboardPage = function(p) {
     var adr=fDR.filter(function(r){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;return String(aid)===uid;});
     var aint=al.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && interestedStatuses.includes(a.status);});}).length;
     var ameet=al.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && (a.status==="Meeting Done"||a.status==="MeetingDone");});}).length;
-    // Rotations away: leads where this agent's id is in previousAgentIds (they were rotated off)
-    var arotated=leads.filter(function(l){return (l.previousAgentIds||[]).some(function(pid){var id=pid&&pid._id?pid._id:pid;return String(id)===uid;});}).length;
+    // Rotations: lead-level agentHistory stores {action:"Rotation", fromAgent:<name>, toAgent:<name>, ...}
+    var uname = u.name || "";
+    var arotOut=leads.filter(function(l){return (l.agentHistory||[]).some(function(h){return h && h.action==="Rotation" && h.fromAgent===uname;});}).length;
+    var arotIn=leads.filter(function(l){return (l.agentHistory||[]).some(function(h){return h && h.action==="Rotation" && h.toAgent===uname;});}).length;
     // No Answer: leads where this agent's assignment.status === "NoAnswer" (or "No Answer")
     var anoAns=al.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && (a.status==="NoAnswer"||a.status==="No Answer");});}).length;
     var afup=al.filter(function(l){return l.callbackTime;}).length;
@@ -2394,7 +2396,7 @@ var DashboardPage = function(p) {
     var actScore=Math.min(100,(al.length+adr.length)*5);
     var rtScore=respH>0?Math.max(0,100-respH*2):50;
     var score=Math.round(actScore*0.4 + mp*0.3 + ip*0.2 + rtScore*0.1);
-    return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,calls:acalls,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,rotated:arotated,noAnswer:anoAns,respTime:respH>0?respH.toFixed(1):"\u2014",score:score,quality:qualityScore};
+    return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,calls:acalls,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,rotOut:arotOut,rotIn:arotIn,noAnswer:anoAns,respTime:respH>0?respH.toFixed(1):"\u2014",score:score,quality:qualityScore};
   }).sort(function(a,b){return b.quality-a.quality;});
 
   // Untouched leads — no activity since assignment
@@ -2616,8 +2618,8 @@ var DashboardPage = function(p) {
         <div style={{fontSize:10,color:"#94A3B8"}} title="Quality = activity + feedback + response time + meetings + callbacks">Quality = activity, feedback, response time, meetings & callbacks</div>
       </div>
       <div style={{overflowX:"auto",overflowY:"auto",maxHeight:360,WebkitOverflowScrolling:"touch",width:"100%"}}>
-      <div style={{display:"grid",gridTemplateColumns:"30px 150px 50px 45px 55px 55px 70px 60px 50px 55px 50px 65px 55px 70px 80px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:1020}}>
-        {["","Agent","Leads","DR","Total","Calls","Followups","Overdue","Int","Meet","Deals","Rotation","No Ans","Resp.Time","Quality"].map(function(h,idx){return <div key={h+idx} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
+      <div style={{display:"grid",gridTemplateColumns:"30px 150px 50px 45px 55px 55px 70px 60px 50px 55px 50px 55px 55px 55px 70px 80px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:1060}}>
+        {["","Agent","Leads","DR","Total","Calls","Followups","Overdue","Int","Meet","Deals","Rot OUT","Rot IN","No Ans","Resp.Time","Quality"].map(function(h,idx){return <div key={h+idx} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
       </div>
       {fAgentPerf.map(function(a,i){
         var medals=["\ud83e\udd47","\ud83e\udd48","\ud83e\udd49"];
@@ -2626,7 +2628,7 @@ var DashboardPage = function(p) {
         var initials=(a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
         var qBg = a.quality>=80?"#DCFCE7":a.quality>=60?"#FEF3C7":"#FEE2E2";
         var qFg = a.quality>=80?"#166534":a.quality>=60?"#92400E":"#991B1B";
-        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:"30px 150px 50px 45px 55px 55px 70px 60px 50px 55px 50px 65px 55px 70px 80px",gap:4,alignItems:"center",padding:"9px 0",borderBottom:"1px solid #F8FAFC",minWidth:1020}}>
+        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:"30px 150px 50px 45px 55px 55px 70px 60px 50px 55px 50px 55px 55px 55px 70px 80px",gap:4,alignItems:"center",padding:"9px 0",borderBottom:"1px solid #F8FAFC",minWidth:1060}}>
           <div style={{fontSize:11,color:"#888",textAlign:"center",fontWeight:500}}>{i+1}</div>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <div style={{width:28,height:28,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{initials}</div>
@@ -2643,7 +2645,8 @@ var DashboardPage = function(p) {
           <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.interested>0?"#15803D":"#94A3B8"}}>{a.interested}</div>
           <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.meetings>0?"#6D28D9":"#94A3B8"}}>{a.meetings}</div>
           <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#065F46"}}>{a.deals}</div>
-          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.rotated>0?"#B45309":"#94A3B8"}}>{a.rotated||0}</div>
+          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.rotOut>0?"#B45309":"#94A3B8"}} title="Leads rotated away from this agent">{a.rotOut||0}</div>
+          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.rotIn>0?"#0F766E":"#94A3B8"}} title="Leads rotated to this agent">{a.rotIn||0}</div>
           <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.noAnswer>0?"#64748B":"#94A3B8"}}>{a.noAnswer||0}</div>
           <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:"#334155"}}>{a.respTime!=="\u2014"?a.respTime+"h":"\u2014"}</div>
           <div style={{textAlign:"center"}} title="Based on activity, feedback, response time, meetings & callbacks">

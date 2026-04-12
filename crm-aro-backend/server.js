@@ -1460,8 +1460,10 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       var agentInt=agentLeads.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && ["HotCase","Potential","Hot Case","Interested"].includes(a.status);});}).length;
       var agentMeet=agentLeads.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && (a.status==="MeetingDone"||a.status==="Meeting Done");});}).length;
       var agentDeals=agentLeads.filter(function(l){return l.status==="DoneDeal"||l.globalStatus==="donedeal";}).length;
-      // Rotations away from this agent: leads whose previousAgentIds contains this uid
-      var agentRotated=leads.filter(function(l){return (l.previousAgentIds||[]).some(function(pid){var id=pid&&pid._id?pid._id:pid;return String(id)===uid;});}).length;
+      // Rotations: lead-level agentHistory stores {action:"Rotation", fromAgent:<name>, toAgent:<name>}
+      var agentName = u.name || "";
+      var agentRotOut=leads.filter(function(l){return (l.agentHistory||[]).some(function(h){return h && h.action==="Rotation" && h.fromAgent===agentName;});}).length;
+      var agentRotIn=leads.filter(function(l){return (l.agentHistory||[]).some(function(h){return h && h.action==="Rotation" && h.toAgent===agentName;});}).length;
       // No Answer: leads where this agent's assignment.status is NoAnswer
       var agentNoAnswer=agentLeads.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && (a.status==="NoAnswer"||a.status==="No Answer");});}).length;
       var agentFb=agentLeads.filter(function(l){
@@ -1502,7 +1504,7 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       var quality = Math.round(qActivity+qFeedback+qResp+qMeeting+qCallback);
       if (quality>100) quality=100; if (quality<0) quality=0;
       var score = quality;
-      return {agentId:uid,name:u.name,leads:agentLeads.length,dr:agentDRs.length,total:agentLeads.length+agentDRs.length,calls:agentCalls,followups:agentFollowups,overdue:agentOverdue,interested:agentInt,interestedPct:ip,meetings:agentMeet,meetingPct:mp,deals:agentDeals,rotated:agentRotated,noAnswer:agentNoAnswer,respTime:avgResp,score:score,quality:quality};
+      return {agentId:uid,name:u.name,leads:agentLeads.length,dr:agentDRs.length,total:agentLeads.length+agentDRs.length,calls:agentCalls,followups:agentFollowups,overdue:agentOverdue,interested:agentInt,interestedPct:ip,meetings:agentMeet,meetingPct:mp,deals:agentDeals,rotOutCount:agentRotOut,rotInCount:agentRotIn,noAnswer:agentNoAnswer,respTime:avgResp,score:score,quality:quality};
     }).sort(function(a,b){return b.quality-a.quality;});
 
     // Calls today
