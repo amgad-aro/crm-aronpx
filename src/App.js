@@ -1286,7 +1286,9 @@ var LeadsPage = function(p) {
     // Hide EOI and DoneDeal from Leads page — they have their own pages.
     // Also hide Cancelled leads that came from EOI (they live in the EOI Cancelled tab).
     if(!isReq && (l.status==="EOI"||l.status==="DoneDeal")) return false;
-    if(!isReq && l.status==="Deal Cancelled" && (l.eoiDate||l.eoiImage||l.eoiApproved||(l.eoiDocuments||[]).length>0)) return false;
+    // Leads that were cancelled from EOI keep their restored status and reappear here for the rotated agent.
+    // Leads that were status-cancelled via the Deals/status dropdown stay hidden from the Leads page as before.
+    if(!isReq && l.status==="Deal Cancelled" && !(l.eoiStatus==="EOI Cancelled")) return false;
     // Manager: hide leads with no agent in daily request
     if(isReq && (p.cu.role==="manager"||p.cu.role==="team_leader") && !l.agentId) return false;
     return true;
@@ -3113,7 +3115,7 @@ var EOIPage = function(p) {
   var eoiScope=p.leads.filter(function(l){return !l.archived && ((l.eoiStatus && l.eoiStatus.length>0) || l.status==="EOI" || (l.status==="Deal Cancelled" && wasEOI(l)));});
   var eoiPending = eoiScope.filter(function(l){ return l.eoiStatus ? l.eoiStatus==="Pending" : (l.status==="EOI" && !l.eoiApproved); });
   var eoiApprovedList = eoiScope.filter(function(l){ return l.eoiStatus ? l.eoiStatus==="Approved" : (l.status==="EOI" && l.eoiApproved); });
-  var eoiCancelled = eoiScope.filter(function(l){ return l.eoiStatus==="Deal Cancelled" || l.status==="Deal Cancelled"; });
+  var eoiCancelled = eoiScope.filter(function(l){ return l.eoiStatus==="EOI Cancelled" || l.eoiStatus==="Deal Cancelled" || l.status==="Deal Cancelled"; });
   var eoiLeads = eoiTab==="pending" ? eoiPending : eoiTab==="approved" ? eoiApprovedList : eoiCancelled;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
@@ -3176,7 +3178,7 @@ var EOIPage = function(p) {
   var cancelEOI=async function(lead){
     if(p.cu.role!=="admin") { alert("Only admin can cancel an EOI"); return; }
     var restoredStatus = lead.preEoiStatus || "HotCase";
-    if(!window.confirm("Cancel this EOI? The lead will return to \""+restoredStatus+"\" status, be rotated to another agent, and stay visible here under Deal Cancelled.")) return;
+    if(!window.confirm("Cancel this EOI? The lead will return to \""+restoredStatus+"\" status, be rotated to another agent, and stay visible here under EOI Cancelled.")) return;
     setCancelling(true);
     try{
       // 1) Dedicated EOI-cancel endpoint restores status, sets eoiStatus="Deal Cancelled", syncs the DR mirror.
@@ -3234,7 +3236,7 @@ var EOIPage = function(p) {
       {(isAdmin||p.cu.role==="sales")&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 14px", fontSize:12 }}><Plus size={13}/> Add EOI</Btn>}
     </div>
     <div style={{ display:"flex", gap:6, marginBottom:14, flexWrap:"wrap" }}>
-      {[["approved","\u2705 Approved",eoiApprovedList.length,"#15803D","#DCFCE7"],["pending","\u23f3 Pending",eoiPending.length,"#B45309","#FEF3C7"],["cancelled","\u274c Deal Cancelled",eoiCancelled.length,"#B91C1C","#FEE2E2"]].map(function(tab){
+      {[["approved","\u2705 Approved",eoiApprovedList.length,"#15803D","#DCFCE7"],["pending","\u23f3 Pending",eoiPending.length,"#B45309","#FEF3C7"],["cancelled","\u274c EOI Cancelled",eoiCancelled.length,"#B91C1C","#FEE2E2"]].map(function(tab){
         var active = eoiTab===tab[0];
         return <button key={tab[0]} onClick={function(){setSelectedEOI(null);setEoiTab(tab[0]);}} style={{ padding:"7px 14px", borderRadius:9, border:active?"1px solid "+tab[3]:"1px solid #E8ECF1", background:active?tab[4]:"#fff", color:active?tab[3]:C.textLight, fontSize:12, fontWeight:active?700:600, cursor:"pointer" }}>{tab[1]} ({tab[2]})</button>;
       })}
@@ -3324,13 +3326,18 @@ var EOIPage = function(p) {
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
           {(p.cu.role==="admin")&&<div style={{ display:"flex", gap:6 }}>
-            {(selectedEOI.eoiStatus!=="Deal Cancelled" && selectedEOI.status!=="Deal Cancelled")&&<button onClick={function(){toggleApproved(selectedEOI,"eoiApproved");}} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
-              {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
-            </button>}
-            {(selectedEOI.eoiStatus!=="Deal Cancelled" && selectedEOI.status!=="Deal Cancelled")&&<button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
-              {cancelling?"Cancelling…":"❌ Cancel"}
-            </button>}
-            {(selectedEOI.eoiStatus==="Deal Cancelled" || selectedEOI.status==="Deal Cancelled")&&<span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ Deal Cancelled</span>}
+            {(function(){
+              var isCancelled = selectedEOI.eoiStatus==="EOI Cancelled" || selectedEOI.eoiStatus==="Deal Cancelled" || selectedEOI.status==="Deal Cancelled";
+              if (isCancelled) return <span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ EOI Cancelled</span>;
+              return <>
+                <button onClick={function(){toggleApproved(selectedEOI,"eoiApproved");}} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
+                  {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
+                </button>
+                <button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
+                  {cancelling?"Cancelling…":"❌ Cancel"}
+                </button>
+              </>;
+            })()}
           </div>}
         </div>
         <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedEOI.name}</div>

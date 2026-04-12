@@ -724,7 +724,7 @@ app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
     var existing = await Lead.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Lead not found" });
     var restored = existing.preEoiStatus || "HotCase";
-    var update = { status: restored, eoiStatus: "Deal Cancelled", eoiApproved: false, preEoiStatus: "", globalStatus: "active", lastActivityTime: new Date() };
+    var update = { status: restored, eoiStatus: "EOI Cancelled", eoiApproved: false, preEoiStatus: "", globalStatus: "active", lastActivityTime: new Date() };
     await Lead.findByIdAndUpdate(req.params.id, { $set: update });
     // Also sync the current agent's assignment.status so per-agent views reflect the restored state
     await Lead.updateOne(
@@ -733,7 +733,7 @@ app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
     );
     // Mirror back to the originating Daily Request (if any)
     if (existing.source === "Daily Request" && existing.phone) {
-      try { await DailyRequest.updateOne({ phone: existing.phone }, { $set: { status: restored, eoiStatus: "Deal Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() } }); }
+      try { await DailyRequest.updateOne({ phone: existing.phone }, { $set: { status: restored, eoiStatus: "EOI Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() } }); }
       catch(syncErr){ console.error("DR sync (eoi-cancel) error:", syncErr.message); }
     }
     try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[" + restored + "] EOI cancelled — restored previous status" }); } catch(e){}
@@ -748,14 +748,14 @@ app.post("/api/daily-requests/:id/eoi-cancel", auth, async function(req, res) {
     var existing = await DailyRequest.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Daily Request not found" });
     var restored = existing.preEoiStatus || "HotCase";
-    var update = { status: restored, eoiStatus: "Deal Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() };
+    var update = { status: restored, eoiStatus: "EOI Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() };
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
-    // Mirror the paired Lead record too so the EOI page still sees it under Deal Cancelled
+    // Mirror the paired Lead record too so the EOI page still sees it under EOI Cancelled
     if (existing.phone) {
       try {
         var mirror = await Lead.findOne({ phone: existing.phone, source: "Daily Request" });
         if (mirror) {
-          await Lead.findByIdAndUpdate(mirror._id, { status: restored, eoiStatus: "Deal Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() });
+          await Lead.findByIdAndUpdate(mirror._id, { status: restored, eoiStatus: "EOI Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() });
         }
       } catch(syncErr){ console.error("Lead mirror (eoi-cancel) error:", syncErr.message); }
     }
