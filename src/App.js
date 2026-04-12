@@ -3178,8 +3178,7 @@ var EOIPage = function(p) {
 
   var cancelEOI=async function(lead){
     if(p.cu.role!=="admin") { alert("Only admin can cancel an EOI"); return; }
-    var restoredStatus = lead.preEoiStatus || "HotCase";
-    if(!window.confirm("Cancel this EOI? The lead will return to \""+restoredStatus+"\" status, be rotated to another agent, and stay visible here under EOI Cancelled.")) return;
+    if(!window.confirm("Cancel this EOI? The lead will return to Hot Case status and be rotated to another agent.")) return;
     setCancelling(true);
     try{
       // 1) Dedicated EOI-cancel endpoint restores status, sets eoiStatus="Deal Cancelled", syncs the DR mirror.
@@ -4038,8 +4037,7 @@ var DealsPage = function(p) {
                   {selectedDeal.dealApproved?"✅ Approved":"⏳ Approve"}
                 </button>
                 <button disabled={dealCancelling} onClick={async function(){
-                  var restoredStatus = selectedDeal.preDealStatus || "HotCase";
-                  if(!window.confirm("Cancel this deal? The lead will return to \""+restoredStatus+"\" status, be rotated to another agent, and stay visible here under Deal Cancelled.")) return;
+                  if(!window.confirm("Cancel this deal? The lead will return to Hot Case status and be rotated to another agent.")) return;
                   setDealCancelling(true);
                   try{
                     var updated = await apiFetch("/api/leads/"+gid(selectedDeal)+"/deal-cancel","POST",{},p.token);

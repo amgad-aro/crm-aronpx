@@ -736,7 +736,8 @@ app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Only admin can cancel an EOI" });
     var existing = await Lead.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Lead not found" });
-    var restored = existing.preEoiStatus || "HotCase";
+    // Rule: any cancel returns the lead to HotCase — preEoiStatus is ignored.
+    var restored = "HotCase";
     var update = { status: restored, eoiStatus: "EOI Cancelled", eoiApproved: false, preEoiStatus: "", globalStatus: "active", lastActivityTime: new Date() };
     await Lead.findByIdAndUpdate(req.params.id, { $set: update });
     // Also sync the current agent's assignment.status so per-agent views reflect the restored state
@@ -749,7 +750,7 @@ app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
       try { await DailyRequest.updateOne({ phone: existing.phone }, { $set: { status: restored, eoiStatus: "EOI Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() } }); }
       catch(syncErr){ console.error("DR sync (eoi-cancel) error:", syncErr.message); }
     }
-    try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[" + restored + "] EOI cancelled — restored previous status" }); } catch(e){}
+    try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[HotCase] EOI cancelled — returned to Hot Case" }); } catch(e){}
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(lead);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -760,7 +761,8 @@ app.post("/api/daily-requests/:id/eoi-cancel", auth, async function(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Only admin can cancel an EOI" });
     var existing = await DailyRequest.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Daily Request not found" });
-    var restored = existing.preEoiStatus || "HotCase";
+    // Rule: any cancel returns the DR to HotCase — preEoiStatus is ignored.
+    var restored = "HotCase";
     var update = { status: restored, eoiStatus: "EOI Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() };
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
     // Mirror the paired Lead record too so the EOI page still sees it under EOI Cancelled
@@ -772,7 +774,7 @@ app.post("/api/daily-requests/:id/eoi-cancel", auth, async function(req, res) {
         }
       } catch(syncErr){ console.error("Lead mirror (eoi-cancel) error:", syncErr.message); }
     }
-    try { await Activity.create({ userId: req.user.id, leadId: r._id, type: "status_change", note: "[" + restored + "] DR EOI cancelled" }); } catch(e){}
+    try { await Activity.create({ userId: req.user.id, leadId: r._id, type: "status_change", note: "[HotCase] DR EOI cancelled — returned to Hot Case" }); } catch(e){}
     res.json(r);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -820,7 +822,8 @@ app.post("/api/leads/:id/deal-cancel", auth, async function(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Only admin can cancel a deal" });
     var existing = await Lead.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Lead not found" });
-    var restored = existing.preDealStatus || "HotCase";
+    // Rule: any cancel returns the lead to HotCase — preDealStatus is ignored.
+    var restored = "HotCase";
     var update = { status: restored, dealStatus: "Deal Cancelled", dealApproved: false, preDealStatus: "", globalStatus: "active", lastActivityTime: new Date() };
     await Lead.findByIdAndUpdate(req.params.id, { $set: update });
     // Sync current agent's assignment.status
@@ -833,7 +836,7 @@ app.post("/api/leads/:id/deal-cancel", auth, async function(req, res) {
       try { await DailyRequest.updateOne({ phone: existing.phone }, { $set: { status: restored, dealStatus: "Deal Cancelled", preDealStatus: "", lastActivityTime: new Date() } }); }
       catch(syncErr){ console.error("DR sync (deal-cancel) error:", syncErr.message); }
     }
-    try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[" + restored + "] Deal cancelled — restored previous status" }); } catch(e){}
+    try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[HotCase] Deal cancelled — returned to Hot Case" }); } catch(e){}
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(lead);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -844,7 +847,8 @@ app.post("/api/daily-requests/:id/deal-cancel", auth, async function(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Only admin can cancel a deal" });
     var existing = await DailyRequest.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Daily Request not found" });
-    var restored = existing.preDealStatus || "HotCase";
+    // Rule: any cancel returns the DR to HotCase — preDealStatus is ignored.
+    var restored = "HotCase";
     var update = { status: restored, dealStatus: "Deal Cancelled", preDealStatus: "", lastActivityTime: new Date() };
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
     if (existing.phone) {
@@ -855,7 +859,7 @@ app.post("/api/daily-requests/:id/deal-cancel", auth, async function(req, res) {
         }
       } catch(syncErr){ console.error("Lead mirror (deal-cancel) error:", syncErr.message); }
     }
-    try { await Activity.create({ userId: req.user.id, leadId: r._id, type: "status_change", note: "[" + restored + "] DR deal cancelled" }); } catch(e){}
+    try { await Activity.create({ userId: req.user.id, leadId: r._id, type: "status_change", note: "[HotCase] DR deal cancelled — returned to Hot Case" }); } catch(e){}
     res.json(r);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
