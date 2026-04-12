@@ -1965,12 +1965,29 @@ var DashboardPage = function(p) {
   var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [filter, setFilter] = useState("today");
   var [qOpen, setQOpen] = useState(false);
+  var [todayActivities, setTodayActivities] = useState(null);
+  var [seeAllOpen, setSeeAllOpen] = useState(false);
   // eslint-disable-next-line no-unused-vars
   var [tick, setTick] = useState(0);
   useEffect(function(){
     var id = setInterval(function(){ setTick(function(t){return t+1;}); }, 1000);
     return function(){ clearInterval(id); };
   },[]);
+  // Fetch ALL today's activities (not limited to the paginated 20) for the "Today's Activities" card; refresh every 30s
+  useEffect(function(){
+    if (!p.token) return;
+    var cancelled = false;
+    var load = function(){
+      var ts = new Date(); ts.setHours(0,0,0,0);
+      apiFetch("/api/activities?since="+encodeURIComponent(ts.toISOString())+"&limit=1000","GET",null,p.token)
+        .then(function(d){ if(cancelled) return; var arr = (d&&d.data)||(Array.isArray(d)?d:[]); setTodayActivities(arr); })
+        .catch(function(){ if(!cancelled && todayActivities===null) setTodayActivities([]); });
+    };
+    load();
+    var id = setInterval(load, 30000);
+    return function(){ cancelled = true; clearInterval(id); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token]);
   var now = Date.now();
   var DAY=86400000, WEEK=7*DAY, MONTH=30*DAY;
   var rangeMs = filter==="today"?DAY:filter==="week"?WEEK:MONTH;
@@ -2323,6 +2340,26 @@ var DashboardPage = function(p) {
     var afup=al.filter(function(l){return l.callbackTime;}).length;
     var aover=al.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now&&!["MeetingDone","DoneDeal","EOI"].includes(l.status);}).length;
     var adeals=al.filter(function(l){return l.status==="DoneDeal"||l.globalStatus==="donedeal";}).length;
+    // Activities for this agent in the active range (from fetched today pool or p.activities fallback)
+    var _actPool = (todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
+    var aActs = _actPool.filter(function(x){
+      var xid = x.userId&&x.userId._id?x.userId._id:x.userId;
+      if (String(xid)!==uid) return false;
+      var t = x.createdAt?new Date(x.createdAt).getTime():0;
+      return t>=rangeStart && t<=rangeEnd;
+    });
+    var acalls = aActs.filter(function(x){ return x.type==="call" || ((x.note||"").toLowerCase().indexOf("call")>=0); }).length;
+    // Feedback quality: % of this agent's leads that have notes/feedback populated
+    var aFbLeads = al.filter(function(l){
+      if (l.notes && String(l.notes).trim().length>0) return true;
+      if (l.lastFeedback && String(l.lastFeedback).trim().length>0) return true;
+      return (l.assignments||[]).some(function(a){
+        var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+        if (String(aid)!==uid) return false;
+        return (a.notes && String(a.notes).trim().length>0) || (a.lastFeedback && String(a.lastFeedback).trim().length>0);
+      });
+    }).length;
+    var fbPct = al.length>0 ? (aFbLeads/al.length) : 0;
     // Resp.Time: avg (assignment.lastActionAt - lead.createdAt) for this agent's assignments
     var rtSum=0, rtCount=0;
     al.forEach(function(l){
@@ -2337,12 +2374,24 @@ var DashboardPage = function(p) {
     var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
     var ip=al.length>0?Math.round(aint/al.length*100):0;
     var mp=al.length>0?Math.round(ameet/al.length*100):0;
-    // Score: 40% activity + 30% meetings% + 20% interested% + 10% resp.time score (lower is better)
+    // Callback compliance: (callbacks not overdue) / total callbacks
+    var cbTotal = afup;
+    var cbOnTime = afup - aover;
+    var cbPct = cbTotal>0 ? (cbOnTime/cbTotal) : (afup===0?1:0);
+    // Quality score (0-100): activity(25) + feedback(20) + resp time(20) + meeting rate(15) + callback compliance(20)
+    var qActivity = al.length>0 ? Math.min(25, (aActs.length/al.length)*25) : 0;
+    var qFeedback = fbPct * 20;
+    var qResp = respH>0 ? Math.max(0, 20 - respH*2) : (rtCount>0?20:10);
+    var qMeeting = al.length>0 ? Math.min(15, (ameet/al.length)*100*0.15) : 0;
+    var qCallback = cbPct * 20;
+    var qualityScore = Math.round(qActivity + qFeedback + qResp + qMeeting + qCallback);
+    if (qualityScore>100) qualityScore = 100; if (qualityScore<0) qualityScore = 0;
+    // Legacy composite score (kept for internal sort compat)
     var actScore=Math.min(100,(al.length+adr.length)*5);
     var rtScore=respH>0?Math.max(0,100-respH*2):50;
     var score=Math.round(actScore*0.4 + mp*0.3 + ip*0.2 + rtScore*0.1);
-    return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,respTime:respH>0?respH.toFixed(1):"\u2014",score:score};
-  }).sort(function(a,b){return b.score-a.score;});
+    return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,calls:acalls,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,respTime:respH>0?respH.toFixed(1):"\u2014",score:score,quality:qualityScore};
+  }).sort(function(a,b){return b.quality-a.quality;});
 
   // Untouched leads — no activity since assignment
   var untouchedLeads = leads.filter(function(l){
@@ -2353,8 +2402,26 @@ var DashboardPage = function(p) {
     return true;
   }).slice(0,20);
 
-  // Today's activities feed
-  var todayActs = (p.activities||[]).filter(function(a){return a.createdAt&&new Date(a.createdAt).getTime()>=todayStart.getTime();}).sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);}).slice(0,20);
+  // Today's activities feed — prefer the dedicated fetch (all today's activities), fall back to the paginated p.activities
+  var _actsPool = (todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
+  var _actsToday = _actsPool.filter(function(a){return a.createdAt&&new Date(a.createdAt).getTime()>=todayStart.getTime();});
+  // Deduplicate: prefer _id; fall back to userId+leadId+type+second-truncated timestamp
+  var _seen = {};
+  var todayActsAll = [];
+  _actsToday.forEach(function(a){
+    var id = a._id ? String(a._id) : null;
+    if (!id) {
+      var uid = String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
+      var lid = String(a.leadId&&a.leadId._id?a.leadId._id:a.leadId||"");
+      var sec = a.createdAt ? Math.floor(new Date(a.createdAt).getTime()/1000) : 0;
+      id = uid+"|"+lid+"|"+(a.type||"")+"|"+sec;
+    }
+    if (_seen[id]) return;
+    _seen[id] = true;
+    todayActsAll.push(a);
+  });
+  todayActsAll.sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
+  var todayActs = todayActsAll.slice(0,7);
 
   // Mask phone
   var maskPh = function(ph){if(!ph)return "";if(ph.length<5)return ph;return ph.slice(0,3)+"****"+ph.slice(-2);};
@@ -2477,7 +2544,7 @@ var DashboardPage = function(p) {
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
             <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Today's Activities</div>
-            <span style={{fontSize:11,fontWeight:600,color:"#1D4ED8",cursor:"pointer"}} onClick={function(){p.nav&&p.nav("activities");}}>View All ({todayActs.length})</span>
+            <span style={{fontSize:11,fontWeight:600,color:"#1D4ED8",cursor:"pointer"}} onClick={function(){setSeeAllOpen(true);}}>View All ({todayActsAll.length})</span>
           </div>
           <div style={{maxHeight:378,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
           {todayActs.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity yet today</div> : todayActs.map(function(a,i){
@@ -2514,14 +2581,14 @@ var DashboardPage = function(p) {
             else if (a.type==="note") ic={icon:"\ud83d\udcdd",bg:"#FFE4E6",fg:"#9F1239"};
             else if (noteLc.indexOf("callback")>=0) ic={icon:"\ud83d\udcc5",bg:"#DBEAFE",fg:"#1D4ED8"};
             else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
-            if (feedbackText && feedbackText.length>60) feedbackText = feedbackText.slice(0,60)+"\u2026";
-            return <div key={a._id||i} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:i<todayActs.length-1?"1px solid #F1F5F9":"none"}}>
+            if (feedbackText && feedbackText.length>80) feedbackText = feedbackText.slice(0,80)+"\u2026";
+            return <div key={(a._id||"")+"-"+i} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:i<todayActs.length-1?"1px solid #F1F5F9":"none"}}>
               <div style={{width:34,height:34,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{aName}{lName?" \u2014 "+lName:""}</div>
                 <div style={{fontSize:11,color:"#64748B",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                   <span style={{fontWeight:600,color:ic.fg}}>{actionLabel}</span>
-                  {feedbackText?<span style={{color:"#94A3B8"}}>{" \u2014 "+feedbackText}</span>:null}
+                  {feedbackText?<span style={{color:"#64748B"}}> {"\u00b7"} {feedbackText}</span>:null}
                 </div>
               </div>
               <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:500}}>{timeAgoShort(a.createdAt)}</div>
@@ -2535,33 +2602,41 @@ var DashboardPage = function(p) {
     {sec("Team Performance")}
     <div style={{marginBottom:14}}>
     {card(<>
-      <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Agent Performance</div>
-      <div style={{overflowX:"auto",overflowY:"auto",maxHeight:320,WebkitOverflowScrolling:"touch",width:"100%"}}>
-      <div style={{display:"grid",gridTemplateColumns:"150px 50px 45px 55px 70px 60px 65px 65px 50px 70px 55px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:850}}>
-        {["Agent","Leads","DR","Total","Followups","Overdue","Int%","Meet%","Deals","Resp.Time","Score"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
+      <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:6}}>
+        <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Agent Performance</div>
+        <div style={{fontSize:10,color:"#94A3B8"}} title="Quality = activity + feedback + response time + meetings + callbacks">Quality = activity, feedback, response time, meetings & callbacks</div>
+      </div>
+      <div style={{overflowX:"auto",overflowY:"auto",maxHeight:360,WebkitOverflowScrolling:"touch",width:"100%"}}>
+      <div style={{display:"grid",gridTemplateColumns:"150px 50px 45px 55px 55px 70px 60px 50px 65px 50px 70px 80px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:960}}>
+        {["Agent","Leads","DR","Total","Calls","Followups","Overdue","Int","Meet%","Deals","Resp.Time","Quality"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
       </div>
       {fAgentPerf.map(function(a,i){
-        var medals=["🥇","🥈","🥉"];
+        var medals=["\ud83e\udd47","\ud83e\udd48","\ud83e\udd49"];
         var avBg=["#DBEAFE","#DCFCE7","#FEF3C7","#EDE9FE","#FFE4E6"][i%5];
         var avC=["#1D4ED8","#166534","#92400E","#5B21B6","#9F1239"][i%5];
         var initials=(a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
-        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:"150px 50px 45px 55px 70px 60px 65px 65px 50px 70px 55px",gap:4,alignItems:"center",padding:"9px 0",borderBottom:"1px solid #F8FAFC",minWidth:850}}>
+        var qBg = a.quality>=80?"#DCFCE7":a.quality>=60?"#FEF3C7":"#FEE2E2";
+        var qFg = a.quality>=80?"#166534":a.quality>=60?"#92400E":"#991B1B";
+        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:"150px 50px 45px 55px 55px 70px 60px 50px 65px 50px 70px 80px",gap:4,alignItems:"center",padding:"9px 0",borderBottom:"1px solid #F8FAFC",minWidth:960}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <div style={{width:28,height:28,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{initials}</div>
             <div><div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>{a.name}</div>
-              <div style={{height:3,borderRadius:2,background:"#F1F5F9",width:55,marginTop:3}}><div style={{height:"100%",width:Math.min(100,a.score)+"%",background:avC,borderRadius:2}}/></div>
+              <div style={{height:3,borderRadius:2,background:"#F1F5F9",width:55,marginTop:3}}><div style={{height:"100%",width:Math.min(100,a.quality)+"%",background:qFg,borderRadius:2}}/></div>
             </div>
           </div>
           <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{a.leads}</div>
           <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#0F172A"}}>{a.dr}</div>
           <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{a.total}</div>
+          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:a.calls>0?"#166534":"#94A3B8"}}>{a.calls}</div>
           <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#334155"}}>{a.followups}</div>
           <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:a.overdue>0?"#DC2626":"#94A3B8"}}>{a.overdue}</div>
-          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.ip>30?"#15803D":a.ip>15?"#92400E":"#94A3B8"}}>{a.ip}%</div>
+          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.interested>0?"#15803D":"#94A3B8"}}>{a.interested}</div>
           <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.mp>20?"#6D28D9":a.mp>10?"#92400E":"#94A3B8"}}>{a.mp}%</div>
           <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#065F46"}}>{a.deals}</div>
           <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:"#334155"}}>{a.respTime!=="\u2014"?a.respTime+"h":"\u2014"}</div>
-          <div style={{fontSize:12,fontWeight:700,textAlign:"center",color:a.score>=70?"#15803D":a.score>=50?"#92400E":"#94A3B8"}}>{medals[i]||""} {a.score}</div>
+          <div style={{textAlign:"center"}} title="Based on activity, feedback, response time, meetings & callbacks">
+            <span style={{display:"inline-block",fontSize:12,fontWeight:700,padding:"3px 8px",borderRadius:8,background:qBg,color:qFg,minWidth:40}}>{medals[i]||""} {a.quality}</span>
+          </div>
         </div>;
       })}
       </div>
@@ -2570,8 +2645,24 @@ var DashboardPage = function(p) {
 
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))",gap:14}}>
       {card(<>
-        <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Leads by Status</div>
-        {[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"],["No Answer","NoAnswer","#CBD5E1"]].map(function(s){return bRow(s[0],sc[s[1]]||0,total,s[2]);})}
+        <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Management Alerts</div>
+        {[
+          {dot:"#EF4444",t:untouched+" untouched leads",s:"no calls yet",onClick:function(){gotoFilter("NewLead");}},
+          {dot:"#F59E0B",t:missingFBCount+" missing feedback",s:"no notes",onClick:function(){gotoFilter("all");}},
+          {dot:"#F97316",t:overdue+" overdue callbacks",s:"past scheduled",onClick:function(){gotoFilter("CallBack");}},
+          {dot:"#DC2626",t:stale48Count+" stale 48h+",s:"no activity",onClick:function(){gotoFilter("all");}},
+          {dot:"#6366F1",t:rotationsTotal+" total rotations",s:"all time",onClick:function(){gotoFilter("all");}},
+          {dot:"#7C3AED",t:lockedCount+" leads locked",s:"noRotation flag",onClick:function(){gotoFilter("all");}}
+        ].map(function(a,i){
+          return <div key={i} onClick={a.onClick} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:i<5?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
+            <div style={{width:8,height:8,borderRadius:"50%",background:a.dot,flexShrink:0,marginTop:3}}/>
+            <div><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{a.t}</div><div style={{fontSize:11,color:"#94A3B8"}}>{a.s}</div></div>
+          </div>;
+        })}
+        <div style={{marginTop:10,padding:10,background:"#F8FAFC",borderRadius:8}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}><span style={{color:"#64748B",fontWeight:500}}>Leads quality</span><span style={{fontWeight:700,color:"#0F172A"}}>{Math.max(0,100-Math.round((untouched+overdue)*100/Math.max(total,1)))}%</span></div>
+          <div style={{height:4,background:"#E2E8F0",borderRadius:2}}><div style={{height:"100%",width:Math.max(0,100-Math.round((untouched+overdue)*100/Math.max(total,1)))+"%",background:"#10B981",borderRadius:2}}/></div>
+        </div>
       </>)}
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Lead Aging</div>
@@ -2591,26 +2682,54 @@ var DashboardPage = function(p) {
         {[["Interested",interested,"#10B981"],["No Answer",sc["NoAnswer"]||0,"#94A3B8"],["Not Int.",sc["NotInterested"]||0,"#EF4444"],["Call Back",sc["CallBack"]||0,"#F59E0B"]].map(function(s){return bRow(s[0],s[1],total,s[2]);})}
       </>)}
       {card(<>
-        <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Management Alerts</div>
-        {[
-          {dot:"#EF4444",t:untouched+" untouched leads",s:"no calls yet",onClick:function(){gotoFilter("NewLead");}},
-          {dot:"#F59E0B",t:missingFBCount+" missing feedback",s:"no notes",onClick:function(){gotoFilter("all");}},
-          {dot:"#F97316",t:overdue+" overdue callbacks",s:"past scheduled",onClick:function(){gotoFilter("CallBack");}},
-          {dot:"#DC2626",t:stale48Count+" stale 48h+",s:"no activity",onClick:function(){gotoFilter("all");}},
-          {dot:"#6366F1",t:rotationsTotal+" total rotations",s:"all time",onClick:function(){gotoFilter("all");}},
-          {dot:"#7C3AED",t:lockedCount+" leads locked",s:"noRotation flag",onClick:function(){gotoFilter("all");}}
-        ].map(function(a,i){
-          return <div key={i} onClick={a.onClick} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:i<5?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
-            <div style={{width:8,height:8,borderRadius:"50%",background:a.dot,flexShrink:0,marginTop:3}}/>
-            <div><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{a.t}</div><div style={{fontSize:11,color:"#94A3B8"}}>{a.s}</div></div>
-          </div>;
-        })}
-        <div style={{marginTop:10,padding:10,background:"#F8FAFC",borderRadius:8}}>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}><span style={{color:"#64748B",fontWeight:500}}>Data quality</span><span style={{fontWeight:700,color:"#0F172A"}}>{Math.max(0,100-Math.round((untouched+overdue)*100/Math.max(total,1)))}%</span></div>
-          <div style={{height:4,background:"#E2E8F0",borderRadius:2}}><div style={{height:"100%",width:Math.max(0,100-Math.round((untouched+overdue)*100/Math.max(total,1)))+"%",background:"#10B981",borderRadius:2}}/></div>
-        </div>
+        <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Leads by Status</div>
+        {[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"],["No Answer","NoAnswer","#CBD5E1"]].map(function(s){return bRow(s[0],sc[s[1]]||0,total,s[2]);})}
       </>)}
     </div>
+    {seeAllOpen && <div onClick={function(){setSeeAllOpen(false);}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(15,23,42,0.55)",zIndex:1000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 16px",overflowY:"auto"}}>
+      <div onClick={function(e){e.stopPropagation();}} style={{background:"#fff",borderRadius:16,maxWidth:640,width:"100%",padding:"20px 22px",boxShadow:"0 10px 40px rgba(0,0,0,0.2)"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+          <div style={{fontSize:17,fontWeight:700,color:"#0F172A"}}>Today's Activities ({todayActsAll.length})</div>
+          <span style={{fontSize:13,fontWeight:600,color:"#64748B",cursor:"pointer",padding:"4px 10px"}} onClick={function(){setSeeAllOpen(false);}}>{"\u2715"} Close</span>
+        </div>
+        <div style={{maxHeight:"70vh",overflowY:"auto",paddingRight:4}}>
+          {todayActsAll.length===0 ? <div style={{fontSize:13,color:"#94A3B8",padding:"20px 0",textAlign:"center"}}>No activity yet today</div> : todayActsAll.map(function(a,i){
+            var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
+            var aName = a.userId&&a.userId.name?a.userId.name:agentName(aid);
+            var lName = a.leadId&&a.leadId.name?a.leadId.name:"";
+            var aNote = a.note||"";
+            var actionLabel = actLabel(a);
+            var feedbackText = aNote;
+            if (a.type==="status_change") {
+              var m1 = aNote.match(/\[([^\]]+)\]/);
+              var statusName = m1 ? m1[1] : (aNote.split(":")[1]||"").trim().split("|")[0].trim();
+              actionLabel = "Status: "+(statusName||"changed");
+              var pipeIdx = aNote.indexOf("|");
+              feedbackText = pipeIdx>=0 ? aNote.slice(pipeIdx+1).trim() : "";
+            } else if (a.type==="call") { actionLabel = "Call initiated"; }
+            else if (a.type==="note") { actionLabel = "Note added"; }
+            else if (a.type==="reassign") { actionLabel = "Reassign"; feedbackText = ""; }
+            if (feedbackText && feedbackText.length>80) feedbackText = feedbackText.slice(0,80)+"\u2026";
+            var noteLc = aNote.toLowerCase();
+            var ic;
+            if (a.type==="call") ic={icon:"\ud83d\udcde",bg:"#DCFCE7",fg:"#166534"};
+            else if (a.type==="meeting" || noteLc.indexOf("deal")>=0) ic={icon:"\ud83c\udfc6",bg:"#FEF3C7",fg:"#92400E"};
+            else if (a.type==="status_change") ic={icon:"\u2197",bg:"#EDE9FE",fg:"#5B21B6"};
+            else if (a.type==="note") ic={icon:"\ud83d\udcdd",bg:"#FFE4E6",fg:"#9F1239"};
+            else if (noteLc.indexOf("callback")>=0) ic={icon:"\ud83d\udcc5",bg:"#DBEAFE",fg:"#1D4ED8"};
+            else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
+            return <div key={(a._id||"")+"-"+i} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none"}}>
+              <div style={{width:36,height:36,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0}}>{ic.icon}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{aName}{lName?" \u2014 "+lName:""}</div>
+                <div style={{fontSize:12,color:"#64748B",marginTop:2}}><span style={{fontWeight:600,color:ic.fg}}>{actionLabel}</span>{feedbackText?<span style={{color:"#64748B"}}> {"\u00b7"} {feedbackText}</span>:null}</div>
+              </div>
+              <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:500}}>{timeAgoShort(a.createdAt)}</div>
+            </div>;
+          })}
+        </div>
+      </div>
+    </div>}
   </div>;
 };
 

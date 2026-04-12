@@ -924,9 +924,16 @@ app.get("/api/activities", auth, async function(req, res) {
     }
     // manager/admin/sales_admin see all (or server already filtered users)
 
+    // Optional createdAt filter (e.g. since today 00:00)
+    if (req.query.since) {
+      var sinceDate = new Date(req.query.since);
+      if (!isNaN(sinceDate.getTime())) query.createdAt = { $gte: sinceDate };
+    }
+
     // Pagination
     var page = parseInt(req.query.page) || 1;
     var limit = parseInt(req.query.limit) || 20;
+    if (limit > 2000) limit = 2000;
     var skip = (page - 1) * limit;
 
     var total = await Activity.countDocuments(query);
@@ -1446,21 +1453,58 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
           return inRange(t);
         });
       });
-      var agentActs=activities.filter(function(a){return String(a.userId&&a.userId._id?a.userId._id:a.userId)===uid;});
+      var agentActs=activities.filter(function(a){
+        if (String(a.userId&&a.userId._id?a.userId._id:a.userId)!==uid) return false;
+        var t = toMs(a.createdAt);
+        return inRange(t);
+      });
       var agentDRs=agentActs.filter(function(a){return a.type==="daily_request";});
-      var agentFollowups=agentActs.filter(function(a){return a.type==="followup";}).length;
-      var agentOverdue=agentLeads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime)<now;}).length;
-      var agentInt=agentLeads.filter(function(l){return ["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status);}).length;
-      var agentMeet=agentLeads.filter(function(l){return l.status==="MeetingDone"||l.status==="DoneDeal";}).length;
-      var agentDeals=agentLeads.filter(function(l){return l.status==="DoneDeal";}).length;
+      var agentCalls=agentActs.filter(function(a){return a.type==="call" || ((a.note||"").toLowerCase().indexOf("call")>=0);}).length;
+      var agentFollowups=agentLeads.filter(function(l){return l.callbackTime;}).length;
+      var agentOverdue=agentLeads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime)<now&&!["MeetingDone","DoneDeal","EOI"].includes(l.status);}).length;
+      var agentInt=agentLeads.filter(function(l){return ["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status) || (l.assignments||[]).some(function(a){return ["HotCase","Potential","Hot Case","Interested"].includes(a.status);});}).length;
+      var agentMeet=agentLeads.filter(function(l){return l.status==="MeetingDone"||l.status==="DoneDeal" || (l.assignments||[]).some(function(a){return a.status==="MeetingDone"||a.status==="Meeting Done";});}).length;
+      var agentDeals=agentLeads.filter(function(l){return l.status==="DoneDeal"||l.globalStatus==="donedeal";}).length;
+      var agentFb=agentLeads.filter(function(l){
+        if (l.notes && String(l.notes).trim().length>0) return true;
+        if (l.lastFeedback && String(l.lastFeedback).trim().length>0) return true;
+        return (l.assignments||[]).some(function(a){
+          var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+          if (String(aid)!==uid) return false;
+          return (a.notes && String(a.notes).trim().length>0) || (a.lastFeedback && String(a.lastFeedback).trim().length>0);
+        });
+      }).length;
       var ip=agentLeads.length>0?Math.round(agentInt/agentLeads.length*100):0;
       var mp=agentLeads.length>0?Math.round(agentMeet/agentLeads.length*100):0;
-      // Avg response time
-      var respTimes=agentLeads.map(function(l){var firstAct=agentActs.filter(function(a){return String(a.leadId)===String(l._id);}).sort(function(a,b){return new Date(a.createdAt)-new Date(b.createdAt);})[0];if(!firstAct)return null;return (new Date(firstAct.createdAt)-new Date(l.createdAt))/(1000*3600);}).filter(function(x){return x!==null&&x>0;});
-      var avgResp=respTimes.length>0?(respTimes.reduce(function(s,x){return s+x;},0)/respTimes.length).toFixed(1):null;
-      var score=Math.min(100,Math.round(ip*0.35+mp*0.25+(agentFollowups>0?20:0)+(avgResp&&avgResp<4?20:avgResp&&avgResp<8?10:0)));
-      return {agentId:uid,name:u.name,leads:agentLeads.length,dr:agentDRs.length,total:agentLeads.length+agentDRs.length,followups:agentFollowups,overdue:agentOverdue,interested:agentInt,interestedPct:ip,meetings:agentMeet,meetingPct:mp,deals:agentDeals,respTime:avgResp,score:score};
-    }).sort(function(a,b){return b.score-a.score;});
+      // Avg response time: (assignment.lastActionAt - lead.createdAt) for this agent's assignments
+      var rtSum=0, rtCount=0;
+      agentLeads.forEach(function(l){
+        (l.assignments||[]).forEach(function(a){
+          var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+          if(String(aid)===uid && a.lastActionAt && l.createdAt){
+            var diff=new Date(a.lastActionAt).getTime()-new Date(l.createdAt).getTime();
+            if(diff>=0){rtSum+=diff;rtCount++;}
+          }
+        });
+      });
+      var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
+      var avgResp = rtCount>0 ? respH.toFixed(1) : null;
+      // Callback compliance: callbacks not overdue / total callbacks
+      var cbTotal = agentFollowups;
+      var cbOnTime = agentFollowups - agentOverdue;
+      var cbPct = cbTotal>0 ? (cbOnTime/cbTotal) : (agentFollowups===0?1:0);
+      var fbPct = agentLeads.length>0 ? (agentFb/agentLeads.length) : 0;
+      // Quality (0-100): activity(25) + feedback(20) + resp time(20) + meeting rate(15) + callback(20)
+      var qActivity = agentLeads.length>0 ? Math.min(25,(agentActs.length/agentLeads.length)*25) : 0;
+      var qFeedback = fbPct * 20;
+      var qResp = respH>0 ? Math.max(0,20-respH*2) : (rtCount>0?20:10);
+      var qMeeting = agentLeads.length>0 ? Math.min(15,(agentMeet/agentLeads.length)*100*0.15) : 0;
+      var qCallback = cbPct * 20;
+      var quality = Math.round(qActivity+qFeedback+qResp+qMeeting+qCallback);
+      if (quality>100) quality=100; if (quality<0) quality=0;
+      var score = quality;
+      return {agentId:uid,name:u.name,leads:agentLeads.length,dr:agentDRs.length,total:agentLeads.length+agentDRs.length,calls:agentCalls,followups:agentFollowups,overdue:agentOverdue,interested:agentInt,interestedPct:ip,meetings:agentMeet,meetingPct:mp,deals:agentDeals,respTime:avgResp,score:score,quality:quality};
+    }).sort(function(a,b){return b.quality-a.quality;});
 
     // Calls today
     var callsToday=activities.filter(function(a){return a.type==="call"&&a.createdAt&&(now-new Date(a.createdAt))<DAY;}).length;
