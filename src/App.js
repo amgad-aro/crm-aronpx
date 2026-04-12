@@ -2629,7 +2629,7 @@ var DashboardPage = function(p) {
         <div style={{fontSize:10,color:"#94A3B8"}} title="Quality = activity + feedback + response time + meetings + callbacks">Quality = activity, feedback, response time, meetings & callbacks</div>
       </div>
       <div style={{overflowX:"auto",overflowY:"auto",maxHeight:360,WebkitOverflowScrolling:"touch",width:"100%"}}>
-      <div style={{display:"grid",gridTemplateColumns:"30px 150px 50px 45px 55px 55px 70px 60px 50px 55px 50px 55px 55px 55px 70px 80px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:1060}}>
+      <div style={{display:"grid",gridTemplateColumns:"30px 150px 50px 45px 55px 55px 70px 60px 50px 55px 50px 55px 55px 55px 70px 80px",gap:4,paddingTop:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:1060,position:"sticky",top:0,zIndex:10,background:"#fff"}}>
         {["","Agent","Leads","DR","Total","Calls","Followups","Overdue","Int","Meet","Deals","Rot OUT","Rot IN","No Ans","Resp.Time","Quality"].map(function(h,idx){return <div key={h+idx} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
       </div>
       {fAgentPerf.map(function(a,i){
