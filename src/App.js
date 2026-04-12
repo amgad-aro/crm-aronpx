@@ -3204,12 +3204,13 @@ var EOIPage = function(p) {
   var convertToDeal=async function(lead){
     if(p.cu.role!=="admin") { alert("Only admin can convert an EOI to a deal"); return; }
     if(lead.eoiStatus!=="Approved") { alert("EOI must be Approved before converting to a Done Deal"); return; }
-    if(!window.confirm("Convert this EOI into a Done Deal? The lead will move to the Deals page and stay visible here under Approved for history.")) return;
+    if(!window.confirm("Convert this EOI to a Done Deal? The lead will move to the Deals page.")) return;
     setConvertingDeal(true);
     try{
       var updated = await apiFetch("/api/leads/"+gid(lead)+"/eoi-to-deal","POST",{},p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
-      if(selectedEOI&&gid(selectedEOI)===gid(lead)) setSelectedEOI(updated);
+      // Close the side panel (the lead no longer belongs to the EOI page)
+      setSelectedEOI(null);
       // Navigate the admin to the Deals page so the new deal is visible immediately
       if (p.nav) p.nav("deals");
     }catch(e){alert(e.message||"Convert failed");}
@@ -3359,7 +3360,6 @@ var EOIPage = function(p) {
                 {selectedEOI.eoiStatus==="Approved"&&!isDoneDeal&&<button disabled={convertingDeal} onClick={function(){convertToDeal(selectedEOI);}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"5px 12px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
                   {convertingDeal?"Converting…":"✅ Done Deal"}
                 </button>}
-                {isDoneDeal&&<span style={{ background:"rgba(34,197,94,0.35)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>✅ Converted to Deal</span>}
               </>;
             })()}
           </div>}

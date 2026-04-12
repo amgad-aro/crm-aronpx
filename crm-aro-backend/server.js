@@ -790,6 +790,8 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       dealDate: existing.dealDate || todayIso,
       dealStatus: "",
       preDealStatus: existing.status || "EOI",
+      // Clear eoiStatus so the record no longer shows in any EOI tab — it belongs to Deals now.
+      eoiStatus: "",
       globalStatus: "donedeal",
       lastActivityTime: new Date()
     };
