@@ -2035,11 +2035,11 @@ var DashboardPage = function(p) {
     </div>;
   };
 
-  var card=function(children,extra){return <div style={Object.assign({background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,padding:"20px"},extra||{})}>{children}</div>;};
+  var card=function(children,extra){return <div style={Object.assign({background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:"20px 22px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"},extra||{})}>{children}</div>;};
   var sec=function(label){return <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:"0.1em",textTransform:"uppercase",margin:"24px 0 12px"}}>{label}</div>;};
   var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
 
-  if(!isOnlyAdmin) return <div style={{padding:"20px 24px",background:"#F8FAFC"}}>
+  if(!isOnlyAdmin) return <div style={{padding:"20px 24px",background:"#F1F5F9"}}>
     {sec("My KPIs")}
     <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14}}>
       {kpiCard("My Leads",leads.filter(function(l){return l.assignments&&l.assignments.some(function(a){return String(a.agentId&&a.agentId._id?a.agentId._id:a.agentId)===String(p.cu.id);});}).length,"assigned","#EFF6FF","#1D4ED8",function(){p.nav("leads");})}
@@ -2049,11 +2049,15 @@ var DashboardPage = function(p) {
     </div>
   </div>;
 
-  return <div style={{padding:"20px 24px 40px",background:"#F8FAFC"}}>
+  var hour = new Date().getHours();
+  var greeting = hour<12 ? "Good Morning \ud83c\udf05" : hour<17 ? "Good Afternoon \u2600\ufe0f" : "Good Evening \ud83c\udf19";
+  var timeStr = new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+
+  return <div style={{padding:"20px 24px 40px",background:"#F1F5F9"}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24,flexWrap:"wrap",gap:8}}>
       <div>
-        <div style={{fontSize:22,fontWeight:700,color:"#0F172A"}}>{p.cu.name||"Dashboard"}</div>
-        <div style={{fontSize:12,color:"#94A3B8",marginTop:2}}>{new Date().toDateString()}</div>
+        <div style={{fontSize:22,fontWeight:700,color:"#0F172A"}}>{greeting+" "+p.cu.name}</div>
+        <div style={{fontSize:12,color:"#94A3B8",marginTop:2}}>{timeStr+" \u00b7 "+new Date().toDateString()}</div>
       </div>
       <div style={{display:"flex",gap:6,alignItems:"center"}}>
         {[["today","Today"],["week","This Week"],["month","This Month"]].map(function(f){
@@ -2140,15 +2144,16 @@ var DashboardPage = function(p) {
     <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:14,marginBottom:14}}>
     {card(<>
       <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Agent Performance</div>
-      <div style={{display:"grid",gridTemplateColumns:"160px 60px 70px 60px 70px 60px 60px 60px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4}}>
-        {["Agent","Leads","Interested","Int%","Meetings","Overdue","Deals","Score"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
+      <div style={{overflowX:"auto",overflowY:"auto",maxHeight:280}}>
+      <div style={{display:"grid",gridTemplateColumns:"150px 50px 45px 55px 70px 60px 70px 50px 65px 50px 50px 55px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:800}}>
+        {["Agent","Leads","DR","Total","Followups","Overdue","Interested","Int%","Meetings","Meet%","Deals","Score"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
       </div>
       {agentPerf.map(function(a,i){
         var medals=["🥇","🥈","🥉"];
         var avBg=["#DBEAFE","#DCFCE7","#FEF3C7","#EDE9FE","#FFE4E6"][i%5];
         var avC=["#1D4ED8","#166534","#92400E","#5B21B6","#9F1239"][i%5];
         var initials=(a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
-        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:"160px 60px 70px 60px 70px 60px 60px 60px",gap:4,alignItems:"center",padding:"9px 0",borderBottom:"1px solid #F8FAFC"}}>
+        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:"150px 50px 45px 55px 70px 60px 70px 50px 65px 50px 50px 55px",gap:4,alignItems:"center",padding:"9px 0",borderBottom:"1px solid #F8FAFC",minWidth:800}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <div style={{width:28,height:28,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{initials}</div>
             <div><div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>{a.name}</div>
@@ -2156,15 +2161,20 @@ var DashboardPage = function(p) {
             </div>
           </div>
           <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{a.leads}</div>
+          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#94A3B8"}}>{"\u2014"}</div>
+          <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{a.leads}</div>
+          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#334155"}}>{a.interested>0?a.interested:0}</div>
+          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:a.overdue>0?"#DC2626":"#94A3B8"}}>{a.overdue}</div>
           <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#15803D"}}>{a.interested}</div>
           <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.ip>30?"#15803D":a.ip>15?"#92400E":"#94A3B8"}}>{a.ip}%</div>
           <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#6D28D9"}}>{a.meetings}</div>
-          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:a.overdue>0?"#DC2626":"#94A3B8"}}>{a.overdue}</div>
+          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.mp>20?"#6D28D9":a.mp>10?"#92400E":"#94A3B8"}}>{a.mp}%</div>
           <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#065F46"}}>{a.deals}</div>
           <div style={{fontSize:12,fontWeight:700,textAlign:"center",color:a.score>=70?"#15803D":a.score>=50?"#92400E":"#94A3B8"}}>{medals[i]||""} {a.score}</div>
         </div>;
       })}
-    </>,{maxHeight:"320px",overflowY:"auto"})}
+      </div>
+    </>)}
     {card(<>
       <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Quick Stats</div>
       {[
