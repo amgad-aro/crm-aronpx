@@ -2200,6 +2200,13 @@ var DashboardPage = function(p) {
   var quarterDropdownRef = useRef(null);
   var [todayActivities, setTodayActivities] = useState(null);
   var [seeAllOpen, setSeeAllOpen] = useState(false);
+  // Mobile layout flag — updates on resize. Desktop styles are untouched; mobile just overrides specific rules.
+  var [isMobile, setIsMobile] = useState(typeof window!=="undefined" && window.innerWidth<768);
+  useEffect(function(){
+    var onResize = function(){ setIsMobile(window.innerWidth<768); };
+    window.addEventListener("resize", onResize);
+    return function(){ window.removeEventListener("resize", onResize); };
+  },[]);
   // eslint-disable-next-line no-unused-vars
   var [tick, setTick] = useState(0);
   useEffect(function(){
@@ -2284,10 +2291,10 @@ var DashboardPage = function(p) {
   var weekDays=Array.from({length:7},function(_,i){return dayNames[(todayIdx-6+i+7)%7];});
   var kpiCard=function(label,value,sub,bg,vc,onClick){
     var bars=[30,45,55,40,65,70,85];
-    return <div onClick={onClick} style={{background:bg,borderRadius:14,padding:"16px",cursor:onClick?"pointer":"default"}}>
-      <div style={{fontSize:11,fontWeight:600,color:vc,opacity:0.75,marginBottom:6}}>{label}</div>
-      <div style={{fontSize:28,fontWeight:800,color:vc,lineHeight:1}}>{value}</div>
-      <div style={{fontSize:11,color:vc,opacity:0.6,marginTop:4}}>{sub}</div>
+    return <div onClick={onClick} style={{background:bg,borderRadius:14,padding:isMobile?"12px":"16px",cursor:onClick?"pointer":"default",minWidth:0,overflow:"hidden"}}>
+      <div style={{fontSize:11,fontWeight:600,color:vc,opacity:0.75,marginBottom:6,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</div>
+      <div style={{fontSize:isMobile?24:28,fontWeight:800,color:vc,lineHeight:1,overflow:"hidden",textOverflow:"ellipsis"}}>{value}</div>
+      <div style={{fontSize:11,color:vc,opacity:0.6,marginTop:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{sub}</div>
       <div style={{display:"flex",alignItems:"flex-end",gap:2,height:20,marginTop:8}}>
         {bars.map(function(h,i){return <div key={i} style={{flex:1,borderRadius:2,height:h+"%",background:vc,opacity:i===6?0.8:0.2}}/>;})}</div>
       <div style={{display:"flex",gap:2,marginTop:3}}>
@@ -2305,7 +2312,7 @@ var DashboardPage = function(p) {
     </div>;
   };
 
-  var card=function(children,extra){return <div style={Object.assign({background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:"20px 22px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"},extra||{})}>{children}</div>;};
+  var card=function(children,extra){return <div style={Object.assign({background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px 14px":"20px 22px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0},extra||{})}>{children}</div>;};
   var sec=function(label){return <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:"0.1em",textTransform:"uppercase",margin:"24px 0 12px"}}>{label}</div>;};
   var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
 
@@ -2730,18 +2737,18 @@ var DashboardPage = function(p) {
   };
   var initialsOf = function(n){return (n||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();};
 
-  return <div style={{padding:"16px 12px 40px",background:"#F1F5F9"}}>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24,flexWrap:"wrap",gap:8}}>
-      <div>
-        <div style={{fontSize:22,fontWeight:700,color:"#0F172A"}}>{greeting+" "+p.cu.name}</div>
-        <div style={{fontSize:12,color:"#94A3B8",marginTop:2,fontVariantNumeric:"tabular-nums"}}>{dateLabel}</div>
+  return <div style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9"}}>
+    <div style={{display:"flex",alignItems:isMobile?"flex-start":"center",justifyContent:"space-between",marginBottom:isMobile?16:24,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
+      <div style={{minWidth:0,width:isMobile?"100%":"auto"}}>
+        <div style={{fontSize:isMobile?16:22,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis"}}>{greeting+" "+p.cu.name}</div>
+        <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,fontVariantNumeric:"tabular-nums"}}>{dateLabel}</div>
       </div>
-      <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+      <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",width:isMobile?"100%":"auto",overflowX:isMobile?"auto":"visible",WebkitOverflowScrolling:"touch"}}>
         {[["today","Today"],["week","This Week"],["month","This Month"]].map(function(f){
-          return <button key={f[0]} onClick={function(){setFilter(f[0]);}} style={{fontSize:12,padding:"6px 14px",border:filter===f[0]?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:filter===f[0]?"#EFF6FF":"#fff",color:filter===f[0]?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:filter===f[0]?600:500}}>{f[1]}</button>;
+          return <button key={f[0]} onClick={function(){setFilter(f[0]);}} style={{fontSize:12,padding:isMobile?"8px 12px":"6px 14px",minHeight:isMobile?36:undefined,border:filter===f[0]?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:filter===f[0]?"#EFF6FF":"#fff",color:filter===f[0]?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:filter===f[0]?600:500,flexShrink:0}}>{f[1]}</button>;
         })}
         <div ref={quarterDropdownRef} style={{position:"relative"}}>
-          <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:12,padding:"6px 14px",border:(typeof filter==="string"&&filter.indexOf("Q")===0)?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:(typeof filter==="string"&&filter.indexOf("Q")===0)?"#EFF6FF":"#fff",color:(typeof filter==="string"&&filter.indexOf("Q")===0)?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:(typeof filter==="string"&&filter.indexOf("Q")===0)?600:500}}>{(typeof filter==="string"&&filter.indexOf("Q")===0)?filter:"Quarter"} &#9662;</button>
+          <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:12,padding:isMobile?"8px 12px":"6px 14px",minHeight:isMobile?36:undefined,border:(typeof filter==="string"&&filter.indexOf("Q")===0)?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:(typeof filter==="string"&&filter.indexOf("Q")===0)?"#EFF6FF":"#fff",color:(typeof filter==="string"&&filter.indexOf("Q")===0)?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:(typeof filter==="string"&&filter.indexOf("Q")===0)?600:500,flexShrink:0}}>{(typeof filter==="string"&&filter.indexOf("Q")===0)?filter:"Quarter"} &#9662;</button>
           {qOpen&&<div style={{position:"absolute",top:"calc(100% + 4px)",right:0,background:"#fff",border:"1px solid #E2E8F0",borderRadius:10,minWidth:120,zIndex:99,boxShadow:"0 4px 16px rgba(0,0,0,0.08)"}}>
             {["Q1 2026","Q2 2026","Q3 2026","Q4 2026"].map(function(q){return <div key={q} onClick={function(){setFilter(q);setQOpen(false);}} style={{padding:"8px 14px",fontSize:12,color:"#334155",cursor:"pointer"}}>{q}</div>;})}
           </div>}
@@ -2750,7 +2757,7 @@ var DashboardPage = function(p) {
     </div>
 
     {sec("Key Metrics")}
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:0}}>
+    <div style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2,1fr)":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:0}}>
       {kpiCard("Leads",fLeads.length,"in period","#1565C0","#ffffff",function(){p.nav("leads");})}
       {kpiCard("Daily Requests",drFiltered,"in period","#00796B","#ffffff",function(){p.nav("dailyReq");})}
       {kpiCard("Interested",interestedFiltered,Math.round(interestedFiltered/fTotal*100)+"%","#E65100","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
@@ -2761,7 +2768,7 @@ var DashboardPage = function(p) {
     </div>
 
     {sec("Campaigns & Pipeline")}
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))",gap:14,marginBottom:14}}>
+    <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit, minmax(300px, 1fr))",gap:isMobile?10:14,marginBottom:14}}>
       {card(<>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
           <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Campaign &amp; Source Performance</div>
@@ -2881,7 +2888,7 @@ var DashboardPage = function(p) {
         <div style={{fontSize:10,color:"#94A3B8"}} title="Quality = activity + feedback + response time + meetings + callbacks">Quality = activity, feedback, response time, meetings & callbacks</div>
       </div>
       <div style={{overflowX:"auto",overflowY:"auto",maxHeight:360,WebkitOverflowScrolling:"touch",width:"100%"}}>
-      <div style={{display:"grid",gridTemplateColumns:"36px 160px repeat(14, minmax(0, 1fr))",gap:4,paddingTop:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,width:"100%",position:"sticky",top:0,zIndex:10,background:"#fff"}}>
+      <div style={{display:"grid",gridTemplateColumns:isMobile?"36px 150px repeat(14, 56px)":"36px 160px repeat(14, minmax(0, 1fr))",gap:4,paddingTop:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,width:isMobile?"max-content":"100%",minWidth:isMobile?980:undefined,position:"sticky",top:0,zIndex:10,background:"#fff"}}>
         {["","Agent","Leads","DR","Total","Calls","Follow","Overdue","Int","Meet","Deals","Rot OUT","Rot IN","No Ans","Resp.","Quality"].map(function(h,idx){return <div key={h+idx} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
       </div>
       {fAgentPerf.map(function(a,i){
@@ -2891,7 +2898,7 @@ var DashboardPage = function(p) {
         var initials=(a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
         var qBg = a.quality>=80?"#DCFCE7":a.quality>=60?"#FEF3C7":"#FEE2E2";
         var qFg = a.quality>=80?"#166534":a.quality>=60?"#92400E":"#991B1B";
-        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:"36px 160px repeat(14, minmax(0, 1fr))",gap:4,alignItems:"center",padding:"10px 0",borderBottom:"1px solid #F8FAFC",width:"100%"}}>
+        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:isMobile?"36px 150px repeat(14, 56px)":"36px 160px repeat(14, minmax(0, 1fr))",gap:4,alignItems:"center",padding:"10px 0",borderBottom:"1px solid #F8FAFC",width:isMobile?"max-content":"100%",minWidth:isMobile?980:undefined}}>
           <div style={{fontSize:11,color:"#888",textAlign:"center",fontWeight:500}}>{i+1}</div>
           <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
             <div style={{width:30,height:30,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>{initials}</div>
@@ -2921,7 +2928,7 @@ var DashboardPage = function(p) {
     </>)}
     </div>
 
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))",gap:14}}>
+    <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit,minmax(260px,1fr))",gap:isMobile?10:14}}>
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Management Alerts</div>
         {(function(){
