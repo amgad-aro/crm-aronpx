@@ -2874,27 +2874,34 @@ var DashboardPage = function(p) {
             {[["#1877F2","Facebook"],["#0F9D58","Sheets"],["#EA4335","G.Ads"]].map(function(s){return <span key={s[1]} style={{fontSize:10,color:"#64748B",display:"flex",alignItems:"center",gap:3}}><span style={{width:6,height:6,borderRadius:"50%",background:s[0],display:"inline-block"}}/>{s[1]}</span>;})}
           </div>
         </div>
-        <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 50px 90px 90px 50px 60px",gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:500}}>
-          {["Campaign \u00b7 Project","Leads","Interested","Meetings","Deals","Quality"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Campaign \u00b7 Project"?"left":"center"}}>{h}</div>;})}
-        </div>
-        {fCamps.map(function(c,i){
-          var srcC=c.source==="Facebook"?"#1877F2":c.source==="Google Sheets"?"#0F9D58":"#EA4335";
-          return <div key={i} style={{display:"grid",gridTemplateColumns:"1fr 50px 90px 90px 50px 60px",gap:4,alignItems:"center",padding:"8px 0",borderBottom:"1px solid #F8FAFC"}}>
-            <div>
-              <div style={{display:"flex",alignItems:"center",gap:5}}>
-                <span style={{width:7,height:7,borderRadius:"50%",background:srcC,display:"inline-block",flexShrink:0}}/>
-                <span style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>{c.campaign||"\u2014"} &middot; {c.project||"\u2014"}</span>
-              </div>
-              <div style={{fontSize:11,color:"#94A3B8",paddingLeft:12}}>{c.source}</div>
+        <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch",marginLeft:isMobile?-4:0,marginRight:isMobile?-4:0}}>
+        {(function(){
+          // Fixed-width columns (name column = 140 minimum on mobile, flex on desktop) so phones can scroll horizontally without collapsing.
+          var cols = isMobile ? "140px 60px 80px 80px 60px 70px" : "minmax(140px, 1fr) 50px 90px 90px 50px 60px";
+          var rowMinW = isMobile ? 600 : 500;
+          return <>
+            <div style={{display:"grid",gridTemplateColumns:cols,gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:rowMinW,width:isMobile?"max-content":"auto"}}>
+              {["Campaign \u00b7 Project","Leads","Interested","Meetings","Deals","Quality"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Campaign \u00b7 Project"?"left":"center",whiteSpace:"nowrap"}}>{h}</div>;})}
             </div>
-            <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{c.leads}</div>
-            <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#15803D"}}>{c.int}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.ip}%</div></div>
-            <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#6D28D9"}}>{c.meet}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.mp}%</div></div>
-            <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#065F46"}}>{c.deals}</div>
-            <div style={{textAlign:"center"}}>{qBadge(c.quality)}</div>
-          </div>;
-        })}
+            {fCamps.map(function(c,i){
+              var srcC=c.source==="Facebook"?"#1877F2":c.source==="Google Sheets"?"#0F9D58":"#EA4335";
+              return <div key={i} style={{display:"grid",gridTemplateColumns:cols,gap:4,alignItems:"center",padding:"8px 0",borderBottom:"1px solid #F8FAFC",minWidth:rowMinW,width:isMobile?"max-content":"auto"}}>
+                <div style={{minWidth:0,overflow:"hidden"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:5,minWidth:0}}>
+                    <span style={{width:7,height:7,borderRadius:"50%",background:srcC,display:"inline-block",flexShrink:0}}/>
+                    <span style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.campaign||"\u2014"} &middot; {c.project||"\u2014"}</span>
+                  </div>
+                  <div style={{fontSize:11,color:"#94A3B8",paddingLeft:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.source}</div>
+                </div>
+                <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{c.leads}</div>
+                <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#15803D"}}>{c.int}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.ip}%</div></div>
+                <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#6D28D9"}}>{c.meet}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.mp}%</div></div>
+                <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#065F46"}}>{c.deals}</div>
+                <div style={{textAlign:"center"}}>{qBadge(c.quality)}</div>
+              </div>;
+            })}
+          </>;
+        })()}
         </div>
       </>)}
       <div style={{display:"flex",flexDirection:"column",gap:14}}>
@@ -2987,7 +2994,7 @@ var DashboardPage = function(p) {
       </div>
       <div style={{overflowX:"auto",overflowY:"auto",maxHeight:360,WebkitOverflowScrolling:"touch",width:"100%"}}>
       <div style={{display:"grid",gridTemplateColumns:isMobile?"36px 150px repeat(14, 56px)":"36px 160px repeat(14, minmax(0, 1fr))",gap:4,paddingTop:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,width:isMobile?"max-content":"100%",minWidth:isMobile?980:undefined,position:"sticky",top:0,zIndex:10,background:"#fff"}}>
-        {["","Agent","Leads","DR","Total","Calls","Follow","Overdue","Int","Meet","Deals","Rot OUT","Rot IN","No Ans","Resp.","Quality"].map(function(h,idx){return <div key={h+idx} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center"}}>{h}</div>;})}
+        {["","Agent","Leads","DR","Total","Calls","Follow","Overdue","Int","Meet","Deals","Rot OUT","Rot IN","No Ans","Resp.","Quality"].map(function(h,idx){return <div key={h+idx} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{h}</div>;})}
       </div>
       {fAgentPerf.map(function(a,i){
         var medals=["\ud83e\udd47","\ud83e\udd48","\ud83e\udd49"];
