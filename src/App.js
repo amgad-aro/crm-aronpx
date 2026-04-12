@@ -3544,7 +3544,11 @@ var calcCommission = function(user, allDeals, allUsers, forQ) {
 
 var DealsPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
-  var deals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
+  var [dealTab,setDealTab]=useState("active"); // "active" | "cancelled"
+  var [dealCancelling,setDealCancelling]=useState(false);
+  var activeDeals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
+  var cancelledDeals=p.leads.filter(function(l){return (l.dealStatus==="Deal Cancelled" || l.status==="Deal Cancelled") && !l.archived && !(l.eoiStatus==="EOI Cancelled");}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
+  var deals = dealTab==="cancelled" ? cancelledDeals : activeDeals;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var total=deals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
@@ -3622,6 +3626,14 @@ var DealsPage = function(p) {
         {filteredTotal>0&&<div style={{ fontSize:13, fontWeight:700, color:C.success, background:"#DCFCE7", padding:"5px 14px", borderRadius:20 }}>Total: {filteredTotal.toLocaleString()} EGP</div>}
       </div>
       {(isOnlyAdmin||p.cu.role==="team_leader")&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> Add Deal</Btn>}
+    </div>
+
+    {/* Deals tab bar: Active vs Deal Cancelled */}
+    <div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
+      {[["active","\ud83d\udcbc Active",activeDeals.length,C.success,"#DCFCE7"],["cancelled","\u274c Deal Cancelled",cancelledDeals.length,"#B91C1C","#FEE2E2"]].map(function(tab){
+        var active=dealTab===tab[0];
+        return <button key={tab[0]} onClick={function(){setSelectedDeal(null);setDealTab(tab[0]);}} style={{ padding:"7px 14px", borderRadius:9, border:active?"1px solid "+tab[3]:"1px solid #E8ECF1", background:active?tab[4]:"#fff", color:active?tab[3]:C.textLight, fontSize:12, fontWeight:active?700:600, cursor:"pointer" }}>{tab[1]} ({tab[2]})</button>;
+      })}
     </div>
 
     {/* Deals Search + Filter bar */}
@@ -3986,16 +3998,45 @@ var DealsPage = function(p) {
       <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
-          {isOnlyAdmin&&<button onClick={async function(){
-            try{
-              var upd={dealApproved:!selectedDeal.dealApproved};
-              var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",upd,p.token);
-              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
-              setSelectedDeal(updated);
-            }catch(e){}
-          }} style={{ background:selectedDeal.dealApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
-            {selectedDeal.dealApproved?"✅ Approved":"⏳ Approve"}
-          </button>}
+          {(p.cu.role==="admin")&&<div style={{ display:"flex", gap:6 }}>
+            {(function(){
+              var isCancelled = selectedDeal.dealStatus==="Deal Cancelled" || selectedDeal.status==="Deal Cancelled";
+              if (isCancelled) return <span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ Deal Cancelled</span>;
+              return <>
+                <button onClick={async function(){
+                  try{
+                    var upd={dealApproved:!selectedDeal.dealApproved};
+                    var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",upd,p.token);
+                    p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+                    setSelectedDeal(updated);
+                  }catch(e){}
+                }} style={{ background:selectedDeal.dealApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
+                  {selectedDeal.dealApproved?"✅ Approved":"⏳ Approve"}
+                </button>
+                <button disabled={dealCancelling} onClick={async function(){
+                  var restoredStatus = selectedDeal.preDealStatus || "HotCase";
+                  if(!window.confirm("Cancel this deal? The lead will return to \""+restoredStatus+"\" status, be rotated to another agent, and stay visible here under Deal Cancelled.")) return;
+                  setDealCancelling(true);
+                  try{
+                    var updated = await apiFetch("/api/leads/"+gid(selectedDeal)+"/deal-cancel","POST",{},p.token);
+                    // Rotate to a random other active sales agent (non-blocking on failure)
+                    var currentAid = updated&&updated.agentId?(updated.agentId._id?String(updated.agentId._id):String(updated.agentId)) : (selectedDeal.agentId&&selectedDeal.agentId._id?String(selectedDeal.agentId._id):String(selectedDeal.agentId||""));
+                    var pool = (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="sales_admin") && String(u._id||gid(u))!==currentAid;});
+                    var target = pool.length>0 ? pool[Math.floor(Math.random()*pool.length)] : null;
+                    if (target) {
+                      try { updated = await apiFetch("/api/leads/"+gid(selectedDeal)+"/rotate","POST",{targetAgentId:String(target._id||gid(target)),reason:"manual"},p.token); } catch(rotErr){}
+                    }
+                    p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+                    setSelectedDeal(updated);
+                    setDealTab("cancelled");
+                  }catch(e){alert(e.message||"Cancel failed");}
+                  setDealCancelling(false);
+                }} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:dealCancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:dealCancelling?0.6:1 }}>
+                  {dealCancelling?"Cancelling…":"❌ Cancel"}
+                </button>
+              </>;
+            })()}
+          </div>}
         </div>
         <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedDeal.name}</div>
         <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}>{selectedDeal.phone}</div>
