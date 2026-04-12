@@ -1252,6 +1252,28 @@ var LeadsPage = function(p) {
     return true;
   });
   var filtered = p.leadFilter==="all"?allVisible:allVisible.filter(function(l){return l.status===p.leadFilter;});
+  // Management-alerts special filter (from dashboard)
+  if (p.specialFilter && p.specialFilter.type) {
+    var spT = p.specialFilter.type;
+    var nowMs = Date.now();
+    var monthStartMs = new Date(new Date().getFullYear(), new Date().getMonth(), 1, 0, 0, 0, 0).getTime();
+    filtered = filtered.filter(function(l){
+      if (spT==="untouched") {
+        var asgn = l.assignments||[];
+        if (asgn.length===0) return true;
+        return asgn.every(function(a){
+          if (!a.lastActionAt) return true;
+          if (a.assignedAt && new Date(a.lastActionAt).getTime()===new Date(a.assignedAt).getTime()) return true;
+          return false;
+        });
+      }
+      if (spT==="missingFeedback") return (l.assignments||[]).some(function(a){ return !a.notes || String(a.notes).trim()===""; });
+      if (spT==="stale48h") return (l.assignments||[]).some(function(a){ return a.lastActionAt && (nowMs - new Date(a.lastActionAt).getTime()) > 48*3600*1000; });
+      if (spT==="noRotation") return (l.assignments||[]).some(function(a){ return a.noRotation===true; });
+      if (spT==="rotatedThisMonth") return (l.agentHistory||[]).some(function(h){ return h && h.date && new Date(h.date).getTime() >= monthStartMs; });
+      return true;
+    });
+  }
   filtered = filtered.filter(function(l){return matchSearch(l,p.search);});
   if (vipFilter) filtered = filtered.filter(function(l){return l.isVIP;});
   if (noAgentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return !aid; });
@@ -1414,7 +1436,16 @@ var LeadsPage = function(p) {
 
   var leadActs = selected ? p.activities.filter(function(a){ var lid=gid(selected); return a.leadId&&(gid(a.leadId)===lid||a.leadId===lid); }) : [];
 
+  var specialFilterLabel = (function(){
+    if (!p.specialFilter||!p.specialFilter.type) return "";
+    var m = {untouched:"Untouched leads (no activity since assignment)",missingFeedback:"Missing feedback (empty notes)",stale48h:"Stale leads \u2014 no activity 48h+",noRotation:"Locked leads (noRotation flag)",rotatedThisMonth:"Rotated this month"};
+    return m[p.specialFilter.type]||p.specialFilter.type;
+  })();
   return <div style={{ padding:"18px 16px 40px" }}>
+    {p.specialFilter&&p.specialFilter.type&&<div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, padding:"10px 14px", background:"#EFF6FF", border:"1px solid #BFDBFE", borderRadius:10, marginBottom:12 }}>
+      <div style={{ fontSize:13, color:"#1D4ED8", fontWeight:600, minWidth:0, overflow:"hidden", textOverflow:"ellipsis" }}>Showing: {specialFilterLabel} <span style={{ color:"#64748B", fontWeight:500 }}>({filtered.length})</span></div>
+      <button onClick={function(){if(p.setSpecialFilter)p.setSpecialFilter(null);}} style={{ background:"#fff", border:"1px solid #BFDBFE", color:"#1D4ED8", fontSize:12, fontWeight:600, padding:"4px 10px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>Clear filter <X size={13}/></button>
+    </div>}
     <WaChooser show={!!waChooser} phone={waChooser} onClose={function(){setWaChooser(null);}}/>
     {showStatusPicker&&selected&&!showStatusComment&&<Modal show={true} onClose={function(){setShowStatusPicker(false);}} title={t.changeStatus}>
       <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:16 }}>
@@ -2766,13 +2797,18 @@ var DashboardPage = function(p) {
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Management Alerts</div>
         {(function(){
+          var gotoSpecial = function(type){
+            if (p.setFilter) p.setFilter("all");
+            if (p.setSpecialFilter) p.setSpecialFilter({type:type});
+            if (p.nav) p.nav("leads");
+          };
           var rows=[
-            {dot:"#EF4444",t:untouched+" untouched leads",s:"no calls yet",onClick:function(){gotoFilter("NewLead");}},
-            {dot:"#F59E0B",t:missingFBCount+" missing feedback",s:"no notes",onClick:function(){gotoFilter("all");}},
+            {dot:"#EF4444",t:untouched+" untouched leads",s:"no calls yet",onClick:function(){gotoSpecial("untouched");}},
+            {dot:"#F59E0B",t:missingFBCount+" missing feedback",s:"no notes",onClick:function(){gotoSpecial("missingFeedback");}},
             {dot:"#F97316",t:overdue+" overdue callbacks",s:"past scheduled",onClick:function(){gotoFilter("CallBack");}},
-            {dot:"#DC2626",t:stale48Count+" stale 48h+",s:"no activity",onClick:function(){gotoFilter("all");}},
-            {dot:"#6366F1",t:rotationsMonth+" rotations this month",s:rotMonthAuto+" auto \u00b7 "+rotMonthManual+" manual",onClick:function(){gotoFilter("all");}},
-            {dot:"#7C3AED",t:lockedCount+" leads locked",s:"noRotation flag",onClick:function(){gotoFilter("all");}}
+            {dot:"#DC2626",t:stale48Count+" stale 48h+",s:"no activity",onClick:function(){gotoSpecial("stale48h");}},
+            {dot:"#6366F1",t:rotationsMonth+" rotations this month",s:rotMonthAuto+" auto \u00b7 "+rotMonthManual+" manual",onClick:function(){gotoSpecial("rotatedThisMonth");}},
+            {dot:"#7C3AED",t:lockedCount+" leads locked",s:"noRotation flag",onClick:function(){gotoSpecial("noRotation");}}
           ];
           return rows.map(function(a,i){
             return <div key={i} onClick={a.onClick} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:i<rows.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
@@ -5399,6 +5435,8 @@ export default function CRMApp() {
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
   var [dailyReqs,setDailyReqs]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
+  var [leadSpecialFilter,setLeadSpecialFilter]=useState(null);
+  useEffect(function(){ if (page && page!=="leads") setLeadSpecialFilter(null); },[page]);
   var [leadsPage,setLeadsPage]=useState(1); var [leadsTotal,setLeadsTotal]=useState(0); var [leadsTotalPages,setLeadsTotalPages]=useState(0);
   var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
@@ -6023,7 +6061,7 @@ export default function CRMApp() {
   var myId = String(currentUser.id||currentUser._id||"");
   var myTeamUsers = users; // server handles all filtering per role
 
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:dailyReqs};
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:dailyReqs};
 
   var renderPage=function(){
     switch(currentPage){
