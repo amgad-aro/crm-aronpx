@@ -1298,7 +1298,11 @@ var PhoneCell = function(p) {
 
 // ===== LEADS PAGE =====
 var LeadsPage = function(p) {
-  var t = p.t; var sc = visibleStatuses(STATUSES(t), p.cu&&p.cu.role);
+  var t = p.t;
+  // Dropdown (Change Status) options — excludes "Deal Cancelled" everywhere on the Leads page.
+  var sc = visibleStatuses(STATUSES(t), p.cu&&p.cu.role).filter(function(s){ return s.value!=="Deal Cancelled"; });
+  // Top filter-tab options — also hide EOI and DoneDeal (they have their own pages).
+  var tabSc = sc.filter(function(s){ return s.value!=="EOI" && s.value!=="DoneDeal"; });
   var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var isManager = p.cu.role==="manager"||p.cu.role==="team_leader";
@@ -1579,7 +1583,7 @@ var LeadsPage = function(p) {
     <div style={{ position:"sticky", top:64, zIndex:90, background:"#F8FAFC", margin:"0 -16px 14px", padding:"8px 16px 8px", borderBottom:"1px solid #E8ECF1", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
       <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:8 }}>
       <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
-        {[{v:"all",l:t.all}].concat(sc.map(function(s){return{v:s.value,l:s.label};})).map(function(s){
+        {[{v:"all",l:t.all}].concat(tabSc.map(function(s){return{v:s.value,l:s.label};})).map(function(s){
           var cnt=s.v==="all"?allVisible.length:allVisible.filter(function(l){return l.status===s.v;}).length;
           return <button key={s.v} onClick={function(){p.setFilter(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:p.leadFilter===s.v?C.accent:"#E8ECF1", background:p.leadFilter===s.v?C.accent+"12":"#fff", color:p.leadFilter===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
         })}
@@ -4423,7 +4427,9 @@ var ArchivePage = function(p) {
 
 // ===== DAILY REQUESTS =====
 var DailyRequestsPage = function(p) {
-  var t=p.t; var sc=visibleStatuses(DR_STATUSES(t), p.cu&&p.cu.role);
+  var t=p.t;
+  // Dropdown and tabs both drop "Deal Cancelled" from DRs entirely.
+  var sc=visibleStatuses(DR_STATUSES(t), p.cu&&p.cu.role).filter(function(s){ return s.value!=="Deal Cancelled"; });
   var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [requests,setRequests]=useState([]);
