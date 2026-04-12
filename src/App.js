@@ -345,6 +345,7 @@ var StatusModal = function(p) {
   var [dealBudget, setDealBudget] = useState("");
   var [eoiDeposit, setEoiDeposit] = useState("");
   var [eoiDateInput, setEoiDateInput] = useState("");
+  var [eoiDocFiles, setEoiDocFiles] = useState([]); // array of {fileData, fileName}
   var [rejectNote, setRejectNote] = useState("");
   var [potBudget, setPotBudget] = useState("");
   var [potDeposit, setPotDeposit] = useState("");
@@ -365,7 +366,7 @@ var StatusModal = function(p) {
   var needsBudgetFields = needsPotFields&&!hasBudget;
 
   useEffect(function(){
-    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit(""); setEoiDateInput(""); setRejectNote("");
+    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit(""); setEoiDateInput(""); setEoiDocFiles([]); setRejectNote("");
     setPotBudget(""); setPotDeposit(""); setPotInstalment(""); setErr("");
   },[p.show]);
 
@@ -383,7 +384,7 @@ var StatusModal = function(p) {
     if (needsBudgetFields && !potInstalment.trim()){ setErr("Please enter the Installments"); return; }
     setSaving(true);
     var extra = (isDoneDeal||isEOI)
-      ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput }
+      ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput, eoiDocumentFiles: isEOI ? eoiDocFiles : [] }
       : (needsPotFields && (potBudget||potDeposit||potInstalment))
         ? { budget: potBudget, deposit: potDeposit, instalment: potInstalment }
         : {};
@@ -492,6 +493,40 @@ var StatusModal = function(p) {
         <input type="text" placeholder="" value={eoiDeposit}
           onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setEoiDeposit(r?Number(r).toLocaleString():"");}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
+      </div>}
+      {isEOI&&<div style={{ marginBottom:11 }}>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📎 Upload EOI Documents</label>
+        <label style={{ display:"block", padding:"9px 12px", borderRadius:10, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:13, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+          Select files (images or PDF)
+          <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" multiple style={{ display:"none" }} onChange={function(e){
+            var picked = Array.from(e.target.files||[]);
+            if (!picked.length) return;
+            var tooBig = picked.find(function(f){return f.size>6*1024*1024;});
+            if (tooBig) { setErr("Each file must be under 6MB ("+tooBig.name+")"); e.target.value=""; return; }
+            Promise.all(picked.map(function(f){
+              return new Promise(function(resolve,reject){
+                var r=new FileReader();
+                r.onload=function(ev){resolve({fileData:ev.target.result, fileName:f.name});};
+                r.onerror=function(){reject(new Error("Read failed: "+f.name));};
+                r.readAsDataURL(f);
+              });
+            })).then(function(loaded){
+              setEoiDocFiles(function(prev){return prev.concat(loaded);});
+              setErr("");
+            }).catch(function(ex){ setErr(ex.message||"Failed to read files"); });
+            try{ e.target.value=""; }catch(er){}
+          }}/>
+        </label>
+        {eoiDocFiles.length>0&&<div style={{ marginTop:8, padding:"8px 10px", background:"#F8FAFC", borderRadius:8, border:"1px solid #E2E8F0" }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>{eoiDocFiles.length} file{eoiDocFiles.length===1?"":"s"} selected — uploaded on Save</div>
+          {eoiDocFiles.map(function(f,idx){
+            var isPdf = f.fileData && f.fileData.indexOf("application/pdf")>=0;
+            return <div key={idx} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, padding:"4px 0", borderTop:idx>0?"1px solid #F1F5F9":"none" }}>
+              <div style={{ fontSize:12, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1 }}>{isPdf?"📕":"🖼️"} {f.fileName}</div>
+              <button onClick={function(){setEoiDocFiles(function(prev){return prev.filter(function(_,i){return i!==idx;});});}} style={{ background:"none", border:"none", color:C.danger, fontSize:14, cursor:"pointer", padding:"0 4px", lineHeight:1 }} title="Remove">×</button>
+            </div>;
+          })}
+        </div>}
       </div>}
     </div>}
 
@@ -1346,6 +1381,17 @@ var LeadsPage = function(p) {
       var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
       // Immediate UI update from PUT response
       if(updated&&updated._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?updated:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(updated);}
+      // Upload any EOI documents picked in the status modal
+      if (extra && Array.isArray(extra.eoiDocumentFiles) && extra.eoiDocumentFiles.length>0) {
+        for (var i=0; i<extra.eoiDocumentFiles.length; i++) {
+          var f = extra.eoiDocumentFiles[i];
+          if (!f || !f.fileData) continue;
+          try {
+            var withDocs = await apiFetch("/api/leads/"+pendingStatus.leadId+"/eoi-documents","POST",{fileData:f.fileData, fileName:f.fileName||""},p.token);
+            if (withDocs && withDocs._id) { updated = withDocs; p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?withDocs:l;});}); if(selected&&gid(selected)===pendingStatus.leadId) setSelected(withDocs); }
+          } catch(docErr) { console.error("EOI document upload failed:", docErr.message); }
+        }
+      }
       try { await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment},p.token); } catch(actE){ console.error("activity log error:",actE.message); }
       // Background re-fetch for correct per-agent overlay
       apiFetch("/api/leads/"+pendingStatus.leadId,"GET",null,p.token).then(function(freshLead){if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?freshLead:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(freshLead);}}).catch(function(){});
@@ -3058,7 +3104,7 @@ var DashboardPage = function(p) {
 // ===== EOI PAGE =====
 var EOIPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
-  var [eoiTab,setEoiTab]=useState("pending");
+  var [eoiTab,setEoiTab]=useState("approved");
   // All leads that are currently EOI OR were cancelled from EOI (identified by any EOI artifact).
   var wasEOI = function(l){return l.eoiDate || l.eoiImage || l.eoiApproved || (l.eoiDocuments||[]).length>0;};
   var eoiScope=p.leads.filter(function(l){return !l.archived && (l.status==="EOI" || (l.status==="Cancelled" && wasEOI(l)));});
@@ -3182,7 +3228,7 @@ var EOIPage = function(p) {
       {(isAdmin||p.cu.role==="sales")&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 14px", fontSize:12 }}><Plus size={13}/> Add EOI</Btn>}
     </div>
     <div style={{ display:"flex", gap:6, marginBottom:14, flexWrap:"wrap" }}>
-      {[["pending","\u23f3 Pending",eoiPending.length,"#B45309","#FEF3C7"],["approved","\u2705 Approved",eoiApprovedList.length,"#15803D","#DCFCE7"],["cancelled","\u274c Cancelled",eoiCancelled.length,"#B91C1C","#FEE2E2"]].map(function(tab){
+      {[["approved","\u2705 Approved",eoiApprovedList.length,"#15803D","#DCFCE7"],["pending","\u23f3 Pending",eoiPending.length,"#B45309","#FEF3C7"],["cancelled","\u274c Cancelled",eoiCancelled.length,"#B91C1C","#FEE2E2"]].map(function(tab){
         var active = eoiTab===tab[0];
         return <button key={tab[0]} onClick={function(){setSelectedEOI(null);setEoiTab(tab[0]);}} style={{ padding:"7px 14px", borderRadius:9, border:active?"1px solid "+tab[3]:"1px solid #E8ECF1", background:active?tab[4]:"#fff", color:active?tab[3]:C.textLight, fontSize:12, fontWeight:active?700:600, cursor:"pointer" }}>{tab[1]} ({tab[2]})</button>;
       })}
@@ -3318,11 +3364,13 @@ var EOIPage = function(p) {
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📄 EOI Documents ({(selectedEOI.eoiDocuments||[]).length})</div>
           {(selectedEOI.eoiDocuments||[]).length>0&&<div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:6, marginBottom:8 }}>
             {(selectedEOI.eoiDocuments||[]).map(function(doc,idx){
-              var isPdf = typeof doc==="string" && doc.indexOf("application/pdf")>=0;
-              return <div key={idx} style={{ position:"relative", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#F8FAFC", aspectRatio:"1/1" }}>
+              var url = typeof doc==="string" ? doc : (doc && doc.url) || "";
+              var name = typeof doc==="object" && doc && doc.name ? doc.name : ("Document "+(idx+1));
+              var isPdf = typeof url==="string" && url.indexOf("application/pdf")>=0;
+              return <div key={idx} style={{ position:"relative", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#F8FAFC", aspectRatio:"1/1" }} title={name}>
                 {isPdf
-                  ? <a href={doc} target="_blank" rel="noreferrer" style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", textDecoration:"none", color:"#DC2626", fontSize:10, fontWeight:700, padding:4, textAlign:"center" }}><span style={{ fontSize:22 }}>📕</span>PDF {idx+1}</a>
-                  : <img src={doc} alt={"doc-"+idx} onClick={function(){var w=window.open();w.document.write("<img src='"+doc+"' style='max-width:100%;'>");}} style={{ width:"100%", height:"100%", objectFit:"cover", cursor:"zoom-in" }}/>}
+                  ? <a href={url} target="_blank" rel="noreferrer" download={name} style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", textDecoration:"none", color:"#DC2626", fontSize:10, fontWeight:700, padding:4, textAlign:"center" }}><span style={{ fontSize:22 }}>📕</span><span style={{ maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name}</span></a>
+                  : <img src={url} alt={name} onClick={function(){var w=window.open();w.document.write("<img src='"+url+"' style='max-width:100%;'>");}} style={{ width:"100%", height:"100%", objectFit:"cover", cursor:"zoom-in" }}/>}
                 {isOnlyAdmin&&<button onClick={function(){deleteDoc(selectedEOI,idx);}} title="Remove" style={{ position:"absolute", top:2, right:2, width:18, height:18, borderRadius:"50%", border:"none", background:"rgba(220,38,38,0.9)", color:"#fff", fontSize:10, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>×</button>}
               </div>;
             })}

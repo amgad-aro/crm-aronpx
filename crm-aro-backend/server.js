@@ -38,7 +38,7 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   lastActivityTime:{type:Date,default:Date.now}, archived:{type:Boolean,default:false}, isVIP:{type:Boolean,default:false},
   eoiDeposit:{type:String,default:""}, eoiDate:{type:String,default:""},
   eoiApproved:{type:Boolean,default:false}, eoiImage:{type:String,default:""},
-  eoiDocuments:[{type:String}],
+  eoiDocuments:[{type:mongoose.Schema.Types.Mixed}],
   stages:{type:mongoose.Schema.Types.Mixed,default:{}},
   dealApproved:{type:Boolean,default:false}, dealImages:[{type:String}],
   commissionClaimDate:{type:String,default:""}, commissionClaimed:{type:Boolean,default:false},
@@ -660,6 +660,7 @@ app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async f
 app.post("/api/leads/:id/eoi-documents", auth, async function(req, res) {
   try {
     var raw = (req.body && req.body.fileData) || "";
+    var fileName = (req.body && req.body.fileName) ? String(req.body.fileName).slice(0,200) : "";
     if (!raw || typeof raw !== "string") return res.status(400).json({ error: "fileData is required" });
     var m = raw.match(/^data:(application\/pdf|image\/(?:jpeg|jpg|png|webp));base64,(.+)$/i);
     if (!m) return res.status(400).json({ error: "Only PDF/JPEG/PNG/WEBP data URLs allowed" });
@@ -667,7 +668,13 @@ app.post("/api/leads/:id/eoi-documents", auth, async function(req, res) {
     try { buf = Buffer.from(m[2], "base64"); } catch(e){ return res.status(400).json({ error: "Invalid base64 data" }); }
     if (!buf || !buf.length) return res.status(400).json({ error: "Invalid file data" });
     if (buf.length > 6 * 1024 * 1024) return res.status(400).json({ error: "File too large (max 6MB)" });
-    var lead = await Lead.findByIdAndUpdate(req.params.id, { $push: { eoiDocuments: raw } }, { new: true }).populate("agentId", "name title");
+    if (!fileName) {
+      // Derive a simple name from the MIME + short hash
+      var ext = m[1]==="application/pdf" ? "pdf" : (m[1].split("/")[1]||"bin");
+      fileName = "document-"+Date.now()+"."+ext;
+    }
+    var entry = { url: raw, name: fileName, uploadedAt: new Date() };
+    var lead = await Lead.findByIdAndUpdate(req.params.id, { $push: { eoiDocuments: entry } }, { new: true }).populate("agentId", "name title");
     if (!lead) return res.status(404).json({ error: "Lead not found" });
     res.json(lead);
   } catch(e) { res.status(500).json({ error: e.message }); }
