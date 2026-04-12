@@ -913,12 +913,14 @@ var Header = function(p) {
               return teamNames.has(n.agentName);
             }).map(function(n){
               var isDeal=n.status==="DoneDeal";
-              var canNav = !!(n.leadId && p.leads);
+              var canNav = !!n.leadId;
               var openItem = function(){
                 p.setShowDealNotif(false);
                 if (!canNav) return;
-                var target = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);});
-                if (!target) return;
+                // Reuse the exact nav + initSelected path already used elsewhere.
+                // EOIPage and DealsPage both read p.initSelected and re-resolve against p.leads,
+                // so passing a shim {_id, name} still works if p.leads hasn't loaded yet.
+                var target = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);}) || { _id: n.leadId, name: n.leadName || "" };
                 var page = isDeal ? "deals" : "eoi";
                 if (p.onDealNotifClick) p.onDealNotifClick(page, target);
               };
