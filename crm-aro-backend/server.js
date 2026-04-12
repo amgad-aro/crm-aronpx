@@ -1459,13 +1459,16 @@ app.get("/api/notifications", auth, async function(req, res) {
     var type = req.query.type || null;
     var query = {};
     if (type) query.type = type;
-    var notifs = await Notification.find(query).sort({ createdAt: -1 }).limit(50).lean();
-    // For deal/EOI notifications, drop entries whose referenced lead no longer exists or was archived.
-    // Rotation notifications don't require this check.
-    var dealIds = notifs.filter(function(n){ return n.type === "deal" && n.leadId; }).map(function(n){ return n.leadId; });
+    // Return the full history, newest first. Cap is defensive only.
+    var limit = Math.min(parseInt(req.query.limit) || 2000, 5000);
+    var notifs = await Notification.find(query).sort({ createdAt: -1 }).limit(limit).lean();
+    // For deal/EOI AND rotation notifications, drop entries whose referenced lead no longer exists or is archived.
+    var idsToCheck = notifs
+      .filter(function(n){ return (n.type === "deal" || n.type === "rotation") && n.leadId; })
+      .map(function(n){ return n.leadId; });
     var aliveLeadIds = new Set();
-    if (dealIds.length > 0) {
-      var objectIds = dealIds.map(function(id){
+    if (idsToCheck.length > 0) {
+      var objectIds = idsToCheck.map(function(id){
         try { return mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : null; } catch(e){ return null; }
       }).filter(Boolean);
       if (objectIds.length > 0) {
@@ -1475,7 +1478,7 @@ app.get("/api/notifications", auth, async function(req, res) {
     }
     var result = notifs
       .filter(function(n){
-        if (n.type !== "deal") return true;
+        if (n.type !== "deal" && n.type !== "rotation") return true;
         if (!n.leadId) return true; // legacy entries without a leadId — leave visible
         return aliveLeadIds.has(String(n.leadId));
       })

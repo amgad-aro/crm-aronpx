@@ -1006,18 +1006,29 @@ var Header = function(p) {
             {(!p.rotNotifs||p.rotNotifs.length===0)&&<div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}>
               <div style={{ fontSize:28, marginBottom:8 }}>🔄</div>No rotations
             </div>}
-            {p.rotNotifs&&p.rotNotifs.map(function(n){return <div key={n._id||n.id} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#FFFBF5", transition:"background 0.2s" }}>
-              <div style={{ width:38, height:38, borderRadius:10, background:"linear-gradient(135deg,#FFF7ED,#FFEDD5)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><RotateCcw size={16} color="#EA580C"/></div>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{n.leadName}</div>
-                <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.fromName} → {n.toName}</div>
-                <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:2 }}>
-                  <span style={{ fontSize:10, color:"#EA580C", fontWeight:600, background:"#FFF7ED", padding:"1px 6px", borderRadius:4 }}>{n.reason}</span>
-                  <span style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.createdAt||n.time,p.t)}</span>
+            {p.rotNotifs&&p.rotNotifs.map(function(n){
+              var canNav = !!n.leadId;
+              var openItem = function(){
+                if (p.setShowRotNotif) p.setShowRotNotif(false);
+                if (!canNav) return;
+                // Reuse the same nav + initSelected path Leads page already uses for row clicks.
+                var target = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);}) || { _id: n.leadId, name: n.leadName||"" };
+                if (p.onRotNotifClick) p.onRotNotifClick(target);
+                else if (p.onLeadClick) p.onLeadClick(target);
+              };
+              return <div key={n._id||n.id} onClick={canNav?openItem:undefined} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#FFFBF5", transition:"background 0.2s", cursor:canNav?"pointer":"default" }}>
+                <div style={{ width:38, height:38, borderRadius:10, background:"linear-gradient(135deg,#FFF7ED,#FFEDD5)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><RotateCcw size={16} color="#EA580C"/></div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{n.leadName}</div>
+                  <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.fromName} → {n.toName}</div>
+                  <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:2 }}>
+                    <span style={{ fontSize:10, color:"#EA580C", fontWeight:600, background:"#FFF7ED", padding:"1px 6px", borderRadius:4 }}>{n.reason}</span>
+                    <span style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.createdAt||n.time,p.t)}</span>
+                  </div>
                 </div>
-              </div>
-              {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#EA580C", flexShrink:0 }}/>}
-            </div>;})}
+                {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#EA580C", flexShrink:0 }}/>}
+              </div>;
+            })}
           </div>
         </div>}
       </div>}
@@ -6526,7 +6537,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
