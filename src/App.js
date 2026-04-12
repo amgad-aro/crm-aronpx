@@ -601,15 +601,20 @@ var Sidebar = function(p) {
   return <>
     {p.isMobile&&p.open&&<div onClick={p.onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.48)", zIndex:140 }}/>}
     <div style={st}>
-      <div style={{ padding:"18px", display:"flex", alignItems:"center", gap:10, borderBottom:"1px solid rgba(255,255,255,0.08)", minHeight:68 }}>
-        <div style={{ width:38, height:38, borderRadius:10, background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:13, color:"#fff", flexShrink:0, letterSpacing:"-0.5px" }}>ARO</div>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ color:"#fff", fontWeight:700, fontSize:14, display:"flex", alignItems:"center", gap:6 }}>
-            <span>ARO CRM</span>
+      <div style={{ padding:"18px 18px 18px", paddingBottom:18, borderBottom:"1px solid rgba(255,255,255,0.06)", marginBottom:8 }}>
+        <div style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between", gap:10 }}>
+          <div style={{ minWidth:0 }}>
+            <div style={{ color:"rgba(255,255,255,0.7)", fontSize:22, fontWeight:800, letterSpacing:"-1.5px", lineHeight:1 }}>
+              ARO
+              <span style={{ color:"rgba(255,255,255,0.25)", fontSize:14, fontWeight:400, letterSpacing:0 }}> CRM</span>
+            </div>
+            <div style={{ width:32, height:2, background:"rgba(255,255,255,0.15)", borderRadius:2, marginTop:5 }}/>
           </div>
-          <div style={{ color:"rgba(255,255,255,0.4)", fontSize:9 }}></div>
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
+            <div style={{ width:7, height:7, borderRadius:"50%", background:"#22C55E" }}/>
+            {p.isMobile&&<button onClick={p.onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"rgba(255,255,255,0.6)", display:"flex", padding:0 }}><X size={18}/></button>}
+          </div>
         </div>
-        {p.isMobile&&<button onClick={p.onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"rgba(255,255,255,0.6)", display:"flex" }}><X size={18}/></button>}
       </div>
       <div style={{ flex:1, padding:"8px 6px", overflowY:"auto" }}>
         {items.map(function(item){ var I=item.icon; var act=p.active===item.id;
