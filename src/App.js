@@ -2050,7 +2050,7 @@ var DashboardPage = function(p) {
   </div>;
 
   var hour = new Date().getHours();
-  var greeting = hour<12 ? "Good Morning \ud83c\udf05" : hour<17 ? "Good Afternoon \u2600\ufe0f" : "Good Evening \ud83c\udf19";
+  var greeting = hour<6 ? "Good Night \ud83d\ude34" : hour<12 ? "Good Morning \u2600\ufe0f" : hour<18 ? "Good Afternoon \ud83c\udf24\ufe0f" : hour<24 ? "Good Evening \ud83c\udf06" : "Good Night \ud83d\ude34";
   var timeStr = new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
 
   return <div style={{padding:"20px 24px 40px",background:"#F1F5F9"}}>
