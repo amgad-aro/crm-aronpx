@@ -2214,15 +2214,58 @@ var DashboardPage = function(p) {
   // DR for current filter
   var fDR = (p.dailyReqs||[]).filter(function(r){var rt=r.createdAt?new Date(r.createdAt).getTime():0;return rt>=rangeStart&&rt<=rangeEnd;});
 
-  // Meetings: "Meeting Done" in any assignment + DR with status "Meeting"
-  var meetingsFiltered = fLeads.filter(function(l){return (l.assignments||[]).some(function(a){return a.status==="Meeting Done"||a.status==="MeetingDone";})||l.status==="MeetingDone";}).length + fDR.filter(function(r){return r.status==="Meeting"||r.status==="MeetingDone";}).length;
-  // Interested: any assignment status in [Interested, Hot Case, Potential]
+  // Helper: was status "X" set in the date range? Check assignments and agentHistory entries.
+  var statusChangedInRange = function(l, targetStatus){
+    // Check if any assignment currently has this status AND lastActionAt is in range
+    var assignMatch = (l.assignments||[]).some(function(a){
+      if (a.status!==targetStatus) return false;
+      var t = a.lastActionAt?new Date(a.lastActionAt).getTime():0;
+      return t>=rangeStart && t<=rangeEnd;
+    });
+    if (assignMatch) return true;
+    // Check agentHistory for "Status: X" entries in range (per-assignment history)
+    return (l.assignments||[]).some(function(a){
+      return (a.agentHistory||[]).some(function(h){
+        var t = h.createdAt?new Date(h.createdAt).getTime():0;
+        if (t<rangeStart||t>rangeEnd) return false;
+        var note = (h.note||"").toLowerCase();
+        return note.indexOf(targetStatus.toLowerCase())>=0;
+      });
+    });
+  };
+  // Interested statuses
   var interestedStatuses = ["Interested","Hot Case","HotCase","Potential"];
+  // Leads where ANY assignment has these statuses OR top-level
+  var allLeadsUntimed = leads; // all non-archived leads for overall counts
+  // Meetings: leads with "Meeting Done" status in assignments + DR with status "Meeting"
+  var meetingsFromLeads = allLeadsUntimed.filter(function(l){
+    return (l.assignments||[]).some(function(a){return a.status==="Meeting Done"||a.status==="MeetingDone";})||l.status==="MeetingDone";
+  }).filter(function(l){
+    // If filtered, check if the status change falls in range
+    if (filter==="today" || filter==="week" || filter==="month" || (typeof filter==="string"&&filter.indexOf("Q")===0)) {
+      return statusChangedInRange(l,"Meeting Done") || statusChangedInRange(l,"MeetingDone") || (l.updatedAt && new Date(l.updatedAt).getTime()>=rangeStart && new Date(l.updatedAt).getTime()<=rangeEnd);
+    }
+    return true;
+  }).length;
+  var meetingsFromDR = (p.dailyReqs||[]).filter(function(r){
+    var rt=r.createdAt?new Date(r.createdAt).getTime():0;
+    return (r.status==="Meeting"||r.status==="MeetingDone") && rt>=rangeStart && rt<=rangeEnd;
+  }).length;
+  var meetingsFiltered = meetingsFromLeads + meetingsFromDR;
+  // Interested: any assignment status in [Interested, Hot Case, Potential]
   var interestedFiltered = fLeads.filter(function(l){return (l.assignments||[]).some(function(a){return interestedStatuses.includes(a.status);})||interestedStatuses.includes(l.status);}).length;
   var dealsFiltered = fLeads.filter(function(l){return l.status==="DoneDeal"||l.globalStatus==="donedeal";}).length;
-  var overdueFiltered = fLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now&&!["MeetingDone","DoneDeal","EOI"].includes(l.status);}).length;
+  // Overdue: leads with overdue callback + DR with overdue dueDate not completed
+  var overdueLeads = allLeadsUntimed.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now&&!["MeetingDone","DoneDeal","EOI"].includes(l.status);}).length;
+  var overdueDR = (p.dailyReqs||[]).filter(function(r){
+    var d = r.dueDate||r.callbackTime;
+    return d && new Date(d).getTime()<now && r.status!=="Meeting" && r.status!=="MeetingDone" && r.status!=="DoneDeal";
+  }).length;
+  var overdueFiltered = overdueLeads + overdueDR;
   var contactedFiltered = fLeads.filter(function(l){return l.status!=="NewLead";}).length;
   var callbacksFiltered = fLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).toDateString()===nowD.toDateString();}).length;
+  // Daily Requests created today (count — for the renamed "Daily Requests" card)
+  var drToday = (p.dailyReqs||[]).filter(function(r){var rt=r.createdAt?new Date(r.createdAt).getTime():0;return rt>=todayStart.getTime();}).length;
 
   // Campaign performance (filtered)
   var fCampMap={};
@@ -2287,7 +2330,7 @@ var DashboardPage = function(p) {
   var maskPh = function(ph){if(!ph)return "";if(ph.length<5)return ph;return ph.slice(0,3)+"****"+ph.slice(-2);};
 
   // Click lead navigation
-  var openLead = function(l){ if(p.setInitSelected)p.setInitSelected(l); if(p.nav)p.nav("leads",true); };
+  var openLead = function(l){ if(p.nav)p.nav("leads",l); };
   // Click alert navigation to filtered leads
   var gotoFilter = function(status){ if(p.setFilter)p.setFilter(status||"all"); if(p.nav)p.nav("leads"); };
 
@@ -2341,8 +2384,8 @@ var DashboardPage = function(p) {
 
     {sec("Key Metrics")}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:0}}>
-      {kpiCard("Total Leads",fLeads.length,"in period","#1565C0","#ffffff",function(){p.nav("leads");})}
-      {kpiCard("New "+(filter==="today"?"Today":filter==="week"?"Week":filter==="month"?"Month":filter),fLeads.length,"in period","#00796B","#ffffff",function(){p.nav("leads");})}
+      {kpiCard("Leads",fLeads.length,"in period","#1565C0","#ffffff",function(){p.nav("leads");})}
+      {kpiCard("Daily Requests",drToday,"today","#00796B","#ffffff",function(){p.nav("requests");})}
       {kpiCard("Interested",interestedFiltered,Math.round(interestedFiltered/fTotal*100)+"%","#E65100","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
       {kpiCard("Meetings",meetingsFiltered,Math.round(meetingsFiltered/fTotal*100)+"%","#6A1B9A","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
       {kpiCard("Overdue",overdueFiltered,"late callbacks","#2E7D32","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
@@ -2401,32 +2444,50 @@ var DashboardPage = function(p) {
           })}
         </>)}
         {card(<>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
             <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Today's Activities</div>
-            <span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:6,background:"#DBEAFE",color:"#1E40AF"}}>{todayActs.length}</span>
+            <span style={{fontSize:11,fontWeight:600,color:"#1D4ED8",cursor:"pointer"}} onClick={function(){p.nav&&p.nav("activities");}}>View All ({todayActs.length})</span>
           </div>
+          <div style={{maxHeight:378,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
           {todayActs.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity yet today</div> : todayActs.map(function(a,i){
             var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
             var aName = a.userId&&a.userId.name?a.userId.name:agentName(aid);
-            var lName = a.leadId&&a.leadId.name?a.leadId.name:(a.note||"");
+            var lName = a.leadId&&a.leadId.name?a.leadId.name:"";
             var inits = initialsOf(aName);
-            var avColors=[["#DBEAFE","#1D4ED8"],["#DCFCE7","#166534"],["#FEF3C7","#92400E"],["#EDE9FE","#5B21B6"],["#FFE4E6","#9F1239"]];
-            var avc = avColors[i%avColors.length];
-            return <div key={a._id||i} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:i<todayActs.length-1?"1px solid #F8FAFC":"none"}}>
-              <div style={{width:28,height:28,borderRadius:"50%",background:avc[0],color:avc[1],display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{inits}</div>
+            var avColors=[["#DBEAFE","#1D4ED8"],["#DCFCE7","#166534"],["#FEF3C7","#92400E"],["#EDE9FE","#5B21B6"],["#FFE4E6","#9F1239"],["#CCFBF1","#0F766E"],["#FEE2E2","#991B1B"]];
+            var avc = avColors[Math.abs((aName||"").charCodeAt(0)||0)%avColors.length];
+            // Build action label: "Status: X" / "Call initiated" / "DailyReq: X" / "Note added" / etc.
+            var aNote = a.note||"";
+            var actionLabel = actLabel(a);
+            if (a.type==="status_change") {
+              var m1 = aNote.match(/\[([^\]]+)\]/);
+              var statusName = m1 ? m1[1] : (aNote.split(":")[1]||"").trim().split("|")[0].trim();
+              actionLabel = "Status: "+(statusName||"changed");
+            } else if (a.type==="call") {
+              actionLabel = "Call initiated";
+            } else if (a.type==="note") {
+              actionLabel = "Note added";
+            } else if (a.type==="reassign") {
+              actionLabel = "Reassign";
+            } else if (a.type==="daily_request" || (aNote.toLowerCase().indexOf("daily")>=0)) {
+              actionLabel = "DailyReq: "+((aNote.split(":")[1]||"").trim().split("|")[0].trim()||"updated");
+            }
+            return <div key={a._id||i} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:i<todayActs.length-1?"1px solid #F1F5F9":"none"}}>
+              <div style={{width:34,height:34,borderRadius:"50%",background:avc[0],color:avc[1],display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>{inits}</div>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{aName} \u2014 {actLabel(a)}</div>
-                <div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{lName}</div>
+                <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{aName}{lName?" \u2014 "+lName:""}</div>
+                <div style={{fontSize:11,color:"#64748B",marginTop:1}}>{actionLabel}</div>
               </div>
-              <div style={{fontSize:10,color:"#94A3B8",flexShrink:0}}>{timeAgoShort(a.createdAt)}</div>
+              <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:500}}>{timeAgoShort(a.createdAt)}</div>
             </div>;
           })}
+          </div>
         </>)}
       </div>
     </div>
 
     {sec("Team Performance")}
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14,marginBottom:14}}>
+    <div style={{marginBottom:14}}>
     {card(<>
       <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Agent Performance</div>
       <div style={{overflowX:"auto",overflowY:"auto",maxHeight:320,WebkitOverflowScrolling:"touch",width:"100%"}}>
@@ -2458,21 +2519,6 @@ var DashboardPage = function(p) {
         </div>;
       })}
       </div>
-    </>)}
-    {card(<>
-      <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Quick Stats</div>
-      {[
-        {l:"Today's New Leads",v:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<DAY;}).length,c:"#1E40AF"},
-        {l:"Missing Feedback",v:leads.filter(function(l){return !l.lastFeedback&&l.status!=="NewLead"&&l.status!=="DoneDeal";}).length,c:"#92400E"},
-        {l:"Expiring Soon (7d)",v:leads.filter(function(l){return l.expiresAt&&(new Date(l.expiresAt).getTime()-now)<7*DAY&&(new Date(l.expiresAt).getTime()-now)>0;}).length,c:"#991B1B"},
-        {l:"Top Project",v:(function(){var pm={};leads.forEach(function(l){if(l.project)pm[l.project]=(pm[l.project]||0)+1;});var top=Object.entries(pm).sort(function(a,b){return b[1]-a[1];})[0];return top?top[0]+" ("+top[1]+")":"—";})(),c:"#5B21B6"},
-        {l:"Avg Leads/Agent",v:fAgentPerf.length>0?Math.round(total/fAgentPerf.length):0,c:"#064E3B"}
-      ].map(function(s,i){
-        return <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<4?"1px solid #F1F5F9":"none"}}>
-          <div style={{fontSize:13,color:"#334155"}}>{s.l}</div>
-          <div style={{fontSize:16,fontWeight:800,color:s.c}}>{s.v}</div>
-        </div>;
-      })}
     </>)}
     </div>
 
