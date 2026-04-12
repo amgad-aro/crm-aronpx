@@ -6090,6 +6090,47 @@ export default function CRMApp() {
     return function(){ clearTimeout(reconnectTimer); if(ws) try{ws.close();}catch(e){} };
   }, [token]);
 
+  // Cross-device sync: refresh everything when the tab becomes visible again, and poll users + notifications in the background
+  // so user management / notification changes on one device propagate to others without a manual refresh.
+  useEffect(function(){
+    if(!token) return;
+    var cancelled = false;
+    var lastSyncAt = Date.now();
+    var refresh = function(reason){
+      if (cancelled || !token) return;
+      lastSyncAt = Date.now();
+      // Full refresh — leads/DRs/activities/tasks/users/notifications — reuses the existing loader.
+      try{ loadData(token, currentUser); }catch(e){}
+      try{ loadNotifications(token); }catch(e){}
+    };
+    // Visibility sync: when the admin comes back to the tab after 15s+ away, force a refresh.
+    var onVis = function(){
+      if (document.visibilityState === "visible" && Date.now() - lastSyncAt > 15*1000) refresh("visibilitychange");
+    };
+    // Window focus sync: same signal on desktop browsers.
+    var onFocus = function(){
+      if (Date.now() - lastSyncAt > 15*1000) refresh("focus");
+    };
+    // Users + notifications poller (60s) — leads/DR/activities already have their own faster intervals above.
+    var usersInterval = setInterval(async function(){
+      if (cancelled || !token) return;
+      try{
+        var u = await apiFetch("/api/users","GET",null,token);
+        if (Array.isArray(u)) setUsers(u);
+      }catch(e){}
+      try{ loadNotifications(token); }catch(e){}
+    }, 60000);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onFocus);
+    return function(){
+      cancelled = true;
+      clearInterval(usersInterval);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onFocus);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[token]);
+
   // Load saved session on startup
   useEffect(function(){
     try {
