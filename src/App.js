@@ -2830,11 +2830,11 @@ var DashboardPage = function(p) {
             byAgent[uid] = {uid:uid,name:u.name||"Unknown",total:0,doneOnTime:0,missed:0};
           });
           var sumScheduled=0, sumMissed=0;
+          // Lead assignments
           leads.forEach(function(l){
             (l.assignments||[]).forEach(function(a){
               var cb = parseCb(a.callbackTime);
               if (!cb) return;
-              // Respect the active dashboard date filter (Today/Week/Month/Quarter)
               if (cb<rangeStart || cb>rangeEnd) return;
               var aid = a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
               var auid = String(aid||"");
@@ -2843,13 +2843,31 @@ var DashboardPage = function(p) {
                 byAgent[auid] = {uid:auid,name:aName,total:0,doneOnTime:0,missed:0};
               }
               byAgent[auid].total++;
-              // Same rule as the notification bell: missed = callback time passed AND assignment still sitting on "Call Back"
               var stillCallBack = a.status==="CallBack" || a.status==="Call Back";
               var isMissed = cb<nowMs && stillCallBack;
               if (isMissed) byAgent[auid].missed++;
               sumScheduled++;
               if (isMissed) sumMissed++;
             });
+          });
+          // Daily Requests — same rule, single agentId per DR
+          (p.dailyReqs||[]).forEach(function(r){
+            var cb = parseCb(r.callbackTime);
+            if (!cb) return;
+            if (cb<rangeStart || cb>rangeEnd) return;
+            var aid = r.agentId&&r.agentId._id?r.agentId._id:r.agentId;
+            var auid = String(aid||"");
+            if (!auid) return;
+            if (!byAgent[auid]) {
+              var aName = r.agentId&&r.agentId.name ? r.agentId.name : (function(){var u=(p.users||[]).find(function(x){return String(x._id||gid(x))===auid;});return u?u.name:"Unknown";})();
+              byAgent[auid] = {uid:auid,name:aName,total:0,doneOnTime:0,missed:0};
+            }
+            byAgent[auid].total++;
+            var drStillCallBack = r.status==="CallBack" || r.status==="Call Back";
+            var drMissed = cb<nowMs && drStillCallBack;
+            if (drMissed) byAgent[auid].missed++;
+            sumScheduled++;
+            if (drMissed) sumMissed++;
           });
           // Done on time = scheduled minus missed (covers future callbacks + past callbacks where status has moved on)
           Object.values(byAgent).forEach(function(x){ x.doneOnTime = x.total - x.missed; });
@@ -2896,25 +2914,31 @@ var DashboardPage = function(p) {
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Call Outcomes</div>
         {(function(){
-          var actsPool = (todayActivities&&todayActivities.length)?todayActivities:(p.activities||[]);
-          var callsToday = actsPool.filter(function(a){return a.type==="call"&&a.createdAt&&new Date(a.createdAt).getTime()>=todayStart.getTime();});
-          var statusToday = actsPool.filter(function(a){return a.type==="status_change"&&a.createdAt&&new Date(a.createdAt).getTime()>=todayStart.getTime();});
+          // Use todayActivities only when filter is "today" (it only holds today's data). Otherwise use the full activities pool.
+          var actsPool = (filter==="today" && todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
+          var inRange = function(a){ if(!a.createdAt) return false; var t=new Date(a.createdAt).getTime(); return t>=rangeStart && t<=rangeEnd; };
+          var callsInRange = actsPool.filter(function(a){return a.type==="call" && inRange(a);});
+          var statusInRange = actsPool.filter(function(a){return a.type==="status_change" && inRange(a);});
           var matchStatus = function(note,s){var lc=(note||"").toLowerCase();return lc.indexOf(s.toLowerCase())>=0;};
-          var noAns = statusToday.filter(function(a){return matchStatus(a.note,"noanswer")||matchStatus(a.note,"no answer");}).length;
-          var intr = statusToday.filter(function(a){return matchStatus(a.note,"hotcase")||matchStatus(a.note,"hot case")||matchStatus(a.note,"potential")||matchStatus(a.note,"interested");}).length;
-          var cbk = statusToday.filter(function(a){return matchStatus(a.note,"callback");}).length;
-          var notInt = statusToday.filter(function(a){return matchStatus(a.note,"notinterested")||matchStatus(a.note,"not interested");}).length;
-          var totalCalls = callsToday.length;
+          var noAns = statusInRange.filter(function(a){return matchStatus(a.note,"noanswer")||matchStatus(a.note,"no answer");}).length;
+          var hotCase = statusInRange.filter(function(a){return matchStatus(a.note,"hotcase")||matchStatus(a.note,"hot case");}).length;
+          var potential = statusInRange.filter(function(a){return matchStatus(a.note,"potential");}).length;
+          var intr = statusInRange.filter(function(a){return matchStatus(a.note,"interested") && !matchStatus(a.note,"notinterested") && !matchStatus(a.note,"not interested");}).length;
+          var interestedTotal = hotCase + potential + intr;
+          var cbk = statusInRange.filter(function(a){return matchStatus(a.note,"callback")||matchStatus(a.note,"call back");}).length;
+          var notInt = statusInRange.filter(function(a){return matchStatus(a.note,"notinterested")||matchStatus(a.note,"not interested");}).length;
+          var totalCalls = callsInRange.length;
           var answered = Math.max(0, totalCalls - noAns);
           var answerRate = totalCalls>0 ? Math.round(answered/totalCalls*100) : 0;
           var invalidPct = totalCalls>0 ? Math.round(notInt/totalCalls*100) : 0;
           var denom = Math.max(1,totalCalls);
+          var callsLabel = filter==="today" ? "Calls Today" : filter==="week" ? "Calls this Week" : filter==="month" ? "Calls this Month" : "Calls in Period";
           return <>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-              <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{totalCalls}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>Calls Today</div></div>
+              <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{totalCalls}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>{callsLabel}</div></div>
               <div style={{background:"#F0FDF4",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#15803D"}}>{answerRate}%</div><div style={{fontSize:10,fontWeight:600,color:"#22C55E"}}>Answer Rate</div></div>
             </div>
-            {[["Interested",intr,"#10B981"],["No Answer",noAns,"#94A3B8"],["Not Int.",notInt,"#EF4444"],["Call Back",cbk,"#F59E0B"]].map(function(s){return bRow(s[0],s[1],denom,s[2]);})}
+            {[["Interested",interestedTotal,"#10B981"],["Hot Case",hotCase,"#F59E0B"],["No Answer",noAns,"#94A3B8"],["Not Int.",notInt,"#EF4444"],["Call Back",cbk,"#F59E0B"]].map(function(s){return bRow(s[0],s[1],denom,s[2]);})}
             <div style={{marginTop:10,padding:"8px 10px",background:"#FFF1F2",borderRadius:8,display:"flex",justifyContent:"space-between",fontSize:12}}>
               <span style={{color:"#64748B",fontWeight:500}}>Invalid leads</span><span style={{fontWeight:700,color:"#BE123C"}}>{invalidPct}%</span>
             </div>
@@ -2924,23 +2948,36 @@ var DashboardPage = function(p) {
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Leads by Status</div>
         {(function(){
-          // Count by each agent's current assignment status; fall back to lead.status for leads with no assignments
+          // Count by each assignment's current status, but only assignments with assignedAt in the active range.
+          // Falls back to lead.createdAt-based inclusion for leads with no assignments.
           var assignSc={};
           var assignTotal=0;
+          var normalize = function(st){
+            if (st==="Meeting Done") return "MeetingDone";
+            if (st==="No Answer") return "NoAnswer";
+            if (st==="Hot Case") return "HotCase";
+            if (st==="Not Interested") return "NotInterested";
+            if (st==="Call Back") return "CallBack";
+            return st;
+          };
           leads.forEach(function(l){
-            var counted=false;
+            var countedAny=false;
             (l.assignments||[]).forEach(function(a){
-              var st = a.status || l.status || "NewLead";
-              if (st==="Meeting Done") st = "MeetingDone";
-              if (st==="No Answer") st = "NoAnswer";
-              if (st==="Hot Case") st = "HotCase";
-              if (st==="Not Interested") st = "NotInterested";
-              if (st==="Call Back") st = "CallBack";
+              var at = a.assignedAt ? new Date(a.assignedAt).getTime() : (l.createdAt?new Date(l.createdAt).getTime():0);
+              if (at<rangeStart || at>rangeEnd) return;
+              var st = normalize(a.status || l.status || "NewLead");
               assignSc[st] = (assignSc[st]||0)+1;
               assignTotal++;
-              counted=true;
+              countedAny=true;
             });
-            if (!counted) { var st2=l.status||"NewLead"; assignSc[st2]=(assignSc[st2]||0)+1; assignTotal++; }
+            if (!countedAny) {
+              var ct = l.createdAt ? new Date(l.createdAt).getTime() : 0;
+              if (ct>=rangeStart && ct<=rangeEnd) {
+                var st2 = normalize(l.status||"NewLead");
+                assignSc[st2]=(assignSc[st2]||0)+1;
+                assignTotal++;
+              }
+            }
           });
           var denom = Math.max(1,assignTotal);
           var rows=[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"],["No Answer","NoAnswer","#CBD5E1"],["EOI","EOI","#0EA5E9"],["Done Deal","DoneDeal","#065F46"]];

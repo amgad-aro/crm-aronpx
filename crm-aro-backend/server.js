@@ -1490,9 +1490,8 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       });
       var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
       var avgResp = rtCount>0 ? respH.toFixed(1) : null;
-      // Callback compliance per agent — filtered by active date range.
-      // Matches the notification-bell logic: a callback is MISSED when callbackTime is past
-      // AND the assignment status is still "Call Back" / "CallBack" (agent never moved it on).
+      // Callback compliance per agent — filtered by active date range, covering both Leads and Daily Requests.
+      // Matches the notification-bell logic: missed = callbackTime past AND status still "Call Back".
       var totalCallbacks=0, doneOnTime=0, missed=0;
       var nowMs = now.getTime();
       leads.forEach(function(l){
@@ -1505,9 +1504,19 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
           if (cb<rangeStart || cb>rangeEnd) return;
           totalCallbacks++;
           var stillCallBack = a.status==="CallBack" || a.status==="Call Back";
-          var isMissed = cb<nowMs && stillCallBack;
-          if (isMissed) missed++;
+          if (cb<nowMs && stillCallBack) missed++;
         });
+      });
+      drs.forEach(function(r){
+        var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;
+        if (String(aid)!==uid) return;
+        if (!r.callbackTime) return;
+        var cb = new Date(r.callbackTime).getTime();
+        if (isNaN(cb)) return;
+        if (cb<rangeStart || cb>rangeEnd) return;
+        totalCallbacks++;
+        var drStill = r.status==="CallBack" || r.status==="Call Back";
+        if (cb<nowMs && drStill) missed++;
       });
       doneOnTime = totalCallbacks - missed;
       var missedRate = totalCallbacks>0 ? Math.round(missed/totalCallbacks*100) : 0;
@@ -1528,37 +1537,55 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       return {agentId:uid,name:u.name,leads:agentLeads.length,dr:agentDRs.length,total:agentLeads.length+agentDRs.length,calls:agentCalls,followups:agentFollowups,overdue:agentOverdue,interested:agentInt,interestedPct:ip,meetings:agentMeet,meetingPct:mp,deals:agentDeals,rotOutCount:agentRotOut,rotInCount:agentRotIn,noAnswer:agentNoAnswer,totalCallbacks:totalCallbacks,doneOnTime:doneOnTime,missed:missed,missedRate:missedRate,respTime:avgResp,score:score,quality:quality};
     }).sort(function(a,b){return b.quality-a.quality;});
 
-    // Calls today (from activities, not just status)
-    var todayStartMs = todayStart.getTime();
-    var callsTodayActs = activities.filter(function(a){return a.type==="call"&&a.createdAt&&new Date(a.createdAt).getTime()>=todayStartMs;});
-    var callsToday = callsTodayActs.length;
-    var statusTodayActs = activities.filter(function(a){return a.type==="status_change"&&a.createdAt&&new Date(a.createdAt).getTime()>=todayStartMs;});
+    // Call outcomes — filtered by the active dashboard range (not only today)
+    var actInRange = function(a){ if (!a.createdAt) return false; var t=new Date(a.createdAt).getTime(); return t>=rangeStart && t<=rangeEnd; };
+    var callsRangeActs = activities.filter(function(a){return a.type==="call" && actInRange(a);});
+    var statusRangeActs = activities.filter(function(a){return a.type==="status_change" && actInRange(a);});
+    var callsToday = callsRangeActs.length; // kept name for compatibility with the response
     var noteContains = function(note,s){return (note||"").toLowerCase().indexOf(s.toLowerCase())>=0;};
+    var hotCaseCount = statusRangeActs.filter(function(a){return noteContains(a.note,"hotcase")||noteContains(a.note,"hot case");}).length;
+    var potentialCount = statusRangeActs.filter(function(a){return noteContains(a.note,"potential");}).length;
+    var interestedLiteral = statusRangeActs.filter(function(a){return noteContains(a.note,"interested") && !noteContains(a.note,"notinterested") && !noteContains(a.note,"not interested");}).length;
     var callsByOutcome = {
-      interested: statusTodayActs.filter(function(a){return noteContains(a.note,"hotcase")||noteContains(a.note,"hot case")||noteContains(a.note,"potential")||noteContains(a.note,"interested");}).length,
-      noAnswer: statusTodayActs.filter(function(a){return noteContains(a.note,"noanswer")||noteContains(a.note,"no answer");}).length,
-      callBack: statusTodayActs.filter(function(a){return noteContains(a.note,"callback");}).length,
-      notInterested: statusTodayActs.filter(function(a){return noteContains(a.note,"notinterested")||noteContains(a.note,"not interested");}).length
+      interested: hotCaseCount + potentialCount + interestedLiteral,
+      hotCase: hotCaseCount,
+      potential: potentialCount,
+      noAnswer: statusRangeActs.filter(function(a){return noteContains(a.note,"noanswer")||noteContains(a.note,"no answer");}).length,
+      callBack: statusRangeActs.filter(function(a){return noteContains(a.note,"callback")||noteContains(a.note,"call back");}).length,
+      notInterested: statusRangeActs.filter(function(a){return noteContains(a.note,"notinterested")||noteContains(a.note,"not interested");}).length
     };
     var answered = Math.max(0, callsToday - callsByOutcome.noAnswer);
     var answerRate = callsToday>0 ? Math.round(answered/callsToday*100) : 0;
     var invalidPct = callsToday>0 ? Math.round(callsByOutcome.notInterested/callsToday*100) : 0;
     var intCalls = callsByOutcome.interested;
 
-    // Leads by status — count per-agent current assignment status (falls back to lead.status)
+    // Leads by status — assignments whose assignedAt falls inside the active date range.
+    // Leads with no assignments fall back to lead.createdAt for inclusion.
     var statusCounts={};
+    var normalizeSt = function(st){
+      if (st==="Meeting Done") return "MeetingDone";
+      if (st==="No Answer") return "NoAnswer";
+      if (st==="Hot Case") return "HotCase";
+      if (st==="Not Interested") return "NotInterested";
+      if (st==="Call Back") return "CallBack";
+      return st;
+    };
     leads.forEach(function(l){
-      var counted=false;
+      var countedAny=false;
       (l.assignments||[]).forEach(function(a){
-        var st = a.status || l.status || "NewLead";
-        if (st==="Meeting Done") st = "MeetingDone";
-        if (st==="No Answer") st = "NoAnswer";
-        if (st==="Hot Case") st = "HotCase";
-        if (st==="Not Interested") st = "NotInterested";
-        if (st==="Call Back") st = "CallBack";
-        statusCounts[st]=(statusCounts[st]||0)+1; counted=true;
+        var at = a.assignedAt ? new Date(a.assignedAt).getTime() : (l.createdAt?new Date(l.createdAt).getTime():0);
+        if (at<rangeStart || at>rangeEnd) return;
+        var st = normalizeSt(a.status || l.status || "NewLead");
+        statusCounts[st]=(statusCounts[st]||0)+1;
+        countedAny=true;
       });
-      if (!counted) { var st2=l.status||"NewLead"; statusCounts[st2]=(statusCounts[st2]||0)+1; }
+      if (!countedAny) {
+        var ct = l.createdAt ? new Date(l.createdAt).getTime() : 0;
+        if (ct>=rangeStart && ct<=rangeEnd) {
+          var st2 = normalizeSt(l.status||"NewLead");
+          statusCounts[st2]=(statusCounts[st2]||0)+1;
+        }
+      }
     });
     var leadsByStatus=Object.entries(statusCounts).map(function(e){return{status:e[0],count:e[1]};});
 
@@ -1602,9 +1629,8 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
     var avgLeads=leadsPerAgent.length>0?leadsPerAgent.reduce(function(s,x){return s+x;},0)/leadsPerAgent.length:0;
     var overloaded=agentPerf.filter(function(a){return a.leads>avgLeads*1.3;}).length;
 
-    // Top-level callback compliance summary — respects the active date filter.
-    // Missed = callbackTime in the past AND assignment still sitting on "Call Back" (same rule
-    // the notification bell uses). Done on time = everything else (future or status moved on).
+    // Top-level callback compliance summary — respects the active date filter and includes Daily Requests.
+    // Missed = callbackTime in the past AND entity still sitting on "Call Back" (same rule the notification bell uses).
     var cbScheduled=0, cbMissed=0;
     leads.forEach(function(l){
       (l.assignments||[]).forEach(function(a){
@@ -1616,6 +1642,15 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
         var stillCallBack = a.status==="CallBack" || a.status==="Call Back";
         if (cb<now.getTime() && stillCallBack) cbMissed++;
       });
+    });
+    drs.forEach(function(r){
+      if (!r.callbackTime) return;
+      var cb = new Date(r.callbackTime).getTime();
+      if (isNaN(cb)) return;
+      if (cb<rangeStart || cb>rangeEnd) return;
+      cbScheduled++;
+      var stillCallBack = r.status==="CallBack" || r.status==="Call Back";
+      if (cb<now.getTime() && stillCallBack) cbMissed++;
     });
     var cbDoneOnTime = cbScheduled - cbMissed;
     var cbComplianceRate = cbScheduled>0 ? Math.round(cbDoneOnTime/cbScheduled*100) : 0;
