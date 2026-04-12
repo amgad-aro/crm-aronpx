@@ -1490,11 +1490,11 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       });
       var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
       var avgResp = rtCount>0 ? respH.toFixed(1) : null;
-      // Callback compliance per agent — filtered by active date range
+      // Callback compliance per agent — filtered by active date range.
+      // Matches the notification-bell logic: a callback is MISSED when callbackTime is past
+      // AND the assignment status is still "Call Back" / "CallBack" (agent never moved it on).
       var totalCallbacks=0, doneOnTime=0, missed=0;
       var nowMs = now.getTime();
-      // Count from all leads (not just agentLeads in range) so callbacks outside the lead-assignedAt
-      // window but within the callback date range are still captured.
       leads.forEach(function(l){
         (l.assignments||[]).forEach(function(a){
           var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
@@ -1504,12 +1504,12 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
           if (isNaN(cb)) return;
           if (cb<rangeStart || cb>rangeEnd) return;
           totalCallbacks++;
-          var last = a.lastActionAt ? new Date(a.lastActionAt).getTime() : 0;
-          var onTime = last>0 && last<=cb;
-          if (onTime) doneOnTime++;
-          else if (cb<nowMs) missed++;
+          var stillCallBack = a.status==="CallBack" || a.status==="Call Back";
+          var isMissed = cb<nowMs && stillCallBack;
+          if (isMissed) missed++;
         });
       });
+      doneOnTime = totalCallbacks - missed;
       var missedRate = totalCallbacks>0 ? Math.round(missed/totalCallbacks*100) : 0;
       // Callback compliance: callbacks not overdue / total callbacks
       var cbTotal = agentFollowups;
@@ -1602,8 +1602,10 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
     var avgLeads=leadsPerAgent.length>0?leadsPerAgent.reduce(function(s,x){return s+x;},0)/leadsPerAgent.length:0;
     var overloaded=agentPerf.filter(function(a){return a.leads>avgLeads*1.3;}).length;
 
-    // Top-level callback compliance summary — respects the active date filter
-    var cbScheduled=0, cbDoneOnTime=0, cbMissed=0;
+    // Top-level callback compliance summary — respects the active date filter.
+    // Missed = callbackTime in the past AND assignment still sitting on "Call Back" (same rule
+    // the notification bell uses). Done on time = everything else (future or status moved on).
+    var cbScheduled=0, cbMissed=0;
     leads.forEach(function(l){
       (l.assignments||[]).forEach(function(a){
         if (!a.callbackTime) return;
@@ -1611,12 +1613,11 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
         if (isNaN(cb)) return;
         if (cb<rangeStart || cb>rangeEnd) return;
         cbScheduled++;
-        var last = a.lastActionAt ? new Date(a.lastActionAt).getTime() : 0;
-        var onTime = last>0 && last<=cb;
-        if (onTime) cbDoneOnTime++;
-        else if (cb<now.getTime()) cbMissed++;
+        var stillCallBack = a.status==="CallBack" || a.status==="Call Back";
+        if (cb<now.getTime() && stillCallBack) cbMissed++;
       });
     });
+    var cbDoneOnTime = cbScheduled - cbMissed;
     var cbComplianceRate = cbScheduled>0 ? Math.round(cbDoneOnTime/cbScheduled*100) : 0;
     // Leaderboard: include every sales/team_leader/manager agent (even with 0 callbacks), sorted worst-first
     var cbLeaderboard = agentPerf.slice().sort(function(a,b){ if (b.missed!==a.missed) return b.missed-a.missed; return (b.totalCallbacks||0)-(a.totalCallbacks||0); }).map(function(a){return {agentId:a.agentId,name:a.name,totalCallbacks:a.totalCallbacks||0,doneOnTime:a.doneOnTime||0,missed:a.missed||0,missedRate:a.missedRate||0};});

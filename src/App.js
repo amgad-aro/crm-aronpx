@@ -2829,7 +2829,7 @@ var DashboardPage = function(p) {
             var uid = String(u._id||gid(u));
             byAgent[uid] = {uid:uid,name:u.name||"Unknown",total:0,doneOnTime:0,missed:0};
           });
-          var sumScheduled=0, sumDoneOnTime=0, sumMissed=0;
+          var sumScheduled=0, sumMissed=0;
           leads.forEach(function(l){
             (l.assignments||[]).forEach(function(a){
               var cb = parseCb(a.callbackTime);
@@ -2843,16 +2843,17 @@ var DashboardPage = function(p) {
                 byAgent[auid] = {uid:auid,name:aName,total:0,doneOnTime:0,missed:0};
               }
               byAgent[auid].total++;
-              var last = a.lastActionAt ? new Date(a.lastActionAt).getTime() : 0;
-              var isDoneOnTime = last>0 && last<=cb;
-              var isMissed = cb<nowMs && !isDoneOnTime;
-              if (isDoneOnTime) byAgent[auid].doneOnTime++;
+              // Same rule as the notification bell: missed = callback time passed AND assignment still sitting on "Call Back"
+              var stillCallBack = a.status==="CallBack" || a.status==="Call Back";
+              var isMissed = cb<nowMs && stillCallBack;
               if (isMissed) byAgent[auid].missed++;
               sumScheduled++;
-              if (isDoneOnTime) sumDoneOnTime++;
               if (isMissed) sumMissed++;
             });
           });
+          // Done on time = scheduled minus missed (covers future callbacks + past callbacks where status has moved on)
+          Object.values(byAgent).forEach(function(x){ x.doneOnTime = x.total - x.missed; });
+          var sumDoneOnTime = sumScheduled - sumMissed;
           var complianceRate = sumScheduled>0 ? Math.round(sumDoneOnTime/sumScheduled*100) : 0;
           var leaderboard = Object.values(byAgent).sort(function(a,b){ if (b.missed!==a.missed) return b.missed-a.missed; return b.total-a.total; });
           leaderboard.forEach(function(x){ x.rate = x.total>0?Math.round(x.missed/x.total*100):0; });
