@@ -895,7 +895,11 @@ var Header = function(p) {
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span style={{ fontSize:16 }}>💰</span>
               <span style={{ fontWeight:700, fontSize:14, color:C.text }}>Deals & EOI</span>
-              {p.dealNotifs&&p.dealNotifs.length>0&&<span style={{ background:"#F0FDF4", color:"#15803D", padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:600 }}>{p.dealNotifs.length}</span>}
+              {(function(){
+                var n = (p.leads||[]).filter(function(l){return !l.archived && (l.status==="EOI"||l.status==="DoneDeal"||l.globalStatus==="eoi"||l.globalStatus==="donedeal") && l.eoiStatus!=="EOI Cancelled";}).length
+                      + (p.dailyRequests||[]).filter(function(r){return !r.archived && (r.status==="EOI"||r.status==="DoneDeal") && r.eoiStatus!=="EOI Cancelled";}).length;
+                return n>0 ? <span style={{ background:"#F0FDF4", color:"#15803D", padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:600 }}>{n}</span> : null;
+              })()}
             </div>
             <div style={{ display:"flex", gap:4, alignItems:"center" }}>
               {p.unseenDeals>0&&<button onClick={function(){if(p.onDealNotifSeen)p.onDealNotifSeen();}} style={{ background:"#F0FDF4", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:"#15803D", fontWeight:600, padding:"4px 10px" }}>Mark Read</button>}
@@ -903,37 +907,79 @@ var Header = function(p) {
             </div>
           </div>
           <div style={{ overflowY:"auto", flex:1 }}>
-            {(!p.dealNotifs||p.dealNotifs.length===0)&&<div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}>
-              <div style={{ fontSize:28, marginBottom:8 }}>💰</div>No deals yet
-            </div>}
-            {p.dealNotifs&&p.dealNotifs.filter(function(n){
-              if(p.cu.role!=="team_leader") return true;
-              var teamNames=new Set((p.myTeamUsers||[]).map(function(u){return u.name;}));
-              teamNames.add(p.cu.name);
-              return teamNames.has(n.agentName);
-            }).map(function(n){
-              var isDeal=n.status==="DoneDeal";
-              var canNav = !!n.leadId;
-              var openItem = function(){
-                p.setShowDealNotif(false);
-                if (!canNav) return;
-                // Reuse the exact nav + initSelected path already used elsewhere.
-                // EOIPage and DealsPage both read p.initSelected and re-resolve against p.leads,
-                // so passing a shim {_id, name} still works if p.leads hasn't loaded yet.
-                var target = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);}) || { _id: n.leadId, name: n.leadName || "" };
-                var page = isDeal ? "deals" : "eoi";
-                if (p.onDealNotifClick) p.onDealNotifClick(page, target);
+            {(function(){
+              // Build the list directly from current leads + daily requests so Pending EOIs never slip through.
+              var agentNameOf = function(entry){
+                if (!entry || !entry.agentId) return "";
+                if (entry.agentId.name) return entry.agentId.name;
+                var u = (p.myTeamUsers||[]).find(function(x){return gid(x)===String(entry.agentId);}); // best-effort lookup
+                return u?u.name:"";
               };
-              return <div key={n._id||n.id} onClick={canNav?openItem:undefined} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#FAFFFE", transition:"background 0.2s", cursor:canNav?"pointer":"default" }}>
-                <div style={{ width:38, height:38, borderRadius:10, background:isDeal?"linear-gradient(135deg,#DCFCE7,#BBF7D0)":"linear-gradient(135deg,#FFF7ED,#FED7AA)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:18 }}>{isDeal?"🎉":"🎯"}</div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{isDeal?"Done Deal":"EOI"}{n.leadName?" — "+n.leadName:""}</div>
-                  <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
-                  <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{timeAgo(n.createdAt||n.time,p.t)}</div>
-                </div>
-                {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#15803D", flexShrink:0 }}/>}
-              </div>;
-            })}
+              var seenLeadKeys = {}; // prevents the DR mirror from double-showing the same phone
+              var items = [];
+              var leads = (p.leads||[]).filter(function(l){return !l.archived;});
+              leads.forEach(function(l){
+                var isEOI = l.status==="EOI" || l.globalStatus==="eoi" || (l.eoiStatus && l.eoiStatus!=="EOI Cancelled" && l.eoiStatus!=="");
+                var isDeal = l.status==="DoneDeal" || l.globalStatus==="donedeal";
+                if (!isEOI && !isDeal) return;
+                if (l.eoiStatus==="EOI Cancelled" && !isDeal) return; // cancelled EOIs don't show in this panel
+                var kind = isDeal ? "DoneDeal" : (l.eoiStatus || "Pending");
+                items.push({
+                  _id: gid(l), leadId: gid(l), leadName: l.name,
+                  agentName: agentNameOf(l), budget: l.budget || "",
+                  kind: kind, // "DoneDeal" | "Approved" | "Pending" | "EOI Cancelled"
+                  time: l.updatedAt || l.lastActivityTime || l.createdAt,
+                  phone: l.phone || ""
+                });
+                if (l.phone) seenLeadKeys[l.phone] = true;
+              });
+              (p.dailyRequests||[]).forEach(function(r){
+                if (r.archived) return;
+                if (r.phone && seenLeadKeys[r.phone]) return; // already represented by the mirror Lead
+                var isEOI = r.status==="EOI" || (r.eoiStatus && r.eoiStatus!=="EOI Cancelled" && r.eoiStatus!=="");
+                var isDeal = r.status==="DoneDeal";
+                if (!isEOI && !isDeal) return;
+                if (r.eoiStatus==="EOI Cancelled" && !isDeal) return;
+                var kind = isDeal ? "DoneDeal" : (r.eoiStatus || "Pending");
+                items.push({
+                  _id: gid(r), leadId: gid(r), leadName: r.name,
+                  agentName: agentNameOf(r), budget: r.budget || "",
+                  kind: kind, isDR: true,
+                  time: r.updatedAt || r.lastActivityTime || r.createdAt,
+                  phone: r.phone || ""
+                });
+              });
+              // Team leader scope: only items where the agent is on the TL's team
+              if (p.cu && p.cu.role==="team_leader") {
+                var teamNames=new Set((p.myTeamUsers||[]).map(function(u){return u.name;}));
+                teamNames.add(p.cu.name);
+                items = items.filter(function(it){ return !it.agentName || teamNames.has(it.agentName); });
+              }
+              items.sort(function(a,b){ return new Date(b.time||0) - new Date(a.time||0); });
+              if (items.length===0) return <div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}><div style={{ fontSize:28, marginBottom:8 }}>💰</div>No deals yet</div>;
+              return items.map(function(n, idx){
+                var isDeal = n.kind==="DoneDeal";
+                var label = isDeal ? "🎉 Done Deal" : (n.kind==="Approved" ? "✅ Approved EOI" : "⏳ Pending EOI");
+                var iconBg = isDeal ? "linear-gradient(135deg,#DCFCE7,#BBF7D0)"
+                  : (n.kind==="Approved" ? "linear-gradient(135deg,#D1FAE5,#A7F3D0)" : "linear-gradient(135deg,#FFF7ED,#FED7AA)");
+                var iconEmoji = isDeal ? "🎉" : (n.kind==="Approved" ? "✅" : "⏳");
+                var openItem = function(){
+                  p.setShowDealNotif(false);
+                  if (!p.onDealNotifClick) return;
+                  var target = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);}) || { _id: n.leadId, name: n.leadName||"" };
+                  var page = isDeal ? "deals" : "eoi";
+                  p.onDealNotifClick(page, target);
+                };
+                return <div key={n._id+"-"+idx} onClick={openItem} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:"#fff", transition:"background 0.2s", cursor:"pointer" }}>
+                  <div style={{ width:38, height:38, borderRadius:10, background:iconBg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:18 }}>{iconEmoji}</div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}{n.leadName?" — "+n.leadName:""}</div>
+                    <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
+                    <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{timeAgo(n.time,p.t)}</div>
+                  </div>
+                </div>;
+              });
+            })()}
           </div>
         </div>}
       </div>}
