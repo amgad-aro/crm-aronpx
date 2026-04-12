@@ -1490,6 +1490,24 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       });
       var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
       var avgResp = rtCount>0 ? respH.toFixed(1) : null;
+      // Callback compliance per agent
+      var totalCallbacks=0, doneOnTime=0, missed=0;
+      var nowMs = now.getTime();
+      agentLeads.forEach(function(l){
+        (l.assignments||[]).forEach(function(a){
+          var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+          if (String(aid)!==uid) return;
+          if (!a.callbackTime) return;
+          var cb = new Date(a.callbackTime).getTime();
+          if (isNaN(cb)) return;
+          totalCallbacks++;
+          var last = a.lastActionAt ? new Date(a.lastActionAt).getTime() : 0;
+          var onTime = last>0 && last<=cb;
+          if (onTime) doneOnTime++;
+          else if (cb<nowMs) missed++;
+        });
+      });
+      var missedRate = totalCallbacks>0 ? Math.round(missed/totalCallbacks*100) : 0;
       // Callback compliance: callbacks not overdue / total callbacks
       var cbTotal = agentFollowups;
       var cbOnTime = agentFollowups - agentOverdue;
@@ -1504,7 +1522,7 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       var quality = Math.round(qActivity+qFeedback+qResp+qMeeting+qCallback);
       if (quality>100) quality=100; if (quality<0) quality=0;
       var score = quality;
-      return {agentId:uid,name:u.name,leads:agentLeads.length,dr:agentDRs.length,total:agentLeads.length+agentDRs.length,calls:agentCalls,followups:agentFollowups,overdue:agentOverdue,interested:agentInt,interestedPct:ip,meetings:agentMeet,meetingPct:mp,deals:agentDeals,rotOutCount:agentRotOut,rotInCount:agentRotIn,noAnswer:agentNoAnswer,respTime:avgResp,score:score,quality:quality};
+      return {agentId:uid,name:u.name,leads:agentLeads.length,dr:agentDRs.length,total:agentLeads.length+agentDRs.length,calls:agentCalls,followups:agentFollowups,overdue:agentOverdue,interested:agentInt,interestedPct:ip,meetings:agentMeet,meetingPct:mp,deals:agentDeals,rotOutCount:agentRotOut,rotInCount:agentRotIn,noAnswer:agentNoAnswer,totalCallbacks:totalCallbacks,doneOnTime:doneOnTime,missed:missed,missedRate:missedRate,respTime:avgResp,score:score,quality:quality};
     }).sort(function(a,b){return b.quality-a.quality;});
 
     // Calls today (from activities, not just status)
@@ -1581,8 +1599,28 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
     var avgLeads=leadsPerAgent.length>0?leadsPerAgent.reduce(function(s,x){return s+x;},0)/leadsPerAgent.length:0;
     var overloaded=agentPerf.filter(function(a){return a.leads>avgLeads*1.3;}).length;
 
+    // Top-level callback compliance summary (today's scheduled callbacks)
+    var _todayEnd = todayStart.getTime() + DAY;
+    var cbScheduledToday=0, cbDoneOnTime=0, cbMissed=0;
+    leads.forEach(function(l){
+      (l.assignments||[]).forEach(function(a){
+        if (!a.callbackTime) return;
+        var cb = new Date(a.callbackTime).getTime();
+        if (isNaN(cb)) return;
+        if (cb<todayStart.getTime() || cb>=_todayEnd) return;
+        cbScheduledToday++;
+        var last = a.lastActionAt ? new Date(a.lastActionAt).getTime() : 0;
+        var onTime = last>0 && last<=cb;
+        if (onTime) cbDoneOnTime++;
+        else if (cb<now.getTime()) cbMissed++;
+      });
+    });
+    var cbComplianceRate = cbScheduledToday>0 ? Math.round(cbDoneOnTime/cbScheduledToday*100) : 0;
+    var cbLeaderboard = agentPerf.slice().filter(function(a){return a.totalCallbacks>0;}).sort(function(a,b){return b.missed-a.missed;}).slice(0,10).map(function(a){return {agentId:a.agentId,name:a.name,totalCallbacks:a.totalCallbacks,doneOnTime:a.doneOnTime,missed:a.missed,missedRate:a.missedRate};});
+
     res.json({
       filter,rangeStart,rangeEnd,
+      callbackCompliance:{scheduledToday:cbScheduledToday,doneOnTime:cbDoneOnTime,missed:cbMissed,complianceRate:cbComplianceRate,leaderboard:cbLeaderboard},
       kpis:{leadsToday,drToday,drCount,dealsCount,contactedCount,callbacksToday,meetingsToday,interestedToday,dealsMonth,convRate,contactedPct:leads.length>0?Math.round(contacted/leads.length*100):0},
       campaignPerformance,funnel,
       hotAlerts:{untouched48h,overdueCallbacks,noRotationCount},
