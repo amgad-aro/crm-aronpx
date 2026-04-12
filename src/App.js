@@ -753,10 +753,11 @@ var HeaderSearch = function(p) {
     return function(){ document.removeEventListener("mousedown", onDown); };
   },[]);
   var q = (p.search||"").trim();
-  var results = [];
+  var leadResults = [];
+  var drResults = [];
   if (q.length>=2) {
     var lc = q.toLowerCase();
-    results = (p.leads||[]).filter(function(l){
+    leadResults = (p.leads||[]).filter(function(l){
       if (l.archived) return false;
       if (l.name && l.name.toLowerCase().indexOf(lc)>=0) return true;
       if (l.phone && l.phone.indexOf(q)>=0) return true;
@@ -764,26 +765,55 @@ var HeaderSearch = function(p) {
       if (l.email && l.email.toLowerCase().indexOf(lc)>=0) return true;
       return false;
     }).slice(0,10);
+    drResults = (p.dailyRequests||[]).filter(function(r){
+      if (r.name && r.name.toLowerCase().indexOf(lc)>=0) return true;
+      if (r.phone && r.phone.indexOf(q)>=0) return true;
+      if (r.phone2 && r.phone2.indexOf(q)>=0) return true;
+      if (r.email && r.email.toLowerCase().indexOf(lc)>=0) return true;
+      if (r.notes && r.notes.toLowerCase().indexOf(lc)>=0) return true;
+      if (r.propertyType && r.propertyType.toLowerCase().indexOf(lc)>=0) return true;
+      if (r.area && r.area.toLowerCase().indexOf(lc)>=0) return true;
+      return false;
+    }).slice(0,10);
   }
+  var totalResults = leadResults.length + drResults.length;
   var showDropdown = open && q.length>=2;
+  var sc = STATUSES(t);
+  var drSc = typeof DR_STATUSES==="function" ? DR_STATUSES(t) : sc;
+  var sectionLabel = function(label,count){ return <div style={{ padding:"8px 14px 6px", fontSize:10, fontWeight:700, color:"#94A3B8", textTransform:"uppercase", letterSpacing:1, background:"#FAFBFC" }}>{label} ({count})</div>; };
+  var renderRow = function(item, onClick, statuses, isDR){
+    var so = statuses.find(function(s){return s.value===item.status;})||statuses[0];
+    var sub = item.phone || "";
+    if (isDR) {
+      var drDesc = item.propertyType || item.area || item.notes || "";
+      if (drDesc) sub = (item.phone||"") + (item.phone?" \u00b7 ":"") + (drDesc.length>32?drDesc.slice(0,32)+"\u2026":drDesc);
+    } else if (item.project) {
+      sub = (item.phone||"") + " \u00b7 " + item.project;
+    }
+    return <div key={(isDR?"dr-":"lead-")+gid(item)} onClick={function(){setOpen(false);onClick&&onClick(item);}} style={{ padding:"10px 14px", borderBottom:"1px solid #F1F5F9", cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:13, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{item.name||"\u2014"}</div>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sub}</div>
+      </div>
+      {so && <span style={{ background:so.bg, color:so.color, fontSize:10, fontWeight:700, padding:"2px 7px", borderRadius:6, flexShrink:0 }}>{so.label}</span>}
+    </div>;
+  };
   return <div ref={wrapRef} style={{ position:"relative", width:260 }}>
     <div style={{ display:"flex", alignItems:"center", gap:7, background:"#F1F5F9", borderRadius:10, padding:"7px 14px", width:"100%", boxSizing:"border-box" }}>
       <Search size={14} color={C.textLight}/>
       <input placeholder={t.search} value={p.search||""} onFocus={function(){setOpen(true);}} onChange={function(e){p.setSearch(e.target.value);setOpen(true);}} style={{ border:"none", background:"transparent", outline:"none", fontSize:13, color:C.text, width:"100%" }}/>
       {q.length>0&&<button onClick={function(){p.setSearch("");setOpen(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, padding:0, display:"flex" }} title="Clear"><X size={14}/></button>}
     </div>
-    {showDropdown && <div style={{ position:"absolute", top:"calc(100% + 6px)", left:0, right:0, background:"#fff", border:"1px solid #E2E8F0", borderRadius:12, boxShadow:"0 8px 32px rgba(0,0,0,0.12)", zIndex:500, maxHeight:360, overflowY:"auto" }}>
-      {results.length===0 ? <div style={{ padding:"14px 16px", fontSize:12, color:"#94A3B8", textAlign:"center" }}>No matching leads</div> : results.map(function(l){
-        var sc = STATUSES(t);
-        var so = sc.find(function(s){return s.value===l.status;})||sc[0];
-        return <div key={gid(l)} onClick={function(){setOpen(false);if(p.onLeadClick) p.onLeadClick(l);}} style={{ padding:"10px 14px", borderBottom:"1px solid #F1F5F9", cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}>
-          <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ fontSize:13, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name||"\u2014"}</div>
-            <div style={{ fontSize:11, color:C.textLight, direction:"ltr", marginTop:2 }}>{l.phone||""}{l.project?" \u00b7 "+l.project:""}</div>
-          </div>
-          <span style={{ background:so.bg, color:so.color, fontSize:10, fontWeight:700, padding:"2px 7px", borderRadius:6, flexShrink:0 }}>{so.label}</span>
-        </div>;
-      })}
+    {showDropdown && <div style={{ position:"absolute", top:"calc(100% + 6px)", left:0, right:0, background:"#fff", border:"1px solid #E2E8F0", borderRadius:12, boxShadow:"0 8px 32px rgba(0,0,0,0.12)", zIndex:500, maxHeight:420, overflowY:"auto" }}>
+      {totalResults===0 && <div style={{ padding:"14px 16px", fontSize:12, color:"#94A3B8", textAlign:"center" }}>No matching results</div>}
+      {leadResults.length>0 && <>
+        {sectionLabel("Leads", leadResults.length)}
+        {leadResults.map(function(l){ return renderRow(l, p.onLeadClick, sc, false); })}
+      </>}
+      {drResults.length>0 && <>
+        {sectionLabel("Daily Requests", drResults.length)}
+        {drResults.map(function(r){ return renderRow(r, p.onDRClick, drSc, true); })}
+      </>}
     </div>}
   </div>;
 };
@@ -814,7 +844,7 @@ var Header = function(p) {
       <h1 style={{ fontSize:p.isMobile?15:19, fontWeight:700, color:C.text, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.title}</h1>
     </div>
     <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
-      {!p.isMobile&&<HeaderSearch t={t} search={p.search} setSearch={p.setSearch} leads={p.leads} onLeadClick={p.onLeadClick}/>}
+      {!p.isMobile&&<HeaderSearch t={t} search={p.search} setSearch={p.setSearch} leads={p.leads} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRItemClick||p.onDRClick}/>}
       
       {/* BELL 3 — Deal notifications: admin + sales_admin + team_leader */}
       {(p.isAdmin||p.cu&&(p.cu.role==="sales_admin"||p.cu.role==="team_leader"))&&<div ref={dealNotifRef} style={{ position:"relative" }}>
@@ -6031,7 +6061,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
