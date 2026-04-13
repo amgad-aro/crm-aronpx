@@ -2924,18 +2924,58 @@ var DashboardPage = function(p) {
             {[["#1877F2","Facebook"],["#0F9D58","Sheets"],["#EA4335","G.Ads"]].map(function(s){return <span key={s[1]} style={{fontSize:10,color:"#64748B",display:"flex",alignItems:"center",gap:3}}><span style={{width:6,height:6,borderRadius:"50%",background:s[0],display:"inline-block"}}/>{s[1]}</span>;})}
           </div>
         </div>
-        <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch",marginLeft:isMobile?-4:0,marginRight:isMobile?-4:0}}>
+        {isMobile ? (
+          // MOBILE: stacked card-per-campaign layout. The grid table (desktop
+          // path below) tried to cram 6 columns into a phone-width container;
+          // the name column clipped, headers and values drifted out of
+          // alignment, and rows rendered inconsistently once any cell's
+          // content shrank. A card per campaign removes the alignment burden
+          // entirely — each card is full-width, with the campaign name
+          // wrapping freely on top and a 4-stat mini-grid + Quality badge
+          // below where every number sits right under its own label.
+          <div style={{display:"flex",flexDirection:"column",gap:10,width:"100%",minWidth:0}}>
+            {fCamps.length===0 && <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No campaign data yet</div>}
+            {fCamps.map(function(c,i){
+              var srcC=c.source==="Facebook"?"#1877F2":c.source==="Google Sheets"?"#0F9D58":"#EA4335";
+              return <div key={i} style={{border:"1px solid #F1F5F9",borderRadius:12,padding:"10px 12px",background:"#FBFBFD",minWidth:0,boxSizing:"border-box"}}>
+                <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:8,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0,flex:1}}>
+                    <span style={{width:8,height:8,borderRadius:"50%",background:srcC,display:"inline-block",flexShrink:0}}/>
+                    <div style={{minWidth:0,flex:1}}>
+                      <div style={{fontSize:13,fontWeight:700,color:"#0F172A",lineHeight:1.25,overflowWrap:"anywhere",wordBreak:"break-word"}}>{c.campaign||"\u2014"} &middot; {c.project||"\u2014"}</div>
+                      <div style={{fontSize:11,color:"#94A3B8",marginTop:2}}>{c.source||"\u2014"}</div>
+                    </div>
+                  </div>
+                  <div style={{flexShrink:0}}>{qBadge(c.quality)}</div>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4, minmax(0, 1fr))",gap:6,paddingTop:8,borderTop:"1px solid #F1F5F9"}}>
+                  {[
+                    {l:"Leads", v:c.leads, sub:null,         vc:"#334155"},
+                    {l:"Int.",  v:c.int,   sub:c.ip+"%",     vc:"#15803D"},
+                    {l:"Meet.", v:c.meet,  sub:c.mp+"%",     vc:"#6D28D9"},
+                    {l:"Deals", v:c.deals, sub:null,         vc:"#065F46"}
+                  ].map(function(s,idx){return <div key={idx} style={{textAlign:"center",minWidth:0,padding:"2px 0"}}>
+                    <div style={{fontSize:10,fontWeight:600,color:"#94A3B8",textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:2,whiteSpace:"nowrap"}}>{s.l}</div>
+                    <div style={{fontSize:15,fontWeight:800,color:s.vc,lineHeight:1}}>{s.v}</div>
+                    {s.sub?<div style={{fontSize:10,color:"#94A3B8",marginTop:2}}>{s.sub}</div>:null}
+                  </div>;})}
+                </div>
+              </div>;
+            })}
+          </div>
+        ) : (
+        <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
         {(function(){
-          // Fixed-width columns (name column = 140 minimum on mobile, flex on desktop) so phones can scroll horizontally without collapsing.
-          var cols = isMobile ? "140px 60px 80px 80px 60px 70px" : "minmax(140px, 1fr) 50px 90px 90px 50px 60px";
-          var rowMinW = isMobile ? 600 : 500;
+          // Desktop: grid-based table. Untouched by the mobile refactor.
+          var cols = "minmax(140px, 1fr) 50px 90px 90px 50px 60px";
+          var rowMinW = 500;
           return <>
-            <div style={{display:"grid",gridTemplateColumns:cols,gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:rowMinW,width:isMobile?"max-content":"auto"}}>
+            <div style={{display:"grid",gridTemplateColumns:cols,gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:rowMinW}}>
               {["Campaign \u00b7 Project","Leads","Interested","Meetings","Deals","Quality"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Campaign \u00b7 Project"?"left":"center",whiteSpace:"nowrap"}}>{h}</div>;})}
             </div>
             {fCamps.map(function(c,i){
               var srcC=c.source==="Facebook"?"#1877F2":c.source==="Google Sheets"?"#0F9D58":"#EA4335";
-              return <div key={i} style={{display:"grid",gridTemplateColumns:cols,gap:4,alignItems:"center",padding:"8px 0",borderBottom:"1px solid #F8FAFC",minWidth:rowMinW,width:isMobile?"max-content":"auto"}}>
+              return <div key={i} style={{display:"grid",gridTemplateColumns:cols,gap:4,alignItems:"center",padding:"8px 0",borderBottom:"1px solid #F8FAFC",minWidth:rowMinW}}>
                 <div style={{minWidth:0,overflow:"hidden"}}>
                   <div style={{display:"flex",alignItems:"center",gap:5,minWidth:0}}>
                     <span style={{width:7,height:7,borderRadius:"50%",background:srcC,display:"inline-block",flexShrink:0}}/>
@@ -2953,6 +2993,7 @@ var DashboardPage = function(p) {
           </>;
         })()}
         </div>
+        )}
       </>)}
       <div style={{display:"flex",flexDirection:"column",gap:14}}>
         {card(<>
