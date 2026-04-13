@@ -2428,14 +2428,17 @@ var DashboardPage = function(p) {
   var weekDays=Array.from({length:7},function(_,i){return dayNames[(todayIdx-6+i+7)%7];});
   var kpiCard=function(label,value,sub,bg,vc,onClick){
     var bars=[30,45,55,40,65,70,85];
-    return <div onClick={onClick} style={{background:bg,borderRadius:14,padding:isMobile?"12px":"16px",cursor:onClick?"pointer":"default",minWidth:0,overflow:"hidden"}}>
-      <div style={{fontSize:11,fontWeight:600,color:vc,opacity:0.75,marginBottom:6,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</div>
-      <div style={{fontSize:isMobile?24:28,fontWeight:800,color:vc,lineHeight:1,overflow:"hidden",textOverflow:"ellipsis"}}>{value}</div>
-      <div style={{fontSize:11,color:vc,opacity:0.6,marginTop:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{sub}</div>
-      <div style={{display:"flex",alignItems:"flex-end",gap:2,height:20,marginTop:8}}>
-        {bars.map(function(h,i){return <div key={i} style={{flex:1,borderRadius:2,height:h+"%",background:vc,opacity:i===6?0.8:0.2}}/>;})}</div>
+    // bg is now a CSS gradient string. vc is kept for the small spark-bar
+    // and weekday strip below the number, since both inherit from the card
+    // accent. Title/value/sub follow the new white-on-gradient spec.
+    return <div onClick={onClick} style={{background:bg,borderRadius:16,padding:isMobile?"14px":"18px",cursor:onClick?"pointer":"default",minWidth:0,overflow:"hidden",boxShadow:"0 2px 10px rgba(0,0,0,0.08)"}}>
+      <div style={{fontSize:13,fontWeight:600,color:"rgba(255,255,255,0.9)",textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:6,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</div>
+      <div style={{fontSize:isMobile?28:36,fontWeight:800,color:"#ffffff",letterSpacing:"-0.02em",lineHeight:1,overflow:"hidden",textOverflow:"ellipsis"}}>{value}</div>
+      <div style={{fontSize:12,color:"rgba(255,255,255,0.75)",fontWeight:500,marginTop:6,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{sub}</div>
+      <div style={{display:"flex",alignItems:"flex-end",gap:2,height:20,marginTop:10}}>
+        {bars.map(function(h,i){return <div key={i} style={{flex:1,borderRadius:2,height:h+"%",background:"#ffffff",opacity:i===6?0.85:0.28}}/>;})}</div>
       <div style={{display:"flex",gap:2,marginTop:3}}>
-        {weekDays.map(function(d,i){return <div key={i} style={{flex:1,fontSize:"6px",textAlign:"center",color:vc,opacity:0.5}}>{d}</div>;})}</div>
+        {weekDays.map(function(d,i){return <div key={i} style={{flex:1,fontSize:"6px",textAlign:"center",color:"#ffffff",opacity:0.55}}>{d}</div>;})}</div>
     </div>;
   };
 
@@ -2696,14 +2699,6 @@ var DashboardPage = function(p) {
     return d && new Date(d).getTime()<now && r.status!=="Meeting" && r.status!=="MeetingDone" && r.status!=="DoneDeal";
   }).length;
   var overdueFiltered = overdueLeads + overdueDR;
-  // Contacted: leads where ANY assignment.lastActionAt falls in the active date range
-  var contactedFiltered = leads.filter(function(l){
-    return (l.assignments||[]).some(function(a){
-      if (!a.lastActionAt) return false;
-      var t = new Date(a.lastActionAt).getTime();
-      return !isNaN(t) && t>=rangeStart && t<=rangeEnd;
-    });
-  }).length;
   var callbacksFiltered = fLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).toDateString()===nowD.toDateString();}).length;
   // Daily Requests in the active date range — counted from the actual dailyRequests collection
   var drFiltered = (p.dailyReqs||[]).filter(function(r){var rt=r.createdAt?new Date(r.createdAt).getTime():0;return rt>=rangeStart&&rt<=rangeEnd;}).length;
@@ -2909,14 +2904,13 @@ var DashboardPage = function(p) {
     </div>
 
     {sec("Key Metrics")}
-    <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2,1fr)":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:0}}>
-      {kpiCard("Leads",fLeads.length,"in period","#1565C0","#ffffff",function(){p.nav("leads");})}
-      {kpiCard("Daily Requests",drFiltered,"in period","#00796B","#ffffff",function(){p.nav("dailyReq");})}
-      {kpiCard("Interested",interestedFiltered,Math.round(interestedFiltered/fTotal*100)+"%","#E65100","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
-      {kpiCard("Meetings",meetingsFiltered,Math.round(meetingsFiltered/fTotal*100)+"%","#6A1B9A","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
-      {kpiCard("Overdue",overdueFiltered,"late callbacks","#2E7D32","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
-      {kpiCard("Deals",dealsFiltered,fTotal>0?((dealsFiltered/fTotal)*100).toFixed(1)+"%":"0%","#AD1457","#ffffff",function(){p.nav("deals");})}
-      {kpiCard("Contacted",contactedFiltered,Math.round(contactedFiltered/fTotal*100)+"%","#00695C","#ffffff",function(){p.nav("leads");})}
+    <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2,1fr)":"repeat(auto-fit,minmax(160px,1fr))",gap:isMobile?10:14,marginBottom:0}}>
+      {kpiCard("Leads",fLeads.length,"in period","linear-gradient(135deg, #43c6db, #3b5cb8)","#ffffff",function(){p.nav("leads");})}
+      {kpiCard("Daily Requests",drFiltered,"in period","linear-gradient(135deg, #56ab2f, #a8e063)","#ffffff",function(){p.nav("dailyReq");})}
+      {kpiCard("Interested",interestedFiltered,Math.round(interestedFiltered/fTotal*100)+"%","linear-gradient(135deg, #f46b45, #eea849)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
+      {kpiCard("Meetings",meetingsFiltered,Math.round(meetingsFiltered/fTotal*100)+"%","linear-gradient(135deg, #a18cd1, #e8a4c8)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
+      {kpiCard("Overdue",overdueFiltered,"late callbacks","linear-gradient(135deg, #e52d27, #b31217)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
+      {kpiCard("Deals",dealsFiltered,fTotal>0?((dealsFiltered/fTotal)*100).toFixed(1)+"%":"0%","linear-gradient(135deg, #f953c6, #b91d73)","#ffffff",function(){p.nav("deals");})}
     </div>
 
     {sec("Campaigns & Pipeline")}
