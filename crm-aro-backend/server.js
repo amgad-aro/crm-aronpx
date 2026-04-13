@@ -69,6 +69,12 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0},
   locked:{type:Boolean,default:false},
   lastFeedback:{type:String,default:""},
+  // Permanent meeting marker — once set, must never be cleared or overwritten.
+  // hadMeeting records that the lead has reached MeetingDone at least once,
+  // meetingDoneAt is the first time it happened so period-based reports can
+  // still bucket it correctly even after the status moves on.
+  hadMeeting:{type:Boolean,default:false},
+  meetingDoneAt:{type:Date,default:null},
   agentHistory:{type:[mongoose.Schema.Types.Mixed],default:[]},
   assignments:[{
     agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"},
@@ -141,6 +147,10 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   lastActivityTime:{type:Date,default:Date.now}, source:{type:String,default:"Daily Request"},
   lastFeedback:{type:String,default:""},
   archived:{type:Boolean,default:false},
+  // Permanent meeting marker — see comment on the Lead schema above. Must
+  // never be cleared or overwritten once set.
+  hadMeeting:{type:Boolean,default:false},
+  meetingDoneAt:{type:Date,default:null},
   eoiApproved:{type:Boolean,default:false}, eoiDate:{type:String,default:""}, eoiDeposit:{type:String,default:""},
   eoiDocuments:[{type:mongoose.Schema.Types.Mixed}],
   preEoiStatus:{type:String,default:""},
@@ -794,12 +804,16 @@ app.post("/api/leads", auth, async function(req, res) {
         });
       }
     }
+    var initialStatus = req.body.status || "NewLead";
+    var stampsMeeting = initialStatus === "MeetingDone";
     var lead = await Lead.create({
       name:             req.body.name,
       phone:            req.body.phone,
       phone2:           req.body.phone2 || "",
       email:            req.body.email || "",
-      status:           req.body.status || "NewLead",
+      status:           initialStatus,
+      hadMeeting:       stampsMeeting,
+      meetingDoneAt:    stampsMeeting ? new Date() : null,
       source:           req.body.source || "Facebook",
       project:          req.body.project || "",
       campaign:         req.body.campaign || "",
@@ -1132,6 +1146,17 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     if (req.body.status === "DoneDeal" && oldLead && oldLead.status && oldLead.status !== "DoneDeal") {
       update.preDealStatus = oldLead.status;
       update.dealStatus = "";
+    }
+    // Permanent meeting marker. Stamp hadMeeting + meetingDoneAt the first
+    // time a lead reaches MeetingDone. Never re-stamp on subsequent visits —
+    // the timestamp must preserve the ORIGINAL meeting, and never revert
+    // when status later moves elsewhere (e.g. back to HotCase, on to EOI/
+    // DoneDeal). Protect against accidental overwrites from the body too.
+    delete update.hadMeeting;
+    delete update.meetingDoneAt;
+    if (req.body.status === "MeetingDone" && oldLead && !oldLead.hadMeeting) {
+      update.hadMeeting = true;
+      update.meetingDoneAt = new Date();
     }
     // Approve/un-approve toggles from the EOI page — mirror to eoiStatus
     if (req.body.eoiApproved === true) update.eoiStatus = "Approved";
@@ -1643,7 +1668,12 @@ app.get("/api/stats", auth, async function(req, res) {
     var potential = await Lead.countDocuments(Object.assign({ status: "Potential" }, leadQuery));
     var hotCase = await Lead.countDocuments(Object.assign({ status: "HotCase" }, leadQuery));
     var callBack = await Lead.countDocuments(Object.assign({ status: "CallBack" }, leadQuery));
-    var meetingDone = await Lead.countDocuments(Object.assign({ status: "MeetingDone" }, leadQuery));
+    // Permanent meeting count: every lead that has EVER reached MeetingDone,
+    // regardless of current status. Falls back to current status for legacy
+    // rows that predate the hadMeeting flag.
+    var meetingDone = await Lead.countDocuments(Object.assign({
+      $or: [{ hadMeeting: true }, { status: "MeetingDone" }]
+    }, leadQuery));
     var notInterested = await Lead.countDocuments(Object.assign({ status: "NotInterested" }, leadQuery));
     var noAnswer = await Lead.countDocuments(Object.assign({ status: "NoAnswer" }, leadQuery));
     var doneDeal = await Lead.countDocuments(Object.assign({ status: "DoneDeal" }, leadQuery));
@@ -1715,6 +1745,8 @@ app.post("/api/daily-requests", auth, async function(req, res) {
       callbackTime: req.body.callbackTime || "",
       status: req.body.status || "NewLead",
       lastActivityTime: new Date(),
+      hadMeeting: req.body.status === "MeetingDone",
+      meetingDoneAt: req.body.status === "MeetingDone" ? new Date() : null,
     });
     r = await DailyRequest.findById(r._id).populate("agentId", "name title");
     // Log creation as activity
@@ -1744,13 +1776,23 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty — only update if explicitly provided and valid
     if (!update.agentId) delete update.agentId;
+    // Permanent meeting marker — stamp once, never overwrite. Strip any
+    // client-supplied value first so only this server logic can set it.
+    delete update.hadMeeting;
+    delete update.meetingDoneAt;
     // Capture previous status on EOI / DoneDeal transition so cancels can restore it.
-    if (req.body.status === "EOI" || req.body.status === "DoneDeal") {
-      var prevDr = await DailyRequest.findById(req.params.id).lean();
-      if (prevDr && prevDr.status && prevDr.status !== req.body.status) {
-        if (req.body.status === "EOI") { update.preEoiStatus = prevDr.status; update.eoiStatus = "Pending"; }
-        else { update.preDealStatus = prevDr.status; update.dealStatus = ""; }
-      }
+    // Also used to decide whether this is the FIRST transition into MeetingDone.
+    var prevDr = null;
+    if (req.body.status === "EOI" || req.body.status === "DoneDeal" || req.body.status === "MeetingDone") {
+      prevDr = await DailyRequest.findById(req.params.id).lean();
+    }
+    if ((req.body.status === "EOI" || req.body.status === "DoneDeal") && prevDr && prevDr.status && prevDr.status !== req.body.status) {
+      if (req.body.status === "EOI") { update.preEoiStatus = prevDr.status; update.eoiStatus = "Pending"; }
+      else { update.preDealStatus = prevDr.status; update.dealStatus = ""; }
+    }
+    if (req.body.status === "MeetingDone" && prevDr && !prevDr.hadMeeting) {
+      update.hadMeeting = true;
+      update.meetingDoneAt = new Date();
     }
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
     if (req.body.status) {
@@ -2398,7 +2440,14 @@ app.get("/api/dashboard/sales", auth, async function(req, res) {
     var followupsDue = myLeads.filter(function(l){var cb=l.callbackTime;return cb&&!l.archived;}).length;
     var overdueFollowups = myLeads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime)<now;}).length;
     var interested = myLeads.filter(function(l){var a=getMyAssign(l);var st=a?a.status:l.status;return ["HotCase","Potential","MeetingDone","DoneDeal"].includes(st);}).length;
-    var meetings = myLeads.filter(function(l){var a=getMyAssign(l);var st=a?a.status:l.status;return st==="MeetingDone"||st==="DoneDeal";}).length;
+    // Permanent meeting source: count any lead that has EVER reached
+    // MeetingDone (hadMeeting flag) plus leads that went directly to
+    // DoneDeal. Legacy rows without the flag fall back to current status.
+    var meetings = myLeads.filter(function(l){
+      if(l.hadMeeting===true) return true;
+      var a=getMyAssign(l); var st=a?a.status:l.status;
+      return st==="MeetingDone"||st==="DoneDeal";
+    }).length;
     var ip = myLeads.length>0?Math.round(interested/myLeads.length*100):0;
     var meetRate = myLeads.length>0?Math.round(meetings/myLeads.length*100):0;
 
@@ -2410,7 +2459,16 @@ app.get("/api/dashboard/sales", auth, async function(req, res) {
       weeklyData.leads.push(myLeads.filter(function(l){var t=new Date(l.createdAt);return t>=dayStart&&t<=dayEnd;}).length);
       weeklyData.dr.push(allActs.filter(function(a){var t=new Date(a.createdAt);return a.type==="daily_request"&&t>=dayStart&&t<=dayEnd;}).length);
       weeklyData.interested.push(allActs.filter(function(a){var t=new Date(a.createdAt);return t>=dayStart&&t<=dayEnd;}).length);
-      weeklyData.meetings.push(myLeads.filter(function(l){var t=new Date(l.updatedAt);return (l.status==="MeetingDone"||l.status==="DoneDeal")&&t>=dayStart&&t<=dayEnd;}).length);
+      weeklyData.meetings.push(myLeads.filter(function(l){
+        // Prefer the permanent meetingDoneAt stamp; fall back to updatedAt +
+        // current-status for legacy rows without the hadMeeting flag.
+        if(l.hadMeeting===true){
+          var tm=new Date(l.meetingDoneAt||l.updatedAt||0);
+          return tm>=dayStart&&tm<=dayEnd;
+        }
+        var t=new Date(l.updatedAt);
+        return (l.status==="MeetingDone"||l.status==="DoneDeal")&&t>=dayStart&&t<=dayEnd;
+      }).length);
     }
 
     // Rank vs team

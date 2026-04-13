@@ -1473,7 +1473,14 @@ var LeadsPage = function(p) {
     if(isReq && (p.cu.role==="manager"||p.cu.role==="team_leader") && !l.agentId) return false;
     return true;
   });
-  var filtered = p.leadFilter==="all"?allVisible:allVisible.filter(function(l){return l.status===p.leadFilter;});
+  var filtered = p.leadFilter==="all"
+    ? allVisible
+    : p.leadFilter==="MeetingDone"
+      // Permanent meeting filter: include every lead that has EVER reached
+      // MeetingDone (hadMeeting=true), regardless of current status. Falls
+      // back to current-status match for legacy rows predating the flag.
+      ? allVisible.filter(function(l){return l.hadMeeting===true||l.status==="MeetingDone";})
+      : allVisible.filter(function(l){return l.status===p.leadFilter;});
   // Management-alerts special filter (from dashboard)
   if (p.specialFilter && p.specialFilter.type) {
     var spT = p.specialFilter.type;
@@ -1700,7 +1707,11 @@ var LeadsPage = function(p) {
       <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:8 }}>
       <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
         {[{v:"all",l:t.all}].concat(tabSc.map(function(s){return{v:s.value,l:s.label};})).map(function(s){
-          var cnt=s.v==="all"?allVisible.length:allVisible.filter(function(l){return l.status===s.v;}).length;
+          var cnt=s.v==="all"
+            ? allVisible.length
+            : s.v==="MeetingDone"
+              ? allVisible.filter(function(l){return l.hadMeeting===true||l.status==="MeetingDone";}).length
+              : allVisible.filter(function(l){return l.status===s.v;}).length;
           return <button key={s.v} onClick={function(){p.setFilter(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:p.leadFilter===s.v?C.accent:"#E8ECF1", background:p.leadFilter===s.v?C.accent+"12":"#fff", color:p.leadFilter===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
         })}
       </div>
@@ -4606,7 +4617,13 @@ var DailyRequestsPage = function(p) {
   useEffect(function(){ if(p.initSelected){setSelected(p.initSelected);p.setInitSelected(null);} },[p.initSelected]);
 
   var filtered=requests.filter(function(r){
-    if(filterStatus!=="all"&&r.status!==filterStatus)return false;
+    if(filterStatus!=="all"){
+      // Permanent meeting filter: include every DR that has EVER reached
+      // MeetingDone (hadMeeting=true), regardless of current status.
+      if(filterStatus==="MeetingDone"){
+        if(!(r.hadMeeting===true||r.status==="MeetingDone"))return false;
+      } else if(r.status!==filterStatus) return false;
+    }
     if(agentFilter){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;if(aid!==agentFilter)return false;}
     return matchSearch(r,p.search);
   }).sort(function(a,b){
@@ -4768,7 +4785,11 @@ var DailyRequestsPage = function(p) {
     {/* Filters */}
     <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
       {[{v:"all",l:t.all}].concat(sc.map(function(s){return{v:s.value,l:s.label};})).map(function(s){
-        var cnt=s.v==="all"?requests.length:requests.filter(function(r){return r.status===s.v;}).length;
+        var cnt=s.v==="all"
+          ? requests.length
+          : s.v==="MeetingDone"
+            ? requests.filter(function(r){return r.hadMeeting===true||r.status==="MeetingDone";}).length
+            : requests.filter(function(r){return r.status===s.v;}).length;
         return <button key={s.v} onClick={function(){setFilterStatus(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:filterStatus===s.v?C.accent:"#E8ECF1", background:filterStatus===s.v?C.accent+"12":"#fff", color:filterStatus===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
       })}
     </div>
@@ -5225,7 +5246,19 @@ var ReportsPage = function(p) {
     var uNew=periodLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.source!=="Daily Request";});
     var uDailyReq=periodLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.source==="Daily Request";});
     var uDeals=periodDeals.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid;});
-    var uMeetingDone=allLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.status==="MeetingDone"&&l.updatedAt&&inPeriod(l.updatedAt);});
+    // Permanent meeting source of truth: hadMeeting flag + meetingDoneAt
+    // (the original transition timestamp). Never derives from current status,
+    // so a lead that later moved to EOI / DoneDeal / etc. still counts. Falls
+    // back to l.updatedAt for legacy rows that predate the flag.
+    var uMeetingDone=allLeads.filter(function(l){
+      var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
+      if(a!==uid) return false;
+      if(l.hadMeeting===true){
+        var when=l.meetingDoneAt||l.updatedAt;
+        return when && inPeriod(when);
+      }
+      return l.status==="MeetingDone" && l.updatedAt && inPeriod(l.updatedAt);
+    });
     var revenue=uDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudgetR(d.budget)*w*(sp?0.5:1);},0);
     var qt=getQTargetsR(uid);
     var qTarget=qt[curQR]||0;
@@ -5585,7 +5618,21 @@ var ReportsPage = function(p) {
             {sales.map(function(a){var uid=gid(a);
               var al=normalLeads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.createdAt&&inP2(l.createdAt);});
               var dailyReqCount=dailyRequests.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.createdAt&&inP2(l.createdAt);}).length;
-              var meetDone=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="MeetingDone"&&l.updatedAt&&inP2(l.updatedAt);}).length+dailyRequests.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="MeetingDone"&&l.updatedAt&&inP2(l.updatedAt);}).length;
+              // Permanent meeting marker — see uMeetingDone above. Counts
+              // every lead / DR that was EVER marked MeetingDone in this
+              // period via hadMeeting + meetingDoneAt; never drops a row
+              // when status later moves on. Legacy rows without the flag
+              // fall back to the current-status + updatedAt check.
+              var hadMeet=function(l){
+                var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
+                if(aid!==uid) return false;
+                if(l.hadMeeting===true){
+                  var w=l.meetingDoneAt||l.updatedAt;
+                  return w && inP2(w);
+                }
+                return l.status==="MeetingDone" && l.updatedAt && inP2(l.updatedAt);
+              };
+              var meetDone=p.leads.filter(hadMeet).length + dailyRequests.filter(hadMeet).length;
               var d=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="DoneDeal"&&!l.archived&&l.updatedAt&&inP2(l.updatedAt);}).length;
               var cl=p.activities.filter(function(ac){var auid=String(ac.userId&&ac.userId._id?ac.userId._id:ac.userId||"");return auid===uid&&ac.type==="call"&&ac.createdAt&&inP2(ac.createdAt);}).length;
               var rate=al.length>0?Math.round(d/al.length*100):0;
