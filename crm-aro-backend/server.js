@@ -609,29 +609,30 @@ app.get("/api/leads/:id", auth, async function(req, res) {
     var role = req.user.role;
     var uid = String(req.user.id);
     if (role === "sales") {
+      // Requirement: leads with no current agent must not be visible to sales.
+      if (!lead.agentId) return res.status(404).json({ error: "Not found" });
       var obj = Object.assign({}, lead);
       var myAssign = (obj.assignments || []).find(function(a) {
         var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
         return String(aid) === uid;
       });
-      if (myAssign) {
-        var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
-        obj.status = assignStatus || obj.status;
-        obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
-        obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
-        obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
-        obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
-        obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
-        if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
-        if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
-        // Isolate sales view: only their own history, no rotation traces
-        obj.agentHistory = (myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
-        obj.assignments = [myAssign];
-        obj.previousAgentIds = [];
-        obj.rotationCount = 0;
-        obj.lastRotationAt = null;
-        if (myAssign.agentId) obj.agentId = myAssign.agentId;
-      }
+      if (!myAssign) return res.status(404).json({ error: "Not found" });
+      var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
+      obj.status = assignStatus || obj.status;
+      obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
+      obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+      obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
+      obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
+      obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
+      if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
+      if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+      // Isolate sales view from rotation traces.
+      obj.agentHistory = (myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
+      obj.assignments = [myAssign];
+      obj.previousAgentIds = [];
+      obj.rotationCount = 0;
+      obj.lastRotationAt = null;
+      if (myAssign.agentId) obj.agentId = myAssign.agentId;
       return res.json(obj);
     }
     res.json(lead);
@@ -1295,7 +1296,7 @@ app.post("/api/activities", auth, async function(req, res) {
 });
 
 // ===== LEAD FULL HISTORY (Admin only) =====
-app.get("/api/leads/:id/full-history", auth, async function(req, res) {
+app.get("/api/leads/:id/full-history", auth, adminOnly, async function(req, res) {
   try {
     var oid = new mongoose.Types.ObjectId(req.params.id);
     var activities = await Activity.find({ leadId: oid })
