@@ -241,9 +241,82 @@ mongoose.connect(process.env.MONGODB_URI).then(function() {
     { hadMeeting: { $ne: true }, status: "MeetingDone" },
     [{ $set: { hadMeeting: true, meetingDoneAt: { $ifNull: ["$updatedAt", "$createdAt", new Date()] } } }]
   ).catch(function(e){ console.error("[hadMeeting DR backfill]", e && e.message); });
+
+  // One-time history backfill: every lead must start with a "created" /
+  // "first_assigned" entry showing who added it and who it was assigned to.
+  // For leads that predate the history array we reconstruct that first entry
+  // from the best evidence available — earliest agentHistory rotation's
+  // "by" field, earliest activity.userId, or fall back to "System". The
+  // initial agent is the first assignments[] entry, or current agentId.
+  // Idempotent: leads whose history already starts with one of those events
+  // are skipped.
+  backfillLeadHistory().catch(function(e){ console.error("[history backfill]", e && e.message); });
 }).catch(function(err) {
   console.error("MongoDB connection error:", err);
 });
+
+async function backfillLeadHistory() {
+  // Leads where the first history entry is NOT already created/first_assigned.
+  var needsInit = await Lead.find({
+    $or: [
+      { history: { $exists: false } },
+      { history: { $size: 0 } },
+      { "history.0.event": { $nin: ["created", "first_assigned"] } }
+    ]
+  }).populate("agentId", "name").populate("assignments.agentId", "name").lean();
+  if (!needsInit.length) return;
+  console.log("[history backfill] stamping initial entry on " + needsInit.length + " leads");
+  for (var i = 0; i < needsInit.length; i++) {
+    var l = needsInit[i];
+    try {
+      // Creator: earliest rotation's `by`, earliest activity's userId.name,
+      // else "System".
+      var creator = "";
+      var hist = Array.isArray(l.agentHistory) ? l.agentHistory : [];
+      var earliest = null;
+      hist.forEach(function(h){
+        if (!h || !h.date) return;
+        var t = new Date(h.date).getTime();
+        if (!earliest || t < new Date(earliest.date).getTime()) earliest = h;
+      });
+      if (earliest && earliest.by) creator = earliest.by;
+      if (!creator) {
+        var firstAct = await Activity.findOne({ leadId: l._id }).populate("userId", "name").sort({ createdAt: 1 }).lean();
+        if (firstAct && firstAct.userId && firstAct.userId.name) creator = firstAct.userId.name;
+      }
+      if (!creator) creator = "System";
+
+      // Initial agent: first assignments[] entry → its agent name. If none,
+      // current agentId's name. If still none, "No Agent".
+      var initialAgent = "";
+      var firstAssign = Array.isArray(l.assignments) && l.assignments.length > 0 ? l.assignments[0] : null;
+      if (firstAssign && firstAssign.agentId && firstAssign.agentId.name) {
+        initialAgent = firstAssign.agentId.name;
+      } else if (l.agentId && l.agentId.name) {
+        initialAgent = l.agentId.name;
+      }
+      var hadAgent = !!initialAgent;
+      if (!initialAgent) initialAgent = "No Agent";
+
+      var entry = {
+        event: hadAgent ? "first_assigned" : "created",
+        description: hadAgent
+          ? "Lead added by " + creator + " and assigned to " + initialAgent + (l.source ? " (source: " + l.source + ")" : "")
+          : "Lead added by " + creator + " — No Agent" + (l.source ? " (source: " + l.source + ")" : ""),
+        byUser: creator,
+        toAgent: initialAgent,
+        timestamp: l.createdAt || new Date()
+      };
+
+      // Prepend so it always sorts first in the timeline regardless of
+      // later events' timestamps.
+      await Lead.updateOne({ _id: l._id }, { $push: { history: { $each: [entry], $position: 0 } } });
+    } catch(err) {
+      console.error("[history backfill] lead " + l._id + ":", err && err.message ? err.message : err);
+    }
+  }
+  console.log("[history backfill] done");
+}
 
 // ===== CREATE DEFAULT ADMIN =====
 async function seedAdmin() {
@@ -874,21 +947,21 @@ app.post("/api/leads", auth, async function(req, res) {
       globalStatus:     "active",
     });
     console.log("SAVED phone2:", lead.phone2);
-    // Admin audit timeline — log creation and, if pre-assigned, the initial
-    // assignment as two distinct events so the admin panel can reconstruct
-    // exactly how the lead entered the system.
+    // Admin audit timeline — the VERY FIRST entry on every lead captures who
+    // created/distributed it from the start. One combined entry (not two)
+    // with event "first_assigned" if an agent was attached, or "created" if
+    // the lead entered unassigned. Stamped with lead.createdAt so it always
+    // sorts first in the timeline.
     var creatorName = (req.user && req.user.name) ? req.user.name : (req.user && req.user.role === "admin" ? "Admin" : "System");
     var firstAgentName = (agentId && targetOnCreate && targetOnCreate.name) ? targetOnCreate.name : "";
-    var createdEntries = [historyEntry("created", "Lead created" + (req.body.source ? " via " + req.body.source : ""), creatorName, "")];
-    if (agentId) {
-      createdEntries.push(historyEntry(
-        "assigned",
-        "Assigned to " + (firstAgentName || "agent") + " by " + creatorName,
-        creatorName,
-        firstAgentName
-      ));
-    }
-    await pushHistory(lead._id, createdEntries);
+    var initEvent = agentId ? "first_assigned" : "created";
+    var initDesc = agentId
+      ? "Lead added by " + creatorName + " and assigned to " + (firstAgentName || "agent") + (req.body.source ? " (source: " + req.body.source + ")" : "")
+      : "Lead added by " + creatorName + " — No Agent" + (req.body.source ? " (source: " + req.body.source + ")" : "");
+    var initEntry = historyEntry(initEvent, initDesc, creatorName, firstAgentName || "No Agent");
+    // Pin to the lead's created timestamp so nothing can sort before it.
+    initEntry.timestamp = lead.createdAt || new Date();
+    await pushHistory(lead._id, initEntry);
     lead = await Lead.findById(lead._id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(lead);
   } catch (e) {
