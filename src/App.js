@@ -5434,26 +5434,15 @@ var TeamPage = function(p) {
   // Also show sales not under any manager (top-level sales)
   var topLevelSales = isAdmin ? p.users.filter(function(u){return u.role==="sales"&&u.active&&!u.reportsTo;}) : [];
 
-  // Color palette — each agent gets a stable color based on a hash of their _id so the same person always gets the same tile.
-  var agentColors = [
-    { accent:"#6366F1", topBg:"#17192E", bottomBg:"#111328", textColor:"#818CF8" },
-    { accent:"#14B8A6", topBg:"#0F1F1E", bottomBg:"#0A1714", textColor:"#2DD4BF" },
-    { accent:"#F97316", topBg:"#1E150D", bottomBg:"#160E07", textColor:"#FB923C" },
-    { accent:"#EC4899", topBg:"#1E0F18", bottomBg:"#160A11", textColor:"#F472B6" },
-    { accent:"#3B82F6", topBg:"#0F1626", bottomBg:"#0A1020", textColor:"#60A5FA" },
-    { accent:"#A855F7", topBg:"#1A1025", bottomBg:"#12091E", textColor:"#C084FC" },
-    { accent:"#10B981", topBg:"#0D1F19", bottomBg:"#081512", textColor:"#34D399" },
-    { accent:"#F59E0B", topBg:"#1E1709", bottomBg:"#160F04", textColor:"#FCD34D" },
-    { accent:"#EF4444", topBg:"#1E1010", bottomBg:"#160808", textColor:"#F87171" },
-    { accent:"#06B6D4", topBg:"#0A1E22", bottomBg:"#061518", textColor:"#22D3EE" }
-  ];
-  var colorForUid = function(uid){
+  // Stable gradient assignment — same user always gets the same tile color
+  // regardless of where they appear in the list. 8 gradients per the spec.
+  var gradientForUid = function(uid){
     var h = 0; var s = String(uid||"");
     for (var i=0;i<s.length;i++) { h = (h*31 + s.charCodeAt(i)) & 0x7fffffff; }
-    return agentColors[h % agentColors.length];
+    return "tp-grad-" + ((h % 8) + 1);
   };
 
-  // Card for one member
+  // Card for one member — gradient top + white bottom per the new design.
   var MemberCard = function(mp){
     var a=mp.user; var uid=String(gid(a));
     var isManagerCard = a.role==="manager"||a.role==="team_leader";
@@ -5478,44 +5467,52 @@ var TeamPage = function(p) {
     var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<2*60*1000;
     var lastSeenStr=a.lastSeen?("Last seen: "+new Date(a.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" — "+timeAgo(a.lastSeen,p.t)):"Never logged in";
     var initials = (a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
-    var col = colorForUid(uid);
+    var grad = gradientForUid(uid);
     var roleLabel = a.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer"}[a.role]||"");
-    return <div key={uid} style={{ flex:"1 1 280px", maxWidth:360, borderRadius:16, overflow:"hidden", border:"1px solid "+col.accent+"33", borderTop:"3px solid "+col.accent }}>
-      {/* Top section */}
-      <div style={{ background:col.topBg, padding:"16px 14px 12px", display:"flex", flexDirection:"column", alignItems:"center", gap:5 }}>
-        <div style={{ position:"relative" }}>
-          <div style={{ width:48, height:48, borderRadius:13, background:col.accent, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, fontWeight:700 }}>{initials}</div>
-          <span style={{ position:"absolute", bottom:-1, right:-1, width:9, height:9, borderRadius:"50%", background:isOnlineNow?"#22C55E":"#6B7280", border:"2px solid "+col.topBg }}/>
-        </div>
-        <div style={{ color:"#fff", fontSize:13, fontWeight:600, textAlign:"center", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:"100%" }}>{a.name}</div>
-        <div style={{ color:"rgba(255,255,255,0.3)", fontSize:10, textAlign:"center", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:"100%" }}>{roleLabel}</div>
-        <div style={{ color:"rgba(255,255,255,0.18)", fontSize:9, textAlign:"center", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:"100%" }}>{isOnlineNow?"Online now":lastSeenStr}</div>
-        {isAdmin&&<button onClick={function(){var qt=getQTargets(uid);setEditQModal({user:a,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
-          style={{ marginTop:4, padding:"4px 10px", borderRadius:20, border:"none", background:col.accent+"25", color:col.textColor, fontSize:10, fontWeight:600, cursor:"pointer" }}>🎯 Edit Targets</button>}
+    var totalRevenueM = (totalRevenue/1000000).toFixed(1)+"M";
+    var stats = [
+      { v: al.length,            l: "Leads", isDeals:false },
+      { v: allAgentDeals.length, l: "Deals", isDeals:true },
+      { v: totalRevenueM,        l: "Total", isDeals:false },
+      { v: calls,                l: "Calls", isDeals:false }
+    ];
+    return <div key={uid} style={{ borderRadius:16, overflow:"hidden", background:"#fff", boxShadow:"0 2px 10px rgba(0,0,0,0.08)" }}>
+      {/* Top — gradient hero */}
+      <div className={grad} style={{ padding:"18px 14px 16px", position:"relative", display:"flex", flexDirection:"column", alignItems:"center", gap:6 }}>
+        {isOnlineNow && <span title="Online" style={{ position:"absolute", top:10, right:12, width:9, height:9, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 0 2px rgba(255,255,255,0.45)" }}/>}
+        <div style={{ width:44, height:44, borderRadius:12, background:"rgba(255,255,255,0.22)", color:"#fff", border:"2px solid rgba(255,255,255,0.35)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:800 }}>{initials}</div>
+        <div style={{ fontSize:13, fontWeight:700, color:"#fff", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{a.name}</div>
+        <div style={{ fontSize:10, color:"rgba(255,255,255,0.85)", textTransform:"uppercase", letterSpacing:"0.04em", textAlign:"center" }}>{roleLabel}</div>
+        <div style={{ fontSize:9, color:"rgba(255,255,255,0.55)", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{isOnlineNow?"Online now":lastSeenStr}</div>
       </div>
-      {/* Bottom section */}
-      <div style={{ background:col.bottomBg, padding:"12px 14px" }}>
+      {/* Bottom — white panel */}
+      <div style={{ background:"#fff", padding:"14px 14px 16px" }}>
+        {isAdmin && <button onClick={function(){var qt=getQTargets(uid);setEditQModal({user:a,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
+          style={{ width:"100%", padding:"8px 0", borderRadius:8, border:"none", background:"#f1f5f9", color:"#1e3a5f", fontSize:10, fontWeight:700, cursor:"pointer", marginBottom:12 }}>🎯 Edit Targets</button>}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6 }}>
-          <span style={{ fontSize:10, fontWeight:600, color:"rgba(255,255,255,0.35)" }}>{viewQ} Target</span>
-          <span style={{ fontSize:10, color:"rgba(255,255,255,0.2)" }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"Not set"}</span>
+          <span style={{ fontSize:10, fontWeight:600, color:"#64748b", textTransform:"uppercase", letterSpacing:"0.04em" }}>{viewQ} Target</span>
+          <span style={{ fontSize:10, fontWeight:700, color:"#334155" }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"Not set"}</span>
         </div>
-        <div style={{ height:3, background:"rgba(255,255,255,0.07)", borderRadius:2, marginBottom:6 }}>
-          <div style={{ height:"100%", width:qProg+"%", background:col.accent, borderRadius:2, transition:"width 0.6s" }}/>
+        <div style={{ height:4, background:"#e2e8f0", borderRadius:2, marginBottom:10, overflow:"hidden" }}>
+          <div className={grad} style={{ height:"100%", width:qProg+"%", borderRadius:2, transition:"width 0.6s" }}/>
         </div>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:10 }}>
-          <span style={{ fontSize:11, fontWeight:700, color:col.textColor }}>{(qRevenue/1000000).toFixed(2)}M</span>
-          <span style={{ fontSize:10, fontWeight:600, color:"#F59E0B" }}>{qProg}%</span>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:12 }}>
+          <span style={{ fontSize:18, fontWeight:800, color:qRevenue>0?"#0f172a":"#94a3b8" }}>{(qRevenue/1000000).toFixed(2)}M</span>
+          <span style={{ fontSize:12, fontWeight:700, color:"#64748b" }}>{qProg}%</span>
         </div>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:6, paddingTop:8, borderTop:"1px solid rgba(255,255,255,0.05)" }}>
-          {[
-            {v:al.length, c:"rgba(255,255,255,0.9)", l:"Leads"},
-            {v:allAgentDeals.length, c:"#34D399", l:"Deals"},
-            {v:(totalRevenue/1000000).toFixed(1)+"M", c:"#F59E0B", l:"Total"},
-            {v:calls, c:"#60A5FA", l:"Calls"}
-          ].map(function(s,i){return <div key={i} style={{ textAlign:"center" }}>
-            <div style={{ fontSize:13, fontWeight:700, color:s.c }}>{s.v}</div>
-            <div style={{ fontSize:8, color:"rgba(255,255,255,0.22)", marginTop:2, letterSpacing:0.5, textTransform:"uppercase" }}>{s.l}</div>
-          </div>;})}
+        <div style={{ height:1, background:"#e2e8f0", marginBottom:10, transform:"scaleY(0.5)" }}/>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:6 }}>
+          {stats.map(function(s,i){
+            // Zero handling: dim numbers when they're 0; deals get green when > 0.
+            var isZero = (s.v === 0) || (s.v === "0.0M") || (s.v === "0M") || (s.v === "0");
+            var color;
+            if (s.isDeals) color = (s.v > 0 ? "#15803d" : "#cbd5e1");
+            else color = isZero ? "#cbd5e1" : "#0f172a";
+            return <div key={i} style={{ textAlign:"center" }}>
+              <div style={{ fontSize:16, fontWeight:800, color:color, lineHeight:1.1 }}>{s.v}</div>
+              <div style={{ fontSize:8, fontWeight:600, color:"#94a3b8", textTransform:"uppercase", letterSpacing:"0.06em", marginTop:4 }}>{s.l}</div>
+            </div>;
+          })}
         </div>
       </div>
     </div>;
@@ -5529,14 +5526,27 @@ var TeamPage = function(p) {
     return {icon,uname,lname,note:a.note,time:a.createdAt};
   });
 
-  return <div style={{ padding:"18px 16px 40px" }}>
+  return <div className="team-page-v2" style={{ padding:"20px", background:"#f1f5f9", minHeight:"100%", fontFamily:"'Inter','Segoe UI',sans-serif" }}>
+    {/* Inter font + the 8 gradient classes used by MemberCard. Scoped under
+        .team-page-v2 so they don't leak to other pages. */}
+    <style>{""
+      + "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');"
+      + ".team-page-v2 .tp-grad-1 { background: linear-gradient(135deg, #43c6db, #3b5cb8); }"
+      + ".team-page-v2 .tp-grad-2 { background: linear-gradient(135deg, #f953c6, #b91d73); }"
+      + ".team-page-v2 .tp-grad-3 { background: linear-gradient(135deg, #56ab2f, #a8e063); }"
+      + ".team-page-v2 .tp-grad-4 { background: linear-gradient(135deg, #f7797d, #c6426e); }"
+      + ".team-page-v2 .tp-grad-5 { background: linear-gradient(135deg, #e52d27, #b31217); }"
+      + ".team-page-v2 .tp-grad-6 { background: linear-gradient(135deg, #f46b45, #eea849); }"
+      + ".team-page-v2 .tp-grad-7 { background: linear-gradient(135deg, #b8d435, #56ab2f); }"
+      + ".team-page-v2 .tp-grad-8 { background: linear-gradient(135deg, #a18cd1, #e8a4c8); }"
+    }</style>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18, flexWrap:"wrap", gap:10 }}>
-      <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.team}</h2>
+      <h2 style={{ margin:0, fontSize:18, fontWeight:700, color:"#0f172a" }}>{t.team}</h2>
       <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
         {["Q1","Q2","Q3","Q4"].map(function(q){return <button key={q} onClick={function(){setViewQ(q);}}
           style={{ padding:"6px 14px", borderRadius:8, border:"1px solid", borderColor:viewQ===q?C.accent:"#E2E8F0",
             background:viewQ===q?C.accent+"12":"#fff", color:viewQ===q?C.accent:C.textLight,
-            fontSize:12, fontWeight:600, cursor:"pointer" }}>{q}{q===curQ&&viewYear===curYear?" 🔵":""}</button>;})}          
+            fontSize:12, fontWeight:600, cursor:"pointer" }}>{q}{q===curQ&&viewYear===curYear?" 🔵":""}</button>;})}
         <select value={viewYear} onChange={function(e){setViewYear(Number(e.target.value));}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
           {years.map(function(y){return <option key={y} value={y}>{y}</option>;})}
         </select>
@@ -5555,40 +5565,50 @@ var TeamPage = function(p) {
       var mTarget=getEffectiveQTarget(mgr,p.users,viewQ);
       var mProg=mTarget>0?Math.min(100,Math.round(mRev/mTarget*100)):0;
       var isOnline=mgr.lastSeen&&(Date.now()-new Date(mgr.lastSeen).getTime())<3*60*1000;
+      var mgrInitials=(mgr.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
+      var mgrTotalLabel = (mRev/1000000).toFixed(1)+"M / "+(mTarget>0?(mTarget/1000000).toFixed(1)+"M":"—");
       return <div key={muid} style={{ marginBottom:16 }}>
-        {/* Manager row - clickable */}
+        {/* Manager group header — navy, redesigned */}
         <div onClick={function(){setExpandedManager(isExpanded?null:muid);}}
-          style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", background:"rgba(28, 30, 40, 0.95)", border:"1px solid rgba(255,255,255,0.07)", borderRadius:12, cursor:"pointer", marginBottom:isExpanded?10:0 }}>
-          <Avatar name={mgr.name} size={40} online={isOnline} flat/>
-          <div style={{ flex:1 }}>
-            <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{mgr.name}</div>
-            <div style={{ color:"rgba(255,255,255,0.6)", fontSize:11 }}>{mgr.title} — {team.length} member</div>
-          </div>
-          <div style={{ textAlign:"left", minWidth:100 }}>
-            <div style={{ height:5, background:"rgba(255,255,255,0.2)", borderRadius:3, marginBottom:3, width:100 }}>
-              <div style={{ height:"100%", width:mProg+"%", background:mProg>=100?"#22C55E":"#E8A838", borderRadius:3 }}/>
+          style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, padding:"16px 24px", background:"#1e3a5f", borderRadius:12, cursor:"pointer", marginBottom:isExpanded?12:0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:14, minWidth:0, flex:1 }}>
+            <div style={{ position:"relative", flexShrink:0 }}>
+              <div style={{ width:44, height:44, borderRadius:11, background:"#162d4a", color:"#93c5fd", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700 }}>{mgrInitials}</div>
+              {isOnline && <span title="Online" style={{ position:"absolute", bottom:-1, right:-1, width:10, height:10, borderRadius:"50%", background:"#22c55e", border:"2px solid #1e3a5f" }}/>}
             </div>
-            <div style={{ color:"rgba(255,255,255,0.8)", fontSize:10 }}>{(mRev/1000000).toFixed(1)}M / {mTarget>0?(mTarget/1000000).toFixed(1)+"M":"—"}</div>
+            <div style={{ minWidth:0 }}>
+              <div style={{ fontSize:15, fontWeight:700, color:"#e0f0ff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{mgr.name}</div>
+              <div style={{ fontSize:11, color:"#4a7aa0", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{mgr.title||""} — {team.length} member{team.length===1?"":"s"}</div>
+            </div>
           </div>
-          <span style={{ color:"rgba(255,255,255,0.7)", fontSize:14 }}>{isExpanded?"▲":"▼"}</span>
+          <div style={{ display:"flex", alignItems:"center", gap:14, flexShrink:0 }}>
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
+              <div style={{ fontSize:14, fontWeight:700, color:"#93c5fd" }}>{mgrTotalLabel}</div>
+              <div style={{ height:5, background:"#162d4a", width:200, maxWidth:"40vw", borderRadius:3, overflow:"hidden" }}>
+                <div style={{ height:"100%", width:mProg+"%", background:"#60a5fa", borderRadius:3 }}/>
+              </div>
+              <div style={{ fontSize:11, color:"#4a7aa0" }}>{mProg}%</div>
+            </div>
+            <span style={{ color:"#93c5fd", fontSize:14 }}>{isExpanded?"▲":"▼"}</span>
+          </div>
         </div>
-        {/* Team members expanded */}
-        {isExpanded&&<div style={{ display:"flex", gap:12, flexWrap:"wrap", paddingRight:16 }}>
+        {/* Team members expanded — responsive grid */}
+        {isExpanded&&<div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(240px, 1fr))", gap:16 }}>
           <MemberCard user={mgr}/>
           {team.map(function(u){return <MemberCard key={gid(u)} user={u}/>;})}</div>}
       </div>;
     })}
 
     {/* Top-level sales (no manager) */}
-    {topLevelSales.length>0&&<div>
-      <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:10 }}>Agents without a manager</div>
-      <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
+    {topLevelSales.length>0&&<div style={{ marginBottom:16 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:"#64748b", marginBottom:10, textTransform:"uppercase", letterSpacing:"0.04em" }}>Agents without a manager</div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(240px, 1fr))", gap:16 }}>
         {topLevelSales.map(function(a){return <MemberCard key={gid(a)} user={a}/>;})}
       </div>
     </div>}
 
     {/* Old fallback if no managers defined */}
-    {visibleManagers.length===0&&<div style={{ display:"flex", gap:14, flexWrap:"wrap" }}>
+    {visibleManagers.length===0&&<div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(240px, 1fr))", gap:16 }}>
       {p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;}).map(function(a){
         return <MemberCard key={gid(a)} user={a}/>;
       })}
