@@ -75,6 +75,10 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // still bucket it correctly even after the status moves on.
   hadMeeting:{type:Boolean,default:false},
   meetingDoneAt:{type:Date,default:null},
+  // Full audit timeline (admin-only view). Every create / assign / rotate /
+  // status change / feedback / callback pushes a single {event, description,
+  // byUser, toAgent, timestamp} entry. Append-only — never cleared.
+  history:{type:[mongoose.Schema.Types.Mixed],default:[]},
   agentHistory:{type:[mongoose.Schema.Types.Mixed],default:[]},
   assignments:[{
     agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"},
@@ -347,6 +351,29 @@ function leadUploadImageValidation(req, res, next) {
     next();
   } catch (e) {
     return res.status(400).json({ error: "Invalid image payload" });
+  }
+}
+
+// ===== LEAD HISTORY HELPERS =====
+// Single write-path for the admin audit timeline. Every caller pushes one
+// entry via $push so concurrent updates never overwrite each other.
+function historyEntry(event, description, byUser, toAgent) {
+  return {
+    event: String(event || "event"),
+    description: String(description || ""),
+    byUser: String(byUser || ""),
+    toAgent: String(toAgent || ""),
+    timestamp: new Date()
+  };
+}
+async function pushHistory(leadId, entries) {
+  if (!leadId || !entries) return;
+  var arr = Array.isArray(entries) ? entries : [entries];
+  if (arr.length === 0) return;
+  try {
+    await Lead.updateOne({ _id: leadId }, { $push: { history: { $each: arr } } });
+  } catch(e) {
+    console.error("[history push]", e && e.message ? e.message : e);
   }
 }
 
@@ -847,6 +874,21 @@ app.post("/api/leads", auth, async function(req, res) {
       globalStatus:     "active",
     });
     console.log("SAVED phone2:", lead.phone2);
+    // Admin audit timeline — log creation and, if pre-assigned, the initial
+    // assignment as two distinct events so the admin panel can reconstruct
+    // exactly how the lead entered the system.
+    var creatorName = (req.user && req.user.name) ? req.user.name : (req.user && req.user.role === "admin" ? "Admin" : "System");
+    var firstAgentName = (agentId && targetOnCreate && targetOnCreate.name) ? targetOnCreate.name : "";
+    var createdEntries = [historyEntry("created", "Lead created" + (req.body.source ? " via " + req.body.source : ""), creatorName, "")];
+    if (agentId) {
+      createdEntries.push(historyEntry(
+        "assigned",
+        "Assigned to " + (firstAgentName || "agent") + " by " + creatorName,
+        creatorName,
+        firstAgentName
+      ));
+    }
+    await pushHistory(lead._id, createdEntries);
     lead = await Lead.findById(lead._id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(lead);
   } catch (e) {
@@ -896,20 +938,44 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
         $push: { assignments: newAssignment }
       };
       // Add old agent to previousAgentIds and log rotation event
+      var oldAgentName = "";
+      var newAgentName = "";
       if (oldAgentId) {
         updateOps.$push.previousAgentIds = oldAgentId;
         var oldAgUser = await User.findById(oldAgentId).lean();
         var newAgUser = await User.findById(agentId).lean();
+        oldAgentName = oldAgUser ? oldAgUser.name : "Unknown";
+        newAgentName = newAgUser ? newAgUser.name : "Unknown";
         updateOps.$push.agentHistory = {
           action: "Rotation",
-          fromAgent: oldAgUser ? oldAgUser.name : "Unknown",
-          toAgent: newAgUser ? newAgUser.name : "Unknown",
+          fromAgent: oldAgentName,
+          toAgent: newAgentName,
           reason: "manual",
           by: req.user.name || "Admin",
           date: new Date()
         };
+      } else {
+        var newAgUser2 = await User.findById(agentId).lean();
+        newAgentName = newAgUser2 ? newAgUser2.name : "Unknown";
       }
       await Lead.findByIdAndUpdate(leadIds[i], updateOps);
+      // Admin timeline: one entry per lead so bulk ops are audit-able.
+      var byName = req.user.name || "Admin";
+      if (oldAgentId) {
+        await pushHistory(leadIds[i], historyEntry(
+          "rotated",
+          "Rotated from " + oldAgentName + " to " + newAgentName + " by " + byName + " (bulk reassign)",
+          byName,
+          newAgentName
+        ));
+      } else {
+        await pushHistory(leadIds[i], historyEntry(
+          "assigned",
+          "Assigned to " + newAgentName + " by " + byName + " (bulk)",
+          byName,
+          newAgentName
+        ));
+      }
     }
     await Activity.create({ userId: req.user.id, type: "reassign", note: "Bulk reassign — " + leadIds.length + " leads" });
     res.json({ ok: true, count: leadIds.length });
@@ -1141,9 +1207,11 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // to the agent who wrote it).
     delete update.notes;
     delete update.lastFeedback;
-    // If agentId is being changed (manual reassign) — reset status to NewLead
+    // Load the existing lead if any tracked field could change — needed both
+    // for status/rotation logic AND to log accurate admin audit entries.
     var oldLead = null;
-    if (req.body.agentId || req.body.status) {
+    var trackedBody = req.body.agentId || req.body.status || req.body.callbackTime !== undefined || req.body.notes !== undefined || req.body.lastFeedback !== undefined;
+    if (trackedBody) {
       oldLead = await Lead.findById(req.params.id).lean();
     }
     // Guard: never downgrade EOI or DoneDeal back to NewLead (prevents stale rotation overwrites)
@@ -1228,6 +1296,62 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     }
     // Single final read with populate
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    // Admin audit timeline — translate the just-applied diff into one or more
+    // history entries so admin can reconstruct exactly what happened.
+    try {
+      var byName = (req.user && req.user.name) ? req.user.name : (req.user && req.user.role === "admin" ? "Admin" : "System");
+      var histBatch = [];
+      if (req.body.agentId && oldLead && String(oldLead.agentId||"") !== String(req.body.agentId)) {
+        var oldAgentDoc = oldLead.agentId ? await User.findById(oldLead.agentId).lean() : null;
+        var newAgentDoc = await User.findById(req.body.agentId).lean();
+        var fromName = oldAgentDoc ? oldAgentDoc.name : "Unassigned";
+        var toName = newAgentDoc ? newAgentDoc.name : "Unknown";
+        if (oldLead.agentId) {
+          histBatch.push(historyEntry(
+            "rotated",
+            "Rotated from " + fromName + " to " + toName + " by " + byName,
+            byName,
+            toName
+          ));
+        } else {
+          histBatch.push(historyEntry(
+            "assigned",
+            "Assigned to " + toName + " by " + byName,
+            byName,
+            toName
+          ));
+        }
+      }
+      if (req.body.status && oldLead && req.body.status !== oldLead.status) {
+        histBatch.push(historyEntry(
+          "status_changed",
+          "Status changed " + (oldLead.status || "—") + " → " + req.body.status + " by " + byName,
+          byName,
+          ""
+        ));
+      }
+      var fb = req.body.lastFeedback;
+      if (fb !== undefined && fb !== null && String(fb).trim() !== "" && oldLead && String(oldLead.lastFeedback||"") !== String(fb)) {
+        var fbPreview = String(fb).length > 160 ? String(fb).slice(0, 160) + "…" : String(fb);
+        histBatch.push(historyEntry(
+          "feedback_added",
+          "Feedback by " + byName + ": " + fbPreview,
+          byName,
+          ""
+        ));
+      }
+      if (req.body.callbackTime !== undefined && req.body.callbackTime && oldLead && String(oldLead.callbackTime||"") !== String(req.body.callbackTime)) {
+        histBatch.push(historyEntry(
+          "callback_scheduled",
+          "Callback scheduled for " + String(req.body.callbackTime).replace("T", " ").slice(0, 16) + " by " + byName,
+          byName,
+          ""
+        ));
+      }
+      if (histBatch.length > 0) await pushHistory(req.params.id, histBatch);
+    } catch(histErr) {
+      console.error("[history put]", histErr && histErr.message ? histErr.message : histErr);
+    }
     try {
       // Only auto-log reassign here. status_change is logged explicitly by the client with agent feedback,
       // and auto-logging it here would produce duplicate activity documents.
@@ -1320,6 +1444,15 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
       lead.agentId = new mongoose.Types.ObjectId(targetAgentId);
       lead.assignments.push({ agentId: new mongoose.Types.ObjectId(targetAgentId), status: "NewLead", notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [], assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false });
       await lead.save();
+      // Admin timeline — first-time assignment.
+      var firstByName = (req.user && req.user.name) ? req.user.name : "System";
+      var firstToName = (targetUser && targetUser.name) ? targetUser.name : "Unknown";
+      await pushHistory(lead._id, historyEntry(
+        "assigned",
+        "Assigned to " + firstToName + " by " + firstByName,
+        firstByName,
+        firstToName
+      ));
       return res.json({ success: true, firstAssignment: true, lead: lead });
     }
 
@@ -1392,6 +1525,14 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
       },
       $push: pushOps
     });
+
+    // Admin timeline — rotation event (fromAgent → toAgent, by whom, why).
+    await pushHistory(req.params.id, historyEntry(
+      "rotated",
+      "Rotated from " + oldAgentName + " to " + newAgentName + " by " + (req.user.name || "System") + " (" + rotationReason + ")",
+      req.user.name || "System",
+      newAgentName
+    ));
 
     var updated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(updated);
@@ -1606,7 +1747,40 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
       });
     }
 
-    var merged = activities.concat(assignmentEntries).sort(function(a, b) {
+    // Dedicated audit-history array on the lead — created / assigned /
+    // rotated / status_changed / feedback_added / callback_scheduled. Admin
+    // sees the full set; sales sees only rows where byUser matches their
+    // own name (other agents' history stays hidden, per the rule).
+    var historyEntries = [];
+    if (lead && Array.isArray(lead.history)) {
+      var myName = "";
+      if (isSales) {
+        var me = await User.findById(uid).select({ name: 1 }).lean();
+        myName = me ? (me.name || "") : "";
+      }
+      lead.history.forEach(function(h, idx) {
+        if (!h) return;
+        if (isSales && (!myName || String(h.byUser || "") !== myName)) return;
+        historyEntries.push({
+          _id: "hist-" + idx + "-" + String(h.timestamp || ""),
+          leadId: oid,
+          // Keep the same shape the timeline renderer already expects —
+          // userId.name is what the panel prints as the author. For sales
+          // we stamp their own uid so the client-side "own rows only"
+          // filter doesn't drop entries they authored.
+          userId: isSales
+            ? { _id: uid, name: h.byUser || "", title: "" }
+            : { name: h.byUser || "", title: "" },
+          agentName: h.toAgent || "",
+          type: h.event || "event",
+          note: h.description || "",
+          createdAt: h.timestamp || lead.createdAt || new Date(),
+          source: "history"
+        });
+      });
+    }
+
+    var merged = activities.concat(assignmentEntries).concat(historyEntries).sort(function(a, b) {
       return new Date(a.createdAt) - new Date(b.createdAt);
     });
 
