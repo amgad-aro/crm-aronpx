@@ -2457,78 +2457,301 @@ var DashboardPage = function(p) {
   var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
 
   if(!isOnlyAdmin) {
-    var myLeads2 = leads.filter(function(l){return l.assignments&&l.assignments.some(function(a){return String(a.agentId&&a.agentId._id?a.agentId._id:a.agentId)===String(p.cu._id||p.cu.id);});});
-    var myTotal2=myLeads2.length;
-    var myInt2=myLeads2.filter(function(l){return["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status);}).length;
-    var myMeet2=myLeads2.filter(function(l){return["MeetingDone","DoneDeal"].includes(l.status);}).length;
-    var myOv2=myLeads2.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).length;
-    var myDR2=(p.activities||[]).filter(function(a){return String(a.userId&&a.userId._id?a.userId._id:a.userId)===String(p.cu._id||p.cu.id)&&a.type==="daily_request";}).length;
-    var urgent2=myLeads2.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);}).slice(0,5);
-    var urgentNew2=myLeads2.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*3600000;}).slice(0,3);
-    var schedule2=myLeads2.filter(function(l){return l.callbackTime&&!l.archived;}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);}).slice(0,7);
-    var mySC2={};myLeads2.forEach(function(l){mySC2[l.status]=(mySC2[l.status]||0)+1;});
-    var recentActs2=(p.activities||[]).filter(function(a){return String(a.userId&&a.userId._id?a.userId._id:a.userId)===String(p.cu._id||p.cu.id);}).slice(-6).reverse();
-    var allUsers2=(p.users||[]).filter(function(u){return u.role==="sales"||u.role==="sales_admin";});
+    // ============ DATE RANGE (calendar-based) ============
+    // Today = 00:00→23:59, Week = Monday→today, Month = 1st→today,
+    // Quarter = Q start → Q end (capped at now). Every stat below filters through inRangeS().
+    var nowDS = new Date();
+    var curYS = nowDS.getFullYear();
+    var curMS = nowDS.getMonth();
+    var curDS = nowDS.getDate();
+    var jsDayS = nowDS.getDay();              // 0=Sun..6=Sat
+    var daysSinceMonS = (jsDayS + 6) % 7;     // Mon=0, Tue=1, ... Sun=6
+    var weekStartS = new Date(curYS, curMS, curDS - daysSinceMonS, 0,0,0,0);
+    var todayStartS = new Date(curYS, curMS, curDS, 0,0,0,0);
+    var todayEndS   = new Date(curYS, curMS, curDS, 23,59,59,999);
+    var monthStartS = new Date(curYS, curMS, 1, 0,0,0,0);
+    var monthEndS   = new Date(curYS, curMS+1, 0, 23,59,59,999);
+    var rangeStartS, rangeEndS, rangeLabelS;
+    if (filter==="today")      { rangeStartS = todayStartS.getTime();  rangeEndS = todayEndS.getTime();                         rangeLabelS = "Today"; }
+    else if (filter==="week")  { rangeStartS = weekStartS.getTime();   rangeEndS = Date.now();                                  rangeLabelS = "This Week"; }
+    else if (filter==="month") { rangeStartS = monthStartS.getTime();  rangeEndS = Math.min(Date.now(), monthEndS.getTime());   rangeLabelS = "This Month"; }
+    else if (typeof filter==="string" && /^Q\d\s+\d{4}$/.test(filter)) {
+      var mS = filter.match(/^Q(\d)\s+(\d{4})$/);
+      var qnS = parseInt(mS[1]); var qyS = parseInt(mS[2]);
+      var qStartS = new Date(qyS, (qnS-1)*3, 1, 0,0,0,0);
+      var qEndS   = new Date(qyS, qnS*3, 0, 23,59,59,999);
+      rangeStartS = qStartS.getTime();
+      rangeEndS   = Math.min(Date.now(), qEndS.getTime());
+      rangeLabelS = filter;
+    } else {
+      rangeStartS = todayStartS.getTime(); rangeEndS = todayEndS.getTime(); rangeLabelS = "Today";
+    }
+    var inRangeS = function(d){ if(!d) return false; var t = new Date(d).getTime(); return !isNaN(t) && t>=rangeStartS && t<=rangeEndS; };
+
+    // Dynamic quarters — only past + current quarters of the current year.
+    var curQNumS = Math.floor(curMS/3) + 1;
+    var quarterOptionsS = [];
+    for (var qiS=1; qiS<=curQNumS; qiS++) quarterOptionsS.push("Q"+qiS+" "+curYS);
+
+    // ============ MY DATA ============
+    var myUidS = String(p.cu._id||p.cu.id);
+    var allMyLeads = leads.filter(function(l){
+      return l.assignments && l.assignments.some(function(a){
+        var aid = a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+        return String(aid)===myUidS;
+      });
+    });
+    // Leads created inside the active range — used for all counts on the dashboard.
+    var myLeads2 = allMyLeads.filter(function(l){ return inRangeS(l.createdAt); });
+    var myTotal2 = myLeads2.length;
+    var mySC2 = {}; myLeads2.forEach(function(l){ mySC2[l.status] = (mySC2[l.status]||0)+1; });
+    var myInt2  = myLeads2.filter(function(l){return["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status);}).length;
+    var myMeet2 = myLeads2.filter(function(l){return["MeetingDone","DoneDeal"].includes(l.status);}).length;
+    // Overdue uses the NOW state across all my leads (date filter doesn't apply to callback overdue).
+    var myOv2   = allMyLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).length;
+    var myDRs   = (p.dailyReqs||[]).filter(function(r){
+      var aid = r.agentId&&r.agentId._id?r.agentId._id:r.agentId;
+      return String(aid)===myUidS && inRangeS(r.createdAt);
+    });
+    var myDR2 = myDRs.length;
+    // These lists are "now state" — independent of the date range filter.
+    var urgent2    = allMyLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);}).slice(0,5);
+    var urgentNew2 = allMyLeads.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*3600000;}).slice(0,3);
+    var schedule2  = allMyLeads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime).toDateString()===new Date().toDateString();}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);}).slice(0,7);
     var statusColors2={"NewLead":"#1565C0","Potential":"#00796B","HotCase":"#E65100","CallBack":"#6A1B9A","MeetingDone":"#2E7D32","NotInterested":"#EF4444","NoAnswer":"#94A3B8","DoneDeal":"#065F46"};
-    var rankBar2=function(label,pos,total2){
-      var arr=Array.from({length:total2},function(_,i){return i;});
-      return <div style={{marginBottom:10}}>
-        <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}>
-          <span style={{color:"#64748B"}}>{label}</span>
-          <span style={{fontWeight:700,color:pos===1?"#1565C0":pos===2?"#6A1B9A":"#94A3B8"}}>{pos} of {total2}</span>
-        </div>
-        <div style={{display:"flex",gap:2}}>
-          {arr.map(function(_,i){return <div key={i} style={{flex:1,height:6,borderRadius:3,background:i===(pos-1)?"#1565C0":i<(pos-1)?"#BFDBFE":"#F1F5F9"}}/>;}) }
-        </div>
-      </div>;
+
+    // ============ MY RANK VS TEAM (real, range-scoped) ============
+    // Rank all active sales / team_leader users by (deals * 10 + meetings * 3) inside the active range.
+    var rankUsersS = (p.users||[]).filter(function(u){return (u.role==="sales"||u.role==="team_leader")&&u.active!==false;});
+    var countDealsR = function(uid){
+      return leads.filter(function(l){
+        var aid = l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
+        if (String(aid)!==String(uid)) return false;
+        if (l.status!=="DoneDeal") return false;
+        var dd = l.dealDate ? new Date(l.dealDate).getTime() : (l.updatedAt ? new Date(l.updatedAt).getTime() : 0);
+        return !isNaN(dd) && dd>=rangeStartS && dd<=rangeEndS;
+      }).length;
     };
-    // Mobile-safe container: relative % + box-sizing so no child can overflow
-    // the viewport, and the whole tree respects whatever width the browser
-    // actually gave us. Desktop layout (the else-branch paddings / rows)
-    // is preserved untouched.
+    var countMeetingsR = function(uid){
+      return leads.filter(function(l){
+        var aid = l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
+        if (String(aid)!==String(uid)) return false;
+        if (l.hadMeeting!==true) return false;
+        var t = l.meetingDoneAt ? new Date(l.meetingDoneAt).getTime() : (l.updatedAt ? new Date(l.updatedAt).getTime() : 0);
+        return !isNaN(t) && t>=rangeStartS && t<=rangeEndS;
+      }).length;
+    };
+    var rankRowsS = rankUsersS.map(function(u){
+      var uid = String(gid(u));
+      var deals = countDealsR(uid);
+      var meets = countMeetingsR(uid);
+      return { uid:uid, name:u.name, deals:deals, meetings:meets, score: deals*10 + meets*3 };
+    }).sort(function(a,b){ return b.score - a.score || b.deals - a.deals; });
+    var myRankIdxS = rankRowsS.findIndex(function(r){return r.uid===myUidS;});
+    var myRankS    = myRankIdxS>=0 ? myRankIdxS+1 : rankRowsS.length;
+    var myRankTotalS = rankRowsS.length || 1;
+    var myRankRowS = myRankIdxS>=0 ? rankRowsS[myRankIdxS] : {deals:0,meetings:0,score:0};
+
+    // ============ CONVERSION FUNNEL (real, 4 stages, range-scoped) ============
+    var funnelRowsS = [
+      { l:"New Lead",     v:(mySC2["NewLead"]||0), c:"#DBEAFE", tc:"#1E40AF", nav:function(){p.setFilter&&p.setFilter("NewLead");p.nav("leads");} },
+      { l:"Interested",   v:myInt2,                c:"#FEF3C7", tc:"#92400E", nav:function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");} },
+      { l:"Meeting Done", v:myMeet2,               c:"#D1FAE5", tc:"#065F46", nav:function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");} },
+      { l:"Deal",         v:(mySC2["DoneDeal"]||0),c:"#FFE4E6", tc:"#9F1239", nav:function(){p.nav("deals");} }
+    ];
+    var funnelMaxS = Math.max(funnelRowsS[0].v, 1);
+
+    // ============ RECENT ACTIVITY (real, from lead.history entries by me) ============
+    var myNameS = p.cu.name||"";
+    var fmtActTime = function(d){
+      var dt = new Date(d);
+      var dayStart = new Date(); dayStart.setHours(0,0,0,0);
+      var yest = new Date(dayStart); yest.setDate(yest.getDate()-1);
+      var tStr = dt.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
+      if (dt>=dayStart) return "Today "+tStr;
+      if (dt>=yest) return "Yesterday "+tStr;
+      return dt.toLocaleDateString("en-GB") + " " + tStr;
+    };
+    var eventIconS = function(e){
+      var ev = String(e||"").toLowerCase();
+      if (ev.indexOf("status")>=0) return "\ud83d\udd04";
+      if (ev.indexOf("feedback")>=0||ev.indexOf("note")>=0) return "\ud83d\udcdd";
+      if (ev.indexOf("meeting")>=0) return "\ud83e\udd1d";
+      if (ev.indexOf("callback")>=0) return "\ud83d\udcde";
+      if (ev.indexOf("call")>=0) return "\u260e\ufe0f";
+      if (ev.indexOf("assign")>=0||ev.indexOf("rotat")>=0) return "\u21aa\ufe0f";
+      if (ev.indexOf("created")>=0||ev.indexOf("create")>=0) return "\u2728";
+      return "\ud83d\udd14";
+    };
+    var myRecentActsS = [];
+    allMyLeads.forEach(function(l){
+      (l.history||[]).forEach(function(h){
+        if (!h || !h.timestamp) return;
+        if (String(h.byUser||"")!==myNameS) return;
+        if (!inRangeS(h.timestamp)) return;
+        myRecentActsS.push({
+          lead: l,
+          leadName: l.name||"Lead",
+          event: h.event||"",
+          description: h.description||"",
+          timestamp: h.timestamp
+        });
+      });
+    });
+    myRecentActsS.sort(function(a,b){return new Date(b.timestamp).getTime()-new Date(a.timestamp).getTime();});
+    myRecentActsS = myRecentActsS.slice(0,10);
+
+    // ============ KPI CARD (MemberCard design — mirrors Team page MemberCard) ============
+    var parseBS = function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
+    var gradForUid = function(uid){var h=0;var s=String(uid||"");for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))&0x7fffffff;}return "sd-grad-"+((h%8)+1);};
+    var myUserObjS   = (p.users||[]).find(function(u){return String(gid(u))===myUidS;}) || p.cu;
+    var gradClassS   = gradForUid(myUidS);
+    var initialsS    = (p.cu.name||"?").split(" ").slice(0,2).map(function(x){return x[0]||"";}).join("").toUpperCase();
+    var roleLabelS   = p.cu.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer"}[p.cu.role]||"");
+    var curQStrS     = "Q"+curQNumS;
+    var qTargetS     = getEffectiveQTarget(myUserObjS, p.users, curQStrS);
+    var qDealsS      = leads.filter(function(l){
+      if (l.status!=="DoneDeal") return false;
+      var aid = l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
+      if (String(aid)!==myUidS) return false;
+      var dd = getDealDate(l); if(!dd) return false;
+      var dt = new Date(dd);
+      if (dt.getFullYear()!==curYS) return false;
+      return (Math.floor(dt.getMonth()/3)+1)===curQNumS;
+    });
+    var qRevS   = qDealsS.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp2=getDealSplitFromObj(d);return s+parseBS(d.budget)*w*(sp2?0.5:1);},0);
+    var qProgS  = qTargetS>0 ? Math.min(100, Math.round(qRevS/qTargetS*100)) : 0;
+    var allMyDealsS = leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return String(aid)===myUidS&&l.status==="DoneDeal";});
+    var totalRevS = allMyDealsS.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp2=getDealSplitFromObj(d);return s+parseBS(d.budget)*w*(sp2?0.5:1);},0);
+    var myCallsS  = (p.activities||[]).filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return String(auid)===myUidS&&a.type==="call"&&inRangeS(a.createdAt);}).length;
+    var isOnlineNowS = myUserObjS.lastSeen && (Date.now()-new Date(myUserObjS.lastSeen).getTime())<2*60*1000;
+    var lastSeenStrS = myUserObjS.lastSeen ? ("Last seen: "+new Date(myUserObjS.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" \u2014 "+timeAgo(myUserObjS.lastSeen,p.t)) : "Never logged in";
+    var totalRevMS = (totalRevS/1000000).toFixed(1)+"M";
+    var memberStatsS = [
+      { v: myTotal2,          l: "Leads", isDeals:false, onClick:function(){p.setFilter&&p.setFilter("all");p.nav("leads");} },
+      { v: allMyDealsS.length,l: "Deals", isDeals:true,  onClick:function(){p.nav("deals");} },
+      { v: totalRevMS,        l: "Total", isDeals:false, onClick:function(){p.nav("kpis");} },
+      { v: myCallsS,          l: "Calls", isDeals:false, onClick:function(){p.nav("kpis");} }
+    ];
+
     return <div className="crm-dash crm-dash-sales" style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100vw",boxSizing:"border-box",overflowX:"hidden"}}>
-      {/* Mobile safety-net CSS lives once in the app root — see CRMApp. */}
+      {/* Local gradient classes for the MemberCard-style KPI — scoped to this page. */}
+      <style>{""
+        + ".crm-dash-sales .sd-grad-1 { background: linear-gradient(135deg, #43c6db, #3b5cb8); }"
+        + ".crm-dash-sales .sd-grad-2 { background: linear-gradient(135deg, #f953c6, #b91d73); }"
+        + ".crm-dash-sales .sd-grad-3 { background: linear-gradient(135deg, #56ab2f, #a8e063); }"
+        + ".crm-dash-sales .sd-grad-4 { background: linear-gradient(135deg, #f7797d, #c6426e); }"
+        + ".crm-dash-sales .sd-grad-5 { background: linear-gradient(135deg, #e52d27, #b31217); }"
+        + ".crm-dash-sales .sd-grad-6 { background: linear-gradient(135deg, #f46b45, #eea849); }"
+        + ".crm-dash-sales .sd-grad-7 { background: linear-gradient(135deg, #b8d435, #56ab2f); }"
+        + ".crm-dash-sales .sd-grad-8 { background: linear-gradient(135deg, #a18cd1, #e8a4c8); }"
+      }</style>
+      {/* Header — clock now sits to the RIGHT of the date on the same line. */}
       <div className="crm-dash-header" style={{display:"flex",alignItems:isMobile?"stretch":"center",justifyContent:"space-between",marginBottom:isMobile?14:20,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
         <div style={{minWidth:0,width:isMobile?"100%":"auto"}}>
           <div style={{fontSize:isMobile?16:20,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{greeting} {p.cu.name}</div>
-          <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{timeStr} {"\u00b7"} {new Date().toDateString()}</div>
+          <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{new Date().toDateString()} {"\u00b7"} {timeStr}</div>
         </div>
         <div className="crm-dash-filters" style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",width:isMobile?"100%":"auto"}}>
           {[["today","Today"],["week","This Week"],["month","This Month"]].map(function(f){return <button key={f[0]} onClick={function(){setFilter(f[0]);}} style={{fontSize:12,padding:isMobile?"8px 10px":"6px 12px",minHeight:isMobile?36:undefined,border:filter===f[0]?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:filter===f[0]?"#EFF6FF":"#fff",color:filter===f[0]?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:filter===f[0]?600:500,flex:isMobile?"1 1 auto":"0 0 auto",flexShrink:0}}>{f[1]}</button>;})}
-          <div style={{position:"relative",flex:isMobile?"1 1 auto":"0 0 auto"}}>
-            <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:12,padding:isMobile?"8px 10px":"6px 12px",minHeight:isMobile?36:undefined,border:"1px solid #E2E8F0",borderRadius:8,background:"#fff",color:"#64748B",cursor:"pointer",width:isMobile?"100%":"auto"}}>{"Quarter \u25be"}</button>
+          <div ref={quarterDropdownRef} style={{position:"relative",flex:isMobile?"1 1 auto":"0 0 auto"}}>
+            {(function(){
+              var qActive = (typeof filter==="string") && filter.indexOf("Q")===0;
+              return <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:12,padding:isMobile?"8px 10px":"6px 12px",minHeight:isMobile?36:undefined,border:qActive?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:qActive?"#EFF6FF":"#fff",color:qActive?"#1D4ED8":"#64748B",cursor:"pointer",width:isMobile?"100%":"auto",fontWeight:qActive?600:500}}>{qActive?filter:"Quarter"} {"\u25be"}</button>;
+            })()}
             {qOpen&&<div style={{position:"absolute",top:"calc(100% + 4px)",right:0,background:"#fff",border:"1px solid #E2E8F0",borderRadius:10,minWidth:110,zIndex:99,boxShadow:"0 4px 16px rgba(0,0,0,0.08)"}}>
-              {["Q1 2026","Q2 2026","Q3 2026","Q4 2025"].map(function(q){return <div key={q} onClick={function(){setFilter(q);setQOpen(false);}} style={{padding:"8px 14px",fontSize:12,color:"#334155",cursor:"pointer"}}>{q}</div>;})}
+              {quarterOptionsS.map(function(q){
+                var isActive = filter===q;
+                return <div key={q} onClick={function(){setFilter(q);setQOpen(false);}} style={{padding:"8px 14px",fontSize:12,color:isActive?"#1D4ED8":"#334155",fontWeight:isActive?600:500,background:isActive?"#EFF6FF":"transparent",cursor:"pointer"}}>{q}</div>;
+              })}
             </div>}
           </div>
         </div>
       </div>
-      {/* KPI strip — on mobile force a fixed 2-column grid so every card is
-           equal width and none can overflow. Desktop keeps its auto-fit. */}
-      <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2, minmax(0, 1fr))":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:isMobile?14:20}}>
-        {kpiCard("My Leads",myTotal2,"assigned","#1565C0","#ffffff",function(){p.setFilter&&p.setFilter("all");p.nav("leads");})}
-        {kpiCard("Daily Requests",myDR2,"total","#00796B","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("all");p.nav("dailyReq");})}
-        {kpiCard("Followups",myLeads2.filter(function(l){return l.callbackTime&&!l.archived;}).length,"scheduled","#E65100","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("CallBack");p.nav("dailyReq");})}
-        {kpiCard("Interested",myInt2,myTotal2>0?Math.round(myInt2/myTotal2*100)+"%":"0%","#6A1B9A","#ffffff",function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");})}
-        {kpiCard("Meetings",myMeet2,myTotal2>0?Math.round(myMeet2/myTotal2*100)+"%":"0%","#2E7D32","#ffffff",function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");})}
-        {kpiCard("Target",myTotal2>0?Math.round(myMeet2/myTotal2*100*5)+"%":"0%","this month","#AD1457","#ffffff",function(){p.nav("kpis");})}
-      </div>
-      {/* Info cards — stack to one column on mobile so every card fills the
-           viewport width with consistent gutters. */}
-      <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
-        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>My Rank vs Team</div>
-          <div style={{fontSize:11,color:"#94A3B8",marginBottom:12}}>{"Position only \u2014 no team numbers shown"}</div>
-          {rankBar2("Activity",1,allUsers2.length)}
-          {rankBar2("Followups",1,allUsers2.length)}
-          {rankBar2("Meetings",myMeet2>0?1:2,allUsers2.length)}
-          {rankBar2("Response time",1,allUsers2.length)}
-          {rankBar2("Target %",1,allUsers2.length)}
-          <div style={{borderTop:"1px solid #F1F5F9",marginTop:10,paddingTop:10,display:"flex",alignItems:"center",gap:8}}>
-            <span style={{fontSize:20}}>{"\ud83e\udd47"}</span>
-            <div><div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>Overall rank: 1st</div><div style={{fontSize:11,color:"#94A3B8"}}>Score {Math.min(99,Math.round(myInt2/Math.max(myTotal2,1)*100*0.4+myMeet2/Math.max(myTotal2,1)*100*0.3+30))}/100</div></div>
+
+      {/* KPIs — MemberCard design (mirrors Admin's Team page individual agent card). */}
+      <div style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"minmax(280px, 340px) 1fr",gap:isMobile?10:14,marginBottom:isMobile?14:20,alignItems:"start"}}>
+        <div style={{ borderRadius:16, overflow:"hidden", background:"#fff", boxShadow:"0 2px 10px rgba(0,0,0,0.08)" }}>
+          {/* Gradient hero */}
+          <div className={gradClassS} style={{ padding:"18px 14px 16px", position:"relative", display:"flex", flexDirection:"column", alignItems:"center", gap:6 }}>
+            {isOnlineNowS && <span title="Online" style={{ position:"absolute", top:10, right:12, width:9, height:9, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 0 2px rgba(255,255,255,0.45)" }}/>}
+            <div style={{ width:44, height:44, borderRadius:12, background:"rgba(255,255,255,0.22)", color:"#fff", border:"2px solid rgba(255,255,255,0.35)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:800 }}>{initialsS}</div>
+            <div style={{ fontSize:13, fontWeight:700, color:"#fff", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.cu.name}</div>
+            <div style={{ fontSize:10, color:"rgba(255,255,255,0.85)", textTransform:"uppercase", letterSpacing:"0.04em", textAlign:"center" }}>{roleLabelS}</div>
+            <div style={{ fontSize:9, color:"rgba(255,255,255,0.55)", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{isOnlineNowS?"Online now":lastSeenStrS}</div>
+          </div>
+          {/* White panel */}
+          <div style={{ background:"#fff", padding:"14px 14px 16px" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6 }}>
+              <span style={{ fontSize:10, fontWeight:600, color:"#64748b", textTransform:"uppercase", letterSpacing:"0.04em" }}>{curQStrS} Target</span>
+              <span style={{ fontSize:10, fontWeight:700, color:"#334155" }}>{qTargetS>0?qTargetS.toLocaleString()+" EGP":"Not set"}</span>
+            </div>
+            <div style={{ height:4, background:"#e2e8f0", borderRadius:2, marginBottom:10, overflow:"hidden" }}>
+              <div className={gradClassS} style={{ height:"100%", width:qProgS+"%", borderRadius:2, transition:"width 0.6s" }}/>
+            </div>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:12 }}>
+              <span style={{ fontSize:18, fontWeight:800, color:qRevS>0?"#0f172a":"#94a3b8" }}>{(qRevS/1000000).toFixed(2)}M</span>
+              <span style={{ fontSize:12, fontWeight:700, color:"#64748b" }}>{qProgS}%</span>
+            </div>
+            <div style={{ height:1, background:"#e2e8f0", marginBottom:10, transform:"scaleY(0.5)" }}/>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:6 }}>
+              {memberStatsS.map(function(s,i){
+                var isZero = (s.v === 0) || (s.v === "0.0M") || (s.v === "0M") || (s.v === "0");
+                var color;
+                if (s.isDeals) color = (s.v > 0 ? "#15803d" : "#cbd5e1");
+                else color = isZero ? "#cbd5e1" : "#0f172a";
+                return <div key={i} onClick={s.onClick} style={{ textAlign:"center", cursor:"pointer" }}>
+                  <div style={{ fontSize:16, fontWeight:800, color:color, lineHeight:1.1 }}>{s.v}</div>
+                  <div style={{ fontSize:8, fontWeight:600, color:"#94a3b8", textTransform:"uppercase", letterSpacing:"0.06em", marginTop:4 }}>{s.l}</div>
+                </div>;
+              })}
+            </div>
           </div>
         </div>
+        {/* Companion tiles — quick-access stats scoped to the active range. */}
+        <div style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2, minmax(0, 1fr))":"repeat(auto-fit,minmax(140px,1fr))",gap:isMobile?8:10}}>
+          {kpiCard("My Leads",   myTotal2,                                         rangeLabelS,                                                     "#1565C0","#ffffff",function(){p.setFilter&&p.setFilter("all");p.nav("leads");})}
+          {kpiCard("Daily Requests", myDR2,                                        rangeLabelS,                                                     "#00796B","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("all");p.nav("dailyReq");})}
+          {kpiCard("Followups",  allMyLeads.filter(function(l){return l.callbackTime&&!l.archived;}).length, "scheduled",                           "#E65100","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("CallBack");p.nav("dailyReq");})}
+          {kpiCard("Interested", myInt2,                                           myTotal2>0?Math.round(myInt2/myTotal2*100)+"%":"0%",              "#6A1B9A","#ffffff",function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");})}
+          {kpiCard("Meetings",   myMeet2,                                          myTotal2>0?Math.round(myMeet2/myTotal2*100)+"%":"0%",             "#2E7D32","#ffffff",function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");})}
+          {kpiCard("Target",     qProgS+"%",                                       curQStrS+" progress",                                            "#AD1457","#ffffff",function(){p.nav("kpis");})}
+        </div>
+      </div>
+
+      {/* Rank + Urgent + Schedule row */}
+      <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
+        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
+            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>My Rank vs Team</div>
+            <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{rangeLabelS}</div>
+          </div>
+          {/* Headline rank — #X out of Y */}
+          <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:12}}>
+            <span style={{fontSize:34,fontWeight:800,color:myRankS===1?"#15803D":myRankS<=3?"#1D4ED8":"#334155",lineHeight:1}}>#{myRankS}</span>
+            <span style={{fontSize:13,color:"#64748B"}}>out of {myRankTotalS} sales agents</span>
+          </div>
+          {/* Ranked list — top 5 so the user can see who's ahead/behind. */}
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {rankRowsS.slice(0,5).map(function(r,i){
+              var isMe = r.uid===myUidS;
+              return <div key={r.uid} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:8,background:isMe?"#EFF6FF":"transparent",border:isMe?"1px solid #BFDBFE":"1px solid transparent"}}>
+                <div style={{width:22,height:22,borderRadius:"50%",background:i===0?"#FBBF24":i===1?"#E2E8F0":i===2?"#F59E0B":"#F1F5F9",color:i<=2?"#0F172A":"#64748B",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{i+1}</div>
+                <div style={{flex:1,minWidth:0,fontSize:12,fontWeight:isMe?700:500,color:isMe?"#1D4ED8":"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isMe?(r.name||p.cu.name)+" (you)":r.name}</div>
+                <div style={{fontSize:11,color:"#64748B"}}><span style={{color:"#15803D",fontWeight:700}}>{r.deals}</span> deals · <span style={{color:"#1D4ED8",fontWeight:700}}>{r.meetings}</span> meet.</div>
+              </div>;
+            })}
+            {!rankRowsS.length && <div style={{fontSize:12,color:"#94A3B8",padding:"6px 0"}}>No team data for this range</div>}
+          </div>
+          <div style={{borderTop:"1px solid #F1F5F9",marginTop:10,paddingTop:10,display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:20}}>{myRankS===1?"\ud83e\udd47":myRankS===2?"\ud83e\udd48":myRankS===3?"\ud83e\udd49":"\ud83d\udcca"}</span>
+            <div>
+              <div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>Your score: {myRankRowS.score}</div>
+              <div style={{fontSize:11,color:"#94A3B8"}}>{myRankRowS.deals} deal{myRankRowS.deals===1?"":"s"} · {myRankRowS.meetings} meeting{myRankRowS.meetings===1?"":"s"} in {rangeLabelS}</div>
+            </div>
+          </div>
+        </div>
+
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
           <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udea8"} Urgent {"\u2014"} Action Needed</div>
           {urgent2.length===0&&urgentNew2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} No urgent items</div>}
@@ -2557,44 +2780,52 @@ var DashboardPage = function(p) {
           })}
         </div>
       </div>
+
+      {/* Status + Funnel + Recent Activity row */}
       <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>My Leads {"\u2014"} Status</div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
+            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>My Leads {"\u2014"} Status</div>
+            <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{rangeLabelS}</div>
+          </div>
           {[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"]].map(function(s){return bRow(s[0],mySC2[s[1]]||0,myTotal2,s[2],function(){p.setFilter&&p.setFilter(s[1]);p.nav("leads");});}) }
           <div style={{borderTop:"1px solid #F1F5F9",marginTop:8,paddingTop:8,display:"flex",gap:14,fontSize:11}}>
             <span onClick={function(){p.setFilter&&p.setFilter("CallBack");p.nav("leads");}} style={{color:"#64748B",cursor:"pointer"}}>Overdue: <span style={{color:"#EF4444",fontWeight:700}}>{myOv2}</span></span>
-            <span onClick={function(){p.setFilter&&p.setFilter("NewLead");p.nav("leads");}} style={{color:"#64748B",cursor:"pointer"}}>Untouched: <span style={{color:"#3B82F6",fontWeight:700}}>{myLeads2.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*DAY;}).length}</span></span>
+            <span onClick={function(){p.setFilter&&p.setFilter("NewLead");p.nav("leads");}} style={{color:"#64748B",cursor:"pointer"}}>Untouched: <span style={{color:"#3B82F6",fontWeight:700}}>{allMyLeads.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*DAY;}).length}</span></span>
           </div>
         </div>
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box",overflow:"hidden"}}>
-          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>My Conversion Funnel</div>
-          {[{l:"Assigned",v:myTotal2,c:"#DBEAFE",tc:"#1E40AF",nav:function(){p.setFilter&&p.setFilter("all");p.nav("leads");}},{l:"Contacted",v:myTotal2-(mySC2["NewLead"]||0),c:"#DCFCE7",tc:"#166534",nav:function(){p.setFilter&&p.setFilter("all");p.nav("leads");}},{l:"Interested",v:myInt2,c:"#FEF3C7",tc:"#92400E",nav:function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");}},{l:"Hot Case",v:mySC2["HotCase"]||0,c:"#EDE9FE",tc:"#5B21B6",nav:function(){p.setFilter&&p.setFilter("HotCase");p.nav("leads");}},{l:"Meeting",v:myMeet2,c:"#D1FAE5",tc:"#065F46",nav:function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");}},{l:"Deal",v:mySC2["DoneDeal"]||0,c:"#FFE4E6",tc:"#9F1239",nav:function(){p.nav("deals");}}].map(function(row,i){
-            var pct=myTotal2>0?Math.max(6,Math.round(row.v/myTotal2*100)):6;
-            // Funnel row is flex+min-width-0 so the bar can shrink within the
-            // card instead of pushing the layout out horizontally on narrow
-            // screens.
-            return <div key={i} onClick={row.nav} style={{display:"flex",alignItems:"center",gap:isMobile?6:8,marginBottom:6,minWidth:0,cursor:"pointer"}}>
-              <div style={{fontSize:11,color:"#64748B",width:isMobile?55:65,flexShrink:0,textAlign:"right",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{row.l}</div>
-              <div style={{flex:1,minWidth:0,height:20,borderRadius:4,background:"#F8FAFC",position:"relative",overflow:"hidden"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
+            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>My Conversion Funnel</div>
+            <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{rangeLabelS}</div>
+          </div>
+          {funnelRowsS.map(function(row,i){
+            var pct = Math.max(6, Math.round((row.v/funnelMaxS)*100));
+            return <div key={i} onClick={row.nav} style={{display:"flex",alignItems:"center",gap:isMobile?6:8,marginBottom:8,minWidth:0,cursor:"pointer"}}>
+              <div style={{fontSize:11,color:"#64748B",width:isMobile?70:90,flexShrink:0,textAlign:"right",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{row.l}</div>
+              <div style={{flex:1,minWidth:0,height:22,borderRadius:4,background:"#F8FAFC",position:"relative",overflow:"hidden"}}>
                 <div style={{position:"absolute",inset:0,height:"100%",borderRadius:4,background:row.c,width:pct+"%",display:"flex",alignItems:"center",padding:"0 8px",minWidth:0,boxSizing:"border-box"}}>
                   <span style={{fontSize:11,fontWeight:700,color:row.tc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.v}</span>
                 </div>
               </div>
-              <div style={{fontSize:10,color:"#94A3B8",width:isMobile?32:undefined,textAlign:"right",flexShrink:0}}>{myTotal2>0?Math.round(row.v/myTotal2*100)+"%":""}</div>
+              <div style={{fontSize:10,color:"#94A3B8",width:isMobile?36:46,textAlign:"right",flexShrink:0}}>{funnelRowsS[0].v>0?Math.round(row.v/funnelRowsS[0].v*100)+"%":"0%"}</div>
             </div>;
           })}
         </div>
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>Recent Activity</div>
-          {recentActs2.length===0&&<div style={{fontSize:12,color:"#94A3B8"}}>No recent activity</div>}
-          {recentActs2.map(function(a,i){
-            var lead2=myLeads2.find(function(l){return String(l._id)===String(a.leadId);});
-            var stC=statusColors2[lead2&&lead2.status]||"#94A3B8";
-            return <div key={i} onClick={function(){ if(lead2) p.nav("leads",lead2); }} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:lead2?"pointer":"default"}}>
-              <div style={{width:8,height:8,borderRadius:"50%",background:stC,flexShrink:0}}/>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
+            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>Recent Activity</div>
+            <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>Last 10 · {rangeLabelS}</div>
+          </div>
+          {myRecentActsS.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity in this range</div>}
+          {myRecentActsS.map(function(h,i){
+            var stC = statusColors2[h.lead&&h.lead.status]||"#94A3B8";
+            return <div key={i} onClick={function(){ if(h.lead) p.nav("leads",h.lead); }} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"8px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:h.lead?"pointer":"default"}}>
+              <span style={{fontSize:14,lineHeight:"18px",flexShrink:0}}>{eventIconS(h.event)}</span>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:12,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{lead2?lead2.name:"Lead"} {"\u2014"} <span style={{color:stC,fontWeight:600}}>{lead2&&lead2.status}</span></div>
-                <div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a.note||""}</div>
+                <div style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.leadName} {"\u2014"} <span style={{color:stC,fontWeight:600}}>{h.lead&&h.lead.status}</span></div>
+                <div style={{fontSize:11,color:"#64748B",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.description||h.event}</div>
+                <div style={{fontSize:10,color:"#94A3B8",marginTop:2}}>{fmtActTime(h.timestamp)}</div>
               </div>
             </div>;
           })}
