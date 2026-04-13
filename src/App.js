@@ -2401,11 +2401,15 @@ var DashboardPage = function(p) {
       re = Math.min(Date.now(), new Date(qy, qn*3, 0, 23,59,59,999).getTime());
     } else { rs = todayStart.getTime(); re = todayEnd.getTime(); }
     var qs = "from="+encodeURIComponent(new Date(rs).toISOString())+"&to="+encodeURIComponent(new Date(re).toISOString());
+    // If the period is a Quarter, tell the backend which quarter so Target
+    // lines up with the selected range; otherwise fall through to current Q.
+    var qMatch = (typeof filter==="string") ? filter.match(/^Q(\d)\s+\d{4}$/) : null;
+    var statsQs = qs + (qMatch ? "&quarter=Q"+qMatch[1] : "");
     var cancelled = false;
     apiFetch("/api/dashboard/sales-ranking?"+qs, "GET", null, p.token)
       .then(function(d){ if(!cancelled) setSalesRanking(Array.isArray(d)?d:[]); })
       .catch(function(){ if(!cancelled) setSalesRanking([]); });
-    apiFetch("/api/dashboard/my-stats?"+qs, "GET", null, p.token)
+    apiFetch("/api/dashboard/my-stats?"+statsQs, "GET", null, p.token)
       .then(function(d){ if(!cancelled) setMyStats(d||{}); })
       .catch(function(){ if(!cancelled) setMyStats({}); });
     return function(){ cancelled = true; };
@@ -2679,12 +2683,7 @@ var DashboardPage = function(p) {
               return <div key={r.uid} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:8,background:isMe?"#EFF6FF":"transparent",border:isMe?"1px solid #BFDBFE":"1px solid transparent"}}>
                 <div style={{width:22,height:22,borderRadius:"50%",background:i===0?"#FBBF24":i===1?"#E2E8F0":i===2?"#F59E0B":"#F1F5F9",color:i<=2?"#0F172A":"#64748B",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{i+1}</div>
                 <div style={{flex:1,minWidth:0,fontSize:12,fontWeight:isMe?700:500,color:isMe?"#1D4ED8":"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isMe?(r.name||p.cu.name)+" (you)":r.name}</div>
-                <div style={{fontSize:11,color:"#64748B",display:"flex",alignItems:"center",gap:6}}>
-                  <span title={"Activities "+(r.activities||0)+" · Calls "+(r.calls||0)+" · Meetings "+(r.meetings||0)+" · DRs "+(r.dailyRequests||0)} style={{fontSize:11,color:"#64748B"}}>
-                    {(r.activities||0)}A · {(r.calls||0)}C · {(r.meetings||0)}M · {(r.dailyRequests||0)}D
-                  </span>
-                  <span style={{fontSize:12,fontWeight:800,color:"#1D4ED8",minWidth:28,textAlign:"right"}}>{r.score||0}</span>
-                </div>
+                <div title={"Activities "+(r.activities||0)+" · Calls "+(r.calls||0)+" · Meetings "+(r.meetings||0)+" · DRs "+(r.dailyRequests||0)} style={{fontSize:12,fontWeight:800,color:"#1D4ED8",minWidth:28,textAlign:"right"}}>{r.score||0}</div>
               </div>;
             })}
             {!rankLoadingS && !rankRowsS.length && <div style={{fontSize:12,color:"#94A3B8",padding:"6px 0"}}>No sales agents found</div>}

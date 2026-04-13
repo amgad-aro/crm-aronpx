@@ -675,9 +675,10 @@ app.get("/api/dashboard/sales-ranking", auth, async function(req, res) {
 });
 
 // ===== DASHBOARD — MY STATS (per-agent, period-scoped) =====
-// Returns counts for the 6 Sales Dashboard KPI cards for the calling user,
-// computed by the backend inside [from, to] so sales users don't have to
-// filter their local dataset client-side.
+// Returns counts for the 6 Sales Dashboard KPI cards for the calling user.
+// Every card except Followups is scoped to [from, to]. Followups matches the
+// notification bell — current-state count of leads idle >= 2 days that still
+// need contact (not range-filtered, matches the bell exactly).
 app.get("/api/dashboard/my-stats", auth, async function(req, res) {
   try {
     var parseDate = function(s){ if(!s) return null; var d = new Date(String(s)); return isNaN(d.getTime()) ? null : d; };
@@ -687,39 +688,78 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     if (!req.user || !req.user.id) return res.status(401).json({ error: "No user" });
     var uid = new mongoose.Types.ObjectId(req.user.id);
 
-    // My Leads: leads assigned to me, created in the active range.
-    var myLeadsMatch = { agentId: uid, archived: { $ne: true }, source: { $ne: "Daily Request" } };
-    if (rangeMatch) myLeadsMatch.createdAt = rangeMatch;
-    var myLeadsP = Lead.countDocuments(myLeadsMatch);
+    // CARD 1 — My Leads: assigned to me AND (createdAt OR any assignment to me) falls in range.
+    var myLeadsPipeline = [
+      { $match: { agentId: uid, archived: { $ne: true }, source: { $ne: "Daily Request" } } }
+    ];
+    if (rangeMatch) {
+      myLeadsPipeline.push({ $match: {
+        $or: [
+          { createdAt: rangeMatch },
+          { assignments: { $elemMatch: { agentId: uid, assignedAt: rangeMatch } } }
+        ]
+      }});
+    }
+    myLeadsPipeline.push({ $count: "c" });
+    var myLeadsP = Lead.aggregate(myLeadsPipeline);
 
-    // Daily Requests: DRs assigned to me, created in the active range.
+    // CARD 2 — Daily Requests: DRs owned by me, created in range.
     var myDrsMatch = { agentId: uid, archived: { $ne: true } };
     if (rangeMatch) myDrsMatch.createdAt = rangeMatch;
     var myDrsP = DailyRequest.countDocuments(myDrsMatch);
 
-    // Followups: activity logs of type "followup" authored by me in the range.
-    var myFollowupsMatch = { userId: uid, type: "followup" };
-    if (rangeMatch) myFollowupsMatch.createdAt = rangeMatch;
-    var myFollowupsP = Activity.countDocuments(myFollowupsMatch);
+    // CARD 3 — Followups: mirror the notification bell (src/App.js:6790). Leads
+    // assigned to me, not archived, status not in {DoneDeal, NotInterested, EOI},
+    // lastActivityTime >= 2 days ago. No range filter — same as the bell.
+    var twoDaysAgo = new Date(Date.now() - 2*24*60*60*1000);
+    var myFollowupsP = Lead.countDocuments({
+      agentId: uid,
+      archived: { $ne: true },
+      status: { $nin: ["DoneDeal", "NotInterested", "EOI"] },
+      lastActivityTime: { $lte: twoDaysAgo }
+    });
 
-    // Interested: leads assigned to me with a current "interested" status
-    // (Potential / HotCase), created in the active range. Matches the card label.
-    var myInterestedMatch = { agentId: uid, archived: { $ne: true }, status: { $in: ["Potential", "HotCase"] } };
-    if (rangeMatch) myInterestedMatch.createdAt = rangeMatch;
-    var myInterestedP = Lead.countDocuments(myInterestedMatch);
+    // CARD 4 — Interested: leads + DRs with status in {HotCase, Potential},
+    // agent = me, created in range (across both collections).
+    var intLeadMatch = { agentId: uid, archived: { $ne: true }, status: { $in: ["Potential", "HotCase"] } };
+    if (rangeMatch) intLeadMatch.createdAt = rangeMatch;
+    var intLeadsP = Lead.countDocuments(intLeadMatch);
+    var intDrMatch = { agentId: uid, archived: { $ne: true }, status: { $in: ["Potential", "HotCase"] } };
+    if (rangeMatch) intDrMatch.createdAt = rangeMatch;
+    var intDrsP = DailyRequest.countDocuments(intDrMatch);
 
-    // Meetings: my leads where hadMeeting === true and the meeting fell in range.
-    var myMeetPipeline = [
-      { $match: { agentId: uid, hadMeeting: true, archived: { $ne: true } } },
+    // CARD 5 — Meetings: Meeting Done OR Meeting Scheduled.
+    //   Done:       lead/DR with hadMeeting === true OR status === "MeetingDone"
+    //               (dated by meetingDoneAt, falling back to updatedAt, within range).
+    //   Scheduled:  Task documents with type "meeting" authored by me, createdAt in range.
+    var meetLeadPipeline = [
+      { $match: { agentId: uid, archived: { $ne: true }, $or: [ { hadMeeting: true }, { status: "MeetingDone" } ] } },
       { $addFields: { meetAt: { $ifNull: ["$meetingDoneAt", "$updatedAt"] } } }
     ];
-    if (rangeMatch) myMeetPipeline.push({ $match: { meetAt: rangeMatch } });
-    myMeetPipeline.push({ $count: "c" });
-    var myMeetP = Lead.aggregate(myMeetPipeline);
+    if (rangeMatch) meetLeadPipeline.push({ $match: { meetAt: rangeMatch } });
+    meetLeadPipeline.push({ $count: "c" });
+    var meetLeadsP = Lead.aggregate(meetLeadPipeline);
+    var meetDrPipeline = [
+      { $match: { agentId: uid, archived: { $ne: true }, $or: [ { hadMeeting: true }, { status: "MeetingDone" } ] } },
+      { $addFields: { meetAt: { $ifNull: ["$meetingDoneAt", "$updatedAt"] } } }
+    ];
+    if (rangeMatch) meetDrPipeline.push({ $match: { meetAt: rangeMatch } });
+    meetDrPipeline.push({ $count: "c" });
+    var meetDrsP = DailyRequest.aggregate(meetDrPipeline);
+    var meetTaskMatch = { userId: uid, type: "meeting" };
+    if (rangeMatch) meetTaskMatch.createdAt = rangeMatch;
+    var meetSchedP = Task.countDocuments(meetTaskMatch);
 
-    // Target vs achieved: achieved = weighted revenue from my DoneDeal leads
-    // whose deal date falls in the active range. Target = current-quarter
-    // target from the user's qTargets map.
+    // CARD 6 — Target: same calculation as the Admin Team page / KPIs page.
+    //   target = user.qTargets[Q], achieved = weighted revenue of my DoneDeal
+    //   leads whose deal date falls in [from, to]. Q defaults to the current
+    //   quarter; if the client passes ?quarter=Qn (active filter is a quarter)
+    //   we honour that so Target lines up with the selected period.
+    var qParam = String(req.query.quarter||"").match(/^Q([1-4])$/);
+    var curQNum = qParam ? parseInt(qParam[1]) : (Math.floor(new Date().getMonth()/3) + 1);
+    var qKey = "Q" + curQNum;
+
+    var userP = User.findById(uid).select("qTargets").lean();
     var myDealsPipeline = [
       { $match: { agentId: uid, status: "DoneDeal" } },
       { $addFields: {
@@ -736,16 +776,20 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     myDealsPipeline.push({ $project: { budget: 1, projectWeight: 1, splitAgent2Id: 1 } });
     var myDealsP = Lead.aggregate(myDealsPipeline);
 
-    var userP = User.findById(uid).select("qTargets").lean();
-
-    var parts = await Promise.all([myLeadsP, myDrsP, myFollowupsP, myInterestedP, myMeetP, myDealsP, userP]);
-    var myLeadsC     = parts[0] || 0;
-    var myDrsC       = parts[1] || 0;
-    var myFollowupsC = parts[2] || 0;
-    var myInterestedC= parts[3] || 0;
-    var myMeetingsC  = (parts[4] && parts[4][0] && parts[4][0].c) || 0;
-    var myDeals      = parts[5] || [];
-    var userDoc      = parts[6] || {};
+    var parts = await Promise.all([
+      myLeadsP, myDrsP, myFollowupsP,
+      intLeadsP, intDrsP,
+      meetLeadsP, meetDrsP, meetSchedP,
+      userP, myDealsP
+    ]);
+    var pickCount = function(arr){ return (arr && arr[0] && arr[0].c) || 0; };
+    var myLeadsC    = pickCount(parts[0]);
+    var myDrsC      = parts[1] || 0;
+    var myFupsC     = parts[2] || 0;
+    var interestedC = (parts[3]||0) + (parts[4]||0);
+    var meetingsC   = pickCount(parts[5]) + pickCount(parts[6]) + (parts[7]||0);
+    var userDoc     = parts[8] || {};
+    var myDeals     = parts[9] || [];
 
     var parseBudget = function(b){ return parseFloat(String(b||"0").replace(/,/g,"")) || 0; };
     var achieved = myDeals.reduce(function(s,d){
@@ -754,17 +798,15 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
       return s + parseBudget(d.budget) * w * split;
     }, 0);
 
-    var curQNum = Math.floor(new Date().getMonth()/3) + 1;
-    var qKey = "Q" + curQNum;
     var target = (userDoc.qTargets && Number(userDoc.qTargets[qKey])) || 0;
     var targetProgress = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
 
     res.json({
       myLeads: myLeadsC,
       dailyRequests: myDrsC,
-      followups: myFollowupsC,
-      interested: myInterestedC,
-      meetings: myMeetingsC,
+      followups: myFupsC,
+      interested: interestedC,
+      meetings: meetingsC,
       target: target,
       achieved: achieved,
       targetProgress: targetProgress,
