@@ -97,6 +97,17 @@ Lead.collection.createIndex({ globalStatus: 1 }).catch(function(){});
 Lead.collection.createIndex({ archived: 1, agentId: 1 }).catch(function(){});
 Lead.collection.createIndex({ "assignments.agentId": 1, createdAt: -1 }).catch(function(){});
 
+// Safety-net unique index on phone. Partial filter skips empty strings so the
+// constraint only applies to rows with a real phone value. If pre-existing
+// duplicates cause creation to fail, log and continue — the app-level guard in
+// POST /api/leads / FB webhook still blocks new duplicates.
+Lead.collection.createIndex(
+  { phone: 1 },
+  { unique: true, partialFilterExpression: { phone: { $type: "string", $gt: "" } }, name: "uniq_phone" }
+).catch(function(e){
+  console.error("[phone unique index] not created:", e && e.message ? e.message : e);
+});
+
 var Activity = mongoose.model("Activity", new mongoose.Schema({
   userId:{type:mongoose.Schema.Types.ObjectId,ref:"User",required:true},
   leadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead"},
@@ -511,11 +522,16 @@ app.get("/api/leads", auth, async function(req, res) {
     var uid = req.user.id;
 
     if (role === "sales") {
-      // Sales sees every lead that has (or ever had) an assignment entry for them.
-      // Per requirement: after a rotation the OLD agent must keep seeing the lead
-      // exactly as before, so we match on the per-agent assignments[] slice rather
-      // than the top-level agentId (which tracks only the CURRENT owner).
-      query["assignments.agentId"] = new mongoose.Types.ObjectId(uid);
+      // Strict ownership. Sales sees ONLY leads whose CURRENT agentId matches
+      // their own user id, and only when agentId is actually set. The second
+      // clause is defensive — $ne: null alone already excludes missing fields
+      // in MongoDB, but spelling out $exists: true + $ne: null makes the
+      // intent unmistakable to anyone reading the query.
+      query.agentId = new mongoose.Types.ObjectId(uid);
+      query.$and = (query.$and || []).concat([
+        { agentId: { $exists: true } },
+        { agentId: { $ne: null } }
+      ]);
 
     } else if (role === "team_leader") {
       // Team leader sees only their direct sales
@@ -576,6 +592,9 @@ app.get("/api/leads", auth, async function(req, res) {
     // point at their own assignment so they never learn the lead was rotated.
     var data = leads;
     if (role === "sales") {
+      // Return ONLY the caller's own assignment slice. Feedback, notes, and
+      // status come from their per-agent entry — never from top-level fields or
+      // another agent's slice.
       data = leads.map(function(l) {
         var obj = Object.assign({}, l);
         var myAssign = (obj.assignments || []).find(function(a) {
@@ -592,10 +611,8 @@ app.get("/api/leads", auth, async function(req, res) {
           obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
           if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
           if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
-          // Hide rotation: sales must see themselves as the owner, never the new agent's name.
-          obj.agentId = myAssign.agentId;
         }
-        // Always strip rotation traces and other agents' data, regardless of overlay match.
+        // Strip other agents' data so nothing about rotation or teammates leaks.
         obj.agentHistory = (myAssign && myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
         obj.assignments = myAssign ? [myAssign] : [];
         obj.previousAgentIds = [];
@@ -643,27 +660,30 @@ app.get("/api/leads/:id", auth, async function(req, res) {
     var role = req.user.role;
     var uid = String(req.user.id);
     if (role === "sales") {
-      // Access by assignment — old agents retain read access after rotation.
+      // Strict ownership. Sales can only read a lead whose current agentId
+      // is their own user id, and only when agentId is set. Unassigned leads
+      // (agentId null/missing) are never visible.
+      var leadAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
+      if (!leadAgentId || String(leadAgentId) !== uid) return res.status(404).json({ error: "Not found" });
       var obj = Object.assign({}, lead);
       var myAssign = (obj.assignments || []).find(function(a) {
         var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
         return String(aid) === uid;
       });
-      if (!myAssign) return res.status(404).json({ error: "Not found" });
-      var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
-      obj.status = assignStatus || obj.status;
-      obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
-      obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
-      obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
-      obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
-      obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
-      if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
-      if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
-      // Hide rotation: show the agent as themselves, never the new owner.
-      obj.agentId = myAssign.agentId;
-      // Always strip rotation traces and other agents' data.
-      obj.agentHistory = (myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
-      obj.assignments = [myAssign];
+      if (myAssign) {
+        var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
+        obj.status = assignStatus || obj.status;
+        obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
+        obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+        obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
+        obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
+        obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
+        if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
+        if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+      }
+      // Strip other agents' data.
+      obj.agentHistory = (myAssign && myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
+      obj.assignments = myAssign ? [myAssign] : [];
       obj.previousAgentIds = [];
       obj.rotationCount = 0;
       obj.lastRotationAt = null;
@@ -693,9 +713,10 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
     var phone = decodeURIComponent(req.params.phone);
     var dupQuery = { $or: [{ phone: phone }, { phone2: phone }], archived: false };
     if (req.user.role === "sales") {
-      // Sales must only learn about duplicates among leads they can see (current
-      // or prior assignment). Matches the visibility rule used by GET /api/leads.
-      dupQuery["assignments.agentId"] = new mongoose.Types.ObjectId(req.user.id);
+      // Sales: only match among their OWN current leads (strict ownership).
+      // Unassigned leads are never visible, so they can't leak through duplicate
+      // lookups either.
+      dupQuery.agentId = new mongoose.Types.ObjectId(req.user.id);
     }
     var lead = await Lead.findOne(dupQuery).populate("agentId", "name title");
     if (lead) res.json({ exists: true, lead: lead });
@@ -775,6 +796,14 @@ app.post("/api/leads", auth, async function(req, res) {
     res.json(lead);
   } catch (e) {
     console.error("POST /api/leads error:", e.message);
+    // Mongo duplicate-key (E11000) — unique phone index caught a race we missed.
+    // Translate to the same 409 contract the pre-insert guard uses.
+    if (e && (e.code === 11000 || String(e.message || "").indexOf("E11000") !== -1)) {
+      return res.status(409).json({
+        error: "Phone already exists",
+        code: "duplicate_phone"
+      });
+    }
     res.status(500).json({ error: e.message });
   }
 });
@@ -1080,15 +1109,35 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     if (req.body.eoiApproved === true) update.eoiStatus = "Approved";
     else if (req.body.eoiApproved === false && oldLead && oldLead.eoiStatus === "Approved") update.eoiStatus = "Pending";
     // Track agent history when agent changes (fallback — should go through /rotate)
+    var pushOnReassign = null;
     if (req.body.agentId && oldLead && oldLead.agentId && String(oldLead.agentId) !== String(req.body.agentId)) {
       update.lastRotationAt = new Date();
       update.rotationCount = (oldLead.rotationCount || 0) + 1;
       update.reassignedAt = new Date();
-      // Don't clear top-level notes/lastFeedback — those are no longer written.
-      // The new agent gets a fresh slice via a new assignments[] entry (see /rotate),
-      // and the old agent's slice stays intact so their feedback survives rotation.
+      // Give the NEW agent a fresh assignments[] entry (empty notes / feedback)
+      // so they see a clean lead. The OLD agent's entry is left untouched —
+      // their feedback and history survive the reassignment verbatim.
+      pushOnReassign = {
+        assignments: {
+          agentId: new mongoose.Types.ObjectId(req.body.agentId),
+          status: "NewLead",
+          assignedAt: new Date(),
+          lastActionAt: new Date(),
+          rotationTimer: new Date(),
+          noRotation: false,
+          notes: "",
+          budget: "",
+          callbackTime: "",
+          lastFeedback: "",
+          nextCallAt: null,
+          agentHistory: []
+        }
+      };
+      if (oldLead.agentId) pushOnReassign.previousAgentIds = oldLead.agentId;
     }
-    await Lead.findByIdAndUpdate(req.params.id, { $set: update });
+    var writeOps = { $set: update };
+    if (pushOnReassign) writeOps.$push = pushOnReassign;
+    await Lead.findByIdAndUpdate(req.params.id, writeOps);
     // Sync agent's own assignments[] entry on any action
     if (req.user.role === "sales" || req.user.role === "team_leader") {
       var assignUpdate = { "assignments.$.lastActionAt": new Date(), "assignments.$.rotationTimer": new Date() };
@@ -1550,8 +1599,15 @@ app.get("/api/daily-requests", auth, async function(req, res) {
   try {
     var query = {};
     if (req.user.role === "sales") {
-      // Strict ownership: sales sees ONLY their own requests; null/empty agentId is excluded.
+      // Strict ownership. Equality match already excludes null/missing, but we
+      // spell out $exists + $ne: null explicitly so the intent is visible and
+      // accidental regressions to a partial filter can't quietly re-admit
+      // unassigned rows.
       query.agentId = new mongoose.Types.ObjectId(req.user.id);
+      query.$and = [
+        { agentId: { $exists: true } },
+        { agentId: { $ne: null } }
+      ];
     } else if (req.user.role === "team_leader") {
       // Team leader: only see their direct sales' requests
       var tlUser = await User.findById(req.user.id).lean();
