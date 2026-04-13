@@ -728,11 +728,21 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
 app.post("/api/leads", auth, async function(req, res) {
   try {
     console.log("NEW LEAD body:", JSON.stringify(req.body));
-    // Admin assigns agent manually — no auto-assignment.
-    // Block sales_admin targets: administrative role must never receive leads (neither on create nor on rotation).
+    // Admin / sales_admin / manager / team_leader / integration keys may leave
+    // agentId empty — those leads stay unassigned until an admin routes them.
+    //
+    // Sales, team_leader, manager users creating a lead through the app do NOT
+    // get a UI control to pick an agent, so the payload's agentId is always "".
+    // Without a default, their new lead would save unassigned and vanish from
+    // their own list on the next refresh (the sales visibility filter hides
+    // anything whose current agentId is not their own user id). Default to the
+    // caller so the lead they just created stays in their list.
     var agentId = (req.body.agentId && req.body.agentId !== "")
       ? new mongoose.Types.ObjectId(req.body.agentId)
       : null;
+    if (!agentId && (req.user.role === "sales" || req.user.role === "team_leader" || req.user.role === "manager") && mongoose.Types.ObjectId.isValid(req.user.id)) {
+      agentId = new mongoose.Types.ObjectId(req.user.id);
+    }
     if (agentId) {
       var targetOnCreate = await User.findById(agentId).lean();
       if (!targetOnCreate) return res.status(400).json({ error: "Target agent not found" });
@@ -1431,21 +1441,47 @@ app.post("/api/activities", auth, async function(req, res) {
   }
 });
 
-// ===== LEAD FULL HISTORY (Admin only) =====
-// Returns the full audit trail for a lead: every Activity record + every
-// per-agent feedback/note entry from assignments[]. Each row carries the agent
-// who authored it so admin sees exactly who said what and when.
-app.get("/api/leads/:id/full-history", auth, adminOnly, async function(req, res) {
+// ===== LEAD FULL HISTORY =====
+// Returns the audit trail for a lead: every Activity record plus every
+// per-agent feedback / note / history entry from assignments[]. Each row
+// carries the agent who authored it.
+//
+// Sales: must also be able to see their own history — this route was
+// previously gated by adminOnly, which silently 403'd sales and made their
+// own feedback disappear from the history panel. For sales we enforce two
+// rules server-side:
+//   1) they must currently own the lead (agentId match), otherwise 404,
+//   2) the returned rows are filtered to their own authorship only (their
+//      Activity entries + their own assignments[] slice).
+// Admin / sales_admin / manager / team_leader get the unfiltered timeline.
+app.get("/api/leads/:id/full-history", auth, async function(req, res) {
   try {
     var oid = new mongoose.Types.ObjectId(req.params.id);
-    var activities = await Activity.find({ leadId: oid })
+    var uid = String(req.user.id);
+    var role = req.user.role;
+    var isSales = role === "sales";
+
+    // Sales: confirm ownership before reading anything. Unassigned or other
+    // agents' leads must not leak history either.
+    if (isSales) {
+      var ownLead = await Lead.findById(oid).select({ agentId: 1 }).lean();
+      if (!ownLead) return res.status(404).json({ error: "Not found" });
+      if (!ownLead.agentId || String(ownLead.agentId) !== uid) {
+        return res.status(404).json({ error: "Not found" });
+      }
+    }
+
+    var activityQuery = { leadId: oid };
+    if (isSales) activityQuery.userId = new mongoose.Types.ObjectId(uid);
+
+    var activities = await Activity.find(activityQuery)
       .populate("userId", "name title")
       .sort({ createdAt: 1 })
       .lean();
 
     // Synthesize entries from assignments[] so per-agent feedback that was
-    // written directly to the assignment slice (never into Activity) still
-    // shows up on the admin timeline, labeled with the agent's name.
+    // written directly to the assignment slice (never into Activity) also
+    // appears in the timeline, labeled with the agent's name.
     var lead = await Lead.findById(oid)
       .populate("agentId", "name title")
       .populate("assignments.agentId", "name title")
@@ -1462,6 +1498,10 @@ app.get("/api/leads/:id/full-history", auth, adminOnly, async function(req, res)
 
       (lead.assignments || []).forEach(function(a) {
         var ag = a.agentId || {};
+        var agentObjId = ag._id ? String(ag._id) : (a.agentId ? String(a.agentId) : "");
+        // Sales: only surface THEIR OWN assignment slice, never other agents'.
+        if (isSales && agentObjId !== uid) return;
+
         var agentObj = ag._id ? { _id: ag._id, name: ag.name || "", title: ag.title || "" } : null;
         var when = a.lastActionAt || a.assignedAt || lead.createdAt || new Date();
         if (a.lastFeedback && String(a.lastFeedback).trim().length > 0) {
@@ -1488,8 +1528,8 @@ app.get("/api/leads/:id/full-history", auth, adminOnly, async function(req, res)
             source: "assignment"
           });
         }
-        // Also surface per-agent agentHistory entries (status changes logged on
-        // the assignment slice by sales PUT) so they appear in admin timeline.
+        // Per-agent agentHistory entries (status changes logged on the
+        // assignment slice by sales PUT).
         (a.agentHistory || []).forEach(function(h, idx) {
           if (!h) return;
           assignmentEntries.push({
@@ -1510,10 +1550,9 @@ app.get("/api/leads/:id/full-history", auth, adminOnly, async function(req, res)
       return new Date(a.createdAt) - new Date(b.createdAt);
     });
 
-    // Legacy clients expect an array response — keep that contract but attach
-    // `currentHolder` as a non-enumerable hint via a wrapping object when the
-    // caller opts in with ?format=full.
-    if (req.query.format === "full") {
+    // Legacy clients (and the existing sales history panel) expect an array.
+    // Admins opting into ?format=full also get the currentHolder hint.
+    if (req.query.format === "full" && !isSales) {
       return res.json({ entries: merged, currentHolder: currentHolder });
     }
     res.json(merged);
