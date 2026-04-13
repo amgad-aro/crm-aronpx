@@ -501,9 +501,9 @@ app.get("/api/leads", auth, async function(req, res) {
     var uid = req.user.id;
 
     if (role === "sales") {
-      query["assignments.agentId"] = new mongoose.Types.ObjectId(uid);
-      // Requirement: leads with no current agent must be invisible to sales (admin-only).
-      query.agentId = { $exists: true, $ne: null };
+      // Strict ownership: sales sees ONLY leads currently assigned to them.
+      // This naturally excludes unassigned leads (agentId null) and other agents' leads.
+      query.agentId = new mongoose.Types.ObjectId(uid);
 
     } else if (role === "team_leader") {
       // Team leader sees only their direct sales
@@ -557,7 +557,8 @@ app.get("/api/leads", auth, async function(req, res) {
     var total = await Lead.countDocuments(query);
     var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
 
-    // For sales agents: overlay their own assignments[] entry fields on top of each lead
+    // For sales agents: overlay their own assignments[] entry, then strip every
+    // trace of other agents (history, prior assignments, rotation counters).
     var data = leads;
     if (role === "sales") {
       data = leads.map(function(l) {
@@ -576,16 +577,13 @@ app.get("/api/leads", auth, async function(req, res) {
           obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
           if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
           if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
-          // Isolate sales view from rotation traces: only their own history,
-          // no lead-level rotation log, no other assignments, no prior-agent ids,
-          // no rotation counters, and the agent identity shown is themselves.
-          obj.agentHistory = (myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
-          obj.assignments = [myAssign];
-          obj.previousAgentIds = [];
-          obj.rotationCount = 0;
-          obj.lastRotationAt = null;
-          if (myAssign.agentId) obj.agentId = myAssign.agentId;
         }
+        // Always strip rotation traces and other agents' data, regardless of overlay match.
+        obj.agentHistory = (myAssign && myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
+        obj.assignments = myAssign ? [myAssign] : [];
+        obj.previousAgentIds = [];
+        obj.rotationCount = 0;
+        obj.lastRotationAt = null;
         return obj;
       });
     }
@@ -609,30 +607,31 @@ app.get("/api/leads/:id", auth, async function(req, res) {
     var role = req.user.role;
     var uid = String(req.user.id);
     if (role === "sales") {
-      // Requirement: leads with no current agent must not be visible to sales.
-      if (!lead.agentId) return res.status(404).json({ error: "Not found" });
+      // Strict ownership: sales can only see leads currently assigned to them.
+      var leadAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
+      if (!leadAgentId || String(leadAgentId) !== uid) return res.status(404).json({ error: "Not found" });
       var obj = Object.assign({}, lead);
       var myAssign = (obj.assignments || []).find(function(a) {
         var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
         return String(aid) === uid;
       });
-      if (!myAssign) return res.status(404).json({ error: "Not found" });
-      var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
-      obj.status = assignStatus || obj.status;
-      obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
-      obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
-      obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
-      obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
-      obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
-      if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
-      if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
-      // Isolate sales view from rotation traces.
-      obj.agentHistory = (myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
-      obj.assignments = [myAssign];
+      if (myAssign) {
+        var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
+        obj.status = assignStatus || obj.status;
+        obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
+        obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+        obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
+        obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
+        obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
+        if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
+        if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+      }
+      // Always strip rotation traces and other agents' data.
+      obj.agentHistory = (myAssign && myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
+      obj.assignments = myAssign ? [myAssign] : [];
       obj.previousAgentIds = [];
       obj.rotationCount = 0;
       obj.lastRotationAt = null;
-      if (myAssign.agentId) obj.agentId = myAssign.agentId;
       return res.json(obj);
     }
     res.json(lead);
@@ -643,7 +642,12 @@ app.get("/api/leads/:id", auth, async function(req, res) {
 app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
   try {
     var phone = decodeURIComponent(req.params.phone);
-    var lead = await Lead.findOne({ $or: [{ phone: phone }, { phone2: phone }], archived: false }).populate("agentId", "name title");
+    var dupQuery = { $or: [{ phone: phone }, { phone2: phone }], archived: false };
+    if (req.user.role === "sales") {
+      // Sales must only learn about duplicates among their OWN leads.
+      dupQuery.agentId = new mongoose.Types.ObjectId(req.user.id);
+    }
+    var lead = await Lead.findOne(dupQuery).populate("agentId", "name title");
     if (lead) res.json({ exists: true, lead: lead });
     else res.json({ exists: false });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -1358,7 +1362,7 @@ app.get("/api/stats", auth, async function(req, res) {
   try {
     var leadQuery = {};
     var actQuery = {};
-    if (req.user.role === "sales") { leadQuery["assignments.agentId"] = req.user.id; actQuery.userId = req.user.id; }
+    if (req.user.role === "sales") { leadQuery.agentId = new mongoose.Types.ObjectId(req.user.id); actQuery.userId = req.user.id; }
     var totalLeads = await Lead.countDocuments(leadQuery);
     var potential = await Lead.countDocuments(Object.assign({ status: "Potential" }, leadQuery));
     var hotCase = await Lead.countDocuments(Object.assign({ status: "HotCase" }, leadQuery));
@@ -1385,7 +1389,8 @@ app.get("/api/daily-requests", auth, async function(req, res) {
   try {
     var query = {};
     if (req.user.role === "sales") {
-      query.agentId = req.user.id;
+      // Strict ownership: sales sees ONLY their own requests; null/empty agentId is excluded.
+      query.agentId = new mongoose.Types.ObjectId(req.user.id);
     } else if (req.user.role === "team_leader") {
       // Team leader: only see their direct sales' requests
       var tlUser = await User.findById(req.user.id).lean();
@@ -2086,7 +2091,7 @@ app.get("/api/dashboard/sales", auth, async function(req, res) {
     var uid = req.user.id; var now = new Date(); var DAY=86400000; var MONTH=30*DAY;
     var todayStart = new Date(); todayStart.setHours(0,0,0,0);
 
-    var myLeads = await Lead.find({archived:false,"assignments.agentId":new mongoose.Types.ObjectId(uid)}).lean();
+    var myLeads = await Lead.find({archived:false,agentId:new mongoose.Types.ObjectId(uid)}).lean();
     var allActs = await Activity.find({userId:uid}).lean();
     var allUsers = await User.find({active:true,role:{$in:["sales","sales_admin"]}}).lean();
     var allLeads = await Lead.find({archived:false}).lean();
@@ -2163,7 +2168,26 @@ var httpServer = http.createServer(app);
 var wss = new WebSocketLib.Server({ server: httpServer });
 wss.on("connection", function(ws){
   ws.isAlive = true;
+  ws.userId = null;
+  ws.role = null;
   ws.on("pong", function(){ ws.isAlive = true; });
+  // Auth handshake: client must send {type:"auth", token} after connect.
+  // Until authenticated, the client receives only the hello greeting.
+  ws.on("message", function(raw){
+    try {
+      var msg = JSON.parse(raw.toString());
+      if (msg && msg.type === "auth" && msg.token) {
+        try {
+          var decoded = jwt.verify(msg.token, process.env.JWT_SECRET || "secret");
+          ws.userId = String(decoded.id || "");
+          ws.role = String(decoded.role || "");
+          try { ws.send(JSON.stringify({ type: "auth_ok", ts: Date.now() })); } catch(e){}
+        } catch(e) {
+          try { ws.send(JSON.stringify({ type: "auth_failed", ts: Date.now() })); } catch(e){}
+        }
+      }
+    } catch(e){}
+  });
   ws.send(JSON.stringify({ type: "hello", ts: Date.now() }));
 });
 // Keepalive ping — drops dead sockets so broadcast() doesn't write to closed connections.
@@ -2174,14 +2198,42 @@ setInterval(function(){
     try { client.ping(); } catch(e){}
   });
 }, 30000);
+
+// Per-client filter for events that carry lead/DR documents. Sales must only
+// receive events for documents currently assigned to them; everyone else
+// (admin / sales_admin / manager / team_leader) gets the unfiltered firehose.
+var clientShouldReceive = function(client, type, data){
+  if (!client) return false;
+  // Apply sales-style restrictions to any unauthenticated socket too — fail closed.
+  var restrict = (client.role === "sales") || !client.role;
+  if (!restrict) return true;
+  // Block rotation activity entirely from sales — they have no UI for it
+  // and the payload exposes other agents' identities.
+  if (type === "rotation_updated") return false;
+  if (type === "lead_updated") {
+    var lead = data && data.lead;
+    if (!lead) return false; // id-only payload — cannot prove ownership, drop
+    var aid = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
+    return !!aid && !!client.userId && String(aid) === client.userId;
+  }
+  if (type === "dr_updated") {
+    var dr = data && data.dr;
+    if (!dr) return false;
+    var did = dr.agentId && dr.agentId._id ? dr.agentId._id : dr.agentId;
+    return !!did && !!client.userId && String(did) === client.userId;
+  }
+  // lead_deleted / dr_deleted carry only an id — safe to forward so clients can prune.
+  return true;
+};
+
 // Replace the placeholder broadcaster with the real one.
 broadcast = function(type, data){
   var payload;
   try { payload = JSON.stringify({ type: type, data: data || {}, ts: Date.now() }); } catch(e){ return; }
   wss.clients.forEach(function(client){
-    if (client.readyState === WebSocketLib.OPEN) {
-      try { client.send(payload); } catch(e){}
-    }
+    if (client.readyState !== WebSocketLib.OPEN) return;
+    if (!clientShouldReceive(client, type, data)) return;
+    try { client.send(payload); } catch(e){}
   });
 };
 httpServer.listen(PORT, function() {

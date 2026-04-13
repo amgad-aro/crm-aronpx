@@ -6187,6 +6187,9 @@ export default function CRMApp() {
       try{ ws = new WebSocket(wsUrl); }catch(e){ return; }
       ws.onopen = function(){
         retries = 0;
+        // Authenticate the socket so the server can scope per-client broadcasts
+        // (sales must only receive events for leads/DRs they own).
+        try { ws.send(JSON.stringify({ type: "auth", token: token })); } catch(e){}
         // On reconnect (not the first connect), only refresh lightweight notifications.
         // Lead/DR/activity/user state is kept as-is and will update via subsequent WS events.
         if (hasConnectedBefore) { try{ loadNotifications(token); }catch(e){} }
