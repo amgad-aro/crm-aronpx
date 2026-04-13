@@ -708,7 +708,8 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
       if (!lead) continue;
       var oldAgentId = lead.agentId;
       var updateOps = {
-        $set: { agentId: agentObjId, lastActivityTime: new Date(), lastRotationAt: new Date(), rotationCount: (lead.rotationCount || 0) + 1 },
+        // Reset previous agent's data so the new agent sees a clean lead
+        $set: { agentId: agentObjId, lastActivityTime: new Date(), lastRotationAt: new Date(), rotationCount: (lead.rotationCount || 0) + 1, notes: "", lastFeedback: "" },
         $push: { assignments: newAssignment }
       };
       // Add old agent to previousAgentIds and log rotation event
@@ -978,6 +979,9 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       update.lastRotationAt = new Date();
       update.rotationCount = (oldLead.rotationCount || 0) + 1;
       update.reassignedAt = new Date();
+      // Reset previous agent's data so the new agent sees a clean lead
+      update.notes = "";
+      update.lastFeedback = "";
     }
     await Lead.findByIdAndUpdate(req.params.id, { $set: update });
     // Sync agent's own assignments[] entry on any action
@@ -1161,7 +1165,10 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
       $set: {
         agentId: new mongoose.Types.ObjectId(targetAgentId),
         lastRotationAt: new Date(),
-        rotationCount: (lead.rotationCount || 0) + 1
+        rotationCount: (lead.rotationCount || 0) + 1,
+        // Reset previous agent's data so the new agent sees a clean lead
+        notes: "",
+        lastFeedback: ""
       },
       $push: pushOps
     });
