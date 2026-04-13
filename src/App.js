@@ -1769,9 +1769,12 @@ var LeadsPage = function(p) {
             </div>
             {/* Phone2 */}
             {lead.phone2&&<div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr", marginBottom:4 }}><PhoneCell phone={lead.phone2}/></div>}
-            {/* Project + Last Activity */}
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-              {lead.project?<span style={{ fontSize:11, color:"#6D28D9", fontWeight:700, background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>📍 {lead.project}</span>:<span style={{ color:C.textLight, fontSize:11 }}>—</span>}
+            {/* Campaign + Project + Last Activity */}
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, flexWrap:"wrap", gap:4 }}>
+              <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
+                {lead.campaign&&<span style={{ fontSize:11, color:"#0369A1", fontWeight:700, background:"#E0F2FE", padding:"2px 8px", borderRadius:6 }}>📣 {lead.campaign}</span>}
+                {lead.project?<span style={{ fontSize:11, color:"#6D28D9", fontWeight:700, background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>📍 {lead.project}</span>:<span style={{ color:C.textLight, fontSize:11 }}>—</span>}
+              </div>
               <span style={{ fontSize:11, color:actColor, fontWeight:600 }}>🕐 {lastAct}</span>
             </div>
             {/* Last Feedback */}
@@ -1947,14 +1950,15 @@ var LeadsPage = function(p) {
               {(isOnlyAdmin?p.myTeamUsers||salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
             </select>
           </div>}
-          {/* Assigned Agents — admin remove */}
+          {/* Assigned Agents — admin remove + full feedback history */}
           {isOnlyAdmin&&selected.assignments&&selected.assignments.length>1&&<div style={{ marginBottom:12, padding:10, background:"#F0F9FF", borderRadius:10, border:"1px solid #BFDBFE" }}>
             <div style={{ fontSize:11, fontWeight:700, color:"#1D4ED8", marginBottom:6 }}>👥 Assigned Agents ({selected.assignments.length})</div>
             {selected.assignments.map(function(a,i){
               var aName=a.agentId&&a.agentId.name?a.agentId.name:"Unknown";
               var aId=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
               var isCurrent=String(aId)===String(selected.agentId&&selected.agentId._id?selected.agentId._id:selected.agentId);
-              return <div key={i} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"5px 0", borderBottom:i<selected.assignments.length-1?"1px solid #DBEAFE":"none" }}>
+              return <div key={i} style={{ padding:"6px 0", borderBottom:i<selected.assignments.length-1?"1px solid #DBEAFE":"none" }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
                 <div>
                   <span style={{ fontSize:12, fontWeight:isCurrent?700:400, color:isCurrent?C.accent:C.text }}>{aName}</span>
                   {isCurrent&&<span style={{ fontSize:9, background:"#DCFCE7", color:"#15803D", padding:"1px 5px", borderRadius:6, marginLeft:4, fontWeight:600 }}>current</span>}
@@ -1964,13 +1968,16 @@ var LeadsPage = function(p) {
                   if(!window.confirm("Remove "+aName+" from this lead?"))return;
                   try{var upd=await apiFetch("/api/leads/"+gid(selected)+"/assignment/"+aId,"DELETE",null,p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){alert(ex.message||"Failed");}
                 }} style={{ background:"none", border:"none", cursor:"pointer", color:"#EF4444", fontSize:14, padding:"2px 6px", borderRadius:6 }} title="Remove agent">🗑</button>
+                </div>
+                {a.lastFeedback&&<div style={{ fontSize:11, color:C.text, marginTop:3, padding:"3px 7px", background:"#FFFBEB", borderRadius:6, borderLeft:"2px solid "+C.accent }}>💬 {a.lastFeedback}</div>}
+                {a.notes&&<div style={{ fontSize:10, color:C.textLight, marginTop:2, padding:"2px 7px" }}>📝 {a.notes}</div>}
               </div>;
             })}
           </div>}
           {/* Details - grid on mobile */}
           {p.isMobile?<div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
-              {[{l:t.budget,v:selected.budget,icon:"💰"},{l:t.source,v:isAdmin?selected.source:null,icon:"📢"},{l:t.agent,v:getAgentName(selected),icon:"👤"},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):null,icon:"📞"},{l:"Last Contact",v:selected.lastActivityTime?timeAgo(selected.lastActivityTime,t):null,icon:"🕐"},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):null:null,icon:"📅"}].map(function(f){return f.v?<div key={f.l} style={{ background:"#F8FAFC", borderRadius:12, padding:"10px 12px", border:"1px solid #E8ECF1" }}>
+              {[{l:"Campaign",v:selected.campaign,icon:"📣"},{l:"Project",v:selected.project,icon:"🏗"},{l:t.budget,v:selected.budget,icon:"💰"},{l:t.source,v:isAdmin?selected.source:null,icon:"📢"},{l:t.agent,v:getAgentName(selected),icon:"👤"},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):null,icon:"📞"},{l:"Last Contact",v:selected.lastActivityTime?timeAgo(selected.lastActivityTime,t):null,icon:"🕐"},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):null:null,icon:"📅"}].map(function(f){return f.v?<div key={f.l} style={{ background:"#F8FAFC", borderRadius:12, padding:"10px 12px", border:"1px solid #E8ECF1" }}>
                 <div style={{ fontSize:10, color:C.textLight, marginBottom:3, fontWeight:600 }}>{f.icon} {f.l}</div>
                 <div style={{ fontSize:12, fontWeight:700, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
               </div>:null;})}

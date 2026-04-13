@@ -502,6 +502,8 @@ app.get("/api/leads", auth, async function(req, res) {
 
     if (role === "sales") {
       query["assignments.agentId"] = new mongoose.Types.ObjectId(uid);
+      // Requirement: leads with no current agent must be invisible to sales (admin-only).
+      query.agentId = { $exists: true, $ne: null };
 
     } else if (role === "team_leader") {
       // Team leader sees only their direct sales
@@ -567,14 +569,22 @@ app.get("/api/leads", auth, async function(req, res) {
         if (myAssign) {
           var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
           obj.status = assignStatus || obj.status;
-          obj.notes = myAssign.notes !== undefined ? myAssign.notes : obj.notes;
+          obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
           obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
           obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
-          obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : obj.lastFeedback;
+          obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
           obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
           if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
           if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
-          if (myAssign.agentHistory && myAssign.agentHistory.length > 0) obj.agentHistory = myAssign.agentHistory;
+          // Isolate sales view from rotation traces: only their own history,
+          // no lead-level rotation log, no other assignments, no prior-agent ids,
+          // no rotation counters, and the agent identity shown is themselves.
+          obj.agentHistory = (myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
+          obj.assignments = [myAssign];
+          obj.previousAgentIds = [];
+          obj.rotationCount = 0;
+          obj.lastRotationAt = null;
+          if (myAssign.agentId) obj.agentId = myAssign.agentId;
         }
         return obj;
       });
@@ -605,15 +615,22 @@ app.get("/api/leads/:id", auth, async function(req, res) {
         return String(aid) === uid;
       });
       if (myAssign) {
-        obj.status = myAssign.status || obj.status;
-        obj.notes = myAssign.notes !== undefined ? myAssign.notes : obj.notes;
+        var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
+        obj.status = assignStatus || obj.status;
+        obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
         obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
         obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
-        obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : obj.lastFeedback;
+        obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
         obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
         if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
         if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
-        if (myAssign.agentHistory && myAssign.agentHistory.length > 0) obj.agentHistory = myAssign.agentHistory;
+        // Isolate sales view: only their own history, no rotation traces
+        obj.agentHistory = (myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
+        obj.assignments = [myAssign];
+        obj.previousAgentIds = [];
+        obj.rotationCount = 0;
+        obj.lastRotationAt = null;
+        if (myAssign.agentId) obj.agentId = myAssign.agentId;
       }
       return res.json(obj);
     }
