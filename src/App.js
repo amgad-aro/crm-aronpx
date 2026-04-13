@@ -2488,10 +2488,8 @@ var DashboardPage = function(p) {
     }
     var inRangeS = function(d){ if(!d) return false; var t = new Date(d).getTime(); return !isNaN(t) && t>=rangeStartS && t<=rangeEndS; };
 
-    // Dynamic quarters — only past + current quarters of the current year.
-    var curQNumS = Math.floor(curMS/3) + 1;
-    var quarterOptionsS = [];
-    for (var qiS=1; qiS<=curQNumS; qiS++) quarterOptionsS.push("Q"+qiS+" "+curYS);
+    // All four quarters of the current year — always shown.
+    var quarterOptionsS = ["Q1 "+curYS, "Q2 "+curYS, "Q3 "+curYS, "Q4 "+curYS];
 
     // ============ MY DATA ============
     var myUidS = String(p.cu._id||p.cu.id);
@@ -2509,11 +2507,6 @@ var DashboardPage = function(p) {
     var myMeet2 = myLeads2.filter(function(l){return["MeetingDone","DoneDeal"].includes(l.status);}).length;
     // Overdue uses the NOW state across all my leads (date filter doesn't apply to callback overdue).
     var myOv2   = allMyLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).length;
-    var myDRs   = (p.dailyReqs||[]).filter(function(r){
-      var aid = r.agentId&&r.agentId._id?r.agentId._id:r.agentId;
-      return String(aid)===myUidS && inRangeS(r.createdAt);
-    });
-    var myDR2 = myDRs.length;
     // These lists are "now state" — independent of the date range filter.
     var urgent2    = allMyLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);}).slice(0,5);
     var urgentNew2 = allMyLeads.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*3600000;}).slice(0,3);
@@ -2521,8 +2514,8 @@ var DashboardPage = function(p) {
     var statusColors2={"NewLead":"#1565C0","Potential":"#00796B","HotCase":"#E65100","CallBack":"#6A1B9A","MeetingDone":"#2E7D32","NotInterested":"#EF4444","NoAnswer":"#94A3B8","DoneDeal":"#065F46"};
 
     // ============ MY RANK VS TEAM (real, range-scoped) ============
-    // Rank all active sales / team_leader users by (deals * 10 + meetings * 3) inside the active range.
-    var rankUsersS = (p.users||[]).filter(function(u){return (u.role==="sales"||u.role==="team_leader")&&u.active!==false;});
+    // Rank ALL active "sales" role users by (deals * 10 + meetings * 3) inside the active range.
+    var rankUsersS = (p.users||[]).filter(function(u){return u.role==="sales"&&u.active!==false;});
     var countDealsR = function(uid){
       return leads.filter(function(l){
         var aid = l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
@@ -2599,53 +2592,9 @@ var DashboardPage = function(p) {
       });
     });
     myRecentActsS.sort(function(a,b){return new Date(b.timestamp).getTime()-new Date(a.timestamp).getTime();});
-    myRecentActsS = myRecentActsS.slice(0,10);
-
-    // ============ KPI CARD (MemberCard design — mirrors Team page MemberCard) ============
-    var parseBS = function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
-    var gradForUid = function(uid){var h=0;var s=String(uid||"");for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))&0x7fffffff;}return "sd-grad-"+((h%8)+1);};
-    var myUserObjS   = (p.users||[]).find(function(u){return String(gid(u))===myUidS;}) || p.cu;
-    var gradClassS   = gradForUid(myUidS);
-    var initialsS    = (p.cu.name||"?").split(" ").slice(0,2).map(function(x){return x[0]||"";}).join("").toUpperCase();
-    var roleLabelS   = p.cu.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer"}[p.cu.role]||"");
-    var curQStrS     = "Q"+curQNumS;
-    var qTargetS     = getEffectiveQTarget(myUserObjS, p.users, curQStrS);
-    var qDealsS      = leads.filter(function(l){
-      if (l.status!=="DoneDeal") return false;
-      var aid = l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
-      if (String(aid)!==myUidS) return false;
-      var dd = getDealDate(l); if(!dd) return false;
-      var dt = new Date(dd);
-      if (dt.getFullYear()!==curYS) return false;
-      return (Math.floor(dt.getMonth()/3)+1)===curQNumS;
-    });
-    var qRevS   = qDealsS.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp2=getDealSplitFromObj(d);return s+parseBS(d.budget)*w*(sp2?0.5:1);},0);
-    var qProgS  = qTargetS>0 ? Math.min(100, Math.round(qRevS/qTargetS*100)) : 0;
-    var allMyDealsS = leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return String(aid)===myUidS&&l.status==="DoneDeal";});
-    var totalRevS = allMyDealsS.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp2=getDealSplitFromObj(d);return s+parseBS(d.budget)*w*(sp2?0.5:1);},0);
-    var myCallsS  = (p.activities||[]).filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return String(auid)===myUidS&&a.type==="call"&&inRangeS(a.createdAt);}).length;
-    var isOnlineNowS = myUserObjS.lastSeen && (Date.now()-new Date(myUserObjS.lastSeen).getTime())<2*60*1000;
-    var lastSeenStrS = myUserObjS.lastSeen ? ("Last seen: "+new Date(myUserObjS.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" \u2014 "+timeAgo(myUserObjS.lastSeen,p.t)) : "Never logged in";
-    var totalRevMS = (totalRevS/1000000).toFixed(1)+"M";
-    var memberStatsS = [
-      { v: myTotal2,          l: "Leads", isDeals:false, onClick:function(){p.setFilter&&p.setFilter("all");p.nav("leads");} },
-      { v: allMyDealsS.length,l: "Deals", isDeals:true,  onClick:function(){p.nav("deals");} },
-      { v: totalRevMS,        l: "Total", isDeals:false, onClick:function(){p.nav("kpis");} },
-      { v: myCallsS,          l: "Calls", isDeals:false, onClick:function(){p.nav("kpis");} }
-    ];
+    myRecentActsS = myRecentActsS.slice(0,20);
 
     return <div className="crm-dash crm-dash-sales" style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100vw",boxSizing:"border-box",overflowX:"hidden"}}>
-      {/* Local gradient classes for the MemberCard-style KPI — scoped to this page. */}
-      <style>{""
-        + ".crm-dash-sales .sd-grad-1 { background: linear-gradient(135deg, #43c6db, #3b5cb8); }"
-        + ".crm-dash-sales .sd-grad-2 { background: linear-gradient(135deg, #f953c6, #b91d73); }"
-        + ".crm-dash-sales .sd-grad-3 { background: linear-gradient(135deg, #56ab2f, #a8e063); }"
-        + ".crm-dash-sales .sd-grad-4 { background: linear-gradient(135deg, #f7797d, #c6426e); }"
-        + ".crm-dash-sales .sd-grad-5 { background: linear-gradient(135deg, #e52d27, #b31217); }"
-        + ".crm-dash-sales .sd-grad-6 { background: linear-gradient(135deg, #f46b45, #eea849); }"
-        + ".crm-dash-sales .sd-grad-7 { background: linear-gradient(135deg, #b8d435, #56ab2f); }"
-        + ".crm-dash-sales .sd-grad-8 { background: linear-gradient(135deg, #a18cd1, #e8a4c8); }"
-      }</style>
       {/* Header — clock now sits to the RIGHT of the date on the same line. */}
       <div className="crm-dash-header" style={{display:"flex",alignItems:isMobile?"stretch":"center",justifyContent:"space-between",marginBottom:isMobile?14:20,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
         <div style={{minWidth:0,width:isMobile?"100%":"auto"}}>
@@ -2669,56 +2618,6 @@ var DashboardPage = function(p) {
         </div>
       </div>
 
-      {/* KPIs — MemberCard design (mirrors Admin's Team page individual agent card). */}
-      <div style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"minmax(280px, 340px) 1fr",gap:isMobile?10:14,marginBottom:isMobile?14:20,alignItems:"start"}}>
-        <div style={{ borderRadius:16, overflow:"hidden", background:"#fff", boxShadow:"0 2px 10px rgba(0,0,0,0.08)" }}>
-          {/* Gradient hero */}
-          <div className={gradClassS} style={{ padding:"18px 14px 16px", position:"relative", display:"flex", flexDirection:"column", alignItems:"center", gap:6 }}>
-            {isOnlineNowS && <span title="Online" style={{ position:"absolute", top:10, right:12, width:9, height:9, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 0 2px rgba(255,255,255,0.45)" }}/>}
-            <div style={{ width:44, height:44, borderRadius:12, background:"rgba(255,255,255,0.22)", color:"#fff", border:"2px solid rgba(255,255,255,0.35)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:800 }}>{initialsS}</div>
-            <div style={{ fontSize:13, fontWeight:700, color:"#fff", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.cu.name}</div>
-            <div style={{ fontSize:10, color:"rgba(255,255,255,0.85)", textTransform:"uppercase", letterSpacing:"0.04em", textAlign:"center" }}>{roleLabelS}</div>
-            <div style={{ fontSize:9, color:"rgba(255,255,255,0.55)", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{isOnlineNowS?"Online now":lastSeenStrS}</div>
-          </div>
-          {/* White panel */}
-          <div style={{ background:"#fff", padding:"14px 14px 16px" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6 }}>
-              <span style={{ fontSize:10, fontWeight:600, color:"#64748b", textTransform:"uppercase", letterSpacing:"0.04em" }}>{curQStrS} Target</span>
-              <span style={{ fontSize:10, fontWeight:700, color:"#334155" }}>{qTargetS>0?qTargetS.toLocaleString()+" EGP":"Not set"}</span>
-            </div>
-            <div style={{ height:4, background:"#e2e8f0", borderRadius:2, marginBottom:10, overflow:"hidden" }}>
-              <div className={gradClassS} style={{ height:"100%", width:qProgS+"%", borderRadius:2, transition:"width 0.6s" }}/>
-            </div>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:12 }}>
-              <span style={{ fontSize:18, fontWeight:800, color:qRevS>0?"#0f172a":"#94a3b8" }}>{(qRevS/1000000).toFixed(2)}M</span>
-              <span style={{ fontSize:12, fontWeight:700, color:"#64748b" }}>{qProgS}%</span>
-            </div>
-            <div style={{ height:1, background:"#e2e8f0", marginBottom:10, transform:"scaleY(0.5)" }}/>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:6 }}>
-              {memberStatsS.map(function(s,i){
-                var isZero = (s.v === 0) || (s.v === "0.0M") || (s.v === "0M") || (s.v === "0");
-                var color;
-                if (s.isDeals) color = (s.v > 0 ? "#15803d" : "#cbd5e1");
-                else color = isZero ? "#cbd5e1" : "#0f172a";
-                return <div key={i} onClick={s.onClick} style={{ textAlign:"center", cursor:"pointer" }}>
-                  <div style={{ fontSize:16, fontWeight:800, color:color, lineHeight:1.1 }}>{s.v}</div>
-                  <div style={{ fontSize:8, fontWeight:600, color:"#94a3b8", textTransform:"uppercase", letterSpacing:"0.06em", marginTop:4 }}>{s.l}</div>
-                </div>;
-              })}
-            </div>
-          </div>
-        </div>
-        {/* Companion tiles — quick-access stats scoped to the active range. */}
-        <div style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2, minmax(0, 1fr))":"repeat(auto-fit,minmax(140px,1fr))",gap:isMobile?8:10}}>
-          {kpiCard("My Leads",   myTotal2,                                         rangeLabelS,                                                     "#1565C0","#ffffff",function(){p.setFilter&&p.setFilter("all");p.nav("leads");})}
-          {kpiCard("Daily Requests", myDR2,                                        rangeLabelS,                                                     "#00796B","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("all");p.nav("dailyReq");})}
-          {kpiCard("Followups",  allMyLeads.filter(function(l){return l.callbackTime&&!l.archived;}).length, "scheduled",                           "#E65100","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("CallBack");p.nav("dailyReq");})}
-          {kpiCard("Interested", myInt2,                                           myTotal2>0?Math.round(myInt2/myTotal2*100)+"%":"0%",              "#6A1B9A","#ffffff",function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");})}
-          {kpiCard("Meetings",   myMeet2,                                          myTotal2>0?Math.round(myMeet2/myTotal2*100)+"%":"0%",             "#2E7D32","#ffffff",function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");})}
-          {kpiCard("Target",     qProgS+"%",                                       curQStrS+" progress",                                            "#AD1457","#ffffff",function(){p.nav("kpis");})}
-        </div>
-      </div>
-
       {/* Rank + Urgent + Schedule row */}
       <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
@@ -2731,9 +2630,9 @@ var DashboardPage = function(p) {
             <span style={{fontSize:34,fontWeight:800,color:myRankS===1?"#15803D":myRankS<=3?"#1D4ED8":"#334155",lineHeight:1}}>#{myRankS}</span>
             <span style={{fontSize:13,color:"#64748B"}}>out of {myRankTotalS} sales agents</span>
           </div>
-          {/* Ranked list — top 5 so the user can see who's ahead/behind. */}
-          <div style={{display:"flex",flexDirection:"column",gap:6}}>
-            {rankRowsS.slice(0,5).map(function(r,i){
+          {/* Full ranked list — every active Sales agent. */}
+          <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:360,overflowY:"auto"}}>
+            {rankRowsS.map(function(r,i){
               var isMe = r.uid===myUidS;
               return <div key={r.uid} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:8,background:isMe?"#EFF6FF":"transparent",border:isMe?"1px solid #BFDBFE":"1px solid transparent"}}>
                 <div style={{width:22,height:22,borderRadius:"50%",background:i===0?"#FBBF24":i===1?"#E2E8F0":i===2?"#F59E0B":"#F1F5F9",color:i<=2?"#0F172A":"#64748B",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{i+1}</div>
@@ -2815,7 +2714,7 @@ var DashboardPage = function(p) {
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
             <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>Recent Activity</div>
-            <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>Last 10 · {rangeLabelS}</div>
+            <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>Last 20 · {rangeLabelS}</div>
           </div>
           {myRecentActsS.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity in this range</div>}
           {myRecentActsS.map(function(h,i){
@@ -6217,36 +6116,77 @@ var KPIsPage = function(p) {
   // Available years — current and past 2
   var years = [curYear, curYear-1, curYear-2, curYear-3];
 
-  return <div style={{ padding:"18px 16px 40px" }}>
+  // Profile card uses the exact same design as the Admin's Sales Team page
+  // individual agent card (MemberCard). Stable per-user gradient + white
+  // stats panel beneath a gradient hero. Data and logic below are unchanged.
+  var kpiGradFor = function(uid){var h=0;var s=String(uid||"");for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))&0x7fffffff;}return "kpi-grad-"+((h%8)+1);};
+  var kpiGradClass = kpiGradFor(uid);
+  var kpiDisplayName = p.cu.username==="amgad" ? "Amgad Mohamed" : p.cu.name;
+  var kpiInitials = (kpiDisplayName||"?").split(" ").slice(0,2).map(function(x){return x[0]||"";}).join("").toUpperCase();
+  var kpiRoleLabel = p.cu.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer"}[p.cu.role]||"");
+  var kpiLastSeenStr = myUser.lastSeen ? ("Last seen: "+new Date(myUser.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" \u2014 "+timeAgo(myUser.lastSeen,p.t)) : "Never logged in";
+  var kpiTotalRevAll = myDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp2=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp2?0.5:1);},0);
+  var kpiTotalRevM = (kpiTotalRevAll/1000000).toFixed(1)+"M";
+  var kpiMemberStats = [
+    { v: myLeads.length, l: "Leads", isDeals:false },
+    { v: myDeals.length, l: "Deals", isDeals:true  },
+    { v: kpiTotalRevM,   l: "Total", isDeals:false },
+    { v: myActs.filter(function(a){return a.type==="call";}).length, l: "Calls", isDeals:false }
+  ];
+  return <div className="kpi-page-v2" style={{ padding:"18px 16px 40px" }}>
+    {/* Inter font + the 8 gradient classes — mirrors Admin's Sales Team page. */}
+    <style>{""
+      + "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');"
+      + ".kpi-page-v2 .kpi-grad-1 { background: linear-gradient(135deg, #43c6db, #3b5cb8); }"
+      + ".kpi-page-v2 .kpi-grad-2 { background: linear-gradient(135deg, #f953c6, #b91d73); }"
+      + ".kpi-page-v2 .kpi-grad-3 { background: linear-gradient(135deg, #56ab2f, #a8e063); }"
+      + ".kpi-page-v2 .kpi-grad-4 { background: linear-gradient(135deg, #f7797d, #c6426e); }"
+      + ".kpi-page-v2 .kpi-grad-5 { background: linear-gradient(135deg, #e52d27, #b31217); }"
+      + ".kpi-page-v2 .kpi-grad-6 { background: linear-gradient(135deg, #f46b45, #eea849); }"
+      + ".kpi-page-v2 .kpi-grad-7 { background: linear-gradient(135deg, #b8d435, #56ab2f); }"
+      + ".kpi-page-v2 .kpi-grad-8 { background: linear-gradient(135deg, #a18cd1, #e8a4c8); }"
+    }</style>
     <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>KPIs</h2>
 
-    {/* Profile Card — centered */}
+    {/* Profile Card — MemberCard design (mirrors Admin's Sales Team page) */}
     <div style={{ display:"flex", justifyContent:"center", marginBottom:20 }}>
-      <Card style={{ width:"100%", maxWidth:420, padding:0, overflow:"hidden" }}>
-        <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:24, textAlign:"center" }}>
-          <div style={{ display:"flex", justifyContent:"center", marginBottom:10 }}>
-            <Avatar name={p.cu.username==="amgad"?"Amgad Mohamed":p.cu.name} size={60} online={isOnlineNow}/>
+      <div style={{ width:"100%", maxWidth:320, borderRadius:16, overflow:"hidden", background:"#fff", boxShadow:"0 2px 10px rgba(0,0,0,0.08)", fontFamily:"'Inter','Segoe UI',sans-serif" }}>
+        {/* Gradient hero */}
+        <div className={kpiGradClass} style={{ padding:"18px 14px 16px", position:"relative", display:"flex", flexDirection:"column", alignItems:"center", gap:6 }}>
+          {isOnlineNow && <span title="Online" style={{ position:"absolute", top:10, right:12, width:9, height:9, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 0 2px rgba(255,255,255,0.45)" }}/>}
+          <div style={{ width:44, height:44, borderRadius:12, background:"rgba(255,255,255,0.22)", color:"#fff", border:"2px solid rgba(255,255,255,0.35)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:800 }}>{kpiInitials}</div>
+          <div style={{ fontSize:13, fontWeight:700, color:"#fff", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{kpiDisplayName}</div>
+          <div style={{ fontSize:10, color:"rgba(255,255,255,0.85)", textTransform:"uppercase", letterSpacing:"0.04em", textAlign:"center" }}>{kpiRoleLabel}</div>
+          <div style={{ fontSize:9, color:"rgba(255,255,255,0.55)", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{isOnlineNow?"Online now":kpiLastSeenStr}</div>
+        </div>
+        {/* White panel */}
+        <div style={{ background:"#fff", padding:"14px 14px 16px" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6 }}>
+            <span style={{ fontSize:10, fontWeight:600, color:"#64748b", textTransform:"uppercase", letterSpacing:"0.04em" }}>{selQ} Target</span>
+            <span style={{ fontSize:10, fontWeight:700, color:"#334155" }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"Not set"}</span>
           </div>
-          <div style={{ color:"#fff", fontSize:16, fontWeight:700 }}>{p.cu.username==="amgad"?"Amgad Mohamed":p.cu.name}</div>
-          <div style={{ color:"rgba(255,255,255,0.55)", fontSize:12, marginTop:2 }}>{p.cu.title}</div>
-          <div style={{ marginTop:6, fontSize:10, color:isOnlineNow?"#86EFAC":"rgba(255,255,255,0.4)", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
-            <span style={{ width:7, height:7, borderRadius:"50%", background:isOnlineNow?"#22C55E":"rgba(255,255,255,0.3)", display:"inline-block" }}/>
-            {isOnlineNow?"Online now":""}
+          <div style={{ height:4, background:"#e2e8f0", borderRadius:2, marginBottom:10, overflow:"hidden" }}>
+            <div className={kpiGradClass} style={{ height:"100%", width:qProg+"%", borderRadius:2, transition:"width 0.6s" }}/>
+          </div>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:12 }}>
+            <span style={{ fontSize:18, fontWeight:800, color:qRev>0?"#0f172a":"#94a3b8" }}>{(qRev/1000000).toFixed(2)}M</span>
+            <span style={{ fontSize:12, fontWeight:700, color:"#64748b" }}>{qProg}%</span>
+          </div>
+          <div style={{ height:1, background:"#e2e8f0", marginBottom:10, transform:"scaleY(0.5)" }}/>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:6 }}>
+            {kpiMemberStats.map(function(s,i){
+              var isZero = (s.v === 0) || (s.v === "0.0M") || (s.v === "0M") || (s.v === "0");
+              var color;
+              if (s.isDeals) color = (s.v > 0 ? "#15803d" : "#cbd5e1");
+              else color = isZero ? "#cbd5e1" : "#0f172a";
+              return <div key={i} style={{ textAlign:"center" }}>
+                <div style={{ fontSize:16, fontWeight:800, color:color, lineHeight:1.1 }}>{s.v}</div>
+                <div style={{ fontSize:8, fontWeight:600, color:"#94a3b8", textTransform:"uppercase", letterSpacing:"0.06em", marginTop:4 }}>{s.l}</div>
+              </div>;
+            })}
           </div>
         </div>
-        {/* Overall stats */}
-        <div style={{ display:"flex", padding:"12px 16px", gap:8 }}>
-          {[
-            {v:myLeads.length, l:"Total Leads", c:C.info},
-            {v:myDeals.length, l:"Total Deals", c:C.success},
-            {v:myActs.filter(function(a){return a.type==="call";}).length, l:"Total Calls", c:C.accent},
-            {v:myLeads.length>0?Math.round(myDeals.length/myLeads.length*100)+"%":"0%", l:"Conversion Rate", c:C.warning},
-          ].map(function(s){return <div key={s.l} style={{ flex:1, textAlign:"center", padding:"8px 4px", background:"#F8FAFC", borderRadius:8 }}>
-            <div style={{ fontSize:15, fontWeight:700, color:s.c }}>{s.v}</div>
-            <div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{s.l}</div>
-          </div>;})}
-        </div>
-      </Card>
+      </div>
     </div>
 
     {/* Q selector + year */}
