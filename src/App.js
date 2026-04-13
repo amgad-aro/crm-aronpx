@@ -2375,6 +2375,35 @@ var DashboardPage = function(p) {
     return function(){ cancelled = true; clearInterval(id); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token]);
+  // ── CRM-wide Sales ranking — pulled from the backend so every sales user
+  //    sees the full roster, not just whatever /api/users returned for them.
+  var [salesRanking, setSalesRanking] = useState(null);
+  useEffect(function(){
+    if (!p.token) return;
+    // Re-derive the active range here so the effect only depends on `filter`.
+    var nd = new Date(); var cY = nd.getFullYear(); var cM = nd.getMonth(); var cD = nd.getDate();
+    var daysSinceMon = (nd.getDay() + 6) % 7;
+    var weekStart = new Date(cY, cM, cD - daysSinceMon, 0,0,0,0);
+    var todayStart = new Date(cY, cM, cD, 0,0,0,0);
+    var todayEnd   = new Date(cY, cM, cD, 23,59,59,999);
+    var monthStart = new Date(cY, cM, 1, 0,0,0,0);
+    var monthEnd   = new Date(cY, cM+1, 0, 23,59,59,999);
+    var rs, re;
+    if (filter==="today")      { rs = todayStart.getTime(); re = todayEnd.getTime(); }
+    else if (filter==="week")  { rs = weekStart.getTime();  re = Date.now(); }
+    else if (filter==="month") { rs = monthStart.getTime(); re = Math.min(Date.now(), monthEnd.getTime()); }
+    else if (typeof filter==="string" && /^Q\d\s+\d{4}$/.test(filter)) {
+      var mm = filter.match(/^Q(\d)\s+(\d{4})$/);
+      var qn = parseInt(mm[1]); var qy = parseInt(mm[2]);
+      rs = new Date(qy, (qn-1)*3, 1, 0,0,0,0).getTime();
+      re = Math.min(Date.now(), new Date(qy, qn*3, 0, 23,59,59,999).getTime());
+    } else { rs = todayStart.getTime(); re = todayEnd.getTime(); }
+    var cancelled = false;
+    apiFetch("/api/dashboard/sales-ranking?from="+encodeURIComponent(new Date(rs).toISOString())+"&to="+encodeURIComponent(new Date(re).toISOString()), "GET", null, p.token)
+      .then(function(d){ if(!cancelled) setSalesRanking(Array.isArray(d)?d:[]); })
+      .catch(function(){ if(!cancelled) setSalesRanking([]); });
+    return function(){ cancelled = true; };
+  },[p.token, filter]);
   var now = Date.now();
   var DAY=86400000, WEEK=7*DAY, MONTH=30*DAY;
   var rangeMs = filter==="today"?DAY:filter==="week"?WEEK:MONTH;
@@ -2513,37 +2542,15 @@ var DashboardPage = function(p) {
     var schedule2  = allMyLeads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime).toDateString()===new Date().toDateString();}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);}).slice(0,7);
     var statusColors2={"NewLead":"#1565C0","Potential":"#00796B","HotCase":"#E65100","CallBack":"#6A1B9A","MeetingDone":"#2E7D32","NotInterested":"#EF4444","NoAnswer":"#94A3B8","DoneDeal":"#065F46"};
 
-    // ============ MY RANK VS TEAM (real, range-scoped) ============
-    // Rank ALL active "sales" role users by (deals * 10 + meetings * 3) inside the active range.
-    var rankUsersS = (p.users||[]).filter(function(u){return u.role==="sales"&&u.active!==false;});
-    var countDealsR = function(uid){
-      return leads.filter(function(l){
-        var aid = l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
-        if (String(aid)!==String(uid)) return false;
-        if (l.status!=="DoneDeal") return false;
-        var dd = l.dealDate ? new Date(l.dealDate).getTime() : (l.updatedAt ? new Date(l.updatedAt).getTime() : 0);
-        return !isNaN(dd) && dd>=rangeStartS && dd<=rangeEndS;
-      }).length;
-    };
-    var countMeetingsR = function(uid){
-      return leads.filter(function(l){
-        var aid = l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
-        if (String(aid)!==String(uid)) return false;
-        if (l.hadMeeting!==true) return false;
-        var t = l.meetingDoneAt ? new Date(l.meetingDoneAt).getTime() : (l.updatedAt ? new Date(l.updatedAt).getTime() : 0);
-        return !isNaN(t) && t>=rangeStartS && t<=rangeEndS;
-      }).length;
-    };
-    var rankRowsS = rankUsersS.map(function(u){
-      var uid = String(gid(u));
-      var deals = countDealsR(uid);
-      var meets = countMeetingsR(uid);
-      return { uid:uid, name:u.name, deals:deals, meetings:meets, score: deals*10 + meets*3 };
-    }).sort(function(a,b){ return b.score - a.score || b.deals - a.deals; });
-    var myRankIdxS = rankRowsS.findIndex(function(r){return r.uid===myUidS;});
-    var myRankS    = myRankIdxS>=0 ? myRankIdxS+1 : rankRowsS.length;
-    var myRankTotalS = rankRowsS.length || 1;
-    var myRankRowS = myRankIdxS>=0 ? rankRowsS[myRankIdxS] : {deals:0,meetings:0,score:0};
+    // ============ MY RANK VS TEAM (CRM-wide, from backend) ============
+    // salesRanking is populated by the useEffect above that hits /api/dashboard/sales-ranking.
+    // Empty array while the first request is in flight (shows the "loading" affordance below).
+    var rankRowsS      = Array.isArray(salesRanking) ? salesRanking : [];
+    var myRankIdxS     = rankRowsS.findIndex(function(r){return String(r.uid)===myUidS;});
+    var myRankS        = myRankIdxS>=0 ? myRankIdxS+1 : 0;
+    var myRankTotalS   = rankRowsS.length;
+    var myRankRowS     = myRankIdxS>=0 ? rankRowsS[myRankIdxS] : {deals:0,meetings:0,score:0};
+    var rankLoadingS   = salesRanking===null;
 
     // ============ CONVERSION FUNNEL (real, 4 stages, range-scoped) ============
     var funnelRowsS = [
@@ -2618,6 +2625,16 @@ var DashboardPage = function(p) {
         </div>
       </div>
 
+      {/* KPI strip — original 6 cards (restored). Mobile: 2-col fixed grid; desktop: auto-fit. */}
+      <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2, minmax(0, 1fr))":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:isMobile?14:20}}>
+        {kpiCard("My Leads",myTotal2,"assigned","#1565C0","#ffffff",function(){p.setFilter&&p.setFilter("all");p.nav("leads");})}
+        {kpiCard("Daily Requests",(p.dailyReqs||[]).filter(function(r){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;return String(aid)===myUidS&&inRangeS(r.createdAt);}).length,"total","#00796B","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("all");p.nav("dailyReq");})}
+        {kpiCard("Followups",allMyLeads.filter(function(l){return l.callbackTime&&!l.archived;}).length,"scheduled","#E65100","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("CallBack");p.nav("dailyReq");})}
+        {kpiCard("Interested",myInt2,myTotal2>0?Math.round(myInt2/myTotal2*100)+"%":"0%","#6A1B9A","#ffffff",function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");})}
+        {kpiCard("Meetings",myMeet2,myTotal2>0?Math.round(myMeet2/myTotal2*100)+"%":"0%","#2E7D32","#ffffff",function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");})}
+        {kpiCard("Target",myTotal2>0?Math.round(myMeet2/myTotal2*100*5)+"%":"0%","this month","#AD1457","#ffffff",function(){p.nav("kpis");})}
+      </div>
+
       {/* Rank + Urgent + Schedule row */}
       <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
@@ -2627,26 +2644,27 @@ var DashboardPage = function(p) {
           </div>
           {/* Headline rank — #X out of Y */}
           <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:12}}>
-            <span style={{fontSize:34,fontWeight:800,color:myRankS===1?"#15803D":myRankS<=3?"#1D4ED8":"#334155",lineHeight:1}}>#{myRankS}</span>
+            <span style={{fontSize:34,fontWeight:800,color:myRankS===1?"#15803D":myRankS>0&&myRankS<=3?"#1D4ED8":"#334155",lineHeight:1}}>{myRankS>0?"#"+myRankS:"\u2014"}</span>
             <span style={{fontSize:13,color:"#64748B"}}>out of {myRankTotalS} sales agents</span>
           </div>
-          {/* Full ranked list — every active Sales agent. */}
+          {/* Full ranked list — every active Sales agent (CRM-wide). */}
           <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:360,overflowY:"auto"}}>
+            {rankLoadingS && <div style={{fontSize:12,color:"#94A3B8",padding:"6px 0"}}>Loading ranking\u2026</div>}
             {rankRowsS.map(function(r,i){
-              var isMe = r.uid===myUidS;
+              var isMe = String(r.uid)===myUidS;
               return <div key={r.uid} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:8,background:isMe?"#EFF6FF":"transparent",border:isMe?"1px solid #BFDBFE":"1px solid transparent"}}>
                 <div style={{width:22,height:22,borderRadius:"50%",background:i===0?"#FBBF24":i===1?"#E2E8F0":i===2?"#F59E0B":"#F1F5F9",color:i<=2?"#0F172A":"#64748B",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{i+1}</div>
                 <div style={{flex:1,minWidth:0,fontSize:12,fontWeight:isMe?700:500,color:isMe?"#1D4ED8":"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isMe?(r.name||p.cu.name)+" (you)":r.name}</div>
                 <div style={{fontSize:11,color:"#64748B"}}><span style={{color:"#15803D",fontWeight:700}}>{r.deals}</span> deals · <span style={{color:"#1D4ED8",fontWeight:700}}>{r.meetings}</span> meet.</div>
               </div>;
             })}
-            {!rankRowsS.length && <div style={{fontSize:12,color:"#94A3B8",padding:"6px 0"}}>No team data for this range</div>}
+            {!rankLoadingS && !rankRowsS.length && <div style={{fontSize:12,color:"#94A3B8",padding:"6px 0"}}>No sales agents found</div>}
           </div>
           <div style={{borderTop:"1px solid #F1F5F9",marginTop:10,paddingTop:10,display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontSize:20}}>{myRankS===1?"\ud83e\udd47":myRankS===2?"\ud83e\udd48":myRankS===3?"\ud83e\udd49":"\ud83d\udcca"}</span>
             <div>
-              <div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>Your score: {myRankRowS.score}</div>
-              <div style={{fontSize:11,color:"#94A3B8"}}>{myRankRowS.deals} deal{myRankRowS.deals===1?"":"s"} · {myRankRowS.meetings} meeting{myRankRowS.meetings===1?"":"s"} in {rangeLabelS}</div>
+              <div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>Your score: {myRankRowS.score||0}</div>
+              <div style={{fontSize:11,color:"#94A3B8"}}>{(myRankRowS.deals||0)} deal{myRankRowS.deals===1?"":"s"} · {(myRankRowS.meetings||0)} meeting{myRankRowS.meetings===1?"":"s"} in {rangeLabelS}</div>
             </div>
           </div>
         </div>

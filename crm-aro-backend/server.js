@@ -587,6 +587,91 @@ app.put("/api/settings/rotation", auth, async function(req, res) {
   }
 });
 
+// ===== DASHBOARD — SALES RANKING (all sales agents, CRM-wide) =====
+// Any authenticated user can read this. Returns one row per active user with
+// role === "sales", scored across the entire CRM (no teamId filter). Rank is
+// deals*10 + meetings*3 inside the [from, to] window, same metric the Sales
+// Dashboard displays elsewhere.
+app.get("/api/dashboard/sales-ranking", auth, async function(req, res) {
+  try {
+    var parseDate = function(s){ if(!s) return null; var d = new Date(String(s)); return isNaN(d.getTime()) ? null : d; };
+    var from = parseDate(req.query.from);
+    var to   = parseDate(req.query.to);
+
+    // Sales users CRM-wide — no team / reportsTo restriction.
+    var salesUsers = await User.find({ role: "sales", active: { $ne: false } })
+      .select("_id name title")
+      .sort({ name: 1 })
+      .lean();
+    if (!salesUsers.length) return res.json([]);
+    var salesIds = salesUsers.map(function(u){ return u._id; });
+
+    // Deals: leads with status DoneDeal assigned to a sales user, dated in range.
+    // Deal date falls back to updatedAt when dealDate is missing.
+    var dealMatch = { status: "DoneDeal", agentId: { $in: salesIds } };
+    var dealPipeline = [
+      { $match: dealMatch },
+      { $addFields: {
+          dealAt: {
+            $cond: [
+              { $and: [ { $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] } ] },
+              { $toDate: "$dealDate" },
+              "$updatedAt"
+            ]
+          }
+        } }
+    ];
+    if (from || to) {
+      var dealRange = {};
+      if (from) dealRange.$gte = from;
+      if (to)   dealRange.$lte = to;
+      dealPipeline.push({ $match: { dealAt: dealRange } });
+    }
+    dealPipeline.push({ $group: { _id: "$agentId", c: { $sum: 1 } } });
+    var dealRows = await Lead.aggregate(dealPipeline);
+    var dealsByAgent = {};
+    dealRows.forEach(function(r){ dealsByAgent[String(r._id)] = r.c; });
+
+    // Meetings: leads with hadMeeting === true, dated in range by meetingDoneAt
+    // (falling back to updatedAt when meetingDoneAt is absent).
+    var meetMatch = { hadMeeting: true, agentId: { $in: salesIds } };
+    var meetPipeline = [
+      { $match: meetMatch },
+      { $addFields: {
+          meetAt: { $ifNull: ["$meetingDoneAt", "$updatedAt"] }
+        } }
+    ];
+    if (from || to) {
+      var meetRange = {};
+      if (from) meetRange.$gte = from;
+      if (to)   meetRange.$lte = to;
+      meetPipeline.push({ $match: { meetAt: meetRange } });
+    }
+    meetPipeline.push({ $group: { _id: "$agentId", c: { $sum: 1 } } });
+    var meetRows = await Lead.aggregate(meetPipeline);
+    var meetsByAgent = {};
+    meetRows.forEach(function(r){ meetsByAgent[String(r._id)] = r.c; });
+
+    var rows = salesUsers.map(function(u){
+      var uid = String(u._id);
+      var deals    = dealsByAgent[uid] || 0;
+      var meetings = meetsByAgent[uid] || 0;
+      return {
+        uid: uid,
+        name: u.name,
+        title: u.title || "",
+        deals: deals,
+        meetings: meetings,
+        score: deals * 10 + meetings * 3
+      };
+    }).sort(function(a,b){ return b.score - a.score || b.deals - a.deals; });
+
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== USER ROUTES =====
 app.get("/api/users", auth, async function(req, res) {
   try {
