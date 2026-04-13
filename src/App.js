@@ -2447,7 +2447,7 @@ var DashboardPage = function(p) {
     </div>;
   };
 
-  var card=function(children,extra){return <div style={Object.assign({background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px 14px":"20px 22px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0},extra||{})}>{children}</div>;};
+  var card=function(children,extra){return <div className="crm-dash-card" style={Object.assign({background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px 14px":"20px 22px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0},extra||{})}>{children}</div>;};
   var sec=function(label){return <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:"0.1em",textTransform:"uppercase",margin:"24px 0 12px"}}>{label}</div>;};
   var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
 
@@ -2481,13 +2481,16 @@ var DashboardPage = function(p) {
     // the viewport, and the whole tree respects whatever width the browser
     // actually gave us. Desktop layout (the else-branch paddings / rows)
     // is preserved untouched.
-    return <div style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100vw",boxSizing:"border-box",overflowX:"hidden"}}>
-      <div style={{display:"flex",alignItems:isMobile?"stretch":"center",justifyContent:"space-between",marginBottom:isMobile?14:20,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
+    return <div className="crm-dash crm-dash-sales" style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100vw",boxSizing:"border-box",overflowX:"hidden"}}>
+      {/* Same mobile safety-net as the admin dashboard — declared once per
+          render of this branch so sales users get the same guarantees. */}
+      <style>{"\n@media (max-width: 768px) {\n  .crm-dash, .crm-dash * { box-sizing: border-box; }\n  .crm-dash { width: 100% !important; max-width: 100vw !important; overflow-x: hidden !important; padding-left: 10px !important; padding-right: 10px !important; }\n  .crm-dash .crm-dash-card { width: 100% !important; max-width: 100% !important; min-width: 0 !important; padding: 14px !important; box-sizing: border-box !important; }\n  .crm-dash .crm-dash-card > * { max-width: 100% !important; }\n  .crm-dash .crm-dash-scroll { overflow-x: auto !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; max-width: 100% !important; width: 100% !important; }\n  .crm-dash .crm-dash-header { flex-direction: column !important; align-items: stretch !important; width: 100% !important; }\n  .crm-dash .crm-dash-header > * { width: 100% !important; min-width: 0 !important; }\n  .crm-dash .crm-dash-filters { overflow-x: visible !important; flex-wrap: wrap !important; gap: 6px !important; }\n  .crm-dash .crm-dash-filters > * { flex: 1 1 auto !important; min-width: 0 !important; }\n  .crm-dash .crm-dash-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; }\n  .crm-dash .crm-dash-row { grid-template-columns: minmax(0, 1fr) !important; gap: 10px !important; }\n  .crm-dash h1, .crm-dash h2, .crm-dash h3 { max-width: 100%; overflow-wrap: anywhere; }\n}\n"}</style>
+      <div className="crm-dash-header" style={{display:"flex",alignItems:isMobile?"stretch":"center",justifyContent:"space-between",marginBottom:isMobile?14:20,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
         <div style={{minWidth:0,width:isMobile?"100%":"auto"}}>
           <div style={{fontSize:isMobile?16:20,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{greeting} {p.cu.name}</div>
           <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{timeStr} {"\u00b7"} {new Date().toDateString()}</div>
         </div>
-        <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",width:isMobile?"100%":"auto"}}>
+        <div className="crm-dash-filters" style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",width:isMobile?"100%":"auto"}}>
           {[["today","Today"],["week","This Week"],["month","This Month"]].map(function(f){return <button key={f[0]} onClick={function(){setFilter(f[0]);}} style={{fontSize:12,padding:isMobile?"8px 10px":"6px 12px",minHeight:isMobile?36:undefined,border:filter===f[0]?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:filter===f[0]?"#EFF6FF":"#fff",color:filter===f[0]?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:filter===f[0]?600:500,flex:isMobile?"1 1 auto":"0 0 auto",flexShrink:0}}>{f[1]}</button>;})}
           <div style={{position:"relative",flex:isMobile?"1 1 auto":"0 0 auto"}}>
             <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:12,padding:isMobile?"8px 10px":"6px 12px",minHeight:isMobile?36:undefined,border:"1px solid #E2E8F0",borderRadius:8,background:"#fff",color:"#64748B",cursor:"pointer",width:isMobile?"100%":"auto"}}>{"Quarter \u25be"}</button>
@@ -2499,7 +2502,7 @@ var DashboardPage = function(p) {
       </div>
       {/* KPI strip — on mobile force a fixed 2-column grid so every card is
            equal width and none can overflow. Desktop keeps its auto-fit. */}
-      <div style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2, minmax(0, 1fr))":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:isMobile?14:20}}>
+      <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2, minmax(0, 1fr))":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:isMobile?14:20}}>
         {kpiCard("My Leads",myTotal2,"assigned","#1565C0","#ffffff",function(){p.nav("leads");})}
         {kpiCard("Daily Requests",myDR2,"total","#00796B","#ffffff",null)}
         {kpiCard("Followups",myLeads2.filter(function(l){return l.callbackTime&&!l.archived;}).length,"scheduled","#E65100","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
@@ -2509,8 +2512,8 @@ var DashboardPage = function(p) {
       </div>
       {/* Info cards — stack to one column on mobile so every card fills the
            viewport width with consistent gutters. */}
-      <div style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
-        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+      <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
+        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
           <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>My Rank vs Team</div>
           <div style={{fontSize:11,color:"#94A3B8",marginBottom:12}}>{"Position only \u2014 no team numbers shown"}</div>
           {rankBar2("Activity",1,allUsers2.length)}
@@ -2523,7 +2526,7 @@ var DashboardPage = function(p) {
             <div><div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>Overall rank: 1st</div><div style={{fontSize:11,color:"#94A3B8"}}>Score {Math.min(99,Math.round(myInt2/Math.max(myTotal2,1)*100*0.4+myMeet2/Math.max(myTotal2,1)*100*0.3+30))}/100</div></div>
           </div>
         </div>
-        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
           <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udea8"} Urgent {"\u2014"} Action Needed</div>
           {urgent2.length===0&&urgentNew2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} No urgent items</div>}
           {urgent2.map(function(l,i){var mins=Math.round((now-new Date(l.callbackTime).getTime())/60000);return <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0}}>
@@ -2537,7 +2540,7 @@ var DashboardPage = function(p) {
             <span style={{fontSize:11,fontWeight:700,color:"#1D4ED8",flexShrink:0}}>NEW</span>
           </div>;})}
         </div>
-        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
           <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udcc5"} Today's Schedule</div>
           {schedule2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No callbacks scheduled today</div>}
           {schedule2.map(function(l,i){
@@ -2551,8 +2554,8 @@ var DashboardPage = function(p) {
           })}
         </div>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
-        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+      <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
+        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
           <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>My Leads {"\u2014"} Status</div>
           {[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"]].map(function(s){return bRow(s[0],mySC2[s[1]]||0,myTotal2,s[2]);}) }
           <div style={{borderTop:"1px solid #F1F5F9",marginTop:8,paddingTop:8,display:"flex",gap:14,fontSize:11}}>
@@ -2560,7 +2563,7 @@ var DashboardPage = function(p) {
             <span style={{color:"#64748B"}}>Untouched: <span style={{color:"#3B82F6",fontWeight:700}}>{myLeads2.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*DAY;}).length}</span></span>
           </div>
         </div>
-        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box",overflow:"hidden"}}>
+        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box",overflow:"hidden"}}>
           <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>My Conversion Funnel</div>
           {[{l:"Assigned",v:myTotal2,c:"#DBEAFE",tc:"#1E40AF"},{l:"Contacted",v:myTotal2-(mySC2["NewLead"]||0),c:"#DCFCE7",tc:"#166534"},{l:"Interested",v:myInt2,c:"#FEF3C7",tc:"#92400E"},{l:"Hot Case",v:mySC2["HotCase"]||0,c:"#EDE9FE",tc:"#5B21B6"},{l:"Meeting",v:myMeet2,c:"#D1FAE5",tc:"#065F46"},{l:"Deal",v:mySC2["DoneDeal"]||0,c:"#FFE4E6",tc:"#9F1239"}].map(function(row,i){
             var pct=myTotal2>0?Math.max(6,Math.round(row.v/myTotal2*100)):6;
@@ -2578,7 +2581,7 @@ var DashboardPage = function(p) {
             </div>;
           })}
         </div>
-        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
           <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>Recent Activity</div>
           {recentActs2.length===0&&<div style={{fontSize:12,color:"#94A3B8"}}>No recent activity</div>}
           {recentActs2.map(function(a,i){
@@ -2885,13 +2888,18 @@ var DashboardPage = function(p) {
   };
   var initialsOf = function(n){return (n||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();};
 
-  return <div style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9"}}>
-    <div style={{display:"flex",alignItems:isMobile?"flex-start":"center",justifyContent:"space-between",marginBottom:isMobile?16:24,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
+  return <div className="crm-dash crm-dash-admin" style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100vw",boxSizing:"border-box",overflowX:"hidden"}}>
+    {/* Mobile safety-net CSS — scoped to .crm-dash, applies only below 768px.
+        Desktop (>=768px) is untouched. This guarantees consistent spacing and
+        no horizontal overflow regardless of any inline width/padding inside
+        the dashboard tree. */}
+    <style>{"\n@media (max-width: 768px) {\n  .crm-dash, .crm-dash * { box-sizing: border-box; }\n  .crm-dash { width: 100% !important; max-width: 100vw !important; overflow-x: hidden !important; padding-left: 10px !important; padding-right: 10px !important; }\n  .crm-dash .crm-dash-card { width: 100% !important; max-width: 100% !important; min-width: 0 !important; padding: 14px !important; box-sizing: border-box !important; }\n  /* Any descendant grid/flex row that tried to overflow — clamp it. */\n  .crm-dash .crm-dash-card > * { max-width: 100% !important; }\n  /* Wide tables (Agent Performance, etc.) become a horizontal scroll area\n     inside their card, never push the page. */\n  .crm-dash .crm-dash-scroll { overflow-x: auto !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; max-width: 100% !important; width: 100% !important; }\n  /* Header row stacks vertically, filter row wraps cleanly. */\n  .crm-dash .crm-dash-header { flex-direction: column !important; align-items: stretch !important; width: 100% !important; }\n  .crm-dash .crm-dash-header > * { width: 100% !important; min-width: 0 !important; }\n  .crm-dash .crm-dash-filters { overflow-x: visible !important; flex-wrap: wrap !important; gap: 6px !important; }\n  .crm-dash .crm-dash-filters > * { flex: 1 1 auto !important; min-width: 0 !important; }\n  /* KPI strip: always a 2-col grid so every tile is equal width. */\n  .crm-dash .crm-dash-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; }\n  /* Multi-col info rows collapse to a single column. */\n  .crm-dash .crm-dash-row { grid-template-columns: minmax(0, 1fr) !important; gap: 10px !important; }\n  .crm-dash h1, .crm-dash h2, .crm-dash h3 { max-width: 100%; overflow-wrap: anywhere; }\n}\n"}</style>
+    <div className="crm-dash-header" style={{display:"flex",alignItems:isMobile?"flex-start":"center",justifyContent:"space-between",marginBottom:isMobile?16:24,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
       <div style={{minWidth:0,width:isMobile?"100%":"auto"}}>
-        <div style={{fontSize:isMobile?16:22,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis"}}>{greeting+" "+p.cu.name}</div>
-        <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,fontVariantNumeric:"tabular-nums"}}>{dateLabel}</div>
+        <div style={{fontSize:isMobile?16:22,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{greeting+" "+p.cu.name}</div>
+        <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,fontVariantNumeric:"tabular-nums",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{dateLabel}</div>
       </div>
-      <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",width:isMobile?"100%":"auto",overflowX:isMobile?"auto":"visible",WebkitOverflowScrolling:"touch"}}>
+      <div className="crm-dash-filters" style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",width:isMobile?"100%":"auto",overflowX:isMobile?"auto":"visible",WebkitOverflowScrolling:"touch"}}>
         {[["today","Today"],["week","This Week"],["month","This Month"]].map(function(f){
           return <button key={f[0]} onClick={function(){setFilter(f[0]);}} style={{fontSize:12,padding:isMobile?"8px 12px":"6px 14px",minHeight:isMobile?36:undefined,border:filter===f[0]?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:filter===f[0]?"#EFF6FF":"#fff",color:filter===f[0]?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:filter===f[0]?600:500,flexShrink:0}}>{f[1]}</button>;
         })}
@@ -2905,7 +2913,7 @@ var DashboardPage = function(p) {
     </div>
 
     {sec("Key Metrics")}
-    <div style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2,1fr)":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:0}}>
+    <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2,1fr)":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:0}}>
       {kpiCard("Leads",fLeads.length,"in period","#1565C0","#ffffff",function(){p.nav("leads");})}
       {kpiCard("Daily Requests",drFiltered,"in period","#00796B","#ffffff",function(){p.nav("dailyReq");})}
       {kpiCard("Interested",interestedFiltered,Math.round(interestedFiltered/fTotal*100)+"%","#E65100","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
@@ -2916,7 +2924,7 @@ var DashboardPage = function(p) {
     </div>
 
     {sec("Campaigns & Pipeline")}
-    <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit, minmax(300px, 1fr))",gap:isMobile?10:14,marginBottom:14}}>
+    <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit, minmax(300px, 1fr))",gap:isMobile?10:14,marginBottom:14}}>
       {card(<>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
           <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Campaign &amp; Source Performance</div>
@@ -3083,7 +3091,7 @@ var DashboardPage = function(p) {
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Agent Performance</div>
         <div style={{fontSize:10,color:"#94A3B8"}} title="Quality = activity + feedback + response time + meetings + callbacks">Quality = activity, feedback, response time, meetings & callbacks</div>
       </div>
-      <div style={{overflowX:"auto",overflowY:"auto",maxHeight:360,WebkitOverflowScrolling:"touch",width:"100%"}}>
+      <div className="crm-dash-scroll" style={{overflowX:"auto",overflowY:"auto",maxHeight:360,WebkitOverflowScrolling:"touch",width:"100%"}}>
       <div style={{display:"grid",gridTemplateColumns:isMobile?"36px 150px repeat(14, 56px)":"36px 160px repeat(14, minmax(0, 1fr))",gap:4,paddingTop:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,width:isMobile?"max-content":"100%",minWidth:isMobile?980:undefined,position:"sticky",top:0,zIndex:10,background:"#fff"}}>
         {["","Agent","Leads","DR","Total","Calls","Follow","Overdue","Int","Meet","Deals","Rot OUT","Rot IN","No Ans","Resp.","Quality"].map(function(h,idx){return <div key={h+idx} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{h}</div>;})}
       </div>
@@ -3124,7 +3132,7 @@ var DashboardPage = function(p) {
     </>)}
     </div>
 
-    <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit,minmax(260px,1fr))",gap:isMobile?10:14}}>
+    <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit,minmax(260px,1fr))",gap:isMobile?10:14}}>
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Management Alerts</div>
         {(function(){
