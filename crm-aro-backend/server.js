@@ -589,14 +589,16 @@ app.put("/api/settings/rotation", auth, async function(req, res) {
 
 // ===== DASHBOARD — SALES RANKING (all sales agents, CRM-wide) =====
 // Any authenticated user can read this. Returns one row per active user with
-// role === "sales", scored across the entire CRM (no teamId filter). Rank is
-// deals*10 + meetings*3 inside the [from, to] window, same metric the Sales
-// Dashboard displays elsewhere.
+// role === "sales", scored across the entire CRM (no teamId filter). Score
+// is a plain sum of four per-agent counts in the [from, to] window:
+//   activities + calls + meetings + dailyRequests
+// — deals are intentionally excluded per the dashboard spec.
 app.get("/api/dashboard/sales-ranking", auth, async function(req, res) {
   try {
     var parseDate = function(s){ if(!s) return null; var d = new Date(String(s)); return isNaN(d.getTime()) ? null : d; };
     var from = parseDate(req.query.from);
     var to   = parseDate(req.query.to);
+    var rangeMatch = (from || to) ? (function(){ var r = {}; if(from) r.$gte = from; if(to) r.$lte = to; return r; })() : null;
 
     // Sales users CRM-wide — no team / reportsTo restriction.
     var salesUsers = await User.find({ role: "sales", active: { $ne: false } })
@@ -606,11 +608,120 @@ app.get("/api/dashboard/sales-ranking", auth, async function(req, res) {
     if (!salesUsers.length) return res.json([]);
     var salesIds = salesUsers.map(function(u){ return u._id; });
 
-    // Deals: leads with status DoneDeal assigned to a sales user, dated in range.
-    // Deal date falls back to updatedAt when dealDate is missing.
-    var dealMatch = { status: "DoneDeal", agentId: { $in: salesIds } };
-    var dealPipeline = [
-      { $match: dealMatch },
+    // Activities (all types) authored by a sales user in range.
+    var actBase = { userId: { $in: salesIds } };
+    if (rangeMatch) actBase.createdAt = rangeMatch;
+    var actRows = await Activity.aggregate([
+      { $match: actBase },
+      { $group: { _id: "$userId", c: { $sum: 1 } } }
+    ]);
+    var activitiesByAgent = {};
+    actRows.forEach(function(r){ activitiesByAgent[String(r._id)] = r.c; });
+
+    // Calls only (subset of activities, tracked separately for display).
+    var callBase = { userId: { $in: salesIds }, type: "call" };
+    if (rangeMatch) callBase.createdAt = rangeMatch;
+    var callRows = await Activity.aggregate([
+      { $match: callBase },
+      { $group: { _id: "$userId", c: { $sum: 1 } } }
+    ]);
+    var callsByAgent = {};
+    callRows.forEach(function(r){ callsByAgent[String(r._id)] = r.c; });
+
+    // Meetings: leads with hadMeeting === true, dated in range by meetingDoneAt
+    // (falling back to updatedAt when meetingDoneAt is absent).
+    var meetPipeline = [
+      { $match: { hadMeeting: true, agentId: { $in: salesIds } } },
+      { $addFields: { meetAt: { $ifNull: ["$meetingDoneAt", "$updatedAt"] } } }
+    ];
+    if (rangeMatch) meetPipeline.push({ $match: { meetAt: rangeMatch } });
+    meetPipeline.push({ $group: { _id: "$agentId", c: { $sum: 1 } } });
+    var meetRows = await Lead.aggregate(meetPipeline);
+    var meetsByAgent = {};
+    meetRows.forEach(function(r){ meetsByAgent[String(r._id)] = r.c; });
+
+    // Daily requests owned by a sales user, created in range.
+    var drBase = { agentId: { $in: salesIds } };
+    if (rangeMatch) drBase.createdAt = rangeMatch;
+    var drRows = await DailyRequest.aggregate([
+      { $match: drBase },
+      { $group: { _id: "$agentId", c: { $sum: 1 } } }
+    ]);
+    var drByAgent = {};
+    drRows.forEach(function(r){ drByAgent[String(r._id)] = r.c; });
+
+    var rows = salesUsers.map(function(u){
+      var uid = String(u._id);
+      var activities     = activitiesByAgent[uid] || 0;
+      var calls          = callsByAgent[uid] || 0;
+      var meetings       = meetsByAgent[uid] || 0;
+      var dailyRequests  = drByAgent[uid] || 0;
+      return {
+        uid: uid,
+        name: u.name,
+        title: u.title || "",
+        activities: activities,
+        calls: calls,
+        meetings: meetings,
+        dailyRequests: dailyRequests,
+        score: activities + calls + meetings + dailyRequests
+      };
+    }).sort(function(a,b){ return b.score - a.score || b.meetings - a.meetings; });
+
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== DASHBOARD — MY STATS (per-agent, period-scoped) =====
+// Returns counts for the 6 Sales Dashboard KPI cards for the calling user,
+// computed by the backend inside [from, to] so sales users don't have to
+// filter their local dataset client-side.
+app.get("/api/dashboard/my-stats", auth, async function(req, res) {
+  try {
+    var parseDate = function(s){ if(!s) return null; var d = new Date(String(s)); return isNaN(d.getTime()) ? null : d; };
+    var from = parseDate(req.query.from);
+    var to   = parseDate(req.query.to);
+    var rangeMatch = (from || to) ? (function(){ var r = {}; if(from) r.$gte = from; if(to) r.$lte = to; return r; })() : null;
+    if (!req.user || !req.user.id) return res.status(401).json({ error: "No user" });
+    var uid = new mongoose.Types.ObjectId(req.user.id);
+
+    // My Leads: leads assigned to me, created in the active range.
+    var myLeadsMatch = { agentId: uid, archived: { $ne: true }, source: { $ne: "Daily Request" } };
+    if (rangeMatch) myLeadsMatch.createdAt = rangeMatch;
+    var myLeadsP = Lead.countDocuments(myLeadsMatch);
+
+    // Daily Requests: DRs assigned to me, created in the active range.
+    var myDrsMatch = { agentId: uid, archived: { $ne: true } };
+    if (rangeMatch) myDrsMatch.createdAt = rangeMatch;
+    var myDrsP = DailyRequest.countDocuments(myDrsMatch);
+
+    // Followups: activity logs of type "followup" authored by me in the range.
+    var myFollowupsMatch = { userId: uid, type: "followup" };
+    if (rangeMatch) myFollowupsMatch.createdAt = rangeMatch;
+    var myFollowupsP = Activity.countDocuments(myFollowupsMatch);
+
+    // Interested: leads assigned to me with a current "interested" status
+    // (Potential / HotCase), created in the active range. Matches the card label.
+    var myInterestedMatch = { agentId: uid, archived: { $ne: true }, status: { $in: ["Potential", "HotCase"] } };
+    if (rangeMatch) myInterestedMatch.createdAt = rangeMatch;
+    var myInterestedP = Lead.countDocuments(myInterestedMatch);
+
+    // Meetings: my leads where hadMeeting === true and the meeting fell in range.
+    var myMeetPipeline = [
+      { $match: { agentId: uid, hadMeeting: true, archived: { $ne: true } } },
+      { $addFields: { meetAt: { $ifNull: ["$meetingDoneAt", "$updatedAt"] } } }
+    ];
+    if (rangeMatch) myMeetPipeline.push({ $match: { meetAt: rangeMatch } });
+    myMeetPipeline.push({ $count: "c" });
+    var myMeetP = Lead.aggregate(myMeetPipeline);
+
+    // Target vs achieved: achieved = weighted revenue from my DoneDeal leads
+    // whose deal date falls in the active range. Target = current-quarter
+    // target from the user's qTargets map.
+    var myDealsPipeline = [
+      { $match: { agentId: uid, status: "DoneDeal" } },
       { $addFields: {
           dealAt: {
             $cond: [
@@ -621,52 +732,44 @@ app.get("/api/dashboard/sales-ranking", auth, async function(req, res) {
           }
         } }
     ];
-    if (from || to) {
-      var dealRange = {};
-      if (from) dealRange.$gte = from;
-      if (to)   dealRange.$lte = to;
-      dealPipeline.push({ $match: { dealAt: dealRange } });
-    }
-    dealPipeline.push({ $group: { _id: "$agentId", c: { $sum: 1 } } });
-    var dealRows = await Lead.aggregate(dealPipeline);
-    var dealsByAgent = {};
-    dealRows.forEach(function(r){ dealsByAgent[String(r._id)] = r.c; });
+    if (rangeMatch) myDealsPipeline.push({ $match: { dealAt: rangeMatch } });
+    myDealsPipeline.push({ $project: { budget: 1, projectWeight: 1, splitAgent2Id: 1 } });
+    var myDealsP = Lead.aggregate(myDealsPipeline);
 
-    // Meetings: leads with hadMeeting === true, dated in range by meetingDoneAt
-    // (falling back to updatedAt when meetingDoneAt is absent).
-    var meetMatch = { hadMeeting: true, agentId: { $in: salesIds } };
-    var meetPipeline = [
-      { $match: meetMatch },
-      { $addFields: {
-          meetAt: { $ifNull: ["$meetingDoneAt", "$updatedAt"] }
-        } }
-    ];
-    if (from || to) {
-      var meetRange = {};
-      if (from) meetRange.$gte = from;
-      if (to)   meetRange.$lte = to;
-      meetPipeline.push({ $match: { meetAt: meetRange } });
-    }
-    meetPipeline.push({ $group: { _id: "$agentId", c: { $sum: 1 } } });
-    var meetRows = await Lead.aggregate(meetPipeline);
-    var meetsByAgent = {};
-    meetRows.forEach(function(r){ meetsByAgent[String(r._id)] = r.c; });
+    var userP = User.findById(uid).select("qTargets").lean();
 
-    var rows = salesUsers.map(function(u){
-      var uid = String(u._id);
-      var deals    = dealsByAgent[uid] || 0;
-      var meetings = meetsByAgent[uid] || 0;
-      return {
-        uid: uid,
-        name: u.name,
-        title: u.title || "",
-        deals: deals,
-        meetings: meetings,
-        score: deals * 10 + meetings * 3
-      };
-    }).sort(function(a,b){ return b.score - a.score || b.deals - a.deals; });
+    var parts = await Promise.all([myLeadsP, myDrsP, myFollowupsP, myInterestedP, myMeetP, myDealsP, userP]);
+    var myLeadsC     = parts[0] || 0;
+    var myDrsC       = parts[1] || 0;
+    var myFollowupsC = parts[2] || 0;
+    var myInterestedC= parts[3] || 0;
+    var myMeetingsC  = (parts[4] && parts[4][0] && parts[4][0].c) || 0;
+    var myDeals      = parts[5] || [];
+    var userDoc      = parts[6] || {};
 
-    res.json(rows);
+    var parseBudget = function(b){ return parseFloat(String(b||"0").replace(/,/g,"")) || 0; };
+    var achieved = myDeals.reduce(function(s,d){
+      var w = (typeof d.projectWeight === "number") ? d.projectWeight : 1;
+      var split = d.splitAgent2Id ? 0.5 : 1;
+      return s + parseBudget(d.budget) * w * split;
+    }, 0);
+
+    var curQNum = Math.floor(new Date().getMonth()/3) + 1;
+    var qKey = "Q" + curQNum;
+    var target = (userDoc.qTargets && Number(userDoc.qTargets[qKey])) || 0;
+    var targetProgress = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
+
+    res.json({
+      myLeads: myLeadsC,
+      dailyRequests: myDrsC,
+      followups: myFollowupsC,
+      interested: myInterestedC,
+      meetings: myMeetingsC,
+      target: target,
+      achieved: achieved,
+      targetProgress: targetProgress,
+      quarter: qKey
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

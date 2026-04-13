@@ -2375,15 +2375,17 @@ var DashboardPage = function(p) {
     return function(){ cancelled = true; clearInterval(id); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token]);
-  // ── CRM-wide Sales ranking — pulled from the backend so every sales user
-  //    sees the full roster, not just whatever /api/users returned for them.
+  // ── CRM-wide Sales ranking + per-agent KPI counts — both come from the
+  //    backend so the dashboard works for any sales user (local p.leads only
+  //    contains their own rows). Re-fetch whenever the period filter changes.
   var [salesRanking, setSalesRanking] = useState(null);
+  var [myStats, setMyStats] = useState(null);
   useEffect(function(){
     if (!p.token) return;
     // Re-derive the active range here so the effect only depends on `filter`.
     var nd = new Date(); var cY = nd.getFullYear(); var cM = nd.getMonth(); var cD = nd.getDate();
     var daysSinceMon = (nd.getDay() + 6) % 7;
-    var weekStart = new Date(cY, cM, cD - daysSinceMon, 0,0,0,0);
+    var weekStart  = new Date(cY, cM, cD - daysSinceMon, 0,0,0,0);
     var todayStart = new Date(cY, cM, cD, 0,0,0,0);
     var todayEnd   = new Date(cY, cM, cD, 23,59,59,999);
     var monthStart = new Date(cY, cM, 1, 0,0,0,0);
@@ -2398,10 +2400,14 @@ var DashboardPage = function(p) {
       rs = new Date(qy, (qn-1)*3, 1, 0,0,0,0).getTime();
       re = Math.min(Date.now(), new Date(qy, qn*3, 0, 23,59,59,999).getTime());
     } else { rs = todayStart.getTime(); re = todayEnd.getTime(); }
+    var qs = "from="+encodeURIComponent(new Date(rs).toISOString())+"&to="+encodeURIComponent(new Date(re).toISOString());
     var cancelled = false;
-    apiFetch("/api/dashboard/sales-ranking?from="+encodeURIComponent(new Date(rs).toISOString())+"&to="+encodeURIComponent(new Date(re).toISOString()), "GET", null, p.token)
+    apiFetch("/api/dashboard/sales-ranking?"+qs, "GET", null, p.token)
       .then(function(d){ if(!cancelled) setSalesRanking(Array.isArray(d)?d:[]); })
       .catch(function(){ if(!cancelled) setSalesRanking([]); });
+    apiFetch("/api/dashboard/my-stats?"+qs, "GET", null, p.token)
+      .then(function(d){ if(!cancelled) setMyStats(d||{}); })
+      .catch(function(){ if(!cancelled) setMyStats({}); });
     return function(){ cancelled = true; };
   },[p.token, filter]);
   var now = Date.now();
@@ -2615,25 +2621,43 @@ var DashboardPage = function(p) {
               var qActive = (typeof filter==="string") && filter.indexOf("Q")===0;
               return <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:12,padding:isMobile?"8px 10px":"6px 12px",minHeight:isMobile?36:undefined,border:qActive?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:qActive?"#EFF6FF":"#fff",color:qActive?"#1D4ED8":"#64748B",cursor:"pointer",width:isMobile?"100%":"auto",fontWeight:qActive?600:500}}>{qActive?filter:"Quarter"} {"\u25be"}</button>;
             })()}
-            {qOpen&&<div style={{position:"absolute",top:"calc(100% + 4px)",right:0,background:"#fff",border:"1px solid #E2E8F0",borderRadius:10,minWidth:110,zIndex:99,boxShadow:"0 4px 16px rgba(0,0,0,0.08)"}}>
-              {quarterOptionsS.map(function(q){
-                var isActive = filter===q;
-                return <div key={q} onClick={function(){setFilter(q);setQOpen(false);}} style={{padding:"8px 14px",fontSize:12,color:isActive?"#1D4ED8":"#334155",fontWeight:isActive?600:500,background:isActive?"#EFF6FF":"transparent",cursor:"pointer"}}>{q}</div>;
-              })}
+            {qOpen&&<div style={{position:"absolute",top:"calc(100% + 4px)",right:0,background:"#fff",border:"1px solid #E2E8F0",borderRadius:10,minWidth:140,zIndex:99,boxShadow:"0 4px 16px rgba(0,0,0,0.08)"}}>
+              {(function(){
+                var curQLabel = "Q"+(Math.floor(new Date().getMonth()/3)+1)+" "+curYS;
+                return quarterOptionsS.map(function(q){
+                  var isActive = filter===q;
+                  var isCurrent = q===curQLabel;
+                  return <div key={q} onClick={function(){setFilter(q);setQOpen(false);}} style={{padding:"8px 14px",fontSize:12,color:isActive?"#1D4ED8":"#334155",fontWeight:isActive?600:500,background:isActive?"#EFF6FF":"transparent",cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
+                    <span>{q}</span>
+                    {isCurrent&&<span title="Current quarter" style={{width:6,height:6,borderRadius:"50%",background:"#22C55E",display:"inline-block"}}/>}
+                  </div>;
+                });
+              })()}
             </div>}
           </div>
         </div>
       </div>
 
-      {/* KPI strip — original 6 cards (restored). Mobile: 2-col fixed grid; desktop: auto-fit. */}
-      <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2, minmax(0, 1fr))":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:isMobile?14:20}}>
-        {kpiCard("My Leads",myTotal2,"assigned","#1565C0","#ffffff",function(){p.setFilter&&p.setFilter("all");p.nav("leads");})}
-        {kpiCard("Daily Requests",(p.dailyReqs||[]).filter(function(r){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;return String(aid)===myUidS&&inRangeS(r.createdAt);}).length,"total","#00796B","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("all");p.nav("dailyReq");})}
-        {kpiCard("Followups",allMyLeads.filter(function(l){return l.callbackTime&&!l.archived;}).length,"scheduled","#E65100","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("CallBack");p.nav("dailyReq");})}
-        {kpiCard("Interested",myInt2,myTotal2>0?Math.round(myInt2/myTotal2*100)+"%":"0%","#6A1B9A","#ffffff",function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");})}
-        {kpiCard("Meetings",myMeet2,myTotal2>0?Math.round(myMeet2/myTotal2*100)+"%":"0%","#2E7D32","#ffffff",function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");})}
-        {kpiCard("Target",myTotal2>0?Math.round(myMeet2/myTotal2*100*5)+"%":"0%","this month","#AD1457","#ffffff",function(){p.nav("kpis");})}
-      </div>
+      {/* KPI strip — real backend counts from /api/dashboard/my-stats, re-fetched on filter change. */}
+      {(function(){
+        var st = myStats || {};
+        var myLeadsCnt    = Number(st.myLeads||0);
+        var myDrsCnt      = Number(st.dailyRequests||0);
+        var myFupsCnt     = Number(st.followups||0);
+        var myIntCnt      = Number(st.interested||0);
+        var myMeetCnt     = Number(st.meetings||0);
+        var myTarget      = Number(st.target||0);
+        var myProgress    = Number(st.targetProgress||0);
+        var pctOf = function(n){ return myLeadsCnt>0 ? Math.round(n/myLeadsCnt*100)+"%" : "0%"; };
+        return <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2, minmax(0, 1fr))":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:isMobile?14:20}}>
+          {kpiCard("My Leads",       myLeadsCnt, rangeLabelS,                         "#1565C0","#ffffff",function(){p.setFilter&&p.setFilter("all");p.nav("leads");})}
+          {kpiCard("Daily Requests", myDrsCnt,   rangeLabelS,                         "#00796B","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("all");p.nav("dailyReq");})}
+          {kpiCard("Followups",      myFupsCnt,  rangeLabelS,                         "#E65100","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("CallBack");p.nav("dailyReq");})}
+          {kpiCard("Interested",     myIntCnt,   pctOf(myIntCnt),                     "#6A1B9A","#ffffff",function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");})}
+          {kpiCard("Meetings",       myMeetCnt,  pctOf(myMeetCnt),                    "#2E7D32","#ffffff",function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");})}
+          {kpiCard("Target",         myProgress+"%", myTarget>0?("of "+(myTarget/1000000).toFixed(1)+"M"):"Not set", "#AD1457","#ffffff",function(){p.nav("kpis");})}
+        </div>;
+      })()}
 
       {/* Rank + Urgent + Schedule row */}
       <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
@@ -2655,7 +2679,12 @@ var DashboardPage = function(p) {
               return <div key={r.uid} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:8,background:isMe?"#EFF6FF":"transparent",border:isMe?"1px solid #BFDBFE":"1px solid transparent"}}>
                 <div style={{width:22,height:22,borderRadius:"50%",background:i===0?"#FBBF24":i===1?"#E2E8F0":i===2?"#F59E0B":"#F1F5F9",color:i<=2?"#0F172A":"#64748B",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{i+1}</div>
                 <div style={{flex:1,minWidth:0,fontSize:12,fontWeight:isMe?700:500,color:isMe?"#1D4ED8":"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isMe?(r.name||p.cu.name)+" (you)":r.name}</div>
-                <div style={{fontSize:11,color:"#64748B"}}><span style={{color:"#15803D",fontWeight:700}}>{r.deals}</span> deals · <span style={{color:"#1D4ED8",fontWeight:700}}>{r.meetings}</span> meet.</div>
+                <div style={{fontSize:11,color:"#64748B",display:"flex",alignItems:"center",gap:6}}>
+                  <span title={"Activities "+(r.activities||0)+" · Calls "+(r.calls||0)+" · Meetings "+(r.meetings||0)+" · DRs "+(r.dailyRequests||0)} style={{fontSize:11,color:"#64748B"}}>
+                    {(r.activities||0)}A · {(r.calls||0)}C · {(r.meetings||0)}M · {(r.dailyRequests||0)}D
+                  </span>
+                  <span style={{fontSize:12,fontWeight:800,color:"#1D4ED8",minWidth:28,textAlign:"right"}}>{r.score||0}</span>
+                </div>
               </div>;
             })}
             {!rankLoadingS && !rankRowsS.length && <div style={{fontSize:12,color:"#94A3B8",padding:"6px 0"}}>No sales agents found</div>}
@@ -2664,7 +2693,7 @@ var DashboardPage = function(p) {
             <span style={{fontSize:20}}>{myRankS===1?"\ud83e\udd47":myRankS===2?"\ud83e\udd48":myRankS===3?"\ud83e\udd49":"\ud83d\udcca"}</span>
             <div>
               <div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>Your score: {myRankRowS.score||0}</div>
-              <div style={{fontSize:11,color:"#94A3B8"}}>{(myRankRowS.deals||0)} deal{myRankRowS.deals===1?"":"s"} · {(myRankRowS.meetings||0)} meeting{myRankRowS.meetings===1?"":"s"} in {rangeLabelS}</div>
+              <div style={{fontSize:11,color:"#94A3B8"}}>{(myRankRowS.activities||0)} activities · {(myRankRowS.calls||0)} calls · {(myRankRowS.meetings||0)} meetings · {(myRankRowS.dailyRequests||0)} DRs in {rangeLabelS}</div>
             </div>
           </div>
         </div>
