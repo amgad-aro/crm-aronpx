@@ -2477,23 +2477,29 @@ var DashboardPage = function(p) {
         </div>
       </div>;
     };
-    return <div style={{padding:"16px 12px 40px",background:"#F1F5F9"}}>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20,flexWrap:"wrap",gap:8}}>
-        <div>
-          <div style={{fontSize:20,fontWeight:700,color:"#0F172A"}}>{greeting} {p.cu.name}</div>
-          <div style={{fontSize:12,color:"#94A3B8",marginTop:2}}>{timeStr} {"\u00b7"} {new Date().toDateString()}</div>
+    // Mobile-safe container: relative % + box-sizing so no child can overflow
+    // the viewport, and the whole tree respects whatever width the browser
+    // actually gave us. Desktop layout (the else-branch paddings / rows)
+    // is preserved untouched.
+    return <div style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100vw",boxSizing:"border-box",overflowX:"hidden"}}>
+      <div style={{display:"flex",alignItems:isMobile?"stretch":"center",justifyContent:"space-between",marginBottom:isMobile?14:20,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
+        <div style={{minWidth:0,width:isMobile?"100%":"auto"}}>
+          <div style={{fontSize:isMobile?16:20,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{greeting} {p.cu.name}</div>
+          <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{timeStr} {"\u00b7"} {new Date().toDateString()}</div>
         </div>
-        <div style={{display:"flex",gap:6,alignItems:"center"}}>
-          {[["today","Today"],["week","This Week"],["month","This Month"]].map(function(f){return <button key={f[0]} onClick={function(){setFilter(f[0]);}} style={{fontSize:12,padding:"6px 12px",border:filter===f[0]?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:filter===f[0]?"#EFF6FF":"#fff",color:filter===f[0]?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:filter===f[0]?600:500}}>{f[1]}</button>;})}
-          <div style={{position:"relative"}}>
-            <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:12,padding:"6px 12px",border:"1px solid #E2E8F0",borderRadius:8,background:"#fff",color:"#64748B",cursor:"pointer"}}>{"Quarter \u25be"}</button>
+        <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",width:isMobile?"100%":"auto"}}>
+          {[["today","Today"],["week","This Week"],["month","This Month"]].map(function(f){return <button key={f[0]} onClick={function(){setFilter(f[0]);}} style={{fontSize:12,padding:isMobile?"8px 10px":"6px 12px",minHeight:isMobile?36:undefined,border:filter===f[0]?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:filter===f[0]?"#EFF6FF":"#fff",color:filter===f[0]?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:filter===f[0]?600:500,flex:isMobile?"1 1 auto":"0 0 auto",flexShrink:0}}>{f[1]}</button>;})}
+          <div style={{position:"relative",flex:isMobile?"1 1 auto":"0 0 auto"}}>
+            <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:12,padding:isMobile?"8px 10px":"6px 12px",minHeight:isMobile?36:undefined,border:"1px solid #E2E8F0",borderRadius:8,background:"#fff",color:"#64748B",cursor:"pointer",width:isMobile?"100%":"auto"}}>{"Quarter \u25be"}</button>
             {qOpen&&<div style={{position:"absolute",top:"calc(100% + 4px)",right:0,background:"#fff",border:"1px solid #E2E8F0",borderRadius:10,minWidth:110,zIndex:99,boxShadow:"0 4px 16px rgba(0,0,0,0.08)"}}>
               {["Q1 2026","Q2 2026","Q3 2026","Q4 2025"].map(function(q){return <div key={q} onClick={function(){setFilter(q);setQOpen(false);}} style={{padding:"8px 14px",fontSize:12,color:"#334155",cursor:"pointer"}}>{q}</div>;})}
             </div>}
           </div>
         </div>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:20}}>
+      {/* KPI strip — on mobile force a fixed 2-column grid so every card is
+           equal width and none can overflow. Desktop keeps its auto-fit. */}
+      <div style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2, minmax(0, 1fr))":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:isMobile?14:20}}>
         {kpiCard("My Leads",myTotal2,"assigned","#1565C0","#ffffff",function(){p.nav("leads");})}
         {kpiCard("Daily Requests",myDR2,"total","#00796B","#ffffff",null)}
         {kpiCard("Followups",myLeads2.filter(function(l){return l.callbackTime&&!l.archived;}).length,"scheduled","#E65100","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
@@ -2501,9 +2507,11 @@ var DashboardPage = function(p) {
         {kpiCard("Meetings",myMeet2,myTotal2>0?Math.round(myMeet2/myTotal2*100)+"%":"0%","#2E7D32","#ffffff",null)}
         {kpiCard("Target",myTotal2>0?Math.round(myMeet2/myTotal2*100*5)+"%":"0%","this month","#AD1457","#ffffff",null)}
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14,marginBottom:14}}>
-        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
-          <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:14}}>My Rank vs Team</div>
+      {/* Info cards — stack to one column on mobile so every card fills the
+           viewport width with consistent gutters. */}
+      <div style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
+        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>My Rank vs Team</div>
           <div style={{fontSize:11,color:"#94A3B8",marginBottom:12}}>{"Position only \u2014 no team numbers shown"}</div>
           {rankBar2("Activity",1,allUsers2.length)}
           {rankBar2("Followups",1,allUsers2.length)}
@@ -2515,67 +2523,72 @@ var DashboardPage = function(p) {
             <div><div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>Overall rank: 1st</div><div style={{fontSize:11,color:"#94A3B8"}}>Score {Math.min(99,Math.round(myInt2/Math.max(myTotal2,1)*100*0.4+myMeet2/Math.max(myTotal2,1)*100*0.3+30))}/100</div></div>
           </div>
         </div>
-        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
-          <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:14}}>{"\ud83d\udea8"} Urgent {"\u2014"} Action Needed</div>
+        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udea8"} Urgent {"\u2014"} Action Needed</div>
           {urgent2.length===0&&urgentNew2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} No urgent items</div>}
-          {urgent2.map(function(l,i){var mins=Math.round((now-new Date(l.callbackTime).getTime())/60000);return <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC"}}>
+          {urgent2.map(function(l,i){var mins=Math.round((now-new Date(l.callbackTime).getTime())/60000);return <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0}}>
             <div style={{width:8,height:8,borderRadius:"50%",background:"#EF4444",flexShrink:0}}/>
-            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8"}}>Overdue {mins>60?Math.round(mins/60)+"h":mins+"min"} {"\u00b7"} {l.status}</div></div>
-            <span style={{fontSize:11,fontWeight:700,color:"#DC2626"}}>LATE</span>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Overdue {mins>60?Math.round(mins/60)+"h":mins+"min"} {"\u00b7"} {l.status}</div></div>
+            <span style={{fontSize:11,fontWeight:700,color:"#DC2626",flexShrink:0}}>LATE</span>
           </div>;})}
-          {urgentNew2.map(function(l,i){var hrs=Math.round((now-new Date(l.createdAt).getTime())/3600000);return <div key={"n"+i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC"}}>
+          {urgentNew2.map(function(l,i){var hrs=Math.round((now-new Date(l.createdAt).getTime())/3600000);return <div key={"n"+i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0}}>
             <div style={{width:8,height:8,borderRadius:"50%",background:"#3B82F6",flexShrink:0}}/>
-            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8"}}>New lead {"\u2014"} no action {hrs}h</div></div>
-            <span style={{fontSize:11,fontWeight:700,color:"#1D4ED8"}}>NEW</span>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>New lead {"\u2014"} no action {hrs}h</div></div>
+            <span style={{fontSize:11,fontWeight:700,color:"#1D4ED8",flexShrink:0}}>NEW</span>
           </div>;})}
         </div>
-        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
-          <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:14}}>{"\ud83d\udcc5"} Today's Schedule</div>
+        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udcc5"} Today's Schedule</div>
           {schedule2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No callbacks scheduled today</div>}
           {schedule2.map(function(l,i){
             var t2=l.callbackTime?new Date(l.callbackTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"\u2014";
             var isLate2=l.callbackTime&&new Date(l.callbackTime).getTime()<now;
-            return <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC"}}>
+            return <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0}}>
               <div style={{fontSize:11,color:isLate2?"#DC2626":"#64748B",width:38,flexShrink:0,fontWeight:600}}>{t2}</div>
-              <div style={{flex:1}}><div style={{fontSize:13,color:"#0F172A"}}>{l.name}</div><div style={{fontSize:11,color:isLate2?"#DC2626":"#94A3B8"}}>{isLate2?"Overdue":"Callback scheduled"}</div></div>
-              <div style={{width:8,height:8,borderRadius:"50%",background:isLate2?"#EF4444":"#10B981"}}/>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:isLate2?"#DC2626":"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isLate2?"Overdue":"Callback scheduled"}</div></div>
+              <div style={{width:8,height:8,borderRadius:"50%",background:isLate2?"#EF4444":"#10B981",flexShrink:0}}/>
             </div>;
           })}
         </div>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14,marginBottom:14}}>
-        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
-          <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:14}}>My Leads {"\u2014"} Status</div>
+      <div style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
+        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>My Leads {"\u2014"} Status</div>
           {[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"]].map(function(s){return bRow(s[0],mySC2[s[1]]||0,myTotal2,s[2]);}) }
           <div style={{borderTop:"1px solid #F1F5F9",marginTop:8,paddingTop:8,display:"flex",gap:14,fontSize:11}}>
             <span style={{color:"#64748B"}}>Overdue: <span style={{color:"#EF4444",fontWeight:700}}>{myOv2}</span></span>
             <span style={{color:"#64748B"}}>Untouched: <span style={{color:"#3B82F6",fontWeight:700}}>{myLeads2.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*DAY;}).length}</span></span>
           </div>
         </div>
-        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
-          <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:14}}>My Conversion Funnel</div>
+        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box",overflow:"hidden"}}>
+          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>My Conversion Funnel</div>
           {[{l:"Assigned",v:myTotal2,c:"#DBEAFE",tc:"#1E40AF"},{l:"Contacted",v:myTotal2-(mySC2["NewLead"]||0),c:"#DCFCE7",tc:"#166534"},{l:"Interested",v:myInt2,c:"#FEF3C7",tc:"#92400E"},{l:"Hot Case",v:mySC2["HotCase"]||0,c:"#EDE9FE",tc:"#5B21B6"},{l:"Meeting",v:myMeet2,c:"#D1FAE5",tc:"#065F46"},{l:"Deal",v:mySC2["DoneDeal"]||0,c:"#FFE4E6",tc:"#9F1239"}].map(function(row,i){
             var pct=myTotal2>0?Math.max(6,Math.round(row.v/myTotal2*100)):6;
-            return <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-              <div style={{fontSize:11,color:"#64748B",width:65,flexShrink:0,textAlign:"right"}}>{row.l}</div>
-              <div style={{height:20,borderRadius:4,background:row.c,display:"flex",alignItems:"center",padding:"0 8px",width:pct+"%",minWidth:45}}>
-                <span style={{fontSize:11,fontWeight:700,color:row.tc}}>{row.v}</span>
+            // Funnel row is flex+min-width-0 so the bar can shrink within the
+            // card instead of pushing the layout out horizontally on narrow
+            // screens.
+            return <div key={i} style={{display:"flex",alignItems:"center",gap:isMobile?6:8,marginBottom:6,minWidth:0}}>
+              <div style={{fontSize:11,color:"#64748B",width:isMobile?55:65,flexShrink:0,textAlign:"right",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{row.l}</div>
+              <div style={{flex:1,minWidth:0,height:20,borderRadius:4,background:"#F8FAFC",position:"relative",overflow:"hidden"}}>
+                <div style={{position:"absolute",inset:0,height:"100%",borderRadius:4,background:row.c,width:pct+"%",display:"flex",alignItems:"center",padding:"0 8px",minWidth:0,boxSizing:"border-box"}}>
+                  <span style={{fontSize:11,fontWeight:700,color:row.tc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.v}</span>
+                </div>
               </div>
-              <div style={{fontSize:10,color:"#94A3B8"}}>{myTotal2>0?Math.round(row.v/myTotal2*100)+"%":""}</div>
+              <div style={{fontSize:10,color:"#94A3B8",width:isMobile?32:undefined,textAlign:"right",flexShrink:0}}>{myTotal2>0?Math.round(row.v/myTotal2*100)+"%":""}</div>
             </div>;
           })}
         </div>
-        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
-          <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:14}}>Recent Activity</div>
+        <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>Recent Activity</div>
           {recentActs2.length===0&&<div style={{fontSize:12,color:"#94A3B8"}}>No recent activity</div>}
           {recentActs2.map(function(a,i){
             var lead2=myLeads2.find(function(l){return String(l._id)===String(a.leadId);});
             var stC=statusColors2[lead2&&lead2.status]||"#94A3B8";
-            return <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC"}}>
+            return <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0}}>
               <div style={{width:8,height:8,borderRadius:"50%",background:stC,flexShrink:0}}/>
-              <div style={{flex:1}}>
-                <div style={{fontSize:12,color:"#0F172A"}}>{lead2?lead2.name:"Lead"} {"\u2014"} <span style={{color:stC,fontWeight:600}}>{lead2&&lead2.status}</span></div>
-                <div style={{fontSize:11,color:"#94A3B8"}}>{a.note||""}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:12,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{lead2?lead2.name:"Lead"} {"\u2014"} <span style={{color:stC,fontWeight:600}}>{lead2&&lead2.status}</span></div>
+                <div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a.note||""}</div>
               </div>
             </div>;
           })}
