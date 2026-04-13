@@ -522,16 +522,13 @@ app.get("/api/leads", auth, async function(req, res) {
     var uid = req.user.id;
 
     if (role === "sales") {
-      // Strict ownership. Sales sees ONLY leads whose CURRENT agentId matches
-      // their own user id, and only when agentId is actually set. The second
-      // clause is defensive — $ne: null alone already excludes missing fields
-      // in MongoDB, but spelling out $exists: true + $ne: null makes the
-      // intent unmistakable to anyone reading the query.
-      query.agentId = new mongoose.Types.ObjectId(uid);
-      query.$and = (query.$and || []).concat([
-        { agentId: { $exists: true } },
-        { agentId: { $ne: null } }
-      ]);
+      // Match by per-agent assignments[] slice, NOT the top-level agentId.
+      // After a rotation the top-level agentId moves to the new owner, so
+      // filtering on it would hide the lead from the previous agent. Matching
+      // on assignments.agentId keeps the lead visible to every agent who has
+      // (or ever had) an entry — each sees only their own slice via the
+      // overlay below. Unassigned leads (no entries) are naturally excluded.
+      query["assignments.agentId"] = new mongoose.Types.ObjectId(uid);
 
     } else if (role === "team_leader") {
       // Team leader sees only their direct sales
@@ -592,15 +589,24 @@ app.get("/api/leads", auth, async function(req, res) {
     // point at their own assignment so they never learn the lead was rotated.
     var data = leads;
     if (role === "sales") {
-      // Return ONLY the caller's own assignment slice. Feedback, notes, and
-      // status come from their per-agent entry — never from top-level fields or
-      // another agent's slice.
+      // Return ONLY the caller's own assignments[] slice. Feedback, notes,
+      // status, callbackTime, budget all come from the caller's per-agent
+      // entry — never from top-level lead fields (which may hold another
+      // agent's text) and never from another agent's slice.
+      //
+      // Top-level notes/lastFeedback are wiped unconditionally even when the
+      // caller has no assignments[] entry (defence in depth: the list query
+      // already guarantees a matching slice, but if a data-inconsistency
+      // produces a match without an entry, we must still not leak).
       data = leads.map(function(l) {
         var obj = Object.assign({}, l);
         var myAssign = (obj.assignments || []).find(function(a) {
           var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
           return String(aid) === String(uid);
         });
+        // Unconditionally clear top-level per-agent text fields before overlay.
+        obj.notes = "";
+        obj.lastFeedback = "";
         if (myAssign) {
           var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
           obj.status = assignStatus || obj.status;
@@ -611,8 +617,11 @@ app.get("/api/leads", auth, async function(req, res) {
           obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
           if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
           if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+          // After rotation the top-level agentId points to the NEW owner; the
+          // old agent must see themselves as the owner to keep the view clean.
+          obj.agentId = myAssign.agentId;
         }
-        // Strip other agents' data so nothing about rotation or teammates leaks.
+        // Strip every other agent's data + rotation metadata.
         obj.agentHistory = (myAssign && myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
         obj.assignments = myAssign ? [myAssign] : [];
         obj.previousAgentIds = [];
@@ -660,30 +669,39 @@ app.get("/api/leads/:id", auth, async function(req, res) {
     var role = req.user.role;
     var uid = String(req.user.id);
     if (role === "sales") {
-      // Strict ownership. Sales can only read a lead whose current agentId
-      // is their own user id, and only when agentId is set. Unassigned leads
-      // (agentId null/missing) are never visible.
-      var leadAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
-      if (!leadAgentId || String(leadAgentId) !== uid) return res.status(404).json({ error: "Not found" });
+      // Access is granted by presence of an assignments[] entry for the caller,
+      // NOT by top-level agentId (which moves to the new owner on rotation).
+      // This keeps the lead reachable for the previous agent while still
+      // blocking anyone who has never held it.
       var obj = Object.assign({}, lead);
       var myAssign = (obj.assignments || []).find(function(a) {
         var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
         return String(aid) === uid;
       });
-      if (myAssign) {
-        var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
-        obj.status = assignStatus || obj.status;
-        obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
-        obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
-        obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
-        obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
-        obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
-        if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
-        if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
-      }
-      // Strip other agents' data.
-      obj.agentHistory = (myAssign && myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
-      obj.assignments = myAssign ? [myAssign] : [];
+      if (!myAssign) return res.status(404).json({ error: "Not found" });
+
+      // Wipe top-level per-agent text unconditionally before the overlay so
+      // another agent's notes / feedback can never leak through a stale
+      // top-level value.
+      obj.notes = "";
+      obj.lastFeedback = "";
+
+      var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
+      obj.status = assignStatus || obj.status;
+      obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
+      obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+      obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
+      obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
+      obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
+      if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
+      if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+      // Rewrite agentId so the old agent sees themselves as the owner even
+      // after rotation — never exposes the new owner's identity.
+      obj.agentId = myAssign.agentId;
+
+      // Strip every other agent's data + rotation metadata.
+      obj.agentHistory = (myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
+      obj.assignments = [myAssign];
       obj.previousAgentIds = [];
       obj.rotationCount = 0;
       obj.lastRotationAt = null;
@@ -713,10 +731,10 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
     var phone = decodeURIComponent(req.params.phone);
     var dupQuery = { $or: [{ phone: phone }, { phone2: phone }], archived: false };
     if (req.user.role === "sales") {
-      // Sales: only match among their OWN current leads (strict ownership).
-      // Unassigned leads are never visible, so they can't leak through duplicate
-      // lookups either.
-      dupQuery.agentId = new mongoose.Types.ObjectId(req.user.id);
+      // Match the visibility rule used by GET /api/leads: sales can only learn
+      // about duplicates on leads they hold or have previously held, by looking
+      // inside assignments[] rather than the top-level agentId.
+      dupQuery["assignments.agentId"] = new mongoose.Types.ObjectId(req.user.id);
     }
     var lead = await Lead.findOne(dupQuery).populate("agentId", "name title");
     if (lead) res.json({ exists: true, lead: lead });
@@ -1450,7 +1468,9 @@ app.post("/api/activities", auth, async function(req, res) {
 // previously gated by adminOnly, which silently 403'd sales and made their
 // own feedback disappear from the history panel. For sales we enforce two
 // rules server-side:
-//   1) they must currently own the lead (agentId match), otherwise 404,
+//   1) they must have (or have had) an assignments[] entry on this lead,
+//      otherwise 404 — access is granted by the per-agent slice, not by
+//      the current top-level agentId, so rotations don't revoke access,
 //   2) the returned rows are filtered to their own authorship only (their
 //      Activity entries + their own assignments[] slice).
 // Admin / sales_admin / manager / team_leader get the unfiltered timeline.
@@ -1461,14 +1481,16 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
     var role = req.user.role;
     var isSales = role === "sales";
 
-    // Sales: confirm ownership before reading anything. Unassigned or other
-    // agents' leads must not leak history either.
+    // Sales: confirm the caller has an assignments[] entry for this lead.
+    // Using top-level agentId here would hide the history from the previous
+    // agent right after a rotation.
     if (isSales) {
-      var ownLead = await Lead.findById(oid).select({ agentId: 1 }).lean();
+      var ownLead = await Lead.findById(oid).select({ "assignments.agentId": 1 }).lean();
       if (!ownLead) return res.status(404).json({ error: "Not found" });
-      if (!ownLead.agentId || String(ownLead.agentId) !== uid) {
-        return res.status(404).json({ error: "Not found" });
-      }
+      var hasEntry = (ownLead.assignments || []).some(function(a){
+        return a && a.agentId && String(a.agentId) === uid;
+      });
+      if (!hasEntry) return res.status(404).json({ error: "Not found" });
     }
 
     var activityQuery = { leadId: oid };
@@ -1611,7 +1633,12 @@ app.get("/api/stats", auth, async function(req, res) {
   try {
     var leadQuery = {};
     var actQuery = {};
-    if (req.user.role === "sales") { leadQuery.agentId = new mongoose.Types.ObjectId(req.user.id); actQuery.userId = req.user.id; }
+    if (req.user.role === "sales") {
+      // Count against the caller's own assignments[] slice so rotated leads
+      // still show up in their stats — same visibility rule as GET /api/leads.
+      leadQuery["assignments.agentId"] = new mongoose.Types.ObjectId(req.user.id);
+      actQuery.userId = req.user.id;
+    }
     var totalLeads = await Lead.countDocuments(leadQuery);
     var potential = await Lead.countDocuments(Object.assign({ status: "Potential" }, leadQuery));
     var hotCase = await Lead.countDocuments(Object.assign({ status: "HotCase" }, leadQuery));
