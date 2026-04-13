@@ -224,6 +224,19 @@ mongoose.connect(process.env.MONGODB_URI).then(function() {
   seedAdmin();
   // Clean up null entries in previousAgentIds from old rotation code
   Lead.updateMany({ previousAgentIds: null }, { $pull: { previousAgentIds: null } }).catch(function(){});
+  // One-time backfill for rows that reached MeetingDone before the
+  // hadMeeting/meetingDoneAt flag existed. Any lead/DR currently at
+  // MeetingDone, or any lead whose assignments[] slice ever recorded a
+  // MeetingDone status, gets stamped once. Idempotent — subsequent runs
+  // find nothing to update because hadMeeting is set.
+  Lead.updateMany(
+    { hadMeeting: { $ne: true }, $or: [ { status: "MeetingDone" }, { "assignments.status": "MeetingDone" }, { "assignments.status": "Meeting Done" } ] },
+    [{ $set: { hadMeeting: true, meetingDoneAt: { $ifNull: ["$updatedAt", "$createdAt", new Date()] } } }]
+  ).catch(function(e){ console.error("[hadMeeting lead backfill]", e && e.message); });
+  DailyRequest.updateMany(
+    { hadMeeting: { $ne: true }, status: "MeetingDone" },
+    [{ $set: { hadMeeting: true, meetingDoneAt: { $ifNull: ["$updatedAt", "$createdAt", new Date()] } } }]
+  ).catch(function(e){ console.error("[hadMeeting DR backfill]", e && e.message); });
 }).catch(function(err) {
   console.error("MongoDB connection error:", err);
 });

@@ -1161,6 +1161,12 @@ var LeadForm = function(p) {
   })());
   var [dupWarning, setDupWarning] = useState(null);
   var [saving, setSaving] = useState(false);
+  // Synchronous inflight guard — the button's disabled attribute depends on
+  // React state, which isn't committed to the DOM until after the current
+  // event loop tick, so a second click that fires before React commits could
+  // still slip through. A ref gives us a same-tick check that blocks the
+  // second submission before it ever hits the network.
+  var inflight = useRef(false);
   var isReq = p.isReq||false;
   var isEOIForm = p.initialStatus==="EOI"||(p.editId&&p.initial&&p.initial.status==="EOI");
 
@@ -1176,10 +1182,14 @@ var LeadForm = function(p) {
   var upd = function(k, v) { setForm(function(f){return Object.assign({},f,{[k]:v});}); };
 
   var submit = async function() {
+    // Block any second entry within the same async submission — ref check
+    // runs synchronously so it wins races that the React state can't.
+    if (inflight.current) return;
     if (!form.name||!form.phone) return;
     if (isEOIForm && !form.budget) { alert("Please enter the Amount (EGP)"); return; }
     if (isEOIForm && !form.project) { alert("Please enter the Project"); return; }
     if (isEOIForm && !form.eoiDeposit) { alert("Please enter the Deposit (EGP)"); return; }
+    inflight.current = true;
     setSaving(true);
     try {
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
@@ -1202,6 +1212,7 @@ var LeadForm = function(p) {
       }
       p.onSave(result);
     } catch(e) { alert(e.message); }
+    inflight.current = false;
     setSaving(false);
   };
 
@@ -1476,10 +1487,11 @@ var LeadsPage = function(p) {
   var filtered = p.leadFilter==="all"
     ? allVisible
     : p.leadFilter==="MeetingDone"
-      // Permanent meeting filter: include every lead that has EVER reached
-      // MeetingDone (hadMeeting=true), regardless of current status. Falls
-      // back to current-status match for legacy rows predating the flag.
-      ? allVisible.filter(function(l){return l.hadMeeting===true||l.status==="MeetingDone";})
+      // Permanent meeting filter: strictly hadMeeting === true. A lead is
+      // tagged on its first transition into MeetingDone and the flag is
+      // never cleared, so this captures every historical meeting regardless
+      // of the current status. Legacy rows are backfilled on server start.
+      ? allVisible.filter(function(l){return l.hadMeeting===true;})
       : allVisible.filter(function(l){return l.status===p.leadFilter;});
   // Management-alerts special filter (from dashboard)
   if (p.specialFilter && p.specialFilter.type) {
@@ -1710,7 +1722,7 @@ var LeadsPage = function(p) {
           var cnt=s.v==="all"
             ? allVisible.length
             : s.v==="MeetingDone"
-              ? allVisible.filter(function(l){return l.hadMeeting===true||l.status==="MeetingDone";}).length
+              ? allVisible.filter(function(l){return l.hadMeeting===true;}).length
               : allVisible.filter(function(l){return l.status===s.v;}).length;
           return <button key={s.v} onClick={function(){p.setFilter(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:p.leadFilter===s.v?C.accent:"#E8ECF1", background:p.leadFilter===s.v?C.accent+"12":"#fff", color:p.leadFilter===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
         })}
@@ -2179,7 +2191,7 @@ var LeadsPage = function(p) {
 
     {/* Add Modal */}
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={isReq?t.addRequest:t.addLead}>
-      <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={isReq} onClose={function(){setShowAdd(false);}} onSave={function(lead){p.setLeads(function(prev){return [lead].concat(prev);});setShowAdd(false);}}/>
+      <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={isReq} onClose={function(){setShowAdd(false);}} onSave={function(lead){p.setLeads(function(prev){var nid=String(lead&&lead._id||"");if(!nid)return[lead].concat(prev);if(prev.some(function(l){return gid(l)===nid;}))return prev.map(function(l){return gid(l)===nid?lead:l;});return [lead].concat(prev);});setShowAdd(false);}}/>
     </Modal>
     {/* Edit Modal */}
     {editLead&&<Modal show={true} onClose={function(){setEditLead(null);}} title={t.edit}>
@@ -3490,7 +3502,7 @@ var EOIPage = function(p) {
         initialStatus="EOI"
         initial={{status:"EOI", source:"Facebook", name:"", phone:"", phone2:"", budget:"", project:"", notes:"", eoiDeposit:""}}
         onClose={function(){setShowAdd(false);}}
-        onSave={function(added){p.setLeads(function(prev){return [added].concat(prev);});setShowAdd(false);}}/>
+        onSave={function(added){p.setLeads(function(prev){var nid=String(added&&added._id||"");if(!nid)return[added].concat(prev);if(prev.some(function(l){return gid(l)===nid;}))return prev.map(function(l){return gid(l)===nid?added:l;});return [added].concat(prev);});setShowAdd(false);}}/>
     </Modal>}
 
     {editLead&&<Modal show={true} onClose={function(){setEditLead(null);}} title={t.edit}>
@@ -3927,7 +3939,7 @@ var DealsPage = function(p) {
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} initialStatus="DoneDeal"
         initial={{name:"",phone:"",phone2:"",email:"",budget:"",project:"",source:"Referral",agentId:"",callbackTime:"",notes:"",status:"DoneDeal"}}
         onClose={function(){setShowAdd(false);}}
-        onSave={function(lead){p.setLeads(function(prev){return [lead].concat(prev);});setShowAdd(false);}}/>
+        onSave={function(lead){p.setLeads(function(prev){var nid=String(lead&&lead._id||"");if(!nid)return[lead].concat(prev);if(prev.some(function(l){return gid(l)===nid;}))return prev.map(function(l){return gid(l)===nid?lead:l;});return [lead].concat(prev);});setShowAdd(false);}}/>
     </Modal>
 
     {editDeal&&<Modal show={true} onClose={function(){setEditDeal(null);}} title={t.edit}>
@@ -4618,10 +4630,11 @@ var DailyRequestsPage = function(p) {
 
   var filtered=requests.filter(function(r){
     if(filterStatus!=="all"){
-      // Permanent meeting filter: include every DR that has EVER reached
-      // MeetingDone (hadMeeting=true), regardless of current status.
+      // Permanent meeting filter: strictly hadMeeting === true (stamped on
+      // first transition, never cleared). Legacy rows are backfilled on
+      // server start.
       if(filterStatus==="MeetingDone"){
-        if(!(r.hadMeeting===true||r.status==="MeetingDone"))return false;
+        if(r.hadMeeting!==true) return false;
       } else if(r.status!==filterStatus) return false;
     }
     if(agentFilter){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;if(aid!==agentFilter)return false;}
@@ -4745,7 +4758,15 @@ var DailyRequestsPage = function(p) {
         status:form.status||"NewLead"
       };
       var r=await apiFetch("/api/daily-requests","POST",submitData,p.token);
-      setRequests(function(prev){return [r].concat(prev);});
+      // Dedupe by _id — the backend also broadcasts a dr_updated WS event for
+      // the same insert, and if it races this prepend we'd end up with two
+      // rows in local state until the next refresh.
+      setRequests(function(prev){
+        var nid=String(r&&r._id||"");
+        if(!nid) return [r].concat(prev);
+        if(prev.some(function(x){return gid(x)===nid;})) return prev.map(function(x){return gid(x)===nid?r:x;});
+        return [r].concat(prev);
+      });
       setShowAdd(false);setForm({name:"",phone:"",phone2:"",propertyType:"",area:"",budget:"",notes:"",agentId:"",callbackTime:"",status:"NewLead"});
     }catch(e){alert(e.message);}setSaving(false);
   };
@@ -4788,7 +4809,7 @@ var DailyRequestsPage = function(p) {
         var cnt=s.v==="all"
           ? requests.length
           : s.v==="MeetingDone"
-            ? requests.filter(function(r){return r.hadMeeting===true||r.status==="MeetingDone";}).length
+            ? requests.filter(function(r){return r.hadMeeting===true;}).length
             : requests.filter(function(r){return r.status===s.v;}).length;
         return <button key={s.v} onClick={function(){setFilterStatus(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:filterStatus===s.v?C.accent:"#E8ECF1", background:filterStatus===s.v?C.accent+"12":"#fff", color:filterStatus===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
       })}
