@@ -143,6 +143,13 @@ var Notification = mongoose.model("Notification", new mongoose.Schema({
   seenBy:[{type:String}]
 },{timestamps:true}));
 
+// AppSetting — key/value store for global CRM settings (rotation config etc).
+// Single source of truth across all clients and server-side jobs.
+var AppSetting = mongoose.model("AppSetting", new mongoose.Schema({
+  key:{type:String,required:true,unique:true},
+  value:{type:mongoose.Schema.Types.Mixed,default:{}}
+},{timestamps:true}));
+
 var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
   email:{type:String,default:""}, budget:{type:String,default:""}, propertyType:{type:String,default:""},
@@ -511,6 +518,70 @@ app.get("/api/me", auth, async function(req, res) {
   try {
     var user = await User.findById(req.user.id).select("-password");
     res.json(user);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== APP SETTINGS — ROTATION CONFIG (single source of truth in MongoDB) =====
+// Defaults used when no record exists yet. Must match the UI defaults.
+var ROTATION_DEFAULTS = {
+  reassignAgents: [],
+  naCount: 2, naHours: 1,
+  niDays: 1, noActDays: 2, cbDays: 1, hotDays: 2
+};
+async function getRotationSettings() {
+  var doc = await AppSetting.findOne({ key: "rotation" }).lean();
+  var v = (doc && doc.value) || {};
+  return {
+    reassignAgents: Array.isArray(v.reassignAgents) ? v.reassignAgents.map(String) : ROTATION_DEFAULTS.reassignAgents,
+    naCount:   Number(v.naCount   != null ? v.naCount   : ROTATION_DEFAULTS.naCount),
+    naHours:   Number(v.naHours   != null ? v.naHours   : ROTATION_DEFAULTS.naHours),
+    niDays:    Number(v.niDays    != null ? v.niDays    : ROTATION_DEFAULTS.niDays),
+    noActDays: Number(v.noActDays != null ? v.noActDays : ROTATION_DEFAULTS.noActDays),
+    cbDays:    Number(v.cbDays    != null ? v.cbDays    : ROTATION_DEFAULTS.cbDays),
+    hotDays:   Number(v.hotDays   != null ? v.hotDays   : ROTATION_DEFAULTS.hotDays)
+  };
+}
+
+// Any authenticated user can READ rotation settings — the rotation loop runs
+// client-side for every signed-in user and must see the same numbers the admin saved.
+app.get("/api/settings/rotation", auth, async function(req, res) {
+  try {
+    res.json(await getRotationSettings());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Only pure "admin" role can WRITE — sales_admin is intentionally excluded per spec.
+app.put("/api/settings/rotation", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Admin only" });
+    var b = req.body || {};
+    var clamp = function(n, def, min, max){
+      var x = Number(n);
+      if (!isFinite(x)) x = def;
+      if (x < min) x = min;
+      if (x > max) x = max;
+      return x;
+    };
+    var value = {
+      reassignAgents: Array.isArray(b.reassignAgents) ? b.reassignAgents.map(String) : [],
+      naCount:   clamp(b.naCount,   ROTATION_DEFAULTS.naCount,   1, 100),
+      naHours:   clamp(b.naHours,   ROTATION_DEFAULTS.naHours,   1, 720),
+      niDays:    clamp(b.niDays,    ROTATION_DEFAULTS.niDays,    1, 365),
+      noActDays: clamp(b.noActDays, ROTATION_DEFAULTS.noActDays, 1, 365),
+      cbDays:    clamp(b.cbDays,    ROTATION_DEFAULTS.cbDays,    1, 365),
+      hotDays:   clamp(b.hotDays,   ROTATION_DEFAULTS.hotDays,   1, 365)
+    };
+    await AppSetting.findOneAndUpdate(
+      { key: "rotation" },
+      { $set: { value: value } },
+      { upsert: true, new: true }
+    );
+    try { broadcast("settings_updated", { key: "rotation", value: value }); } catch(e) {}
+    res.json(value);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

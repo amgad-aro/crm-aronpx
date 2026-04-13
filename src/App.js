@@ -638,7 +638,7 @@ var Sidebar = function(p) {
     isAdmin&&{id:"team",label:t.team,adminSection:true},
     isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
     isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
-    isOnlyAdmin&&{id:"settings",label:t.settings,adminSection:true},
+    p.cu.role==="admin"&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
   var leadsCount = Array.isArray(p.leads) ? p.leads.filter(function(l){return !l.archived;}).length : 0;
@@ -5822,36 +5822,60 @@ var SettingsPage = function(p) {
   var [company,setCompany]=useState(function(){return getSaved('company','شركة ARO العقارية');});
   var [em,setEm]=useState(function(){return getSaved('email','admin@aro.com');});
   var [ph,setPh]=useState(function(){return getSaved('phone','01012345678');});
-  var [reassignAgents,setReassignAgents]=useState(function(){
-    try{return JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]');}catch(e){return[];}
-  });
-  // Rotation durations (in hours)
-  var [rotNoAnswerCount,setRotNoAnswerCount]=useState(function(){try{return Number(localStorage.getItem('crm_rot_na_count')||'2');}catch(e){return 2;}});
-  var [rotNoAnswerHours,setRotNoAnswerHours]=useState(function(){try{return Number(localStorage.getItem('crm_rot_na_hours')||'1');}catch(e){return 1;}});
-  var [rotNotIntDays,setRotNotIntDays]=useState(function(){try{return Number(localStorage.getItem('crm_rot_ni_days')||'1');}catch(e){return 1;}});
-  var [rotNoActDays,setRotNoActDays]=useState(function(){try{return Number(localStorage.getItem('crm_rot_noact_days')||'2');}catch(e){return 2;}});
-  var [rotCbDays,setRotCbDays]=useState(function(){try{return Number(localStorage.getItem('crm_rot_cb_days')||'1');}catch(e){return 1;}});
-  var [rotHotDays,setRotHotDays]=useState(function(){try{return Number(localStorage.getItem('crm_rot_hot_days')||'2');}catch(e){return 2;}});
+  // Rotation settings live in MongoDB — single source of truth for every user.
+  // Start with empty/defaults; useEffect below hydrates from /api/settings/rotation.
+  var [reassignAgents,setReassignAgents]=useState([]);
+  var [rotNoAnswerCount,setRotNoAnswerCount]=useState(2);
+  var [rotNoAnswerHours,setRotNoAnswerHours]=useState(1);
+  var [rotNotIntDays,setRotNotIntDays]=useState(1);
+  var [rotNoActDays,setRotNoActDays]=useState(2);
+  var [rotCbDays,setRotCbDays]=useState(1);
+  var [rotHotDays,setRotHotDays]=useState(2);
   var [saved,setSaved]=useState(false);
+  var [saveError,setSaveError]=useState("");
+  var [loading,setLoading]=useState(true);
+
+  useEffect(function(){
+    var cancelled=false;
+    apiFetch("/api/settings/rotation","GET",null,p.token).then(function(s){
+      if(cancelled||!s) return;
+      setReassignAgents(Array.isArray(s.reassignAgents)?s.reassignAgents.map(String):[]);
+      setRotNoAnswerCount(Number(s.naCount)||2);
+      setRotNoAnswerHours(Number(s.naHours)||1);
+      setRotNotIntDays(Number(s.niDays)||1);
+      setRotNoActDays(Number(s.noActDays)||2);
+      setRotCbDays(Number(s.cbDays)||1);
+      setRotHotDays(Number(s.hotDays)||2);
+    }).catch(function(){}).finally(function(){ if(!cancelled) setLoading(false); });
+    return function(){ cancelled=true; };
+  },[p.token]);
+
   var toggleAgent=function(uid){
     setReassignAgents(function(prev){
       return prev.includes(uid)?prev.filter(function(x){return x!==uid;}):[...prev,uid];
     });
   };
-  var doSave=function(){
+  var doSave=async function(){
+    setSaveError("");
     try{
       localStorage.setItem('crm_set_company',company);
       localStorage.setItem('crm_set_email',em);
       localStorage.setItem('crm_set_phone',ph);
-      localStorage.setItem('crm_set_reassign_agents',JSON.stringify(reassignAgents));
-      localStorage.setItem('crm_rot_na_count',String(rotNoAnswerCount));
-      localStorage.setItem('crm_rot_na_hours',String(rotNoAnswerHours));
-      localStorage.setItem('crm_rot_ni_days',String(rotNotIntDays));
-      localStorage.setItem('crm_rot_noact_days',String(rotNoActDays));
-      localStorage.setItem('crm_rot_cb_days',String(rotCbDays));
-      localStorage.setItem('crm_rot_hot_days',String(rotHotDays));
     }catch(e){}
-    setSaved(true); setTimeout(function(){setSaved(false);},2500);
+    try{
+      await apiFetch("/api/settings/rotation","PUT",{
+        reassignAgents: reassignAgents,
+        naCount: Number(rotNoAnswerCount),
+        naHours: Number(rotNoAnswerHours),
+        niDays:  Number(rotNotIntDays),
+        noActDays: Number(rotNoActDays),
+        cbDays:  Number(rotCbDays),
+        hotDays: Number(rotHotDays)
+      },p.token,p.csrfToken);
+      setSaved(true); setTimeout(function(){setSaved(false);},2500);
+    }catch(e){
+      setSaveError(e&&e.message?e.message:"Save failed");
+    }
   };
   var rotInpStyle={width:60,padding:"4px 8px",borderRadius:7,border:"1px solid #E2E8F0",fontSize:13,textAlign:"center"};
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -5903,7 +5927,8 @@ var SettingsPage = function(p) {
 
       <Inp label={t.language} type="select" value={p.lang} onChange={function(e){p.setLang(e.target.value);}} options={[{value:"ar",label:"Arabic"},{value:"en",label:"English"}]}/>
       {saved&&<div style={{marginBottom:12,padding:"10px 14px",background:"#DCFCE7",borderRadius:10,color:"#15803D",fontSize:13,fontWeight:600}}>✅ Saved successfully</div>}
-      <Btn onClick={doSave}>{t.save}</Btn>
+      {saveError&&<div style={{marginBottom:12,padding:"10px 14px",background:"#FEE2E2",borderRadius:10,color:"#B91C1C",fontSize:13,fontWeight:600}}>❌ {saveError}</div>}
+      <Btn onClick={doSave} disabled={loading}>{t.save}</Btn>
     </Card>
   </div>;
 };
@@ -6624,22 +6649,11 @@ export default function CRMApp() {
   useEffect(function(){
     if(!token||!leads.length||!users.length) return;
 
-    // Load rotation agents from settings — if none selected, NO rotation
-    var getSavedAgents = function(){
-      try{return JSON.parse(localStorage.getItem('crm_set_reassign_agents')||'[]');}catch(e){return[];}
-    };
-
-    // Load configurable durations from settings
-    var getRotDurations = function(){
-      try{return {
-        naCount:  Number(localStorage.getItem('crm_rot_na_count')||'2'),
-        naHours:  Number(localStorage.getItem('crm_rot_na_hours')||'1'),
-        niDays:   Number(localStorage.getItem('crm_rot_ni_days')||'1'),
-        noActDays:Number(localStorage.getItem('crm_rot_noact_days')||'2'),
-        cbDays:   Number(localStorage.getItem('crm_rot_cb_days')||'1'),
-        hotDays:  Number(localStorage.getItem('crm_rot_hot_days')||'2'),
-      };}catch(e){return{naCount:2,naHours:1,niDays:1,noActDays:2,cbDays:1,hotDays:2};}
-    };
+    // Rotation config (agents + durations) lives in MongoDB — see /api/settings/rotation.
+    // Every cycle re-fetches so admin edits take effect across all users without reload.
+    // Cached for the current cycle only; populated by runChecks before any rotation work.
+    var cycleSavedIds = [];
+    var getSavedAgents = function(){ return cycleSavedIds; };
 
     // Helper: pick agent using round-robin rotation
     var pickAgent = function(excludeId, previousAgentIds){
@@ -6714,10 +6728,24 @@ export default function CRMApp() {
       if(isRunning) return;
       isRunning = true;
       try{
+      // Pull the latest rotation settings from Mongo at the start of every cycle
+      // — any admin change takes effect immediately for every signed-in client.
+      var dur;
+      try{
+        var s = await apiFetch("/api/settings/rotation","GET",null,token);
+        cycleSavedIds = Array.isArray(s&&s.reassignAgents) ? s.reassignAgents.map(String) : [];
+        dur = {
+          naCount:  Number(s&&s.naCount)||2,
+          naHours:  Number(s&&s.naHours)||1,
+          niDays:   Number(s&&s.niDays)||1,
+          noActDays:Number(s&&s.noActDays)||2,
+          cbDays:   Number(s&&s.cbDays)||1,
+          hotDays:  Number(s&&s.hotDays)||2
+        };
+      }catch(e){ isRunning=false; return; }
       var now = Date.now();
-      var savedIds = getSavedAgents();
+      var savedIds = cycleSavedIds;
       if(!savedIds.length){ isRunning=false; return; }
-      var dur = getRotDurations();
       var rotatedThisCycle = new Set();
 
       var salesLeads = leads.filter(function(l){
@@ -6855,7 +6883,7 @@ export default function CRMApp() {
       case "team": return <TeamPage {...sp}/>;
       case "users": return <UsersPage {...sp}/>;
       case "archive": return <ArchivePage {...sp}/>;
-      case "settings": return <SettingsPage {...sp} users={users}/>;
+      case "settings": return currentUser.role==="admin" ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
       default: return <DashboardPage {...sp}/>;
     }
   };
