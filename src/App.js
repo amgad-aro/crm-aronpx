@@ -2442,9 +2442,9 @@ var DashboardPage = function(p) {
     </div>;
   };
 
-  var bRow=function(label,count,total2,color){
+  var bRow=function(label,count,total2,color,onClick){
     var pct=total2>0?Math.max(2,Math.round(count/total2*100)):0;
-    return <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
+    return <div onClick={onClick} style={{display:"flex",alignItems:"center",gap:8,marginBottom:7,cursor:onClick?"pointer":"default"}}>
       <div style={{fontSize:12,color:"#64748B",width:82,flexShrink:0}}>{label}</div>
       <div style={{flex:1,height:5,background:"#F1F5F9",borderRadius:3,overflow:"hidden"}}>
         <div style={{height:"100%",width:pct+"%",background:color,borderRadius:3}}/></div>
@@ -2506,12 +2506,12 @@ var DashboardPage = function(p) {
       {/* KPI strip — on mobile force a fixed 2-column grid so every card is
            equal width and none can overflow. Desktop keeps its auto-fit. */}
       <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2, minmax(0, 1fr))":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:isMobile?14:20}}>
-        {kpiCard("My Leads",myTotal2,"assigned","#1565C0","#ffffff",function(){p.nav("leads");})}
-        {kpiCard("Daily Requests",myDR2,"total","#00796B","#ffffff",null)}
-        {kpiCard("Followups",myLeads2.filter(function(l){return l.callbackTime&&!l.archived;}).length,"scheduled","#E65100","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
-        {kpiCard("Interested",myInt2,myTotal2>0?Math.round(myInt2/myTotal2*100)+"%":"0%","#6A1B9A","#ffffff",null)}
-        {kpiCard("Meetings",myMeet2,myTotal2>0?Math.round(myMeet2/myTotal2*100)+"%":"0%","#2E7D32","#ffffff",null)}
-        {kpiCard("Target",myTotal2>0?Math.round(myMeet2/myTotal2*100*5)+"%":"0%","this month","#AD1457","#ffffff",null)}
+        {kpiCard("My Leads",myTotal2,"assigned","#1565C0","#ffffff",function(){p.setFilter&&p.setFilter("all");p.nav("leads");})}
+        {kpiCard("Daily Requests",myDR2,"total","#00796B","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("all");p.nav("dailyReq");})}
+        {kpiCard("Followups",myLeads2.filter(function(l){return l.callbackTime&&!l.archived;}).length,"scheduled","#E65100","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("CallBack");p.nav("dailyReq");})}
+        {kpiCard("Interested",myInt2,myTotal2>0?Math.round(myInt2/myTotal2*100)+"%":"0%","#6A1B9A","#ffffff",function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");})}
+        {kpiCard("Meetings",myMeet2,myTotal2>0?Math.round(myMeet2/myTotal2*100)+"%":"0%","#2E7D32","#ffffff",function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");})}
+        {kpiCard("Target",myTotal2>0?Math.round(myMeet2/myTotal2*100*5)+"%":"0%","this month","#AD1457","#ffffff",function(){p.nav("kpis");})}
       </div>
       {/* Info cards — stack to one column on mobile so every card fills the
            viewport width with consistent gutters. */}
@@ -2532,12 +2532,12 @@ var DashboardPage = function(p) {
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
           <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udea8"} Urgent {"\u2014"} Action Needed</div>
           {urgent2.length===0&&urgentNew2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} No urgent items</div>}
-          {urgent2.map(function(l,i){var mins=Math.round((now-new Date(l.callbackTime).getTime())/60000);return <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0}}>
+          {urgent2.map(function(l,i){var mins=Math.round((now-new Date(l.callbackTime).getTime())/60000);return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
             <div style={{width:8,height:8,borderRadius:"50%",background:"#EF4444",flexShrink:0}}/>
             <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Overdue {mins>60?Math.round(mins/60)+"h":mins+"min"} {"\u00b7"} {l.status}</div></div>
             <span style={{fontSize:11,fontWeight:700,color:"#DC2626",flexShrink:0}}>LATE</span>
           </div>;})}
-          {urgentNew2.map(function(l,i){var hrs=Math.round((now-new Date(l.createdAt).getTime())/3600000);return <div key={"n"+i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0}}>
+          {urgentNew2.map(function(l,i){var hrs=Math.round((now-new Date(l.createdAt).getTime())/3600000);return <div key={"n"+i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
             <div style={{width:8,height:8,borderRadius:"50%",background:"#3B82F6",flexShrink:0}}/>
             <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>New lead {"\u2014"} no action {hrs}h</div></div>
             <span style={{fontSize:11,fontWeight:700,color:"#1D4ED8",flexShrink:0}}>NEW</span>
@@ -2549,7 +2549,7 @@ var DashboardPage = function(p) {
           {schedule2.map(function(l,i){
             var t2=l.callbackTime?new Date(l.callbackTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"\u2014";
             var isLate2=l.callbackTime&&new Date(l.callbackTime).getTime()<now;
-            return <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0}}>
+            return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
               <div style={{fontSize:11,color:isLate2?"#DC2626":"#64748B",width:38,flexShrink:0,fontWeight:600}}>{t2}</div>
               <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:isLate2?"#DC2626":"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isLate2?"Overdue":"Callback scheduled"}</div></div>
               <div style={{width:8,height:8,borderRadius:"50%",background:isLate2?"#EF4444":"#10B981",flexShrink:0}}/>
@@ -2560,20 +2560,20 @@ var DashboardPage = function(p) {
       <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
           <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>My Leads {"\u2014"} Status</div>
-          {[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"]].map(function(s){return bRow(s[0],mySC2[s[1]]||0,myTotal2,s[2]);}) }
+          {[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"]].map(function(s){return bRow(s[0],mySC2[s[1]]||0,myTotal2,s[2],function(){p.setFilter&&p.setFilter(s[1]);p.nav("leads");});}) }
           <div style={{borderTop:"1px solid #F1F5F9",marginTop:8,paddingTop:8,display:"flex",gap:14,fontSize:11}}>
-            <span style={{color:"#64748B"}}>Overdue: <span style={{color:"#EF4444",fontWeight:700}}>{myOv2}</span></span>
-            <span style={{color:"#64748B"}}>Untouched: <span style={{color:"#3B82F6",fontWeight:700}}>{myLeads2.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*DAY;}).length}</span></span>
+            <span onClick={function(){p.setFilter&&p.setFilter("CallBack");p.nav("leads");}} style={{color:"#64748B",cursor:"pointer"}}>Overdue: <span style={{color:"#EF4444",fontWeight:700}}>{myOv2}</span></span>
+            <span onClick={function(){p.setFilter&&p.setFilter("NewLead");p.nav("leads");}} style={{color:"#64748B",cursor:"pointer"}}>Untouched: <span style={{color:"#3B82F6",fontWeight:700}}>{myLeads2.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*DAY;}).length}</span></span>
           </div>
         </div>
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box",overflow:"hidden"}}>
           <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>My Conversion Funnel</div>
-          {[{l:"Assigned",v:myTotal2,c:"#DBEAFE",tc:"#1E40AF"},{l:"Contacted",v:myTotal2-(mySC2["NewLead"]||0),c:"#DCFCE7",tc:"#166534"},{l:"Interested",v:myInt2,c:"#FEF3C7",tc:"#92400E"},{l:"Hot Case",v:mySC2["HotCase"]||0,c:"#EDE9FE",tc:"#5B21B6"},{l:"Meeting",v:myMeet2,c:"#D1FAE5",tc:"#065F46"},{l:"Deal",v:mySC2["DoneDeal"]||0,c:"#FFE4E6",tc:"#9F1239"}].map(function(row,i){
+          {[{l:"Assigned",v:myTotal2,c:"#DBEAFE",tc:"#1E40AF",nav:function(){p.setFilter&&p.setFilter("all");p.nav("leads");}},{l:"Contacted",v:myTotal2-(mySC2["NewLead"]||0),c:"#DCFCE7",tc:"#166534",nav:function(){p.setFilter&&p.setFilter("all");p.nav("leads");}},{l:"Interested",v:myInt2,c:"#FEF3C7",tc:"#92400E",nav:function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");}},{l:"Hot Case",v:mySC2["HotCase"]||0,c:"#EDE9FE",tc:"#5B21B6",nav:function(){p.setFilter&&p.setFilter("HotCase");p.nav("leads");}},{l:"Meeting",v:myMeet2,c:"#D1FAE5",tc:"#065F46",nav:function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");}},{l:"Deal",v:mySC2["DoneDeal"]||0,c:"#FFE4E6",tc:"#9F1239",nav:function(){p.nav("deals");}}].map(function(row,i){
             var pct=myTotal2>0?Math.max(6,Math.round(row.v/myTotal2*100)):6;
             // Funnel row is flex+min-width-0 so the bar can shrink within the
             // card instead of pushing the layout out horizontally on narrow
             // screens.
-            return <div key={i} style={{display:"flex",alignItems:"center",gap:isMobile?6:8,marginBottom:6,minWidth:0}}>
+            return <div key={i} onClick={row.nav} style={{display:"flex",alignItems:"center",gap:isMobile?6:8,marginBottom:6,minWidth:0,cursor:"pointer"}}>
               <div style={{fontSize:11,color:"#64748B",width:isMobile?55:65,flexShrink:0,textAlign:"right",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{row.l}</div>
               <div style={{flex:1,minWidth:0,height:20,borderRadius:4,background:"#F8FAFC",position:"relative",overflow:"hidden"}}>
                 <div style={{position:"absolute",inset:0,height:"100%",borderRadius:4,background:row.c,width:pct+"%",display:"flex",alignItems:"center",padding:"0 8px",minWidth:0,boxSizing:"border-box"}}>
@@ -2590,7 +2590,7 @@ var DashboardPage = function(p) {
           {recentActs2.map(function(a,i){
             var lead2=myLeads2.find(function(l){return String(l._id)===String(a.leadId);});
             var stC=statusColors2[lead2&&lead2.status]||"#94A3B8";
-            return <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0}}>
+            return <div key={i} onClick={function(){ if(lead2) p.nav("leads",lead2); }} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:lead2?"pointer":"default"}}>
               <div style={{width:8,height:8,borderRadius:"50%",background:stC,flexShrink:0}}/>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:12,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{lead2?lead2.name:"Lead"} {"\u2014"} <span style={{color:stC,fontWeight:600}}>{lead2&&lead2.status}</span></div>
@@ -4658,9 +4658,14 @@ var DailyRequestsPage = function(p) {
   var [drHistoryReq,setDrHistoryReq]=useState(null);
   var [drHistoryList,setDrHistoryList]=useState([]);
   var [drHistoryLoading,setDrHistoryLoading]=useState(false);
-  var [filterStatus,setFilterStatus]=useState("all");
+  // Honour a one-shot initial filter from the Sales Dashboard (e.g. CallBack).
+  var [filterStatus,setFilterStatus]=useState(p.drInitFilter||"all");
   var [sortBy,setSortBy]=useState("lastActivity");
   var [agentFilter,setAgentFilter]=useState("");
+  useEffect(function(){
+    if(p.drInitFilter){ setFilterStatus(p.drInitFilter); if(p.setDrInitFilter) p.setDrInitFilter(null); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
   var [form,setForm]=useState({name:"",phone:"",phone2:"",propertyType:"",area:"",budget:"",notes:"",agentId:"",callbackTime:"",status:"NewLead"});
   var [selected2,setSelected2]=useState([]);
   var [showBulk,setShowBulk]=useState(false);
@@ -6189,6 +6194,9 @@ export default function CRMApp() {
   var [dailyReqs,setDailyReqs]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
   var [leadSpecialFilter,setLeadSpecialFilter]=useState(null);
+  // One-shot initial filter for the Daily Requests page — set from the Sales
+  // Dashboard click handlers; the page consumes it on mount and clears it.
+  var [drInitFilter,setDrInitFilter]=useState(null);
   useEffect(function(){ if (page && page!=="leads") setLeadSpecialFilter(null); },[page]);
   var [leadsPage,setLeadsPage]=useState(1); var [leadsTotal,setLeadsTotal]=useState(0); var [leadsTotalPages,setLeadsTotalPages]=useState(0);
   var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
@@ -6865,7 +6873,7 @@ export default function CRMApp() {
   var myId = String(currentUser.id||currentUser._id||"");
   var myTeamUsers = users; // server handles all filtering per role
 
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:dailyReqs};
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:dailyReqs};
 
   var renderPage=function(){
     switch(currentPage){
