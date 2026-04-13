@@ -323,8 +323,10 @@ var StatCard = function(p) {
 };
 var Modal = function(p) {
   if (!p.show) return null;
-  return <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.52)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:600, padding:16 }} onClick={p.onClose}>
-    <div style={{ background:"#fff", borderRadius:18, padding:26, width:"100%", maxWidth:p.w||500, maxHeight:"90vh", overflowY:"auto" }} onClick={function(e){e.stopPropagation();}}>
+  // className hooks so the global mobile stylesheet can make the overlay
+  // full-screen on phones without disturbing desktop centering.
+  return <div className="crm-modal" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.52)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:600, padding:16 }} onClick={p.onClose}>
+    <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:18, padding:26, width:"100%", maxWidth:p.w||500, maxHeight:"90vh", overflowY:"auto" }} onClick={function(e){e.stopPropagation();}}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
         <h2 style={{ margin:0, fontSize:17, fontWeight:700, color:C.text }}>{p.title}</h2>
         <button onClick={p.onClose} style={{ width:28, height:28, borderRadius:7, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><X size={14}/></button>
@@ -2482,9 +2484,7 @@ var DashboardPage = function(p) {
     // actually gave us. Desktop layout (the else-branch paddings / rows)
     // is preserved untouched.
     return <div className="crm-dash crm-dash-sales" style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100vw",boxSizing:"border-box",overflowX:"hidden"}}>
-      {/* Same mobile safety-net as the admin dashboard — declared once per
-          render of this branch so sales users get the same guarantees. */}
-      <style>{"\n@media (max-width: 768px) {\n  .crm-dash, .crm-dash * { box-sizing: border-box; }\n  .crm-dash { width: 100% !important; max-width: 100vw !important; overflow-x: hidden !important; padding-left: 10px !important; padding-right: 10px !important; }\n  .crm-dash .crm-dash-card { width: 100% !important; max-width: 100% !important; min-width: 0 !important; padding: 14px !important; box-sizing: border-box !important; }\n  .crm-dash .crm-dash-card > * { max-width: 100% !important; }\n  .crm-dash .crm-dash-scroll { overflow-x: auto !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; max-width: 100% !important; width: 100% !important; }\n  .crm-dash .crm-dash-header { flex-direction: column !important; align-items: stretch !important; width: 100% !important; }\n  .crm-dash .crm-dash-header > * { width: 100% !important; min-width: 0 !important; }\n  .crm-dash .crm-dash-filters { overflow-x: visible !important; flex-wrap: wrap !important; gap: 6px !important; }\n  .crm-dash .crm-dash-filters > * { flex: 1 1 auto !important; min-width: 0 !important; }\n  .crm-dash .crm-dash-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; }\n  .crm-dash .crm-dash-row { grid-template-columns: minmax(0, 1fr) !important; gap: 10px !important; }\n  .crm-dash h1, .crm-dash h2, .crm-dash h3 { max-width: 100%; overflow-wrap: anywhere; }\n}\n"}</style>
+      {/* Mobile safety-net CSS lives once in the app root — see CRMApp. */}
       <div className="crm-dash-header" style={{display:"flex",alignItems:isMobile?"stretch":"center",justifyContent:"space-between",marginBottom:isMobile?14:20,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
         <div style={{minWidth:0,width:isMobile?"100%":"auto"}}>
           <div style={{fontSize:isMobile?16:20,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{greeting} {p.cu.name}</div>
@@ -2889,11 +2889,7 @@ var DashboardPage = function(p) {
   var initialsOf = function(n){return (n||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();};
 
   return <div className="crm-dash crm-dash-admin" style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100vw",boxSizing:"border-box",overflowX:"hidden"}}>
-    {/* Mobile safety-net CSS — scoped to .crm-dash, applies only below 768px.
-        Desktop (>=768px) is untouched. This guarantees consistent spacing and
-        no horizontal overflow regardless of any inline width/padding inside
-        the dashboard tree. */}
-    <style>{"\n@media (max-width: 768px) {\n  .crm-dash, .crm-dash * { box-sizing: border-box; }\n  .crm-dash { width: 100% !important; max-width: 100vw !important; overflow-x: hidden !important; padding-left: 10px !important; padding-right: 10px !important; }\n  .crm-dash .crm-dash-card { width: 100% !important; max-width: 100% !important; min-width: 0 !important; padding: 14px !important; box-sizing: border-box !important; }\n  /* Any descendant grid/flex row that tried to overflow — clamp it. */\n  .crm-dash .crm-dash-card > * { max-width: 100% !important; }\n  /* Wide tables (Agent Performance, etc.) become a horizontal scroll area\n     inside their card, never push the page. */\n  .crm-dash .crm-dash-scroll { overflow-x: auto !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; max-width: 100% !important; width: 100% !important; }\n  /* Header row stacks vertically, filter row wraps cleanly. */\n  .crm-dash .crm-dash-header { flex-direction: column !important; align-items: stretch !important; width: 100% !important; }\n  .crm-dash .crm-dash-header > * { width: 100% !important; min-width: 0 !important; }\n  .crm-dash .crm-dash-filters { overflow-x: visible !important; flex-wrap: wrap !important; gap: 6px !important; }\n  .crm-dash .crm-dash-filters > * { flex: 1 1 auto !important; min-width: 0 !important; }\n  /* KPI strip: always a 2-col grid so every tile is equal width. */\n  .crm-dash .crm-dash-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; }\n  /* Multi-col info rows collapse to a single column. */\n  .crm-dash .crm-dash-row { grid-template-columns: minmax(0, 1fr) !important; gap: 10px !important; }\n  .crm-dash h1, .crm-dash h2, .crm-dash h3 { max-width: 100%; overflow-wrap: anywhere; }\n}\n"}</style>
+    {/* Mobile safety-net CSS lives once in the app root — see CRMApp. */}
     <div className="crm-dash-header" style={{display:"flex",alignItems:isMobile?"flex-start":"center",justifyContent:"space-between",marginBottom:isMobile?16:24,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
       <div style={{minWidth:0,width:isMobile?"100%":"auto"}}>
         <div style={{fontSize:isMobile?16:22,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{greeting+" "+p.cu.name}</div>
@@ -6850,8 +6846,46 @@ export default function CRMApp() {
     }
   };
 
-  return <div style={{ display:"flex", minHeight:"100vh", background:C.bg, fontFamily:"'Cairo','Segoe UI',Tahoma,sans-serif", direction:t.dir }}>
-    <style>{"* { box-sizing: border-box; margin: 0; padding: 0; } ::-webkit-scrollbar { width: 4px; height: 4px; } ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; } input::placeholder, textarea::placeholder { color: #94A3B8; } @keyframes spin { to { transform: rotate(360deg); } }"}</style>
+  return <div className="crm-app" style={{ display:"flex", minHeight:"100vh", background:C.bg, fontFamily:"'Cairo','Segoe UI',Tahoma,sans-serif", direction:t.dir }}>
+    {/* Global base styles + mobile safety-net. Desktop behaviour is unchanged
+        — every mobile rule lives inside @media (max-width: 768px). The goal
+        of the mobile block is a reliable layer-of-last-resort: no page can
+        horizontally scroll, every modal becomes a full-screen sheet, every
+        button has a 44 px tap target, inputs use 16 px font so iOS doesn't
+        auto-zoom on focus, and wide tables/cards are clamped to the
+        viewport width. */}
+    <style>{""
++ "* { box-sizing: border-box; margin: 0; padding: 0; }"
++ "::-webkit-scrollbar { width: 4px; height: 4px; }"
++ "::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }"
++ "input::placeholder, textarea::placeholder { color: #94A3B8; }"
++ "@keyframes spin { to { transform: rotate(360deg); } }"
++ "@media (max-width: 768px) {"
++   "html, body, #root, .crm-app { max-width: 100vw; overflow-x: hidden; }"
++   ".crm-app, .crm-app *, .crm-app *::before, .crm-app *::after { box-sizing: border-box; }"
++   /* Prevent iOS auto-zoom on focus and keep body text readable. */
++   ".crm-app input, .crm-app select, .crm-app textarea { font-size: 16px !important; }"
++   /* Touch targets: buttons need at least a 40 px tap area on phones. Icon
++      buttons and filter chips opt out with .crm-btn-xs. */
++   ".crm-app button:not(.crm-btn-xs) { min-height: 40px; }"
++   /* Modals become full-screen sheets on mobile so no content is clipped. */
++   ".crm-modal { padding: 0 !important; align-items: stretch !important; }"
++   ".crm-modal > .crm-modal-inner { width: 100vw !important; max-width: 100vw !important; min-height: 100vh !important; max-height: 100vh !important; border-radius: 0 !important; padding: 16px !important; box-sizing: border-box !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; }"
++   /* Dashboard-specific safety net (admin + sales). */
++   ".crm-dash { width: 100% !important; max-width: 100vw !important; overflow-x: hidden !important; padding-left: 12px !important; padding-right: 12px !important; }"
++   ".crm-dash .crm-dash-card { width: 100% !important; max-width: 100% !important; min-width: 0 !important; padding: 14px !important; box-sizing: border-box !important; }"
++   ".crm-dash .crm-dash-card > * { max-width: 100%; }"
++   ".crm-dash .crm-dash-scroll { overflow-x: auto !important; overflow-y: auto !important; max-width: 100% !important; width: 100% !important; -webkit-overflow-scrolling: touch; }"
++   ".crm-dash .crm-dash-header { flex-direction: column !important; align-items: stretch !important; width: 100% !important; }"
++   ".crm-dash .crm-dash-header > * { width: 100% !important; min-width: 0 !important; }"
++   ".crm-dash .crm-dash-filters { overflow-x: visible !important; flex-wrap: wrap !important; gap: 6px !important; }"
++   ".crm-dash .crm-dash-filters > * { flex: 1 1 auto !important; min-width: 0 !important; }"
++   ".crm-dash .crm-dash-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; }"
++   ".crm-dash .crm-dash-row { grid-template-columns: minmax(0, 1fr) !important; gap: 10px !important; }"
++   /* Long Arabic / English text should wrap instead of stretching a parent. */
++   ".crm-dash h1, .crm-dash h2, .crm-dash h3 { max-width: 100%; overflow-wrap: anywhere; }"
++ "}"
+}</style>
     {showPwaBanner&&<div style={{ position:"fixed", bottom:0, left:0, right:0, zIndex:9999, background:C.primary, color:"#fff", padding:"14px 16px", display:"flex", alignItems:"center", gap:10, boxShadow:"0 -4px 20px rgba(0,0,0,0.2)" }}>
       <div style={{ flex:1 }}>
         <div style={{ fontSize:13, fontWeight:700, marginBottom:3 }}>📲 Enable Notifications</div>
