@@ -3123,9 +3123,12 @@ var DashboardPage = function(p) {
   };
   // Router:
   //   - Lead-backed activity → open the lead directly.
-  //   - DR-backed activity   → check phone against p.leads; if a Lead exists
-  //     with the same phone (the "linked leadId" in the spec), open THAT
-  //     lead's detail page. Otherwise open the Daily Request itself.
+  //   - DR-backed activity   → look up a Lead by phone (cached DR's phone
+  //     OR the activity's own clientPhone snapshot, so we don't depend on
+  //     p.dailyReqs being loaded). Found → open that Lead's detail page.
+  //     Not found → open the DR detail (cached doc when available, shell
+  //     {_id, name, phone} otherwise — DailyRequestsPage re-hydrates from
+  //     its own fetch on mount).
   var openActivity = function(a){
     var id = activityLeadIdStr(a);
     if (!id) return;
@@ -3134,22 +3137,16 @@ var DashboardPage = function(p) {
       if (p.nav) p.nav("leads", leadObj);
       return;
     }
-    // DR-backed. Try the cached DR first so we have its phone, fall back to
-    // what resolveClientName can produce when the DR isn't in p.dailyReqs.
+    // DR-backed.
     var drObj = _drsById[id];
-    if (drObj) {
-      var drPhone = _normPh(drObj.phone) || _normPh(drObj.phone2);
-      var linkedLead = drPhone ? _leadsByPhone[drPhone] : null;
-      if (linkedLead) {
-        if (p.nav) p.nav("leads", linkedLead);
-        return;
-      }
-      if (p.nav) p.nav("dailyReq", drObj);
+    var drPhone = (drObj && (_normPh(drObj.phone) || _normPh(drObj.phone2))) || _normPh(a && a.clientPhone);
+    var linkedLead = drPhone ? _leadsByPhone[drPhone] : null;
+    if (linkedLead) {
+      if (p.nav) p.nav("leads", linkedLead);
       return;
     }
-    // DR not loaded locally — open the DR page with a shell so the page can
-    // re-hydrate via its own fetch.
-    if (p.nav) p.nav("dailyReq", { _id: id, name: resolveClientName(a) });
+    var drForOpen = drObj || { _id: id, name: resolveClientName(a), phone: (a && a.clientPhone) || "" };
+    if (p.nav) p.nav("dailyReq", drForOpen);
   };
   // Kept for backward compatibility with any older call sites (single-arg id).
   var openActivityClient = function(leadId){
@@ -5103,16 +5100,14 @@ var DailyRequestsPage = function(p) {
 
   useEffect(function(){ if(p.initSelected){setSelected(p.initSelected);p.setInitSelected(null);} },[p.initSelected]);
   // Re-hydrate `selected` from the fetched `requests` list when we arrived with
-  // only a shell {_id, name} — e.g. from the Admin dashboard activity click.
-  // Without this the detail panel would render empty fields until the user
-  // clicks another request.
+  // only a shell ({_id, name, phone}) — e.g. from the Admin dashboard activity
+  // click. createdAt is on every persisted DR but never on the shells we hand
+  // in via initSelected, so it's a reliable "is this a real doc" probe.
   useEffect(function(){
     if (!selected || !requests || !requests.length) return;
     var sid = gid(selected);
     var full = requests.find(function(r){ return String(gid(r)) === String(sid); });
-    // Only replace when the current `selected` is missing core fields (phone
-    // is a cheap tell — real DR docs always carry it).
-    if (full && !selected.phone) setSelected(full);
+    if (full && !selected.createdAt) setSelected(full);
   }, [requests]);
 
   var filtered=requests.filter(function(r){
