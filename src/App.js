@@ -3097,8 +3097,10 @@ var DashboardPage = function(p) {
   // Click alert navigation to filtered leads
   var gotoFilter = function(status){ if(p.setFilter)p.setFilter(status||"all"); if(p.nav)p.nav("leads"); };
   // Activity-row click router: Activity.leadId can point at either a Lead or
-  // a DailyRequest (same Activity model, different collections). Look up by id
-  // in both local stores and send the user to the matching detail page.
+  // a DailyRequest (same Activity model, different collections). The server
+  // only .populate()s the Lead side, so DR-owned activities arrive with an
+  // unresolved id — we handle both the click-through and the displayed
+  // client name via these local indexes.
   var _leadsById = {}; (p.leads||[]).forEach(function(l){ _leadsById[String(gid(l))] = l; });
   var _drsById   = {}; (p.dailyReqs||[]).forEach(function(r){ _drsById[String(gid(r))] = r; });
   var openActivityClient = function(leadId){
@@ -3108,6 +3110,23 @@ var DashboardPage = function(p) {
     if (_drsById[key])   { if(p.nav) p.nav("dailyReq", _drsById[key]); return; }
     // Unknown id — default to opening the leads page with the id as the selected shell.
     if (p.nav) p.nav("leads", { _id: key });
+  };
+  // Resolve the client name for an activity row. Server populate misses when
+  // the id belongs to DailyRequest; fall back to the local DR/lead indexes.
+  var resolveClientName = function(a){
+    if (a && a.leadId && a.leadId.name) return a.leadId.name;
+    var lid = a && a.leadId ? (a.leadId._id ? String(a.leadId._id) : String(a.leadId)) : "";
+    if (!lid) return "";
+    if (_leadsById[lid]) return _leadsById[lid].name || "";
+    if (_drsById[lid])   return _drsById[lid].name   || "";
+    return "";
+  };
+  // Activity source badge: "DR" for DailyRequest-backed rows, nothing for Leads.
+  var activitySource = function(a){
+    var lid = a && a.leadId ? (a.leadId._id ? String(a.leadId._id) : String(a.leadId)) : "";
+    if (!lid) return "";
+    if (_drsById[lid] && !_leadsById[lid]) return "DR";
+    return "";
   };
   // Exact-time formatter for the activity rows — "3:45 PM".
   var exactTime = function(d){
@@ -3305,7 +3324,8 @@ var DashboardPage = function(p) {
           {todayActsAll.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity yet today</div> : todayActsAll.map(function(a,i){
             var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
             var aName = a.userId&&a.userId.name?a.userId.name:agentName(aid);
-            var lName = a.leadId&&a.leadId.name?a.leadId.name:"";
+            var lName = resolveClientName(a);
+            var srcTag = activitySource(a);
             var aNote = a.note||a.notes||a.feedback||a.details||"";
             var actionLabel = actLabel(a);
             var feedbackText = aNote;
@@ -3351,6 +3371,7 @@ var DashboardPage = function(p) {
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                   <span style={{fontWeight:600,color:ic.fg}}>{actionLabel}</span>
                   {" \u2014 "}{clientName}
+                  {srcTag&&<span style={{marginLeft:6,fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,background:"#DBEAFE",color:"#1D4ED8",verticalAlign:"middle"}} title="Daily Request">{srcTag}</span>}
                 </div>
                 <div style={{fontSize:11,color:"#64748B",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                   {aName}{feedbackText?<span> {"\u00b7"} <span style={{fontWeight:700,color:"#334155"}}>{feedbackText}</span></span>:null}
@@ -3658,7 +3679,8 @@ var DashboardPage = function(p) {
           {todayActsAll.length===0 ? <div style={{fontSize:13,color:"#94A3B8",padding:"20px 0",textAlign:"center"}}>No activity yet today</div> : todayActsAll.map(function(a,i){
             var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
             var aName = a.userId&&a.userId.name?a.userId.name:agentName(aid);
-            var lName = a.leadId&&a.leadId.name?a.leadId.name:"";
+            var lName = resolveClientName(a);
+            var srcTagM = activitySource(a);
             var aNote = a.note||a.notes||a.feedback||a.details||"";
             var actionLabel = actLabel(a);
             var feedbackText = aNote;
@@ -3690,7 +3712,10 @@ var DashboardPage = function(p) {
             return <div key={(a._id||"")+"-"+i} onClick={onActClickM} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadIdM?"pointer":"default"}}>
               <div style={{width:36,height:36,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}><span style={{fontWeight:600,color:ic.fg}}>{actionLabel}</span> {"\u2014 "}{clientNameM}</div>
+                <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>
+                  <span style={{fontWeight:600,color:ic.fg}}>{actionLabel}</span> {"\u2014 "}{clientNameM}
+                  {srcTagM&&<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:4,background:"#DBEAFE",color:"#1D4ED8",verticalAlign:"middle"}} title="Daily Request">{srcTagM}</span>}
+                </div>
                 <div style={{fontSize:12,color:"#64748B",marginTop:2}}>{aName}{feedbackText?<span> {"\u00b7"} <span style={{fontWeight:700,color:"#334155"}}>{feedbackText}</span></span>:null}</div>
               </div>
               <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:600}}>{exactTime(a.createdAt)}</div>
