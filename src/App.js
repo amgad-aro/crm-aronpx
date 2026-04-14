@@ -3112,14 +3112,35 @@ var DashboardPage = function(p) {
     var k1 = _normPh(l.phone);   if (k1) _leadsByPhone[k1] = l;
     var k2 = _normPh(l.phone2);  if (k2 && !_leadsByPhone[k2]) _leadsByPhone[k2] = l;
   });
+  // Phone-indexed DR lookup — when Activity.populate("leadId") misses (the
+  // referenced id is a DailyRequest, not a Lead), a.leadId comes back null
+  // and we lose the original id. The Activity's clientPhone snapshot lets
+  // us recover the DR by phone, which in turn gives us back the DR's _id
+  // for click routing and its name for the row label.
+  var _drsByPhone = {};
+  (p.dailyReqs||[]).forEach(function(r){
+    var k1 = _normPh(r.phone);   if (k1 && !_drsByPhone[k1]) _drsByPhone[k1] = r;
+    var k2 = _normPh(r.phone2);  if (k2 && !_drsByPhone[k2]) _drsByPhone[k2] = r;
+  });
+  var _drFromActivityPhone = function(a){
+    var ph = _normPh(a && a.clientPhone);
+    return ph ? (_drsByPhone[ph] || null) : null;
+  };
   // Source inference from the raw activity doc:
   //   - Lead-backed:  a.leadId is the populated object { _id, name }
   //   - DR-backed:    a.leadId is an unpopulated ObjectId (string after JSON)
+  //                   OR null (populate miss — recover via clientPhone)
   var activityIsLead = function(a){ return !!(a && a.leadId && typeof a.leadId === "object" && a.leadId.name); };
   var activityLeadIdStr = function(a){
-    if (!a || !a.leadId) return "";
-    if (typeof a.leadId === "object") return a.leadId._id ? String(a.leadId._id) : "";
-    return String(a.leadId);
+    if (!a) return "";
+    if (a.leadId) {
+      if (typeof a.leadId === "object") return a.leadId._id ? String(a.leadId._id) : "";
+      return String(a.leadId);
+    }
+    // Populate miss — DR-backed. Resolve the DR through the phone snapshot
+    // and return its _id so the click router can find it in _drsById.
+    var dr = _drFromActivityPhone(a);
+    return dr ? String(gid(dr)) : "";
   };
   // Router:
   //   - Lead-backed activity → open the lead directly.
@@ -3175,6 +3196,12 @@ var DashboardPage = function(p) {
       if (_leadsById[lid] && _leadsById[lid].phone) return _leadsById[lid].phone;
       if (_drsById[lid]   && _drsById[lid].phone)   return _drsById[lid].phone;
     }
+    // Populate miss — DR-backed activity. Pull the DR via phone snapshot so
+    // the row renders the real client name (or phone) instead of "Unknown
+    // client". Spec: DR rows must fall back to phone if name is empty and
+    // must never render "Unknown client".
+    var dr = _drFromActivityPhone(a);
+    if (dr) return dr.name || dr.phone || (a && a.clientPhone) || "";
     if (a && a.clientPhone) return a.clientPhone;
     return "Unknown client";
   };

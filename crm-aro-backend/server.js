@@ -1504,7 +1504,7 @@ app.post("/api/daily-requests/:id/eoi-cancel", auth, async function(req, res) {
         }
       } catch(syncErr){ console.error("Lead mirror (eoi-cancel) error:", syncErr.message); }
     }
-    try { await Activity.create({ userId: req.user.id, leadId: r._id, type: "status_change", note: "[HotCase] DR EOI cancelled — returned to Hot Case" }); } catch(e){}
+    try { await Activity.create({ userId: req.user.id, leadId: r._id, type: "status_change", note: "[HotCase] DR EOI cancelled — returned to Hot Case", clientName: r.name || "", clientPhone: r.phone || "" }); } catch(e){}
     res.json(r);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1589,7 +1589,7 @@ app.post("/api/daily-requests/:id/deal-cancel", auth, async function(req, res) {
         }
       } catch(syncErr){ console.error("Lead mirror (deal-cancel) error:", syncErr.message); }
     }
-    try { await Activity.create({ userId: req.user.id, leadId: r._id, type: "status_change", note: "[HotCase] DR deal cancelled — returned to Hot Case" }); } catch(e){}
+    try { await Activity.create({ userId: req.user.id, leadId: r._id, type: "status_change", note: "[HotCase] DR deal cancelled — returned to Hot Case", clientName: r.name || "", clientPhone: r.phone || "" }); } catch(e){}
     res.json(r);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2634,7 +2634,10 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
     if (req.body.status) {
       var actNote = "DailyReq: " + req.body.status;
       if (req.body.notes) actNote += " | " + req.body.notes;
-      await Activity.create({ userId: req.user.id, type: "status_change", note: actNote, leadId: r._id });
+      // Snapshot client identity so dashboard DR-activity rows can resolve
+      // the client (populate("leadId") misses DR ids — we'd otherwise lose
+      // both the name and the _id needed for click-through).
+      await Activity.create({ userId: req.user.id, type: "status_change", note: actNote, leadId: r._id, clientName: r.name || "", clientPhone: r.phone || "" });
       // If status is DoneDeal or EOI — create/update a Lead mirror in the main collection
       if (req.body.status === "DoneDeal" || req.body.status === "EOI") {
         var existingLead = await Lead.findOne({ phone: r.phone, source: "Daily Request" });
