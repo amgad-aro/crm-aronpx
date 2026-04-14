@@ -3159,15 +3159,27 @@ var DashboardPage = function(p) {
     if (_drsById[key])   { if(p.nav) p.nav("dailyReq", _drsById[key]); return; }
     if (p.nav) p.nav("dailyReq", { _id: key });
   };
-  // Resolve the client name for an activity row. Server populate misses when
-  // the id belongs to DailyRequest; fall back to the local DR/lead indexes.
+  // Resolve a display label for the client behind an activity row. Order:
+  //   1. a.clientName    — server snapshot (new — covers DR-backed activities
+  //                        the populate can't resolve, no matter what's cached)
+  //   2. a.leadId.name   — populate result (Lead-backed only)
+  //   3. local indexes   — _leadsById / _drsById fallback
+  //   4. a.clientPhone   — phone snapshot from server (digits as a last resort)
+  //   5. "Unknown client"
+  // Never returns the empty string; never lets the row render "(no client)".
   var resolveClientName = function(a){
-    if (a && a.leadId && a.leadId.name) return a.leadId.name;
+    if (a && a.clientName) return a.clientName;
+    if (a && a.leadId && typeof a.leadId === "object" && a.leadId.name) return a.leadId.name;
     var lid = a && a.leadId ? (a.leadId._id ? String(a.leadId._id) : String(a.leadId)) : "";
-    if (!lid) return "";
-    if (_leadsById[lid]) return _leadsById[lid].name || "";
-    if (_drsById[lid])   return _drsById[lid].name   || "";
-    return "";
+    if (lid) {
+      if (_leadsById[lid] && _leadsById[lid].name) return _leadsById[lid].name;
+      if (_drsById[lid]   && _drsById[lid].name)   return _drsById[lid].name;
+      // Last-ditch: phone from local indexes if the doc exists but is unnamed.
+      if (_leadsById[lid] && _leadsById[lid].phone) return _leadsById[lid].phone;
+      if (_drsById[lid]   && _drsById[lid].phone)   return _drsById[lid].phone;
+    }
+    if (a && a.clientPhone) return a.clientPhone;
+    return "Unknown client";
   };
   // Activity source badge: "DR" for DailyRequest-backed rows, nothing for Leads.
   // Lead-backed activities arrive populated (a.leadId is an object with name);
@@ -3413,7 +3425,7 @@ var DashboardPage = function(p) {
             var actLeadId = activityLeadIdStr(a);
             var onActClick = actLeadId ? function(){ openActivity(a); } : null;
             // Spec: "client name, action type, agent name, exact time" — show client first, agent on the subtitle.
-            var clientName = lName || "(no client)";
+            var clientName = lName || "Unknown client";
             // Daily Request rows show the full feedback text (spec — no truncation).
             // Lead rows stay single-line with the existing 80-char cap so long notes
             // don't blow up the dashboard.
@@ -3771,7 +3783,7 @@ var DashboardPage = function(p) {
             else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
             var actLeadIdM = activityLeadIdStr(a);
             var onActClickM = actLeadIdM ? function(){ setSeeAllOpen(false); openActivity(a); } : null;
-            var clientNameM = lName || "(no client)";
+            var clientNameM = lName || "Unknown client";
             var subtitleStyleM = isDrRowM
               ? { fontSize:12, color:"#64748B", marginTop:2, wordBreak:"break-word", whiteSpace:"normal" }
               : { fontSize:12, color:"#64748B", marginTop:2 };

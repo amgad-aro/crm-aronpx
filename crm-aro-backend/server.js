@@ -126,7 +126,12 @@ Lead.collection.createIndex(
 var Activity = mongoose.model("Activity", new mongoose.Schema({
   userId:{type:mongoose.Schema.Types.ObjectId,ref:"User",required:true},
   leadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead"},
-  type:{type:String,default:"call"}, note:{type:String,default:""}
+  type:{type:String,default:"call"}, note:{type:String,default:""},
+  // Client snapshot at the time of the action — captured by POST /api/activities
+  // so the dashboard never has to cross-join Lead/DailyRequest at render time.
+  // populate("leadId") only resolves Lead docs; DR-backed activities lose the
+  // populated name, which is what made the "Note added" rows render "no client".
+  clientName:{type:String,default:""}, clientPhone:{type:String,default:""}
 },{timestamps:true}));
 
 var Task = mongoose.model("Task", new mongoose.Schema({
@@ -2242,11 +2247,35 @@ app.get("/api/activities", auth, async function(req, res) {
 
 app.post("/api/activities", auth, async function(req, res) {
   try {
+    // Snapshot the client identity (name + phone) at write time. Activity.leadId
+    // can point at either a Lead or a DailyRequest; populate only resolves the
+    // Lead side, so DR-backed rows used to lose the client name on read. We
+    // look the id up in BOTH collections and stash whatever we find — the
+    // dashboard then renders the snapshot directly with no cross-join.
+    var clientName = "";
+    var clientPhone = "";
+    if (req.body.leadId) {
+      try {
+        var leadDoc = await Lead.findById(req.body.leadId).select("name phone").lean();
+        if (leadDoc) {
+          clientName  = leadDoc.name  || "";
+          clientPhone = leadDoc.phone || "";
+        } else {
+          var drDoc = await DailyRequest.findById(req.body.leadId).select("name phone").lean();
+          if (drDoc) {
+            clientName  = drDoc.name  || "";
+            clientPhone = drDoc.phone || "";
+          }
+        }
+      } catch(lookupErr) { /* non-fatal — activity still gets created without snapshot */ }
+    }
     var activity = await Activity.create({
       userId: req.user.id,
       leadId: req.body.leadId,
       type: req.body.type || "call",
       note: req.body.note || "",
+      clientName: clientName,
+      clientPhone: clientPhone
     });
     if (req.body.leadId) {
       await Lead.findByIdAndUpdate(req.body.leadId, { lastActivityTime: new Date() });
