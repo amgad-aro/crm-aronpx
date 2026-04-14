@@ -3103,32 +3103,53 @@ var DashboardPage = function(p) {
   // client name via these local indexes.
   var _leadsById = {}; (p.leads||[]).forEach(function(l){ _leadsById[String(gid(l))] = l; });
   var _drsById   = {}; (p.dailyReqs||[]).forEach(function(r){ _drsById[String(gid(r))] = r; });
+  // Phone-indexed lead lookup — DR rows are linked to leads by phone number
+  // (same convention the server uses for DR ↔ Lead sync). We normalize to
+  // digits only so "+20 010..." and "010..." resolve the same lead.
+  var _normPh = function(p){ return String(p||"").replace(/\D+/g,""); };
+  var _leadsByPhone = {};
+  (p.leads||[]).forEach(function(l){
+    var k1 = _normPh(l.phone);   if (k1) _leadsByPhone[k1] = l;
+    var k2 = _normPh(l.phone2);  if (k2 && !_leadsByPhone[k2]) _leadsByPhone[k2] = l;
+  });
   // Source inference from the raw activity doc:
   //   - Lead-backed:  a.leadId is the populated object { _id, name }
   //   - DR-backed:    a.leadId is an unpopulated ObjectId (string after JSON)
-  //   The previous router treated DR activities whose DR wasn't cached as
-  //   "unknown" and silently sent the admin to the Leads page; now we send
-  //   DR rows to the Daily Requests page unconditionally, passing the full
-  //   DR doc when we have it and a shell {_id, name} when we don't (the
-  //   DR page re-hydrates the shell from its own fetch — see below).
   var activityIsLead = function(a){ return !!(a && a.leadId && typeof a.leadId === "object" && a.leadId.name); };
   var activityLeadIdStr = function(a){
     if (!a || !a.leadId) return "";
     if (typeof a.leadId === "object") return a.leadId._id ? String(a.leadId._id) : "";
     return String(a.leadId);
   };
+  // Router:
+  //   - Lead-backed activity → open the lead directly.
+  //   - DR-backed activity   → check phone against p.leads; if a Lead exists
+  //     with the same phone (the "linked leadId" in the spec), open THAT
+  //     lead's detail page. Otherwise open the Daily Request itself.
   var openActivity = function(a){
     var id = activityLeadIdStr(a);
     if (!id) return;
     if (activityIsLead(a)) {
-      // Prefer the full lead from local state; fall back to the populated shell.
       var leadObj = _leadsById[id] || { _id: id, name: (a.leadId && a.leadId.name) || "" };
       if (p.nav) p.nav("leads", leadObj);
       return;
     }
-    // DR-backed — navigate to the Daily Requests page and open the detail for this id.
-    var drObj = _drsById[id] || { _id: id, name: resolveClientName(a) };
-    if (p.nav) p.nav("dailyReq", drObj);
+    // DR-backed. Try the cached DR first so we have its phone, fall back to
+    // what resolveClientName can produce when the DR isn't in p.dailyReqs.
+    var drObj = _drsById[id];
+    if (drObj) {
+      var drPhone = _normPh(drObj.phone) || _normPh(drObj.phone2);
+      var linkedLead = drPhone ? _leadsByPhone[drPhone] : null;
+      if (linkedLead) {
+        if (p.nav) p.nav("leads", linkedLead);
+        return;
+      }
+      if (p.nav) p.nav("dailyReq", drObj);
+      return;
+    }
+    // DR not loaded locally — open the DR page with a shell so the page can
+    // re-hydrate via its own fetch.
+    if (p.nav) p.nav("dailyReq", { _id: id, name: resolveClientName(a) });
   };
   // Kept for backward compatibility with any older call sites (single-arg id).
   var openActivityClient = function(leadId){
@@ -3389,24 +3410,34 @@ var DashboardPage = function(p) {
             else if (a.type==="note") ic={icon:"\ud83d\udcdd",bg:"#FFE4E6",fg:"#9F1239"};
             else if (noteLc.indexOf("callback")>=0) ic={icon:"\ud83d\udcc5",bg:"#DBEAFE",fg:"#1D4ED8"};
             else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
-            if (feedbackText && feedbackText.length>80) feedbackText = feedbackText.slice(0,80)+"\u2026";
             var actLeadId = activityLeadIdStr(a);
             var onActClick = actLeadId ? function(){ openActivity(a); } : null;
             // Spec: "client name, action type, agent name, exact time" — show client first, agent on the subtitle.
             var clientName = lName || "(no client)";
-            return <div key={String(a._id||("k"+i))} onClick={onActClick} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadId?"pointer":"default"}}>
-              <div style={{width:34,height:34,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{ic.icon}</div>
+            // Daily Request rows show the full feedback text (spec — no truncation).
+            // Lead rows stay single-line with the existing 80-char cap so long notes
+            // don't blow up the dashboard.
+            var isDrRow = srcTag === "DR";
+            var feedbackTextDisplay = feedbackText;
+            if (!isDrRow && feedbackTextDisplay && feedbackTextDisplay.length>80) {
+              feedbackTextDisplay = feedbackTextDisplay.slice(0,80)+"\u2026";
+            }
+            var subtitleStyle = isDrRow
+              ? { fontSize:11, color:"#64748B", marginTop:1, wordBreak:"break-word", whiteSpace:"normal" }
+              : { fontSize:11, color:"#64748B", marginTop:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" };
+            return <div key={String(a._id||("k"+i))} onClick={onActClick} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"9px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadId?"pointer":"default"}}>
+              <div style={{width:34,height:34,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0,marginTop:2}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                   <span style={{fontWeight:600,color:ic.fg}}>{actionLabel}</span>
                   {" \u2014 "}{clientName}
                   {srcTag&&<span style={{marginLeft:6,fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,background:"#DBEAFE",color:"#1D4ED8",verticalAlign:"middle"}} title="Daily Request">{srcTag}</span>}
                 </div>
-                <div style={{fontSize:11,color:"#64748B",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                  {aName}{feedbackText?<span> {"\u00b7"} <span style={{fontWeight:700,color:"#334155"}}>{feedbackText}</span></span>:null}
+                <div style={subtitleStyle}>
+                  {aName}{feedbackTextDisplay?<span> {"\u00b7"} <span style={{fontWeight:700,color:"#334155"}}>{feedbackTextDisplay}</span></span>:null}
                 </div>
               </div>
-              <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:600}}>{exactTime(a.createdAt)}</div>
+              <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:600,marginTop:2}}>{exactTime(a.createdAt)}</div>
             </div>;
           })}
           </div>
@@ -3726,7 +3757,10 @@ var DashboardPage = function(p) {
             else if (a.type==="note") { actionLabel = "Note added"; }
             else if (a.type==="reassign") { actionLabel = "Reassign"; feedbackText = ""; }
             else if (a.type==="meeting") { actionLabel = "Meeting booked"; }
-            if (feedbackText && feedbackText.length>80) feedbackText = feedbackText.slice(0,80)+"\u2026";
+            // Daily Request rows: show full feedback; Lead rows keep the 80-char cap.
+            var isDrRowM = srcTagM === "DR";
+            var feedbackTextDisplayM = feedbackText;
+            if (!isDrRowM && feedbackTextDisplayM && feedbackTextDisplayM.length>80) feedbackTextDisplayM = feedbackTextDisplayM.slice(0,80)+"\u2026";
             var noteLc = aNote.toLowerCase();
             var ic;
             if (a.type==="call") ic={icon:"\ud83d\udcde",bg:"#DCFCE7",fg:"#166534"};
@@ -3738,16 +3772,19 @@ var DashboardPage = function(p) {
             var actLeadIdM = activityLeadIdStr(a);
             var onActClickM = actLeadIdM ? function(){ setSeeAllOpen(false); openActivity(a); } : null;
             var clientNameM = lName || "(no client)";
-            return <div key={(a._id||"")+"-"+i} onClick={onActClickM} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadIdM?"pointer":"default"}}>
-              <div style={{width:36,height:36,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0}}>{ic.icon}</div>
+            var subtitleStyleM = isDrRowM
+              ? { fontSize:12, color:"#64748B", marginTop:2, wordBreak:"break-word", whiteSpace:"normal" }
+              : { fontSize:12, color:"#64748B", marginTop:2 };
+            return <div key={(a._id||"")+"-"+i} onClick={onActClickM} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadIdM?"pointer":"default"}}>
+              <div style={{width:36,height:36,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0,marginTop:2}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>
                   <span style={{fontWeight:600,color:ic.fg}}>{actionLabel}</span> {"\u2014 "}{clientNameM}
                   {srcTagM&&<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:4,background:"#DBEAFE",color:"#1D4ED8",verticalAlign:"middle"}} title="Daily Request">{srcTagM}</span>}
                 </div>
-                <div style={{fontSize:12,color:"#64748B",marginTop:2}}>{aName}{feedbackText?<span> {"\u00b7"} <span style={{fontWeight:700,color:"#334155"}}>{feedbackText}</span></span>:null}</div>
+                <div style={subtitleStyleM}>{aName}{feedbackTextDisplayM?<span> {"\u00b7"} <span style={{fontWeight:700,color:"#334155"}}>{feedbackTextDisplayM}</span></span>:null}</div>
               </div>
-              <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:600}}>{exactTime(a.createdAt)}</div>
+              <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:600,marginTop:2}}>{exactTime(a.createdAt)}</div>
             </div>;
           })}
         </div>
