@@ -3103,13 +3103,40 @@ var DashboardPage = function(p) {
   // client name via these local indexes.
   var _leadsById = {}; (p.leads||[]).forEach(function(l){ _leadsById[String(gid(l))] = l; });
   var _drsById   = {}; (p.dailyReqs||[]).forEach(function(r){ _drsById[String(gid(r))] = r; });
+  // Source inference from the raw activity doc:
+  //   - Lead-backed:  a.leadId is the populated object { _id, name }
+  //   - DR-backed:    a.leadId is an unpopulated ObjectId (string after JSON)
+  //   The previous router treated DR activities whose DR wasn't cached as
+  //   "unknown" and silently sent the admin to the Leads page; now we send
+  //   DR rows to the Daily Requests page unconditionally, passing the full
+  //   DR doc when we have it and a shell {_id, name} when we don't (the
+  //   DR page re-hydrates the shell from its own fetch — see below).
+  var activityIsLead = function(a){ return !!(a && a.leadId && typeof a.leadId === "object" && a.leadId.name); };
+  var activityLeadIdStr = function(a){
+    if (!a || !a.leadId) return "";
+    if (typeof a.leadId === "object") return a.leadId._id ? String(a.leadId._id) : "";
+    return String(a.leadId);
+  };
+  var openActivity = function(a){
+    var id = activityLeadIdStr(a);
+    if (!id) return;
+    if (activityIsLead(a)) {
+      // Prefer the full lead from local state; fall back to the populated shell.
+      var leadObj = _leadsById[id] || { _id: id, name: (a.leadId && a.leadId.name) || "" };
+      if (p.nav) p.nav("leads", leadObj);
+      return;
+    }
+    // DR-backed — navigate to the Daily Requests page and open the detail for this id.
+    var drObj = _drsById[id] || { _id: id, name: resolveClientName(a) };
+    if (p.nav) p.nav("dailyReq", drObj);
+  };
+  // Kept for backward compatibility with any older call sites (single-arg id).
   var openActivityClient = function(leadId){
     if (!leadId) return;
     var key = String(leadId);
     if (_leadsById[key]) { if(p.nav) p.nav("leads", _leadsById[key]); return; }
     if (_drsById[key])   { if(p.nav) p.nav("dailyReq", _drsById[key]); return; }
-    // Unknown id — default to opening the leads page with the id as the selected shell.
-    if (p.nav) p.nav("leads", { _id: key });
+    if (p.nav) p.nav("dailyReq", { _id: key });
   };
   // Resolve the client name for an activity row. Server populate misses when
   // the id belongs to DailyRequest; fall back to the local DR/lead indexes.
@@ -3122,11 +3149,13 @@ var DashboardPage = function(p) {
     return "";
   };
   // Activity source badge: "DR" for DailyRequest-backed rows, nothing for Leads.
+  // Lead-backed activities arrive populated (a.leadId is an object with name);
+  // everything else is either a DR or an unknown id — either way the row
+  // should route to the Daily Requests page when clicked.
   var activitySource = function(a){
-    var lid = a && a.leadId ? (a.leadId._id ? String(a.leadId._id) : String(a.leadId)) : "";
-    if (!lid) return "";
-    if (_drsById[lid] && !_leadsById[lid]) return "DR";
-    return "";
+    if (!a || !a.leadId) return "";
+    if (activityIsLead(a)) return "";
+    return "DR";
   };
   // Exact-time formatter for the activity rows — "3:45 PM".
   var exactTime = function(d){
@@ -3361,8 +3390,8 @@ var DashboardPage = function(p) {
             else if (noteLc.indexOf("callback")>=0) ic={icon:"\ud83d\udcc5",bg:"#DBEAFE",fg:"#1D4ED8"};
             else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
             if (feedbackText && feedbackText.length>80) feedbackText = feedbackText.slice(0,80)+"\u2026";
-            var actLeadId = a.leadId && a.leadId._id ? a.leadId._id : a.leadId;
-            var onActClick = actLeadId ? function(){ openActivityClient(actLeadId); } : null;
+            var actLeadId = activityLeadIdStr(a);
+            var onActClick = actLeadId ? function(){ openActivity(a); } : null;
             // Spec: "client name, action type, agent name, exact time" — show client first, agent on the subtitle.
             var clientName = lName || "(no client)";
             return <div key={String(a._id||("k"+i))} onClick={onActClick} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadId?"pointer":"default"}}>
@@ -3706,8 +3735,8 @@ var DashboardPage = function(p) {
             else if (a.type==="note") ic={icon:"\ud83d\udcdd",bg:"#FFE4E6",fg:"#9F1239"};
             else if (noteLc.indexOf("callback")>=0) ic={icon:"\ud83d\udcc5",bg:"#DBEAFE",fg:"#1D4ED8"};
             else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
-            var actLeadIdM = a.leadId && a.leadId._id ? a.leadId._id : a.leadId;
-            var onActClickM = actLeadIdM ? function(){ setSeeAllOpen(false); openActivityClient(actLeadIdM); } : null;
+            var actLeadIdM = activityLeadIdStr(a);
+            var onActClickM = actLeadIdM ? function(){ setSeeAllOpen(false); openActivity(a); } : null;
             var clientNameM = lName || "(no client)";
             return <div key={(a._id||"")+"-"+i} onClick={onActClickM} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadIdM?"pointer":"default"}}>
               <div style={{width:36,height:36,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0}}>{ic.icon}</div>
@@ -5024,6 +5053,18 @@ var DailyRequestsPage = function(p) {
   },[]);
 
   useEffect(function(){ if(p.initSelected){setSelected(p.initSelected);p.setInitSelected(null);} },[p.initSelected]);
+  // Re-hydrate `selected` from the fetched `requests` list when we arrived with
+  // only a shell {_id, name} — e.g. from the Admin dashboard activity click.
+  // Without this the detail panel would render empty fields until the user
+  // clicks another request.
+  useEffect(function(){
+    if (!selected || !requests || !requests.length) return;
+    var sid = gid(selected);
+    var full = requests.find(function(r){ return String(gid(r)) === String(sid); });
+    // Only replace when the current `selected` is missing core fields (phone
+    // is a cheap tell — real DR docs always carry it).
+    if (full && !selected.phone) setSelected(full);
+  }, [requests]);
 
   var filtered=requests.filter(function(r){
     if(filterStatus!=="all"){
