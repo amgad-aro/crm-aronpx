@@ -540,7 +540,8 @@ async function getRotationSettings() {
     niDays:    Number(v.niDays    != null ? v.niDays    : ROTATION_DEFAULTS.niDays),
     noActDays: Number(v.noActDays != null ? v.noActDays : ROTATION_DEFAULTS.noActDays),
     cbDays:    Number(v.cbDays    != null ? v.cbDays    : ROTATION_DEFAULTS.cbDays),
-    hotDays:   Number(v.hotDays   != null ? v.hotDays   : ROTATION_DEFAULTS.hotDays)
+    hotDays:   Number(v.hotDays   != null ? v.hotDays   : ROTATION_DEFAULTS.hotDays),
+    lastAssignedIdx: (typeof v.lastAssignedIdx === "number") ? v.lastAssignedIdx : -1
   };
 }
 
@@ -566,14 +567,22 @@ app.put("/api/settings/rotation", auth, async function(req, res) {
       if (x > max) x = max;
       return x;
     };
+    var reassignAgents = Array.isArray(b.reassignAgents) ? b.reassignAgents.map(String) : [];
+    // Preserve the global round-robin pointer across saves; clamp it so a
+    // shortened list can't leave the pointer past the end. New/empty list → -1
+    // (no assignment yet — next rotation starts at index 0).
+    var existing = await AppSetting.findOne({ key: "rotation" }).lean();
+    var prevIdx = (existing && existing.value && typeof existing.value.lastAssignedIdx === "number") ? existing.value.lastAssignedIdx : -1;
+    var clampedIdx = reassignAgents.length > 0 ? Math.max(-1, Math.min(prevIdx, reassignAgents.length - 1)) : -1;
     var value = {
-      reassignAgents: Array.isArray(b.reassignAgents) ? b.reassignAgents.map(String) : [],
+      reassignAgents: reassignAgents,
       naCount:   clamp(b.naCount,   ROTATION_DEFAULTS.naCount,   1, 100),
       naHours:   clamp(b.naHours,   ROTATION_DEFAULTS.naHours,   1, 720),
       niDays:    clamp(b.niDays,    ROTATION_DEFAULTS.niDays,    1, 365),
       noActDays: clamp(b.noActDays, ROTATION_DEFAULTS.noActDays, 1, 365),
       cbDays:    clamp(b.cbDays,    ROTATION_DEFAULTS.cbDays,    1, 365),
-      hotDays:   clamp(b.hotDays,   ROTATION_DEFAULTS.hotDays,   1, 365)
+      hotDays:   clamp(b.hotDays,   ROTATION_DEFAULTS.hotDays,   1, 365),
+      lastAssignedIdx: clampedIdx
     };
     await AppSetting.findOneAndUpdate(
       { key: "rotation" },
@@ -1967,20 +1976,32 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     });
     (lead.previousAgentIds || []).forEach(function(id){ if (id) exclusion.add(String(id)); });
 
-    // Load the ordered candidates (only active + rotation-eligible roles) in ONE query,
-    // then walk the saved order and pick the first non-excluded match. This preserves
-    // the admin's priority order exactly while skipping removed / inactive users.
+    // Load the ordered candidates (only active + rotation-eligible roles) in ONE query.
     var candidateDocs = await User.find({ _id: { $in: orderedIds } }).select("_id name title role active").lean();
     var byId = {};
     candidateDocs.forEach(function(u){ byId[String(u._id)] = u; });
+
+    // Global round-robin pointer — persists in AppSetting.rotation.lastAssignedIdx.
+    // lastAssignedIdx = index of the agent who received the MOST RECENT rotation.
+    // We start scanning at (lastAssignedIdx + 1) % N so each call picks up where
+    // the previous one left off. Bulk rotations thus fan out across agents in
+    // order instead of piling onto index 0. The pointer is only advanced AFTER
+    // a successful assignment; "exhausted" calls leave it untouched.
+    var lastIdx = (settingDoc && settingDoc.value && typeof settingDoc.value.lastAssignedIdx === "number")
+      ? settingDoc.value.lastAssignedIdx
+      : -1;
+    var startAt = ((lastIdx + 1) % orderedIds.length + orderedIds.length) % orderedIds.length;
+    var foundIdx = -1;
     var targetUser = null;
-    for (var i = 0; i < orderedIds.length; i++) {
-      var uid = String(orderedIds[i]);
-      if (exclusion.has(uid)) continue;
+    for (var step = 0; step < orderedIds.length; step++) {
+      var idx = (startAt + step) % orderedIds.length;
+      var uid = String(orderedIds[idx]);
+      if (exclusion.has(uid)) continue;                 // lead already handled by this agent — skip (don't advance the global pointer)
       var u = byId[uid];
       if (!u) continue;                                 // removed from users
       if (u.active === false) continue;                 // skip inactive
       if (["sales","team_leader","manager"].indexOf(u.role) < 0) continue;
+      foundIdx = idx;
       targetUser = u;
       break;
     }
@@ -2001,6 +2022,8 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
         firstByName,
         targetUser.name
       ));
+      // Advance the global pointer so the next rotation picks up after this agent.
+      try { await AppSetting.updateOne({ key: "rotation" }, { $set: { "value.lastAssignedIdx": foundIdx } }); } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
       var firstPopulated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
       return res.json({ success: true, firstAssignment: true, targetAgentId: targetAgentId, lead: firstPopulated });
     }
@@ -2043,6 +2066,9 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       req.user.name || "System",
       targetUser.name
     ));
+    // Advance the global round-robin pointer — next rotation (in this batch or
+    // any future one) resumes from (foundIdx + 1) % N so assignments fan out.
+    try { await AppSetting.updateOne({ key: "rotation" }, { $set: { "value.lastAssignedIdx": foundIdx } }); } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
     var updated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json({ success: true, targetAgentId: targetAgentId, lead: updated });
   } catch(e) {
