@@ -750,6 +750,16 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     if (rangeMatch) meetTaskMatch.createdAt = rangeMatch;
     var meetSchedP = Task.countDocuments(meetTaskMatch);
 
+    // Per-status breakdown for the "My Leads — Status" + "Conversion Funnel"
+    // cards. Same scope as Card 1 (agent=me, archived=false, source!=DR,
+    // createdAt in range). Returned as a { status: count } map.
+    var byStatusPipeline = [
+      { $match: { agentId: uid, archived: { $ne: true }, source: { $ne: "Daily Request" } } }
+    ];
+    if (rangeMatch) byStatusPipeline.push({ $match: { createdAt: rangeMatch } });
+    byStatusPipeline.push({ $group: { _id: "$status", c: { $sum: 1 } } });
+    var byStatusP = Lead.aggregate(byStatusPipeline);
+
     // CARD 6 — Target: same calculation as the Admin Team page / KPIs page.
     //   target = user.qTargets[Q], achieved = weighted revenue of my DoneDeal
     //   leads whose deal date falls in [from, to]. Q defaults to the current
@@ -780,7 +790,7 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
       myLeadsP, myDrsP, myFollowupsP,
       intLeadsP, intDrsP,
       meetLeadsP, meetDrsP, meetSchedP,
-      userP, myDealsP
+      userP, myDealsP, byStatusP
     ]);
     var pickCount = function(arr){ return (arr && arr[0] && arr[0].c) || 0; };
     var myLeadsC    = pickCount(parts[0]);
@@ -790,6 +800,8 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     var meetingsC   = pickCount(parts[5]) + pickCount(parts[6]) + (parts[7]||0);
     var userDoc     = parts[8] || {};
     var myDeals     = parts[9] || [];
+    var byStatus = { NewLead:0, Potential:0, HotCase:0, CallBack:0, MeetingDone:0, NotInterested:0, NoAnswer:0, DoneDeal:0 };
+    (parts[10] || []).forEach(function(r){ if (r && r._id) byStatus[r._id] = r.c; });
 
     var parseBudget = function(b){ return parseFloat(String(b||"0").replace(/,/g,"")) || 0; };
     var achieved = myDeals.reduce(function(s,d){
@@ -810,7 +822,8 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
       target: target,
       achieved: achieved,
       targetProgress: targetProgress,
-      quarter: qKey
+      quarter: qKey,
+      byStatus: byStatus
     });
   } catch (e) {
     res.status(500).json({ error: e.message });

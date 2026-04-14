@@ -2540,10 +2540,16 @@ var DashboardPage = function(p) {
     });
     // Leads created inside the active range — used for all counts on the dashboard.
     var myLeads2 = allMyLeads.filter(function(l){ return inRangeS(l.createdAt); });
-    var myTotal2 = myLeads2.length;
-    var mySC2 = {}; myLeads2.forEach(function(l){ mySC2[l.status] = (mySC2[l.status]||0)+1; });
-    var myInt2  = myLeads2.filter(function(l){return["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status);}).length;
-    var myMeet2 = myLeads2.filter(function(l){return["MeetingDone","DoneDeal"].includes(l.status);}).length;
+    // Per-status counts come from the backend (myStats.byStatus). Falls back
+    // to a local recomputation while the first request is still in flight so
+    // the cards never render undefined.
+    var localSC = {}; myLeads2.forEach(function(l){ localSC[l.status] = (localSC[l.status]||0)+1; });
+    var mySC2 = (myStats && myStats.byStatus) ? myStats.byStatus : localSC;
+    // myTotal2: prefer the backend "My Leads" count (matches Card 1);
+    // otherwise fall back to the local filtered set.
+    var myTotal2 = (myStats && typeof myStats.myLeads === "number") ? myStats.myLeads : myLeads2.length;
+    var myInt2  = (mySC2.HotCase||0) + (mySC2.Potential||0) + (mySC2.MeetingDone||0) + (mySC2.DoneDeal||0);
+    var myMeet2 = (myStats && typeof myStats.meetings === "number") ? myStats.meetings : ((mySC2.MeetingDone||0) + (mySC2.DoneDeal||0));
     // Overdue uses the NOW state across all my leads (date filter doesn't apply to callback overdue).
     var myOv2   = allMyLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).length;
     // These lists are "now state" — independent of the date range filter.
@@ -2562,14 +2568,18 @@ var DashboardPage = function(p) {
     var myRankRowS     = myRankIdxS>=0 ? rankRowsS[myRankIdxS] : {deals:0,meetings:0,score:0};
     var rankLoadingS   = salesRanking===null;
 
-    // ============ CONVERSION FUNNEL (real, 4 stages, range-scoped) ============
+    // ============ CONVERSION FUNNEL (real, range-scoped, backend-sourced) ============
+    // - New Lead   = byStatus.NewLead
+    // - Interested = byStatus.HotCase + byStatus.Potential
+    // - Meeting    = backend "meetings" (hadMeeting OR MeetingDone, dated in range) — matches Card 5 semantics
+    // - Deal       = byStatus.DoneDeal
     var funnelRowsS = [
-      { l:"New Lead",     v:(mySC2["NewLead"]||0), c:"#DBEAFE", tc:"#1E40AF", nav:function(){p.setFilter&&p.setFilter("NewLead");p.nav("leads");} },
-      { l:"Interested",   v:myInt2,                c:"#FEF3C7", tc:"#92400E", nav:function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");} },
-      { l:"Meeting Done", v:myMeet2,               c:"#D1FAE5", tc:"#065F46", nav:function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");} },
-      { l:"Deal",         v:(mySC2["DoneDeal"]||0),c:"#FFE4E6", tc:"#9F1239", nav:function(){p.nav("deals");} }
+      { l:"New Lead",     v:(mySC2["NewLead"]||0),                     c:"#DBEAFE", tc:"#1E40AF", nav:function(){p.setFilter&&p.setFilter("NewLead");p.nav("leads");} },
+      { l:"Interested",   v:((mySC2["HotCase"]||0)+(mySC2["Potential"]||0)), c:"#FEF3C7", tc:"#92400E", nav:function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");} },
+      { l:"Meeting",      v:myMeet2,                                   c:"#D1FAE5", tc:"#065F46", nav:function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");} },
+      { l:"Deal",         v:(mySC2["DoneDeal"]||0),                    c:"#FFE4E6", tc:"#9F1239", nav:function(){p.nav("deals");} }
     ];
-    var funnelMaxS = Math.max(funnelRowsS[0].v, 1);
+    var funnelMaxS = Math.max(funnelRowsS[0].v, funnelRowsS[1].v, funnelRowsS[2].v, funnelRowsS[3].v, 1);
 
     // ============ RECENT ACTIVITY (real, from lead.history entries by me) ============
     var myNameS = p.cu.name||"";
@@ -2762,18 +2772,21 @@ var DashboardPage = function(p) {
             <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>Recent Activity</div>
             <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>Last 20 · {rangeLabelS}</div>
           </div>
-          {myRecentActsS.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity in this range</div>}
-          {myRecentActsS.map(function(h,i){
-            var stC = statusColors2[h.lead&&h.lead.status]||"#94A3B8";
-            return <div key={i} onClick={function(){ if(h.lead) p.nav("leads",h.lead); }} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"8px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:h.lead?"pointer":"default"}}>
-              <span style={{fontSize:14,lineHeight:"18px",flexShrink:0}}>{eventIconS(h.event)}</span>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.leadName} {"\u2014"} <span style={{color:stC,fontWeight:600}}>{h.lead&&h.lead.status}</span></div>
-                <div style={{fontSize:11,color:"#64748B",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.description||h.event}</div>
-                <div style={{fontSize:10,color:"#94A3B8",marginTop:2}}>{fmtActTime(h.timestamp)}</div>
-              </div>
-            </div>;
-          })}
+          {/* Fixed-height list — first 4 visible (~57px each), the rest scroll inside the card. */}
+          <div style={{maxHeight:228,overflowY:"auto",paddingRight:4}}>
+            {myRecentActsS.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity in this range</div>}
+            {myRecentActsS.map(function(h,i){
+              var stC = statusColors2[h.lead&&h.lead.status]||"#94A3B8";
+              return <div key={i} onClick={function(){ if(h.lead) p.nav("leads",h.lead); }} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"8px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:h.lead?"pointer":"default"}}>
+                <span style={{fontSize:14,lineHeight:"18px",flexShrink:0}}>{eventIconS(h.event)}</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.leadName} {"\u2014"} <span style={{color:stC,fontWeight:600}}>{h.lead&&h.lead.status}</span></div>
+                  <div style={{fontSize:11,color:"#64748B",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.description||h.event}</div>
+                  <div style={{fontSize:10,color:"#94A3B8",marginTop:2}}>{fmtActTime(h.timestamp)}</div>
+                </div>
+              </div>;
+            })}
+          </div>
         </div>
       </div>
     </div>;
