@@ -7026,9 +7026,12 @@ export default function CRMApp() {
         var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,token);
         if(fresh&&fresh.data) setLeads(fresh.data);
       }catch(e){
-        // "exhausted" (409) is expected when every in-list agent has had the lead — don't spam the console.
+        // These 409s are expected and safe to swallow — the lead is already in the right place.
+        //   exhausted            — every in-list agent has already handled this lead
+        //   no_rotation_order    — admin hasn't configured a list yet
+        //   concurrent_rotation  — another request already rotated this lead; we mustn't rotate again
         var msg = String(e && e.message || "");
-        if (msg.indexOf("exhausted")<0 && msg.indexOf("no_rotation_order")<0) console.error("Rotation error:", e);
+        if (msg.indexOf("exhausted")<0 && msg.indexOf("no_rotation_order")<0 && msg.indexOf("concurrent_rotation")<0) console.error("Rotation error:", e);
       }
       finally{ rotatingNow.delete(lid); }
     };

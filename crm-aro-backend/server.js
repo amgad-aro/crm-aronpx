@@ -1942,6 +1942,11 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
 // handled" = any id in lead.assignments[].agentId, lead.previousAgentIds, or the
 // current lead.agentId. If every agent in the list has already had the lead,
 // rotation stops and the lead is left as-is.
+//
+// INVARIANT: ONE rotation event = exactly ONE new assignment to ONE agent.
+// The scan loop below has a `break` on first match, and the mutation is a
+// single atomic findOneAndUpdate guarded on the lead's current agentId so
+// two concurrent requests can't both append an assignment to the same lead.
 app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
   try {
     var reason = (req.body && req.body.reason) || "auto_timeout";
@@ -2009,14 +2014,32 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
 
     var targetAgentId = String(targetUser._id);
 
-    // First assignment — lead has no active agent yet. Just assign.
+    // First assignment — lead has no active agent yet. Atomic so two concurrent
+    // requests can't both push an assignment: the filter requires the lead to
+    // still have no active agent at update time. Second request → null result → 409.
     var isFirstAssignment = !lead.agentId || (!lead.agentId._id && !mongoose.Types.ObjectId.isValid(String(lead.agentId))) || (lead.assignments && lead.assignments.length === 0);
     if (isFirstAssignment) {
-      lead.agentId = new mongoose.Types.ObjectId(targetAgentId);
-      lead.assignments.push({ agentId: new mongoose.Types.ObjectId(targetAgentId), status: "NewLead", notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [], assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false });
-      await lead.save();
+      var firstAssignment = {
+        agentId: new mongoose.Types.ObjectId(targetAgentId),
+        status: "NewLead",
+        notes: "", budget: "", callbackTime: "", lastFeedback: "",
+        nextCallAt: null, agentHistory: [],
+        assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(),
+        noRotation: false
+      };
+      var firstResult = await Lead.findOneAndUpdate(
+        { _id: req.params.id, agentId: null },
+        {
+          $set: { agentId: new mongoose.Types.ObjectId(targetAgentId), lastRotationAt: new Date() },
+          $push: { assignments: firstAssignment }
+        },
+        { new: true }
+      );
+      if (!firstResult) {
+        return res.status(409).json({ error: "concurrent_rotation", message: "Lead was modified by another request — retry" });
+      }
       var firstByName = (req.user && req.user.name) ? req.user.name : "System";
-      await pushHistory(lead._id, historyEntry(
+      await pushHistory(firstResult._id, historyEntry(
         "assigned",
         "Assigned to " + targetUser.name + " by " + firstByName + " (auto-rotate)",
         firstByName,
@@ -2028,8 +2051,13 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       return res.json({ success: true, firstAssignment: true, targetAgentId: targetAgentId, lead: firstPopulated });
     }
 
-    // Regular rotation path — same mutation as POST /rotate, minus the duplicate-target guard
-    // (we've already excluded previous agents above).
+    // ── Regular rotation path ──
+    // ONE assignment, atomically. The filter pins the lead to its CURRENT
+    // agentId as read above — if another /auto-rotate (or /rotate) call has
+    // already moved the lead since we fetched it, findOneAndUpdate returns
+    // null and we bail with 409. That's what guarantees "one trigger = one
+    // agent assignment": concurrent triggers can't each append their own
+    // assignment to the same lead.
     var oldAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
     var oldAgentName = lead.agentId && lead.agentId.name ? lead.agentId.name : "Unassigned";
     var newAssignment = {
@@ -2052,14 +2080,21 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     if (oldAgentId && String(oldAgentId) !== "null" && String(oldAgentId) !== "undefined" && String(oldAgentId) !== "") {
       pushOps.previousAgentIds = oldAgentId;
     }
-    await Lead.findByIdAndUpdate(req.params.id, {
-      $set: {
-        agentId: new mongoose.Types.ObjectId(targetAgentId),
-        lastRotationAt: new Date(),
-        rotationCount: (lead.rotationCount || 0) + 1
+    var guardedResult = await Lead.findOneAndUpdate(
+      { _id: req.params.id, agentId: oldAgentId },
+      {
+        $set: {
+          agentId: new mongoose.Types.ObjectId(targetAgentId),
+          lastRotationAt: new Date()
+        },
+        $inc: { rotationCount: 1 },
+        $push: pushOps
       },
-      $push: pushOps
-    });
+      { new: true }
+    );
+    if (!guardedResult) {
+      return res.status(409).json({ error: "concurrent_rotation", message: "Lead was already rotated by another request" });
+    }
     await pushHistory(req.params.id, historyEntry(
       "rotated",
       "Rotated from " + oldAgentName + " to " + targetUser.name + " by " + (req.user.name || "System") + " (" + reason + ")",
