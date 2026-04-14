@@ -2984,13 +2984,40 @@ var DashboardPage = function(p) {
     return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,calls:acalls,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,rotOut:arotOut,rotIn:arotIn,noAnswer:anoAns,respTime:respH>0?respH.toFixed(1):"\u2014",score:score,quality:qualityScore};
   }).sort(function(a,b){return b.quality-a.quality;});
 
-  // Untouched leads — no activity since assignment
+  // Untouched leads — assigned to an agent for more than 24h with no activity
+  // recorded since assignment. Current assignment's assignedAt is the anchor;
+  // lead.lastActivityTime is updated on every activity, so if it's <= assignedAt
+  // (with 1-minute tolerance for the log that happens at assignment time) we
+  // know the agent hasn't touched the lead yet.
+  var DAY_MS = 24*60*60*1000;
   var untouchedLeads = leads.filter(function(l){
-    if (l.status!=="NewLead") return false;
-    if (l.callbackTime) return false;
-    if (l.notes && l.notes.trim().length>0) return false;
-    if (l.lastFeedback && l.lastFeedback.trim().length>0) return false;
+    var cur = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
+    if (!cur) return false;
+    var asg = (l.assignments||[]).find(function(a){
+      var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+      return String(aid||"")===String(cur);
+    });
+    if (!asg || !asg.assignedAt) return false;
+    var assignedAt = new Date(asg.assignedAt).getTime();
+    if (!assignedAt || isNaN(assignedAt)) return false;
+    if ((now - assignedAt) < DAY_MS) return false; // assigned less than 24h ago
+    // Any activity after assignment (lead-level lastActivityTime OR assignment.lastActionAt) disqualifies.
+    var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
+    var lastOnAssignment = asg.lastActionAt ? new Date(asg.lastActionAt).getTime() : 0;
+    var latest = Math.max(lastAct, lastOnAssignment);
+    if (latest > assignedAt + 60*1000) return false;
+    // Explicit notes / feedback / callback set = activity too.
+    if (asg.notes && String(asg.notes).trim().length>0) return false;
+    if (asg.lastFeedback && String(asg.lastFeedback).trim().length>0) return false;
+    if (asg.callbackTime) return false;
     return true;
+  }).sort(function(a,b){
+    var t = function(l){
+      var cur = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
+      var asg = (l.assignments||[]).find(function(x){var aid=x.agentId&&x.agentId._id?x.agentId._id:x.agentId;return String(aid||"")===String(cur);});
+      return asg && asg.assignedAt ? new Date(asg.assignedAt).getTime() : 0;
+    };
+    return t(a) - t(b); // oldest assignment first
   }).slice(0,20);
 
   // Today's activities feed — prefer the dedicated fetch (all today's activities), fall back to the paginated p.activities
@@ -3189,15 +3216,17 @@ var DashboardPage = function(p) {
             <span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:6,background:"#FEE2E2",color:"#991B1B"}}>{untouchedLeads.length}</span>
           </div>
           {untouchedLeads.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} All leads have activity</div> : untouchedLeads.map(function(l,i){
-            var hrs = l.createdAt ? Math.round((now-new Date(l.createdAt).getTime())/3600000) : 0;
+            var cur = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
+            var asg = (l.assignments||[]).find(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid||"")===String(cur);});
+            var assignedAt = asg && asg.assignedAt ? new Date(asg.assignedAt).getTime() : (l.createdAt?new Date(l.createdAt).getTime():0);
+            var hrs = assignedAt ? Math.round((now-assignedAt)/3600000) : 0;
             var aName = l.agentId && l.agentId.name ? l.agentId.name : (l.agentId ? agentName(l.agentId) : "\u2014");
-            var projectName = (l.project||"\u2014").replace(/_/g," ");
             return <div key={gid(l)} onClick={function(){openLead(l);}} style={{display:"grid",gridTemplateColumns:"1fr auto",gap:6,padding:"8px 0",borderBottom:i<untouchedLeads.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
               <div>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{l.name}</div>
-                <div style={{fontSize:11,color:"#94A3B8"}}>{maskPh(l.phone)} {"\u00b7"} {aName} {"\u00b7"} {projectName}</div>
+                <div style={{fontSize:11,color:"#94A3B8"}}>{aName} {"\u00b7"} assigned {hrs}h ago</div>
               </div>
-              <div style={{fontSize:11,fontWeight:600,color:hrs>48?"#DC2626":"#92400E",alignSelf:"center"}}>{hrs}h</div>
+              <div style={{fontSize:11,fontWeight:600,color:hrs>=48?"#DC2626":"#92400E",alignSelf:"center"}}>{hrs}h</div>
             </div>;
           })}
         </>)}
@@ -3246,7 +3275,9 @@ var DashboardPage = function(p) {
             else if (noteLc.indexOf("callback")>=0) ic={icon:"\ud83d\udcc5",bg:"#DBEAFE",fg:"#1D4ED8"};
             else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
             if (feedbackText && feedbackText.length>80) feedbackText = feedbackText.slice(0,80)+"\u2026";
-            return <div key={String(a._id||("k"+i))} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none"}}>
+            var actLeadId = a.leadId && a.leadId._id ? a.leadId._id : a.leadId;
+            var onActClick = actLeadId ? function(){ openLead({_id: actLeadId, name: lName}); } : null;
+            return <div key={String(a._id||("k"+i))} onClick={onActClick} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadId?"pointer":"default"}}>
               <div style={{width:34,height:34,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{aName}{lName?" \u2014 "+lName:""}</div>
@@ -3320,11 +3351,33 @@ var DashboardPage = function(p) {
             if (p.setSpecialFilter) p.setSpecialFilter({type:type});
             if (p.nav) p.nav("leads");
           };
+          // Rotated > 3 times with no deal — heavy-churn leads that never closed.
+          var ROT_THRESHOLD = 3;
+          var heavyRotNoDeal = leads.filter(function(l){
+            if ((l.rotationCount||0) <= ROT_THRESHOLD) return false;
+            if (l.status==="DoneDeal") return false;
+            if (l.globalStatus==="donedeal" || l.globalStatus==="eoi") return false;
+            return true;
+          }).length;
+          // Agents with zero activity today — active sales staff who haven't logged anything since 00:00.
+          var todayStartMs = todayStart.getTime();
+          var activeAgents = (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="team_leader"||u.role==="manager");});
+          var actPool = (todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
+          var activeAgentIds = {};
+          actPool.forEach(function(a){
+            var t = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            if (!t || t<todayStartMs) return;
+            var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
+            if (aid) activeAgentIds[String(aid)] = true;
+          });
+          var inactiveAgentsToday = activeAgents.filter(function(u){return !activeAgentIds[String(u._id||gid(u))];}).length;
           var rows=[
+            {dot:"#F97316",n:overdue,t:"overdue callbacks",s:"past scheduled",onClick:function(){gotoFilter("CallBack");}},
+            {dot:"#DC2626",n:stale48Count,t:"untouched 48h+",s:"no activity in 48h",onClick:function(){gotoSpecial("stale48h");}},
+            {dot:"#6366F1",n:heavyRotNoDeal,t:"rotated > "+ROT_THRESHOLD+"\u00d7 no deal",s:"churning without closing",onClick:function(){gotoSpecial("rotatedThisMonth");}},
+            {dot:"#0EA5E9",n:inactiveAgentsToday,t:"agents no activity today",s:"of "+activeAgents.length+" active sales staff",onClick:function(){if(p.nav) p.nav("team");}},
             {dot:"#EF4444",n:untouched,t:"untouched leads",s:"no action taken",onClick:function(){gotoSpecial("untouched");}},
             {dot:"#F59E0B",n:missingFBCount,t:"missing feedback",s:"no notes",onClick:function(){gotoSpecial("missingFeedback");}},
-            {dot:"#F97316",n:overdue,t:"overdue callbacks",s:"past scheduled",onClick:function(){gotoFilter("CallBack");}},
-            {dot:"#DC2626",n:stale48Count,t:"stale 48h+",s:"no activity",onClick:function(){gotoSpecial("stale48h");}},
             {dot:"#6366F1",n:rotationsMonth,t:"rotations this month",s:rotMonthAuto+" auto \u00b7 "+rotMonthManual+" manual",onClick:function(){gotoSpecial("rotatedThisMonth");}},
             {dot:"#7C3AED",n:lockedCount,t:"leads locked",s:"noRotation flag",onClick:function(){gotoSpecial("noRotation");}}
           ];
@@ -3396,8 +3449,9 @@ var DashboardPage = function(p) {
           var sumDoneOnTime = sumScheduled - sumMissed;
           var complianceRate = sumScheduled>0 ? Math.round(sumDoneOnTime/sumScheduled*100) : 0;
           var leaderboard = Object.values(byAgent).sort(function(a,b){ if (b.missed!==a.missed) return b.missed-a.missed; return b.total-a.total; });
-          leaderboard.forEach(function(x){ x.rate = x.total>0?Math.round(x.missed/x.total*100):0; });
-          var rateColor = function(rate){ return rate>40?"#DC2626":rate>=20?"#F59E0B":"#10B981"; };
+          // Per-agent compliance rate = done on time / total scheduled (spec definition).
+          leaderboard.forEach(function(x){ x.rate = x.total>0?Math.round(x.doneOnTime/x.total*100):100; });
+          var rateColor = function(rate){ return rate>=80?"#10B981":rate>=60?"#F59E0B":"#DC2626"; };
           var initialsOfName = function(n){return (n||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();};
           var filterLabel = filter==="today" ? "Scheduled Today" : filter==="week" ? "Scheduled this Week" : filter==="month" ? "Scheduled this Month" : "Scheduled in Period";
           return <>
@@ -3424,8 +3478,8 @@ var DashboardPage = function(p) {
                     <div style={{height:3,borderRadius:2,background:"#F1F5F9",marginTop:3}}><div style={{height:"100%",width:Math.min(100,x.rate)+"%",background:rc,borderRadius:2}}/></div>
                   </div>
                   <div style={{textAlign:"right",flexShrink:0}}>
-                    <div style={{fontSize:13,fontWeight:700,color:x.missed>3?"#DC2626":"#334155"}}>{x.missed}</div>
-                    <div style={{fontSize:10,color:"#94A3B8"}}>of {x.total} · <span style={{color:rc,fontWeight:700}}>{x.rate}%</span></div>
+                    <div style={{fontSize:13,fontWeight:700,color:rc}}>{x.rate}%</div>
+                    <div style={{fontSize:10,color:"#94A3B8"}}>{x.doneOnTime}/{x.total} on time{x.missed>0?" · "+x.missed+" missed":""}</div>
                   </div>
                 </div>;
               })}
@@ -3436,46 +3490,52 @@ var DashboardPage = function(p) {
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Call Outcomes</div>
         {(function(){
-          // Data source: activities collection only (no lead mixing). Use todayActivities when filter is "today", else p.activities.
+          // Spec: count LEADS per status that represent call outcomes, filtered by the active period.
+          // Scope = fLeads (leads with createdAt in [rangeStart, rangeEnd]) — the same range
+          // the admin dashboard uses everywhere else. Answer rate stays call-based as before.
+          var statusCounts = {};
+          fLeads.forEach(function(l){ var s = l.status||"NewLead"; statusCounts[s] = (statusCounts[s]||0)+1; });
+          var hotCase       = statusCounts.HotCase       || 0;
+          var potential     = statusCounts.Potential     || 0;
+          var interestedTotal = hotCase + potential; // spec "Interested" bucket
+          var cbk           = statusCounts.CallBack     || 0;
+          var noAns         = statusCounts.NoAnswer     || 0;
+          var notInt        = statusCounts.NotInterested|| 0;
+          var meetingDone   = statusCounts.MeetingDone  || 0;
+          var totalOutcomes = interestedTotal + cbk + noAns + notInt + meetingDone;
+          // Calls made in the period — still sourced from the Activity log for the same window.
           var actsPool = (filter==="today" && todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
-          var inRange = function(a){ if(!a.createdAt) return false; var t=new Date(a.createdAt).getTime(); return t>=rangeStart && t<=rangeEnd; };
-          var callsInRange = actsPool.filter(function(a){return a.type==="call" && inRange(a);});
-          var statusInRange = actsPool.filter(function(a){return a.type==="status_change" && inRange(a);});
-          // Parse the bracketed tag that the client writes — format is "[StatusCode] feedback" (see line ~1251)
-          var tagOf = function(note){ var m=(note||"").match(/^\s*\[([^\]]+)\]/); return m?m[1].trim():""; };
-          var outcomeCounts = {};
-          statusInRange.forEach(function(a){
-            var tag = tagOf(a.note);
-            if (!tag) return;
-            if (tag==="Meeting Done") tag="MeetingDone";
-            if (tag==="No Answer") tag="NoAnswer";
-            if (tag==="Hot Case") tag="HotCase";
-            if (tag==="Not Interested") tag="NotInterested";
-            if (tag==="Call Back") tag="CallBack";
-            outcomeCounts[tag] = (outcomeCounts[tag]||0)+1;
-          });
-          var hotCase = outcomeCounts.HotCase || 0;
-          var potential = outcomeCounts.Potential || 0;
-          var interestedTotal = hotCase + potential;
-          var cbk = outcomeCounts.CallBack || 0;
-          var noAns = outcomeCounts.NoAnswer || 0;
-          var notInt = outcomeCounts.NotInterested || 0;
-          var meetingDone = outcomeCounts.MeetingDone || 0;
-          var totalCalls = callsInRange.length;
-          var totalOutcomes = statusInRange.length;
-          // Answer rate is call-based (calls - no-answer status_changes, clamped)
+          var totalCalls = actsPool.filter(function(a){ if(a.type!=="call") return false; var t=a.createdAt?new Date(a.createdAt).getTime():0; return t>=rangeStart && t<=rangeEnd; }).length;
           var answered = Math.max(0, totalCalls - noAns);
           var answerRate = totalCalls>0 ? Math.round(answered/totalCalls*100) : 0;
-          var invalidPct = totalOutcomes>0 ? Math.round(notInt/totalOutcomes*100) : 0;
-          var denom = Math.max(1,totalOutcomes);
+          var denom = Math.max(1, totalOutcomes);
+          var pct = function(n){ return totalOutcomes>0 ? Math.round(n/totalOutcomes*100) : 0; };
+          var invalidPct = pct(notInt);
           var callsLabel = filter==="today" ? "Calls Today" : filter==="week" ? "Calls this Week" : filter==="month" ? "Calls this Month" : "Calls in Period";
           return <>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
               <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{totalCalls}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>{callsLabel}</div></div>
               <div style={{background:"#F0FDF4",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#15803D"}}>{answerRate}%</div><div style={{fontSize:10,fontWeight:600,color:"#22C55E"}}>Answer Rate</div></div>
             </div>
-            <div style={{fontSize:10,color:"#94A3B8",marginBottom:6}}>Outcomes from {totalOutcomes} status change{totalOutcomes===1?"":"s"} in period</div>
-            {[["Interested",interestedTotal,"#10B981"],["Hot Case",hotCase,"#F59E0B"],["Potential",potential,"#14B8A6"],["No Answer",noAns,"#94A3B8"],["Not Int.",notInt,"#EF4444"],["Call Back",cbk,"#F59E0B"],["Meeting",meetingDone,"#8B5CF6"]].map(function(s){return bRow(s[0],s[1],denom,s[2]);})}
+            <div style={{fontSize:10,color:"#94A3B8",marginBottom:6}}>Leads per outcome status in period ({totalOutcomes} total)</div>
+            {[
+              ["Interested",interestedTotal,"#10B981"],
+              ["Hot Case",hotCase,"#F59E0B"],
+              ["Potential",potential,"#14B8A6"],
+              ["No Answer",noAns,"#94A3B8"],
+              ["Not Int.",notInt,"#EF4444"],
+              ["Call Back",cbk,"#F59E0B"],
+              ["Meeting",meetingDone,"#8B5CF6"]
+            ].map(function(s){
+              var cnt = s[1]; var p2 = pct(cnt);
+              return <div key={s[0]} style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
+                <div style={{fontSize:12,color:"#64748B",width:82,flexShrink:0}}>{s[0]}</div>
+                <div style={{flex:1,height:5,background:"#F1F5F9",borderRadius:3,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:Math.max(2,Math.round(cnt/denom*100))+"%",background:s[2],borderRadius:3}}/>
+                </div>
+                <div style={{fontSize:12,fontWeight:700,color:"#334155",width:52,textAlign:"right"}}>{cnt} <span style={{color:"#94A3B8",fontWeight:500,fontSize:10}}>({p2}%)</span></div>
+              </div>;
+            })}
             <div style={{marginTop:10,padding:"8px 10px",background:"#FFF1F2",borderRadius:8,display:"flex",justifyContent:"space-between",fontSize:12}}>
               <span style={{color:"#64748B",fontWeight:500}}>Invalid leads</span><span style={{fontWeight:700,color:"#BE123C"}}>{invalidPct}%</span>
             </div>
@@ -3554,7 +3614,9 @@ var DashboardPage = function(p) {
             else if (a.type==="note") ic={icon:"\ud83d\udcdd",bg:"#FFE4E6",fg:"#9F1239"};
             else if (noteLc.indexOf("callback")>=0) ic={icon:"\ud83d\udcc5",bg:"#DBEAFE",fg:"#1D4ED8"};
             else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
-            return <div key={(a._id||"")+"-"+i} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none"}}>
+            var actLeadIdM = a.leadId && a.leadId._id ? a.leadId._id : a.leadId;
+            var onActClickM = actLeadIdM ? function(){ setSeeAllOpen(false); openLead({_id: actLeadIdM, name: lName}); } : null;
+            return <div key={(a._id||"")+"-"+i} onClick={onActClickM} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadIdM?"pointer":"default"}}>
               <div style={{width:36,height:36,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{aName}{lName?" \u2014 "+lName:""}</div>
