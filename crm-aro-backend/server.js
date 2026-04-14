@@ -67,6 +67,11 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   projectWeight:{type:Number,default:1},
   dealDate:{type:String,default:""},
   lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0},
+  // Rotation kill-switch — flipped true after 3 consecutive agents mark the
+  // lead "Not Interested" (tracked by notInterestedStreak). Once true, every
+  // rotation endpoint bails out; admin can reset it by editing the lead.
+  rotationStopped:{type:Boolean,default:false},
+  notInterestedStreak:{type:Number,default:0},
   locked:{type:Boolean,default:false},
   lastFeedback:{type:String,default:""},
   // Permanent meeting marker — once set, must never be cleared or overwritten.
@@ -1852,6 +1857,10 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
       return res.json({ success: true, firstAssignment: true, lead: lead });
     }
 
+    // ── HARD STOP 0: rotation permanently stopped (3 consecutive Not Interested) ──
+    if (lead.rotationStopped === true) {
+      return res.status(409).json({ error: "rotation_stopped", message: "Rotation permanently stopped on this lead (3 consecutive Not Interested)" });
+    }
     // ── HARD STOP 1: noRotation flag on any assignment ──
     var currentAssignment = (lead.assignments || []).find(function(a) { return String(a.agentId) === String(lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId); });
     if (currentAssignment && currentAssignment.noRotation && req.user.role !== "admin" && req.user.role !== "sales_admin") {
@@ -1956,6 +1965,9 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     // Hard stops mirror the manual /rotate endpoint — same invariants apply.
     var currentAid = lead.agentId && lead.agentId._id ? String(lead.agentId._id) : String(lead.agentId||"");
     var currentAssignment = (lead.assignments || []).find(function(a) { return String(a.agentId) === currentAid; });
+    if (lead.rotationStopped === true) {
+      return res.status(409).json({ error: "rotation_stopped", message: "Rotation permanently stopped on this lead (3 consecutive Not Interested)" });
+    }
     if (currentAssignment && currentAssignment.noRotation && req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(400).json({ error: "noRotation", message: "Rotation blocked — noRotation flag set" });
     }
@@ -2060,6 +2072,41 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     // assignment to the same lead.
     var oldAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
     var oldAgentName = lead.agentId && lead.agentId.name ? lead.agentId.name : "Unassigned";
+
+    // Consecutive-NotInterested streak. The outgoing agent's final status on
+    // their own assignment decides whether the streak advances:
+    //   - "NotInterested" on their slice → streak + 1
+    //   - anything else                   → streak reset to 0
+    // Hitting 3 flips rotationStopped permanently (admin can clear the flag
+    // by editing the lead). When we hit 3 we ABORT this rotation — the lead
+    // stays where it is, marked stopped.
+    var outgoingAssignment = (lead.assignments || []).find(function(a) {
+      var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+      return String(aid||"") === String(oldAgentId||"");
+    });
+    var outgoingStatus = outgoingAssignment ? String(outgoingAssignment.status||"") : String(lead.status||"");
+    var prevStreak = Number(lead.notInterestedStreak||0);
+    var nextStreak = (outgoingStatus === "NotInterested" || outgoingStatus === "Not Interested") ? (prevStreak + 1) : 0;
+    if (nextStreak >= 3) {
+      // Flip the kill switch; do NOT rotate.
+      var stopResult = await Lead.findOneAndUpdate(
+        { _id: req.params.id, agentId: oldAgentId, rotationStopped: { $ne: true } },
+        { $set: { notInterestedStreak: nextStreak, rotationStopped: true } },
+        { new: true }
+      );
+      if (stopResult) {
+        try {
+          await pushHistory(req.params.id, historyEntry(
+            "rotation_stopped",
+            "Rotation permanently stopped — 3 consecutive Not Interested outcomes",
+            req.user.name || "System",
+            ""
+          ));
+        } catch(hErr) { /* non-fatal */ }
+      }
+      return res.status(409).json({ error: "rotation_stopped", message: "Rotation permanently stopped on this lead (3 consecutive Not Interested)" });
+    }
+
     var newAssignment = {
       agentId: new mongoose.Types.ObjectId(targetAgentId),
       status: "NewLead",
@@ -2085,7 +2132,8 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       {
         $set: {
           agentId: new mongoose.Types.ObjectId(targetAgentId),
-          lastRotationAt: new Date()
+          lastRotationAt: new Date(),
+          notInterestedStreak: nextStreak
         },
         $inc: { rotationCount: 1 },
         $push: pushOps

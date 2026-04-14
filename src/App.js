@@ -1847,9 +1847,10 @@ var LeadsPage = function(p) {
                 return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":isRotated?"#FFF7ED":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
                   <td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();setSelected2(function(prev){return prev.includes(lid)?prev.filter(function(x){return x!==lid;}):[...prev,lid];});}}><input type="checkbox" checked={isChk} readOnly/></td>
                   <td style={{ padding:"10px 12px", textAlign:"left" }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
                       {lead.isVIP&&<span style={{ fontSize:14 }} title="VIP">⭐</span>}
                       {lead.locked&&<span style={{ fontSize:12 }} title="Locked — no rotation">🔒</span>}
+                      {lead.rotationStopped&&<span style={{ fontSize:10, fontWeight:700, padding:"1px 6px", borderRadius:5, background:"#FEE2E2", color:"#991B1B", whiteSpace:"nowrap" }} title="Rotation permanently stopped — 3 consecutive Not Interested">🛑 Rotation Stopped</span>}
                       <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
                     </div>
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
@@ -1942,6 +1943,7 @@ var LeadsPage = function(p) {
             </div>
           </div>
           <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selected.name}</div>
+          {selected.rotationStopped&&<div style={{ marginTop:4, display:"inline-block", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:5, background:"rgba(255,255,255,0.95)", color:"#991B1B" }} title="Rotation permanently stopped — 3 consecutive Not Interested">🛑 Rotation Stopped</div>}
           <div style={{ color:"rgba(255,255,255,0.6)", fontSize:11, marginTop:2 }}>
             {selected.phone}{selected.phone2?" / "+selected.phone2:""}
           </div>
