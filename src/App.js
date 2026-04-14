@@ -3724,15 +3724,11 @@ var EOIPage = function(p) {
     try{
       // 1) Dedicated EOI-cancel endpoint restores status, sets eoiStatus="Deal Cancelled", syncs the DR mirror.
       var updated = await apiFetch("/api/leads/"+gid(lead)+"/eoi-cancel","POST",{},p.token);
-      // 2) Rotate to a random other active sales agent (non-blocking if it fails)
-      var currentAid = updated&&updated.agentId?(updated.agentId._id?String(updated.agentId._id):String(updated.agentId)) : (lead.agentId&&lead.agentId._id?String(lead.agentId._id):String(lead.agentId||""));
-      // Rotation pool: sales / team_leader / manager only — sales_admin is never rotation-eligible.
-      var pool = (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="team_leader"||u.role==="manager") && String(u._id||gid(u))!==currentAid;});
-      var target = pool.length>0 ? pool[Math.floor(Math.random()*pool.length)] : null;
-      if (target) {
-        try { updated = await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:String(target._id||gid(target)),reason:"manual"},p.token); }
-        catch(rotErr){ /* rotation failed but status + eoiStatus already updated */ }
-      }
+      // 2) Auto-rotate via the ordered rotation list (backend skips previous agents).
+      try {
+        var rot = await apiFetch("/api/leads/"+gid(lead)+"/auto-rotate","POST",{reason:"manual"},p.token);
+        if (rot && rot.lead) updated = rot.lead;
+      } catch(rotErr){ /* status + eoiStatus already updated; rotation may be exhausted */ }
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
       if(selectedEOI&&gid(selectedEOI)===gid(lead)) setSelectedEOI(updated);
       // Switch to the Deal Cancelled tab so the admin sees where it went
@@ -4592,14 +4588,11 @@ var DealsPage = function(p) {
                   setDealCancelling(true);
                   try{
                     var updated = await apiFetch("/api/leads/"+gid(selectedDeal)+"/deal-cancel","POST",{},p.token);
-                    // Rotate to a random other active sales agent (non-blocking on failure)
-                    var currentAid = updated&&updated.agentId?(updated.agentId._id?String(updated.agentId._id):String(updated.agentId)) : (selectedDeal.agentId&&selectedDeal.agentId._id?String(selectedDeal.agentId._id):String(selectedDeal.agentId||""));
-                    // Rotation pool: sales / team_leader / manager only — sales_admin is never rotation-eligible.
-                    var pool = (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="team_leader"||u.role==="manager") && String(u._id||gid(u))!==currentAid;});
-                    var target = pool.length>0 ? pool[Math.floor(Math.random()*pool.length)] : null;
-                    if (target) {
-                      try { updated = await apiFetch("/api/leads/"+gid(selectedDeal)+"/rotate","POST",{targetAgentId:String(target._id||gid(target)),reason:"manual"},p.token); } catch(rotErr){}
-                    }
+                    // Auto-rotate via the ordered rotation list (backend skips previous agents).
+                    try {
+                      var rot = await apiFetch("/api/leads/"+gid(selectedDeal)+"/auto-rotate","POST",{reason:"manual"},p.token);
+                      if (rot && rot.lead) updated = rot.lead;
+                    } catch(rotErr){ /* deal cancelled; rotation may be exhausted */ }
                     p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
                     setSelectedDeal(updated);
                     setDealTab("cancelled");
@@ -6108,7 +6101,20 @@ var SettingsPage = function(p) {
 
   var toggleAgent=function(uid){
     setReassignAgents(function(prev){
-      return prev.includes(uid)?prev.filter(function(x){return x!==uid;}):[...prev,uid];
+      // When adding, append to the end so the admin's drag order stays stable.
+      return prev.includes(uid) ? prev.filter(function(x){return x!==uid;}) : prev.concat([uid]);
+    });
+  };
+  // Drag-and-drop state for the ordered rotation list.
+  var [dragIdx, setDragIdx] = useState(-1);
+  var [dropIdx, setDropIdx] = useState(-1);
+  var reorderAgent=function(from, to){
+    if (from===to || from<0 || to<0) return;
+    setReassignAgents(function(prev){
+      var next = prev.slice();
+      var [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
     });
   };
   var doSave=async function(){
@@ -6141,26 +6147,58 @@ var SettingsPage = function(p) {
       <Inp label={t.email} value={em} onChange={function(e){setEm(e.target.value);}}/>
       <Inp label={t.phone} value={ph} onChange={function(e){setPh(e.target.value);}}/>
 
-      {/* Rotation Agents */}
+      {/* Auto-Rotation Order — priority-ordered list the backend walks top-to-bottom
+          when auto-rotating a lead. Drag to reorder; checkbox on the right-side roster
+          to add/remove an agent. An agent never receives a lead they've previously
+          handled — if all in-list agents have already had it, rotation stops. */}
       <div style={{marginBottom:13}}>
-        <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>🔄 Auto-Rotation Agents</label>
-        <div style={{border:"1px solid #E2E8F0",borderRadius:10,padding:"8px 12px",background:"#fff",maxHeight:200,overflowY:"auto"}}>
-          {salesAgentsForSetting.length===0&&<div style={{fontSize:12,color:C.textLight,padding:"6px 0"}}>No agents</div>}
-          {salesAgentsForSetting.map(function(u){
-            var uid=gid(u); var checked=reassignAgents.includes(uid);
-            return <div key={uid} onClick={function(){toggleAgent(uid);}} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 4px",cursor:"pointer",borderRadius:7,background:checked?C.accent+"10":"transparent",marginBottom:2}}>
-              <div style={{width:18,height:18,borderRadius:5,border:"2px solid",borderColor:checked?C.accent:"#CBD5E1",background:checked?C.accent:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s"}}>
-                {checked&&<span style={{color:"#fff",fontSize:11,fontWeight:700,lineHeight:1}}>✓</span>}
+        <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>🔢 Auto-Rotation Order</label>
+        <div style={{border:"1px solid #E2E8F0",borderRadius:10,padding:"8px 8px",background:"#fff",maxHeight:260,overflowY:"auto"}}>
+          {reassignAgents.length===0 ? <div style={{fontSize:12,color:C.textLight,padding:"10px 4px"}}>No agents in the rotation order yet. Add agents from the list below.</div> : reassignAgents.map(function(uid, idx){
+            var u = (p.users||[]).find(function(x){return String(gid(x))===String(uid);});
+            if (!u) return null;
+            var isDragTarget = dropIdx===idx && dragIdx!==idx;
+            return <div key={uid}
+              draggable={true}
+              onDragStart={function(e){ setDragIdx(idx); try{e.dataTransfer.effectAllowed="move";}catch(_){} }}
+              onDragOver={function(e){ e.preventDefault(); if (dropIdx!==idx) setDropIdx(idx); try{e.dataTransfer.dropEffect="move";}catch(_){} }}
+              onDragLeave={function(){ if (dropIdx===idx) setDropIdx(-1); }}
+              onDrop={function(e){ e.preventDefault(); reorderAgent(dragIdx, idx); setDragIdx(-1); setDropIdx(-1); }}
+              onDragEnd={function(){ setDragIdx(-1); setDropIdx(-1); }}
+              style={{display:"flex",alignItems:"center",gap:10,padding:"10px 10px",borderRadius:8,background:dragIdx===idx?"#F1F5F9":isDragTarget?C.accent+"14":"#fff",border:"1px solid",borderColor:isDragTarget?C.accent:"#EEF2F7",marginBottom:4,cursor:"grab",userSelect:"none"}}>
+              <span style={{fontSize:14,color:"#94A3B8",lineHeight:1,letterSpacing:-1}}>⋮⋮</span>
+              <div style={{width:24,height:24,borderRadius:"50%",background:C.accent+"20",color:C.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{idx+1}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</div>
+                <div style={{fontSize:11,color:C.textLight,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.title||""}</div>
               </div>
-              <div>
-                <div style={{fontSize:13,fontWeight:600}}>{u.name}</div>
-                <div style={{fontSize:11,color:C.textLight}}>{u.title}</div>
-              </div>
+              <button onClick={function(){toggleAgent(uid);}} title="Remove from rotation order" style={{background:"none",border:"none",color:"#DC2626",fontSize:16,cursor:"pointer",padding:"2px 6px",lineHeight:1}}>×</button>
             </div>;
           })}
         </div>
-        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>Leads will only be assigned to selected agents ({reassignAgents.length} selected) — if none selected, no rotation occurs</div>
+        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>Drag to reorder. Auto-rotation walks this list top → bottom, skipping any agent who has already handled the lead. If all agents have handled it, the lead stops rotating.</div>
       </div>
+
+      {/* Remaining active agents not yet in the order — one-click add */}
+      {(function(){
+        var remaining = salesAgentsForSetting.filter(function(u){return !reassignAgents.includes(String(gid(u)));});
+        if (!remaining.length) return null;
+        return <div style={{marginBottom:13}}>
+          <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>➕ Add agent to rotation order</label>
+          <div style={{border:"1px dashed #E2E8F0",borderRadius:10,padding:"8px 8px",background:"#FAFBFC",maxHeight:160,overflowY:"auto"}}>
+            {remaining.map(function(u){
+              var uid = String(gid(u));
+              return <div key={uid} onClick={function(){toggleAgent(uid);}} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 8px",cursor:"pointer",borderRadius:7,marginBottom:2}}>
+                <span style={{fontSize:16,color:C.accent,fontWeight:700,lineHeight:1}}>+</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:500,color:"#334155",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</div>
+                  <div style={{fontSize:11,color:C.textLight,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.title||""}</div>
+                </div>
+              </div>;
+            })}
+          </div>
+        </div>;
+      })()}
 
       {/* Rotation Durations */}
       <div style={{marginBottom:13,padding:"14px 16px",background:"#F8FAFC",borderRadius:12,border:"1px solid #E8ECF1"}}>
@@ -6951,72 +6989,47 @@ export default function CRMApp() {
 
     // Rotation config (agents + durations) lives in MongoDB — see /api/settings/rotation.
     // Every cycle re-fetches so admin edits take effect across all users without reload.
-    // Cached for the current cycle only; populated by runChecks before any rotation work.
     var cycleSavedIds = [];
-    var getSavedAgents = function(){ return cycleSavedIds; };
 
-    // Helper: pick agent using round-robin rotation
-    var pickAgent = function(excludeId, previousAgentIds){
-      var savedIds = getSavedAgents();
-      if(!savedIds.length) return null;
-      var agents = users.filter(function(u){return savedIds.includes(gid(u))&&(u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
-      if(!agents.length) return null;
-      // Filter out the current agent and all previous agents
-      var prevSet = (previousAgentIds||[]).map(function(id){return String(id);});
-      var candidates = agents.filter(function(u){return gid(u)!==excludeId && !prevSet.includes(String(gid(u)));});
-      if(!candidates.length) return null; // all agents exhausted
-      // Round-robin: get last index from localStorage
-      var lastIdx = 0;
-      try{lastIdx = Number(localStorage.getItem('crm_rot_last_idx')||'0');}catch(e){}
-      var nextIdx = lastIdx % candidates.length;
-      var picked = candidates[nextIdx];
-      // Save next index
-      try{localStorage.setItem('crm_rot_last_idx', String((nextIdx+1) % candidates.length));}catch(e){}
-      return picked;
-    };
-
-    // Helper: do rotation via backend /rotate endpoint (all 5 hard stops enforced server-side)
+    // Helper: server picks the next agent using the ordered rotation list + the
+    // lead's full assignment history. Target selection, history-exclusion and all
+    // hard stops live in the backend /auto-rotate endpoint — we just trigger it.
     var doRotate = async function(lead, reason){
       var lid = gid(lead);
       if(rotatingNow.has(lid)) return;
 
-      // ── Frontend hard stop checks (fast fail before API call) ──
-      // 1. noRotation on current assignment
+      // ── Frontend fast-fail guards (match the server's hard stops) ──
       var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
       var curAssign = (lead.assignments||[]).find(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===String(currentAgentId);});
       if(curAssign&&curAssign.noRotation) return;
-      // 2. globalStatus eoi
       if(lead.globalStatus==="eoi") return;
-      // 3. globalStatus donedeal
       if(lead.globalStatus==="donedeal") return;
-      // 4. older than 30 days
       if(lead.createdAt&&(new Date()-new Date(lead.createdAt))>30*24*60*60*1000) return;
-      // 5. Skip team_leader
       var currentAgentUser = users.find(function(u){return String(gid(u))===String(currentAgentId);});
       if(currentAgentUser&&currentAgentUser.role==="team_leader") return;
-
-      var targetAgent = pickAgent(currentAgentId, lead.previousAgentIds);
-      if(!targetAgent) return; // all agents exhausted (hard stop 5)
-      var targetAgentId = gid(targetAgent);
-      if(targetAgentId===currentAgentId) return;
 
       rotatingNow.add(lid);
       try{
         var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"Agent";
         var timeStr=new Date().toLocaleString("en-GB");
-        await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{
-          targetAgentId: targetAgentId,
-          reason: "auto_timeout"
-        },token);
+        var result = await apiFetch("/api/leads/"+lid+"/auto-rotate","POST",{ reason: "auto_timeout" }, token);
+        // Server returns { exhausted } / 409 when every in-list agent has already handled the lead — treat as silent stop.
+        if (!result || !result.targetAgentId) return;
+        var toUser = users.find(function(u){return String(gid(u))===String(result.targetAgentId);});
+        var toName = toUser ? toUser.name : (result.lead && result.lead.agentId && result.lead.agentId.name ? result.lead.agentId.name : "Agent");
         await apiFetch("/api/activities","POST",{
-          leadId:gid(lead),type:"reassign",
-          note:"🔄 Auto Rotation | From: "+fromName+" → To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
+          leadId:lid,type:"reassign",
+          note:"🔄 Auto Rotation | From: "+fromName+" → To: "+toName+" | Reason: "+reason+" | "+timeStr
         },token);
-        notifyRotationRef.current(lead,fromName,targetAgent.name,reason);
+        notifyRotationRef.current(lead,fromName,toName,reason);
         // Re-fetch leads from server to get correct per-agent overlay
         var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,token);
         if(fresh&&fresh.data) setLeads(fresh.data);
-      }catch(e){console.error("Rotation error:",e);}
+      }catch(e){
+        // "exhausted" (409) is expected when every in-list agent has had the lead — don't spam the console.
+        var msg = String(e && e.message || "");
+        if (msg.indexOf("exhausted")<0 && msg.indexOf("no_rotation_order")<0) console.error("Rotation error:", e);
+      }
       finally{ rotatingNow.delete(lid); }
     };
 

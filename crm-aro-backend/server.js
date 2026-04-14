@@ -1926,6 +1926,130 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== AUTO-ROTATE (server picks next agent from the ordered rotation list) =====
+// The rotation order lives in AppSetting (key "rotation", field reassignAgents)
+// and is an ORDERED array of user ids. This endpoint walks that list top-to-bottom
+// and assigns the lead to the first agent who has never handled it. "Previously
+// handled" = any id in lead.assignments[].agentId, lead.previousAgentIds, or the
+// current lead.agentId. If every agent in the list has already had the lead,
+// rotation stops and the lead is left as-is.
+app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
+  try {
+    var reason = (req.body && req.body.reason) || "auto_timeout";
+    var lead = await Lead.findById(req.params.id).populate("agentId", "name title");
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+
+    // Hard stops mirror the manual /rotate endpoint — same invariants apply.
+    var currentAid = lead.agentId && lead.agentId._id ? String(lead.agentId._id) : String(lead.agentId||"");
+    var currentAssignment = (lead.assignments || []).find(function(a) { return String(a.agentId) === currentAid; });
+    if (currentAssignment && currentAssignment.noRotation && req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(400).json({ error: "noRotation", message: "Rotation blocked — noRotation flag set" });
+    }
+    if (lead.globalStatus === "eoi")      return res.status(400).json({ error: "eoi",      message: "Rotation blocked — lead is EOI" });
+    if (lead.globalStatus === "donedeal") return res.status(400).json({ error: "donedeal", message: "Rotation blocked — lead is Done Deal" });
+    if (lead.createdAt && (new Date() - new Date(lead.createdAt)) > 30*24*60*60*1000) {
+      return res.status(400).json({ error: "expired", message: "Rotation blocked — lead older than 30 days" });
+    }
+
+    // Fetch the ordered rotation list.
+    var settingDoc = await AppSetting.findOne({ key: "rotation" }).lean();
+    var orderedIds = (settingDoc && settingDoc.value && Array.isArray(settingDoc.value.reassignAgents))
+      ? settingDoc.value.reassignAgents.map(String)
+      : [];
+    if (!orderedIds.length) return res.status(409).json({ error: "no_rotation_order", message: "No rotation order configured" });
+
+    // Build the exclusion set: current agent + every assignment this lead has ever carried + previousAgentIds.
+    var exclusion = new Set();
+    if (currentAid) exclusion.add(currentAid);
+    (lead.assignments || []).forEach(function(a){
+      var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+      if (aid) exclusion.add(String(aid));
+    });
+    (lead.previousAgentIds || []).forEach(function(id){ if (id) exclusion.add(String(id)); });
+
+    // Load the ordered candidates (only active + rotation-eligible roles) in ONE query,
+    // then walk the saved order and pick the first non-excluded match. This preserves
+    // the admin's priority order exactly while skipping removed / inactive users.
+    var candidateDocs = await User.find({ _id: { $in: orderedIds } }).select("_id name title role active").lean();
+    var byId = {};
+    candidateDocs.forEach(function(u){ byId[String(u._id)] = u; });
+    var targetUser = null;
+    for (var i = 0; i < orderedIds.length; i++) {
+      var uid = String(orderedIds[i]);
+      if (exclusion.has(uid)) continue;
+      var u = byId[uid];
+      if (!u) continue;                                 // removed from users
+      if (u.active === false) continue;                 // skip inactive
+      if (["sales","team_leader","manager"].indexOf(u.role) < 0) continue;
+      targetUser = u;
+      break;
+    }
+    if (!targetUser) return res.status(409).json({ error: "exhausted", message: "All agents in the rotation order have already handled this lead" });
+
+    var targetAgentId = String(targetUser._id);
+
+    // First assignment — lead has no active agent yet. Just assign.
+    var isFirstAssignment = !lead.agentId || (!lead.agentId._id && !mongoose.Types.ObjectId.isValid(String(lead.agentId))) || (lead.assignments && lead.assignments.length === 0);
+    if (isFirstAssignment) {
+      lead.agentId = new mongoose.Types.ObjectId(targetAgentId);
+      lead.assignments.push({ agentId: new mongoose.Types.ObjectId(targetAgentId), status: "NewLead", notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [], assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false });
+      await lead.save();
+      var firstByName = (req.user && req.user.name) ? req.user.name : "System";
+      await pushHistory(lead._id, historyEntry(
+        "assigned",
+        "Assigned to " + targetUser.name + " by " + firstByName + " (auto-rotate)",
+        firstByName,
+        targetUser.name
+      ));
+      var firstPopulated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+      return res.json({ success: true, firstAssignment: true, targetAgentId: targetAgentId, lead: firstPopulated });
+    }
+
+    // Regular rotation path — same mutation as POST /rotate, minus the duplicate-target guard
+    // (we've already excluded previous agents above).
+    var oldAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
+    var oldAgentName = lead.agentId && lead.agentId.name ? lead.agentId.name : "Unassigned";
+    var newAssignment = {
+      agentId: new mongoose.Types.ObjectId(targetAgentId),
+      status: "NewLead",
+      assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(),
+      noRotation: false,
+      notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null,
+      agentHistory: []
+    };
+    var rotationLog = {
+      action: "Rotation",
+      fromAgent: oldAgentName,
+      toAgent: targetUser.name,
+      reason: reason,
+      by: req.user.name || "System",
+      date: new Date()
+    };
+    var pushOps = { assignments: newAssignment, agentHistory: rotationLog };
+    if (oldAgentId && String(oldAgentId) !== "null" && String(oldAgentId) !== "undefined" && String(oldAgentId) !== "") {
+      pushOps.previousAgentIds = oldAgentId;
+    }
+    await Lead.findByIdAndUpdate(req.params.id, {
+      $set: {
+        agentId: new mongoose.Types.ObjectId(targetAgentId),
+        lastRotationAt: new Date(),
+        rotationCount: (lead.rotationCount || 0) + 1
+      },
+      $push: pushOps
+    });
+    await pushHistory(req.params.id, historyEntry(
+      "rotated",
+      "Rotated from " + oldAgentName + " to " + targetUser.name + " by " + (req.user.name || "System") + " (" + reason + ")",
+      req.user.name || "System",
+      targetUser.name
+    ));
+    var updated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    res.json({ success: true, targetAgentId: targetAgentId, lead: updated });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Admin cleanup: remove duplicate leads by phone, keep oldest
 app.post("/api/admin/cleanup-duplicates", auth, adminOnly, async function(req, res) {
   try {
