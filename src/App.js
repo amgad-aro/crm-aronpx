@@ -3022,7 +3022,10 @@ var DashboardPage = function(p) {
     return t(a) - t(b); // oldest assignment first
   }).slice(0,20);
 
-  // Today's activities feed — prefer the dedicated fetch (all today's activities), fall back to the paginated p.activities
+  // Today's activities feed — Activity collection (covers leads + DRs) merged
+  // with lead.history entries (captures status_change / feedback_added /
+  // callback_scheduled / rotated / assigned events the Activity collection
+  // doesn't track natively).
   var _actsPool = (todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
   var _actsToday = _actsPool.filter(function(a){return a.createdAt&&new Date(a.createdAt).getTime()>=todayStart.getTime();});
   _actsToday.sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
@@ -3042,6 +3045,48 @@ var DashboardPage = function(p) {
     _seenContent[key] = true;
     todayActsAll.push(a);
   });
+
+  // Merge lead.history entries dated today (same lead pool already loaded).
+  // Spec: "Pull from the lead history array and daily requests activity".
+  // history entries carry {event, description, byUser, toAgent, timestamp};
+  // we adapt them to the activity shape expected by the renderer below.
+  var _nameToUid = {};
+  (p.users||[]).forEach(function(u){ if (u && u.name) _nameToUid[u.name] = String(u._id||gid(u)); });
+  var mapHistoryEvent = function(evt){
+    var e = String(evt||"").toLowerCase();
+    if (e.indexOf("status")>=0)   return "status_change";
+    if (e.indexOf("feedback")>=0) return "note";
+    if (e.indexOf("callback")>=0) return "note";
+    if (e.indexOf("rotat")>=0)    return "reassign";
+    if (e.indexOf("assign")>=0)   return "reassign";
+    if (e.indexOf("meet")>=0)     return "meeting";
+    return "note";
+  };
+  leads.forEach(function(l){
+    (l.history||[]).forEach(function(h){
+      if (!h || !h.timestamp) return;
+      var t = new Date(h.timestamp).getTime();
+      if (!t || t < todayStart.getTime()) return;
+      var mappedType = mapHistoryEvent(h.event);
+      var byName = h.byUser || "";
+      var byUid = _nameToUid[byName] || null;
+      // Dedupe against Activity-collection entries already captured for the same lead+type+10s bucket.
+      var lid = String(gid(l)||"");
+      var bucket = Math.floor(t/10000);
+      var key = (byUid||"")+"|"+lid+"|"+mappedType+"|"+bucket;
+      if (_seenContent[key]) return;
+      _seenContent[key] = true;
+      todayActsAll.push({
+        _id: "hist:"+lid+":"+t+":"+(h.event||""),
+        type: mappedType,
+        note: h.description || h.event || "",
+        userId: byUid ? { _id: byUid, name: byName } : (byName ? { name: byName } : null),
+        leadId: { _id: gid(l), name: l.name },
+        createdAt: h.timestamp,
+        _fromHistory: true
+      });
+    });
+  });
   todayActsAll.sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
 
   // Mask phone
@@ -3051,6 +3096,25 @@ var DashboardPage = function(p) {
   var openLead = function(l){ if(p.nav)p.nav("leads",l); };
   // Click alert navigation to filtered leads
   var gotoFilter = function(status){ if(p.setFilter)p.setFilter(status||"all"); if(p.nav)p.nav("leads"); };
+  // Activity-row click router: Activity.leadId can point at either a Lead or
+  // a DailyRequest (same Activity model, different collections). Look up by id
+  // in both local stores and send the user to the matching detail page.
+  var _leadsById = {}; (p.leads||[]).forEach(function(l){ _leadsById[String(gid(l))] = l; });
+  var _drsById   = {}; (p.dailyReqs||[]).forEach(function(r){ _drsById[String(gid(r))] = r; });
+  var openActivityClient = function(leadId){
+    if (!leadId) return;
+    var key = String(leadId);
+    if (_leadsById[key]) { if(p.nav) p.nav("leads", _leadsById[key]); return; }
+    if (_drsById[key])   { if(p.nav) p.nav("dailyReq", _drsById[key]); return; }
+    // Unknown id — default to opening the leads page with the id as the selected shell.
+    if (p.nav) p.nav("leads", { _id: key });
+  };
+  // Exact-time formatter for the activity rows — "3:45 PM".
+  var exactTime = function(d){
+    if (!d) return "";
+    try { return new Date(d).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}); }
+    catch(e) { return ""; }
+  };
 
   // Locked leads: any assignment with noRotation === true
   var lockedCount = leads.filter(function(l){return (l.assignments||[]).some(function(a){return a.noRotation===true;});}).length;
@@ -3278,17 +3342,21 @@ var DashboardPage = function(p) {
             else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
             if (feedbackText && feedbackText.length>80) feedbackText = feedbackText.slice(0,80)+"\u2026";
             var actLeadId = a.leadId && a.leadId._id ? a.leadId._id : a.leadId;
-            var onActClick = actLeadId ? function(){ openLead({_id: actLeadId, name: lName}); } : null;
+            var onActClick = actLeadId ? function(){ openActivityClient(actLeadId); } : null;
+            // Spec: "client name, action type, agent name, exact time" — show client first, agent on the subtitle.
+            var clientName = lName || "(no client)";
             return <div key={String(a._id||("k"+i))} onClick={onActClick} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadId?"pointer":"default"}}>
               <div style={{width:34,height:34,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{aName}{lName?" \u2014 "+lName:""}</div>
-                <div style={{fontSize:11,color:"#64748B",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                   <span style={{fontWeight:600,color:ic.fg}}>{actionLabel}</span>
-                  {feedbackText?<span> {"\u00b7"} <span style={{fontWeight:700,color:"#334155"}}>{feedbackText}</span></span>:null}
+                  {" \u2014 "}{clientName}
+                </div>
+                <div style={{fontSize:11,color:"#64748B",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  {aName}{feedbackText?<span> {"\u00b7"} <span style={{fontWeight:700,color:"#334155"}}>{feedbackText}</span></span>:null}
                 </div>
               </div>
-              <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:500}}>{timeAgoShort(a.createdAt)}</div>
+              <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:600}}>{exactTime(a.createdAt)}</div>
             </div>;
           })}
           </div>
@@ -3617,14 +3685,15 @@ var DashboardPage = function(p) {
             else if (noteLc.indexOf("callback")>=0) ic={icon:"\ud83d\udcc5",bg:"#DBEAFE",fg:"#1D4ED8"};
             else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
             var actLeadIdM = a.leadId && a.leadId._id ? a.leadId._id : a.leadId;
-            var onActClickM = actLeadIdM ? function(){ setSeeAllOpen(false); openLead({_id: actLeadIdM, name: lName}); } : null;
+            var onActClickM = actLeadIdM ? function(){ setSeeAllOpen(false); openActivityClient(actLeadIdM); } : null;
+            var clientNameM = lName || "(no client)";
             return <div key={(a._id||"")+"-"+i} onClick={onActClickM} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadIdM?"pointer":"default"}}>
               <div style={{width:36,height:36,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{aName}{lName?" \u2014 "+lName:""}</div>
-                <div style={{fontSize:12,color:"#64748B",marginTop:2}}><span style={{fontWeight:600,color:ic.fg}}>{actionLabel}</span>{feedbackText?<span> {"\u00b7"} <span style={{fontWeight:700,color:"#334155"}}>{feedbackText}</span></span>:null}</div>
+                <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}><span style={{fontWeight:600,color:ic.fg}}>{actionLabel}</span> {"\u2014 "}{clientNameM}</div>
+                <div style={{fontSize:12,color:"#64748B",marginTop:2}}>{aName}{feedbackText?<span> {"\u00b7"} <span style={{fontWeight:700,color:"#334155"}}>{feedbackText}</span></span>:null}</div>
               </div>
-              <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:500}}>{timeAgoShort(a.createdAt)}</div>
+              <div style={{fontSize:11,color:"#94A3B8",flexShrink:0,fontWeight:600}}>{exactTime(a.createdAt)}</div>
             </div>;
           })}
         </div>
@@ -4938,6 +5007,10 @@ var DailyRequestsPage = function(p) {
       // server start.
       if(filterStatus==="MeetingDone"){
         if(r.hadMeeting!==true) return false;
+      } else if(filterStatus==="__noAgent"){
+        // "No Agent" pseudo-filter: only DRs with empty/null agentId.
+        var naAid = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
+        if (naAid) return false;
       } else if(r.status!==filterStatus) return false;
     }
     if(agentFilter){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;if(aid!==agentFilter)return false;}
@@ -5116,6 +5189,12 @@ var DailyRequestsPage = function(p) {
             : requests.filter(function(r){return r.status===s.v;}).length;
         return <button key={s.v} onClick={function(){setFilterStatus(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:filterStatus===s.v?C.accent:"#E8ECF1", background:filterStatus===s.v?C.accent+"12":"#fff", color:filterStatus===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
       })}
+      {/* No Agent — pseudo-filter; toggles off when re-clicked or when any other filter is chosen. */}
+      {(function(){
+        var noAgentCount = requests.filter(function(r){var a=r.agentId&&r.agentId._id?r.agentId._id:r.agentId; return !a;}).length;
+        var on = filterStatus==="__noAgent";
+        return <button key="__noAgent" onClick={function(){setFilterStatus(on?"all":"__noAgent");}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:on?"#DC2626":"#E8ECF1", background:on?"#FEE2E2":"#fff", color:on?"#991B1B":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer" }} title="Show only requests with no agent assigned">👤 No Agent ({noAgentCount})</button>;
+      })()}
     </div>
     <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
       {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
