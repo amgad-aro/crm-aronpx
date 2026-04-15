@@ -1831,6 +1831,7 @@ var LeadsPage = function(p) {
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.phone}</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.phone2}</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.project}</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>Campaign</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.status}</th>
               {!p.isMobile&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>Last Feedback</th>}
               {!p.isMobile&&isAdmin&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90 }}>{t.source}</th>}
@@ -1839,7 +1840,7 @@ var LeadsPage = function(p) {
               {!p.isMobile&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.callbackTime}</th>}
             </tr></thead>
             <tbody>
-              {filtered.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No data</td></tr>}
+              {filtered.length===0&&<tr><td colSpan={10} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No data</td></tr>}
               {filtered.map(function(lead){
                 var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0];
                 var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
@@ -1874,6 +1875,7 @@ var LeadsPage = function(p) {
                     })():<span style={{ fontSize:12, direction:"ltr", display:"inline-block" }}>{lead.phone2?<PhoneCell phone={lead.phone2}/>:<span style={{color:"#CBD5E1"}}>-</span>}</span>}
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, textAlign:"left", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{lead.project}</td>
+                  <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, textAlign:"left", maxWidth:140, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{lead.campaign||<span style={{color:"#CBD5E1"}}>-</span>}</td>
                   <td style={{ padding:"10px 12px", position:"relative" }} onClick={function(e){e.stopPropagation();}}>
                     <div style={{ position:"relative", display:"inline-block" }}>
                       <span style={{ background:so.bg, color:so.color, padding:"4px 10px", borderRadius:20, fontSize:12, fontWeight:600, whiteSpace:"nowrap", border:"1px dashed "+so.color, display:"inline-flex", alignItems:"center", gap:4, cursor:"pointer" }}
