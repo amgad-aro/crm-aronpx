@@ -416,6 +416,27 @@ var StatusModal = function(p) {
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 Callback <span style={{color:C.danger}}>*</span></label>
       <input type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);setErr("");}}
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
+      {/* Quick-pick row, CallBack only — fills cbTime in the same datetime-local
+          format ("YYYY-MM-DDTHH:MM") the manual picker emits, so the existing
+          submit / save path is untouched. The manual picker stays visible above
+          for any timing the quick options don't cover. */}
+      {st==="CallBack"&&(function(){
+        var pad2 = function(n){return n<10?"0"+n:""+n;};
+        var fmt = function(d){return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate())+"T"+pad2(d.getHours())+":"+pad2(d.getMinutes());};
+        var quick = [
+          { label:"After 1hr", make:function(){var d=new Date();d.setHours(d.getHours()+1);return d;} },
+          { label:"After 2hr", make:function(){var d=new Date();d.setHours(d.getHours()+2);return d;} },
+          { label:"8 PM",      make:function(){var d=new Date();d.setHours(20,0,0,0);return d;} }
+        ];
+        return <div style={{ display:"flex", gap:6, marginTop:8, flexWrap:"wrap" }}>
+          {quick.map(function(q){
+            var v = fmt(q.make());
+            var active = cbTime===v;
+            return <button key={q.label} type="button" onClick={function(){setCbTime(v);setErr("");}}
+              style={{ flex:"1 1 0", minWidth:88, padding:"7px 10px", borderRadius:9, border:"1px solid "+(active?"#3B82F6":"#E2E8F0"), background:active?"#EFF6FF":"#fff", color:active?"#1D4ED8":"#334155", fontSize:12, fontWeight:600, cursor:"pointer" }}>{q.label}</button>;
+          })}
+        </div>;
+      })()}
     </div>}
 
     {/* Potential / HotCase / MeetingDone: date + comment required */}
