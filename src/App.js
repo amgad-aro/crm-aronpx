@@ -2477,7 +2477,7 @@ var DashboardPage = function(p) {
     return Object.assign({},c,{ip:c.leads>0?Math.round(c.int/c.leads*100):0,mp:c.leads>0?Math.round(c.meet/c.leads*100):0,quality:c.leads>0&&Math.round(c.int/c.leads*100)>30?"High":Math.round(c.int/c.leads*100)>15?"Medium":"Low"});
   });
 
-  var agentPerf=(p.users||[]).filter(function(u){return u.role==="sales"||u.role==="sales_admin";}).map(function(u){
+  var agentPerf=(p.users||[]).filter(function(u){return u.role==="sales";}).map(function(u){
     var uid=String(u._id||gid(u));
     var al=leads.filter(function(l){return l.assignments&&l.assignments.some(function(a){return String(a.agentId&&a.agentId._id?a.agentId._id:a.agentId)===uid;});});
     var aint=al.filter(function(l){return["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status);}).length;
@@ -2939,7 +2939,7 @@ var DashboardPage = function(p) {
   });
 
   // Agent performance — count leads by assignments[].assignedAt in active range (not lead.createdAt)
-  var fAgentPerf=(p.users||[]).filter(function(u){return u.role==="sales"||u.role==="sales_admin";}).map(function(u){
+  var fAgentPerf=(p.users||[]).filter(function(u){return u.role==="sales";}).map(function(u){
     var uid=String(u._id||gid(u));
     var al=leads.filter(function(l){
       return (l.assignments||[]).some(function(a){
