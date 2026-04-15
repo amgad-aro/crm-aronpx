@@ -3377,7 +3377,9 @@ var DashboardPage = function(p) {
           </div>
           {untouchedData===null ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>Loading\u2026</div>
            : untouchedData.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} All leads have activity</div>
-           : untouchedData.map(function(u,i){
+           : <div style={{maxHeight:360,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
+             {/* Fixed height = ~8 rows (each row ~45px with padding + borders); rest scrolls inside the card. */}
+             {untouchedData.map(function(u,i){
             // Server returns the computed view; we resolve the full Lead from
             // the local store for navigation, falling back to a {_id,name}
             // shell so the click still works if the lead isn't in the current
@@ -3395,6 +3397,7 @@ var DashboardPage = function(p) {
               <div style={{fontSize:11,fontWeight:600,color:hrs>=48?"#DC2626":"#92400E",alignSelf:"center"}}>{hrs}h</div>
             </div>;
           })}
+          </div>}
         </>)}
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
