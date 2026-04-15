@@ -2340,6 +2340,7 @@ var DashboardPage = function(p) {
   var [qOpen, setQOpen] = useState(false);
   var quarterDropdownRef = useRef(null);
   var [todayActivities, setTodayActivities] = useState(null);
+  var [untouchedData, setUntouchedData] = useState(null);
   var [seeAllOpen, setSeeAllOpen] = useState(false);
   // Mobile layout flag — updates on resize. Desktop styles are untouched; mobile just overrides specific rules.
   var [isMobile, setIsMobile] = useState(typeof window!=="undefined" && window.innerWidth<768);
@@ -2373,6 +2374,23 @@ var DashboardPage = function(p) {
       apiFetch("/api/activities?since="+encodeURIComponent(ts.toISOString())+"&limit=1000","GET",null,p.token)
         .then(function(d){ if(cancelled) return; var arr = (d&&d.data)||(Array.isArray(d)?d:[]); setTodayActivities(arr); })
         .catch(function(){ if(!cancelled && todayActivities===null) setTodayActivities([]); });
+    };
+    load();
+    var id = setInterval(load, 30000);
+    return function(){ cancelled = true; clearInterval(id); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token]);
+  // Untouched leads — server computes across the full Lead collection, so the
+  // card is correct even when the local leads[] only holds the current page.
+  // Refresh on the same 30s cadence as the activity feed.
+  useEffect(function(){
+    if (!p.token) return;
+    if (!isOnlyAdmin && p.cu.role !== "manager" && p.cu.role !== "team_leader") return;
+    var cancelled = false;
+    var load = function(){
+      apiFetch("/api/leads/untouched","GET",null,p.token)
+        .then(function(d){ if(cancelled) return; setUntouchedData(Array.isArray(d)?d:[]); })
+        .catch(function(){ if(!cancelled && untouchedData===null) setUntouchedData([]); });
     };
     load();
     var id = setInterval(load, 30000);
@@ -2988,41 +3006,10 @@ var DashboardPage = function(p) {
     return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,calls:acalls,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,rotOut:arotOut,rotIn:arotIn,noAnswer:anoAns,respTime:respH>0?respH.toFixed(1):"\u2014",score:score,quality:qualityScore};
   }).sort(function(a,b){return b.quality-a.quality;});
 
-  // Untouched leads — assigned to an agent for more than 24h with no activity
-  // recorded since assignment. Current assignment's assignedAt is the anchor;
-  // lead.lastActivityTime is updated on every activity, so if it's <= assignedAt
-  // (with 1-minute tolerance for the log that happens at assignment time) we
-  // know the agent hasn't touched the lead yet.
-  var DAY_MS = 24*60*60*1000;
-  var untouchedLeads = leads.filter(function(l){
-    var cur = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
-    if (!cur) return false;
-    var asg = (l.assignments||[]).find(function(a){
-      var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
-      return String(aid||"")===String(cur);
-    });
-    if (!asg || !asg.assignedAt) return false;
-    var assignedAt = new Date(asg.assignedAt).getTime();
-    if (!assignedAt || isNaN(assignedAt)) return false;
-    if ((now - assignedAt) < DAY_MS) return false; // assigned less than 24h ago
-    // Any activity after assignment (lead-level lastActivityTime OR assignment.lastActionAt) disqualifies.
-    var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
-    var lastOnAssignment = asg.lastActionAt ? new Date(asg.lastActionAt).getTime() : 0;
-    var latest = Math.max(lastAct, lastOnAssignment);
-    if (latest > assignedAt + 60*1000) return false;
-    // Explicit notes / feedback / callback set = activity too.
-    if (asg.notes && String(asg.notes).trim().length>0) return false;
-    if (asg.lastFeedback && String(asg.lastFeedback).trim().length>0) return false;
-    if (asg.callbackTime) return false;
-    return true;
-  }).sort(function(a,b){
-    var t = function(l){
-      var cur = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
-      var asg = (l.assignments||[]).find(function(x){var aid=x.agentId&&x.agentId._id?x.agentId._id:x.agentId;return String(aid||"")===String(cur);});
-      return asg && asg.assignedAt ? new Date(asg.assignedAt).getTime() : 0;
-    };
-    return t(a) - t(b); // oldest assignment first
-  }).slice(0,20);
+  // Untouched leads are served by GET /api/leads/untouched — the local
+  // leads[] is paginated, so any client-side filter here was capped to the
+  // current page (which is why the card used to read 0). See the
+  // untouchedData state + polling effect above.
 
   // Today's activities feed — Activity collection (covers leads + DRs) merged
   // with lead.history entries (captures status_change / feedback_added /
@@ -3386,18 +3373,24 @@ var DashboardPage = function(p) {
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
             <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Untouched Leads</div>
-            <span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:6,background:"#FEE2E2",color:"#991B1B"}}>{untouchedLeads.length}</span>
+            <span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:6,background:"#FEE2E2",color:"#991B1B"}}>{untouchedData===null?"\u2026":untouchedData.length}</span>
           </div>
-          {untouchedLeads.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} All leads have activity</div> : untouchedLeads.map(function(l,i){
-            var cur = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
-            var asg = (l.assignments||[]).find(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid||"")===String(cur);});
-            var assignedAt = asg && asg.assignedAt ? new Date(asg.assignedAt).getTime() : (l.createdAt?new Date(l.createdAt).getTime():0);
-            var hrs = assignedAt ? Math.round((now-assignedAt)/3600000) : 0;
-            var aName = l.agentId && l.agentId.name ? l.agentId.name : (l.agentId ? agentName(l.agentId) : "\u2014");
-            return <div key={gid(l)} onClick={function(){openLead(l);}} style={{display:"grid",gridTemplateColumns:"1fr auto",gap:6,padding:"8px 0",borderBottom:i<untouchedLeads.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
+          {untouchedData===null ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>Loading\u2026</div>
+           : untouchedData.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} All leads have activity</div>
+           : untouchedData.map(function(u,i){
+            // Server returns the computed view; we resolve the full Lead from
+            // the local store for navigation, falling back to a {_id,name}
+            // shell so the click still works if the lead isn't in the current
+            // paginated window.
+            var localLead = (leads||[]).find(function(x){return String(gid(x))===String(u._id);}) || { _id: u._id, name: u.name };
+            var hrs = Number(u.hoursSinceActivity||0);
+            var since = hrs < 1 ? "just now"
+                       : hrs < 24 ? hrs + "h ago"
+                       : Math.floor(hrs/24) + "d ago";
+            return <div key={String(u._id)} onClick={function(){openLead(localLead);}} style={{display:"grid",gridTemplateColumns:"1fr auto",gap:6,padding:"8px 0",borderBottom:i<untouchedData.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
               <div>
-                <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{l.name}</div>
-                <div style={{fontSize:11,color:"#94A3B8"}}>{aName} {"\u00b7"} assigned {hrs}h ago</div>
+                <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{u.name||"\u2014"}</div>
+                <div style={{fontSize:11,color:"#94A3B8"}}>{u.agentName||"\u2014"} {"\u00b7"} {since}</div>
               </div>
               <div style={{fontSize:11,fontWeight:600,color:hrs>=48?"#DC2626":"#92400E",alignSelf:"center"}}>{hrs}h</div>
             </div>;

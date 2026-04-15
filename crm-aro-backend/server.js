@@ -1117,6 +1117,70 @@ app.get("/api/leads", auth, async function(req, res) {
   }
 });
 
+// ===== UNTOUCHED LEADS =====
+// Admin dashboard "Untouched Leads" card. Must be registered BEFORE
+// /api/leads/:id or Express will route "/api/leads/untouched" into the
+// :id handler (and Lead.findById("untouched") returns 404).
+//
+// A lead is "untouched" when:
+//   - agentId is set (someone owns it)
+//   - last history entry is older than 24h, OR history only carries the
+//     initial created/first_assigned entry with no follow-up action
+// Archived leads are excluded. Sorted by longest-idle first, capped at 50.
+app.get("/api/leads/untouched", auth, adminOnly, async function(req, res) {
+  try {
+    var DAY = 24 * 60 * 60 * 1000;
+    var now = Date.now();
+    var leads = await Lead.find({ agentId: { $ne: null }, archived: { $ne: true } })
+      .populate("agentId", "name")
+      .lean();
+    var out = [];
+    leads.forEach(function(l) {
+      var hist = Array.isArray(l.history) ? l.history : [];
+      // Follow-up = anything that isn't the initial "created" / "first_assigned"
+      // stamp. Reassignments count as activity too — the status log / feedback
+      // log still drives the dashboard, but reassign is a deliberate action.
+      var hasFollowUp = hist.some(function(h) {
+        if (!h || !h.event) return false;
+        var e = String(h.event).toLowerCase();
+        return e !== "created" && e !== "first_assigned";
+      });
+      // Latest timestamp across history + lead.lastActivityTime. Falls back to
+      // createdAt so brand-new leads without any history still anchor somewhere.
+      var latest = 0;
+      hist.forEach(function(h) {
+        var t = h && h.timestamp ? new Date(h.timestamp).getTime() : 0;
+        if (t > latest) latest = t;
+      });
+      if (l.lastActivityTime) {
+        var la = new Date(l.lastActivityTime).getTime();
+        if (la > latest) latest = la;
+      }
+      if (!latest && l.createdAt) latest = new Date(l.createdAt).getTime();
+      if (!latest) return;
+      var idleMs = now - latest;
+      // Untouched gate: no follow-up action AND idle for more than 24h.
+      // (A lead with a follow-up entry within the last 24h is "live".)
+      if (hasFollowUp && idleMs <= DAY) return;
+      if (idleMs <= DAY) return;
+      out.push({
+        _id: l._id,
+        name: l.name,
+        phone: l.phone,
+        agentId: l.agentId && l.agentId._id ? l.agentId._id : l.agentId,
+        agentName: (l.agentId && l.agentId.name) ? l.agentId.name : "",
+        lastActivityAt: new Date(latest),
+        hoursSinceActivity: Math.floor(idleMs / (60 * 60 * 1000)),
+        assignedOnly: !hasFollowUp
+      });
+    });
+    out.sort(function(a, b) { return new Date(a.lastActivityAt) - new Date(b.lastActivityAt); });
+    res.json(out.slice(0, 50));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== SINGLE LEAD GET (with per-agent overlay) =====
 app.get("/api/leads/:id", auth, async function(req, res) {
   try {
