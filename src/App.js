@@ -2410,12 +2410,15 @@ var DashboardPage = function(p) {
     var weekStart  = new Date(cY, cM, cD - daysSinceMon, 0,0,0,0);
     var todayStart = new Date(cY, cM, cD, 0,0,0,0);
     var todayEnd   = new Date(cY, cM, cD, 23,59,59,999);
+    var yestStart  = new Date(cY, cM, cD-1, 0,0,0,0);
+    var yestEnd    = new Date(cY, cM, cD-1, 23,59,59,999);
     var monthStart = new Date(cY, cM, 1, 0,0,0,0);
     var monthEnd   = new Date(cY, cM+1, 0, 23,59,59,999);
     var rs, re;
-    if (filter==="today")      { rs = todayStart.getTime(); re = todayEnd.getTime(); }
-    else if (filter==="week")  { rs = weekStart.getTime();  re = Date.now(); }
-    else if (filter==="month") { rs = monthStart.getTime(); re = Math.min(Date.now(), monthEnd.getTime()); }
+    if (filter==="today")          { rs = todayStart.getTime(); re = todayEnd.getTime(); }
+    else if (filter==="yesterday") { rs = yestStart.getTime();  re = yestEnd.getTime(); }
+    else if (filter==="week")      { rs = weekStart.getTime();  re = Date.now(); }
+    else if (filter==="month")     { rs = monthStart.getTime(); re = Math.min(Date.now(), monthEnd.getTime()); }
     else if (typeof filter==="string" && /^Q\d\s+\d{4}$/.test(filter)) {
       var mm = filter.match(/^Q(\d)\s+(\d{4})$/);
       var qn = parseInt(mm[1]); var qy = parseInt(mm[2]);
@@ -2438,7 +2441,7 @@ var DashboardPage = function(p) {
   },[p.token, filter]);
   var now = Date.now();
   var DAY=86400000, WEEK=7*DAY, MONTH=30*DAY;
-  var rangeMs = filter==="today"?DAY:filter==="week"?WEEK:MONTH;
+  var rangeMs = (filter==="today"||filter==="yesterday")?DAY:filter==="week"?WEEK:MONTH;
 
   var leads = useMemo(function(){
     return (p.leads||[]).filter(function(l){return !l.archived&&l.source!=="Daily Request";});
@@ -2530,12 +2533,15 @@ var DashboardPage = function(p) {
     var weekStartS = new Date(curYS, curMS, curDS - daysSinceMonS, 0,0,0,0);
     var todayStartS = new Date(curYS, curMS, curDS, 0,0,0,0);
     var todayEndS   = new Date(curYS, curMS, curDS, 23,59,59,999);
+    var yestStartS  = new Date(curYS, curMS, curDS-1, 0,0,0,0);
+    var yestEndS    = new Date(curYS, curMS, curDS-1, 23,59,59,999);
     var monthStartS = new Date(curYS, curMS, 1, 0,0,0,0);
     var monthEndS   = new Date(curYS, curMS+1, 0, 23,59,59,999);
     var rangeStartS, rangeEndS, rangeLabelS;
-    if (filter==="today")      { rangeStartS = todayStartS.getTime();  rangeEndS = todayEndS.getTime();                         rangeLabelS = "Today"; }
-    else if (filter==="week")  { rangeStartS = weekStartS.getTime();   rangeEndS = Date.now();                                  rangeLabelS = "This Week"; }
-    else if (filter==="month") { rangeStartS = monthStartS.getTime();  rangeEndS = Math.min(Date.now(), monthEndS.getTime());   rangeLabelS = "This Month"; }
+    if (filter==="today")          { rangeStartS = todayStartS.getTime();  rangeEndS = todayEndS.getTime();                         rangeLabelS = "Today"; }
+    else if (filter==="yesterday") { rangeStartS = yestStartS.getTime();   rangeEndS = yestEndS.getTime();                          rangeLabelS = "Yesterday"; }
+    else if (filter==="week")      { rangeStartS = weekStartS.getTime();   rangeEndS = Date.now();                                  rangeLabelS = "This Week"; }
+    else if (filter==="month")     { rangeStartS = monthStartS.getTime();  rangeEndS = Math.min(Date.now(), monthEndS.getTime());   rangeLabelS = "This Month"; }
     else if (typeof filter==="string" && /^Q\d\s+\d{4}$/.test(filter)) {
       var mS = filter.match(/^Q(\d)\s+(\d{4})$/);
       var qnS = parseInt(mS[1]); var qyS = parseInt(mS[2]);
@@ -2651,7 +2657,7 @@ var DashboardPage = function(p) {
           <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{new Date().toDateString()} {"\u00b7"} {timeStr}</div>
         </div>
         <div className="crm-dash-filters" style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",width:isMobile?"100%":"auto"}}>
-          {[["today","Today"],["week","This Week"],["month","This Month"]].map(function(f){return <button key={f[0]} onClick={function(){setFilter(f[0]);}} style={{fontSize:12,padding:isMobile?"8px 10px":"6px 12px",minHeight:isMobile?36:undefined,border:filter===f[0]?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:filter===f[0]?"#EFF6FF":"#fff",color:filter===f[0]?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:filter===f[0]?600:500,flex:isMobile?"1 1 auto":"0 0 auto",flexShrink:0}}>{f[1]}</button>;})}
+          {[["today","Today"],["yesterday","Yesterday"],["week","This Week"],["month","This Month"]].map(function(f){return <button key={f[0]} onClick={function(){setFilter(f[0]);}} style={{fontSize:12,padding:isMobile?"8px 10px":"6px 12px",minHeight:isMobile?36:undefined,border:filter===f[0]?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:filter===f[0]?"#EFF6FF":"#fff",color:filter===f[0]?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:filter===f[0]?600:500,flex:isMobile?"1 1 auto":"0 0 auto",flexShrink:0}}>{f[1]}</button>;})}
           <div ref={quarterDropdownRef} style={{position:"relative",flex:isMobile?"1 1 auto":"0 0 auto"}}>
             {(function(){
               var qActive = (typeof filter==="string") && filter.indexOf("Q")===0;
@@ -2828,9 +2834,11 @@ var DashboardPage = function(p) {
 
   // Compute filter date range [rangeStart, rangeEnd]
   var todayStart = new Date(nowD.getFullYear(),nowD.getMonth(),nowD.getDate(),0,0,0,0);
+  var yestStart  = new Date(nowD.getFullYear(),nowD.getMonth(),nowD.getDate()-1,0,0,0,0);
   var monthStart = new Date(nowD.getFullYear(),nowD.getMonth(),1,0,0,0,0);
   var rangeStart, rangeEnd = now, periodEnd;
   if (filter==="today") { rangeStart = todayStart.getTime(); periodEnd = todayStart.getTime()+DAY-1; }
+  else if (filter==="yesterday") { rangeStart = yestStart.getTime(); rangeEnd = yestStart.getTime()+DAY-1; periodEnd = rangeEnd; }
   else if (filter==="week") { rangeStart = weekStart.getTime(); rangeEnd = weekEnd.getTime(); periodEnd = weekEnd.getTime(); }
   else if (filter==="month") { rangeStart = monthStart.getTime(); periodEnd = new Date(nowD.getFullYear(),nowD.getMonth()+1,1,0,0,0,0).getTime()-1; }
   else if (typeof filter==="string" && filter.indexOf("Q")===0) {
@@ -2874,7 +2882,7 @@ var DashboardPage = function(p) {
     return (l.assignments||[]).some(function(a){return a.status==="Meeting Done"||a.status==="MeetingDone";})||l.status==="MeetingDone";
   }).filter(function(l){
     // If filtered, check if the status change falls in range
-    if (filter==="today" || filter==="week" || filter==="month" || (typeof filter==="string"&&filter.indexOf("Q")===0)) {
+    if (filter==="today" || filter==="yesterday" || filter==="week" || filter==="month" || (typeof filter==="string"&&filter.indexOf("Q")===0)) {
       return statusChangedInRange(l,"Meeting Done") || statusChangedInRange(l,"MeetingDone") || (l.updatedAt && new Date(l.updatedAt).getTime()>=rangeStart && new Date(l.updatedAt).getTime()<=rangeEnd);
     }
     return true;
@@ -3267,7 +3275,7 @@ var DashboardPage = function(p) {
         <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,fontVariantNumeric:"tabular-nums",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{dateLabel}</div>
       </div>
       <div className="crm-dash-filters" style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",width:isMobile?"100%":"auto",overflowX:isMobile?"auto":"visible",WebkitOverflowScrolling:"touch"}}>
-        {[["today","Today"],["week","This Week"],["month","This Month"]].map(function(f){
+        {[["today","Today"],["yesterday","Yesterday"],["week","This Week"],["month","This Month"]].map(function(f){
           return <button key={f[0]} onClick={function(){setFilter(f[0]);}} style={{fontSize:12,padding:isMobile?"8px 12px":"6px 14px",minHeight:isMobile?36:undefined,border:filter===f[0]?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:filter===f[0]?"#EFF6FF":"#fff",color:filter===f[0]?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:filter===f[0]?600:500,flexShrink:0}}>{f[1]}</button>;
         })}
         <div ref={quarterDropdownRef} style={{position:"relative"}}>
@@ -3638,7 +3646,7 @@ var DashboardPage = function(p) {
           leaderboard.forEach(function(x){ x.rate = x.total>0?Math.round(x.doneOnTime/x.total*100):100; });
           var rateColor = function(rate){ return rate>=80?"#10B981":rate>=60?"#F59E0B":"#DC2626"; };
           var initialsOfName = function(n){return (n||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();};
-          var filterLabel = filter==="today" ? "Scheduled Today" : filter==="week" ? "Scheduled this Week" : filter==="month" ? "Scheduled this Month" : "Scheduled in Period";
+          var filterLabel = filter==="today" ? "Scheduled Today" : filter==="yesterday" ? "Scheduled Yesterday" : filter==="week" ? "Scheduled this Week" : filter==="month" ? "Scheduled this Month" : "Scheduled in Period";
           return <>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
               <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{sumScheduled}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>{filterLabel}</div></div>
@@ -3696,7 +3704,7 @@ var DashboardPage = function(p) {
           var denom = Math.max(1, totalOutcomes);
           var pct = function(n){ return totalOutcomes>0 ? Math.round(n/totalOutcomes*100) : 0; };
           var invalidPct = pct(notInt);
-          var callsLabel = filter==="today" ? "Calls Today" : filter==="week" ? "Calls this Week" : filter==="month" ? "Calls this Month" : "Calls in Period";
+          var callsLabel = filter==="today" ? "Calls Today" : filter==="yesterday" ? "Calls Yesterday" : filter==="week" ? "Calls this Week" : filter==="month" ? "Calls this Month" : "Calls in Period";
           return <>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
               <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{totalCalls}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>{callsLabel}</div></div>
@@ -4302,7 +4310,12 @@ var DealsPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [dealTab,setDealTab]=useState("active"); // "active" | "cancelled"
   var [dealCancelling,setDealCancelling]=useState(false);
-  var activeDeals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
+  // Include every record that the rest of the CRM already treats as a deal:
+  // newly-converted EOIs have status="DoneDeal", but older records may carry
+  // only globalStatus="donedeal" (or vice-versa) depending on which path
+  // stamped them. Mirroring the admin dashboard's rule here ensures existing
+  // EOI records with Done Deal status show up alongside new ones.
+  var activeDeals=p.leads.filter(function(l){return (l.status==="DoneDeal"||l.globalStatus==="donedeal")&&!l.archived&&!(l.dealStatus==="Deal Cancelled"||l.status==="Deal Cancelled");}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
   var cancelledDeals=p.leads.filter(function(l){return (l.dealStatus==="Deal Cancelled" || l.status==="Deal Cancelled") && !l.archived && !(l.eoiStatus==="EOI Cancelled");}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
   var deals = dealTab==="cancelled" ? cancelledDeals : activeDeals;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
