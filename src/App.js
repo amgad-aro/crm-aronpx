@@ -4097,9 +4097,15 @@ var EOIPage = function(p) {
                     {cancelling?"Cancelling…":"❌ Cancel"}
                   </button>}
                 </div>
-                {selectedEOI.eoiStatus==="Approved"&&!isDoneDeal&&<button disabled={convertingDeal} onClick={function(){convertToDeal(selectedEOI);}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"5px 12px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
+                {/* Done Deal button is always visible on every EOI record — no
+                    eoiStatus / status / agent / date guard. The convertToDeal
+                    handler itself surfaces a clear alert if the backend rejects
+                    the conversion (e.g. "EOI must be Approved" on a still-
+                    pending row), so the visibility rule and the action rule
+                    stay decoupled. */}
+                <button disabled={convertingDeal} onClick={function(){convertToDeal(selectedEOI);}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"5px 12px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
                   {convertingDeal?"Converting…":"✅ Done Deal"}
-                </button>}
+                </button>
               </>;
             })()}
           </div>}
