@@ -4105,32 +4105,26 @@ var EOIPage = function(p) {
       <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"14px 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
-          {(p.cu.role==="admin")&&<div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
+          <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
             {(function(){
               var isCancelled = selectedEOI.eoiStatus==="EOI Cancelled" || selectedEOI.eoiStatus==="Deal Cancelled" || selectedEOI.status==="Deal Cancelled";
               if (isCancelled) return <span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ EOI Cancelled</span>;
               var isDoneDeal = selectedEOI.status==="DoneDeal";
               return <>
-                <div style={{ display:"flex", gap:6 }}>
+                {p.cu.role==="admin"&&<div style={{ display:"flex", gap:6 }}>
                   <button onClick={function(){if(!isDoneDeal) toggleApproved(selectedEOI,"eoiApproved");}} disabled={isDoneDeal} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:isDoneDeal?"default":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:isDoneDeal?0.7:1 }}>
                     {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
                   </button>
                   {!isDoneDeal&&<button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
                     {cancelling?"Cancelling…":"❌ Cancel"}
                   </button>}
-                </div>
-                {/* Done Deal button is always visible on every EOI record — no
-                    eoiStatus / status / agent / date guard. The convertToDeal
-                    handler itself surfaces a clear alert if the backend rejects
-                    the conversion (e.g. "EOI must be Approved" on a still-
-                    pending row), so the visibility rule and the action rule
-                    stay decoupled. */}
+                </div>}
                 <button disabled={convertingDeal} onClick={function(){convertToDeal(selectedEOI);}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"5px 12px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
                   {convertingDeal?"Converting…":"✅ Done Deal"}
                 </button>
               </>;
             })()}
-          </div>}
+          </div>
         </div>
         <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedEOI.name}</div>
         <div style={{ color:"rgba(255,255,255,0.7)", fontSize:11, marginTop:2 }}>{selectedEOI.phone}</div>
@@ -5246,6 +5240,11 @@ var DailyRequestsPage = function(p) {
           pendingStatus.newStatus==="DoneDeal"?"🏆 New Deal!":"📋 New EOI!",
           (req.name||"leads")+" — "+(updateData.budget||req.budget||"")
         );
+      }
+      // The backend creates/updates a Lead mirror for DR→EOI/DoneDeal, but the
+      // mirror isn't in p.leads yet. Refetch so the EOI/Deals page sees it.
+      if(pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI"){
+        try{var freshLeads=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);if(freshLeads&&freshLeads.data)p.setLeads(freshLeads.data);}catch(e){}
       }
       if(pendingStatus.newStatus==="DoneDeal") p.nav("deals");
       else if(pendingStatus.newStatus==="EOI") p.nav("eoi");
