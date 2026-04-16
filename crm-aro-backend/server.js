@@ -1576,7 +1576,7 @@ app.post("/api/daily-requests/:id/eoi-cancel", auth, async function(req, res) {
 // ===== EOI -> DONE DEAL (admin) — converts an approved EOI to a Done Deal =====
 app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
   try {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Only admin can convert an EOI to a deal" });
+    if (req.user.role !== "admin" && req.user.role !== "sales") return res.status(403).json({ error: "Only admin or sales can convert an EOI to a deal" });
     var existing = await Lead.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Lead not found" });
     if (existing.eoiStatus !== "Approved") return res.status(400).json({ error: "EOI must be Approved before it can be converted to a Done Deal" });
@@ -2705,8 +2705,14 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
       // If status is DoneDeal or EOI — create/update a Lead mirror in the main collection
       if (req.body.status === "DoneDeal" || req.body.status === "EOI") {
         var existingLead = await Lead.findOne({ phone: r.phone, source: "Daily Request" });
+        // EOI mirrors need eoiStatus so the EOI page's Pending tab picks
+        // them up; DoneDeal mirrors need globalStatus so the Deals page and
+        // the admin dashboard both find them.
+        var mirrorExtra = {};
+        if (req.body.status === "EOI")      { mirrorExtra.eoiStatus = "Pending"; mirrorExtra.eoiApproved = false; }
+        if (req.body.status === "DoneDeal") { mirrorExtra.globalStatus = "donedeal"; mirrorExtra.dealDate = new Date().toISOString().slice(0,10); }
         if (existingLead) {
-          await Lead.findByIdAndUpdate(existingLead._id, {
+          await Lead.findByIdAndUpdate(existingLead._id, Object.assign({
             status: req.body.status,
             budget: req.body.budget || r.budget || existingLead.budget,
             project: req.body.project || r.propertyType || existingLead.project,
@@ -2714,9 +2720,9 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             lastActivityTime: new Date(),
             notes: req.body.notes || r.notes || existingLead.notes,
             eoiDeposit: req.body.eoiDeposit || existingLead.eoiDeposit || "",
-          });
+          }, mirrorExtra));
         } else {
-          await Lead.create({
+          await Lead.create(Object.assign({
             name: r.name, phone: r.phone, phone2: r.phone2 || "",
             email: r.email || "", budget: req.body.budget || r.budget || "",
             project: req.body.project || r.propertyType || "",
@@ -2727,7 +2733,7 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             callbackTime: r.callbackTime || "",
             lastActivityTime: new Date(),
             eoiDeposit: req.body.eoiDeposit || "",
-          });
+          }, mirrorExtra));
         }
       } else if (req.body.status === "Deal Cancelled") {
         // DR moved out of EOI/DoneDeal — keep the mirror Lead in sync so the EOI page shows it under Deal Cancelled
