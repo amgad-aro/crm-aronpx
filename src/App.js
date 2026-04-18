@@ -2387,12 +2387,32 @@ var DashboardPage = function(p) {
     document.addEventListener("mousedown", handleClickOutside);
     return function(){ document.removeEventListener("mousedown", handleClickOutside); };
   },[]);
-  // Fetch ALL today's activities (not limited to the paginated 20) for the "Today's Activities" card; refresh every 30s
+  // Fetch activities since the active period's start (not just today's 00:00)
+  // — so Today's Activities / This Week's Activities / etc all have enough
+  // data to render without another round-trip. Refreshes every 30s, and
+  // re-fires whenever the filter changes so the card always matches the
+  // Key Metrics row above it.
   useEffect(function(){
     if (!p.token) return;
     var cancelled = false;
     var load = function(){
-      var ts = new Date(); ts.setHours(0,0,0,0);
+      var nd = new Date();
+      var cY = nd.getFullYear(), cM = nd.getMonth(), cD = nd.getDate();
+      // Week uses Saturday as the anchor, matching the admin dashboard's
+      // rangeStart calc (see the admin-side block further down).
+      var todayDay = nd.getDay(); // 0=Sun..6=Sat
+      var daysSinceSat = (todayDay - 6 + 7) % 7;
+      var ts;
+      if (filter==="today") ts = new Date(cY, cM, cD, 0,0,0,0);
+      else if (filter==="yesterday") ts = new Date(cY, cM, cD-1, 0,0,0,0);
+      else if (filter==="week") ts = new Date(cY, cM, cD-daysSinceSat, 0,0,0,0);
+      else if (filter==="month") ts = new Date(cY, cM, 1, 0,0,0,0);
+      else if (typeof filter==="string" && /^Q(\d)\s+(\d{4})$/.test(filter)) {
+        var mm = filter.match(/^Q(\d)\s+(\d{4})$/);
+        ts = new Date(parseInt(mm[2]), (parseInt(mm[1])-1)*3, 1, 0,0,0,0);
+      } else {
+        ts = new Date(cY, cM, cD, 0,0,0,0);
+      }
       apiFetch("/api/activities?since="+encodeURIComponent(ts.toISOString())+"&limit=1000","GET",null,p.token)
         .then(function(d){ if(cancelled) return; var arr = (d&&d.data)||(Array.isArray(d)?d:[]); setTodayActivities(arr); })
         .catch(function(){ if(!cancelled && todayActivities===null) setTodayActivities([]); });
@@ -2401,7 +2421,7 @@ var DashboardPage = function(p) {
     var id = setInterval(load, 30000);
     return function(){ cancelled = true; clearInterval(id); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[p.token]);
+  },[p.token, filter]);
   // Untouched leads — server computes across the full Lead collection, so the
   // card is correct even when the local leads[] only holds the current page.
   // Refresh on the same 30s cadence as the activity feed.
@@ -2541,6 +2561,71 @@ var DashboardPage = function(p) {
   var card=function(children,extra){return <div className="crm-dash-card" style={Object.assign({background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px 14px":"20px 22px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0},extra||{})}>{children}</div>;};
   var sec=function(label){return <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:"0.1em",textTransform:"uppercase",margin:"24px 0 12px"}}>{label}</div>;};
   var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
+
+  // Shared period labels used by both the Today's Activities card (Change 1
+  // — respects the global filter) and the admin Rank Team widget (Change 2).
+  var periodLabelForFilter = function(f){
+    if (f==="today") return "Today";
+    if (f==="yesterday") return "Yesterday";
+    if (f==="week") return "This Week";
+    if (f==="month") return "This Month";
+    if (typeof f==="string" && /^Q\d\s+\d{4}$/.test(f)) return f;
+    return "Today";
+  };
+  var activitiesTitleForFilter = function(f){
+    if (f==="today") return "Today's Activities";
+    if (f==="yesterday") return "Yesterday's Activities";
+    if (f==="week") return "This Week's Activities";
+    if (f==="month") return "This Month's Activities";
+    if (typeof f==="string" && /^Q\d\s+\d{4}$/.test(f)) return "This Quarter's Activities";
+    return "Today's Activities";
+  };
+  // Reusable Rank widget — used by BOTH sales ("My Rank vs Team") and
+  // admin ("Rank Team", replacing the old Call Outcomes card). Takes a
+  // mode because admin has no personal rank / score block; otherwise
+  // identical data (salesRanking comes from the same /api/dashboard/
+  // sales-ranking endpoint for both roles).
+  var rankWidget = function(opts){
+    var mode = opts && opts.mode;
+    var rangeLabel = (opts && opts.rangeLabel) || "";
+    var rankRows = Array.isArray(salesRanking) ? salesRanking : [];
+    var loading = salesRanking === null;
+    var myUid = mode === "sales" ? String(p.cu._id || p.cu.id) : "";
+    var myRankIdx = mode === "sales" ? rankRows.findIndex(function(r){return String(r.uid)===myUid;}) : -1;
+    var myRank = myRankIdx >= 0 ? myRankIdx+1 : 0;
+    var myRankTotal = rankRows.length;
+    var myRankRow = myRankIdx >= 0 ? rankRows[myRankIdx] : {deals:0,meetings:0,score:0};
+    var title = mode === "admin" ? "Rank Team" : "My Rank vs Team";
+    return <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
+        <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>{title}</div>
+        <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{rangeLabel}</div>
+      </div>
+      {mode === "sales" && <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:12}}>
+        <span style={{fontSize:34,fontWeight:800,color:myRank===1?"#15803D":myRank>0&&myRank<=3?"#1D4ED8":"#334155",lineHeight:1}}>{myRank>0?"#"+myRank:"\u2014"}</span>
+        <span style={{fontSize:13,color:"#64748B"}}>out of {myRankTotal} sales agents</span>
+      </div>}
+      <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:360,overflowY:"auto"}}>
+        {loading && <div style={{fontSize:12,color:"#94A3B8",padding:"6px 0"}}>Loading ranking\u2026</div>}
+        {rankRows.map(function(r,i){
+          var isMe = mode === "sales" && String(r.uid)===myUid;
+          return <div key={r.uid} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:8,background:isMe?"#EFF6FF":"transparent",border:isMe?"1px solid #BFDBFE":"1px solid transparent"}}>
+            <div style={{width:22,height:22,borderRadius:"50%",background:i===0?"#FBBF24":i===1?"#E2E8F0":i===2?"#F59E0B":"#F1F5F9",color:i<=2?"#0F172A":"#64748B",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{i+1}</div>
+            <div style={{flex:1,minWidth:0,fontSize:12,fontWeight:isMe?700:500,color:isMe?"#1D4ED8":"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isMe?(r.name||p.cu.name)+" (you)":r.name}</div>
+            <div title={"Activities "+(r.activities||0)+" \u00b7 Calls "+(r.calls||0)+" \u00b7 Meetings "+(r.meetings||0)+" \u00b7 DRs "+(r.dailyRequests||0)} style={{fontSize:12,fontWeight:800,color:"#1D4ED8",minWidth:28,textAlign:"right"}}>{r.score||0}</div>
+          </div>;
+        })}
+        {!loading && !rankRows.length && <div style={{fontSize:12,color:"#94A3B8",padding:"6px 0"}}>No sales agents found</div>}
+      </div>
+      {mode === "sales" && <div style={{borderTop:"1px solid #F1F5F9",marginTop:10,paddingTop:10,display:"flex",alignItems:"center",gap:8}}>
+        <span style={{fontSize:20}}>{myRank===1?"\ud83e\udd47":myRank===2?"\ud83e\udd48":myRank===3?"\ud83e\udd49":"\ud83d\udcca"}</span>
+        <div>
+          <div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>Your score: {myRankRow.score||0}</div>
+          <div style={{fontSize:11,color:"#94A3B8"}}>{(myRankRow.activities||0)} activities \u00b7 {(myRankRow.calls||0)} calls \u00b7 {(myRankRow.meetings||0)} meetings \u00b7 {(myRankRow.dailyRequests||0)} DRs in {rangeLabel}</div>
+        </div>
+      </div>}
+    </div>;
+  };
 
   if(!isOnlyAdmin) {
     // ============ DATE RANGE (calendar-based) ============
@@ -2725,37 +2810,7 @@ var DashboardPage = function(p) {
 
       {/* Rank + Urgent + Schedule row */}
       <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
-        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
-            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>My Rank vs Team</div>
-            <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{rangeLabelS}</div>
-          </div>
-          {/* Headline rank — #X out of Y */}
-          <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:12}}>
-            <span style={{fontSize:34,fontWeight:800,color:myRankS===1?"#15803D":myRankS>0&&myRankS<=3?"#1D4ED8":"#334155",lineHeight:1}}>{myRankS>0?"#"+myRankS:"\u2014"}</span>
-            <span style={{fontSize:13,color:"#64748B"}}>out of {myRankTotalS} sales agents</span>
-          </div>
-          {/* Full ranked list — every active Sales agent (CRM-wide). */}
-          <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:360,overflowY:"auto"}}>
-            {rankLoadingS && <div style={{fontSize:12,color:"#94A3B8",padding:"6px 0"}}>Loading ranking\u2026</div>}
-            {rankRowsS.map(function(r,i){
-              var isMe = String(r.uid)===myUidS;
-              return <div key={r.uid} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:8,background:isMe?"#EFF6FF":"transparent",border:isMe?"1px solid #BFDBFE":"1px solid transparent"}}>
-                <div style={{width:22,height:22,borderRadius:"50%",background:i===0?"#FBBF24":i===1?"#E2E8F0":i===2?"#F59E0B":"#F1F5F9",color:i<=2?"#0F172A":"#64748B",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{i+1}</div>
-                <div style={{flex:1,minWidth:0,fontSize:12,fontWeight:isMe?700:500,color:isMe?"#1D4ED8":"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isMe?(r.name||p.cu.name)+" (you)":r.name}</div>
-                <div title={"Activities "+(r.activities||0)+" · Calls "+(r.calls||0)+" · Meetings "+(r.meetings||0)+" · DRs "+(r.dailyRequests||0)} style={{fontSize:12,fontWeight:800,color:"#1D4ED8",minWidth:28,textAlign:"right"}}>{r.score||0}</div>
-              </div>;
-            })}
-            {!rankLoadingS && !rankRowsS.length && <div style={{fontSize:12,color:"#94A3B8",padding:"6px 0"}}>No sales agents found</div>}
-          </div>
-          <div style={{borderTop:"1px solid #F1F5F9",marginTop:10,paddingTop:10,display:"flex",alignItems:"center",gap:8}}>
-            <span style={{fontSize:20}}>{myRankS===1?"\ud83e\udd47":myRankS===2?"\ud83e\udd48":myRankS===3?"\ud83e\udd49":"\ud83d\udcca"}</span>
-            <div>
-              <div style={{fontSize:12,fontWeight:600,color:"#0F172A"}}>Your score: {myRankRowS.score||0}</div>
-              <div style={{fontSize:11,color:"#94A3B8"}}>{(myRankRowS.activities||0)} activities · {(myRankRowS.calls||0)} calls · {(myRankRowS.meetings||0)} meetings · {(myRankRowS.dailyRequests||0)} DRs in {rangeLabelS}</div>
-            </div>
-          </div>
-        </div>
+        {rankWidget({ mode: "sales", rangeLabel: rangeLabelS })}
 
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
           <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udea8"} Urgent {"\u2014"} Action Needed</div>
@@ -3046,7 +3101,13 @@ var DashboardPage = function(p) {
   // callback_scheduled / rotated / assigned events the Activity collection
   // doesn't track natively).
   var _actsPool = (todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
-  var _actsToday = _actsPool.filter(function(a){return a.createdAt&&new Date(a.createdAt).getTime()>=todayStart.getTime();});
+  // Range-scoped (Change 1) — no longer hardcoded to today. Bounds come
+  // from the admin rangeStart/rangeEnd that the Key Metrics cards use.
+  var _actsToday = _actsPool.filter(function(a){
+    if (!a.createdAt) return false;
+    var t = new Date(a.createdAt).getTime();
+    return t >= rangeStart && t <= rangeEnd;
+  });
   _actsToday.sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);});
   // Dedupe: first by _id (Map), then collapse near-duplicate legacy entries created by old server auto-log
   // (same user+lead+type within 10 seconds => keep only one)
@@ -3085,7 +3146,7 @@ var DashboardPage = function(p) {
     (l.history||[]).forEach(function(h){
       if (!h || !h.timestamp) return;
       var t = new Date(h.timestamp).getTime();
-      if (!t || t < todayStart.getTime()) return;
+      if (!t || t < rangeStart || t > rangeEnd) return;
       var mappedType = mapHistoryEvent(h.event);
       var byName = h.byUser || "";
       var byUid = _nameToUid[byName] || null;
@@ -3443,11 +3504,11 @@ var DashboardPage = function(p) {
         </>)}
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
-            <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Today's Activities</div>
+            <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>{activitiesTitleForFilter(filter)}</div>
             <span style={{fontSize:11,fontWeight:600,color:"#1D4ED8",cursor:"pointer"}} onClick={function(){setSeeAllOpen(true);}}>View All ({todayActsAll.length})</span>
           </div>
           <div style={{maxHeight:420,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
-          {todayActsAll.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity yet today</div> : todayActsAll.map(function(a,i){
+          {todayActsAll.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity in {periodLabelForFilter(filter)}</div> : todayActsAll.map(function(a,i){
             var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
             var aName = a.userId&&a.userId.name?a.userId.name:agentName(aid);
             var lName = resolveClientName(a);
@@ -3718,61 +3779,12 @@ var DashboardPage = function(p) {
           </>;
         })()}
       </>)}
-      {card(<>
-        <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Call Outcomes</div>
-        {(function(){
-          // Spec: count LEADS per status that represent call outcomes, filtered by the active period.
-          // Scope = fLeads (leads with createdAt in [rangeStart, rangeEnd]) — the same range
-          // the admin dashboard uses everywhere else. Answer rate stays call-based as before.
-          var statusCounts = {};
-          fLeads.forEach(function(l){ var s = l.status||"NewLead"; statusCounts[s] = (statusCounts[s]||0)+1; });
-          var hotCase       = statusCounts.HotCase       || 0;
-          var potential     = statusCounts.Potential     || 0;
-          var interestedTotal = hotCase + potential; // spec "Interested" bucket
-          var cbk           = statusCounts.CallBack     || 0;
-          var noAns         = statusCounts.NoAnswer     || 0;
-          var notInt        = statusCounts.NotInterested|| 0;
-          var meetingDone   = statusCounts.MeetingDone  || 0;
-          var totalOutcomes = interestedTotal + cbk + noAns + notInt + meetingDone;
-          // Calls made in the period — still sourced from the Activity log for the same window.
-          var actsPool = (filter==="today" && todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
-          var totalCalls = actsPool.filter(function(a){ if(a.type!=="call") return false; var t=a.createdAt?new Date(a.createdAt).getTime():0; return t>=rangeStart && t<=rangeEnd; }).length;
-          var answered = Math.max(0, totalCalls - noAns);
-          var answerRate = totalCalls>0 ? Math.round(answered/totalCalls*100) : 0;
-          var denom = Math.max(1, totalOutcomes);
-          var pct = function(n){ return totalOutcomes>0 ? Math.round(n/totalOutcomes*100) : 0; };
-          var invalidPct = pct(notInt);
-          var callsLabel = filter==="today" ? "Calls Today" : filter==="yesterday" ? "Calls Yesterday" : filter==="week" ? "Calls this Week" : filter==="month" ? "Calls this Month" : "Calls in Period";
-          return <>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-              <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{totalCalls}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>{callsLabel}</div></div>
-              <div style={{background:"#F0FDF4",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#15803D"}}>{answerRate}%</div><div style={{fontSize:10,fontWeight:600,color:"#22C55E"}}>Answer Rate</div></div>
-            </div>
-            <div style={{fontSize:10,color:"#94A3B8",marginBottom:6}}>Leads per outcome status in period ({totalOutcomes} total)</div>
-            {[
-              ["Interested",interestedTotal,"#10B981"],
-              ["Hot Case",hotCase,"#F59E0B"],
-              ["Potential",potential,"#14B8A6"],
-              ["No Answer",noAns,"#94A3B8"],
-              ["Not Int.",notInt,"#EF4444"],
-              ["Call Back",cbk,"#F59E0B"],
-              ["Meeting",meetingDone,"#8B5CF6"]
-            ].map(function(s){
-              var cnt = s[1]; var p2 = pct(cnt);
-              return <div key={s[0]} style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
-                <div style={{fontSize:12,color:"#64748B",width:82,flexShrink:0}}>{s[0]}</div>
-                <div style={{flex:1,height:5,background:"#F1F5F9",borderRadius:3,overflow:"hidden"}}>
-                  <div style={{height:"100%",width:Math.max(2,Math.round(cnt/denom*100))+"%",background:s[2],borderRadius:3}}/>
-                </div>
-                <div style={{fontSize:12,fontWeight:700,color:"#334155",width:52,textAlign:"right"}}>{cnt} <span style={{color:"#94A3B8",fontWeight:500,fontSize:10}}>({p2}%)</span></div>
-              </div>;
-            })}
-            <div style={{marginTop:10,padding:"8px 10px",background:"#FFF1F2",borderRadius:8,display:"flex",justifyContent:"space-between",fontSize:12}}>
-              <span style={{color:"#64748B",fontWeight:500}}>Invalid leads</span><span style={{fontWeight:700,color:"#BE123C"}}>{invalidPct}%</span>
-            </div>
-          </>;
-        })()}
-      </>)}
+      {/* Change 2 — Call Outcomes widget replaced with the same Rank Team
+          widget the sales view uses. Admin mode hides the personal rank /
+          score blocks; data feed (salesRanking) is already re-fetched when
+          the global filter changes, so the ranking reflects the selected
+          period. */}
+      {rankWidget({ mode: "admin", rangeLabel: periodLabelForFilter(filter) })}
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Leads by Status</div>
         {(function(){
@@ -3812,11 +3824,11 @@ var DashboardPage = function(p) {
     {seeAllOpen && <div onClick={function(){setSeeAllOpen(false);}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(15,23,42,0.55)",zIndex:1000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 16px",overflowY:"auto"}}>
       <div onClick={function(e){e.stopPropagation();}} style={{background:"#fff",borderRadius:16,maxWidth:640,width:"100%",padding:"20px 22px",boxShadow:"0 10px 40px rgba(0,0,0,0.2)"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
-          <div style={{fontSize:17,fontWeight:700,color:"#0F172A"}}>Today's Activities ({todayActsAll.length})</div>
+          <div style={{fontSize:17,fontWeight:700,color:"#0F172A"}}>{activitiesTitleForFilter(filter)} ({todayActsAll.length})</div>
           <span style={{fontSize:13,fontWeight:600,color:"#64748B",cursor:"pointer",padding:"4px 10px"}} onClick={function(){setSeeAllOpen(false);}}>{"\u2715"} Close</span>
         </div>
         <div style={{maxHeight:"70vh",overflowY:"auto",paddingRight:4}}>
-          {todayActsAll.length===0 ? <div style={{fontSize:13,color:"#94A3B8",padding:"20px 0",textAlign:"center"}}>No activity yet today</div> : todayActsAll.map(function(a,i){
+          {todayActsAll.length===0 ? <div style={{fontSize:13,color:"#94A3B8",padding:"20px 0",textAlign:"center"}}>No activity in {periodLabelForFilter(filter)}</div> : todayActsAll.map(function(a,i){
             var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
             var aName = a.userId&&a.userId.name?a.userId.name:agentName(aid);
             var lName = resolveClientName(a);
