@@ -3188,6 +3188,18 @@ var DashboardPage = function(p) {
     var drForOpen = drObj || { _id: id, name: resolveClientName(a), phone: (a && a.clientPhone) || "" };
     if (p.nav) p.nav("dailyReq", drForOpen);
   };
+  // Can we actually navigate to the source record of this activity? Rows
+  // where we genuinely can't (DR deleted, no Lead, no phone to fall back to)
+  // must render as visually non-clickable — don't pretend a dead click is
+  // a real one.
+  var canOpenActivity = function(a){
+    if (!a) return false;
+    if (activityIsLead(a)) return true;
+    var id = activityLeadIdStr(a);
+    if (id && (_leadsById[id] || _drsById[id])) return true;
+    if (_drFromActivityPhone(a)) return true;
+    return false;
+  };
   // Kept for backward compatibility with any older call sites (single-arg id).
   var openActivityClient = function(leadId){
     if (!leadId) return;
@@ -3475,7 +3487,11 @@ var DashboardPage = function(p) {
             else if (noteLc.indexOf("callback")>=0) ic={icon:"\ud83d\udcc5",bg:"#DBEAFE",fg:"#1D4ED8"};
             else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
             var actLeadId = activityLeadIdStr(a);
-            var onActClick = actLeadId ? function(){ openActivity(a); } : null;
+            // Gate the click on canOpenActivity — not just on whether we have
+            // an id string. Rows for deleted DRs (id exists but no doc in
+            // p.dailyReqs and no phone to fall back to) are truly dead and
+            // should render as cursor:default with no handler.
+            var onActClick = canOpenActivity(a) ? function(){ openActivity(a); } : null;
             // Spec: "client name, action type, agent name, exact time" — show client first, agent on the subtitle.
             var clientName = lName || "Unknown client";
             // Daily Request rows show the full feedback text (spec — no truncation).
@@ -3489,7 +3505,7 @@ var DashboardPage = function(p) {
             var subtitleStyle = isDrRow
               ? { fontSize:11, color:"#64748B", marginTop:1, wordBreak:"break-word", whiteSpace:"normal" }
               : { fontSize:11, color:"#64748B", marginTop:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" };
-            return <div key={String(a._id||("k"+i))} onClick={onActClick} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"9px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadId?"pointer":"default"}}>
+            return <div key={String(a._id||("k"+i))} onClick={onActClick} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"9px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:onActClick?"pointer":"default"}}>
               <div style={{width:34,height:34,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0,marginTop:2}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
@@ -3834,12 +3850,13 @@ var DashboardPage = function(p) {
             else if (noteLc.indexOf("callback")>=0) ic={icon:"\ud83d\udcc5",bg:"#DBEAFE",fg:"#1D4ED8"};
             else ic={icon:"\u2022",bg:"#F1F5F9",fg:"#64748B"};
             var actLeadIdM = activityLeadIdStr(a);
-            var onActClickM = actLeadIdM ? function(){ setSeeAllOpen(false); openActivity(a); } : null;
+            // Same orphan-safe gate as the compact card above.
+            var onActClickM = canOpenActivity(a) ? function(){ setSeeAllOpen(false); openActivity(a); } : null;
             var clientNameM = lName || "Unknown client";
             var subtitleStyleM = isDrRowM
               ? { fontSize:12, color:"#64748B", marginTop:2, wordBreak:"break-word", whiteSpace:"normal" }
               : { fontSize:12, color:"#64748B", marginTop:2 };
-            return <div key={(a._id||"")+"-"+i} onClick={onActClickM} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:actLeadIdM?"pointer":"default"}}>
+            return <div key={(a._id||"")+"-"+i} onClick={onActClickM} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:onActClickM?"pointer":"default"}}>
               <div style={{width:36,height:36,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0,marginTop:2}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>

@@ -2296,7 +2296,38 @@ app.get("/api/activities", auth, async function(req, res) {
     var skip = (page - 1) * limit;
 
     var total = await Activity.countDocuments(query);
-    var activities = await Activity.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 }).skip(skip).limit(limit);
+    // Manual Lead hydration instead of .populate("leadId", "name").
+    // Reason: Activity.leadId points at EITHER a Lead or a DailyRequest,
+    // and Mongoose's .populate with ref="Lead" silently REPLACES the field
+    // with null when the referenced doc is a DR. That wipes the raw id the
+    // frontend needs to look up the DR in p.dailyReqs — which is why
+    // DR-backed rows used to render as "Unknown client" with a dead click
+    // on Today's Activities. Fetching lean + joining Lead.find ourselves
+    // keeps the raw ObjectId on DR-backed activities (it becomes a string
+    // after JSON serialization, which is exactly what the existing
+    // activityLeadIdStr / _drsById resolver expects).
+    var activitiesRaw = await Activity.find(query).populate("userId", "name").sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+    var leadIdsToLoad = [];
+    activitiesRaw.forEach(function(a){ if (a.leadId) leadIdsToLoad.push(a.leadId); });
+    var leadDocs = [];
+    if (leadIdsToLoad.length) {
+      try { leadDocs = await Lead.find({ _id: { $in: leadIdsToLoad } }).select("name").lean(); }
+      catch(hydrationErr) { console.error("activities Lead hydration failed (non-fatal):", hydrationErr.message); }
+    }
+    var leadMap = {};
+    leadDocs.forEach(function(l){ leadMap[String(l._id)] = l; });
+    activitiesRaw.forEach(function(a){
+      if (a.leadId) {
+        var key = String(a.leadId);
+        if (leadMap[key]) {
+          // Lead-backed — keep the same shape .populate used to return.
+          a.leadId = { _id: a.leadId, name: leadMap[key].name };
+        }
+        // DR-backed: leave a.leadId as the raw ObjectId. JSON-serialized as
+        // a string; frontend's _drsById lookup takes it from here.
+      }
+    });
+    var activities = activitiesRaw;
 
     res.json({
       data: activities,
