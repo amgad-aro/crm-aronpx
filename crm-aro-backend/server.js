@@ -2777,6 +2777,19 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             assignments: seedAssignments,
           }, mirrorExtra));
         }
+        // Real-time broadcast for the Lead mirror. The auto-broadcast
+        // middleware only emits dr_updated here (the response path is
+        // /api/daily-requests), so admins never received the new/updated
+        // mirror Lead until a manual refresh. Emitting lead_updated here
+        // — with the full populated doc — matches what a direct Lead PUT
+        // would emit, so the frontend lead_updated handler slots the row
+        // into p.leads and the EOI / Deals page shows it instantly. The
+        // DR's own dr_updated event is still emitted by the middleware
+        // after res.json(r), so the DR page also stays live.
+        try {
+          var mirrorLead = await Lead.findOne({ phone: r.phone, source: "Daily Request" }).populate("agentId", "name title").populate("assignments.agentId", "name title").lean();
+          if (mirrorLead) emitLead(mirrorLead);
+        } catch(emitErr) { console.error("DR→EOI/Deal mirror broadcast failed (non-fatal):", emitErr.message); }
       } else if (req.body.status === "Deal Cancelled") {
         // DR moved out of EOI/DoneDeal — keep the mirror Lead in sync so the EOI page shows it under Deal Cancelled
         var mirror = await Lead.findOne({ phone: r.phone, source: "Daily Request" });
