@@ -311,7 +311,52 @@ var rowToLead = function(row) {
 
 // ===== UI COMPONENTS =====
 var Badge = function(p) { return <span style={{ background: p.bg||"#F1F5F9", color: p.color||C.text, padding:"4px 12px", borderRadius:20, fontSize:12, fontWeight:600, whiteSpace:"nowrap", cursor:p.onClick?"pointer":"default", border:p.dashed?"1px dashed "+(p.color||C.text):"none", display:"inline-flex", alignItems:"center", gap:4 }} onClick={p.onClick}>{p.children}</span>; };
-var Card = function(p) { return <div style={Object.assign({ background:"#fff", borderRadius:14, padding:p.p!==undefined?p.p:22, boxShadow:"0 1px 4px rgba(0,0,0,0.07)", border:"1px solid #E8ECF1" }, p.style||{})}>{p.children}</div>; };
+var Card = function(p) { return <div ref={p.innerRef} style={Object.assign({ background:"#fff", borderRadius:14, padding:p.p!==undefined?p.p:22, boxShadow:"0 1px 4px rgba(0,0,0,0.07)", border:"1px solid #E8ECF1" }, p.style||{})}>{p.children}</div>; };
+
+// Shared helper for closing any side panel when the user clicks outside it.
+// Strategy: Option A — a document-level mousedown listener that closes when
+// the target is not inside the panel AND is not inside a higher-stacking
+// overlay (Modal at z:600, status dropdowns at z:500, etc). Walks ancestors
+// and bails out if any is a fixed/absolute element at zIndex >= 400 other
+// than the panel itself — this keeps the Edit Modal, status picker, and
+// confirm dialogs from accidentally closing the panel underneath. Esc also
+// closes. Pair this with ref={outsideCloseRef} on the panel's outermost node.
+function useOutsideClose(open, onClose){
+  var ref = useRef(null);
+  var cbRef = useRef(onClose);
+  cbRef.current = onClose;
+  useEffect(function(){
+    if (!open) return;
+    function isInOverlayAbove(target, panel){
+      var n = target;
+      while (n && n !== document.body && n !== document.documentElement) {
+        if (n === panel) return false;
+        try {
+          var cs = window.getComputedStyle(n);
+          var z = parseInt(cs.zIndex, 10);
+          if ((cs.position === "fixed" || cs.position === "absolute") && !isNaN(z) && z >= 400) return true;
+        } catch(e) {}
+        n = n.parentNode;
+      }
+      return false;
+    }
+    function onMouseDown(e){
+      var panel = ref.current;
+      if (!panel) return;
+      if (panel.contains(e.target)) return;
+      if (isInOverlayAbove(e.target, panel)) return;
+      cbRef.current && cbRef.current();
+    }
+    function onKey(e){ if (e.key === "Escape") { cbRef.current && cbRef.current(); } }
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKey);
+    return function(){
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  return ref;
+}
 var StatCard = function(p) {
   var I = p.icon;
   return <div onClick={p.onClick} style={{ background:"#fff", borderRadius:14, padding:"16px 18px", flex:1, minWidth:150, boxShadow:"0 1px 4px rgba(0,0,0,0.07)", border:"1px solid #E8ECF1", display:"flex", alignItems:"center", gap:13, cursor:p.onClick?"pointer":"default", transition:"transform 0.15s,box-shadow 0.15s" }}
@@ -1462,6 +1507,8 @@ var LeadsPage = function(p) {
 
   // ---- State declarations (must be before filter logic) ----
   var [selected, setSelected] = useState(null);
+  // Close the side panel when the user clicks anywhere outside of it.
+  var panelRef = useOutsideClose(!!selected, function(){ setSelected(null); });
   var [statusDrop, setStatusDrop] = useState(null);
   var [showAdd, setShowAdd] = useState(false);
   var [editLead, setEditLead] = useState(null);
@@ -1957,7 +2004,7 @@ var LeadsPage = function(p) {
       </div>}
 
       {/* Side Panel */}
-      {selected&&<Card style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
+      {selected&&<Card innerRef={panelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px", position:"sticky", top:0 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
@@ -3249,12 +3296,29 @@ var DashboardPage = function(p) {
     var drForOpen = drObj || { _id: id, name: resolveClientName(a), phone: (a && a.clientPhone) || "" };
     if (p.nav) p.nav("dailyReq", drForOpen);
   };
+  // Is the originating Lead/DR for this activity archived? Archived records
+  // stay in the Activities card as a read-only history, so the row must be
+  // non-clickable even though we could resolve the source. Lead-backed ⇒
+  // check the Lead's archived flag; DR-backed ⇒ check the DR's archived flag
+  // (via id or phone snapshot). Linked-Lead-by-phone is NOT consulted here:
+  // if the activity was logged on an archived DR, it's history either way.
+  var isActivityArchived = function(a){
+    if (!a) return false;
+    var id = activityLeadIdStr(a);
+    if (activityIsLead(a)) {
+      var l = id ? _leadsById[id] : null;
+      return !!(l && l.archived === true);
+    }
+    var dr = (id ? _drsById[id] : null) || _drFromActivityPhone(a);
+    return !!(dr && dr.archived === true);
+  };
   // Can we actually navigate to the source record of this activity? Rows
   // where we genuinely can't (DR deleted, no Lead, no phone to fall back to)
   // must render as visually non-clickable — don't pretend a dead click is
-  // a real one.
+  // a real one. Also: archived records are read-only history — no click.
   var canOpenActivity = function(a){
     if (!a) return false;
+    if (isActivityArchived(a)) return false;
     if (activityIsLead(a)) return true;
     var id = activityLeadIdStr(a);
     if (id && (_leadsById[id] || _drsById[id])) return true;
@@ -3553,6 +3617,10 @@ var DashboardPage = function(p) {
             // p.dailyReqs and no phone to fall back to) are truly dead and
             // should render as cursor:default with no handler.
             var onActClick = canOpenActivity(a) ? function(){ openActivity(a); } : null;
+            // Archived source records stay in the history but must not be
+            // clickable — match the existing archived visual style used on
+            // the Archive page rows (opacity 0.7, cursor default).
+            var isArchivedRow = isActivityArchived(a);
             // Spec: "client name, action type, agent name, exact time" — show client first, agent on the subtitle.
             var clientName = lName || "Unknown client";
             // Daily Request rows show the full feedback text (spec — no truncation).
@@ -3566,7 +3634,7 @@ var DashboardPage = function(p) {
             var subtitleStyle = isDrRow
               ? { fontSize:11, color:"#64748B", marginTop:1, wordBreak:"break-word", whiteSpace:"normal" }
               : { fontSize:11, color:"#64748B", marginTop:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" };
-            return <div key={String(a._id||("k"+i))} onClick={onActClick} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"9px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:onActClick?"pointer":"default"}}>
+            return <div key={String(a._id||("k"+i))} onClick={onActClick} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"9px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:onActClick?"pointer":"default",opacity:isArchivedRow?0.7:1}}>
               <div style={{width:34,height:34,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0,marginTop:2}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
@@ -3864,11 +3932,12 @@ var DashboardPage = function(p) {
             var actLeadIdM = activityLeadIdStr(a);
             // Same orphan-safe gate as the compact card above.
             var onActClickM = canOpenActivity(a) ? function(){ setSeeAllOpen(false); openActivity(a); } : null;
+            var isArchivedRowM = isActivityArchived(a);
             var clientNameM = lName || "Unknown client";
             var subtitleStyleM = isDrRowM
               ? { fontSize:12, color:"#64748B", marginTop:2, wordBreak:"break-word", whiteSpace:"normal" }
               : { fontSize:12, color:"#64748B", marginTop:2 };
-            return <div key={(a._id||"")+"-"+i} onClick={onActClickM} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:onActClickM?"pointer":"default"}}>
+            return <div key={(a._id||"")+"-"+i} onClick={onActClickM} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:onActClickM?"pointer":"default",opacity:isArchivedRowM?0.7:1}}>
               <div style={{width:36,height:36,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0,marginTop:2}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>
@@ -3905,6 +3974,8 @@ var EOIPage = function(p) {
   var [editLead,setEditLead]=useState(null);
   var [showAdd,setShowAdd]=useState(false);
   var [selectedEOI,setSelectedEOI]=useState(null);
+  // Click-outside closes the EOI side panel (docked drawer).
+  var eoiPanelRef = useOutsideClose(!!selectedEOI, function(){ setSelectedEOI(null); });
   var [imgUploading,setImgUploading]=useState(false);
   var [docUploading,setDocUploading]=useState(false);
   var [cancelling,setCancelling]=useState(false);
@@ -4167,7 +4238,7 @@ var EOIPage = function(p) {
     </Card>}
 
     {/* EOI Side Panel */}
-    {selectedEOI&&<div style={ p.isMobile?{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }:{ flex:"0 0 260px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
+    {selectedEOI&&<div ref={eoiPanelRef} style={ p.isMobile?{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }:{ flex:"0 0 260px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
       <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"14px 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
@@ -4413,6 +4484,8 @@ var DealsPage = function(p) {
   var [showAdd,setShowAdd]=useState(false);
   var [editDeal,setEditDeal]=useState(null);
   var [selectedDeal,setSelectedDeal]=useState(null);
+  // Click-outside closes the Deal side panel (docked drawer).
+  var dealPanelRef = useOutsideClose(!!selectedDeal, function(){ setSelectedDeal(null); });
   // Deep-link: open the side panel when navigated here with a lead (e.g. from the Deals & EOI notifications bell).
   useEffect(function(){
     if (!p.initSelected) return;
@@ -4861,7 +4934,7 @@ var DealsPage = function(p) {
       var extra=getDealExtra(String(selectedDeal._id||gid(selectedDeal)))||{};
       var downPct=extra.downPaymentPct||selectedDeal.downPaymentPct||"";
       var instYears=extra.installmentYears||selectedDeal.installmentYears||"";
-      return <div style={{ flex:"0 0 280px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
+      return <div ref={dealPanelRef} style={{ flex:"0 0 280px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
       <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
@@ -5190,6 +5263,10 @@ var DailyRequestsPage = function(p) {
   var [showAdd,setShowAdd]=useState(false);
   var [saving,setSaving]=useState(false);
   var [selected,setSelected]=useState(null);
+  // Close the DR side panel when the user clicks anywhere outside of it.
+  // The same ref is attached to both the mobile and desktop panel renders;
+  // only one is mounted at a time so a single ref is enough.
+  var drPanelRef = useOutsideClose(!!selected, function(){ setSelected(null); });
   var [statusDrop,setStatusDrop]=useState(null);
   var [showStatusComment,setShowStatusComment]=useState(false);
   var [pendingStatus,setPendingStatus]=useState(null);
@@ -5452,7 +5529,7 @@ var DailyRequestsPage = function(p) {
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         {loading?<Loader/>:p.isMobile?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:"12px", maxWidth:500, margin:"0 auto" }}>
           {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>No requests</div>}
-          {selected&&<div style={{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }}>
+          {selected&&<div ref={drPanelRef} style={{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }}>
             {/* Mobile detail panel - same as leads */}
             <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"16px 16px 20px" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -5603,7 +5680,7 @@ var DailyRequestsPage = function(p) {
       </Card>
 
       {/* Side Panel */}
-      {selected&&<Card style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
+      {selected&&<Card innerRef={drPanelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
