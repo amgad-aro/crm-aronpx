@@ -4063,6 +4063,12 @@ var EOIPage = function(p) {
             {d.eoiDeposit&&<span style={{ fontSize:11, color:C.textLight }}>Deposit: {d.eoiDeposit}</span>}
             {isAdmin&&<span style={{ fontSize:11, color:C.accent }}>👤 {getAg(d)}</span>}
           </div>
+          {/* Convert to Deal — per-row action, visible to admin + sales.
+              Internally sets status to the existing "DoneDeal" enum via
+              convertToDeal (no new status value). */}
+          {(p.cu.role==="admin"||p.cu.role==="sales")&&<button onClick={function(e){e.stopPropagation();convertToDeal(d);}} disabled={convertingDeal} style={{ marginTop:10, width:"100%", padding:"8px 12px", borderRadius:9, border:"none", background:"#15803D", color:"#fff", fontSize:12, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1 }}>
+            {convertingDeal?"Converting…":"✅ Convert to Deal"}
+          </button>}
         </div>;
       })}
     </div>:<div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
@@ -4089,7 +4095,12 @@ var EOIPage = function(p) {
                 :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳ Pending</span>}
             </td>
             <td style={{ padding:"8px 12px" }} onClick={function(e){e.stopPropagation();}}>
-              <div style={{ display:"flex", gap:5 }}>
+              <div style={{ display:"flex", gap:5, alignItems:"center" }}>
+                {/* Convert to Deal — per-row action, visible to admin + sales.
+                    Sets status to the existing "DoneDeal" enum via convertToDeal. */}
+                {(p.cu.role==="admin"||p.cu.role==="sales")&&<button onClick={function(){convertToDeal(d);}} disabled={convertingDeal} title="Convert to Deal" style={{ padding:"6px 10px", borderRadius:6, border:"none", background:"#15803D", color:"#fff", fontSize:11, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1, whiteSpace:"nowrap" }}>
+                  {convertingDeal?"…":"Convert to Deal"}
+                </button>}
                 {isAdmin&&<button onClick={function(){setEditLead(d);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Edit size={13} color={C.info}/></button>}
                 {isAdmin&&<button onClick={function(){archiveLead(gid(d));}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Archive size={13} color={C.warning}/></button>}
               </div>

@@ -2711,6 +2711,12 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
         var mirrorExtra = {};
         if (req.body.status === "EOI")      { mirrorExtra.eoiStatus = "Pending"; mirrorExtra.eoiApproved = false; }
         if (req.body.status === "DoneDeal") { mirrorExtra.globalStatus = "donedeal"; mirrorExtra.dealDate = new Date().toISOString().slice(0,10); }
+        // GET /api/leads filters sales-role users on assignments.agentId, not
+        // the top-level agentId, so a mirror Lead with just agentId is
+        // invisible to the very sales user who just created it. Seed an
+        // assignments[] entry for the DR's current agent so the mirror is
+        // visible in sales' leads list (and therefore on the EOI/Deals page).
+        var agentForMirror = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
         if (existingLead) {
           await Lead.findByIdAndUpdate(existingLead._id, Object.assign({
             status: req.body.status,
@@ -2721,7 +2727,42 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             notes: req.body.notes || r.notes || existingLead.notes,
             eoiDeposit: req.body.eoiDeposit || existingLead.eoiDeposit || "",
           }, mirrorExtra));
+          // If the existing mirror has no assignment for the current agent,
+          // add one so the sales-role leads filter accepts it. Use $addToSet
+          // semantics by checking first — $addToSet on sub-docs doesn't dedupe
+          // on a single field, so we do the check explicitly.
+          if (agentForMirror) {
+            var hasAssign = (existingLead.assignments || []).some(function(a) {
+              var aid = a && a.agentId && a.agentId._id ? a.agentId._id : (a && a.agentId);
+              return String(aid || "") === String(agentForMirror);
+            });
+            if (!hasAssign) {
+              await Lead.findByIdAndUpdate(existingLead._id, {
+                $push: { assignments: { agentId: agentForMirror, status: req.body.status, assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [] } }
+              });
+            } else {
+              // Sync the agent's assignments status so per-agent views reflect the mirror's new state.
+              await Lead.updateOne(
+                { _id: existingLead._id, "assignments.agentId": agentForMirror },
+                { $set: { "assignments.$.status": req.body.status, "assignments.$.lastActionAt": new Date() } }
+              );
+            }
+          }
         } else {
+          var seedAssignments = agentForMirror ? [{
+            agentId: agentForMirror,
+            status: req.body.status,
+            assignedAt: new Date(),
+            lastActionAt: new Date(),
+            rotationTimer: new Date(),
+            noRotation: false,
+            notes: "",
+            budget: "",
+            callbackTime: "",
+            lastFeedback: "",
+            nextCallAt: null,
+            agentHistory: []
+          }] : [];
           await Lead.create(Object.assign({
             name: r.name, phone: r.phone, phone2: r.phone2 || "",
             email: r.email || "", budget: req.body.budget || r.budget || "",
@@ -2733,6 +2774,7 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             callbackTime: r.callbackTime || "",
             lastActivityTime: new Date(),
             eoiDeposit: req.body.eoiDeposit || "",
+            assignments: seedAssignments,
           }, mirrorExtra));
         }
       } else if (req.body.status === "Deal Cancelled") {
