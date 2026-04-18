@@ -3968,14 +3968,35 @@ var EOIPage = function(p) {
     if(lead.eoiStatus!=="Approved") { alert("EOI must be Approved before converting to a Done Deal"); return; }
     if(!window.confirm("Convert this EOI to a Done Deal? The lead will move to the Deals page.")) return;
     setConvertingDeal(true);
+    var leadId = gid(lead);
+    console.log("[convertToDeal] POST /api/leads/"+leadId+"/eoi-to-deal", { role: p.cu.role, eoiStatus: lead.eoiStatus, source: lead.source });
     try{
-      var updated = await apiFetch("/api/leads/"+gid(lead)+"/eoi-to-deal","POST",{},p.token);
-      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
-      // Close the side panel (the lead no longer belongs to the EOI page)
+      var updated = await apiFetch("/api/leads/"+leadId+"/eoi-to-deal","POST",{},p.token);
+      if (!updated || !updated._id) {
+        console.error("[convertToDeal] empty response", updated);
+        alert("Convert failed — empty response from server. Please refresh and try again.");
+        setConvertingDeal(false);
+        return;
+      }
+      console.log("[convertToDeal] ok", { status: updated.status, globalStatus: updated.globalStatus, eoiStatus: updated.eoiStatus });
+      // Close the EOI side panel BEFORE touching p.leads. If bubbling from
+      // the row click had already opened the detail panel, this ensures the
+      // next render doesn't keep it open on a row that's about to disappear
+      // from eoiScope.
       setSelectedEOI(null);
-      // Navigate the admin to the Deals page so the new deal is visible immediately
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===leadId?updated:l;});});
+      // Belt-and-suspenders refresh — make absolutely sure the Deals page sees
+      // the new state even if an outer component holds a stale reference.
+      try {
+        var refreshed = await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);
+        if (refreshed && Array.isArray(refreshed.data)) p.setLeads(refreshed.data);
+      } catch(refreshErr) { console.error("[convertToDeal] leads refresh failed (non-fatal)", refreshErr); }
+      // Navigate to the Deals page so the freshly-converted deal is visible.
       if (p.nav) p.nav("deals");
-    }catch(e){alert(e.message||"Convert failed");}
+    }catch(e){
+      console.error("[convertToDeal] failed", e);
+      alert("Convert failed: "+(e && e.message ? e.message : "Unknown error"));
+    }
     setConvertingDeal(false);
   };
 
@@ -4065,8 +4086,10 @@ var EOIPage = function(p) {
           </div>
           {/* Convert to Deal — per-row action, visible to admin + sales.
               Internally sets status to the existing "DoneDeal" enum via
-              convertToDeal (no new status value). */}
-          {(p.cu.role==="admin"||p.cu.role==="sales")&&<button onClick={function(e){e.stopPropagation();convertToDeal(d);}} disabled={convertingDeal} style={{ marginTop:10, width:"100%", padding:"8px 12px", borderRadius:9, border:"none", background:"#15803D", color:"#fff", fontSize:12, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1 }}>
+              convertToDeal (no new status value). The button MUST call both
+              stopPropagation and preventDefault so the outer card's onClick
+              (which opens the details panel) doesn't fire on the same click. */}
+          {(p.cu.role==="admin"||p.cu.role==="sales")&&<button onClick={function(e){e.stopPropagation();e.preventDefault();convertToDeal(d);}} onMouseDown={function(e){e.stopPropagation();}} onTouchStart={function(e){e.stopPropagation();}} disabled={convertingDeal} style={{ marginTop:10, width:"100%", padding:"8px 12px", borderRadius:9, border:"none", background:"#15803D", color:"#fff", fontSize:12, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1 }}>
             {convertingDeal?"Converting…":"✅ Convert to Deal"}
           </button>}
         </div>;
@@ -4097,8 +4120,11 @@ var EOIPage = function(p) {
             <td style={{ padding:"8px 12px" }} onClick={function(e){e.stopPropagation();}}>
               <div style={{ display:"flex", gap:5, alignItems:"center" }}>
                 {/* Convert to Deal — per-row action, visible to admin + sales.
-                    Sets status to the existing "DoneDeal" enum via convertToDeal. */}
-                {(p.cu.role==="admin"||p.cu.role==="sales")&&<button onClick={function(){convertToDeal(d);}} disabled={convertingDeal} title="Convert to Deal" style={{ padding:"6px 10px", borderRadius:6, border:"none", background:"#15803D", color:"#fff", fontSize:11, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1, whiteSpace:"nowrap" }}>
+                    Sets status to the existing "DoneDeal" enum via convertToDeal.
+                    stopPropagation on the button itself is belt-and-suspenders
+                    alongside the td's stopPropagation — keeps the row's
+                    detail-panel onClick from firing on the same click. */}
+                {(p.cu.role==="admin"||p.cu.role==="sales")&&<button onClick={function(e){e.stopPropagation();e.preventDefault();convertToDeal(d);}} onMouseDown={function(e){e.stopPropagation();}} disabled={convertingDeal} title="Convert to Deal" style={{ padding:"6px 10px", borderRadius:6, border:"none", background:"#15803D", color:"#fff", fontSize:11, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1, whiteSpace:"nowrap" }}>
                   {convertingDeal?"…":"Convert to Deal"}
                 </button>}
                 {isAdmin&&<button onClick={function(){setEditLead(d);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Edit size={13} color={C.info}/></button>}
