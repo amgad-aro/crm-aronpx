@@ -6482,6 +6482,7 @@ var SettingsPage = function(p) {
   var [saved,setSaved]=useState(false);
   var [saveError,setSaveError]=useState("");
   var [loading,setLoading]=useState(true);
+  var [activeTab,setActiveTab]=useState("general");
 
   useEffect(function(){
     var cancelled=false;
@@ -6539,89 +6540,126 @@ var SettingsPage = function(p) {
     }
   };
   var rotInpStyle={width:60,padding:"4px 8px",borderRadius:7,border:"1px solid #E2E8F0",fontSize:13,textAlign:"center"};
+
+  var tabs=[
+    {id:"general",     label:"General",        icon:"⚙️"},
+    {id:"rotation",    label:"Rotation",       icon:"🔄"},
+    {id:"team",        label:"Team & Roles",   icon:"👥"},
+    {id:"integrations",label:"Integrations",   icon:"🔌"},
+    {id:"rules",       label:"Business Rules", icon:"📋"},
+    {id:"audit",       label:"Audit Log",      icon:"📜"}
+  ];
+  var tabBtn=function(tab){var act=activeTab===tab.id;return <button key={tab.id} onClick={function(){setActiveTab(tab.id);}}
+    style={{padding:"8px 14px",borderRadius:10,border:"none",background:act?C.accent:"#F1F5F9",
+      color:act?"#fff":C.textLight,fontSize:12,fontWeight:act?700:500,
+      cursor:"pointer",display:"flex",alignItems:"center",gap:5,flexShrink:0}}>
+    <span>{tab.icon}</span>{tab.label}
+  </button>;};
+  var placeholder=function(icon,title,msg){return <div style={{padding:"40px 20px",textAlign:"center",color:C.textLight}}>
+    <div style={{fontSize:40,marginBottom:10}}>{icon}</div>
+    <div style={{fontSize:14,fontWeight:700,color:C.text,marginBottom:4}}>{title}</div>
+    <div style={{fontSize:12}}>{msg}</div>
+  </div>;};
+  var showSave=activeTab==="general"||activeTab==="rotation";
+
   return <div style={{ padding:"18px 16px 40px" }}>
     <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.settings}</h2>
+
+    {/* Tab bar */}
+    <div style={{ display:"flex", gap:6, marginBottom:16, overflowX:"auto", paddingBottom:4 }}>
+      {tabs.map(tabBtn)}
+    </div>
+
     <Card style={{ maxWidth:560 }}>
-      <Inp label={t.companyName} value={company} onChange={function(e){setCompany(e.target.value);}}/>
-      <Inp label={t.email} value={em} onChange={function(e){setEm(e.target.value);}}/>
-      <Inp label={t.phone} value={ph} onChange={function(e){setPh(e.target.value);}}/>
+      {activeTab==="general"&&<div>
+        <Inp label={t.companyName} value={company} onChange={function(e){setCompany(e.target.value);}}/>
+        <Inp label={t.email} value={em} onChange={function(e){setEm(e.target.value);}}/>
+        <Inp label={t.phone} value={ph} onChange={function(e){setPh(e.target.value);}}/>
+        <Inp label={t.language} type="select" value={p.lang} onChange={function(e){p.setLang(e.target.value);}} options={[{value:"ar",label:"Arabic"},{value:"en",label:"English"}]}/>
+      </div>}
 
-      {/* Auto-Rotation Order — priority-ordered list the backend walks top-to-bottom
-          when auto-rotating a lead. Drag to reorder; checkbox on the right-side roster
-          to add/remove an agent. An agent never receives a lead they've previously
-          handled — if all in-list agents have already had it, rotation stops. */}
-      <div style={{marginBottom:13}}>
-        <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>🔢 Auto-Rotation Order</label>
-        <div style={{border:"1px solid #E2E8F0",borderRadius:10,padding:"8px 8px",background:"#fff",maxHeight:260,overflowY:"auto"}}>
-          {reassignAgents.length===0 ? <div style={{fontSize:12,color:C.textLight,padding:"10px 4px"}}>No agents in the rotation order yet. Add agents from the list below.</div> : reassignAgents.map(function(uid, idx){
-            var u = (p.users||[]).find(function(x){return String(gid(x))===String(uid);});
-            if (!u) return null;
-            var isDragTarget = dropIdx===idx && dragIdx!==idx;
-            return <div key={uid}
-              draggable={true}
-              onDragStart={function(e){ setDragIdx(idx); try{e.dataTransfer.effectAllowed="move";}catch(_){} }}
-              onDragOver={function(e){ e.preventDefault(); if (dropIdx!==idx) setDropIdx(idx); try{e.dataTransfer.dropEffect="move";}catch(_){} }}
-              onDragLeave={function(){ if (dropIdx===idx) setDropIdx(-1); }}
-              onDrop={function(e){ e.preventDefault(); reorderAgent(dragIdx, idx); setDragIdx(-1); setDropIdx(-1); }}
-              onDragEnd={function(){ setDragIdx(-1); setDropIdx(-1); }}
-              style={{display:"flex",alignItems:"center",gap:10,padding:"10px 10px",borderRadius:8,background:dragIdx===idx?"#F1F5F9":isDragTarget?C.accent+"14":"#fff",border:"1px solid",borderColor:isDragTarget?C.accent:"#EEF2F7",marginBottom:4,cursor:"grab",userSelect:"none"}}>
-              <span style={{fontSize:14,color:"#94A3B8",lineHeight:1,letterSpacing:-1}}>⋮⋮</span>
-              <div style={{width:24,height:24,borderRadius:"50%",background:C.accent+"20",color:C.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{idx+1}</div>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</div>
-                <div style={{fontSize:11,color:C.textLight,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.title||""}</div>
-              </div>
-              <button onClick={function(){toggleAgent(uid);}} title="Remove from rotation order" style={{background:"none",border:"none",color:"#DC2626",fontSize:16,cursor:"pointer",padding:"2px 6px",lineHeight:1}}>×</button>
-            </div>;
-          })}
-        </div>
-        <div style={{fontSize:11,color:C.textLight,marginTop:4}}>Drag to reorder. Auto-rotation walks this list top → bottom, skipping any agent who has already handled the lead. If all agents have handled it, the lead stops rotating.</div>
-      </div>
-
-      {/* Remaining active agents not yet in the order — one-click add */}
-      {(function(){
-        var remaining = salesAgentsForSetting.filter(function(u){return !reassignAgents.includes(String(gid(u)));});
-        if (!remaining.length) return null;
-        return <div style={{marginBottom:13}}>
-          <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>➕ Add agent to rotation order</label>
-          <div style={{border:"1px dashed #E2E8F0",borderRadius:10,padding:"8px 8px",background:"#FAFBFC",maxHeight:160,overflowY:"auto"}}>
-            {remaining.map(function(u){
-              var uid = String(gid(u));
-              return <div key={uid} onClick={function(){toggleAgent(uid);}} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 8px",cursor:"pointer",borderRadius:7,marginBottom:2}}>
-                <span style={{fontSize:16,color:C.accent,fontWeight:700,lineHeight:1}}>+</span>
+      {activeTab==="rotation"&&<div>
+        {/* Auto-Rotation Order — priority-ordered list the backend walks top-to-bottom
+            when auto-rotating a lead. Drag to reorder; checkbox on the right-side roster
+            to add/remove an agent. An agent never receives a lead they've previously
+            handled — if all in-list agents have already had it, rotation stops. */}
+        <div style={{marginBottom:13}}>
+          <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>🔢 Auto-Rotation Order</label>
+          <div style={{border:"1px solid #E2E8F0",borderRadius:10,padding:"8px 8px",background:"#fff",maxHeight:260,overflowY:"auto"}}>
+            {reassignAgents.length===0 ? <div style={{fontSize:12,color:C.textLight,padding:"10px 4px"}}>No agents in the rotation order yet. Add agents from the list below.</div> : reassignAgents.map(function(uid, idx){
+              var u = (p.users||[]).find(function(x){return String(gid(x))===String(uid);});
+              if (!u) return null;
+              var isDragTarget = dropIdx===idx && dragIdx!==idx;
+              return <div key={uid}
+                draggable={true}
+                onDragStart={function(e){ setDragIdx(idx); try{e.dataTransfer.effectAllowed="move";}catch(_){} }}
+                onDragOver={function(e){ e.preventDefault(); if (dropIdx!==idx) setDropIdx(idx); try{e.dataTransfer.dropEffect="move";}catch(_){} }}
+                onDragLeave={function(){ if (dropIdx===idx) setDropIdx(-1); }}
+                onDrop={function(e){ e.preventDefault(); reorderAgent(dragIdx, idx); setDragIdx(-1); setDropIdx(-1); }}
+                onDragEnd={function(){ setDragIdx(-1); setDropIdx(-1); }}
+                style={{display:"flex",alignItems:"center",gap:10,padding:"10px 10px",borderRadius:8,background:dragIdx===idx?"#F1F5F9":isDragTarget?C.accent+"14":"#fff",border:"1px solid",borderColor:isDragTarget?C.accent:"#EEF2F7",marginBottom:4,cursor:"grab",userSelect:"none"}}>
+                <span style={{fontSize:14,color:"#94A3B8",lineHeight:1,letterSpacing:-1}}>⋮⋮</span>
+                <div style={{width:24,height:24,borderRadius:"50%",background:C.accent+"20",color:C.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{idx+1}</div>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,fontWeight:500,color:"#334155",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</div>
+                  <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</div>
                   <div style={{fontSize:11,color:C.textLight,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.title||""}</div>
                 </div>
+                <button onClick={function(){toggleAgent(uid);}} title="Remove from rotation order" style={{background:"none",border:"none",color:"#DC2626",fontSize:16,cursor:"pointer",padding:"2px 6px",lineHeight:1}}>×</button>
               </div>;
             })}
           </div>
-        </div>;
-      })()}
+          <div style={{fontSize:11,color:C.textLight,marginTop:4}}>Drag to reorder. Auto-rotation walks this list top → bottom, skipping any agent who has already handled the lead. If all agents have handled it, the lead stops rotating.</div>
+        </div>
 
-      {/* Rotation Durations */}
-      <div style={{marginBottom:13,padding:"14px 16px",background:"#F8FAFC",borderRadius:12,border:"1px solid #E8ECF1"}}>
-        <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:12}}>⚙️ Auto-Rotation Durations</div>
-        {[
-          {label:"No Answer — times before rotation",val:rotNoAnswerCount,set:setRotNoAnswerCount,unit:"times"},
-          {label:"No Answer — wait after last attempt",val:rotNoAnswerHours,set:setRotNoAnswerHours,unit:"hrs"},
-          {label:"Not Interested — return after",val:rotNotIntDays,set:setRotNotIntDays,unit:"days"},
-          {label:"No Contact — rotate after",val:rotNoActDays,set:setRotNoActDays,unit:"days"},
-          {label:"CallBack overdue — rotate after",val:rotCbDays,set:setRotCbDays,unit:"days"},
-          {label:"Potential/HotCase/Meeting no action — rotate after",val:rotHotDays,set:setRotHotDays,unit:"days"},
-        ].map(function(row){return <div key={row.label} style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9,gap:10}}>
-          <span style={{fontSize:12,color:C.text,flex:1}}>{row.label}</span>
-          <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
-            <input type="number" min={1} max={30} value={row.val} onChange={function(e){row.set(Number(e.target.value));}} style={rotInpStyle}/>
-            <span style={{fontSize:11,color:C.textLight}}>{row.unit}</span>
-          </div>
-        </div>;})}
-      </div>
+        {/* Remaining active agents not yet in the order — one-click add */}
+        {(function(){
+          var remaining = salesAgentsForSetting.filter(function(u){return !reassignAgents.includes(String(gid(u)));});
+          if (!remaining.length) return null;
+          return <div style={{marginBottom:13}}>
+            <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>➕ Add agent to rotation order</label>
+            <div style={{border:"1px dashed #E2E8F0",borderRadius:10,padding:"8px 8px",background:"#FAFBFC",maxHeight:160,overflowY:"auto"}}>
+              {remaining.map(function(u){
+                var uid = String(gid(u));
+                return <div key={uid} onClick={function(){toggleAgent(uid);}} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 8px",cursor:"pointer",borderRadius:7,marginBottom:2}}>
+                  <span style={{fontSize:16,color:C.accent,fontWeight:700,lineHeight:1}}>+</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:500,color:"#334155",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</div>
+                    <div style={{fontSize:11,color:C.textLight,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.title||""}</div>
+                  </div>
+                </div>;
+              })}
+            </div>
+          </div>;
+        })()}
 
-      <Inp label={t.language} type="select" value={p.lang} onChange={function(e){p.setLang(e.target.value);}} options={[{value:"ar",label:"Arabic"},{value:"en",label:"English"}]}/>
+        {/* Rotation Durations */}
+        <div style={{marginBottom:13,padding:"14px 16px",background:"#F8FAFC",borderRadius:12,border:"1px solid #E8ECF1"}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:12}}>⚙️ Auto-Rotation Durations</div>
+          {[
+            {label:"No Answer — times before rotation",val:rotNoAnswerCount,set:setRotNoAnswerCount,unit:"times"},
+            {label:"No Answer — wait after last attempt",val:rotNoAnswerHours,set:setRotNoAnswerHours,unit:"hrs"},
+            {label:"Not Interested — return after",val:rotNotIntDays,set:setRotNotIntDays,unit:"days"},
+            {label:"No Contact — rotate after",val:rotNoActDays,set:setRotNoActDays,unit:"days"},
+            {label:"CallBack overdue — rotate after",val:rotCbDays,set:setRotCbDays,unit:"days"},
+            {label:"Potential/HotCase/Meeting no action — rotate after",val:rotHotDays,set:setRotHotDays,unit:"days"},
+          ].map(function(row){return <div key={row.label} style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9,gap:10}}>
+            <span style={{fontSize:12,color:C.text,flex:1}}>{row.label}</span>
+            <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+              <input type="number" min={1} max={30} value={row.val} onChange={function(e){row.set(Number(e.target.value));}} style={rotInpStyle}/>
+              <span style={{fontSize:11,color:C.textLight}}>{row.unit}</span>
+            </div>
+          </div>;})}
+        </div>
+      </div>}
+
+      {activeTab==="team"        &&placeholder("👥","Team & Roles","Hierarchy and permissions — coming soon.")}
+      {activeTab==="integrations"&&placeholder("🔌","Integrations","Google Sheets, Facebook Lead Ads, WhatsApp — coming soon.")}
+      {activeTab==="rules"       &&placeholder("📋","Business Rules","Toggle-based rules — coming soon.")}
+      {activeTab==="audit"       &&placeholder("📜","Audit Log","Settings change history — coming soon.")}
+
       {saved&&<div style={{marginBottom:12,padding:"10px 14px",background:"#DCFCE7",borderRadius:10,color:"#15803D",fontSize:13,fontWeight:600}}>✅ Saved successfully</div>}
       {saveError&&<div style={{marginBottom:12,padding:"10px 14px",background:"#FEE2E2",borderRadius:10,color:"#B91C1C",fontSize:13,fontWeight:600}}>❌ {saveError}</div>}
-      <Btn onClick={doSave} disabled={loading}>{t.save}</Btn>
+      {showSave&&<Btn onClick={doSave} disabled={loading}>{t.save}</Btn>}
     </Card>
   </div>;
 };
