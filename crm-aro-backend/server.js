@@ -538,21 +538,87 @@ app.get("/api/me", auth, async function(req, res) {
 var ROTATION_DEFAULTS = {
   reassignAgents: [],
   naCount: 2, naHours: 1,
-  niDays: 1, noActDays: 2, cbDays: 1, hotDays: 2
+  niDays: 1, noActDays: 2, cbDays: 1, hotDays: 2,
+  tiers: {
+    tier1: { agents: [], lastIdx: -1 },
+    tier2: { agents: [], lastIdx: -1 },
+    tier3: { agents: [], lastIdx: -1 }
+  },
+  autoRotationEnabled: true,
+  autoRotationPausedUntil: null,
+  workingHours: {
+    days: ["Sun","Mon","Tue","Wed","Thu"],
+    from: "10:00",
+    to:   "19:00",
+    afterHoursBehavior: "queue"
+  },
+  smartSkipRules: {
+    skipOnVacation:         true,
+    skipIfOfflineHours:     4,
+    respectWorkingHours:    true,
+    skipIfAlreadyHandled:   true,
+    haltAfterNotInterested: 3,
+    haltWhenAllHandled:     true
+  },
+  rotationStopAfterDays: 45
 };
 async function getRotationSettings() {
   var doc = await AppSetting.findOne({ key: "rotation" }).lean();
   var v = (doc && doc.value) || {};
+  var D = ROTATION_DEFAULTS;
+
+  // Lazy, idempotent migration: seed tiers from the legacy flat reassignAgents list.
+  var tiers = v.tiers;
+  if (!tiers || !tiers.tier1) {
+    var legacyList = Array.isArray(v.reassignAgents) ? v.reassignAgents.map(String) : [];
+    var legacyIdx  = (typeof v.lastAssignedIdx === "number") ? v.lastAssignedIdx : -1;
+    tiers = {
+      tier1: { agents: legacyList, lastIdx: legacyIdx },
+      tier2: { agents: [],         lastIdx: -1 },
+      tier3: { agents: [],         lastIdx: -1 }
+    };
+  } else {
+    ["tier1","tier2","tier3"].forEach(function(k){
+      if (!tiers[k] || typeof tiers[k] !== "object") tiers[k] = { agents: [], lastIdx: -1 };
+      tiers[k].agents  = Array.isArray(tiers[k].agents) ? tiers[k].agents.map(String) : [];
+      tiers[k].lastIdx = (typeof tiers[k].lastIdx === "number") ? tiers[k].lastIdx : -1;
+    });
+  }
+
+  // Flat list derived from tiers — kept for read-compat with older clients.
+  var flat = [].concat(tiers.tier1.agents, tiers.tier2.agents, tiers.tier3.agents);
+
   return {
-    reassignAgents: Array.isArray(v.reassignAgents) ? v.reassignAgents.map(String) : ROTATION_DEFAULTS.reassignAgents,
-    naCount:   Number(v.naCount   != null ? v.naCount   : ROTATION_DEFAULTS.naCount),
-    naHours:   Number(v.naHours   != null ? v.naHours   : ROTATION_DEFAULTS.naHours),
-    niDays:    Number(v.niDays    != null ? v.niDays    : ROTATION_DEFAULTS.niDays),
-    noActDays: Number(v.noActDays != null ? v.noActDays : ROTATION_DEFAULTS.noActDays),
-    cbDays:    Number(v.cbDays    != null ? v.cbDays    : ROTATION_DEFAULTS.cbDays),
-    hotDays:   Number(v.hotDays   != null ? v.hotDays   : ROTATION_DEFAULTS.hotDays),
-    lastAssignedIdx: (typeof v.lastAssignedIdx === "number") ? v.lastAssignedIdx : -1
+    reassignAgents: flat,
+    naCount:   Number(v.naCount   != null ? v.naCount   : D.naCount),
+    naHours:   Number(v.naHours   != null ? v.naHours   : D.naHours),
+    niDays:    Number(v.niDays    != null ? v.niDays    : D.niDays),
+    noActDays: Number(v.noActDays != null ? v.noActDays : D.noActDays),
+    cbDays:    Number(v.cbDays    != null ? v.cbDays    : D.cbDays),
+    hotDays:   Number(v.hotDays   != null ? v.hotDays   : D.hotDays),
+    lastAssignedIdx: (typeof v.lastAssignedIdx === "number") ? v.lastAssignedIdx : -1,
+    tiers: tiers,
+    autoRotationEnabled:     v.autoRotationEnabled !== false,
+    autoRotationPausedUntil: v.autoRotationPausedUntil || null,
+    workingHours:            Object.assign({}, D.workingHours, v.workingHours || {}),
+    smartSkipRules:          Object.assign({}, D.smartSkipRules, v.smartSkipRules || {}),
+    rotationStopAfterDays:   Number(v.rotationStopAfterDays != null ? v.rotationStopAfterDays : D.rotationStopAfterDays)
   };
+}
+
+// Is "now" within the company working-hours window? Days: Sun..Sat (3-letter).
+// Empty from/to = always open; overnight windows (22:00→06:00) supported.
+function isWithinWorkingHours(wh, d) {
+  if (!wh) return true;
+  var dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  var today = dayNames[d.getDay()];
+  if (Array.isArray(wh.days) && wh.days.length && wh.days.indexOf(today) < 0) return false;
+  var toMin = function(hhmm){ var p = String(hhmm||"").split(":"); return (Number(p[0])||0)*60 + (Number(p[1])||0); };
+  var cur = d.getHours()*60 + d.getMinutes();
+  var from = toMin(wh.from), to = toMin(wh.to);
+  if (from === 0 && to === 0) return true;
+  if (from <= to) return cur >= from && cur <= to;
+  return cur >= from || cur <= to;
 }
 
 // Any authenticated user can READ rotation settings — the rotation loop runs
@@ -570,35 +636,60 @@ app.put("/api/settings/rotation", auth, async function(req, res) {
   try {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Admin only" });
     var b = req.body || {};
+    var D = ROTATION_DEFAULTS;
     var clamp = function(n, def, min, max){
-      var x = Number(n);
-      if (!isFinite(x)) x = def;
-      if (x < min) x = min;
-      if (x > max) x = max;
-      return x;
+      var x = Number(n); if (!isFinite(x)) x = def;
+      if (x < min) x = min; if (x > max) x = max; return x;
     };
-    var reassignAgents = Array.isArray(b.reassignAgents) ? b.reassignAgents.map(String) : [];
-    // Preserve the global round-robin pointer across saves; clamp it so a
-    // shortened list can't leave the pointer past the end. New/empty list → -1
-    // (no assignment yet — next rotation starts at index 0).
+    var toIdArr = function(a){ return Array.isArray(a) ? a.map(String) : []; };
+
     var existing = await AppSetting.findOne({ key: "rotation" }).lean();
-    var prevIdx = (existing && existing.value && typeof existing.value.lastAssignedIdx === "number") ? existing.value.lastAssignedIdx : -1;
-    var clampedIdx = reassignAgents.length > 0 ? Math.max(-1, Math.min(prevIdx, reassignAgents.length - 1)) : -1;
+    var prevValue = (existing && existing.value) || {};
+    var prevTiers = (prevValue.tiers && prevValue.tiers.tier1) ? prevValue.tiers : null;
+
+    // Tiers: accept new {tiers:{tier1,tier2,tier3}} shape; fall back to legacy reassignAgents → tier1.
+    var tiers;
+    if (b.tiers && b.tiers.tier1) {
+      tiers = {
+        tier1: { agents: toIdArr(b.tiers.tier1.agents), lastIdx: prevTiers ? prevTiers.tier1.lastIdx : -1 },
+        tier2: { agents: toIdArr(b.tiers.tier2 && b.tiers.tier2.agents), lastIdx: prevTiers ? prevTiers.tier2.lastIdx : -1 },
+        tier3: { agents: toIdArr(b.tiers.tier3 && b.tiers.tier3.agents), lastIdx: prevTiers ? prevTiers.tier3.lastIdx : -1 }
+      };
+    } else {
+      tiers = {
+        tier1: { agents: toIdArr(b.reassignAgents), lastIdx: prevTiers ? prevTiers.tier1.lastIdx : -1 },
+        tier2: { agents: prevTiers ? prevTiers.tier2.agents : [], lastIdx: prevTiers ? prevTiers.tier2.lastIdx : -1 },
+        tier3: { agents: prevTiers ? prevTiers.tier3.agents : [], lastIdx: prevTiers ? prevTiers.tier3.lastIdx : -1 }
+      };
+    }
+    // Clamp per-tier pointers so a shortened list can't leave a pointer past its end.
+    ["tier1","tier2","tier3"].forEach(function(k){
+      var t = tiers[k];
+      t.lastIdx = t.agents.length > 0 ? Math.max(-1, Math.min(t.lastIdx, t.agents.length - 1)) : -1;
+    });
+
+    var wh = Object.assign({}, D.workingHours, prevValue.workingHours || {}, b.workingHours || {});
+    var sr = Object.assign({}, D.smartSkipRules, prevValue.smartSkipRules || {}, b.smartSkipRules || {});
+    sr.skipIfOfflineHours     = clamp(sr.skipIfOfflineHours,     D.smartSkipRules.skipIfOfflineHours,     0, 168);
+    sr.haltAfterNotInterested = clamp(sr.haltAfterNotInterested, D.smartSkipRules.haltAfterNotInterested, 0, 20);
+
     var value = {
-      reassignAgents: reassignAgents,
-      naCount:   clamp(b.naCount,   ROTATION_DEFAULTS.naCount,   1, 100),
-      naHours:   clamp(b.naHours,   ROTATION_DEFAULTS.naHours,   1, 720),
-      niDays:    clamp(b.niDays,    ROTATION_DEFAULTS.niDays,    1, 365),
-      noActDays: clamp(b.noActDays, ROTATION_DEFAULTS.noActDays, 1, 365),
-      cbDays:    clamp(b.cbDays,    ROTATION_DEFAULTS.cbDays,    1, 365),
-      hotDays:   clamp(b.hotDays,   ROTATION_DEFAULTS.hotDays,   1, 365),
-      lastAssignedIdx: clampedIdx
+      reassignAgents: [].concat(tiers.tier1.agents, tiers.tier2.agents, tiers.tier3.agents),
+      naCount:   clamp(b.naCount,   D.naCount,   1, 100),
+      naHours:   clamp(b.naHours,   D.naHours,   1, 720),
+      niDays:    clamp(b.niDays,    D.niDays,    1, 365),
+      noActDays: clamp(b.noActDays, D.noActDays, 1, 365),
+      cbDays:    clamp(b.cbDays,    D.cbDays,    1, 365),
+      hotDays:   clamp(b.hotDays,   D.hotDays,   1, 365),
+      lastAssignedIdx: tiers.tier1.lastIdx,
+      tiers: tiers,
+      autoRotationEnabled:     b.autoRotationEnabled !== false,
+      autoRotationPausedUntil: b.autoRotationPausedUntil ? new Date(b.autoRotationPausedUntil) : null,
+      workingHours:            wh,
+      smartSkipRules:          sr,
+      rotationStopAfterDays:   clamp(b.rotationStopAfterDays, D.rotationStopAfterDays, 1, 3650)
     };
-    await AppSetting.findOneAndUpdate(
-      { key: "rotation" },
-      { $set: { value: value } },
-      { upsert: true, new: true }
-    );
+    await AppSetting.findOneAndUpdate({ key: "rotation" }, { $set: { value: value } }, { upsert: true, new: true });
     try { broadcast("settings_updated", { key: "rotation", value: value }); } catch(e) {}
     res.json(value);
   } catch (e) {
@@ -2042,16 +2133,22 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     }
     if (lead.globalStatus === "eoi")      return res.status(400).json({ error: "eoi",      message: "Rotation blocked — lead is EOI" });
     if (lead.globalStatus === "donedeal") return res.status(400).json({ error: "donedeal", message: "Rotation blocked — lead is Done Deal" });
-    if (lead.createdAt && (new Date() - new Date(lead.createdAt)) > 30*24*60*60*1000) {
-      return res.status(400).json({ error: "expired", message: "Rotation blocked — lead older than 30 days" });
+
+    // Load rotation settings once (normalized + migrated). Master switch and
+    // pause window gate everything below — nothing rotates while disabled.
+    var settings = await getRotationSettings();
+    if (settings.autoRotationEnabled === false) {
+      return res.status(409).json({ error: "rotation_disabled", message: "Auto-rotation is turned off" });
+    }
+    if (settings.autoRotationPausedUntil && new Date(settings.autoRotationPausedUntil) > new Date()) {
+      return res.status(409).json({ error: "rotation_paused", message: "Auto-rotation is paused until " + settings.autoRotationPausedUntil });
     }
 
-    // Fetch the ordered rotation list.
-    var settingDoc = await AppSetting.findOne({ key: "rotation" }).lean();
-    var orderedIds = (settingDoc && settingDoc.value && Array.isArray(settingDoc.value.reassignAgents))
-      ? settingDoc.value.reassignAgents.map(String)
-      : [];
-    if (!orderedIds.length) return res.status(409).json({ error: "no_rotation_order", message: "No rotation order configured" });
+    // Configurable age cutoff (was hardcoded 30 days, spec Rule 5 says 45).
+    var stopDays = Number(settings.rotationStopAfterDays) || 45;
+    if (lead.createdAt && (new Date() - new Date(lead.createdAt)) > stopDays*24*60*60*1000) {
+      return res.status(400).json({ error: "stopped_age", message: "Rotation blocked — lead older than " + stopDays + " days" });
+    }
 
     // Build the exclusion set: current agent + every assignment this lead has ever carried + previousAgentIds.
     var exclusion = new Set();
@@ -2062,36 +2159,51 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     });
     (lead.previousAgentIds || []).forEach(function(id){ if (id) exclusion.add(String(id)); });
 
-    // Load the ordered candidates (only active + rotation-eligible roles) in ONE query.
-    var candidateDocs = await User.find({ _id: { $in: orderedIds } }).select("_id name title role active").lean();
+    // All candidate ids across tiers (one query).
+    var allTierIds = [].concat(settings.tiers.tier1.agents, settings.tiers.tier2.agents, settings.tiers.tier3.agents);
+    if (!allTierIds.length) return res.status(409).json({ error: "no_rotation_order", message: "No rotation order configured" });
+    var candidateDocs = await User.find({ _id: { $in: allTierIds } }).select("_id name title role active lastSeen").lean();
     var byId = {};
     candidateDocs.forEach(function(u){ byId[String(u._id)] = u; });
 
-    // Global round-robin pointer — persists in AppSetting.rotation.lastAssignedIdx.
-    // lastAssignedIdx = index of the agent who received the MOST RECENT rotation.
-    // We start scanning at (lastAssignedIdx + 1) % N so each call picks up where
-    // the previous one left off. Bulk rotations thus fan out across agents in
-    // order instead of piling onto index 0. The pointer is only advanced AFTER
-    // a successful assignment; "exhausted" calls leave it untouched.
-    var lastIdx = (settingDoc && settingDoc.value && typeof settingDoc.value.lastAssignedIdx === "number")
-      ? settingDoc.value.lastAssignedIdx
-      : -1;
-    var startAt = ((lastIdx + 1) % orderedIds.length + orderedIds.length) % orderedIds.length;
-    var foundIdx = -1;
-    var targetUser = null;
-    for (var step = 0; step < orderedIds.length; step++) {
-      var idx = (startAt + step) % orderedIds.length;
-      var uid = String(orderedIds[idx]);
-      if (exclusion.has(uid)) continue;                 // lead already handled by this agent — skip (don't advance the global pointer)
-      var u = byId[uid];
-      if (!u) continue;                                 // removed from users
-      if (u.active === false) continue;                 // skip inactive
-      if (["sales","team_leader","manager"].indexOf(u.role) < 0) continue;
-      foundIdx = idx;
-      targetUser = u;
-      break;
-    }
-    if (!targetUser) return res.status(409).json({ error: "exhausted", message: "All agents in the rotation order have already handled this lead" });
+    // Tier cascade: try Tier 1, then 2, then 3. Each tier has its own
+    // round-robin pointer. Skip rules are applied per-candidate; "skipped"
+    // agents leave the pointer untouched.
+    var sr = settings.smartSkipRules || {};
+    var nowTs = new Date();
+    var withinHours = isWithinWorkingHours(settings.workingHours, nowTs);
+    var tryTier = function(tier){
+      var ids = Array.isArray(tier.agents) ? tier.agents : [];
+      var n = ids.length;
+      if (!n) return null;
+      var start = ((tier.lastIdx + 1) % n + n) % n;
+      for (var step = 0; step < n; step++) {
+        var idx = (start + step) % n;
+        var uid = String(ids[idx]);
+        if (sr.skipIfAlreadyHandled !== false && exclusion.has(uid)) continue;
+        var u = byId[uid];
+        if (!u || u.active === false) continue;
+        if (["sales","team_leader"].indexOf(u.role) < 0) continue; // managers/directors excluded per spec
+        if (Number(sr.skipIfOfflineHours) > 0 && u.lastSeen) {
+          var offH = (nowTs.getTime() - new Date(u.lastSeen).getTime()) / 3600000;
+          if (offH > Number(sr.skipIfOfflineHours)) continue;
+        }
+        if (sr.respectWorkingHours && !withinHours) continue;
+        // skipOnVacation: no-op until vacation collection exists (Team & Roles tab)
+        return { user: u, idx: idx };
+      }
+      return null;
+    };
+    var pick = null;
+    var tierKey = null;
+    ["tier1","tier2","tier3"].some(function(k){
+      var got = tryTier(settings.tiers[k]);
+      if (got) { pick = got; tierKey = k; return true; }
+      return false;
+    });
+    if (!pick) return res.status(409).json({ error: "exhausted", message: "No eligible agent in any tier" });
+    var targetUser = pick.user;
+    var foundIdx   = pick.idx;
 
     var targetAgentId = String(targetUser._id);
 
@@ -2127,7 +2239,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
         targetUser.name
       ));
       // Advance the global pointer so the next rotation picks up after this agent.
-      try { await AppSetting.updateOne({ key: "rotation" }, { $set: { "value.lastAssignedIdx": foundIdx } }); } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
+      try { var pUpd = {}; pUpd["value.tiers." + tierKey + ".lastIdx"] = foundIdx; if (tierKey === "tier1") pUpd["value.lastAssignedIdx"] = foundIdx; await AppSetting.updateOne({ key: "rotation" }, { $set: pUpd }); } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
       var firstPopulated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
       return res.json({ success: true, firstAssignment: true, targetAgentId: targetAgentId, lead: firstPopulated });
     }
@@ -2156,7 +2268,8 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     var outgoingStatus = outgoingAssignment ? String(outgoingAssignment.status||"") : String(lead.status||"");
     var prevStreak = Number(lead.notInterestedStreak||0);
     var nextStreak = (outgoingStatus === "NotInterested" || outgoingStatus === "Not Interested") ? (prevStreak + 1) : 0;
-    if (nextStreak >= 3) {
+    var haltThreshold = Number(settings.smartSkipRules && settings.smartSkipRules.haltAfterNotInterested) || 0;
+    if (haltThreshold > 0 && nextStreak >= haltThreshold) {
       // Flip the kill switch; do NOT rotate.
       var stopResult = await Lead.findOneAndUpdate(
         { _id: req.params.id, agentId: oldAgentId, rotationStopped: { $ne: true } },
@@ -2220,7 +2333,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     ));
     // Advance the global round-robin pointer — next rotation (in this batch or
     // any future one) resumes from (foundIdx + 1) % N so assignments fan out.
-    try { await AppSetting.updateOne({ key: "rotation" }, { $set: { "value.lastAssignedIdx": foundIdx } }); } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
+    try { var pUpd2 = {}; pUpd2["value.tiers." + tierKey + ".lastIdx"] = foundIdx; if (tierKey === "tier1") pUpd2["value.lastAssignedIdx"] = foundIdx; await AppSetting.updateOne({ key: "rotation" }, { $set: pUpd2 }); } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
     var updated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json({ success: true, targetAgentId: targetAgentId, lead: updated });
   } catch(e) {

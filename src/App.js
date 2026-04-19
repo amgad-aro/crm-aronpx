@@ -6466,19 +6466,39 @@ var ProjectsPage = function(p) {
 var SettingsPage = function(p) {
   var t=p.t;
   var getSaved = function(k,def){ try{ return localStorage.getItem('crm_set_'+k)||def; }catch(e){return def;} };
-  var salesAgentsForSetting = p.users ? p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;}) : [];
+  // Rotation eligibility (spec v3): only sales + team_leader receive leads.
+  var salesAgentsForSetting = p.users ? p.users.filter(function(u){return (u.role==="sales"||u.role==="team_leader")&&u.active;}) : [];
   var [company,setCompany]=useState(function(){return getSaved('company','شركة ARO العقارية');});
   var [em,setEm]=useState(function(){return getSaved('email','admin@aro.com');});
   var [ph,setPh]=useState(function(){return getSaved('phone','01012345678');});
   // Rotation settings live in MongoDB — single source of truth for every user.
   // Start with empty/defaults; useEffect below hydrates from /api/settings/rotation.
-  var [reassignAgents,setReassignAgents]=useState([]);
+  var [tier1,setTier1]=useState([]);
+  var [tier2,setTier2]=useState([]);
+  var [tier3,setTier3]=useState([]);
+  var [tier1LastIdx,setTier1LastIdx]=useState(-1);
   var [rotNoAnswerCount,setRotNoAnswerCount]=useState(2);
   var [rotNoAnswerHours,setRotNoAnswerHours]=useState(1);
   var [rotNotIntDays,setRotNotIntDays]=useState(1);
   var [rotNoActDays,setRotNoActDays]=useState(2);
   var [rotCbDays,setRotCbDays]=useState(1);
   var [rotHotDays,setRotHotDays]=useState(2);
+  var [rotStopDays,setRotStopDays]=useState(45);
+  // Master switch + pause
+  var [autoRotEnabled,setAutoRotEnabled]=useState(true);
+  var [pausedUntil,setPausedUntil]=useState(null);
+  // Working hours (company default)
+  var [whDays,setWhDays]=useState(["Sun","Mon","Tue","Wed","Thu"]);
+  var [whFrom,setWhFrom]=useState("10:00");
+  var [whTo,setWhTo]=useState("19:00");
+  var [whAfter,setWhAfter]=useState("queue");
+  // Smart skip rules
+  var [srVac,setSrVac]=useState(true);
+  var [srOffH,setSrOffH]=useState(4);
+  var [srHours,setSrHours]=useState(true);
+  var [srHandled,setSrHandled]=useState(true);
+  var [srHaltNI,setSrHaltNI]=useState(3);
+  var [srHaltAll,setSrHaltAll]=useState(true);
   var [saved,setSaved]=useState(false);
   var [saveError,setSaveError]=useState("");
   var [loading,setLoading]=useState(true);
@@ -6488,34 +6508,64 @@ var SettingsPage = function(p) {
     var cancelled=false;
     apiFetch("/api/settings/rotation","GET",null,p.token).then(function(s){
       if(cancelled||!s) return;
-      setReassignAgents(Array.isArray(s.reassignAgents)?s.reassignAgents.map(String):[]);
+      var t=(s&&s.tiers)||{};
+      var g=function(k){return (t[k]&&Array.isArray(t[k].agents))?t[k].agents.map(String):[];};
+      setTier1(g("tier1"));
+      setTier2(g("tier2"));
+      setTier3(g("tier3"));
+      setTier1LastIdx((t.tier1&&typeof t.tier1.lastIdx==="number")?t.tier1.lastIdx:-1);
       setRotNoAnswerCount(Number(s.naCount)||2);
       setRotNoAnswerHours(Number(s.naHours)||1);
       setRotNotIntDays(Number(s.niDays)||1);
       setRotNoActDays(Number(s.noActDays)||2);
       setRotCbDays(Number(s.cbDays)||1);
       setRotHotDays(Number(s.hotDays)||2);
+      setRotStopDays(Number(s.rotationStopAfterDays)||45);
+      setAutoRotEnabled(s.autoRotationEnabled!==false);
+      setPausedUntil(s.autoRotationPausedUntil||null);
+      var w=s.workingHours||{};
+      if(Array.isArray(w.days)) setWhDays(w.days);
+      if(w.from) setWhFrom(w.from);
+      if(w.to) setWhTo(w.to);
+      if(w.afterHoursBehavior) setWhAfter(w.afterHoursBehavior);
+      var sr=s.smartSkipRules||{};
+      if(typeof sr.skipOnVacation==="boolean") setSrVac(sr.skipOnVacation);
+      if(sr.skipIfOfflineHours!=null) setSrOffH(Number(sr.skipIfOfflineHours)||0);
+      if(typeof sr.respectWorkingHours==="boolean") setSrHours(sr.respectWorkingHours);
+      if(typeof sr.skipIfAlreadyHandled==="boolean") setSrHandled(sr.skipIfAlreadyHandled);
+      if(sr.haltAfterNotInterested!=null) setSrHaltNI(Number(sr.haltAfterNotInterested)||0);
+      if(typeof sr.haltWhenAllHandled==="boolean") setSrHaltAll(sr.haltWhenAllHandled);
     }).catch(function(){}).finally(function(){ if(!cancelled) setLoading(false); });
     return function(){ cancelled=true; };
   },[p.token]);
 
-  var toggleAgent=function(uid){
-    setReassignAgents(function(prev){
-      // When adding, append to the end so the admin's drag order stays stable.
-      return prev.includes(uid) ? prev.filter(function(x){return x!==uid;}) : prev.concat([uid]);
-    });
+  // Tier-aware drag state: source and destination each tracked with {tier,idx}.
+  var [dragFrom,setDragFrom]=useState(null);
+  var [dropOn,setDropOn]=useState(null);
+  var tierArrays=function(){return {tier1:tier1.slice(),tier2:tier2.slice(),tier3:tier3.slice()};};
+  var writeTiers=function(a){setTier1(a.tier1);setTier2(a.tier2);setTier3(a.tier3);};
+  // Atomic move across tiers: splice from source, insert at destination index.
+  var moveAgent=function(from,to){
+    if(!from||!to) return;
+    if(from.tier===to.tier&&from.idx===to.idx) return;
+    var arrs=tierArrays();
+    var src=arrs[from.tier], dst=arrs[to.tier];
+    var moved=src.splice(from.idx,1)[0];
+    if(!moved) return;
+    var effIdx=(from.tier===to.tier&&from.idx<to.idx)?to.idx-1:to.idx;
+    dst.splice(Math.max(0,Math.min(effIdx,dst.length)),0,moved);
+    writeTiers(arrs);
   };
-  // Drag-and-drop state for the ordered rotation list.
-  var [dragIdx, setDragIdx] = useState(-1);
-  var [dropIdx, setDropIdx] = useState(-1);
-  var reorderAgent=function(from, to){
-    if (from===to || from<0 || to<0) return;
-    setReassignAgents(function(prev){
-      var next = prev.slice();
-      var [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next;
-    });
+  var appendToTier=function(uid,tierKey){
+    var arrs=tierArrays();
+    ["tier1","tier2","tier3"].forEach(function(k){arrs[k]=arrs[k].filter(function(x){return x!==uid;});});
+    arrs[tierKey].push(uid);
+    writeTiers(arrs);
+  };
+  var removeFromAllTiers=function(uid){
+    var arrs=tierArrays();
+    ["tier1","tier2","tier3"].forEach(function(k){arrs[k]=arrs[k].filter(function(x){return x!==uid;});});
+    writeTiers(arrs);
   };
   var doSave=async function(){
     setSaveError("");
@@ -6526,13 +6576,29 @@ var SettingsPage = function(p) {
     }catch(e){}
     try{
       await apiFetch("/api/settings/rotation","PUT",{
-        reassignAgents: reassignAgents,
+        tiers: {
+          tier1: { agents: tier1 },
+          tier2: { agents: tier2 },
+          tier3: { agents: tier3 }
+        },
         naCount: Number(rotNoAnswerCount),
         naHours: Number(rotNoAnswerHours),
         niDays:  Number(rotNotIntDays),
         noActDays: Number(rotNoActDays),
         cbDays:  Number(rotCbDays),
-        hotDays: Number(rotHotDays)
+        hotDays: Number(rotHotDays),
+        rotationStopAfterDays: Number(rotStopDays),
+        autoRotationEnabled: autoRotEnabled,
+        autoRotationPausedUntil: pausedUntil,
+        workingHours: { days: whDays, from: whFrom, to: whTo, afterHoursBehavior: whAfter },
+        smartSkipRules: {
+          skipOnVacation:         srVac,
+          skipIfOfflineHours:     Number(srOffH),
+          respectWorkingHours:    srHours,
+          skipIfAlreadyHandled:   srHandled,
+          haltAfterNotInterested: Number(srHaltNI),
+          haltWhenAllHandled:     srHaltAll
+        }
       },p.token,p.csrfToken);
       setSaved(true); setTimeout(function(){setSaved(false);},2500);
     }catch(e){
@@ -6579,48 +6645,128 @@ var SettingsPage = function(p) {
       </div>}
 
       {activeTab==="rotation"&&<div>
-        {/* Auto-Rotation Order — priority-ordered list the backend walks top-to-bottom
-            when auto-rotating a lead. Drag to reorder; checkbox on the right-side roster
-            to add/remove an agent. An agent never receives a lead they've previously
-            handled — if all in-list agents have already had it, rotation stops. */}
-        <div style={{marginBottom:13}}>
-          <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>🔢 Auto-Rotation Order</label>
-          <div style={{border:"1px solid #E2E8F0",borderRadius:10,padding:"8px 8px",background:"#fff",maxHeight:260,overflowY:"auto"}}>
-            {reassignAgents.length===0 ? <div style={{fontSize:12,color:C.textLight,padding:"10px 4px"}}>No agents in the rotation order yet. Add agents from the list below.</div> : reassignAgents.map(function(uid, idx){
-              var u = (p.users||[]).find(function(x){return String(gid(x))===String(uid);});
-              if (!u) return null;
-              var isDragTarget = dropIdx===idx && dragIdx!==idx;
-              return <div key={uid}
-                draggable={true}
-                onDragStart={function(e){ setDragIdx(idx); try{e.dataTransfer.effectAllowed="move";}catch(_){} }}
-                onDragOver={function(e){ e.preventDefault(); if (dropIdx!==idx) setDropIdx(idx); try{e.dataTransfer.dropEffect="move";}catch(_){} }}
-                onDragLeave={function(){ if (dropIdx===idx) setDropIdx(-1); }}
-                onDrop={function(e){ e.preventDefault(); reorderAgent(dragIdx, idx); setDragIdx(-1); setDropIdx(-1); }}
-                onDragEnd={function(){ setDragIdx(-1); setDropIdx(-1); }}
-                style={{display:"flex",alignItems:"center",gap:10,padding:"10px 10px",borderRadius:8,background:dragIdx===idx?"#F1F5F9":isDragTarget?C.accent+"14":"#fff",border:"1px solid",borderColor:isDragTarget?C.accent:"#EEF2F7",marginBottom:4,cursor:"grab",userSelect:"none"}}>
-                <span style={{fontSize:14,color:"#94A3B8",lineHeight:1,letterSpacing:-1}}>⋮⋮</span>
-                <div style={{width:24,height:24,borderRadius:"50%",background:C.accent+"20",color:C.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{idx+1}</div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</div>
-                  <div style={{fontSize:11,color:C.textLight,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.title||""}</div>
-                </div>
-                <button onClick={function(){toggleAgent(uid);}} title="Remove from rotation order" style={{background:"none",border:"none",color:"#DC2626",fontSize:16,cursor:"pointer",padding:"2px 6px",lineHeight:1}}>×</button>
-              </div>;
-            })}
-          </div>
-          <div style={{fontSize:11,color:C.textLight,marginTop:4}}>Drag to reorder. Auto-rotation walks this list top → bottom, skipping any agent who has already handled the lead. If all agents have handled it, the lead stops rotating.</div>
-        </div>
-
-        {/* Remaining active agents not yet in the order — one-click add */}
+        {/* Master rotation card — status + Pause 2h + Stop */}
         {(function(){
-          var remaining = salesAgentsForSetting.filter(function(u){return !reassignAgents.includes(String(gid(u)));});
-          if (!remaining.length) return null;
-          return <div style={{marginBottom:13}}>
-            <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>➕ Add agent to rotation order</label>
+          var pausedActive = pausedUntil && new Date(pausedUntil) > new Date();
+          var on = autoRotEnabled && !pausedActive;
+          var statusTxt = !autoRotEnabled ? "Auto-Rotation is OFF"
+                        : pausedActive ? ("Paused until " + new Date(pausedUntil).toLocaleString("en-GB",{hour:"2-digit",minute:"2-digit",day:"2-digit",month:"short"}))
+                        : "Auto-Rotation is active";
+          var subTxt = !autoRotEnabled ? "Leads will not auto-rotate until turned back on."
+                     : pausedActive ? "All rotation triggers are suppressed until the pause expires."
+                     : ((tier1.length+tier2.length+tier3.length) + " agents across 3 tiers");
+          return <div style={{
+            background: on?"#EAF6F0":"#FCEBEB",
+            border:"0.5px solid "+(on?"rgba(15,110,86,0.3)":"rgba(163,45,45,0.3)"),
+            borderRadius:12, padding:"14px 16px", marginBottom:14,
+            display:"flex", justifyContent:"space-between", alignItems:"center", gap:12
+          }}>
+            <div style={{display:"flex",alignItems:"center",gap:12,flex:1,minWidth:0}}>
+              <div onClick={function(){setAutoRotEnabled(!autoRotEnabled); if(!autoRotEnabled) setPausedUntil(null);}}
+                title="Toggle auto-rotation"
+                style={{width:40,height:22,borderRadius:11,cursor:"pointer",position:"relative",flexShrink:0,
+                  background:autoRotEnabled?"#0F6E56":"#94A3B8",transition:"background 0.15s"}}>
+                <span style={{display:"block",width:16,height:16,background:"#fff",borderRadius:"50%",position:"absolute",
+                  top:3,left:autoRotEnabled?21:3,transition:"left 0.15s"}}/>
+              </div>
+              <div style={{minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:600,color:on?"#0F6E56":"#A32D2D"}}>{statusTxt}</div>
+                <div style={{fontSize:11,color:on?"#0F6E56":"#A32D2D",opacity:0.8,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{subTxt}</div>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:6,flexShrink:0}}>
+              <button onClick={function(){setAutoRotEnabled(true); setPausedUntil(new Date(Date.now()+2*60*60*1000).toISOString());}}
+                style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"#fff",borderRadius:8,cursor:"pointer",color:"#1a1a1a"}}>Pause 2h</button>
+              <button onClick={function(){setAutoRotEnabled(false); setPausedUntil(null);}}
+                style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(163,45,45,0.3)",background:"#FCEBEB",borderRadius:8,cursor:"pointer",color:"#A32D2D",fontWeight:500}}>Stop</button>
+            </div>
+          </div>;
+        })()}
+
+        {/* Tier boxes — Tier 1 (Top), Tier 2 (Regular), Tier 3 (New) */}
+        {(function(){
+          var tierMeta={
+            tier1:{label:"Top — first priority",   sub:"Round-robin within tier",                     bg:"#EAF6F0", brd:"rgba(15,110,86,0.3)", num:"#0F6E56", txt:"#0F6E56"},
+            tier2:{label:"Regular",                 sub:"Activates only when all Tier 1 unavailable",  bg:"#E6F1FB", brd:"rgba(24,95,165,0.3)", num:"#185FA5", txt:"#185FA5"},
+            tier3:{label:"New / Training",          sub:"Only when Tier 1 and 2 unavailable",          bg:"#F8FAFC", brd:"rgba(0,0,0,0.1)",     num:"#64748B", txt:"#475569"}
+          };
+          var tierArrs={tier1:tier1,tier2:tier2,tier3:tier3};
+          var nextInLineIdx = tier1.length>0 ? (((tier1LastIdx+1)%tier1.length+tier1.length)%tier1.length) : -1;
+
+          var renderRow=function(tierKey,uid,idx){
+            var u=(p.users||[]).find(function(x){return String(gid(x))===String(uid);});
+            if(!u) return null;
+            var isNext = (tierKey==="tier1" && idx===nextInLineIdx);
+            var initials=(u.name||"?").split(" ").slice(0,2).map(function(s){return (s[0]||"").toUpperCase();}).join("");
+            var roleLabel=({admin:"ADMIN",manager:"MANAGER",team_leader:"TEAM LEADER",sales:"SALES",viewer:"VIEWER"}[u.role]||(u.role||"").toUpperCase());
+            var roleBgMap={team_leader:"#EEEDFE",sales:"#E6F1FB",manager:"#FAEEDA"};
+            var roleFgMap={team_leader:"#3C3489",sales:"#185FA5",manager:"#854F0B"};
+            var dragging = dragFrom && dragFrom.tier===tierKey && dragFrom.idx===idx;
+            var hover    = dropOn   && dropOn.tier===tierKey && dropOn.idx===idx && !dragging;
+            return <div key={uid}
+              draggable={true}
+              onDragStart={function(e){ setDragFrom({tier:tierKey,idx:idx}); try{e.dataTransfer.effectAllowed="move";}catch(_){} }}
+              onDragOver={function(e){ e.preventDefault(); if(!dropOn||dropOn.tier!==tierKey||dropOn.idx!==idx) setDropOn({tier:tierKey,idx:idx}); try{e.dataTransfer.dropEffect="move";}catch(_){} }}
+              onDragLeave={function(){ if(dropOn&&dropOn.tier===tierKey&&dropOn.idx===idx) setDropOn(null); }}
+              onDrop={function(e){ e.preventDefault(); e.stopPropagation(); moveAgent(dragFrom,{tier:tierKey,idx:idx}); setDragFrom(null); setDropOn(null); }}
+              onDragEnd={function(){ setDragFrom(null); setDropOn(null); }}
+              style={{display:"flex",alignItems:"center",gap:10,padding:isNext?"7px 9px":"8px 10px",background:"#fff",borderRadius:8,marginBottom:4,cursor:"grab",userSelect:"none",
+                border: isNext ? "2px solid #0F6E56" : (hover ? "1.5px solid "+tierMeta[tierKey].num : "0.5px solid rgba(0,0,0,0.05)"),
+                opacity: dragging?0.5:1}}>
+              <span style={{color:"#999",cursor:"grab",fontSize:13,flexShrink:0}}>⋮⋮</span>
+              <div style={{width:30,height:30,borderRadius:"50%",background:tierMeta[tierKey].num,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:500,flexShrink:0}}>{initials}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:500,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                  <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</span>
+                  {roleLabel && <span style={{fontSize:9,padding:"2px 6px",borderRadius:10,fontWeight:500,letterSpacing:"0.3px",background:roleBgMap[u.role]||"#EEEEEA",color:roleFgMap[u.role]||"#666"}}>{roleLabel}</span>}
+                </div>
+                <div style={{fontSize:11,color:isNext?"#0F6E56":"#666",fontWeight:isNext?600:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  {isNext ? "NEXT IN LINE" : (u.title||"")}
+                </div>
+              </div>
+              <button onClick={function(){removeFromAllTiers(uid);}} title="Remove from rotation"
+                style={{background:"none",border:"none",color:"#DC2626",fontSize:16,cursor:"pointer",padding:"2px 6px",lineHeight:1}}>×</button>
+            </div>;
+          };
+
+          return ["tier1","tier2","tier3"].map(function(k){
+            var m=tierMeta[k]; var agents=tierArrs[k];
+            var isEmptyHover = dropOn && dropOn.tier===k && agents.length===0;
+            return <div key={k}
+              onDragOver={function(e){ if(agents.length===0){ e.preventDefault(); setDropOn({tier:k,idx:0}); } }}
+              onDrop={function(e){ if(agents.length===0){ e.preventDefault(); moveAgent(dragFrom,{tier:k,idx:0}); setDragFrom(null); setDropOn(null); } }}
+              style={{background:m.bg,border:"0.5px solid "+m.brd,borderRadius:12,marginBottom:10,overflow:"hidden"}}>
+              <div style={{padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{width:26,height:26,borderRadius:"50%",background:m.num,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:500}}>{k.slice(-1)}</div>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:500,color:m.txt}}>{m.label}</div>
+                    <div style={{fontSize:11,color:m.txt,opacity:0.8}}>{m.sub}</div>
+                  </div>
+                </div>
+                <div style={{fontSize:11,color:m.txt,fontWeight:500}}>{agents.length} agent{agents.length===1?"":"s"}</div>
+              </div>
+              <div style={{padding:"0 8px 8px 8px",background:isEmptyHover?"rgba(255,255,255,0.6)":"transparent"}}>
+                {agents.length===0
+                  ? <div style={{fontSize:11,color:m.txt,opacity:0.7,padding:"10px 6px",textAlign:"center",fontStyle:"italic",border:"1px dashed "+m.brd,borderRadius:8,background:"rgba(255,255,255,0.4)"}}>Drop agents here{isEmptyHover?" ⤵":""}</div>
+                  : agents.map(function(uid,idx){return renderRow(k,uid,idx);})
+                }
+              </div>
+            </div>;
+          });
+        })()}
+
+        {/* Remaining agents → one-click add to Tier 1 */}
+        {(function(){
+          var inAny = new Set([].concat(tier1,tier2,tier3).map(String));
+          var remaining=salesAgentsForSetting.filter(function(u){return !inAny.has(String(gid(u)));});
+          if(!remaining.length) return null;
+          return <div style={{marginBottom:14,marginTop:4}}>
+            <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>➕ Add agent to rotation (goes to Tier 1)</label>
             <div style={{border:"1px dashed #E2E8F0",borderRadius:10,padding:"8px 8px",background:"#FAFBFC",maxHeight:160,overflowY:"auto"}}>
               {remaining.map(function(u){
-                var uid = String(gid(u));
-                return <div key={uid} onClick={function(){toggleAgent(uid);}} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 8px",cursor:"pointer",borderRadius:7,marginBottom:2}}>
+                var uid=String(gid(u));
+                return <div key={uid} onClick={function(){appendToTier(uid,"tier1");}} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 8px",cursor:"pointer",borderRadius:7,marginBottom:2}}>
                   <span style={{fontSize:16,color:C.accent,fontWeight:700,lineHeight:1}}>+</span>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13,fontWeight:500,color:"#334155",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</div>
@@ -6632,21 +6778,91 @@ var SettingsPage = function(p) {
           </div>;
         })()}
 
-        {/* Rotation Durations */}
+        {/* Working hours */}
+        <div style={{marginBottom:14,padding:"14px 16px",background:"#F8FAFC",borderRadius:12,border:"1px solid #E8ECF1"}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:4}}>🕒 Company Working Hours</div>
+          <div style={{fontSize:11,color:C.textLight,marginBottom:10}}>Used by the "Respect working hours" skip rule. Per-agent overrides live in Team &amp; Roles (coming soon).</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+            {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(function(d){
+              var on = whDays.indexOf(d)>=0;
+              return <button key={d} type="button"
+                onClick={function(){setWhDays(function(prev){return prev.indexOf(d)>=0 ? prev.filter(function(x){return x!==d;}) : prev.concat([d]);});}}
+                style={{padding:"6px 12px",background:on?"#E6F1FB":"#fff",border:"0.5px solid "+(on?"rgba(24,95,165,0.3)":"#E2E8F0"),borderRadius:8,fontSize:12,cursor:"pointer",color:on?"#185FA5":C.textLight,fontWeight:on?500:400}}>{d}</button>;
+            })}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <span style={{fontSize:12,color:C.textLight}}>From</span>
+              <input type="time" value={whFrom} onChange={function(e){setWhFrom(e.target.value);}} style={{padding:"6px 10px",border:"0.5px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff"}}/>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <span style={{fontSize:12,color:C.textLight}}>to</span>
+              <input type="time" value={whTo} onChange={function(e){setWhTo(e.target.value);}} style={{padding:"6px 10px",border:"0.5px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff"}}/>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <span style={{fontSize:12,color:C.textLight}}>After-hours</span>
+              <select value={whAfter} onChange={function(e){setWhAfter(e.target.value);}} style={{padding:"6px 10px",border:"0.5px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff"}}>
+                <option value="queue">Queue until next shift</option>
+                <option value="oncall">Route to on-call agent</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* Smart skip rules */}
+        <div style={{marginBottom:14,padding:"14px 16px",background:"#F8FAFC",borderRadius:12,border:"1px solid #E8ECF1"}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:4}}>🚦 Smart Skip Rules</div>
+          <div style={{fontSize:11,color:C.textLight,marginBottom:10}}>Applied to each candidate before assignment. Unchecked rules are ignored by the backend.</div>
+          <label style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",fontSize:13,color:C.text,cursor:"pointer"}}>
+            <input type="checkbox" checked={srVac} onChange={function(e){setSrVac(e.target.checked);}}/>
+            <span>Skip if agent is on vacation <span style={{color:C.textLight,fontSize:11,marginLeft:6}}>(no-op until vacation management ships)</span></span>
+          </label>
+          <label style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",fontSize:13,color:C.text}}>
+            <input type="checkbox" checked={srOffH>0} onChange={function(e){setSrOffH(e.target.checked?4:0);}}/>
+            <span>Skip if agent offline more than</span>
+            <input type="number" min={0} max={168} value={srOffH} onChange={function(e){setSrOffH(Number(e.target.value)||0);}} style={{width:56,padding:"4px 8px",borderRadius:7,border:"0.5px solid #E2E8F0",fontSize:13,textAlign:"center"}}/>
+            <span style={{fontSize:11,color:C.textLight}}>hours (0 = off)</span>
+          </label>
+          <label style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",fontSize:13,color:C.text,cursor:"pointer"}}>
+            <input type="checkbox" checked={srHours} onChange={function(e){setSrHours(e.target.checked);}}/>
+            <span>Respect company working hours</span>
+          </label>
+          <label style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",fontSize:13,color:C.text,cursor:"pointer"}}>
+            <input type="checkbox" checked={srHandled} onChange={function(e){setSrHandled(e.target.checked);}}/>
+            <span>Skip agents who already handled this lead</span>
+          </label>
+          <label style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",fontSize:13,color:C.text}}>
+            <input type="checkbox" checked={srHaltNI>0} onChange={function(e){setSrHaltNI(e.target.checked?3:0);}}/>
+            <span>Halt rotation after</span>
+            <input type="number" min={0} max={20} value={srHaltNI} onChange={function(e){setSrHaltNI(Number(e.target.value)||0);}} style={{width:56,padding:"4px 8px",borderRadius:7,border:"0.5px solid #E2E8F0",fontSize:13,textAlign:"center"}}/>
+            <span style={{fontSize:11,color:C.textLight}}>× consecutive Not Interested (0 = off)</span>
+          </label>
+          <label style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",fontSize:13,color:C.text,cursor:"pointer"}}>
+            <input type="checkbox" checked={srHaltAll} onChange={function(e){setSrHaltAll(e.target.checked);}}/>
+            <span>Halt rotation when all agents have handled the lead</span>
+          </label>
+        </div>
+
+        {/* Rotation Durations (existing 6 + new 45-day stop) */}
         <div style={{marginBottom:13,padding:"14px 16px",background:"#F8FAFC",borderRadius:12,border:"1px solid #E8ECF1"}}>
           <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:12}}>⚙️ Auto-Rotation Durations</div>
           {[
-            {label:"No Answer — times before rotation",val:rotNoAnswerCount,set:setRotNoAnswerCount,unit:"times"},
-            {label:"No Answer — wait after last attempt",val:rotNoAnswerHours,set:setRotNoAnswerHours,unit:"hrs"},
-            {label:"Not Interested — return after",val:rotNotIntDays,set:setRotNotIntDays,unit:"days"},
-            {label:"No Contact — rotate after",val:rotNoActDays,set:setRotNoActDays,unit:"days"},
-            {label:"CallBack overdue — rotate after",val:rotCbDays,set:setRotCbDays,unit:"days"},
-            {label:"Potential/HotCase/Meeting no action — rotate after",val:rotHotDays,set:setRotHotDays,unit:"days"},
-          ].map(function(row){return <div key={row.label} style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9,gap:10}}>
-            <span style={{fontSize:12,color:C.text,flex:1}}>{row.label}</span>
+            {label:"No Answer — times before rotation",val:rotNoAnswerCount,set:setRotNoAnswerCount,unit:"times",max:100},
+            {label:"No Answer — wait after last attempt",val:rotNoAnswerHours,set:setRotNoAnswerHours,unit:"hrs",max:720},
+            {label:"Not Interested — return after",val:rotNotIntDays,set:setRotNotIntDays,unit:"days",max:365},
+            {label:"No Contact — rotate after",val:rotNoActDays,set:setRotNoActDays,unit:"days",max:365},
+            {label:"CallBack overdue — rotate after",val:rotCbDays,set:setRotCbDays,unit:"days",max:365},
+            {label:"Potential/HotCase/Meeting no action — rotate after",val:rotHotDays,set:setRotHotDays,unit:"days",max:365},
+            {label:"Stop rotation after — lead stays with current agent",val:rotStopDays,set:setRotStopDays,unit:"days in CRM",max:3650,highlight:true}
+          ].map(function(row){return <div key={row.label} style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9,gap:10,
+            padding:row.highlight?"8px 10px":"0",
+            background:row.highlight?"#FAEEDA":"transparent",
+            borderRadius:row.highlight?8:0,
+            border:row.highlight?"0.5px solid rgba(133,79,11,0.3)":"none"}}>
+            <span style={{fontSize:12,color:row.highlight?"#854F0B":C.text,flex:1,fontWeight:row.highlight?500:400}}>{row.label}</span>
             <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
-              <input type="number" min={1} max={30} value={row.val} onChange={function(e){row.set(Number(e.target.value));}} style={rotInpStyle}/>
-              <span style={{fontSize:11,color:C.textLight}}>{row.unit}</span>
+              <input type="number" min={1} max={row.max} value={row.val} onChange={function(e){row.set(Number(e.target.value));}} style={rotInpStyle}/>
+              <span style={{fontSize:11,color:row.highlight?"#854F0B":C.textLight}}>{row.unit}</span>
             </div>
           </div>;})}
         </div>
@@ -7441,7 +7657,7 @@ export default function CRMApp() {
       if(curAssign&&curAssign.noRotation) return;
       if(lead.globalStatus==="eoi") return;
       if(lead.globalStatus==="donedeal") return;
-      if(lead.createdAt&&(new Date()-new Date(lead.createdAt))>30*24*60*60*1000) return;
+      // Age cutoff is enforced by the backend using rotationStopAfterDays — let it decide.
       var currentAgentUser = users.find(function(u){return String(gid(u))===String(currentAgentId);});
       if(currentAgentUser&&currentAgentUser.role==="team_leader") return;
 
@@ -7468,7 +7684,8 @@ export default function CRMApp() {
         //   no_rotation_order    — admin hasn't configured a list yet
         //   concurrent_rotation  — another request already rotated this lead; we mustn't rotate again
         var msg = String(e && e.message || "");
-        if (msg.indexOf("exhausted")<0 && msg.indexOf("no_rotation_order")<0 && msg.indexOf("concurrent_rotation")<0) console.error("Rotation error:", e);
+        var silent = ["exhausted","no_rotation_order","concurrent_rotation","stopped_age","rotation_disabled","rotation_paused"];
+        if (!silent.some(function(k){return msg.indexOf(k)>=0;})) console.error("Rotation error:", e);
       }
       finally{ rotatingNow.delete(lid); }
     };
@@ -7484,8 +7701,12 @@ export default function CRMApp() {
       // Pull the latest rotation settings from Mongo at the start of every cycle
       // — any admin change takes effect immediately for every signed-in client.
       var dur;
+      var stopDaysCfg = 45;
       try{
         var s = await apiFetch("/api/settings/rotation","GET",null,token);
+        // Master switch / pause gate — no rotation triggers while disabled.
+        if (s && s.autoRotationEnabled === false) { isRunning=false; return; }
+        if (s && s.autoRotationPausedUntil && new Date(s.autoRotationPausedUntil) > new Date()) { isRunning=false; return; }
         cycleSavedIds = Array.isArray(s&&s.reassignAgents) ? s.reassignAgents.map(String) : [];
         dur = {
           naCount:  Number(s&&s.naCount)||2,
@@ -7495,6 +7716,7 @@ export default function CRMApp() {
           cbDays:   Number(s&&s.cbDays)||1,
           hotDays:  Number(s&&s.hotDays)||2
         };
+        stopDaysCfg = Number(s&&s.rotationStopAfterDays)||45;
       }catch(e){ isRunning=false; return; }
       var now = Date.now();
       var savedIds = cycleSavedIds;
@@ -7504,7 +7726,7 @@ export default function CRMApp() {
       var salesLeads = leads.filter(function(l){
         return !l.archived && l.source!=="Daily Request";
       });
-      var THIRTY_DAYS = 30*24*60*60*1000;
+      var STOP_MS = stopDaysCfg*24*60*60*1000;
 
       for(var i=0;i<salesLeads.length;i++){
         var l = salesLeads[i];
@@ -7521,8 +7743,8 @@ export default function CRMApp() {
         if(l.globalStatus==="eoi") continue;
         // 3. globalStatus donedeal
         if(l.globalStatus==="donedeal") continue;
-        // 4. expired
-        if(l.createdAt&&(new Date()-new Date(l.createdAt))>30*24*60*60*1000) continue;
+        // 4. past rotation-stop age (configurable via rotationStopAfterDays, default 45)
+        if(l.createdAt&&(new Date()-new Date(l.createdAt))>STOP_MS) continue;
         // Also skip old status checks for backwards compat
         if(l.status==="DoneDeal"||l.status==="EOI") continue;
         // Skip VIP leads — pinned, never rotate
