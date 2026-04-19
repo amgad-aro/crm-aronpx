@@ -10,11 +10,14 @@ import {
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
-const API = process.env.REACT_APP_API_URL || "http://localhost:5001";
+const API = "https://crm-aro-backend-production.up.railway.app";
 
-async function apiFetch(path, method, body, token) {
+async function apiFetch(path, method, body, token, csrfToken) {
   var opts = { method: method || "GET", headers: { "Content-Type": "application/json" } };
   if (token) opts.headers["Authorization"] = "Bearer " + token;
+  if (csrfToken && (method === "POST" || method === "PUT" || method === "DELETE")) {
+    opts.headers["X-CSRF-Token"] = csrfToken;
+  }
   if (body) opts.body = JSON.stringify(body);
   var res;
   try { res = await fetch(API + path, opts); } catch(netErr) { throw new Error("Connection error"); }
@@ -341,6 +344,7 @@ var StatusModal = function(p) {
   var [dealBudget, setDealBudget] = useState("");
   var [eoiDeposit, setEoiDeposit] = useState("");
   var [eoiDateInput, setEoiDateInput] = useState("");
+  var [rejectNote, setRejectNote] = useState("");
   var [potBudget, setPotBudget] = useState("");
   var [potDeposit, setPotDeposit] = useState("");
   var [potInstalment, setPotInstalment] = useState("");
@@ -356,9 +360,11 @@ var StatusModal = function(p) {
   var needsComment = st==="Potential"||st==="HotCase"||st==="MeetingDone";
   var needsCb      = st==="CallBack"||st==="NoAnswer";
   var needsPotFields = st==="Potential"||st==="HotCase";
+  var hasBudget = p.lead&&p.lead.budget&&p.lead.budget.trim&&p.lead.budget.trim()!=="";
+  var needsBudgetFields = needsPotFields&&!hasBudget;
 
   useEffect(function(){
-    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit(""); setEoiDateInput("");
+    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit(""); setEoiDateInput(""); setRejectNote("");
     setPotBudget(""); setPotDeposit(""); setPotInstalment(""); setErr("");
   },[p.show]);
 
@@ -369,17 +375,19 @@ var StatusModal = function(p) {
     if (needsComment && !comment.trim()) { setErr("A note is required"); return; }
     if (needsCb && !cbTime)              { setErr("Please select a time"); return; }
     if (isReject && !comment.trim())     { setErr("Please select a rejection reason"); return; }
+    if (isReject && !rejectNote.trim())  { setErr("Feedback is required"); return; }
     if ((isDoneDeal||isEOI) && !dealBudget.trim()){ setErr("Please enter the amount"); return; }
-    if (needsPotFields && !potBudget.trim()){ setErr("Please enter the Budget"); return; }
-    if (needsPotFields && !potDeposit.trim()){ setErr("Please enter the Down Payment"); return; }
-    if (needsPotFields && !potInstalment.trim()){ setErr("Please enter the Installments"); return; }
+    if (needsBudgetFields && !potBudget.trim()){ setErr("Please enter the Budget"); return; }
+    if (needsBudgetFields && !potDeposit.trim()){ setErr("Please enter the Down Payment"); return; }
+    if (needsBudgetFields && !potInstalment.trim()){ setErr("Please enter the Installments"); return; }
     setSaving(true);
     var extra = (isDoneDeal||isEOI)
       ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput }
-      : needsPotFields
+      : (needsPotFields && (potBudget||potDeposit||potInstalment))
         ? { budget: potBudget, deposit: potDeposit, instalment: potInstalment }
         : {};
-    await p.onConfirm(comment.trim(), cbTime, extra);
+    var finalComment = isReject&&rejectNote.trim() ? comment.trim()+" — "+rejectNote.trim() : comment.trim();
+    await p.onConfirm(finalComment, cbTime, extra);
     setSaving(false);
   };
 
@@ -407,8 +415,8 @@ var StatusModal = function(p) {
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
     </div>}
 
-    {/* Potential / HotCase: budget + deposit + instalment */}
-    {needsPotFields&&<div style={{ background:"#F0F9FF", borderRadius:10, padding:"12px 14px", marginBottom:12, border:"1px solid #BAE6FD" }}>
+    {/* Potential / HotCase: budget + deposit + instalment (only when no budget set yet) */}
+    {needsBudgetFields&&<div style={{ background:"#F0F9FF", borderRadius:10, padding:"12px 14px", marginBottom:12, border:"1px solid #BAE6FD" }}>
       <div style={{ fontSize:12, fontWeight:700, color:"#0284C7", marginBottom:10 }}>💰 Budget Details</div>
       <div style={{ marginBottom:9 }}>
         <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.text, marginBottom:4 }}>Budget (EGP) <span style={{color:C.danger}}>*</span></label>
@@ -445,6 +453,11 @@ var StatusModal = function(p) {
             style={{ padding:"8px 12px", borderRadius:8, border:"1px solid", borderColor:comment===r?"#EF4444":"#E2E8F0",
               background:comment===r?"#FEF2F2":"#fff", color:comment===r?"#EF4444":"#64748B", fontSize:12, cursor:"pointer", textAlign:"right" }}>{r}</button>;
         })}
+      </div>
+      <div style={{ marginTop:10 }}>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 Feedback <span style={{color:C.danger}}>*</span></label>
+        <textarea rows={2} placeholder="" value={rejectNote} onChange={function(e){setRejectNote(e.target.value);setErr("");}}
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
       </div>
     </div>}
 
@@ -495,7 +508,7 @@ var LoginPage = function(p) {
   var [user, setUser] = useState(""); var [pass, setPass] = useState(""); var [err, setErr] = useState(""); var [showPass, setShowPass] = useState(false); var [loading, setLoading] = useState(false);
   var go = async function() {
     if (!user||!pass) return; setLoading(true); setErr("");
-    try { var data = await apiFetch("/api/login","POST",{username:user,password:pass}); p.onLogin(data.user,data.token); }
+    try { var data = await apiFetch("/api/login","POST",{username:user,password:pass}); p.onLogin(data.user,data.token,data.csrfToken); }
     catch(e) { setErr(t.loginError); } setLoading(false);
   };
   return <div style={{ minHeight:"100vh", background:"linear-gradient(135deg,"+C.primaryDark+" 0%,"+C.primary+" 55%,"+C.primaryLight+" 100%)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Cairo','Segoe UI',sans-serif", padding:16 }}>
@@ -576,72 +589,163 @@ var Sidebar = function(p) {
   </>;
 };
 
-// ===== HEADER =====
-var Header = function(p) {
-  var t = p.t; var isOnlyAdmin = p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin");
+// ===== CALLBACK BELL (isolated for performance) =====
+var CB_COLORS = {overdue:{bg:"#FEF2F2",border:"#EF4444",icon:"#FEE2E2",text:"#DC2626"},now:{bg:"#FFF7ED",border:"#F97316",icon:"#FFEDD5",text:"#EA580C"},upcoming:{bg:"#F0FDF4",border:"#22C55E",icon:"#DCFCE7",text:"#16A34A"},nocontact:{bg:"#FFFBEB",border:"#EAB308",icon:"#FEF3C7",text:"#B45309"}};
+var CB_CSS = "@keyframes cbBellShake{0%,100%{transform:rotate(0)}15%{transform:rotate(12deg)}30%{transform:rotate(-10deg)}45%{transform:rotate(8deg)}60%{transform:rotate(-6deg)}75%{transform:rotate(3deg)}}.cb-bell-shake{animation:cbBellShake 0.6s ease-in-out infinite}.cb-dropdown-enter{animation:cbSlideDown 0.2s ease-out}@keyframes cbSlideDown{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}.cb-card:hover{box-shadow:0 4px 16px rgba(0,0,0,0.08)!important;transform:translateY(-1px)}";
+var cbStyleInjected = false;
+
+var CallbackBell = function(p) {
+  var [tab, setTab] = useState("all");
+  var [limit, setLimit] = useState(30);
+  var ref = useRef(null);
+
+  useEffect(function(){ setLimit(30); },[tab]);
+
+  useEffect(function(){
+    if(!p.showNotif) return;
+    var fn=function(e){if(ref.current&&!ref.current.contains(e.target))p.setShowNotif(false);};
+    document.addEventListener("mousedown",fn);
+    return function(){document.removeEventListener("mousedown",fn);};
+  },[p.showNotif]);
+
+  useEffect(function(){
+    if(cbStyleInjected) return;
+    var s=document.createElement("style"); s.textContent=CB_CSS; document.head.appendChild(s); cbStyleInjected=true;
+  },[]);
+
+  // Simple computation - no useMemo, no useRef tricks
+  var now = Date.now();
   var uid = String(p.cu&&p.cu.id||"");
   var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(u._id||gid(u)||"");}));
   teamUids.add(uid);
 
-  var myLeadsForNotif = (p.cu&&p.cu.role==="sales")
-    ? p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid;})
-    : (p.cu&&p.cu.role==="team_leader")
-    ? p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return teamUids.has(aid);})
-    : p.leads;
-  var myDRForNotif = (p.cu&&p.cu.role==="sales")
-    ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return aid===uid;})
-    : (p.cu&&p.cu.role==="team_leader")
-    ? (p.dailyRequests||[]).filter(function(r){var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");return teamUids.has(aid);})
-    : (p.dailyRequests||[]);
-  var allItemsForNotif = myLeadsForNotif.concat(myDRForNotif);
-  var now = Date.now();
-  var callbackNow = allItemsForNotif.filter(function(l){
-    if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
-    var diff = new Date(l.callbackTime).getTime() - now;
-    if(!(diff<=0 && diff>-60*60*1000)) return false;
-    // Hide if had activity after the callback time (already handled)
-    var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
-    if(lastAct > new Date(l.callbackTime).getTime()) return false;
+  var allLeads = (p.leads||[]).concat(p.dailyRequests||[]);
+
+  var myItems = allLeads.filter(function(l){
+    if(l.archived||l.status==="DoneDeal"||l.status==="NotInterested"||l.status==="EOI") return false;
+    var aid = String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
+    if(p.cu.role==="sales") return aid===uid;
+    if(p.cu.role==="team_leader") return teamUids.has(aid);
     return true;
   });
-  var upcoming = allItemsForNotif.filter(function(l){
-    if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
-    var diff = new Date(l.callbackTime).getTime() - now;
-    return diff>0 && diff<=24*60*60*1000;
-  }).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
-  var overdueCallback = allItemsForNotif.filter(function(l){
-    if(!l.callbackTime||l.archived||l.status==="DoneDeal"||l.status==="NotInterested") return false;
-    var diff = new Date(l.callbackTime).getTime() - now;
-    if(!(diff < -60*60*1000)) return false;
-    // Hide if had activity after the callback time
-    var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
-    if(lastAct > new Date(l.callbackTime).getTime()) return false;
-    return true;
-  });
-  var noActivityLeads = myLeadsForNotif.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(Date.now()-new Date(l.lastActivityTime||0).getTime())>1*24*60*60*1000;});
-  var noActivityDR = myDRForNotif.filter(function(r){return r.status!=="DoneDeal"&&r.status!=="NotInterested"&&(Date.now()-new Date(r.lastActivityTime||0).getTime())>1*24*60*60*1000;});
-  var allNoActivity = noActivityLeads.concat(noActivityDR);
-  var notifRef = useRef(null);
-  var [badgeHidden, setBadgeHidden] = useState(function(){
-    try{
-      var seen = Number(localStorage.getItem("crm_notif_seen_count")||"0");
-      return seen > 0;
-    }catch(e){return false;}
-  });
-  useEffect(function(){
-    if(callbackNow.length+overdueCallback.length>0){
-      try{
-        var seen = Number(localStorage.getItem("crm_notif_seen_count")||"0");
-        var total = callbackNow.length+overdueCallback.length;
-        if(total > seen) setBadgeHidden(false);
-      }catch(e){}
+
+  var overdue = [];
+  var nowItems = [];
+  var upcoming = [];
+  var noContact = [];
+  var cbIds = new Set();
+
+  myItems.forEach(function(l){
+    if(l.callbackTime){
+      var cbT = new Date(l.callbackTime).getTime();
+      var diff = cbT - now;
+      var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
+      if(lastAct > cbT) return;
+      if(diff < -3600000){ overdue.push(l); cbIds.add(gid(l)); }
+      else if(diff <= 0){ nowItems.push(l); cbIds.add(gid(l)); }
+      else if(diff <= 86400000){ upcoming.push(l); cbIds.add(gid(l)); }
     }
-  },[callbackNow.length, overdueCallback.length]);
-  useEffect(function(){
-    if (!p.showNotif) return;
-    var fn=function(e){if(notifRef.current&&!notifRef.current.contains(e.target))p.setShowNotif(false);};
-    document.addEventListener("mousedown",fn); return function(){document.removeEventListener("mousedown",fn);};
-  },[p.showNotif]);
+  });
+
+  upcoming.sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
+
+  myItems.forEach(function(l){
+    if(!cbIds.has(gid(l)) && (now - new Date(l.lastActivityTime||0).getTime()) > 86400000){
+      noContact.push(l);
+    }
+  });
+
+  var allItems = overdue.concat(nowItems).concat(upcoming).concat(noContact);
+
+  var filtered;
+  if(tab==="overdue") filtered = overdue;
+  else if(tab==="now") filtered = nowItems;
+  else if(tab==="upcoming") filtered = upcoming;
+  else if(tab==="nocontact") filtered = noContact;
+  else filtered = allItems;
+
+  var visible = filtered.slice(0, limit);
+  var totalCount = allItems.length;
+
+  var tabs = [
+    {key:"all", label:"All", count:totalCount},
+    {key:"overdue", label:"Delay", count:overdue.length},
+    {key:"now", label:"Now", count:nowItems.length},
+    {key:"upcoming", label:"Upcoming", count:upcoming.length},
+    {key:"nocontact", label:"No Contact", count:noContact.length}
+  ];
+
+  var getType = function(l){
+    if(overdue.indexOf(l)!==-1) return "overdue";
+    if(nowItems.indexOf(l)!==-1) return "now";
+    if(upcoming.indexOf(l)!==-1) return "upcoming";
+    return "nocontact";
+  };
+
+  return <div style={{ position:"relative" }} ref={ref}>
+    <button onClick={function(){
+      var opening=!p.showNotif;
+      p.setShowNotif(opening);
+      if(opening){p.setShowDealNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);setTab("all");}
+    }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:totalCount>0?"#FEF2F2":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+      <Bell size={16} color={totalCount>0?C.danger:C.textLight} className={totalCount>0?"cb-bell-shake":""}/>
+      {totalCount>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{totalCount>99?"99+":totalCount}</span>}
+    </button>
+    {p.showNotif&&<div className="cb-dropdown-enter" style={{ position:"absolute", top:46, right:0, width:440,maxWidth:"95vw", background:"#fff", borderRadius:16, boxShadow:"0 8px 32px rgba(0,0,0,0.15)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
+      <div style={{ padding:"16px 20px 12px", borderBottom:"1px solid #F1F5F9", flexShrink:0 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <span style={{ fontSize:18 }}>🔔</span>
+            <span style={{ fontWeight:700, fontSize:15, color:C.text }}>Callbacks</span>
+            {totalCount>0&&<span style={{ background:"#FEF2F2", color:C.danger, padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:700 }}>{totalCount}</span>}
+          </div>
+          <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+            <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:3, overflow:"hidden" }}>
+          {tabs.map(function(t2){var active=tab===t2.key;return <button key={t2.key} onClick={function(){setTab(t2.key);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3, flexShrink:0 }}>
+            {t2.label}
+            {t2.count>0&&<span style={{ background:active?"rgba(255,255,255,0.25)":"#E5E7EB", color:active?"#fff":"#374151", padding:"0 4px", borderRadius:4, fontSize:8, fontWeight:700, lineHeight:"14px" }}>{t2.count}</span>}
+          </button>;})}
+        </div>
+      </div>
+      <div style={{ overflowY:"auto", flex:1, padding:"8px 12px" }}>
+        {totalCount===0&&<div style={{ padding:"40px 20px", textAlign:"center" }}>
+          <div style={{ fontSize:40, marginBottom:12 }}>🎉</div>
+          <div style={{ fontSize:14, fontWeight:600, color:C.text, marginBottom:4 }}>All clear!</div>
+          <div style={{ fontSize:12, color:C.textLight }}>No pending callbacks</div>
+        </div>}
+        {filtered.length===0&&totalCount>0&&<div style={{ padding:"32px 20px", textAlign:"center", color:C.textLight, fontSize:13 }}>No items in this category</div>}
+        {visible.map(function(l){
+          var agName=l.agentId&&l.agentId.name?l.agentId.name:"";
+          var lType=getType(l);
+          var cc=CB_COLORS[lType]||CB_COLORS.now;
+          var cbTypeLabel=lType==="overdue"?"Overdue":lType==="now"?"Callback Now":lType==="upcoming"?"Upcoming":"No Contact";
+          var timeStr=lType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?timeAgo(l.callbackTime,p.t):"");
+          return <div key={gid(l)} className="cb-card" onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{lType==="overdue"?"⏰":lType==="now"?"📞":lType==="upcoming"?"🔔":"😴"}</div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:15, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
+              <div style={{ fontSize:13, fontWeight:500, color:C.textLight, marginTop:2 }}>{agName||"Unassigned"}</div>
+              <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:3 }}>
+                <span style={{ fontSize:10, fontWeight:600, color:cc.text, background:cc.icon, padding:"1px 6px", borderRadius:4 }}>{cbTypeLabel}</span>
+                <span style={{ fontSize:11, color:C.textLight }}>{timeStr}</span>
+              </div>
+            </div>
+            {l.phone&&<a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();}} style={{ width:40, height:40, borderRadius:10, background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, textDecoration:"none", boxShadow:"0 2px 8px rgba(0,0,0,0.15)" }} title="Call"><Phone size={16} color={cc.text}/></a>}
+          </div>;
+        })}
+        {filtered.length>limit&&<button onClick={function(e){e.stopPropagation();setLimit(function(v){return v+30;});}} style={{ width:"100%", padding:"10px", border:"none", borderRadius:8, background:"#F1F5F9", color:"#374151", fontSize:12, fontWeight:600, cursor:"pointer", marginTop:4 }}>Show More ({filtered.length-limit} remaining)</button>}
+      </div>
+    </div>}
+  </div>;
+};
+
+// ===== HEADER =====
+var Header = function(p) {
+  var t = p.t; var isOnlyAdmin = p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin");
+
   // Close deal notif + rot notif on outside click
   var dealNotifRef = useRef(null);
   var rotNotifRef = useRef(null);
@@ -669,149 +773,86 @@ var Header = function(p) {
         <input placeholder={t.search} value={p.search} onChange={function(e){p.setSearch(e.target.value);}} style={{ border:"none", background:"transparent", outline:"none", fontSize:13, color:C.text, width:"100%" }}/>
       </div>}
       
-      {/* Deal notifications bell - admin + team_leader */}
+      {/* BELL 3 — Deal notifications: admin + sales_admin + team_leader */}
       {(p.isAdmin||p.cu&&(p.cu.role==="sales_admin"||p.cu.role==="team_leader"))&&<div ref={dealNotifRef} style={{ position:"relative" }}>
-        <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening){p.setShowNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);if(p.onDealNotifSeen)p.onDealNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
-          <DollarSign size={16} color={p.unseenDeals>0&&!p.showDealNotif?"#15803D":C.textLight}/>
-          {p.unseenDeals>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:"#15803D", color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{p.unseenDeals}</span>}
+        <button onClick={function(){var opening=!p.showDealNotif;p.setShowDealNotif(opening);if(opening){p.setShowNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);if(p.onDealNotifSeen)p.onDealNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:p.unseenDeals>0?"#F0FDF4":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+          <DollarSign size={16} color={p.unseenDeals>0?"#15803D":C.textLight}/>
+          {p.unseenDeals>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:"#15803D", color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{p.unseenDeals>9?"9+":p.unseenDeals}</span>}
         </button>
-        {p.showDealNotif&&<div style={{ position:"absolute", top:44, right:0, width:310, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
-          <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <span style={{ fontWeight:700, fontSize:13 }}>🎉 New Deals ({p.dealNotifs?p.dealNotifs.length:0})</span>
-            <div style={{ display:"flex", gap:6 }}>
-              {p.dealNotifs&&p.dealNotifs.length>0&&<button onClick={function(){p.setDealNotifs([]);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.textLight }}>Clear All</button>}
-              <button onClick={function(){p.setShowDealNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
+        {p.showDealNotif&&<div style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
+          <div style={{ padding:"14px 18px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ fontSize:16 }}>💰</span>
+              <span style={{ fontWeight:700, fontSize:14, color:C.text }}>Deals & EOI</span>
+              {p.dealNotifs&&p.dealNotifs.length>0&&<span style={{ background:"#F0FDF4", color:"#15803D", padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:600 }}>{p.dealNotifs.length}</span>}
+            </div>
+            <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+              {p.unseenDeals>0&&<button onClick={function(){if(p.onDealNotifSeen)p.onDealNotifSeen();}} style={{ background:"#F0FDF4", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:"#15803D", fontWeight:600, padding:"4px 10px" }}>Mark Read</button>}
+              <button onClick={function(){p.setShowDealNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
             </div>
           </div>
-          {(!p.dealNotifs||p.dealNotifs.length===0)&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No new deals</div>}
-          {p.dealNotifs&&p.dealNotifs.filter(function(n){
-            if(p.cu.role!=="team_leader") return true;
-            // team_leader only sees their team's deals
-            var teamNames=new Set((p.myTeamUsers||[]).map(function(u){return u.name;}));
-            teamNames.add(p.cu.name);
-            return teamNames.has(n.agentName);
-          }).map(function(n){return <div key={n.id} style={{ padding:"12px 16px", borderBottom:"1px solid #F8FAFC" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <div style={{ width:32, height:32, borderRadius:8, background:n.status==="DoneDeal"?"#DCFCE7":"#FFF7ED", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{n.status==="DoneDeal"?"🎉":"🎯"}</div>
+          <div style={{ overflowY:"auto", flex:1 }}>
+            {(!p.dealNotifs||p.dealNotifs.length===0)&&<div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}>
+              <div style={{ fontSize:28, marginBottom:8 }}>💰</div>No deals yet
+            </div>}
+            {p.dealNotifs&&p.dealNotifs.filter(function(n){
+              if(p.cu.role!=="team_leader") return true;
+              var teamNames=new Set((p.myTeamUsers||[]).map(function(u){return u.name;}));
+              teamNames.add(p.cu.name);
+              return teamNames.has(n.agentName);
+            }).map(function(n){var isDeal=n.status==="DoneDeal";return <div key={n._id||n.id} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#FAFFFE", transition:"background 0.2s" }}>
+              <div style={{ width:38, height:38, borderRadius:10, background:isDeal?"linear-gradient(135deg,#DCFCE7,#BBF7D0)":"linear-gradient(135deg,#FFF7ED,#FED7AA)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:18 }}>{isDeal?"🎉":"🎯"}</div>
               <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:12, fontWeight:700 }}>{n.status==="DoneDeal"?"🎉 Done Deal":"🎯 EOI"}{n.leadName?" — "+n.leadName:""}</div>
-                <div style={{ fontSize:11, color:C.textLight }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
-                <div style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.time,p.t)}</div>
+                <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{isDeal?"Done Deal":"EOI"}{n.leadName?" — "+n.leadName:""}</div>
+                <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
+                <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{timeAgo(n.createdAt||n.time,p.t)}</div>
               </div>
-            </div>
-          </div>;})}
+              {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#15803D", flexShrink:0 }}/>}
+            </div>;})}
+          </div>
         </div>}
       </div>}
 
-      {/* Rotation notifications bell - admin only, not team_leader */}
-      {(p.isAdmin||p.cu&&p.cu.role==="sales_admin")&&(!p.cu||p.cu.role!=="manager")&&(!p.cu||p.cu.role!=="team_leader")&&(function(){
-        var rotNotifs=[];
-        try{rotNotifs=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}
-        var unseenRot=0;
-        try{var seen=Number(localStorage.getItem("crm_rot_seen")||"0");unseenRot=Math.max(0,rotNotifs.length-seen);}catch(e){}
-        var [showRot,setShowRot]=p.rotNotifState||[false,function(){}];
-        return <div ref={rotNotifRef} style={{ position:"relative" }}>
-          <button onClick={function(){
-            var next=!p.showRotNotif;
-            if(p.setShowRotNotif)p.setShowRotNotif(next);
-            if(next){p.setShowNotif(false);p.setShowDealNotif(false);try{localStorage.setItem("crm_rot_seen",String(rotNotifs.length));}catch(e){}}
-          }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", fontSize:15 }}>
-            🔄
-            {unseenRot>0&&!p.showRotNotif&&<span style={{ position:"absolute", top:4, right:4, width:14, height:14, borderRadius:"50%", background:C.warning, color:"#fff", fontSize:8, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>{unseenRot}</span>}
-          </button>
-          {p.showRotNotif&&<div style={{ position:"absolute", top:44, right:0, width:320, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
-            <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <span style={{ fontWeight:700, fontSize:13 }}>🔄 Auto Rotation ({rotNotifs.length})</span>
-              <div style={{ display:"flex", gap:6 }}>
-                {rotNotifs.length>0&&<button onClick={function(){try{localStorage.setItem("crm_rot_notifs","[]");}catch(e){}if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger }}>Clear All</button>}
-                <button onClick={function(){if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
-              </div>
-            </div>
-            {rotNotifs.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No rotations</div>}
-            {rotNotifs.map(function(n){return <div key={n.id} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC" }}>
-              <div style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
-                <span style={{ fontSize:16, flexShrink:0 }}>🔄</span>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:12, fontWeight:700 }}>{n.leadName}</div>
-                  <div style={{ fontSize:11, color:C.textLight }}>{n.fromName} ← {n.toName}</div>
-                  <div style={{ fontSize:10, color:C.warning, fontWeight:600, marginTop:2 }}>{n.reason}</div>
-                  <div style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.time,p.t)}</div>
-                </div>
-              </div>
-            </div>;})}
-          </div>}
-        </div>;
-      })()}
-
-      <div style={{ position:"relative" }} ref={notifRef}>
-
-        <button onClick={function(){
-          p.setShowNotif(!p.showNotif);
-          if(!p.showNotif){
-            setBadgeHidden(true);
-            try{localStorage.setItem("crm_notif_seen_count", String(callbackNow.length+overdueCallback.length));}catch(e){}
-          }
-        }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative" }}>
-          <Bell size={16} color={(callbackNow.length+overdueCallback.length)>0?C.danger:C.textLight}/>
-          {(callbackNow.length+overdueCallback.length)>0&&!badgeHidden&&<span style={{ position:"absolute", top:2, right:2, minWidth:16, height:16, borderRadius:8, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 3px" }}>{callbackNow.length+overdueCallback.length}</span>}
+      {/* BELL 2 — Rotation notifications: admin + sales_admin only */}
+      {(p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin"))&&<div ref={rotNotifRef} style={{ position:"relative" }}>
+        <button onClick={function(){var next=!p.showRotNotif;if(p.setShowRotNotif)p.setShowRotNotif(next);if(next){p.setShowNotif(false);p.setShowDealNotif(false);if(p.onRotNotifSeen)p.onRotNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:p.unseenRot>0?"#FFF7ED":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+          <RotateCcw size={15} color={p.unseenRot>0?"#EA580C":C.textLight}/>
+          {p.unseenRot>0&&!p.showRotNotif&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:"#EA580C", color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{p.unseenRot>9?"9+":p.unseenRot}</span>}
         </button>
-        {p.showNotif&&<div style={{ position:"absolute", top:44, right:0, width:290, background:"#fff", borderRadius:14, boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:"1px solid #E8ECF1", zIndex:200, maxHeight:400, overflowY:"auto" }}>
-          <div style={{ padding:"13px 16px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <span style={{ fontWeight:700, fontSize:13 }}>{t.callReminder}</span>
-            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
-              {p.isAdmin&&(callbackNow.length+upcoming.length+overdueCallback.length)>0&&<button onClick={function(e){
-                e.stopPropagation();
-                setBadgeHidden(true);
-                try{
-                  localStorage.setItem("crm_notif_seen_count","9999");
-                  localStorage.setItem("crm_notif_cleared_at", String(Date.now()));
-                }catch(e2){}
-                p.setShowNotif(false);
-              }} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:C.danger, fontWeight:600 }}>Clear All</button>}
-              <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}><X size={14}/></button>
+        {p.showRotNotif&&<div style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
+          <div style={{ padding:"14px 18px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <RotateCcw size={16} color="#EA580C"/>
+              <span style={{ fontWeight:700, fontSize:14, color:C.text }}>Rotations</span>
+              {p.rotNotifs&&p.rotNotifs.length>0&&<span style={{ background:"#FFF7ED", color:"#EA580C", padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:600 }}>{p.rotNotifs.length}</span>}
+            </div>
+            <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+              {p.unseenRot>0&&<button onClick={function(){if(p.onRotNotifSeen)p.onRotNotifSeen();}} style={{ background:"#FFF7ED", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:"#EA580C", fontWeight:600, padding:"4px 10px" }}>Mark Read</button>}
+              <button onClick={function(){if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
             </div>
           </div>
-          {callbackNow.length===0&&upcoming.length===0&&allNoActivity.length===0&&overdueCallback.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No notifications</div>}
-          {callbackNow.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Callback Now!</div>
-            {callbackNow.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2", width:"100%", background:"none", border:"none", textAlign:"left" }}>
-              <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
+          <div style={{ overflowY:"auto", flex:1 }}>
+            {(!p.rotNotifs||p.rotNotifs.length===0)&&<div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}>
+              <div style={{ fontSize:28, marginBottom:8 }}>🔄</div>No rotations
+            </div>}
+            {p.rotNotifs&&p.rotNotifs.map(function(n){return <div key={n._id||n.id} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#FFFBF5", transition:"background 0.2s" }}>
+              <div style={{ width:38, height:38, borderRadius:10, background:"linear-gradient(135deg,#FFF7ED,#FFEDD5)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><RotateCcw size={16} color="#EA580C"/></div>
               <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:11, fontWeight:400 }}>{l.name}{agName&&<span style={{ fontSize:10, color:C.accent }}> — {agName}</span>}</div>
-                <div style={{ fontSize:10, color:C.danger }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
+                <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{n.leadName}</div>
+                <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.fromName} → {n.toName}</div>
+                <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:2 }}>
+                  <span style={{ fontSize:10, color:"#EA580C", fontWeight:600, background:"#FFF7ED", padding:"1px 6px", borderRadius:4 }}>{n.reason}</span>
+                  <span style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.createdAt||n.time,p.t)}</span>
+                </div>
               </div>
-            </button>;})}  
-          </div>}
-          {overdueCallback.length>0&&<div style={{ padding:"8px 16px", background:"#FEF2F2", borderBottom:"1px solid #FECACA" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:C.danger, marginBottom:6 }}>📞 Overdue CallBack</div>
-            {overdueCallback.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEE2E2", width:"100%", background:"none", border:"none", textAlign:"left" }}>
-              <div style={{ width:28, height:28, borderRadius:7, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>📞</div>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:11, fontWeight:400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
-                <div style={{ fontSize:10, color:C.danger }}>{agName?agName+" · ":""}{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
-              </div>
-            </button>;})}  
-          </div>}
-          {allNoActivity.length>0&&<div style={{ padding:"8px 16px", background:"#FFF7ED", borderBottom:"1px solid #FEF3E2" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:"#EA580C", marginBottom:6 }}>😴 No Contact +1 Day</div>
-            {allNoActivity.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:"";return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", borderBottom:"1px solid #FEF3E2", width:"100%", background:"none", border:"none", textAlign:"left" }}>
-              <div style={{ width:28, height:28, borderRadius:7, background:"#FED7AA", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>😴</div>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:11, fontWeight:400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
-                <div style={{ fontSize:10, color:"#EA580C" }}>{agName?agName+" · ":""}{timeAgo(l.lastActivityTime,p.t)}</div>
-              </div>
-            </button>;})}  
-          </div>}
-          {upcoming.map(function(l){var agName=l.agentId&&l.agentId.name?l.agentId.name:""; return <button key={gid(l)} onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ padding:"11px 16px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:10, cursor:"pointer", width:"100%", background:"none", border:"none", textAlign:"left" }}>
-            <div style={{ width:32, height:32, borderRadius:8, background:C.warning+"15", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Phone size={14} color={C.warning}/></div>
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontSize:12, fontWeight:400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}{agName&&<span style={{ fontSize:10, color:C.accent }}> — {agName}</span>}</div>
-              <div style={{ fontSize:11, color:C.textLight }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div>
-            </div>
-            <ChevronRight size={13} color={C.textLight}/>
-          </button>;})}  
+              {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#EA580C", flexShrink:0 }}/>}
+            </div>;})}
+          </div>
         </div>}
-      </div>
+      </div>}
+
+      {/* BELL 1 — Callbacks (isolated component) */}
+      <CallbackBell t={p.t} leads={p.leads} dailyRequests={p.dailyRequests} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>
     </div>
   </div>;
 };
@@ -849,15 +890,16 @@ var LeadForm = function(p) {
 
   var submit = async function() {
     if (!form.name||!form.phone) return;
+    if (isEOIForm && !form.budget) { alert("Please enter the Amount (EGP)"); return; }
+    if (isEOIForm && !form.project) { alert("Please enter the Project"); return; }
+    if (isEOIForm && !form.eoiDeposit) { alert("Please enter the Deposit (EGP)"); return; }
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||null, status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
-      // Remove fields backend doesn't accept directly
-      delete payload.downPaymentPct; delete payload.installmentYears;
-      // Keep dealDate in payload so it saves to DB
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||gid(p.cu), status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
+      // Keep deal metadata in payload so it saves to DB
       var result = p.editId
-        ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token)
-        : await apiFetch("/api/leads", "POST", payload, p.token);
+        ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token, p.csrfToken)
+        : await apiFetch("/api/leads", "POST", payload, p.token, p.csrfToken);
       // Also save extra deal fields to localStorage as backup
       if(result && result._id && (form.downPaymentPct||form.installmentYears||form.dealDate)){
         saveDealExtra(String(result._id),{downPaymentPct:form.downPaymentPct||"",installmentYears:form.installmentYears||"",dealDate:form.dealDate||""});
@@ -885,13 +927,13 @@ var LeadForm = function(p) {
       <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder=""/>
       <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder=""/>
       <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
-      <Inp label={t.budget} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
+      <Inp label={isEOIForm?"💰 Amount (EGP)":t.budget} req={isEOIForm} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
     </div>
-    <Inp label={t.project} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder=""/>
+    <Inp label={t.project} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder=""/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     {isEOIForm&&<Inp label="📅 EOI Date" type="date" value={form.eoiDate||""} onChange={function(e){upd("eoiDate",e.target.value);}}/>}
-    {isEOIForm&&<Inp label="💵 Deposit (EGP)" value={form.eoiDeposit||""} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("eoiDeposit",r?Number(r).toLocaleString():"");}} placeholder=""/>}
+    {isEOIForm&&<Inp label="💵 Deposit (EGP)" req value={form.eoiDeposit||""} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("eoiDeposit",r?Number(r).toLocaleString():"");}} placeholder=""/>}
     {!isEOIForm&&<Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>}
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
     {(p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal"))&&<Inp label="Deal Date" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
@@ -1018,10 +1060,29 @@ var callbackColor = function(cbTime) {
 var QuickPhoneSearch = function(p) {
   var [show,setShow]=useState(false);
   var [q,setQ]=useState("");
-  var results=q.length>=4?p.leads.filter(function(l){
+  var leadResults=q.length>=4?p.leads.filter(function(l){
     return l.phone&&(l.phone.includes(q)||l.phone.endsWith(q));
   }):[];
+  var drResults=q.length>=4?(p.dailyReqs||[]).filter(function(r){
+    return r.phone&&(r.phone.includes(q)||r.phone.endsWith(q));
+  }):[];
   var sc=STATUSES(p.t);
+  var drSc=DR_STATUSES(p.t);
+  var totalResults=leadResults.length+drResults.length;
+  var renderCard=function(l,onClick,statuses){
+    var so=statuses.find(function(s){return s.value===l.status;})||statuses[0];
+    return <div key={gid(l)} onClick={function(){onClick(l);setShow(false);setQ("");}} style={{ padding:"12px 14px", borderRadius:12, border:"1px solid #E8ECF1", marginBottom:8, cursor:"pointer", background:"#FAFBFC" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <div style={{ fontWeight:700, fontSize:14 }}>{l.name}</div>
+        <span style={{ background:so.bg, color:so.color, padding:"2px 8px", borderRadius:12, fontSize:11, fontWeight:600 }}>{so.label}</span>
+      </div>
+      <div style={{ fontSize:12, color:"#64748B", marginTop:4, direction:"ltr" }}>{l.phone}</div>
+      <div style={{ display:"flex", gap:8, marginTop:8 }}>
+        <a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#EFF6FF", color:"#60A5FA", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>📞 Call</a>
+        <a href={"https://wa.me/"+waPhone(l.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#DCFCE7", color:"#25D366", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp</a>
+      </div>
+    </div>;
+  };
   if(!show)return <button onClick={function(){setShow(true);}} style={{ position:"fixed", bottom:24, right:24, zIndex:300, width:46, height:46, borderRadius:"50%", background:"rgba(255,255,255,0.15)", backdropFilter:"blur(8px)", WebkitBackdropFilter:"blur(8px)", border:"1.5px solid rgba(255,255,255,0.35)", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 2px 16px rgba(0,0,0,0.18)" }} title="Quick Phone Search"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke={C.accent} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="22" y2="22"/></svg></button>;
   return <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center" }} onClick={function(){setShow(false);setQ("");}}>
     <div style={{ background:"#fff", borderRadius:18, padding:20, width:340, maxWidth:"90vw", maxHeight:"80vh", overflow:"auto" }} onClick={function(e){e.stopPropagation();}}>
@@ -1031,21 +1092,15 @@ var QuickPhoneSearch = function(p) {
       </div>
       <input autoFocus value={q} onChange={function(e){setQ(e.target.value);}} placeholder="Enter last 4 digits or full number..." style={{ width:"100%", padding:"10px 14px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr", marginBottom:12 }}/>
       {q.length>0&&q.length<4&&<div style={{ fontSize:12, color:"#94A3B8", textAlign:"center", marginBottom:10 }}>Type at least 4 digits</div>}
-      {results.length===0&&q.length>=4&&<div style={{ fontSize:13, color:"#94A3B8", textAlign:"center", padding:20 }}>No results</div>}
-      {results.map(function(l){
-        var so=sc.find(function(s){return s.value===l.status;})||sc[0];
-        return <div key={gid(l)} onClick={function(){p.onSelect(l);setShow(false);setQ("");}} style={{ padding:"12px 14px", borderRadius:12, border:"1px solid #E8ECF1", marginBottom:8, cursor:"pointer", background:"#FAFBFC" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <div style={{ fontWeight:700, fontSize:14 }}>{l.name}</div>
-            <span style={{ background:so.bg, color:so.color, padding:"2px 8px", borderRadius:12, fontSize:11, fontWeight:600 }}>{so.label}</span>
-          </div>
-          <div style={{ fontSize:12, color:"#64748B", marginTop:4, direction:"ltr" }}>{l.phone}</div>
-          <div style={{ display:"flex", gap:8, marginTop:8 }}>
-            <a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#EFF6FF", color:"#60A5FA", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>📞 Call</a>
-            <a href={"https://wa.me/"+waPhone(l.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#DCFCE7", color:"#25D366", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp</a>
-          </div>
-        </div>;
-      })}
+      {totalResults===0&&q.length>=4&&<div style={{ fontSize:13, color:"#94A3B8", textAlign:"center", padding:20 }}>No results</div>}
+      {leadResults.length>0&&<div>
+        <div style={{ fontSize:12, fontWeight:700, color:"#64748B", textTransform:"uppercase", letterSpacing:1, marginBottom:8 }}>Leads ({leadResults.length})</div>
+        {leadResults.map(function(l){return renderCard(l,p.onSelect,sc);})}
+      </div>}
+      {drResults.length>0&&<div style={{ marginTop:leadResults.length>0?12:0 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:"#8B5CF6", textTransform:"uppercase", letterSpacing:1, marginBottom:8 }}>Daily Requests ({drResults.length})</div>
+        {drResults.map(function(r){return renderCard(r,p.onSelectDR,drSc);})}
+      </div>}
     </div>
   </div>;
 };
@@ -1108,6 +1163,7 @@ var LeadsPage = function(p) {
   var [noAgentFilter, setNoAgentFilter] = useState(false);
   var [agentFilter, setAgentFilter] = useState("");
   var [sortBy, setSortBy] = useState("lastActivity");
+  var [panelHistory, setPanelHistory] = useState([]);
   var fileRef = useRef(null);
 
   // ---- Filter logic (uses state values above) ----
@@ -1136,6 +1192,24 @@ var LeadsPage = function(p) {
 
   useEffect(function(){ if(p.initSelected){setSelected(p.initSelected);} },[p.initSelected]);
 
+  // Fetch full history when a lead is selected
+  useEffect(function(){
+    if(!selected){setPanelHistory([]);return;}
+    var lid=gid(selected);
+    apiFetch("/api/leads/"+lid+"/full-history","GET",null,p.token).then(function(hist){
+      var all=hist||[];
+      var isAdminRole=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
+      if(!isAdminRole){
+        var rotTime=selected.lastRotationAt?new Date(selected.lastRotationAt).getTime():0;
+        all=all.filter(function(a){
+          var auid=String(a.userId&&a.userId._id?a.userId._id:a.userId||"");
+          return auid===String(p.cu.id||"")&&(!rotTime||new Date(a.createdAt).getTime()>=rotTime);
+        });
+      }
+      setPanelHistory(all.slice().sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt);}));
+    }).catch(function(){setPanelHistory([]);});
+  },[selected]);
+
   var getAgentName = function(l){ if(!l.agentId)return"-"; if(l.agentId.name)return l.agentId.name; var u=p.users.find(function(x){return gid(x)===l.agentId;}); return u?u.name:"-"; };
 
   var reqStatus = function(lid, st) {
@@ -1149,26 +1223,30 @@ var LeadsPage = function(p) {
     if(!pendingStatus) return;
     try {
       var upData = { status: pendingStatus.newStatus };
+      if(comment) upData.lastFeedback = comment;
       if(cbTime) upData.callbackTime = cbTime;
+      else upData.callbackTime = "";
       if(extra) {
         if(extra.budget)     upData.budget     = extra.budget;
         if(extra.project)    upData.project    = extra.project;
         if(extra.notes)      upData.notes      = extra.notes;
         if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
-        if(extra.deposit)    upData.notes      = (upData.notes?upData.notes+" | ":"")+"Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
+        if(extra.deposit) {
+          upData.notes = (upData.notes?upData.notes+" | ":"")+"Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
+        }
       }
+      if(comment) upData.notes = comment;
       if(pendingStatus.newStatus === "EOI") upData.eoiDate = extra&&extra.eoiDate ? new Date(extra.eoiDate).toISOString() : new Date().toISOString();
       // Set dealDate to today when converting to DoneDeal (don't use eoiDate)
       if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date().toISOString().slice(0,10);
       // Notify admin when DoneDeal or EOI
       if(pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI"){
-        var notifEntry={id:Date.now(),leadName:selected?selected.name:"leads",leadPhone:selected?selected.phone:"",agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:"",time:new Date().toISOString()};
+        var notifEntry={leadName:selected?selected.name:"",leadId:pendingStatus.leadId,agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:""};
         if(p.addDealNotif) p.addDealNotif(notifEntry);
       }
-      var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
+      await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
       try { await apiFetch("/api/activities","POST",{leadId:pendingStatus.leadId,type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment},p.token); } catch(actE){ console.error("activity log error:",actE.message); }
-      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?updated:l;});});
-      if(selected&&gid(selected)===pendingStatus.leadId) setSelected(updated);
+      try{var freshLead=await apiFetch("/api/leads/"+pendingStatus.leadId,"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?freshLead:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(freshLead);}}catch(fe){}
       p.setActivities(function(prev){return [{_id:Date.now(),userId:{name:p.cu.name},leadId:{_id:pendingStatus.leadId,name:selected?selected.name:""},type:"status_change",note:"["+pendingStatus.newStatus+"] "+comment,createdAt:new Date().toISOString()}].concat(prev);});
       // Track NoAnswer count for rotation
       if(pendingStatus.newStatus==="NoAnswer"){
@@ -1182,6 +1260,8 @@ var LeadsPage = function(p) {
         // Reset no-activity rotation flags
         try{localStorage.removeItem("crm_noact2_"+pendingStatus.leadId);localStorage.removeItem("crm_hotrot_"+pendingStatus.leadId);localStorage.removeItem("crm_cbrot_"+pendingStatus.leadId);}catch(e){}
       }
+      if(pendingStatus.newStatus==="DoneDeal") p.nav("deals");
+      else if(pendingStatus.newStatus==="EOI") p.nav("eoi");
     } catch(e){alert(e.message);}
     setShowStatusComment(false); setPendingStatus(null); setShowStatusPicker(false);
   };
@@ -1212,7 +1292,7 @@ var LeadsPage = function(p) {
   var archiveLead = async function(lid) {
     if(!window.confirm(t.archiveConfirm)) return;
     try {
-      await apiFetch("/api/leads/"+lid+"/archive","PUT",null,p.token);
+      await apiFetch("/api/leads/"+lid+"/archive","PUT",null,p.token,p.csrfToken);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:true}):l;});});
       if(selected&&gid(selected)===lid) setSelected(null);
     } catch(e){alert(e.message);}
@@ -1251,7 +1331,7 @@ var LeadsPage = function(p) {
   var doBulkReassign = async function() {
     if(!bulkAgent||selected2.length===0) return;
     try {
-      await apiFetch("/api/leads/bulk-reassign","PUT",{leadIds:selected2,agentId:bulkAgent},p.token);
+      await apiFetch("/api/leads/bulk-reassign","PUT",{leadIds:selected2,agentId:bulkAgent},p.token,p.csrfToken);
       var updAgent=p.users.find(function(u){return gid(u)===bulkAgent;});
       p.setLeads(function(prev){return prev.map(function(l){return selected2.includes(gid(l))?Object.assign({},l,{agentId:updAgent||bulkAgent}):l;});});
       setSelected2([]); setShowBulk(false);
@@ -1268,7 +1348,7 @@ var LeadsPage = function(p) {
       </div>
       <Btn outline onClick={function(){setShowStatusPicker(false);}} style={{ width:"100%" }}>{t.cancel}</Btn>
     </Modal>}
-    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
+    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} lead={selected} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
 
     {/* Bulk Reassign Modal */}
     <Modal show={showBulk} onClose={function(){setShowBulk(false);}} title={t.bulkReassign}>
@@ -1324,7 +1404,7 @@ var LeadsPage = function(p) {
     </div>
     {importMsg&&<div style={{ marginBottom:10, padding:"9px 14px", background:importMsg.startsWith("✅")?"#DCFCE7":"#FEE2E2", color:importMsg.startsWith("✅")?"#15803D":"#B91C1C", borderRadius:9, fontSize:13 }}>{importMsg}</div>}
 
-    <div style={{ display:"flex", gap:14 }}>
+    <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&selected?330:0, transition:"padding-right 0.25s" }}>
       {/* Status dropdown overlay */}
       {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
     {/* Table */}
@@ -1335,8 +1415,9 @@ var LeadsPage = function(p) {
           var lastAct=lead.lastActivityTime?timeAgo(lead.lastActivityTime,t):"—";
           var actColor=lead.lastActivityTime&&(Date.now()-new Date(lead.lastActivityTime).getTime())>3*24*60*60*1000?C.danger:C.accent;
           var borderCol=isVIP?"#F59E0B":so.color||"#E8ECF1";
-          return <div key={lid} onClick={function(){setSelected(lead);window.scrollTo({top:0,behavior:"smooth"});}}
-            style={{ background:"#fff", borderRadius:16, padding:"16px",
+          var isRotated = isOnlyAdmin && lead.previousAgentIds && lead.previousAgentIds.filter(function(x){ return x != null; }).length > 0;
+          return <div key={lid} onClick={function(){setSelected(lead);}}
+            style={{ background:isRotated?"#FFF7ED":"#fff", borderRadius:16, padding:"16px",
               border:"2px solid "+borderCol,
               cursor:"pointer", boxShadow:"0 3px 12px "+borderCol+"35" }}>
             {/* Header row */}
@@ -1351,10 +1432,14 @@ var LeadsPage = function(p) {
             {/* Phone2 */}
             {lead.phone2&&<div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr", marginBottom:4 }}><PhoneCell phone={lead.phone2}/></div>}
             {/* Project + Last Activity */}
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
               {lead.project?<span style={{ fontSize:11, color:"#6D28D9", fontWeight:700, background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>📍 {lead.project}</span>:<span style={{ color:C.textLight, fontSize:11 }}>—</span>}
               <span style={{ fontSize:11, color:actColor, fontWeight:600 }}>🕐 {lastAct}</span>
             </div>
+            {/* Last Feedback */}
+            {lead.lastFeedback&&<div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8, padding:"6px 10px", background:"#F8FAFC", borderRadius:8, borderLeft:"3px solid "+C.accent }}>💬 {lead.lastFeedback}</div>}
+            {/* Callback time */}
+            {lead.callbackTime&&(function(){var ci=callbackColor(lead.callbackTime);return <div style={{ fontSize:11, fontWeight:600, color:ci?ci.color:C.textLight, marginBottom:8, padding:"4px 10px", background:ci?ci.bg:"#F8FAFC", borderRadius:8 }}>📞 {lead.callbackTime.slice(0,16).replace("T"," ")}</div>;})()}
             {/* Action buttons */}
             <div style={{ display:"flex", gap:8 }}>
               <a href={"tel:"+cleanPhone(lead.phone)} onClick={async function(e){e.stopPropagation();try{await apiFetch("/api/activities","POST",{leadId:gid(lead),type:"call",note:"📞 Call initiated"},p.token);}catch(ex){}}}
@@ -1381,6 +1466,7 @@ var LeadsPage = function(p) {
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.phone2}</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.project}</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.status}</th>
+              {!p.isMobile&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>Last Feedback</th>}
               {!p.isMobile&&isAdmin&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90 }}>{t.source}</th>}
               {isAdmin&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.agent}</th>}
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90 }}>{t.lastActivity}</th>
@@ -1391,7 +1477,8 @@ var LeadsPage = function(p) {
               {filtered.map(function(lead){
                 var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0];
                 var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
-                return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
+                var isRotated = isOnlyAdmin && lead.previousAgentIds && lead.previousAgentIds.filter(function(x){ return x != null; }).length > 0;
+                return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":isRotated?"#FFF7ED":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
                   <td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();setSelected2(function(prev){return prev.includes(lid)?prev.filter(function(x){return x!==lid;}):[...prev,lid];});}}><input type="checkbox" checked={isChk} readOnly/></td>
                   <td style={{ padding:"10px 12px", textAlign:"left" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6 }}>
@@ -1437,11 +1524,15 @@ var LeadsPage = function(p) {
                       </div>}
                     </div>
                   </td>
+                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:13, fontWeight:700, color:C.text, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{lead.lastFeedback||<span style={{color:"#CBD5E1", fontWeight:400}}>-</span>}</td>}
                   {!p.isMobile&&isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
-                      try{var upd=await apiFetch("/api/leads/"+gid(lead),"PUT",{agentId:newAgent||null,status:"NewLead",reassignedAt:new Date().toISOString()},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?upd:l;});});if(selected&&gid(selected)===gid(lead))setSelected(upd);}catch(ex){}
+                      if(!newAgent)return;
+                      var oldAgName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";
+                      var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
+                      try{var rotRes=await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);try{var freshLead=await apiFetch("/api/leads/"+gid(lead),"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?freshLead:l;});});if(selected&&gid(selected)===gid(lead))setSelected(freshLead);}}catch(fe){}if(rotRes.firstAssignment)return;if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
                       {isOnlyAdmin&&<option value="">— No Agent —</option>}
                       {(isOnlyAdmin?salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
@@ -1466,8 +1557,15 @@ var LeadsPage = function(p) {
         </div>
       </Card>}
 
+      {/* Pagination Controls */}
+      {p.leadsTotalPages > 1 && <div style={{ display:"flex", justifyContent:"center", alignItems:"center", gap:10, marginTop:16, padding:"12px 16px", background:"#F8FAFC", borderRadius:12, border:"1px solid #E8ECF1" }}>
+        <button onClick={function(){if(p.leadsPage>1){p.setLeadsPage(p.leadsPage-1);}}} disabled={p.leadsPage<=1} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:p.leadsPage<=1?"#F1F5F9":"#fff", color:p.leadsPage<=1?C.textLight:C.text, fontSize:12, cursor:p.leadsPage<=1?"not-allowed":"pointer" }}>⬅️ Previous</button>
+        <span style={{ fontSize:12, color:C.textLight }}>Page {p.leadsPage} of {p.leadsTotalPages} ({p.leadsTotal} total)</span>
+        <button onClick={function(){if(p.leadsPage<p.leadsTotalPages){p.setLeadsPage(p.leadsPage+1);}}} disabled={p.leadsPage>=p.leadsTotalPages} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:p.leadsPage>=p.leadsTotalPages?"#F1F5F9":"#fff", color:p.leadsPage>=p.leadsTotalPages?C.textLight:C.text, fontSize:12, cursor:p.leadsPage>=p.leadsTotalPages?"not-allowed":"pointer" }}>Next ➡️</button>
+      </div>}
+
       {/* Side Panel */}
-      {selected&&<Card style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ flex:"0 0 295px", maxHeight:"calc(100vh - 120px)", overflowY:"auto", padding:0 }}>
+      {selected&&<Card style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px", position:"sticky", top:0 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
@@ -1482,7 +1580,7 @@ var LeadsPage = function(p) {
           </div>
           {/* Quick action buttons */}
           <div style={{ display:"flex", gap:6, marginTop:10 }}>
-            <a href={"tel:"+cleanPhone(selected.phone)} onClick={async function(){try{await apiFetch("/api/activities","POST",{leadId:gid(selected),type:"call",note:"📞 Call initiated — "+selected.phone},p.token);p.setActivities&&p.setActivities(function(prev){return [{_id:Date.now(),type:"call",note:"📞 Call initiated",leadId:selected,userId:p.cu,createdAt:new Date().toISOString()}].concat(prev);});}catch(ex){}}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#EFF6FF", color:"#60A5FA", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> {t.call}</a>
+            <a href={"tel:"+cleanPhone(selected.phone)} onClick={async function(){try{await apiFetch("/api/activities","POST",{leadId:gid(selected),type:"call",note:"📞 Call initiated — "+selected.phone},p.token,p.csrfToken);p.setActivities&&p.setActivities(function(prev){return [{_id:Date.now(),type:"call",note:"📞 Call initiated",leadId:selected,userId:p.cu,createdAt:new Date().toISOString()}].concat(prev);});}catch(ex){}}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#EFF6FF", color:"#60A5FA", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> {t.call}</a>
             <a href={"https://wa.me/"+waPhone(selected.phone)} target="_blank" rel="noreferrer" style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(37,211,102,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> {t.whatsapp}</a>
           </div>
         </div>
@@ -1499,9 +1597,12 @@ var LeadsPage = function(p) {
             <div style={{ fontSize:11, color:C.textLight, marginBottom:6, fontWeight:600 }}>{t.assignTo}</div>
             <select value={selected.agentId&&selected.agentId._id?selected.agentId._id:(selected.agentId||"")} onChange={async function(e){
               var newAgent=e.target.value;
+              if(!newAgent)return;
               var isManagerUser=p.cu.role==="manager"||p.cu.role==="team_leader";
               if(isManagerUser&&p.cu.teamId){var tgt=p.users.find(function(u){return gid(u)===newAgent;});if(tgt&&tgt.teamId!==p.cu.teamId)return;}
-              try{var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{agentId:newAgent||null,status:"NewLead",reassignedAt:new Date().toISOString()},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){}
+              var oldAgName=selected.agentId&&selected.agentId.name?selected.agentId.name:"";
+              var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
+              try{var rotRes=await apiFetch("/api/leads/"+gid(selected)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);try{var freshLead=await apiFetch("/api/leads/"+gid(selected),"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?freshLead:l;});});setSelected(freshLead);}}catch(fe){}if(rotRes.firstAssignment)return;if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
               {isOnlyAdmin&&<option value="">— No Agent —</option>}
               {(isOnlyAdmin?p.myTeamUsers||salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
@@ -1544,52 +1645,54 @@ var LeadsPage = function(p) {
             <button onClick={function(){openHistory(selected);}} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid #E2E8F0", background:"#F3E8FF", fontSize:13, cursor:"pointer" }} title="History">📋</button>
           </div>
 
-          {/* Activity Log */}
-          {(function(){
-            var cuRole=p.cu.role;
-            var isOnlyAdminH=cuRole==="admin";
-            // Admin: sees all history
-            // Manager: sees only activities after last reassign (reassignedAt)
-            // Sales: sees only activities after last reassign (reassignedAt)
-            var visibleActs=leadActs;
-            if(!isOnlyAdminH && selected){
-              var cutoffTime = 0;
-              if(selected.reassignedAt){
-                cutoffTime = new Date(selected.reassignedAt).getTime();
-              } else if(selected.lastRotationAt){
-                cutoffTime = new Date(selected.lastRotationAt).getTime();
-              } else {
-                // No reassign date: show only activities by current agent
-                var curAgentId = selected.agentId && selected.agentId._id
-                  ? String(selected.agentId._id)
-                  : String(selected.agentId||"");
-                visibleActs = leadActs.filter(function(a){
-                  var auid = a.userId && a.userId._id ? String(a.userId._id) : String(a.userId||"");
-                  return auid === curAgentId || auid === String(p.cu.id||"");
-                });
+          {/* Agent History — admin only */}
+          {isOnlyAdmin&&selected.agentHistory&&selected.agentHistory.length>0&&<div style={{ marginTop:14, padding:10, background:"#F5F3FF", borderRadius:10, border:"1px solid #DDD6FE" }}>
+            <div style={{ fontSize:11, fontWeight:700, color:"#7C3AED", marginBottom:8 }}>🔄 Rotation History ({selected.agentHistory.filter(function(h){return h.action==="Rotation";}).length})</div>
+            {selected.agentHistory.slice().reverse().map(function(h,i){
+              if(h.action==="Rotation"){
+                var reasonLabel=h.reason==="auto_timeout"?"Auto Timeout":h.reason==="no_rotation_override"?"Admin Override":"Manual";
+                return <div key={i} style={{ padding:"8px 0", borderBottom:"1px solid #EDE9FE" }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{h.fromAgent||"Unassigned"} → {h.toAgent||"Unknown"}</div>
+                  <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>
+                    <span style={{ background:h.reason==="auto_timeout"?"#FEF3C7":h.reason==="no_rotation_override"?"#FEE2E2":"#E0E7FF", color:h.reason==="auto_timeout"?"#B45309":h.reason==="no_rotation_override"?"#DC2626":"#4338CA", padding:"1px 6px", borderRadius:6, fontSize:9, fontWeight:600, marginRight:4 }}>{reasonLabel}</span>
+                    <span>by {h.by||"System"}</span>
+                  </div>
+                  <div style={{ fontSize:9, color:C.textLight, marginTop:3 }}>{h.date?new Date(h.date).toLocaleString("en-GB"):""}</div>
+                </div>;
               }
-              if(cutoffTime>0){
-                visibleActs=leadActs.filter(function(a){return new Date(a.createdAt).getTime()>=cutoffTime;});
-              }
-            }
-            // sort by createdAt ascending then reverse = newest first
-            var displayActs = visibleActs.slice().sort(function(a,b){return new Date(a.createdAt)-new Date(b.createdAt);}).reverse();
-            if(displayActs.length===0&&!isOnlyAdminH) return null;
-            return <div style={{ marginTop:14 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-                <span style={{ fontSize:11, color:C.textLight, fontWeight:600 }}>{t.clientHistory}</span>
-                {isOnlyAdminH&&selected&&(selected.rotationCount||0)>0&&<span style={{ fontSize:9, background:"#FEF3C7", color:"#B45309", padding:"2px 6px", borderRadius:6, fontWeight:600 }}>🔄 {selected.rotationCount} transfers</span>}
-              </div>
-              {displayActs.map(function(a,i){var uname=a.userId&&a.userId.name?a.userId.name:"";return <div key={a._id||i} style={{ fontSize:10, padding:"8px 0", borderBottom:"1px solid #F8FAFC" }}>
-                <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
-                  <span style={{ flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔"}</span>
-                  <span style={{ flex:1 }}>{a.note}</span>
-                  <span style={{ color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
+              // Legacy format fallback
+              return <div key={i} style={{ padding:"8px 0", borderBottom:"1px solid #EDE9FE" }}>
+                <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{h.agentName||h.note||"Unknown"}</div>
+                <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>
+                  {h.status&&<span style={{ background:"#E0E7FF", color:"#4338CA", padding:"1px 6px", borderRadius:6, fontSize:9, fontWeight:600, marginRight:4 }}>{h.status}</span>}
+                  {h.budget&&<span style={{ color:C.success, fontWeight:600 }}>{h.budget} EGP</span>}
                 </div>
-                {uname&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{uname} · {new Date(a.createdAt).toLocaleDateString("en-GB")}</div>}
-              </div>;})}
-            </div>;
-          })()}
+                {h.feedback&&<div style={{ fontSize:11, color:C.text, marginTop:4, padding:"4px 8px", background:"#fff", borderRadius:6 }}>💬 {h.feedback}</div>}
+                <div style={{ fontSize:9, color:C.textLight, marginTop:3 }}>
+                  {h.assignedAt?new Date(h.assignedAt).toLocaleDateString("en-GB"):""}
+                  {h.removedAt?" → "+new Date(h.removedAt).toLocaleDateString("en-GB"):""}
+                  {h.date?new Date(h.date).toLocaleString("en-GB"):""}
+                </div>
+              </div>;
+            })}
+          </div>}
+
+          {/* Activity Log — full history */}
+          <div style={{ marginTop:14 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+              <span style={{ fontSize:11, color:C.textLight, fontWeight:600 }}>{t.clientHistory} ({panelHistory.length})</span>
+              {isOnlyAdmin&&selected&&(selected.rotationCount||0)>0&&<span style={{ fontSize:9, background:"#FEF3C7", color:"#B45309", padding:"2px 6px", borderRadius:6, fontWeight:600 }}>🔄 {selected.rotationCount} transfers</span>}
+            </div>
+            {panelHistory.length===0&&<div style={{ fontSize:11, color:C.textLight, textAlign:"center", padding:12 }}>No history</div>}
+            {panelHistory.map(function(a,i){var uname=a.userId&&a.userId.name?a.userId.name:"";return <div key={a._id||i} style={{ fontSize:10, padding:"8px 0", borderBottom:"1px solid #F8FAFC" }}>
+              <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
+                <span style={{ flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔"}</span>
+                <span style={{ flex:1 }}>{a.note}</span>
+                <span style={{ color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
+              </div>
+              {uname&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{uname} · {new Date(a.createdAt).toLocaleDateString("en-GB")}</div>}
+            </div>;})}
+          </div>
         </div>
       </Card>}
     </div>
@@ -1966,7 +2069,7 @@ var DashboardPage = function(p) {
       <StatCard icon={Target} label={t.newLeads} value={myLeads.filter(function(l){return l.status==="Potential";}).length+""} c={C.success} onClick={function(){p.nav("leads");p.setFilter("Potential");}}/>
       <StatCard icon={Briefcase} label={t.activeDeals} value={myLeads.filter(function(l){return["HotCase","CallBack","MeetingDone"].includes(l.status);}).length+""} c={C.accent} onClick={function(){p.nav("leads");p.setFilter("HotCase");}}/>
       <StatCard icon={DollarSign} label={t.doneDeals} value={myLeads.filter(function(l){return l.status==="DoneDeal";}).length+""} c={C.primary} onClick={function(){p.nav("deals");}}/>
-      {(function(){var rots=[];try{rots=JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");}catch(e){}var todayRots=rots.filter(function(r){return r.time&&(Date.now()-new Date(r.time).getTime())<24*60*60*1000;});return todayRots.length>0?<StatCard icon={RotateCcw} label="Rotations Today" value={todayRots.length+""} c={C.warning}/>:null;})()}
+      {(function(){var todayRots=(p.rotNotifs||[]).filter(function(r){var t2=r.createdAt||r.time;return t2&&(Date.now()-new Date(t2).getTime())<24*60*60*1000;});return todayRots.length>0?<StatCard icon={RotateCcw} label="Rotations Today" value={todayRots.length+""} c={C.warning}/>:null;})()}
     </div>}
 
     <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
@@ -2449,7 +2552,7 @@ var DealsPage = function(p) {
         <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.deals} ({filteredDeals.length})</h2>
         {filteredTotal>0&&<div style={{ fontSize:13, fontWeight:700, color:C.success, background:"#DCFCE7", padding:"5px 14px", borderRadius:20 }}>Total: {filteredTotal.toLocaleString()} EGP</div>}
       </div>
-      {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> {t.addLead}</Btn>}
+      {(isOnlyAdmin||p.cu.role==="team_leader")&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> Add Deal</Btn>}
     </div>
 
     {/* Deals Search + Filter bar */}
@@ -2877,39 +2980,41 @@ var DealsPage = function(p) {
           </label>
         </div>}
 
-        {/* Deal Image */}
+        {/* Deal Images */}
         <div style={{ marginTop:12 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 Contract Image</div>
-          {selectedDeal.dealImage
-            ?<div>
-              <img src={selectedDeal.dealImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedDeal.dealImage+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, marginBottom:6, cursor:"zoom-in" }} alt="Contract" title="Click to view full size"/>
-              <label style={{ display:"block", padding:"6px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
-                🔄 Replace Image
-                <input type="file" accept="image/*" style={{ display:"none" }} onChange={async function(e){
-                  var file=e.target.files[0]; if(!file)return;
-                  var reader=new FileReader();
-                  reader.onload=function(ev){
-                    var img=new Image();img.onload=function(){
-                      var canvas=document.createElement("canvas");var maxW=1200,maxH=1200;var w=img.width,h=img.height;
-                      if(w>maxW){h=h*(maxW/w);w=maxW;}if(h>maxH){w=w*(maxH/h);h=maxH;}
-                      canvas.width=w;canvas.height=h;canvas.getContext("2d").drawImage(img,0,0,w,h);
-                      var resized=canvas.toDataURL("image/jpeg",0.7);
-                      apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:resized,imageType:"deal"},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Upload failed");});
-                    };img.src=ev.target.result;
-                  };reader.readAsDataURL(file);
-                }}/>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 Contract Images</div>
+          {(function(){
+            var imgs=selectedDeal.dealImages&&selectedDeal.dealImages.length?selectedDeal.dealImages:selectedDeal.dealImage?[selectedDeal.dealImage]:[];
+            var uploadHandler=function(e){
+              var file=e.target.files[0]; if(!file)return; e.target.value="";
+              var reader=new FileReader();
+              reader.onload=function(ev){
+                var img=new Image();img.onload=function(){
+                  var canvas=document.createElement("canvas");var maxW=1200,maxH=1200;var w=img.width,h=img.height;
+                  if(w>maxW){h=h*(maxW/w);w=maxW;}if(h>maxH){w=w*(maxH/h);h=maxH;}
+                  canvas.width=w;canvas.height=h;canvas.getContext("2d").drawImage(img,0,0,w,h);
+                  var resized=canvas.toDataURL("image/jpeg",0.7);
+                  apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:resized,imageType:"deal"},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Upload failed");});
+                };img.src=ev.target.result;
+              };reader.readAsDataURL(file);
+            };
+            var deleteHandler=function(idx){
+              if(!window.confirm("Delete this image?"))return;
+              apiFetch("/api/leads/"+gid(selectedDeal)+"/delete-deal-image","POST",{index:idx},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Delete failed");});
+            };
+            return <div>
+              {imgs.length>0&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, marginBottom:6 }}>
+                {imgs.map(function(src,i){return <div key={i} style={{ position:"relative" }}>
+                  <img src={src} onClick={function(){var w=window.open();w.document.write("<img src='"+src+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, cursor:"zoom-in", display:"block" }} alt={"Contract "+(i+1)} title="Click to view full size"/>
+                  <button onClick={function(){deleteHandler(i);}} style={{ position:"absolute", top:4, right:4, background:"rgba(239,68,68,0.85)", border:"none", borderRadius:"50%", width:20, height:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:12, fontWeight:700, lineHeight:1 }} title="Delete image">×</button>
+                </div>;})}
+              </div>}
+              <label style={{ display:"block", padding:imgs.length>0?"6px":"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:imgs.length>0?11:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+                {imgs.length>0?"➕ Add More":"📤 Upload Contract Image"}
+                <input type="file" accept="image/*" style={{ display:"none" }} onChange={uploadHandler}/>
               </label>
-            </div>
-            :<label style={{ display:"block", padding:"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
-              📤 Upload Contract Image
-              <input type="file" accept="image/*" style={{ display:"none" }} onChange={async function(e){
-                var file=e.target.files[0]; if(!file)return;
-                var reader=new FileReader();
-                reader.onload=async function(ev){
-                  try{var updated=await apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:ev.target.result,imageType:"deal"},p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}catch(ex){}
-                };reader.readAsDataURL(file);
-              }}/>
-            </label>}
+            </div>;
+          })()}
         </div>
       </div>
     </div>;})()}
@@ -3133,6 +3238,8 @@ var DailyRequestsPage = function(p) {
       .catch(function(){setRequests([]);setLoading(false);});
   },[]);
 
+  useEffect(function(){ if(p.initSelected){setSelected(p.initSelected);p.setInitSelected(null);} },[p.initSelected]);
+
   var filtered=requests.filter(function(r){
     if(filterStatus!=="all"&&r.status!==filterStatus)return false;
     if(agentFilter){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;if(aid!==agentFilter)return false;}
@@ -3151,6 +3258,8 @@ var DailyRequestsPage = function(p) {
     if(!pendingStatus.leadId){alert("Error: request ID not found. Please refresh.");return;}
     try{
       var updateData={status:pendingStatus.newStatus};
+      var fbParts=[];
+      if(comment) fbParts.push(comment);
       if(cbTime) updateData.callbackTime=cbTime;
       if(comment) updateData.notes=comment;
       // Pass deal fields from StatusModal
@@ -3159,7 +3268,13 @@ var DailyRequestsPage = function(p) {
         if(extra.project)   updateData.project=extra.project;
         if(extra.notes)     updateData.notes=(updateData.notes?updateData.notes+" | ":"")+extra.notes;
         if(extra.eoiDeposit) updateData.eoiDeposit=extra.eoiDeposit;
+        if(extra.deposit){
+          var paymentInfo="Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
+          updateData.notes=(updateData.notes?updateData.notes+" | ":"")+paymentInfo;
+          fbParts.push(paymentInfo);
+        }
       }
+      if(fbParts.length) updateData.lastFeedback=fbParts.join(" | ");
       var upd=await apiFetch("/api/daily-requests/"+pendingStatus.leadId,"PUT",updateData,p.token);
       // Also log separate activity with comment if exists
       if(comment||cbTime){
@@ -3173,7 +3288,7 @@ var DailyRequestsPage = function(p) {
       if((pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI")&&p.addDealNotif){
         var req=requests.find(function(r){return gid(r)===pendingStatus.leadId;})||{};
         p.addDealNotif({
-          id:Date.now(),
+          leadId:pendingStatus.leadId,
           leadName:req.name||upd.name||"",
           agentName:req.agentId&&req.agentId.name?req.agentId.name:p.cu.name,
           status:pendingStatus.newStatus,
@@ -3185,6 +3300,8 @@ var DailyRequestsPage = function(p) {
           (req.name||"leads")+" — "+(updateData.budget||req.budget||"")
         );
       }
+      if(pendingStatus.newStatus==="DoneDeal") p.nav("deals");
+      else if(pendingStatus.newStatus==="EOI") p.nav("eoi");
     }catch(e){alert(e.message);}
     setShowStatusComment(false);setPendingStatus(null);setStatusDrop(null);
   };
@@ -3254,7 +3371,7 @@ var DailyRequestsPage = function(p) {
   var getAgentName=function(r){if(!r.agentId)return"-";if(r.agentId.name)return r.agentId.name;var u=p.users.find(function(x){return gid(x)===r.agentId;});return u?u.name:"-";};
 
   return <div style={{ padding:"18px 16px 40px" }}>
-    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
+    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} lead={selected} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
     {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
 
     {/* Stats */}
@@ -3306,7 +3423,7 @@ var DailyRequestsPage = function(p) {
       </select>
     </div>
 
-    <div style={{ display:"flex", gap:14 }}>
+    <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&selected?330:0, transition:"padding-right 0.25s" }}>
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         {loading?<Loader/>:p.isMobile?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:"12px", maxWidth:500, margin:"0 auto" }}>
           {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>No requests</div>}
@@ -3361,13 +3478,17 @@ var DailyRequestsPage = function(p) {
                 </div>
                 <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
               </div>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
                 <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
                   {r.area&&<span style={{ fontSize:11, color:"#6D28D9", fontWeight:700, background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>📍 {r.area}</span>}
                   {r.budget&&<span style={{ fontSize:11, color:C.success, fontWeight:700 }}>💰 {r.budget}</span>}
                 </div>
                 <span style={{ fontSize:11, color:actColor, fontWeight:600 }}>🕐 {lastAct}</span>
               </div>
+              {/* Last Feedback */}
+              {(r.lastFeedback||r.notes)&&<div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8, padding:"6px 10px", background:"#F8FAFC", borderRadius:8, borderLeft:"3px solid "+C.accent }}>💬 {r.lastFeedback||r.notes}</div>}
+              {/* Callback time */}
+              {r.callbackTime&&(function(){var ci=callbackColor(r.callbackTime);return <div style={{ fontSize:11, fontWeight:600, color:ci?ci.color:C.textLight, marginBottom:8, padding:"4px 10px", background:ci?ci.bg:"#F8FAFC", borderRadius:8 }}>📞 {r.callbackTime.slice(0,16).replace("T"," ")}</div>;})()}
               <div style={{ display:"flex", gap:8 }}>
                 <a href={"tel:"+cleanPhone(r.phone)} onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"10px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5, border:"1px solid #BFDBFE" }}><Phone size={13} color="#1D4ED8"/> Call</a>
                 <a href={"https://wa.me/"+waPhone(r.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ flex:1, padding:"10px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5, border:"1px solid #22C55E60" }}><svg viewBox="0 0 24 24" width="13" height="13" fill="#15803D"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp</a>
@@ -3400,7 +3521,7 @@ var DailyRequestsPage = function(p) {
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}>
             <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
               {p.cu.role==="admin"&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(r){return gid(r);}):[]);}}/></th>}
-              {["Name","Phone","Property Type","Location","Budget","Status",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+              {["Name","Phone","Property Type","Location","Budget","Status","Last Feedback",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
             </tr></thead>
             <tbody>
               {filtered.length===0&&<tr><td colSpan={10} style={{ padding:40, textAlign:"center", color:C.textLight }}>No requests</td></tr>}
@@ -3435,6 +3556,7 @@ var DailyRequestsPage = function(p) {
                       <div style={{ borderTop:"1px solid #F1F5F9", marginTop:4, paddingTop:4 }}><button onClick={function(){setStatusDrop(null);}} style={{ width:"100%", padding:"7px", borderRadius:8, border:"none", background:"#F1F5F9", cursor:"pointer", fontSize:12 }}>{t.cancel}</button></div>
                     </div>}
                   </td>
+                  <td style={{ padding:"10px 12px", fontSize:13, fontWeight:700, color:C.text, maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{r.lastFeedback||r.notes||<span style={{color:"#CBD5E1", fontWeight:400}}>-</span>}</td>
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight }} onClick={function(e){e.stopPropagation();}}>
                     <select value={r.agentId&&r.agentId._id?r.agentId._id:(r.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
@@ -3456,7 +3578,7 @@ var DailyRequestsPage = function(p) {
       </Card>
 
       {/* Side Panel */}
-      {selected&&<Card style={{ flex:"0 0 280px", maxHeight:"calc(100vh - 120px)", overflowY:"auto", padding:0 }}>
+      {selected&&<Card style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
@@ -3553,7 +3675,7 @@ var DailyRequestsPage = function(p) {
             <Btn onClick={async function(){
               if(!bulkAgent)return;
               try{
-                await apiFetch("/api/daily-requests/bulk-reassign","PUT",{leadIds:selected2,agentId:bulkAgent},p.token);
+                await apiFetch("/api/daily-requests/bulk-reassign","PUT",{leadIds:selected2,agentId:bulkAgent},p.token,p.csrfToken);
                 var agentUser=p.users.find(function(u){return gid(u)===bulkAgent;});
                 setRequests(function(prev){return prev.map(function(r){return selected2.includes(gid(r))?Object.assign({},r,{agentId:{_id:bulkAgent,name:agentUser?agentUser.name:""}}):r;});});
                 setSelected2([]);setShowBulk(false);setBulkAgent("");
@@ -4511,18 +4633,19 @@ var CallCalendarPage = function(p) {
 // ===== MAIN APP =====
 export default function CRMApp() {
   var [lang,setLang]=useState((function(){try{return "en";}catch(e){return "ar";}})());
-  var [currentUser,setCurrentUser]=useState(null); var [token,setToken]=useState(null);
+  var [currentUser,setCurrentUser]=useState(null); var [token,setToken]=useState(null); var [csrfToken,setCsrfToken]=useState(null);
   var [page,setPage]=useState((function(){try{return localStorage.getItem("crm_page")||null;}catch(e){return null;}})());
   var [leads,setLeads]=useState([]); var [users,setUsers]=useState([]);
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
   var [dailyReqs,setDailyReqs]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
+  var [leadsPage,setLeadsPage]=useState(1); var [leadsTotal,setLeadsTotal]=useState(0); var [leadsTotalPages,setLeadsTotalPages]=useState(0);
+  var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
-  var [dealNotifsSeenCount,setDealNotifsSeenCount]=useState(function(){try{return Number(localStorage.getItem("crm_deal_seen_count")||"0");}catch(e){return 0;}});
-  var [dealNotifs,setDealNotifsRaw]=useState(function(){try{return JSON.parse(localStorage.getItem("crm_deal_notifs")||"[]");}catch(e){return[];}});
-  var setDealNotifs=function(fn){setDealNotifsRaw(function(prev){var next=typeof fn==="function"?fn(prev):fn;try{localStorage.setItem("crm_deal_notifs",JSON.stringify(next));}catch(e){}return next;});};
+  var [dealNotifs,setDealNotifs]=useState([]);
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
+  var [rotNotifs,setRotNotifs]=useState([]);
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
   var [sidebarOpen,setSidebarOpen]=useState(false);
@@ -4535,6 +4658,33 @@ export default function CRMApp() {
     var isDismissed=false; try{isDismissed=localStorage.getItem("crm_pwa_dismissed")==="1";}catch(e){}
     return isIOS&&!isStandalone&&!isDismissed;
   });
+
+  // Deal notification helper — saves to DB, updates local state
+  var addDealNotif = function(n){
+    var notif = {type:"deal",leadName:n.leadName||"",leadId:n.leadId||"",agentName:n.agentName||"",status:n.status||"",budget:n.budget||""};
+    apiFetch("/api/notifications","POST",notif,token).then(function(saved){
+      if(saved) setDealNotifs(function(prev){return [Object.assign({},saved,{seen:false})].concat(prev).slice(0,50);});
+    }).catch(function(){});
+  };
+
+  // Rotation notification helper — saves to DB, updates local state
+  var notifyRotation = function(lead, fromName, toName, reason){
+    var notif = {type:"rotation",leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason};
+    apiFetch("/api/notifications","POST",notif,token).then(function(saved){
+      if(saved) setRotNotifs(function(prev){return [Object.assign({},saved,{seen:false})].concat(prev).slice(0,50);});
+    }).catch(function(){});
+    showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
+  };
+  var rotatingNow = useRef(new Set()).current;
+  var notifyRotationRef = useRef(notifyRotation);
+  notifyRotationRef.current = notifyRotation;
+
+  // Fetch notifications from DB
+  var loadNotifications = function(tok){
+    apiFetch("/api/notifications?type=deal","GET",null,tok).then(function(data){if(data)setDealNotifs(data);}).catch(function(){});
+    apiFetch("/api/notifications?type=rotation","GET",null,tok).then(function(data){if(data)setRotNotifs(data);}).catch(function(){});
+  };
+
   useEffect(function(){
     if (!document.getElementById('cairo-font')) {
       var link=document.createElement('link'); link.id='cairo-font'; link.rel='stylesheet';
@@ -4567,11 +4717,16 @@ export default function CRMApp() {
   var loadData=useCallback(async function(tok, userOverride){
     setLoading(true); setDataError(null);
     try {
-      var results=await Promise.all([apiFetch("/api/leads","GET",null,tok),apiFetch("/api/users","GET",null,tok),apiFetch("/api/activities","GET",null,tok),apiFetch("/api/tasks","GET",null,tok)]);
+      var results=await Promise.all([
+        apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,tok),
+        apiFetch("/api/users","GET",null,tok),
+        apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,tok),
+        apiFetch("/api/tasks","GET",null,tok)
+      ]);
       // Use userOverride if passed (avoids React state timing issue)
       var effectiveUser = userOverride || currentUser;
       // Restore phone2 from cache for leads that are missing it
-      var leadsData = results[0]||[];
+      var leadsData = results[0].data||[];
       try {
         var cache = JSON.parse(localStorage.getItem('phone2_cache')||'{}');
         leadsData = leadsData.map(function(l){
@@ -4580,10 +4735,29 @@ export default function CRMApp() {
           return l;
         });
       } catch(e) {}
-      setLeads(getVisibleLeads(leadsData, effectiveUser, results[1])); setUsers(results[1]); setActivities(results[2]); setTasks(results[3]);
+      setLeads(getVisibleLeads(leadsData, effectiveUser, results[1]));
+      setLeadsTotal(results[0].total || 0);
+      setLeadsTotalPages(results[0].totalPages || 0);
+      setUsers(results[1]);
+      setActivities(results[2].data || []);
+      setActivitiesTotal(results[2].total || 0);
+      setActivitiesTotalPages(results[2].totalPages || 0);
+      setTasks(results[3]);
+      try{ var drData = await apiFetch("/api/daily-requests","GET",null,tok); setDailyReqs(drData||[]); }catch(e){}
     } catch(e){setDataError(e.message);}
     setLoading(false);
-  },[]);
+    // Backfill lastFeedback for existing leads (once per browser)
+    try{
+      var bfKey="crm_feedback_backfilled";
+      if(!localStorage.getItem(bfKey)){
+        apiFetch("/api/leads/backfill-feedback","GET",null,tok).then(function(){
+          localStorage.setItem(bfKey,"1");
+          // Reload leads to pick up backfilled data
+          apiFetch("/api/leads?page=1&limit=1000","GET",null,tok).then(function(r){if(r&&r.data)setLeads(r.data);}).catch(function(){});
+        }).catch(function(){});
+      }
+    }catch(e){}
+  },[leadsPage, activitiesPage]);
 
   // ===== POLLING BACKUP (every 15 seconds) =====
   useEffect(function(){
@@ -4593,11 +4767,11 @@ export default function CRMApp() {
     var interval = setInterval(async function(){
       try{
         var results = await Promise.all([
-          apiFetch("/api/leads","GET",null,token),
-          apiFetch("/api/activities","GET",null,token)
+          apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,token),
+          apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,token)
         ]);
-        var leadsData = results[0]||[];
-        var activitiesData = results[1]||[];
+        var leadsData = results[0].data||[];
+        var activitiesData = results[1].data||[];
         // Fetch DR separately
         try{
           var drData = await apiFetch("/api/daily-requests","GET",null,token);
@@ -4615,20 +4789,8 @@ export default function CRMApp() {
             var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
             showBrowserNotif("🆕 New Lead", l.name+(agName?" → "+agName:""));
           });
-          // Detect status changes to DoneDeal/EOI via polling
-          setLeads(function(prevLeads){
-            leadsData.forEach(function(l){
-              var prev = prevLeads.find(function(p2){return String(p2._id)===String(l._id);});
-              if(prev && prev.status!==l.status && (l.status==="DoneDeal"||l.status==="EOI")){
-                var agName = l.agentId&&l.agentId.name?l.agentId.name:"";
-                setDealNotifs(function(dn){
-                  return [{id:Date.now(),leadName:l.name,agentName:agName,status:l.status,budget:l.budget||"",time:new Date().toISOString()}].concat(dn).slice(0,50);
-                });
-                showBrowserNotif("🎉 "+(l.status==="DoneDeal"?"Done Deal":"EOI"), l.name+(agName?" — "+agName:""));
-              }
-            });
-            return prevLeads;
-          });
+          // Deal/EOI notifications are created by confirmStatus via addDealNotif (MongoDB)
+          // No duplicate detection needed here — polling just refreshes notification state
         }
         knownLeadIds = new Set(leadsData.map(function(l){return String(l._id);}));
 
@@ -4659,10 +4821,12 @@ export default function CRMApp() {
   }, [token]);
   useEffect(function(){
     if(!token) return;
-    var wsUrl = (process.env.REACT_APP_API_URL||"https://crm-aro-api-production.up.railway.app").replace("https://","wss://").replace("http://","ws://");
-    var ws; var reconnectTimer;
+    var wsUrl = (process.env.REACT_APP_API_URL||API).replace("https://","wss://").replace("http://","ws://");
+    var ws; var reconnectTimer; var retries=0; var maxRetries=10;
     function connect(){
-      ws = new WebSocket(wsUrl);
+      if(retries>=maxRetries) return;
+      try{ ws = new WebSocket(wsUrl); }catch(e){ return; }
+      ws.onopen = function(){ retries=0; };
       ws.onmessage = function(e){
         try{
           var msg = JSON.parse(e.data);
@@ -4675,16 +4839,20 @@ export default function CRMApp() {
             setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(msg.data)?msg.data:l;});});
           } else if(msg.type==="activity_created"){
             setActivities(function(prev){return [msg.data].concat(prev).slice(0,50);});
-          } else if(msg.type==="dr_created"){
-            // Daily requests are local state per page, just notify
           }
         }catch(err){}
       };
-      ws.onclose = function(){ reconnectTimer = setTimeout(connect, 5000); };
-      ws.onerror = function(){ ws.close(); };
+      ws.onclose = function(){
+        retries++;
+        if(retries<maxRetries){
+          var delay=Math.min(1000*Math.pow(2,retries),30000);
+          reconnectTimer = setTimeout(connect, delay);
+        }
+      };
+      ws.onerror = function(){ try{ws.close();}catch(e){} };
     }
     connect();
-    return function(){ clearTimeout(reconnectTimer); if(ws) ws.close(); };
+    return function(){ clearTimeout(reconnectTimer); if(ws) try{ws.close();}catch(e){} };
   }, [token]);
 
   // Load saved session on startup
@@ -4693,16 +4861,16 @@ export default function CRMApp() {
       var saved = localStorage.getItem('crm_aro_session');
       if (saved) {
         var s = JSON.parse(saved);
-        if (s.user && s.token) { setCurrentUser(s.user); setToken(s.token); loadData(s.token, s.user); }
+        if (s.user && s.token) { setCurrentUser(s.user); setToken(s.token); if(s.csrfToken) setCsrfToken(s.csrfToken); loadData(s.token, s.user); loadNotifications(s.token); }
       }
     } catch(e) {}
   }, []);
 
-  var handleLogin=function(user,tok){
-    setCurrentUser(user); setToken(tok); loadData(tok, user);
+  var handleLogin=function(user,tok,csrfTok){
+    setCurrentUser(user); setToken(tok); setCsrfToken(csrfTok); loadData(tok, user); loadNotifications(tok);
     var defaultPage = (user.role==="sales"||user.role==="team_leader") ? "myday" : "dashboard";
     setPage(defaultPage);
-    try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok})); } catch(e){}
+    try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok,csrfToken:csrfTok})); } catch(e){}
   };
   // Auto-refresh disabled
 
@@ -4753,7 +4921,7 @@ export default function CRMApp() {
     // 2. Callback notifications - all statuses with callbackTime
     var checkCallbacks = function(){
       var now = Date.now();
-      var allItems = getMyLeads().concat(getMyDR()).filter(function(l){return l.callbackTime;});
+      var allItems = getMyLeads().concat(getMyDR()).filter(function(l){return l.callbackTime&&l.status!=="DoneDeal"&&l.status!=="NotInterested";});
       allItems.forEach(function(l){
         var cbTime = new Date(l.callbackTime).getTime();
         var diff = cbTime - now;
@@ -4871,6 +5039,14 @@ export default function CRMApp() {
     };
   },[token]);
 
+  // ===== NOTIFICATION POLLING (every 30s) =====
+  useEffect(function(){
+    if(!token) return;
+    var poll = function(){ loadNotifications(token); };
+    var interval = setInterval(poll, 30000);
+    return function(){ clearInterval(interval); };
+  },[token]);
+
   // ===== SMART AUTO ROTATION SYSTEM =====
   useEffect(function(){
     if(!token||!leads.length||!users.length) return;
@@ -4893,14 +5069,15 @@ export default function CRMApp() {
     };
 
     // Helper: pick agent using round-robin rotation
-    var pickAgent = function(excludeId){
+    var pickAgent = function(excludeId, previousAgentIds){
       var savedIds = getSavedAgents();
       if(!savedIds.length) return null;
       var agents = users.filter(function(u){return savedIds.includes(gid(u))&&(u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
       if(!agents.length) return null;
-      // Filter out the current agent
-      var candidates = agents.filter(function(u){return gid(u)!==excludeId;});
-      if(!candidates.length) candidates = agents;
+      // Filter out the current agent and all previous agents
+      var prevSet = (previousAgentIds||[]).map(function(id){return String(id);});
+      var candidates = agents.filter(function(u){return gid(u)!==excludeId && !prevSet.includes(String(gid(u)));});
+      if(!candidates.length) return null; // all agents exhausted
       // Round-robin: get last index from localStorage
       var lastIdx = 0;
       try{lastIdx = Number(localStorage.getItem('crm_rot_last_idx')||'0');}catch(e){}
@@ -4911,56 +5088,64 @@ export default function CRMApp() {
       return picked;
     };
 
-    // Helper: send in-app notification to admins + browser notif
-    var notifyAdmins = function(lead, fromName, toName, reason){
-      var timeStr = new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"});
-      var dateStr = new Date().toLocaleDateString("en-GB");
-      showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
-      // Store in-app notification for admins
-      try{
-        var notifs = JSON.parse(localStorage.getItem("crm_rot_notifs")||"[]");
-        notifs.unshift({id:Date.now(),leadName:lead.name,leadId:gid(lead),fromName:fromName,toName:toName,reason:reason,time:new Date().toISOString()});
-        localStorage.setItem("crm_rot_notifs",JSON.stringify(notifs.slice(0,50)));
-      }catch(e){}
-    };
-
-    // Helper: do rotation
+    // Helper: do rotation via backend /rotate endpoint (all 5 hard stops enforced server-side)
     var doRotate = async function(lead, reason){
+      var lid = gid(lead);
+      if(rotatingNow.has(lid)) return;
+
+      // ── Frontend hard stop checks (fast fail before API call) ──
+      // 1. noRotation on current assignment
       var currentAgentId = lead.agentId&&lead.agentId._id?lead.agentId._id:lead.agentId;
-      var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"Agent";
-      // If current agent is team_leader, skip rotation — they keep the lead until they reassign
+      var curAssign = (lead.assignments||[]).find(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===String(currentAgentId);});
+      if(curAssign&&curAssign.noRotation) return;
+      // 2. globalStatus eoi
+      if(lead.globalStatus==="eoi") return;
+      // 3. globalStatus donedeal
+      if(lead.globalStatus==="donedeal") return;
+      // 4. older than 30 days
+      if(lead.createdAt&&(new Date()-new Date(lead.createdAt))>30*24*60*60*1000) return;
+      // 5. Skip team_leader
       var currentAgentUser = users.find(function(u){return String(gid(u))===String(currentAgentId);});
       if(currentAgentUser&&currentAgentUser.role==="team_leader") return;
-      var targetAgent = pickAgent(currentAgentId);
-      if(!targetAgent) return; // no valid target agent
+
+      var targetAgent = pickAgent(currentAgentId, lead.previousAgentIds);
+      if(!targetAgent) return; // all agents exhausted (hard stop 5)
       var targetAgentId = gid(targetAgent);
       if(targetAgentId===currentAgentId) return;
-      var timeStr=new Date().toLocaleString("en-GB");
+
+      rotatingNow.add(lid);
       try{
-        var updated = await apiFetch("/api/leads/"+gid(lead),"PUT",{
-          agentId: targetAgentId,
-          status: "NewLead",
-          callbackTime: "",
-          lastRotationAt: new Date().toISOString(),
-          rotationCount: (lead.rotationCount||0)+1
+        var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"Agent";
+        var timeStr=new Date().toLocaleString("en-GB");
+        await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{
+          targetAgentId: targetAgentId,
+          reason: "auto_timeout"
         },token);
         await apiFetch("/api/activities","POST",{
           leadId:gid(lead),type:"reassign",
-          note:"🔄 Auto Rotation | From: "+fromName+" ← To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
+          note:"🔄 Auto Rotation | From: "+fromName+" → To: "+targetAgent.name+" | Reason: "+reason+" | "+timeStr
         },token);
-        setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
-        notifyAdmins(lead,fromName,targetAgent.name,reason);
+        notifyRotationRef.current(lead,fromName,targetAgent.name,reason);
+        // Re-fetch leads from server to get correct per-agent overlay
+        var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,token);
+        if(fresh&&fresh.data) setLeads(fresh.data);
       }catch(e){console.error("Rotation error:",e);}
+      finally{ rotatingNow.delete(lid); }
     };
 
     var HOUR = 60*60*1000;
     var DAY  = 24*60*60*1000;
-    var now  = Date.now();
 
+    var isRunning = false;
     var runChecks = async function(){
+      if(isRunning) return;
+      isRunning = true;
+      try{
+      var now = Date.now();
       var savedIds = getSavedAgents();
-      if(!savedIds.length) return; // ← no agents configured = no rotation at all
+      if(!savedIds.length){ isRunning=false; return; }
       var dur = getRotDurations();
+      var rotatedThisCycle = new Set();
 
       var salesLeads = leads.filter(function(l){
         return !l.archived && l.source!=="Daily Request";
@@ -4970,34 +5155,27 @@ export default function CRMApp() {
       for(var i=0;i<salesLeads.length;i++){
         var l = salesLeads[i];
         var lid = gid(l);
+        if(rotatedThisCycle.has(lid)) continue;
         var lastAct = new Date(l.lastActivityTime||0).getTime();
 
-        // Skip DoneDeal and EOI — never rotate
+        // ── Hard stops (mirrors backend) ──
+        // 1. noRotation on current assignment
+        var lAgentId = String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
+        var lCurAssign = (l.assignments||[]).find(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===lAgentId;});
+        if(lCurAssign&&lCurAssign.noRotation) continue;
+        // 2. globalStatus eoi
+        if(l.globalStatus==="eoi") continue;
+        // 3. globalStatus donedeal
+        if(l.globalStatus==="donedeal") continue;
+        // 4. expired
+        if(l.createdAt&&(new Date()-new Date(l.createdAt))>30*24*60*60*1000) continue;
+        // Also skip old status checks for backwards compat
         if(l.status==="DoneDeal"||l.status==="EOI") continue;
-
         // Skip VIP leads — pinned, never rotate
         if(l.isVIP) continue;
-
-        // 🔒 Skip locked leads — never rotate (now stored in DB via lead.locked)
+        // Skip locked leads
         if(l.locked) continue;
-
-        // 👤 Skip leads assigned to team_leader — they keep the lead until they reassign
-        var lAgentId = String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
-        var lAgentRole = (function(){
-          var savedIds = getSavedAgents();
-          // Check if agent is team_leader by checking if NOT in saved rotation agents
-          // and their role — we check from all users including admins
-          var allU = users.find(function(u){return String(gid(u))===lAgentId;});
-          return allU?allU.role:"sales";
-        })();
-        if(lAgentRole==="team_leader") continue;
-
-        // ⏰ Skip leads older than 30 days (createdAt)
-        var createdAt = new Date(l.createdAt||0).getTime();
-        if((Date.now()-createdAt) > THIRTY_DAYS) continue;
-
-        // 🔢 Skip leads that have been rotated 6+ times — just stop rotating, don't change status
-        if((l.rotationCount||0) >= 6) continue;
+        // 5. all agents exhausted — checked inside doRotate/pickAgent
 
         // ── RULE 1: NoAnswer x(naCount) → rotate after naHours ──────────
         if(l.status==="NoAnswer"){
@@ -5006,7 +5184,7 @@ export default function CRMApp() {
           try{naCount=Number(localStorage.getItem(naKey)||0);}catch(e){}
           try{naTime=Number(localStorage.getItem(naTimeKey)||0);}catch(e){}
           if(naCount>=dur.naCount && naTime>0 && (now-naTime)>=(dur.naHours*HOUR)){
-            await doRotate(l,"No Answer "+dur.naCount+" times");
+            rotatedThisCycle.add(lid); await doRotate(l,"No Answer "+dur.naCount+" times");
             try{localStorage.removeItem(naKey);localStorage.removeItem(naTimeKey);}catch(e){}
             continue;
           }
@@ -5018,19 +5196,19 @@ export default function CRMApp() {
           try{niTime=Number(localStorage.getItem(niKey)||0);}catch(e){}
           if(!niTime){try{localStorage.setItem(niKey,String(lastAct));}catch(e){} continue;}
           if((now-niTime)>=(dur.niDays*DAY)){
-            await doRotate(l,"Not Interested — new opportunity after "+dur.niDays+" days");
+            rotatedThisCycle.add(lid); await doRotate(l,"Not Interested — new opportunity after "+dur.niDays+" days");
             try{localStorage.removeItem(niKey);}catch(e){}
             continue;
           }
         }
 
-        // ── RULE 3: No activity +noActDays ─────────────────────────────
-        if(l.status!=="NotInterested"&&l.status!=="DoneDeal"&&l.status!=="EOI"){
+        // ── RULE 3: No activity +noActDays (NewLead only — other statuses have their own rules) ──
+        if(l.status==="NewLead"){
           if((now-lastAct)>=(dur.noActDays*DAY)){
             var noActKey="crm_noact2_"+lid; var noActDone=false;
             try{noActDone=localStorage.getItem(noActKey)==="1";}catch(e){}
             if(!noActDone){
-              await doRotate(l,"No Contact +"+dur.noActDays+" days");
+              rotatedThisCycle.add(lid); await doRotate(l,"No Contact +"+dur.noActDays+" days");
               try{localStorage.setItem(noActKey,"1");}catch(e){}
               continue;
             }
@@ -5044,7 +5222,7 @@ export default function CRMApp() {
             var cbDoneKey="crm_cbrot_"+lid; var cbDone=false;
             try{cbDone=localStorage.getItem(cbDoneKey)==="1";}catch(e){}
             if(!cbDone){
-              await doRotate(l,"CallBack overdue by "+dur.cbDays+" days");
+              rotatedThisCycle.add(lid); await doRotate(l,"CallBack overdue by "+dur.cbDays+" days");
               try{localStorage.setItem(cbDoneKey,"1");}catch(e){}
               continue;
             }
@@ -5057,21 +5235,22 @@ export default function CRMApp() {
             var hotKey="crm_hotrot_"+lid; var hotDone=false;
             try{hotDone=localStorage.getItem(hotKey)==="1";}catch(e){}
             if(!hotDone){
-              await doRotate(l,l.status+" — no action "+dur.hotDays+" days");
+              rotatedThisCycle.add(lid); await doRotate(l,l.status+" — no action "+dur.hotDays+" days");
               try{localStorage.setItem(hotKey,"1");}catch(e){}
               continue;
             }
           } else { try{localStorage.removeItem("crm_hotrot_"+lid);}catch(e){} }
         }
       }
+      }finally{ isRunning=false; }
     };
 
     runChecks();
     var rotInterval = setInterval(runChecks, 5*60*1000);
     return function(){clearInterval(rotInterval);};
-  },[token, leads.length, users.length]);
+  },[token, leads, users]);
 
-  var handleLogout=function(){setCurrentUser(null);setToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
+  var handleLogout=function(){setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
 
   if(!currentUser) return <LoginPage t={t} onLogin={handleLogin}/>;
@@ -5085,7 +5264,7 @@ export default function CRMApp() {
   var myId = String(currentUser.id||currentUser._id||"");
   var myTeamUsers = users; // server handles all filtering per role
 
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:function(n){setDealNotifs(function(prev){return [n].concat(prev).slice(0,50);});setShowDealNotif(false);try{localStorage.setItem("crm_notif_seen","0");}catch(e){}}}; 
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs};
 
   var renderPage=function(){
     switch(currentPage){
@@ -5119,11 +5298,11 @@ export default function CRMApp() {
     </div>}
     <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
-      <QuickPhoneSearch leads={leads} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}}/>
+      <QuickPhoneSearch leads={leads} dailyReqs={dailyReqs} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.length-dealNotifsSeenCount>0?dealNotifs.length-dealNotifsSeenCount:0} onDealNotifSeen={function(){setDealNotifsSeenCount(dealNotifs.length);try{localStorage.setItem("crm_deal_seen_count",String(dealNotifs.length));}catch(e){}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;

@@ -7,7 +7,7 @@ var userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   email: { type: String, default: "" },
   phone: { type: String, default: "" },
-  role: { type: String, enum: ["admin", "sales_admin", "manager", "team_leader", "sales", "viewer"], default: "sales" },
+  role: { type: String, enum: ["admin", "sales_admin", "director", "manager", "team_leader", "sales", "viewer"], default: "sales" },
   title: { type: String, default: "" },
   active: { type: Boolean, default: true },
   monthlyTarget: { type: Number, default: 15 },

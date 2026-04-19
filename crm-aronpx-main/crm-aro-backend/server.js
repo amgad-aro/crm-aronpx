@@ -4,201 +4,112 @@ var mongoose = require("mongoose");
 var cors = require("cors");
 var bcrypt = require("bcryptjs");
 var jwt = require("jsonwebtoken");
-var rateLimit = require("express-rate-limit");
 
-// ===== MODELS (imported from models.js) =====
-var { User, Lead, Activity, Task, DailyRequest } = require("./models.js");
+// ===== CORS OPTIONS =====
+var corsOptions = {
+  // Reflect caller origin to avoid blocking Vercel custom domains.
+  origin: true,
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"]
+};
+
+// ===== MODELS =====
+delete mongoose.models["User"];
+delete mongoose.models["Lead"];
+delete mongoose.models["Activity"];
+delete mongoose.models["Task"];
+delete mongoose.models["DailyRequest"];
+
+var User = mongoose.model("User", new mongoose.Schema({
+  name:{type:String,required:true}, username:{type:String,required:true,unique:true},
+  password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
+  role:{type:String,enum:["admin","sales_admin","director","manager","team_leader","sales","viewer"],default:"sales"},
+  title:{type:String,default:""}, active:{type:Boolean,default:true},
+  monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, lastActive:{type:Date,default:null}, qTargets:{type:Object,default:{}}, reportsTo:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null}
+},{timestamps:true}));
+
+var Lead = mongoose.model("Lead", new mongoose.Schema({
+  name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
+  email:{type:String,default:""}, status:{type:String,default:"NewLead"},
+  source:{type:String,default:"Facebook"}, project:{type:String,default:""}, campaign:{type:String,default:""},
+  agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, budget:{type:String,default:""},
+  notes:{type:String,default:""}, callbackTime:{type:String,default:""},
+  lastActivityTime:{type:Date,default:Date.now}, archived:{type:Boolean,default:false}, isVIP:{type:Boolean,default:false},
+  eoiDeposit:{type:String,default:""}, eoiDate:{type:String,default:""},
+  eoiApproved:{type:Boolean,default:false}, eoiImage:{type:String,default:""},
+  dealApproved:{type:Boolean,default:false}, dealImages:[{type:String}],
+  commissionClaimDate:{type:String,default:""}, commissionClaimed:{type:Boolean,default:false},
+  splitAgent2Id:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+  splitAgent2Name:{type:String,default:""},
+  projectWeight:{type:Number,default:1},
+  dealDate:{type:String,default:""},
+  lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0},
+  locked:{type:Boolean,default:false},
+  lastFeedback:{type:String,default:""},
+  agentHistory:{type:[mongoose.Schema.Types.Mixed],default:[]},
+  assignments:[{
+    agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"},
+    status:{type:String,default:"NewLead"},
+    notes:{type:String,default:""},
+    budget:{type:String,default:""},
+    callbackTime:{type:String,default:""},
+    lastFeedback:{type:String,default:""},
+    lastActionAt:{type:Date,default:Date.now},
+    rotationTimer:{type:Date,default:Date.now},
+    noRotation:{type:Boolean,default:false},
+    nextCallAt:{type:Date,default:null},
+    assignedAt:{type:Date,default:Date.now},
+    agentHistory:{type:[mongoose.Schema.Types.Mixed],default:[]}
+  }],
+  previousAgentIds:[{type:mongoose.Schema.Types.ObjectId,ref:"User"}],
+  globalStatus:{type:String,default:"active"},
+  expiresAt:{type:Date,default:null}
+},{timestamps:true}));
+
+// Indexes for query performance
+Lead.collection.createIndex({ "assignments.agentId": 1 }).catch(function(){});
+Lead.collection.createIndex({ agentId: 1 }).catch(function(){});
+Lead.collection.createIndex({ createdAt: -1 }).catch(function(){});
+Lead.collection.createIndex({ globalStatus: 1 }).catch(function(){});
+Lead.collection.createIndex({ archived: 1, agentId: 1 }).catch(function(){});
+Lead.collection.createIndex({ "assignments.agentId": 1, createdAt: -1 }).catch(function(){});
+
+var Activity = mongoose.model("Activity", new mongoose.Schema({
+  userId:{type:mongoose.Schema.Types.ObjectId,ref:"User",required:true},
+  leadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead"},
+  type:{type:String,default:"call"}, note:{type:String,default:""}
+},{timestamps:true}));
+
+var Task = mongoose.model("Task", new mongoose.Schema({
+  title:{type:String,required:true}, type:{type:String,default:"call"},
+  time:{type:String,default:""}, leadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead"},
+  userId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, done:{type:Boolean,default:false}
+},{timestamps:true}));
+
+var Notification = mongoose.model("Notification", new mongoose.Schema({
+  type:{type:String,required:true}, // "deal" or "rotation"
+  leadName:{type:String,default:""},
+  leadId:{type:String,default:""},
+  agentName:{type:String,default:""},
+  fromName:{type:String,default:""},
+  toName:{type:String,default:""},
+  status:{type:String,default:""},
+  budget:{type:String,default:""},
+  reason:{type:String,default:""},
+  seenBy:[{type:String}]
+},{timestamps:true}));
+
+var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
+  name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
+  email:{type:String,default:""}, budget:{type:String,default:""}, propertyType:{type:String,default:""},
+  area:{type:String,default:""}, notes:{type:String,default:""}, status:{type:String,default:"NewLead"},
+  agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, callbackTime:{type:String,default:""},
+  lastActivityTime:{type:Date,default:Date.now}, source:{type:String,default:"Daily Request"},
+  lastFeedback:{type:String,default:""}
+},{timestamps:true}));
 
 var app = express();
-var allowedOrigins = [
-  "https://crm-aronpx.vercel.app",
-  "http://localhost:3000",
-  "https://script.google.com",
-  "https://script.googleusercontent.com"
-];
-var corsOptions = {
-  origin: function(origin, callback) {
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  }
-};
-var validRoles = ["admin", "sales_admin", "manager", "team_leader", "sales", "viewer"];
-var validLeadStatuses = ["NewLead", "Potential", "HotCase", "CallBack", "MeetingDone", "NotInterested", "NoAnswer", "DoneDeal"];
-var validActivityTypes = ["call", "meeting", "followup", "email", "status_change", "reassign", "note"];
-var validTaskTypes = ["call", "meeting", "followup", "email", "note"];
-var validDailyStatuses = ["NewLead", "Potential", "HotCase", "CallBack", "MeetingDone", "NotInterested", "NoAnswer", "DoneDeal", "EOI"];
-
-function validate(rules) {
-  return async function(req, res, next) {
-    for (const rule of rules) {
-      await rule.run(req);
-    }
-    var errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-    next();
-  };
-}
-
-var loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many login attempts. Please try again later." }
-});
-
-var loginValidation = validate([
-  body("username").exists().withMessage("username required").isString().trim().notEmpty().escape(),
-  body("password").exists().withMessage("password required").isString().trim().notEmpty()
-]);
-
-var userCreateValidation = validate([
-  body("name").exists().withMessage("name required").isString().trim().notEmpty().escape(),
-  body("username").exists().withMessage("username required").isString().trim().notEmpty().escape(),
-  body("password").optional().isString().trim().notEmpty(),
-  body("email").optional().isEmail().normalizeEmail(),
-  body("phone").optional().isString().trim().notEmpty().escape(),
-  body("role").optional().isIn(validRoles),
-  body("title").optional().isString().trim().escape(),
-  body("teamId").optional().isString().trim().escape(),
-  body("teamName").optional().isString().trim().escape(),
-  body("monthlyTarget").optional().isInt({ min: 0 }),
-  body("reportsTo").optional().isMongoId(),
-]);
-
-var userUpdateValidation = validate([
-  param("id").isMongoId().withMessage("Invalid user id"),
-  body("name").optional().isString().trim().notEmpty().escape(),
-  body("email").optional().isEmail().normalizeEmail(),
-  body("phone").optional().isString().trim().notEmpty().escape(),
-  body("role").optional().isIn(validRoles),
-  body("title").optional().isString().trim().escape(),
-  body("active").optional().isBoolean(),
-  body("monthlyTarget").optional().isInt({ min: 0 }),
-  body("password").optional().isString().trim().notEmpty(),
-  body("qTargets").optional().isObject(),
-  body("reportsTo").optional().isMongoId(),
-  body("teamId").optional().isString().trim().escape(),
-  body("teamName").optional().isString().trim().escape(),
-]);
-
-var idParamValidation = validate([
-  param("id").isMongoId().withMessage("Invalid id")
-]);
-
-var duplicatePhoneValidation = validate([
-  param("phone").exists().withMessage("phone required").isString().trim().notEmpty().escape()
-]);
-
-var leadCreateValidation = validate([
-  body("name").exists().withMessage("name required").isString().trim().notEmpty().escape(),
-  body("phone").exists().withMessage("phone required").isString().trim().notEmpty().escape(),
-  body("phone2").optional().isString().trim().escape(),
-  body("email").optional().isEmail().normalizeEmail(),
-  body("status").optional().isIn(validLeadStatuses),
-  body("source").optional().isString().trim().escape(),
-  body("project").optional().isString().trim().escape(),
-  body("agentId").optional({ checkFalsy: true }).isMongoId(),
-  body("budget").optional().isString().trim().escape(),
-  body("notes").optional().isString().trim(),
-  body("callbackTime").optional().isString().trim().escape(),
-  body("isVIP").optional().isBoolean(),
-]);
-
-var leadUpdateValidation = validate([
-  param("id").isMongoId().withMessage("Invalid lead id"),
-  body("name").optional().isString().trim().notEmpty().escape(),
-  body("phone").optional().isString().trim().notEmpty().escape(),
-  body("phone2").optional().isString().trim().escape(),
-  body("email").optional().isEmail().normalizeEmail(),
-  body("status").optional().isIn(validLeadStatuses),
-  body("source").optional().isString().trim().escape(),
-  body("project").optional().isString().trim().escape(),
-  body("agentId").optional({ checkFalsy: true }).isMongoId(),
-  body("budget").optional().isString().trim().escape(),
-  body("notes").optional().isString().trim(),
-  body("callbackTime").optional().isString().trim().escape(),
-  body("archived").optional().isBoolean(),
-  body("isVIP").optional().isBoolean(),
-]);
-
-var leadBulkReassignValidation = validate([
-  body("leadIds").isArray({ min: 1 }).withMessage("leadIds must be a non-empty array"),
-  body("leadIds.*").isMongoId().withMessage("Invalid lead id in leadIds"),
-  body("agentId").exists().withMessage("agentId required").isMongoId().withMessage("Invalid agentId")
-]);
-
-var leadUploadImageValidation = validate([
-  param("id").isMongoId().withMessage("Invalid lead id"),
-  body("imageData").exists().withMessage("imageData required").isString().notEmpty(),
-  body("imageType").optional().isIn(["eoi", "deal"])
-]);
-
-var activityCreateValidation = validate([
-  body("leadId").optional().isMongoId().withMessage("Invalid leadId"),
-  body("type").optional().isIn(validActivityTypes),
-  body("note").optional().isString().trim()
-]);
-
-var taskCreateValidation = validate([
-  body("title").exists().withMessage("title required").isString().trim().notEmpty().escape(),
-  body("type").optional().isIn(validTaskTypes),
-  body("time").optional().isString().trim().escape(),
-  body("leadId").optional().isMongoId().withMessage("Invalid leadId"),
-  body("userId").optional().isMongoId().withMessage("Invalid userId"),
-  body("done").optional().isBoolean()
-]);
-
-var taskUpdateValidation = validate([
-  param("id").isMongoId().withMessage("Invalid task id"),
-  body("title").optional().isString().trim().notEmpty().escape(),
-  body("type").optional().isIn(validTaskTypes),
-  body("time").optional().isString().trim().escape(),
-  body("leadId").optional().isMongoId().withMessage("Invalid leadId"),
-  body("userId").optional().isMongoId().withMessage("Invalid userId"),
-  body("done").optional().isBoolean()
-]);
-
-var dailyRequestCreateValidation = validate([
-  body("name").exists().withMessage("name required").isString().trim().notEmpty().escape(),
-  body("phone").exists().withMessage("phone required").isString().trim().notEmpty().escape(),
-  body("phone2").optional().isString().trim().escape(),
-  body("email").optional().isEmail().normalizeEmail(),
-  body("budget").optional().isString().trim().escape(),
-  body("propertyType").optional().isString().trim().escape(),
-  body("area").optional().isString().trim().escape(),
-  body("notes").optional().isString().trim(),
-  body("agentId").optional().isMongoId().withMessage("Invalid agentId"),
-  body("callbackTime").optional().isString().trim().escape(),
-  body("status").optional().isIn(validDailyStatuses)
-]);
-
-var dailyRequestUpdateValidation = validate([
-  param("id").isMongoId().withMessage("Invalid daily request id"),
-  body("name").optional().isString().trim().notEmpty().escape(),
-  body("phone").optional().isString().trim().notEmpty().escape(),
-  body("phone2").optional().isString().trim().escape(),
-  body("email").optional().isEmail().normalizeEmail(),
-  body("budget").optional().isString().trim().escape(),
-  body("propertyType").optional().isString().trim().escape(),
-  body("area").optional().isString().trim().escape(),
-  body("notes").optional().isString().trim(),
-  body("agentId").optional().isMongoId().withMessage("Invalid agentId"),
-  body("callbackTime").optional().isString().trim().escape(),
-  body("status").optional().isIn(validDailyStatuses)
-]);
-
-var dailyRequestBulkReassignValidation = validate([
-  body("leadIds").isArray({ min: 1 }).withMessage("leadIds must be a non-empty array"),
-  body("leadIds.*").isMongoId().withMessage("Invalid id in leadIds"),
-  body("agentId").exists().withMessage("agentId required").isMongoId().withMessage("Invalid agentId")
-]);
-
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
@@ -207,6 +118,8 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 mongoose.connect(process.env.MONGODB_URI).then(function() {
   console.log("Connected to MongoDB");
   seedAdmin();
+  // Clean up null entries in previousAgentIds from old rotation code
+  Lead.updateMany({ previousAgentIds: null }, { $pull: { previousAgentIds: null } }).catch(function(){});
 }).catch(function(err) {
   console.error("MongoDB connection error:", err);
 });
@@ -254,22 +167,102 @@ function auth(req, res, next) {
 }
 
 function adminOnly(req, res, next) {
-  if (req.user.role !== "admin" && req.user.role !== "sales_admin" && req.user.role !== "manager" && req.user.role !== "team_leader") {
+  if (req.user.role !== "admin" && req.user.role !== "sales_admin" && req.user.role !== "director" && req.user.role !== "manager" && req.user.role !== "team_leader") {
     return res.status(403).json({ error: "Admin only" });
   }
   next();
 }
 
+function leadUploadImageValidation(req, res, next) {
+  try {
+    var imageType = req.body && req.body.imageType;
+    var rawValue = req.body && req.body.imageData;
+
+    if (imageType && imageType !== "eoi" && imageType !== "deal") {
+      return res.status(400).json({ error: "Invalid imageType" });
+    }
+
+    var raw = String(rawValue || "").trim();
+    if (!raw) {
+      return res.status(400).json({ error: "imageData is required" });
+    }
+
+    var mime = "";
+    var base64Part = raw;
+    var dataUrlMatch = raw.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (dataUrlMatch) {
+      mime = dataUrlMatch[1].toLowerCase();
+      base64Part = dataUrlMatch[2];
+    }
+
+    if (!/^[A-Za-z0-9+/=]+$/.test(base64Part)) {
+      return res.status(400).json({ error: "Invalid base64 image data" });
+    }
+
+    var buffer;
+    try {
+      buffer = Buffer.from(base64Part, "base64");
+    } catch (e) {
+      return res.status(400).json({ error: "Invalid base64 image data" });
+    }
+
+    if (!buffer || !buffer.length) {
+      return res.status(400).json({ error: "Invalid base64 image data" });
+    }
+
+    // 5MB decoded payload limit for safer storage and DoS resistance.
+    if (buffer.length > 5 * 1024 * 1024) {
+      return res.status(400).json({ error: "Image too large (max 5MB)" });
+    }
+
+    var isJpeg = buffer.length > 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF;
+    var isPng = buffer.length > 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47 && buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A;
+    var isWebp = buffer.length > 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP";
+
+    if (!isJpeg && !isPng && !isWebp) {
+      return res.status(400).json({ error: "Only JPEG, PNG, or WEBP images are allowed" });
+    }
+
+    if (mime && ["image/jpeg", "image/jpg", "image/png", "image/webp"].indexOf(mime) === -1) {
+      return res.status(400).json({ error: "Unsupported image MIME type" });
+    }
+
+    next();
+  } catch (e) {
+    return res.status(400).json({ error: "Invalid image payload" });
+  }
+}
+
 // ===== AUTH ROUTES =====
-app.post("/api/login", loginLimiter, loginValidation, async function(req, res) {
+app.post("/api/login", async function(req, res) {
   try {
     var user = await User.findOne({ username: req.body.username, active: true });
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
     var valid = await bcrypt.compare(req.body.password, user.password);
     if (!valid) return res.status(401).json({ error: "Invalid credentials" });
-    var token = jwt.sign({ id: user._id, role: user.role, name: user.name }, process.env.JWT_SECRET, { expiresIn: "7d" });
+
+    var token = jwt.sign({
+      id: user._id,
+      role: user.role,
+      name: user.name
+    }, process.env.JWT_SECRET, { expiresIn: "7d" });
+
     await User.findByIdAndUpdate(user._id, { lastSeen: new Date() });
-    res.json({ token: token, user: { id: user._id, name: user.name, username: user.username, role: user.role, title: user.title, email: user.email, phone: user.phone, teamId: user.teamId||"", teamName: user.teamName||"", reportsTo: user.reportsTo||null } });
+    res.json({
+      token: token,
+      user: {
+        id: user._id,
+        name: user.name,
+        username: user.username,
+        role: user.role,
+        title: user.title,
+        email: user.email,
+        phone: user.phone,
+        teamId: user.teamId||"",
+        teamName: user.teamName||"",
+        reportsTo: user.reportsTo||null
+      }
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -306,6 +299,28 @@ app.get("/api/users", auth, async function(req, res) {
     if (role === "admin" || role === "sales_admin") {
       // Admin sees all users
       users = await User.find().select("-password").sort({ createdAt: -1 });
+      users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
+
+    } else if (role === "director") {
+      // Director: sees managers under them + TLs under those managers + sales under those TLs
+      var directorUser = await User.findById(uid).lean();
+      var visibleIds = [directorUser._id];
+      var managersUnder = await User.find({ reportsTo: directorUser._id, role: "manager" }).lean();
+      var mgrIds = managersUnder.map(function(m){ return m._id; });
+      managersUnder.forEach(function(m){ visibleIds.push(m._id); });
+      if (mgrIds.length > 0) {
+        var tlsUnderMgrs = await User.find({ reportsTo: { $in: mgrIds }, role: { $in: ["team_leader","manager"] } }).lean();
+        var tlIdsD = tlsUnderMgrs.map(function(tl){ return tl._id; });
+        tlsUnderMgrs.forEach(function(tl){ visibleIds.push(tl._id); });
+        if (tlIdsD.length > 0) {
+          var salesUnderTlsD = await User.find({ reportsTo: { $in: tlIdsD }, role: { $in: ["sales","team_leader"] } }).lean();
+          salesUnderTlsD.forEach(function(s){ visibleIds.push(s._id); });
+        }
+        // Direct sales under managers (no TL)
+        var directSalesUnderMgrs = await User.find({ reportsTo: { $in: mgrIds }, role: "sales" }).lean();
+        directSalesUnderMgrs.forEach(function(s){ if(!visibleIds.some(function(id){ return String(id)===String(s._id); })) visibleIds.push(s._id); });
+      }
+      users = await User.find({ _id: { $in: visibleIds } }).select("-password").sort({ createdAt: -1 });
       users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
 
     } else if (role === "manager") {
@@ -347,7 +362,7 @@ app.get("/api/users", auth, async function(req, res) {
   }
 });
 
-app.post("/api/users", auth, adminOnly, userCreateValidation, async function(req, res) {
+app.post("/api/users", auth, adminOnly, async function(req, res) {
   try {
     var hashed = await bcrypt.hash(req.body.password || "sales123", 10);
     var teamId = req.body.teamId || "";
@@ -383,7 +398,7 @@ app.post("/api/users", auth, adminOnly, userCreateValidation, async function(req
   }
 });
 
-app.put("/api/users/:id", auth, adminOnly, userUpdateValidation, async function(req, res) {
+app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
   try {
     var update = {};
     if (req.body.name) update.name = req.body.name;
@@ -405,7 +420,7 @@ app.put("/api/users/:id", auth, adminOnly, userUpdateValidation, async function(
   }
 });
 
-app.delete("/api/users/:id", auth, adminOnly, idParamValidation, async function(req, res) {
+app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
   try {
     await User.findByIdAndDelete(req.params.id);
     res.json({ ok: true });
@@ -422,7 +437,7 @@ app.get("/api/leads", auth, async function(req, res) {
     var uid = req.user.id;
 
     if (role === "sales") {
-      query.agentId = new mongoose.Types.ObjectId(uid);
+      query["assignments.agentId"] = new mongoose.Types.ObjectId(uid);
 
     } else if (role === "team_leader") {
       // Team leader sees only their direct sales
@@ -432,6 +447,29 @@ app.get("/api/leads", auth, async function(req, res) {
       var directSales = await User.find({ reportsTo: tlUser._id }).lean();
       directSales.forEach(function(s) { visibleAgentIds.push(s._id); });
       query.agentId = { $in: visibleAgentIds };
+
+    } else if (role === "director") {
+      // Director: Managers under them → TLs under those Managers → Sales under those TLs
+      var directorUser = await User.findById(uid).lean();
+      if (!directorUser) return res.status(404).json({ error: "User not found" });
+      var visibleAgentIds = [directorUser._id];
+      var managersUnder = await User.find({ reportsTo: directorUser._id, role: "manager" }).lean();
+      var mgrIds = managersUnder.map(function(m){ return m._id; });
+      managersUnder.forEach(function(m){ visibleAgentIds.push(m._id); });
+      if (mgrIds.length > 0) {
+        var tlsUnderMgrs = await User.find({ reportsTo: { $in: mgrIds } }).lean();
+        var tlIdsD = tlsUnderMgrs.filter(function(u){ return u.role === "team_leader" || u.role === "manager"; }).map(function(tl){ return tl._id; });
+        tlsUnderMgrs.forEach(function(u){ visibleAgentIds.push(u._id); });
+        if (tlIdsD.length > 0) {
+          var salesUnderTlsD = await User.find({ reportsTo: { $in: tlIdsD } }).lean();
+          salesUnderTlsD.forEach(function(s){ visibleAgentIds.push(s._id); });
+        }
+      }
+      // Deduplicate
+      var uniqueIdsD = visibleAgentIds.filter(function(id, i, arr) {
+        return arr.findIndex(function(x) { return String(x) === String(id); }) === i;
+      });
+      query.agentId = { $in: uniqueIdsD };
 
     } else if (role === "manager") {
       var managerUser = await User.findById(uid).lean();
@@ -468,27 +506,95 @@ app.get("/api/leads", auth, async function(req, res) {
     }
     // admin: no filter
 
-    var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").sort({ createdAt: -1 });
-    res.json(leads);
+    // Pagination
+    var page = parseInt(req.query.page) || 1;
+    var limit = parseInt(req.query.limit) || 1000;
+    var skip = (page - 1) * limit;
+
+    var total = await Lead.countDocuments(query);
+    var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+
+    // For sales agents: overlay their own assignments[] entry fields on top of each lead
+    var data = leads;
+    if (role === "sales") {
+      data = leads.map(function(l) {
+        var obj = Object.assign({}, l);
+        var myAssign = (obj.assignments || []).find(function(a) {
+          var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+          return String(aid) === String(uid);
+        });
+        if (myAssign) {
+          var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
+          obj.status = assignStatus || obj.status;
+          obj.notes = myAssign.notes !== undefined ? myAssign.notes : obj.notes;
+          obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+          obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
+          obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : obj.lastFeedback;
+          obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
+          if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
+          if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+          if (myAssign.agentHistory && myAssign.agentHistory.length > 0) obj.agentHistory = myAssign.agentHistory;
+        }
+        return obj;
+      });
+    }
+
+    res.json({
+      data: data,
+      total: total,
+      page: page,
+      totalPages: Math.ceil(total / limit)
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// ===== SINGLE LEAD GET (with per-agent overlay) =====
+app.get("/api/leads/:id", auth, async function(req, res) {
+  try {
+    var lead = await Lead.findById(req.params.id).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").lean();
+    if (!lead) return res.status(404).json({ error: "Not found" });
+    var role = req.user.role;
+    var uid = String(req.user.id);
+    if (role === "sales") {
+      var obj = Object.assign({}, lead);
+      var myAssign = (obj.assignments || []).find(function(a) {
+        var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+        return String(aid) === uid;
+      });
+      if (myAssign) {
+        obj.status = myAssign.status || obj.status;
+        obj.notes = myAssign.notes !== undefined ? myAssign.notes : obj.notes;
+        obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+        obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
+        obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : obj.lastFeedback;
+        obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
+        if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
+        if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+        if (myAssign.agentHistory && myAssign.agentHistory.length > 0) obj.agentHistory = myAssign.agentHistory;
+      }
+      return res.json(obj);
+    }
+    res.json(lead);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== CHECK DUPLICATE PHONE =====
-app.get("/api/leads/check-duplicate/:phone", auth, duplicatePhoneValidation, async function(req, res) {
+app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
   try {
     var phone = decodeURIComponent(req.params.phone);
-    var lead = await Lead.findOne({ phone: phone, archived: false }).populate("agentId", "name title");
+    var lead = await Lead.findOne({ $or: [{ phone: phone }, { phone2: phone }], archived: false }).populate("agentId", "name title");
     if (lead) res.json({ exists: true, lead: lead });
     else res.json({ exists: false });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ===== ADD LEAD =====
-app.post("/api/leads", auth, leadCreateValidation, async function(req, res) {
+app.post("/api/leads", auth, async function(req, res) {
   try {
     console.log("NEW LEAD body:", JSON.stringify(req.body));
+    // Admin assigns agent manually — no auto-assignment
     var agentId = (req.body.agentId && req.body.agentId !== "")
       ? new mongoose.Types.ObjectId(req.body.agentId)
       : null;
@@ -500,16 +606,25 @@ app.post("/api/leads", auth, leadCreateValidation, async function(req, res) {
       status:           req.body.status || "NewLead",
       source:           req.body.source || "Facebook",
       project:          req.body.project || "",
+      campaign:         req.body.campaign || "",
       agentId:          agentId,
       budget:           req.body.budget || "",
       notes:            req.body.notes || "",
       callbackTime:     req.body.callbackTime || "",
+      dealDate:         req.body.dealDate || "",
+      downPaymentPct:   req.body.downPaymentPct || "",
+      installmentYears: req.body.installmentYears || "",
       lastActivityTime: new Date(),
       archived:         false,
       isVIP:            false,
+      eoiDeposit:       req.body.eoiDeposit || "",
+      eoiDate:          req.body.eoiDate || "",
+      assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "New Lead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: req.body.notes || "", budget: req.body.budget || "", callbackTime: req.body.callbackTime || "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
+      expiresAt:        new Date(Date.now() + 30*24*60*60*1000),
+      globalStatus:     "active",
     });
     console.log("SAVED phone2:", lead.phone2);
-    lead = await Lead.findById(lead._id).populate("agentId", "name title");
+    lead = await Lead.findById(lead._id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(lead);
   } catch (e) {
     console.error("POST /api/leads error:", e.message);
@@ -518,12 +633,50 @@ app.post("/api/leads", auth, leadCreateValidation, async function(req, res) {
 });
 
 // ===== BULK REASSIGN (must be before /:id) =====
-app.put("/api/leads/bulk-reassign", auth, adminOnly, leadBulkReassignValidation, async function(req, res) {
+app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
   try {
     var { leadIds, agentId } = req.body;
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
     var agentObjId = new mongoose.Types.ObjectId(agentId);
-    await Lead.updateMany({ _id: { $in: leadIds } }, { $set: { agentId: agentObjId, lastActivityTime: new Date() } });
+    var newAssignment = {
+      agentId: agentObjId,
+      status: "NewLead",
+      assignedAt: new Date(),
+      lastActionAt: new Date(),
+      rotationTimer: new Date(),
+      noRotation: false,
+      notes: "",
+      budget: "",
+      callbackTime: "",
+      lastFeedback: "",
+      nextCallAt: null,
+      agentHistory: []
+    };
+    // Update top-level fields AND push new assignments entry
+    for (var i = 0; i < leadIds.length; i++) {
+      var lead = await Lead.findById(leadIds[i]).lean();
+      if (!lead) continue;
+      var oldAgentId = lead.agentId;
+      var updateOps = {
+        $set: { agentId: agentObjId, lastActivityTime: new Date(), lastRotationAt: new Date(), rotationCount: (lead.rotationCount || 0) + 1 },
+        $push: { assignments: newAssignment }
+      };
+      // Add old agent to previousAgentIds and log rotation event
+      if (oldAgentId) {
+        updateOps.$push.previousAgentIds = oldAgentId;
+        var oldAgUser = await User.findById(oldAgentId).lean();
+        var newAgUser = await User.findById(agentId).lean();
+        updateOps.$push.agentHistory = {
+          action: "Rotation",
+          fromAgent: oldAgUser ? oldAgUser.name : "Unknown",
+          toAgent: newAgUser ? newAgUser.name : "Unknown",
+          reason: "manual",
+          by: req.user.name || "Admin",
+          date: new Date()
+        };
+      }
+      await Lead.findByIdAndUpdate(leadIds[i], updateOps);
+    }
     await Activity.create({ userId: req.user.id, type: "reassign", note: "Bulk reassign — " + leadIds.length + " leads" });
     res.json({ ok: true, count: leadIds.length });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -535,36 +688,82 @@ app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async f
   try {
     var { imageData, imageType } = req.body; // imageType: "eoi" or "deal"
     if (!imageData) return res.status(400).json({ error: "No image data" });
-    var field = imageType === "deal" ? "dealImage" : "eoiImage";
+    if (imageType === "deal") {
+      var lead = await Lead.findByIdAndUpdate(req.params.id, { $push: { dealImages: imageData } }, { new: true }).populate("agentId", "name title");
+      return res.json(lead);
+    }
+    var field = "eoiImage";
     var update = {}; update[field] = imageData;
     var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
     res.json(lead);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put("/api/leads/:id", auth, leadUpdateValidation, async function(req, res) {
+// ===== DELETE DEAL IMAGE =====
+app.post("/api/leads/:id/delete-deal-image", auth, async function(req, res) {
   try {
-    var allowedFields = [
-      "name", "phone", "phone2", "email", "status", "source", "project",
-      "agentId", "budget", "notes", "callbackTime", "archived", "isVIP",
-      "eoiDeposit", "eoiDate", "eoiApproved", "dealApproved", "eoiImage",
-      "dealImage", "commissionClaimDate", "commissionClaimed", "splitAgent2Id",
-      "splitAgent2Name", "projectWeight", "dealDate"
-    ];
-    var update = { lastActivityTime: new Date() };
-    allowedFields.forEach(function(field) {
-      if (req.body[field] !== undefined) {
-        update[field] = req.body[field];
-      }
-    });
+    var { index } = req.body;
+    var lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    var imgs = lead.dealImages || [];
+    if (index < 0 || index >= imgs.length) return res.status(400).json({ error: "Invalid index" });
+    imgs.splice(index, 1);
+    lead.dealImages = imgs;
+    await lead.save();
+    var populated = await Lead.findById(req.params.id).populate("agentId", "name title");
+    res.json(populated);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put("/api/leads/:id", auth, async function(req, res) {
+  try {
+    var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty unless explicitly reassigning
     if (!update.agentId) delete update.agentId;
+    // Protect array fields from being overwritten via $set — these are append-only
+    delete update.agentHistory;
+    delete update.assignments;
+    delete update.previousAgentIds;
     // If agentId is being changed (manual reassign) — reset status to NewLead
     var oldLead = null;
-    if (req.body.agentId) {
+    if (req.body.agentId || req.body.status) {
       oldLead = await Lead.findById(req.params.id).lean();
     }
-    var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
+    // Guard: never downgrade EOI or DoneDeal back to NewLead (prevents stale rotation overwrites)
+    if (oldLead && (oldLead.status === "EOI" || oldLead.status === "DoneDeal") && req.body.status === "NewLead") {
+      return res.json(oldLead);
+    }
+    // Track agent history when agent changes (fallback — should go through /rotate)
+    if (req.body.agentId && oldLead && oldLead.agentId && String(oldLead.agentId) !== String(req.body.agentId)) {
+      update.lastRotationAt = new Date();
+      update.rotationCount = (oldLead.rotationCount || 0) + 1;
+      update.reassignedAt = new Date();
+    }
+    await Lead.findByIdAndUpdate(req.params.id, { $set: update });
+    // Sync agent's own assignments[] entry on any action
+    if (req.user.role === "sales" || req.user.role === "team_leader") {
+      var assignUpdate = { "assignments.$.lastActionAt": new Date(), "assignments.$.rotationTimer": new Date() };
+      if (req.body.status) assignUpdate["assignments.$.status"] = req.body.status;
+      if (req.body.notes !== undefined) assignUpdate["assignments.$.notes"] = req.body.notes;
+      if (req.body.budget !== undefined) assignUpdate["assignments.$.budget"] = req.body.budget;
+      if (req.body.callbackTime !== undefined) assignUpdate["assignments.$.callbackTime"] = req.body.callbackTime;
+      if (req.body.lastFeedback !== undefined) assignUpdate["assignments.$.lastFeedback"] = req.body.lastFeedback;
+      if (req.body.noRotation !== undefined) assignUpdate["assignments.$.noRotation"] = req.body.noRotation;
+      var assignOps = { $set: assignUpdate };
+      // Append to per-agent agentHistory on status change or note
+      if (req.body.status || req.body.notes || req.body.lastFeedback) {
+        var histNote = {};
+        if (req.body.status) histNote.type = "status_change";
+        else if (req.body.notes) histNote.type = "note";
+        else histNote.type = "feedback";
+        histNote.note = req.body.status ? "Status: " + req.body.status : (req.body.notes || req.body.lastFeedback || "");
+        histNote.createdAt = new Date();
+        assignOps.$push = { "assignments.$.agentHistory": histNote };
+      }
+      await Lead.updateOne({ _id: req.params.id, "assignments.agentId": new mongoose.Types.ObjectId(req.user.id) }, assignOps);
+    }
+    // Single final read with populate
+    var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     try {
       var actType = "note";
       var actNote = "Updated";
@@ -574,8 +773,6 @@ app.put("/api/leads/:id", auth, leadUpdateValidation, async function(req, res) {
       } else if (req.body.agentId && oldLead && String(oldLead.agentId) !== String(req.body.agentId)) {
         actType = "reassign";
         actNote = "تم التحويل اليدوي إلى موظف جديد";
-        // Also log reassignedAt
-        await Lead.findByIdAndUpdate(req.params.id, { $set: { reassignedAt: new Date() } });
       }
       await Activity.create({
         userId: req.user.id,
@@ -599,6 +796,122 @@ app.delete("/api/leads/:id", auth, adminOnly, async function(req, res) {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ===== REMOVE ASSIGNMENT =====
+app.delete("/api/leads/:id/assignment/:agentId", auth, adminOnly, async function(req, res) {
+  try {
+    var lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    if (!lead.assignments || lead.assignments.length <= 1) {
+      return res.status(400).json({ error: "Cannot remove last assignment" });
+    }
+    var removeId = req.params.agentId;
+    var before = lead.assignments.length;
+    lead.assignments = lead.assignments.filter(function(a) { return String(a.agentId) !== String(removeId); });
+    if (lead.assignments.length === before) {
+      return res.status(404).json({ error: "Assignment not found for this agent" });
+    }
+    // Remove from previousAgentIds if present
+    lead.previousAgentIds = (lead.previousAgentIds || []).filter(function(id) { return String(id) !== String(removeId); });
+    // If removed agent was the current agentId, set to most recent remaining
+    if (String(lead.agentId) === String(removeId)) {
+      var latest = lead.assignments[lead.assignments.length - 1];
+      lead.agentId = latest.agentId;
+    }
+    await lead.save();
+    var populated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    res.json(populated);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== ROTATE LEAD =====
+app.post("/api/leads/:id/rotate", auth, async function(req, res) {
+  try {
+    var { targetAgentId, reason } = req.body;
+    if (!targetAgentId) return res.status(400).json({ error: "targetAgentId required" });
+    var lead = await Lead.findById(req.params.id).populate("agentId", "name title");
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+
+    // ── FIRST ASSIGNMENT (not a rotation) ──
+    var isFirstAssignment = !lead.agentId || (!lead.agentId._id && !mongoose.Types.ObjectId.isValid(String(lead.agentId))) || (lead.assignments && lead.assignments.length === 0);
+    if (isFirstAssignment) {
+      lead.agentId = new mongoose.Types.ObjectId(targetAgentId);
+      lead.assignments.push({ agentId: new mongoose.Types.ObjectId(targetAgentId), status: "NewLead", notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [], assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false });
+      await lead.save();
+      return res.json({ success: true, firstAssignment: true, lead: lead });
+    }
+
+    // ── HARD STOP 1: noRotation flag on any assignment ──
+    var currentAssignment = (lead.assignments || []).find(function(a) { return String(a.agentId) === String(lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId); });
+    if (currentAssignment && currentAssignment.noRotation && req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(400).json({ error: "noRotation", message: "Rotation blocked — noRotation flag set" });
+    }
+    // ── HARD STOP 2: globalStatus === eoi ──
+    if (lead.globalStatus === "eoi") {
+      return res.status(400).json({ error: "eoi", message: "Rotation blocked — lead is EOI" });
+    }
+    // ── HARD STOP 3: globalStatus === donedeal ──
+    if (lead.globalStatus === "donedeal") {
+      return res.status(400).json({ error: "donedeal", message: "Rotation blocked — lead is Done Deal" });
+    }
+    // ── HARD STOP 4: older than 30 days ──
+    if (lead.createdAt && (new Date() - new Date(lead.createdAt)) > 30*24*60*60*1000) {
+      return res.status(400).json({ error: "expired", message: "Rotation blocked — lead older than 30 days" });
+    }
+    // ── HARD STOP 5: all agents exhausted ──
+    var prevIds = (lead.previousAgentIds || []).map(function(id) { return String(id); });
+    if (prevIds.includes(String(targetAgentId))) {
+      return res.status(400).json({ error: "already_assigned", message: "Target agent already had this lead" });
+    }
+
+    // Add new assignment entry for target agent
+    var oldAgentId = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
+    var newAssignment = {
+      agentId: new mongoose.Types.ObjectId(targetAgentId),
+      status: "NewLead",
+      assignedAt: new Date(),
+      lastActionAt: new Date(),
+      rotationTimer: new Date(),
+      noRotation: false,
+      notes: "",
+      budget: "",
+      callbackTime: "",
+      lastFeedback: "",
+      nextCallAt: null,
+      agentHistory: []
+    };
+
+    var oldAgentName = lead.agentId && lead.agentId.name ? lead.agentId.name : "Unassigned";
+    var newAgentUser = await User.findById(targetAgentId).lean();
+    var newAgentName = newAgentUser ? newAgentUser.name : "Unknown";
+    var rotationReason = reason || "manual";
+    var rotationLog = {
+      action: "Rotation",
+      fromAgent: oldAgentName,
+      toAgent: newAgentName,
+      reason: rotationReason,
+      by: req.user.name || "System",
+      date: new Date()
+    };
+
+    var pushOps = { assignments: newAssignment, agentHistory: rotationLog };
+    if (oldAgentId && String(oldAgentId) !== "null" && String(oldAgentId) !== "undefined" && String(oldAgentId) !== "") {
+      pushOps.previousAgentIds = oldAgentId;
+    }
+
+    await Lead.findByIdAndUpdate(req.params.id, {
+      $set: {
+        agentId: new mongoose.Types.ObjectId(targetAgentId),
+        lastRotationAt: new Date(),
+        rotationCount: (lead.rotationCount || 0) + 1
+      },
+      $push: pushOps
+    });
+
+    var updated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    res.json(updated);
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // Admin cleanup: remove duplicate leads by phone, keep oldest
@@ -653,16 +966,46 @@ app.get("/api/activities", auth, async function(req, res) {
       var teamIds = directSales.map(function(s){ return s._id; });
       teamIds.push(new mongoose.Types.ObjectId(uid));
       query.userId = { $in: teamIds };
+    } else if (role === "director") {
+      // Director: activities from managers → TLs → sales in their chain
+      var directorUserA = await User.findById(uid).lean();
+      var visibleUserIdsA = [directorUserA._id];
+      var managersUnderA = await User.find({ reportsTo: directorUserA._id, role: "manager" }).lean();
+      var mgrIdsA = managersUnderA.map(function(m){ return m._id; });
+      managersUnderA.forEach(function(m){ visibleUserIdsA.push(m._id); });
+      if (mgrIdsA.length > 0) {
+        var tlsA = await User.find({ reportsTo: { $in: mgrIdsA } }).lean();
+        var tlIdsA = tlsA.filter(function(u){ return u.role === "team_leader" || u.role === "manager"; }).map(function(tl){ return tl._id; });
+        tlsA.forEach(function(u){ visibleUserIdsA.push(u._id); });
+        if (tlIdsA.length > 0) {
+          var salesA = await User.find({ reportsTo: { $in: tlIdsA } }).lean();
+          salesA.forEach(function(s){ visibleUserIdsA.push(s._id); });
+        }
+      }
+      query.userId = { $in: visibleUserIdsA };
     }
     // manager/admin/sales_admin see all (or server already filtered users)
-    var activities = await Activity.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 }).limit(50);
-    res.json(activities);
+
+    // Pagination
+    var page = parseInt(req.query.page) || 1;
+    var limit = parseInt(req.query.limit) || 20;
+    var skip = (page - 1) * limit;
+
+    var total = await Activity.countDocuments(query);
+    var activities = await Activity.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 }).skip(skip).limit(limit);
+
+    res.json({
+      data: activities,
+      total: total,
+      page: page,
+      totalPages: Math.ceil(total / limit)
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.post("/api/activities", auth, activityCreateValidation, async function(req, res) {
+app.post("/api/activities", auth, async function(req, res) {
   try {
     var activity = await Activity.create({
       userId: req.user.id,
@@ -703,7 +1046,7 @@ app.get("/api/tasks", auth, async function(req, res) {
   }
 });
 
-app.post("/api/tasks", auth, taskCreateValidation, async function(req, res) {
+app.post("/api/tasks", auth, async function(req, res) {
   try {
     var task = await Task.create({
       title: req.body.title,
@@ -720,13 +1063,9 @@ app.post("/api/tasks", auth, taskCreateValidation, async function(req, res) {
   }
 });
 
-app.put("/api/tasks/:id", auth, taskUpdateValidation, async function(req, res) {
+app.put("/api/tasks/:id", auth, async function(req, res) {
   try {
-    var taskUpdate = {};
-    ["title", "type", "time", "leadId", "userId", "done"].forEach(function(field) {
-      if (req.body[field] !== undefined) taskUpdate[field] = req.body[field];
-    });
-    var task = await Task.findByIdAndUpdate(req.params.id, taskUpdate, { new: true }).populate("userId", "name").populate("leadId", "name");
+    var task = await Task.findByIdAndUpdate(req.params.id, req.body, { new: true }).populate("userId", "name").populate("leadId", "name");
     res.json(task);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -747,7 +1086,7 @@ app.get("/api/stats", auth, async function(req, res) {
   try {
     var leadQuery = {};
     var actQuery = {};
-    if (req.user.role === "sales") { leadQuery.agentId = req.user.id; actQuery.userId = req.user.id; }
+    if (req.user.role === "sales") { leadQuery["assignments.agentId"] = req.user.id; actQuery.userId = req.user.id; }
     var totalLeads = await Lead.countDocuments(leadQuery);
     var potential = await Lead.countDocuments(Object.assign({ status: "Potential" }, leadQuery));
     var hotCase = await Lead.countDocuments(Object.assign({ status: "HotCase" }, leadQuery));
@@ -782,6 +1121,23 @@ app.get("/api/daily-requests", auth, async function(req, res) {
       var tlSales = await User.find({ reportsTo: tlUser._id }).lean();
       tlSales.forEach(function(s){ tlVisibleIds.push(s._id); });
       query.agentId = { $in: tlVisibleIds };
+    } else if (req.user.role === "director") {
+      // Director: assigned requests across their chain (managers → TLs → sales)
+      var directorUserDr = await User.findById(req.user.id).lean();
+      var visibleIdsDr = [directorUserDr._id];
+      var managersUnderDr = await User.find({ reportsTo: directorUserDr._id, role: "manager" }).lean();
+      var mgrIdsDr = managersUnderDr.map(function(m){ return m._id; });
+      managersUnderDr.forEach(function(m){ visibleIdsDr.push(m._id); });
+      if (mgrIdsDr.length > 0) {
+        var tlsDr = await User.find({ reportsTo: { $in: mgrIdsDr } }).lean();
+        var tlIdsDr = tlsDr.filter(function(u){ return u.role === "team_leader" || u.role === "manager"; }).map(function(tl){ return tl._id; });
+        tlsDr.forEach(function(u){ visibleIdsDr.push(u._id); });
+        if (tlIdsDr.length > 0) {
+          var salesDr = await User.find({ reportsTo: { $in: tlIdsDr } }).lean();
+          salesDr.forEach(function(s){ visibleIdsDr.push(s._id); });
+        }
+      }
+      query.agentId = { $in: visibleIdsDr };
     } else if (req.user.role === "manager") {
       // Manager: only assigned requests (no unassigned), filtered by team
       var managerUser = await User.findById(req.user.id).lean();
@@ -804,7 +1160,7 @@ app.get("/api/daily-requests", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post("/api/daily-requests", auth, dailyRequestCreateValidation, async function(req, res) {
+app.post("/api/daily-requests", auth, async function(req, res) {
   try {
     var r = await DailyRequest.create({
       name: req.body.name, phone: req.body.phone,
@@ -826,7 +1182,7 @@ app.post("/api/daily-requests", auth, dailyRequestCreateValidation, async functi
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, dailyRequestBulkReassignValidation, async function(req, res) {
+app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req, res) {
   try {
     var { leadIds, agentId } = req.body;
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
@@ -836,13 +1192,9 @@ app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, dailyRequestBulkRe
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put("/api/daily-requests/:id", auth, dailyRequestUpdateValidation, async function(req, res) {
+app.put("/api/daily-requests/:id", auth, async function(req, res) {
   try {
-    var allowedFields = ["name","phone","phone2","email","budget","propertyType","area","notes","agentId","callbackTime","status"];
-    var update = { lastActivityTime: new Date() };
-    allowedFields.forEach(function(field) {
-      if (req.body[field] !== undefined) update[field] = req.body[field];
-    });
+    var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty — only update if explicitly provided and valid
     if (!update.agentId) delete update.agentId;
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
@@ -901,6 +1253,39 @@ app.get("/api/daily-requests/:id/history", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== NOTIFICATIONS =====
+app.post("/api/notifications", auth, async function(req, res) {
+  try {
+    var n = await Notification.create(req.body);
+    res.json(n);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/notifications", auth, async function(req, res) {
+  try {
+    var uid = req.user.id;
+    var type = req.query.type || null;
+    var query = {};
+    if (type) query.type = type;
+    var notifs = await Notification.find(query).sort({ createdAt: -1 }).limit(50).lean();
+    var result = notifs.map(function(n) {
+      return Object.assign({}, n, { seen: n.seenBy && n.seenBy.indexOf(String(uid)) !== -1 });
+    });
+    res.json(result);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put("/api/notifications/mark-seen", auth, async function(req, res) {
+  try {
+    var uid = String(req.user.id);
+    var type = req.body.type || null;
+    var query = { seenBy: { $ne: uid } };
+    if (type) query.type = type;
+    await Notification.updateMany(query, { $addToSet: { seenBy: uid } });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== BULK REASSIGN =====
 // ===== FIX MANAGER TEAM IDS =====
 // One-time endpoint to auto-assign teamId to managers based on their sales' teamIds
@@ -923,6 +1308,25 @@ app.post("/api/fix-manager-teams", auth, adminOnly, async function(req, res) {
     }
     res.json({ ok: true, fixed: fixed });
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== BACKFILL LAST FEEDBACK =====
+app.get("/api/leads/backfill-feedback", auth, adminOnly, async function(req, res) {
+  try {
+    var leads = await Lead.find({ $or: [{ lastFeedback: "" }, { lastFeedback: { $exists: false } }] }).lean();
+    var updated = 0;
+    for (var i = 0; i < leads.length; i++) {
+      var act = await Activity.findOne({ leadId: leads[i]._id, type: "status_change", note: { $regex: /^\[.*?\]\s*.+/ } }).sort({ createdAt: -1 }).lean();
+      if (act && act.note) {
+        var txt = act.note.replace(/^\[.*?\]\s*/, "").trim();
+        if (txt) {
+          await Lead.findByIdAndUpdate(leads[i]._id, { $set: { lastFeedback: txt } });
+          updated++;
+        }
+      }
+    }
+    res.json({ ok: true, updated: updated, total: leads.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ===== ARCHIVE LEAD =====
@@ -1006,8 +1410,193 @@ var sendDealEmail = async function(lead, agentName) {
   } catch(e) { console.error("Email error:", e.message); }
 };
 
+// ===== DASHBOARD ENDPOINTS =====
+app.get("/api/dashboard/admin", auth, async function(req, res) {
+  try {
+    if(req.user.role!=="admin"&&req.user.role!=="sales_admin") return res.status(403).json({error:"Forbidden"});
+    var now = new Date(); var DAY=86400000; var MONTH=30*DAY;
+    var todayStart = new Date(); todayStart.setHours(0,0,0,0);
+
+    var leads = await Lead.find({archived:false}).populate("agentId","name title").populate("assignments.agentId","name title").lean();
+    var drs = await Activity.find({}).populate("userId","name").lean();
+    var activities = await Activity.find({}).lean();
+    var users = await User.find({active:true,role:{$in:["sales","sales_admin","team_leader","manager"]}}).lean();
+
+    // KPIs
+    var leadsToday = leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))< DAY;}).length;
+    var drToday = activities.filter(function(a){return a.createdAt&&(now-new Date(a.createdAt))<DAY&&a.type==="daily_request";}).length;
+    var callbacksToday = leads.filter(function(l){return l.callbackTime&&!l.archived;}).length;
+    var meetingsToday = leads.filter(function(l){return l.status==="MeetingDone"&&l.lastActivityTime&&(now-new Date(l.lastActivityTime))<DAY;}).length;
+    var interestedToday = leads.filter(function(l){return ["HotCase","Potential","MeetingDone"].includes(l.status)&&l.lastActivityTime&&(now-new Date(l.lastActivityTime))<DAY;}).length;
+    var dealsMonth = leads.filter(function(l){return l.status==="DoneDeal"&&l.updatedAt&&(now-new Date(l.updatedAt))<MONTH;}).length;
+    var contacted = leads.filter(function(l){return l.status!=="NewLead";}).length;
+    var convRate = leads.length>0?((dealsMonth/leads.length)*100).toFixed(1):0;
+
+    // Campaign performance — group by campaign+project+source
+    var campMap = {};
+    leads.forEach(function(l){
+      var key = (l.campaign||"—")+"|"+(l.project||"—")+"|"+(l.source||"—");
+      if(!campMap[key]) campMap[key]={campaign:l.campaign||"",project:l.project||"",source:l.source||"",leads:0,interested:0,meetings:0,deals:0};
+      campMap[key].leads++;
+      if(["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status)) campMap[key].interested++;
+      if(l.status==="MeetingDone"||l.status==="DoneDeal") campMap[key].meetings++;
+      if(l.status==="DoneDeal") campMap[key].deals++;
+    });
+    var campaignPerformance = Object.values(campMap).map(function(c){
+      var ip=c.leads>0?Math.round(c.interested/c.leads*100):0;
+      var mp=c.leads>0?Math.round(c.meetings/c.leads*100):0;
+      return Object.assign({},c,{interestedPct:ip,meetingPct:mp,quality:ip>30?"High":ip>15?"Medium":"Low"});
+    }).sort(function(a,b){return b.leads-a.leads;});
+
+    // Funnel
+    var funnel = {
+      assigned:leads.length,
+      contacted:leads.filter(function(l){return l.status!=="NewLead";}).length,
+      interested:leads.filter(function(l){return ["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status);}).length,
+      hotCase:leads.filter(function(l){return l.status==="HotCase";}).length,
+      meeting:leads.filter(function(l){return l.status==="MeetingDone";}).length,
+      deal:dealsMonth
+    };
+
+    // Hot alerts
+    var untouched48h = leads.filter(function(l){return !l.archived&&l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt))>2*DAY;}).length;
+    var overdueCallbacks = leads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime)<now;}).length;
+    var noRotationCount = leads.filter(function(l){return l.locked;}).length;
+
+    // Agent performance
+    var agentPerf = users.map(function(u){
+      var uid=String(u._id);
+      var agentLeads=leads.filter(function(l){return l.assignments&&l.assignments.some(function(a){return String(a.agentId&&a.agentId._id?a.agentId._id:a.agentId)===uid;});});
+      var agentActs=activities.filter(function(a){return String(a.userId&&a.userId._id?a.userId._id:a.userId)===uid;});
+      var agentDRs=agentActs.filter(function(a){return a.type==="daily_request";});
+      var agentFollowups=agentActs.filter(function(a){return a.type==="followup";}).length;
+      var agentOverdue=agentLeads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime)<now;}).length;
+      var agentInt=agentLeads.filter(function(l){return ["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status);}).length;
+      var agentMeet=agentLeads.filter(function(l){return l.status==="MeetingDone"||l.status==="DoneDeal";}).length;
+      var agentDeals=agentLeads.filter(function(l){return l.status==="DoneDeal";}).length;
+      var ip=agentLeads.length>0?Math.round(agentInt/agentLeads.length*100):0;
+      var mp=agentLeads.length>0?Math.round(agentMeet/agentLeads.length*100):0;
+      // Avg response time
+      var respTimes=agentLeads.map(function(l){var firstAct=agentActs.filter(function(a){return String(a.leadId)===String(l._id);}).sort(function(a,b){return new Date(a.createdAt)-new Date(b.createdAt);})[0];if(!firstAct)return null;return (new Date(firstAct.createdAt)-new Date(l.createdAt))/(1000*3600);}).filter(function(x){return x!==null&&x>0;});
+      var avgResp=respTimes.length>0?(respTimes.reduce(function(s,x){return s+x;},0)/respTimes.length).toFixed(1):null;
+      var score=Math.min(100,Math.round(ip*0.35+mp*0.25+(agentFollowups>0?20:0)+(avgResp&&avgResp<4?20:avgResp&&avgResp<8?10:0)));
+      return {agentId:uid,name:u.name,leads:agentLeads.length,dr:agentDRs.length,total:agentLeads.length+agentDRs.length,followups:agentFollowups,overdue:agentOverdue,interested:agentInt,interestedPct:ip,meetings:agentMeet,meetingPct:mp,deals:agentDeals,respTime:avgResp,score:score};
+    }).sort(function(a,b){return b.score-a.score;});
+
+    // Calls today
+    var callsToday=activities.filter(function(a){return a.type==="call"&&a.createdAt&&(now-new Date(a.createdAt))<DAY;}).length;
+    var intCalls=activities.filter(function(a){return a.type==="call"&&a.note&&a.note.toLowerCase().includes("interest")&&a.createdAt&&(now-new Date(a.createdAt))<DAY;}).length;
+
+    // Leads by status
+    var statusCounts={};
+    leads.forEach(function(l){statusCounts[l.status]=(statusCounts[l.status]||0)+1;});
+    var leadsByStatus=Object.entries(statusCounts).map(function(e){return{status:e[0],count:e[1]};});
+
+    // Lead aging
+    var leadAging={
+      fresh:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))<DAY;}).length,
+      needsFollowup:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))>=DAY&&(now-new Date(l.createdAt))<3*DAY;}).length,
+      atRisk:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))>=3*DAY&&(now-new Date(l.createdAt))<7*DAY;}).length,
+      expired:leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt))>=MONTH;}).length
+    };
+
+    // Management alerts
+    var missingFeedback=leads.filter(function(l){return !l.lastFeedback&&l.status!=="NewLead";}).length;
+    var stale48h=leads.filter(function(l){return !l.archived&&l.lastActivityTime&&(now-new Date(l.lastActivityTime))>2*DAY;}).length;
+    var rotationsMonth=leads.reduce(function(s,l){return s+(l.rotationCount||0);},0);
+    var leadsPerAgent=agentPerf.map(function(a){return a.leads;});
+    var avgLeads=leadsPerAgent.length>0?leadsPerAgent.reduce(function(s,x){return s+x;},0)/leadsPerAgent.length:0;
+    var overloaded=agentPerf.filter(function(a){return a.leads>avgLeads*1.3;}).length;
+
+    res.json({
+      kpis:{leadsToday,drToday,callbacksToday,meetingsToday,interestedToday,dealsMonth,convRate,contactedPct:leads.length>0?Math.round(contacted/leads.length*100):0},
+      campaignPerformance,funnel,
+      hotAlerts:{untouched48h,overdueCallbacks,noRotationCount},
+      agentPerformance:agentPerf,
+      calls:{today:callsToday,invalidPct:leads.length>0?Math.round(leads.filter(function(l){return l.status==="NotInterested";}).length/leads.length*100):0},
+      leadsByStatus,leadAging,
+      managementAlerts:{untouched:untouched48h,missingFeedback,stale48h,rotationsMonth,overloadedAgents:overloaded,dataQuality:Math.max(0,100-Math.round((missingFeedback+stale48h)*100/Math.max(leads.length,1)))}
+    });
+  } catch(e){console.error("dashboard/admin error:",e.message);res.status(500).json({error:e.message});}
+});
+
+app.get("/api/dashboard/sales", auth, async function(req, res) {
+  try {
+    var uid = req.user.id; var now = new Date(); var DAY=86400000; var MONTH=30*DAY;
+    var todayStart = new Date(); todayStart.setHours(0,0,0,0);
+
+    var myLeads = await Lead.find({archived:false,"assignments.agentId":new mongoose.Types.ObjectId(uid)}).lean();
+    var allActs = await Activity.find({userId:uid}).lean();
+    var allUsers = await User.find({active:true,role:{$in:["sales","sales_admin"]}}).lean();
+    var allLeads = await Lead.find({archived:false}).lean();
+
+    // Get my assignment data for each lead
+    var getMyAssign = function(l){return (l.assignments||[]).find(function(a){return String(a.agentId&&a.agentId._id?a.agentId._id:a.agentId)===String(uid);});};
+
+    // KPIs
+    var myDr = allActs.filter(function(a){return a.type==="daily_request";}).length;
+    var followupsDue = myLeads.filter(function(l){var cb=l.callbackTime;return cb&&!l.archived;}).length;
+    var overdueFollowups = myLeads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime)<now;}).length;
+    var interested = myLeads.filter(function(l){var a=getMyAssign(l);var st=a?a.status:l.status;return ["HotCase","Potential","MeetingDone","DoneDeal"].includes(st);}).length;
+    var meetings = myLeads.filter(function(l){var a=getMyAssign(l);var st=a?a.status:l.status;return st==="MeetingDone"||st==="DoneDeal";}).length;
+    var ip = myLeads.length>0?Math.round(interested/myLeads.length*100):0;
+    var meetRate = myLeads.length>0?Math.round(meetings/myLeads.length*100):0;
+
+    // Weekly data (last 7 days)
+    var weeklyData={leads:[],dr:[],interested:[],meetings:[]};
+    for(var i=6;i>=0;i--){
+      var dayStart=new Date(now); dayStart.setDate(dayStart.getDate()-i); dayStart.setHours(0,0,0,0);
+      var dayEnd=new Date(dayStart); dayEnd.setHours(23,59,59,999);
+      weeklyData.leads.push(myLeads.filter(function(l){var t=new Date(l.createdAt);return t>=dayStart&&t<=dayEnd;}).length);
+      weeklyData.dr.push(allActs.filter(function(a){var t=new Date(a.createdAt);return a.type==="daily_request"&&t>=dayStart&&t<=dayEnd;}).length);
+      weeklyData.interested.push(allActs.filter(function(a){var t=new Date(a.createdAt);return t>=dayStart&&t<=dayEnd;}).length);
+      weeklyData.meetings.push(myLeads.filter(function(l){var t=new Date(l.updatedAt);return (l.status==="MeetingDone"||l.status==="DoneDeal")&&t>=dayStart&&t<=dayEnd;}).length);
+    }
+
+    // Rank vs team
+    var getRank=function(arr,myVal,higher){arr.sort(function(a,b){return higher?b-a:a-b;});var pos=arr.indexOf(myVal)+1;return{position:pos,total:arr.length};};
+    var allAgentLeads=allUsers.map(function(u){return allLeads.filter(function(l){return l.assignments&&l.assignments.some(function(a){return String(a.agentId)===String(u._id);});}).length;});
+    var allAgentActs=allUsers.map(function(u){return 0;});
+    var myActCount=allActs.filter(function(a){return a.createdAt&&(now-new Date(a.createdAt))<MONTH;}).length;
+    var myFollowups=allActs.filter(function(a){return a.type==="followup"&&a.createdAt&&(now-new Date(a.createdAt))<MONTH;}).length;
+    var respTimes=myLeads.map(function(l){var fa=allActs.filter(function(a){return String(a.leadId)===String(l._id);}).sort(function(a,b){return new Date(a.createdAt)-new Date(b.createdAt);})[0];if(!fa)return null;return(new Date(fa.createdAt)-new Date(l.createdAt))/(1000*3600);}).filter(function(x){return x!==null&&x>0;});
+    var avgResp=respTimes.length>0?(respTimes.reduce(function(s,x){return s+x;},0)/respTimes.length).toFixed(1):null;
+
+    // Urgent leads
+    var urgent=[];
+    myLeads.forEach(function(l){
+      if(l.callbackTime&&new Date(l.callbackTime)<now&&!l.archived){urgent.push({leadId:String(l._id),name:l.name,type:"overdue",minutesLate:Math.round((now-new Date(l.callbackTime))/60000),status:l.status});}
+      else if(l.callbackTime&&(new Date(l.callbackTime)-now)<30*60000&&new Date(l.callbackTime)>now){urgent.push({leadId:String(l._id),name:l.name,type:"soon",minutesLate:Math.round((new Date(l.callbackTime)-now)/60000),status:l.status});}
+      else if(l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt))>2*3600000){urgent.push({leadId:String(l._id),name:l.name,type:"new",minutesLate:Math.round((now-new Date(l.createdAt))/3600000),status:l.status});}
+    });
+    urgent.sort(function(a,b){return a.type==="overdue"?-1:b.type==="overdue"?1:0;});
+
+    // Schedule today
+    var schedule=myLeads.filter(function(l){return l.callbackTime&&!l.archived;}).map(function(l){return{time:l.callbackTime,leadId:String(l._id),name:l.name,status:l.status};}).sort(function(a,b){return new Date(a.time)-new Date(b.time);}).slice(0,10);
+
+    // My leads by status
+    var statusMap={};
+    myLeads.forEach(function(l){var a=getMyAssign(l);var st=a?a.status:l.status;statusMap[st]=(statusMap[st]||0)+1;});
+    var myLeadsByStatus=Object.entries(statusMap).map(function(e){return{status:e[0],count:e[1]};});
+
+    // Recent activity
+    var recentActivity=allActs.slice(-20).reverse().map(function(a){var lead=myLeads.find(function(l){return String(l._id)===String(a.leadId);});return lead?{leadId:String(a.leadId),name:lead.name,status:lead.status,note:a.note,time:a.createdAt}:null;}).filter(Boolean).slice(0,8);
+
+    // Funnel
+    var funnel={assigned:myLeads.length,contacted:myLeads.filter(function(l){var a=getMyAssign(l);var st=a?a.status:l.status;return st!=="NewLead";}).length,interested:interested,hotCase:myLeads.filter(function(l){var a=getMyAssign(l);var st=a?a.status:l.status;return st==="HotCase";}).length,meeting:meetings,deal:myLeads.filter(function(l){return l.status==="DoneDeal";}).length};
+
+    res.json({
+      kpis:{myLeads:myLeads.length,myDr,followupsDue,overdueFollowups,interested,interestedPct:ip,meetings,meetingRate:meetRate},
+      weeklyData,
+      rank:{activity:{position:1,total:allUsers.length},followups:{position:1,total:allUsers.length},meetings:{position:meetings>0?1:2,total:allUsers.length},respTime:{position:1,total:allUsers.length},target:{position:1,total:allUsers.length}},
+      urgent:urgent.slice(0,8),schedule,myLeadsByStatus,recentActivity,funnel,
+      monthlySummary:{totalActions:myActCount,followupsDone:myFollowups,meetings,avgRespTime:avgResp}
+    });
+  } catch(e){console.error("dashboard/sales error:",e.message);res.status(500).json({error:e.message});}
+});
+
 // ===== START SERVER =====
-var PORT = process.env.PORT || 5001;
+var PORT = process.env.PORT || 5000;
 app.listen(PORT, function() {
   console.log("CRM ARO Server running on port " + PORT);
 });
