@@ -6923,9 +6923,9 @@ var SettingsPage = function(p) {
         var isOnlineNow = function(u){return u && u.lastSeen && (nowMs-new Date(u.lastSeen).getTime()) < 3*60*1000;};
 
         var tierMeta = {
-          tier1:{label:"Top — first priority",  sub:"Round-robin: each agent takes one lead in turn", bg:"#EAF6F0", border:"rgba(15,110,86,0.3)", num:"#0F6E56", text:"#0F6E56"},
-          tier2:{label:"Regular",                sub:"Activates only when all Tier 1 unavailable",     bg:"#E6F1FB", border:"rgba(24,95,165,0.3)", num:"#185FA5", text:"#185FA5"},
-          tier3:{label:"New / Training",         sub:"Only when Tier 1 and 2 unavailable",             bg:"#F7F7F5", border:"rgba(0,0,0,0.1)",     num:"#666",    text:"#1a1a1a"}
+          tier1:{label:"Top — first priority",  sub:"First 2 rotations go here",                      bg:"#EAF6F0", border:"rgba(15,110,86,0.3)", num:"#0F6E56", text:"#0F6E56"},
+          tier2:{label:"Regular",                sub:"Joins Tier 3 after Tier 1 is exhausted",         bg:"#E6F1FB", border:"rgba(24,95,165,0.3)", num:"#185FA5", text:"#185FA5"},
+          tier3:{label:"New / Training",         sub:"Joins Tier 2 after Tier 1 is exhausted",         bg:"#F7F7F5", border:"rgba(0,0,0,0.1)",     num:"#666",    text:"#1a1a1a"}
         };
         var tierArrs = {tier1:tier1, tier2:tier2, tier3:tier3};
 
@@ -6948,8 +6948,6 @@ var SettingsPage = function(p) {
           var u=(p.users||[]).find(function(x){return String(gid(x))===String(uid);});
           if(!u) return null;
           var rb = roleBadgeOf(u.role);
-          var isNext     = (tierKey==="tier1" && idx===nextInLineIdx);
-          var isTookLast = (tierKey==="tier1" && idx===tier1LastIdx && tier1LastIdx>=0);
           var active = activeFor(uid);
           var online = isOnlineNow(u);
           var team = u.teamName || "";
@@ -6959,8 +6957,6 @@ var SettingsPage = function(p) {
           var infoParts = [];
           if(team) infoParts.push(team);
           infoParts.push(active+" active");
-          if(isNext) infoParts.push("NEXT IN LINE");
-          else if(isTookLast) infoParts.push("took last lead");
           return <div key={uid}
             draggable={true}
             onDragStart={function(e){ setDragFrom({tier:tierKey,idx:idx}); try{e.dataTransfer.effectAllowed="move";}catch(_){} }}
@@ -6968,8 +6964,8 @@ var SettingsPage = function(p) {
             onDragLeave={function(){ if(dropOn&&dropOn.tier===tierKey&&dropOn.idx===idx) setDropOn(null); }}
             onDrop={function(e){ e.preventDefault(); e.stopPropagation(); moveAgent(dragFrom,{tier:tierKey,idx:idx}); setDragFrom(null); setDropOn(null); }}
             onDragEnd={function(){ setDragFrom(null); setDropOn(null); }}
-            style={{display:"flex",alignItems:"center",gap:10,padding:isNext?"7px 9px":"8px 10px",background:"#fff",borderRadius:8,marginBottom:4,cursor:"grab",userSelect:"none",
-              border: isNext ? "2px solid #0F6E56" : (hover ? "1.5px solid "+meta.num : "0.5px solid rgba(0,0,0,0.05)"),
+            style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",background:"#fff",borderRadius:8,marginBottom:4,cursor:"grab",userSelect:"none",
+              border: hover ? "1.5px solid "+meta.num : "0.5px solid rgba(0,0,0,0.05)",
               opacity: dragging?0.5:1}}>
             <span style={{color:"#999",cursor:"grab",fontSize:13,flexShrink:0}}>⋮⋮</span>
             <div style={{width:30,height:30,borderRadius:"50%",background:meta.num,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:500,flexShrink:0}}>{initialsOf(u.name)}</div>
@@ -6980,7 +6976,7 @@ var SettingsPage = function(p) {
                 {activeVacSet.has(String(uid)) && <span title="Currently on vacation — skipped by auto-rotation"
                   style={{fontSize:9,padding:"2px 6px",borderRadius:10,fontWeight:500,letterSpacing:"0.3px",background:"#FAEEDA",color:"#854F0B",marginLeft:6}}>On Vacation</span>}
               </div>
-              <div style={{fontSize:11,color:isNext?"#0F6E56":"#666",fontWeight:isNext?500:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+              <div style={{fontSize:11,color:"#666",fontWeight:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                 {infoParts.join(" · ")}
               </div>
             </div>
