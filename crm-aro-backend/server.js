@@ -2802,7 +2802,7 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
         { lastRotationAt: null },
         { lastRotationAt: { $lt: rotatedGuard } }
       ]
-    }).select("_id agentId assignments previousAgentIds").lean();
+    }).select("_id agentId assignments previousAgentIds status lastActivityTime callbackTime").lean();
 
     // NoAnswer eligibility needs per-lead activity counts. Pull status_change
     // activities tagged [NoAnswer] for just the candidate set in one query.
@@ -2845,7 +2845,17 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
     };
     var isEligible = function(l){
       var cur = currentSliceOf(l);
-      if (!cur) return false;
+      // Legacy fallback: lead has agentId but no matching assignments[] slice
+      // (pre-assignments-system leads). Use top-level fields as the agent's
+      // clock — that's the only action timestamp these rows carry.
+      if (!cur) {
+        cur = {
+          status:       l.status,
+          lastActionAt: l.lastActivityTime,
+          callbackTime: l.callbackTime,
+          noRotation:   false
+        };
+      }
       if (cur.noRotation) return false;
       var lastAct = cur.lastActionAt ? new Date(cur.lastActionAt).getTime() : 0;
       var ageMs   = lastAct ? (now.getTime() - lastAct) : Infinity;
