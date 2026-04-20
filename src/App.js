@@ -6502,6 +6502,20 @@ var SettingsPage = function(p) {
   // UI-only (not yet persisted server-side — backend ignores manualAssignmentWindowMinutes today)
   var [manualWindowMin,setManualWindowMin]=useState(15);
   var [simulateOpen,setSimulateOpen]=useState(false);
+  // Audit Log tab
+  var [auditEntries,setAuditEntries]=useState([]);   // populated from /api/settings/audit when endpoint ships
+  var [auditLoaded,setAuditLoaded]=useState(false);
+  var [auditDate,setAuditDate]=useState("all");     // "today" | "week" | "month" | "all"
+  var [auditAdmin,setAuditAdmin]=useState("all");
+  var [auditField,setAuditField]=useState("all");
+  useEffect(function(){
+    var cancelled=false;
+    apiFetch("/api/settings/audit","GET",null,p.token)
+      .then(function(data){ if(!cancelled && Array.isArray(data)) setAuditEntries(data); })
+      .catch(function(){}) // endpoint may not exist yet — silently leave empty
+      .finally(function(){ if(!cancelled) setAuditLoaded(true); });
+    return function(){ cancelled=true; };
+  },[p.token]);
   // Business Rules tab — UI-only toggles (backend enforces the locked ones regardless)
   var [bizRules,setBizRules]=useState({
     excludeArchived:   true,  // rotation exclusions
@@ -6638,7 +6652,7 @@ var SettingsPage = function(p) {
     <div style={{fontSize:14,fontWeight:700,color:C.text,marginBottom:4}}>{title}</div>
     <div style={{fontSize:12}}>{msg}</div>
   </div>;};
-  var showSave=activeTab==="general"||activeTab==="rotation";
+  var showSave=activeTab==="general"||activeTab==="rotation"||activeTab==="rules";
 
   return <div style={{ padding:"18px 16px 40px" }}>
     <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.settings}</h2>
@@ -7384,7 +7398,125 @@ var SettingsPage = function(p) {
           </div>
         </div>;
       })()}
-      {activeTab==="audit"       &&placeholder("📜","Audit Log","Settings change history — coming soon.")}
+      {activeTab==="audit"&&(function(){
+        // Apply UI-level filters to the entries array (when backend ships, these run client-side).
+        var nowMs = Date.now();
+        var withinDate = function(ts){
+          if(!ts || auditDate==="all") return true;
+          var diff = nowMs - new Date(ts).getTime();
+          if(auditDate==="today") return diff < 24*60*60*1000;
+          if(auditDate==="week")  return diff < 7*24*60*60*1000;
+          if(auditDate==="month") return diff < 30*24*60*60*1000;
+          return true;
+        };
+        var filtered = auditEntries.filter(function(e){
+          if(!withinDate(e.timestamp||e.createdAt)) return false;
+          if(auditAdmin!=="all" && String(e.changedBy&&e.changedBy._id||e.changedBy) !== auditAdmin) return false;
+          if(auditField!=="all" && e.field !== auditField) return false;
+          return true;
+        });
+
+        // Distinct admin + field lists for the filter dropdowns
+        var admins = {};
+        auditEntries.forEach(function(e){
+          var id   = String(e.changedBy&&e.changedBy._id||e.changedBy||"");
+          var name = (e.changedBy&&e.changedBy.name) || e.changedByName || id;
+          if(id) admins[id] = name;
+        });
+        var fields = Array.from(new Set(auditEntries.map(function(e){return e.field;}).filter(Boolean))).sort();
+
+        var filterSelStyle = {padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:12,background:"#fff",fontFamily:"inherit",color:"#1a1a1a"};
+
+        // Pretty-format a value for display (truncate long values, stringify objects).
+        var fmt = function(v){
+          if(v==null) return "∅";
+          if(typeof v==="boolean") return v ? "on" : "off";
+          if(typeof v==="object") { try { v = JSON.stringify(v); } catch(_){ v = "[object]"; } }
+          v = String(v);
+          return v.length>60 ? v.slice(0,60)+"…" : v;
+        };
+
+        var formatTs = function(ts){
+          if(!ts) return "";
+          var d = new Date(ts);
+          var today = new Date(); today.setHours(0,0,0,0);
+          var dDay  = new Date(d);  dDay.setHours(0,0,0,0);
+          var time = d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"});
+          if(dDay.getTime()===today.getTime()) return "Today "+time;
+          var yesterday = new Date(today); yesterday.setDate(today.getDate()-1);
+          if(dDay.getTime()===yesterday.getTime()) return "Yesterday "+time;
+          return d.toLocaleDateString("en-GB",{day:"2-digit",month:"short"})+" "+time;
+        };
+
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Recent settings changes</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:12}}>Every change to company settings, with who made it and when. Click Rollback to revert a single change.</div>
+
+          {/* Filter bar */}
+          <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
+            <span style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px"}}>Filter</span>
+            <select value={auditDate} onChange={function(e){setAuditDate(e.target.value);}} style={filterSelStyle}>
+              <option value="all">Any date</option>
+              <option value="today">Today</option>
+              <option value="week">Past 7 days</option>
+              <option value="month">Past 30 days</option>
+            </select>
+            <select value={auditAdmin} onChange={function(e){setAuditAdmin(e.target.value);}} style={filterSelStyle}>
+              <option value="all">Any admin</option>
+              {Object.keys(admins).map(function(id){return <option key={id} value={id}>{admins[id]}</option>;})}
+            </select>
+            <select value={auditField} onChange={function(e){setAuditField(e.target.value);}} style={filterSelStyle}>
+              <option value="all">Any field</option>
+              {fields.map(function(f){return <option key={f} value={f}>{f}</option>;})}
+            </select>
+            {(auditDate!=="all"||auditAdmin!=="all"||auditField!=="all") &&
+              <button type="button" onClick={function(){setAuditDate("all");setAuditAdmin("all");setAuditField("all");}}
+                style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:8,cursor:"pointer",color:"#1a1a1a",fontFamily:"inherit"}}>Clear</button>}
+          </div>
+
+          {/* Entries */}
+          {!auditLoaded
+            ? <div style={{background:"#F7F7F5",border:"0.5px dashed rgba(0,0,0,0.1)",borderRadius:8,padding:"16px",textAlign:"center",color:"#666",fontSize:12}}>Loading audit log…</div>
+            : filtered.length===0
+              ? <div style={{background:"#F7F7F5",border:"0.5px dashed rgba(0,0,0,0.1)",borderRadius:8,padding:"24px 16px",textAlign:"center",color:"#666"}}>
+                  <div style={{fontSize:14,fontWeight:500,marginBottom:6,color:"#1a1a1a"}}>
+                    {auditEntries.length===0 ? "No settings changes yet" : "No entries match these filters"}
+                  </div>
+                  <div style={{fontSize:12,lineHeight:1.5}}>
+                    {auditEntries.length===0
+                      ? "Once the /api/settings/audit endpoint ships, every change to Rotation, Team & Roles, Business Rules, and Integrations will appear here with a Rollback option."
+                      : "Try clearing the filters or widening the date range."}
+                  </div>
+                </div>
+              : <div>
+                  {filtered.map(function(e,i){
+                    var actor = (e.changedBy&&e.changedBy.name) || e.changedByName || "Admin";
+                    var field = e.field || "(unknown field)";
+                    var rolled = !!e.rolledBack;
+                    return <div key={e._id||i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"0.5px solid rgba(0,0,0,0.1)",fontSize:12}}>
+                      <div style={{flex:1,minWidth:0,lineHeight:1.5}}>
+                        <b>{actor}</b> changed <span style={{color:"#185FA5",fontFamily:"ui-monospace, Menlo, monospace"}}>{field}</span>
+                        {" "}from <span style={{color:"#666"}}>"{fmt(e.oldValue)}"</span>
+                        {" "}to <span style={{color:"#0F6E56",fontWeight:500}}>"{fmt(e.newValue)}"</span>
+                        {rolled && <span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:"#EEEEEA",color:"#666",fontWeight:500,marginLeft:8}}>ROLLED BACK</span>}
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                        <span style={{color:"#666",fontSize:11}}>{formatTs(e.timestamp||e.createdAt)}</span>
+                        <button type="button" disabled={rolled} title={rolled ? "Already rolled back" : "Rollback not yet wired (endpoint pending)"}
+                          style={{fontSize:12,padding:"4px 10px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:6,cursor: rolled ? "not-allowed" : "pointer",color:"#1a1a1a",fontFamily:"inherit",opacity: rolled ? 0.4 : 0.8}}>
+                          Rollback
+                        </button>
+                      </div>
+                    </div>;
+                  })}
+                </div>
+          }
+
+          {auditEntries.length>0 && <div style={{fontSize:11,color:"#999",marginTop:12,textAlign:"right"}}>
+            Showing {filtered.length} of {auditEntries.length} {auditEntries.length===1?"entry":"entries"}
+          </div>}
+        </div>;
+      })()}
 
       {saved&&<div style={{marginBottom:12,padding:"10px 14px",background:"#DCFCE7",borderRadius:10,color:"#15803D",fontSize:13,fontWeight:600}}>✅ Saved successfully</div>}
       {saveError&&<div style={{marginBottom:12,padding:"10px 14px",background:"#FEE2E2",borderRadius:10,color:"#B91C1C",fontSize:13,fontWeight:600}}>❌ {saveError}</div>}
