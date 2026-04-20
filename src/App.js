@@ -1029,6 +1029,56 @@ var HeaderSearch = function(p) {
   </div>;
 };
 
+// Live EOI/DoneDeal items, shared by the Deal bell badge (unseen count) and
+// the Deal bell panel (rendered list). Keeping both on one source prevents the
+// badge from drifting out of sync with the panel contents.
+var buildDealItems = function(leads, dailyRequests, cu, myTeamUsers) {
+  var agentNameOf = function(entry){
+    if (!entry || !entry.agentId) return "";
+    if (entry.agentId.name) return entry.agentId.name;
+    var u = (myTeamUsers||[]).find(function(x){return gid(x)===String(entry.agentId);});
+    return u?u.name:"";
+  };
+  var seenLeadKeys = {};
+  var items = [];
+  (leads||[]).filter(function(l){return !l.archived;}).forEach(function(l){
+    var isEOI = l.status==="EOI" || l.globalStatus==="eoi" || (l.eoiStatus && l.eoiStatus!=="EOI Cancelled" && l.eoiStatus!=="");
+    var isDeal = l.status==="DoneDeal" || l.globalStatus==="donedeal";
+    if (!isEOI && !isDeal) return;
+    if (l.eoiStatus==="EOI Cancelled" && !isDeal) return;
+    var kind = isDeal ? "DoneDeal" : (l.eoiStatus || "Pending");
+    items.push({
+      _id: gid(l), leadId: gid(l), leadName: l.name,
+      agentName: agentNameOf(l), budget: l.budget || "",
+      kind: kind, time: l.updatedAt || l.lastActivityTime || l.createdAt,
+      phone: l.phone || ""
+    });
+    if (l.phone) seenLeadKeys[l.phone] = true;
+  });
+  (dailyRequests||[]).forEach(function(r){
+    if (r.archived) return;
+    if (r.phone && seenLeadKeys[r.phone]) return;
+    var isEOI = r.status==="EOI" || (r.eoiStatus && r.eoiStatus!=="EOI Cancelled" && r.eoiStatus!=="");
+    var isDeal = r.status==="DoneDeal";
+    if (!isEOI && !isDeal) return;
+    if (r.eoiStatus==="EOI Cancelled" && !isDeal) return;
+    var kind = isDeal ? "DoneDeal" : (r.eoiStatus || "Pending");
+    items.push({
+      _id: gid(r), leadId: gid(r), leadName: r.name,
+      agentName: agentNameOf(r), budget: r.budget || "",
+      kind: kind, isDR: true, time: r.updatedAt || r.lastActivityTime || r.createdAt,
+      phone: r.phone || ""
+    });
+  });
+  if (cu && cu.role==="team_leader") {
+    var teamNames=new Set((myTeamUsers||[]).map(function(u){return u.name;}));
+    teamNames.add(cu.name);
+    items = items.filter(function(it){ return !it.agentName || teamNames.has(it.agentName); });
+  }
+  items.sort(function(a,b){ return new Date(b.time||0) - new Date(a.time||0); });
+  return items;
+};
+
 // ===== HEADER =====
 var Header = function(p) {
   var t = p.t; var isOnlyAdmin = p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin");
@@ -1081,54 +1131,7 @@ var Header = function(p) {
           </div>
           <div style={{ overflowY:"auto", flex:1 }}>
             {(function(){
-              // Build the list directly from current leads + daily requests so Pending EOIs never slip through.
-              var agentNameOf = function(entry){
-                if (!entry || !entry.agentId) return "";
-                if (entry.agentId.name) return entry.agentId.name;
-                var u = (p.myTeamUsers||[]).find(function(x){return gid(x)===String(entry.agentId);}); // best-effort lookup
-                return u?u.name:"";
-              };
-              var seenLeadKeys = {}; // prevents the DR mirror from double-showing the same phone
-              var items = [];
-              var leads = (p.leads||[]).filter(function(l){return !l.archived;});
-              leads.forEach(function(l){
-                var isEOI = l.status==="EOI" || l.globalStatus==="eoi" || (l.eoiStatus && l.eoiStatus!=="EOI Cancelled" && l.eoiStatus!=="");
-                var isDeal = l.status==="DoneDeal" || l.globalStatus==="donedeal";
-                if (!isEOI && !isDeal) return;
-                if (l.eoiStatus==="EOI Cancelled" && !isDeal) return; // cancelled EOIs don't show in this panel
-                var kind = isDeal ? "DoneDeal" : (l.eoiStatus || "Pending");
-                items.push({
-                  _id: gid(l), leadId: gid(l), leadName: l.name,
-                  agentName: agentNameOf(l), budget: l.budget || "",
-                  kind: kind, // "DoneDeal" | "Approved" | "Pending" | "EOI Cancelled"
-                  time: l.updatedAt || l.lastActivityTime || l.createdAt,
-                  phone: l.phone || ""
-                });
-                if (l.phone) seenLeadKeys[l.phone] = true;
-              });
-              (p.dailyRequests||[]).forEach(function(r){
-                if (r.archived) return;
-                if (r.phone && seenLeadKeys[r.phone]) return; // already represented by the mirror Lead
-                var isEOI = r.status==="EOI" || (r.eoiStatus && r.eoiStatus!=="EOI Cancelled" && r.eoiStatus!=="");
-                var isDeal = r.status==="DoneDeal";
-                if (!isEOI && !isDeal) return;
-                if (r.eoiStatus==="EOI Cancelled" && !isDeal) return;
-                var kind = isDeal ? "DoneDeal" : (r.eoiStatus || "Pending");
-                items.push({
-                  _id: gid(r), leadId: gid(r), leadName: r.name,
-                  agentName: agentNameOf(r), budget: r.budget || "",
-                  kind: kind, isDR: true,
-                  time: r.updatedAt || r.lastActivityTime || r.createdAt,
-                  phone: r.phone || ""
-                });
-              });
-              // Team leader scope: only items where the agent is on the TL's team
-              if (p.cu && p.cu.role==="team_leader") {
-                var teamNames=new Set((p.myTeamUsers||[]).map(function(u){return u.name;}));
-                teamNames.add(p.cu.name);
-                items = items.filter(function(it){ return !it.agentName || teamNames.has(it.agentName); });
-              }
-              items.sort(function(a,b){ return new Date(b.time||0) - new Date(a.time||0); });
+              var items = buildDealItems(p.leads, p.dailyRequests, p.cu, p.myTeamUsers);
               if (items.length===0) return <div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}><div style={{ fontSize:28, marginBottom:8 }}>💰</div>No deals yet</div>;
               return items.map(function(n, idx){
                 var isDeal = n.kind==="DoneDeal";
@@ -1171,7 +1174,7 @@ var Header = function(p) {
               {p.rotNotifs&&p.rotNotifs.length>0&&<span style={{ background:"#FFF7ED", color:"#EA580C", padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:600 }}>{p.rotNotifs.length}</span>}
             </div>
             <div style={{ display:"flex", gap:4, alignItems:"center" }}>
-              {p.unseenRot>0&&<button onClick={function(){if(p.onRotNotifSeen)p.onRotNotifSeen();}} style={{ background:"#FFF7ED", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:"#EA580C", fontWeight:600, padding:"4px 10px" }}>Mark Read</button>}
+              {p.rotNotifs&&p.rotNotifs.length>0&&<button onClick={function(){if(p.onRotClearAll)p.onRotClearAll();}} style={{ background:"#FFF7ED", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:"#EA580C", fontWeight:600, padding:"4px 10px" }}>Clear all</button>}
               <button onClick={function(){if(p.setShowRotNotif)p.setShowRotNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
             </div>
           </div>
@@ -8132,6 +8135,12 @@ export default function CRMApp() {
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
   var [rotNotifs,setRotNotifs]=useState([]);
+  // Client-side "last seen" markers for the Deal and Rotation bells. Stored per
+  // user in localStorage so the badge clears across reloads on the same device.
+  // Deal badge is driven by live lead/DR state (see buildDealItems), not the
+  // Notification collection, so the "seen" flag lives here rather than the DB.
+  var [lastSeenDealAt,setLastSeenDealAt]=useState(0);
+  var [rotHiddenBefore,setRotHiddenBefore]=useState(0);
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
   var [sidebarOpen,setSidebarOpen]=useState(false);
@@ -8191,6 +8200,17 @@ export default function CRMApp() {
     var fn=function(){setIsMobile(window.innerWidth<768);if(window.innerWidth>=768)setSidebarOpen(false);};
     window.addEventListener("resize",fn); return function(){window.removeEventListener("resize",fn);};
   },[]);
+
+  // Load per-user bell "seen" markers from localStorage once the user is known.
+  useEffect(function(){
+    var uid = gid(currentUser); if (!uid) return;
+    try {
+      var dv = localStorage.getItem("crm_deal_seen_"+uid);
+      if (dv) setLastSeenDealAt(parseInt(dv,10)||0);
+      var rv = localStorage.getItem("crm_rot_hidden_"+uid);
+      if (rv) setRotHiddenBefore(parseInt(rv,10)||0);
+    } catch(e){}
+  },[currentUser&&gid(currentUser)]);
 
   var t=TR[lang];
 
@@ -8860,7 +8880,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs.filter(function(n){return !rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore;})} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen&&(!rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore);}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){var now=Date.now();setRotHiddenBefore(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_rot_hidden_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={(function(){var items=buildDealItems(leads,dailyReqs,currentUser,myTeamUsers);var cutoff=lastSeenDealAt||0;return items.filter(function(it){return new Date(it.time||0).getTime()>cutoff;}).length;})()} onDealNotifSeen={function(){var now=Date.now();setLastSeenDealAt(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_deal_seen_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
