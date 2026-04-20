@@ -116,7 +116,12 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   }],
   previousAgentIds:[{type:mongoose.Schema.Types.ObjectId,ref:"User"}],
   globalStatus:{type:String,default:"active"},
-  expiresAt:{type:Date,default:null}
+  expiresAt:{type:Date,default:null},
+  // Manual Assignment Window: when settings.manualAssignmentWindowMinutes > 0
+  // and a new lead is created without an agent, the lead goes into an
+  // "unassigned queue" for admins to manually assign. After this timestamp
+  // passes, the background sweeper auto-rotates it to Tier 1.
+  manualWindowExpiresAt:{type:Date,default:null,index:true}
 },{timestamps:true}));
 
 // Indexes for query performance
@@ -633,7 +638,11 @@ var ROTATION_DEFAULTS = {
     haltAfterNotInterested: 3,
     haltWhenAllHandled:     true
   },
-  rotationStopAfterDays: 45
+  rotationStopAfterDays: 45,
+  // Minutes the admin has to manually assign a newly-created lead before the
+  // background sweeper auto-rotates it to Tier 1. 0 = disabled (legacy behavior
+  // — new leads without an agent are unassigned/immediate-rotate as before).
+  manualAssignmentWindowMinutes: 15
 };
 async function getRotationSettings() {
   var doc = await AppSetting.findOne({ key: "rotation" }).lean();
@@ -675,7 +684,8 @@ async function getRotationSettings() {
     autoRotationPausedUntil: v.autoRotationPausedUntil || null,
     workingHours:            Object.assign({}, D.workingHours, v.workingHours || {}),
     smartSkipRules:          Object.assign({}, D.smartSkipRules, v.smartSkipRules || {}),
-    rotationStopAfterDays:   Number(v.rotationStopAfterDays != null ? v.rotationStopAfterDays : D.rotationStopAfterDays)
+    rotationStopAfterDays:   Number(v.rotationStopAfterDays != null ? v.rotationStopAfterDays : D.rotationStopAfterDays),
+    manualAssignmentWindowMinutes: Number(v.manualAssignmentWindowMinutes != null ? v.manualAssignmentWindowMinutes : D.manualAssignmentWindowMinutes)
   };
 }
 
@@ -760,7 +770,8 @@ app.put("/api/settings/rotation", auth, async function(req, res) {
       autoRotationPausedUntil: b.autoRotationPausedUntil ? new Date(b.autoRotationPausedUntil) : null,
       workingHours:            wh,
       smartSkipRules:          sr,
-      rotationStopAfterDays:   clamp(b.rotationStopAfterDays, D.rotationStopAfterDays, 1, 3650)
+      rotationStopAfterDays:   clamp(b.rotationStopAfterDays, D.rotationStopAfterDays, 1, 3650),
+      manualAssignmentWindowMinutes: clamp(b.manualAssignmentWindowMinutes, D.manualAssignmentWindowMinutes, 0, 120)
     };
     await AppSetting.findOneAndUpdate({ key: "rotation" }, { $set: { value: value } }, { upsert: true, new: true });
     try {
@@ -1533,6 +1544,29 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
 });
 
 // ===== ADD LEAD =====
+// ===== UNASSIGNED QUEUE (Manual Assignment Window) =====
+// Leads created with no agent while manualAssignmentWindowMinutes > 0 land here.
+// Admins have `manualAssignmentWindowMinutes` to manually assign before the
+// background sweeper auto-rotates the lead to Tier 1.
+app.get("/api/leads/unassigned", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    var rows = await Lead.find({
+      agentId: null,
+      archived: false,
+      manualWindowExpiresAt: { $ne: null, $gt: new Date() }
+    })
+      .sort({ manualWindowExpiresAt: 1 })
+      .select("_id name phone phone2 email source project notes createdAt manualWindowExpiresAt")
+      .lean();
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/api/leads", auth, async function(req, res) {
   try {
     console.log("NEW LEAD body:", JSON.stringify(req.body));
@@ -1550,7 +1584,15 @@ app.post("/api/leads", auth, async function(req, res) {
     // create-only), or a plain id string.
     var normalizedAgent = normId(req.body.agentId);
     var agentId = normalizedAgent ? new mongoose.Types.ObjectId(normalizedAgent) : null;
-    if (!agentId && (req.user.role === "sales" || req.user.role === "team_leader" || req.user.role === "manager") && mongoose.Types.ObjectId.isValid(req.user.id)) {
+    // Manual Assignment Window: admin/sales_admin creating a lead without an
+    // agent routes it to the queue for manual assignment. Sales/TL/manager
+    // still default to themselves (unchanged) so their new lead stays visible
+    // in their own list.
+    var rotSettings = null;
+    try { rotSettings = await getRotationSettings(); } catch(e) {}
+    var windowMins = rotSettings ? Number(rotSettings.manualAssignmentWindowMinutes || 0) : 0;
+    var queueLead = !agentId && windowMins > 0 && (req.user.role === "admin" || req.user.role === "sales_admin");
+    if (!agentId && !queueLead && (req.user.role === "sales" || req.user.role === "team_leader" || req.user.role === "manager") && mongoose.Types.ObjectId.isValid(req.user.id)) {
       agentId = new mongoose.Types.ObjectId(req.user.id);
     }
     if (agentId) {
@@ -1614,6 +1656,7 @@ app.post("/api/leads", auth, async function(req, res) {
       assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "New Lead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: req.body.notes || "", budget: req.body.budget || "", callbackTime: req.body.callbackTime || "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
       expiresAt:        new Date(Date.now() + 30*24*60*60*1000),
       globalStatus:     "active",
+      manualWindowExpiresAt: queueLead ? new Date(Date.now() + windowMins*60000) : null,
     });
     console.log("SAVED phone2:", lead.phone2);
     // Admin audit timeline — the VERY FIRST entry on every lead captures who
@@ -1623,10 +1666,12 @@ app.post("/api/leads", auth, async function(req, res) {
     // sorts first in the timeline.
     var creatorName = (req.user && req.user.name) ? req.user.name : (req.user && req.user.role === "admin" ? "Admin" : "System");
     var firstAgentName = (agentId && targetOnCreate && targetOnCreate.name) ? targetOnCreate.name : "";
-    var initEvent = agentId ? "first_assigned" : "created";
+    var initEvent = agentId ? "first_assigned" : (queueLead ? "queued" : "created");
     var initDesc = agentId
       ? "Lead added by " + creatorName + " and assigned to " + (firstAgentName || "agent") + (req.body.source ? " (source: " + req.body.source + ")" : "")
-      : "Lead added by " + creatorName + " — No Agent" + (req.body.source ? " (source: " + req.body.source + ")" : "");
+      : (queueLead
+          ? "Lead added by " + creatorName + " — queued for manual assignment (" + windowMins + "m window)" + (req.body.source ? " (source: " + req.body.source + ")" : "")
+          : "Lead added by " + creatorName + " — No Agent" + (req.body.source ? " (source: " + req.body.source + ")" : ""));
     var initEntry = historyEntry(initEvent, initDesc, creatorName, firstAgentName || "No Agent");
     // Pin to the lead's created timestamp so nothing can sort before it.
     initEntry.timestamp = lead.createdAt || new Date();
@@ -1990,6 +2035,30 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // Approve/un-approve toggles from the EOI page — mirror to eoiStatus
     if (req.body.eoiApproved === true) update.eoiStatus = "Approved";
     else if (req.body.eoiApproved === false && oldLead && oldLead.eoiStatus === "Approved") update.eoiStatus = "Pending";
+    // Manual Assignment Window: if the lead is currently in the unassigned
+    // queue (no agent, manualWindowExpiresAt set) and we're assigning an
+    // agent now, clear the expiry so the sweeper leaves it alone, and give
+    // the new agent a fresh assignments[] entry (queued leads have none).
+    var queuedAssignPush = null;
+    if (req.body.agentId && oldLead && !oldLead.agentId && oldLead.manualWindowExpiresAt) {
+      update.manualWindowExpiresAt = null;
+      if (!Array.isArray(oldLead.assignments) || oldLead.assignments.length === 0) {
+        queuedAssignPush = {
+          agentId: new mongoose.Types.ObjectId(req.body.agentId),
+          status: "NewLead",
+          assignedAt: new Date(),
+          lastActionAt: new Date(),
+          rotationTimer: new Date(),
+          noRotation: false,
+          notes: "",
+          budget: "",
+          callbackTime: "",
+          lastFeedback: "",
+          nextCallAt: null,
+          agentHistory: []
+        };
+      }
+    }
     // Track agent history when agent changes (fallback — should go through /rotate)
     var pushOnReassign = null;
     if (req.body.agentId && oldLead && oldLead.agentId && String(oldLead.agentId) !== String(req.body.agentId)) {
@@ -2019,7 +2088,23 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     }
     var writeOps = { $set: update };
     if (pushOnReassign) writeOps.$push = pushOnReassign;
+    if (queuedAssignPush) {
+      writeOps.$push = Object.assign({}, writeOps.$push || {}, { assignments: queuedAssignPush });
+    }
     await Lead.findByIdAndUpdate(req.params.id, writeOps);
+    if (queuedAssignPush) {
+      try {
+        var qAgent = await User.findById(req.body.agentId).select("name").lean();
+        var qByName = (req.user && req.user.name) ? req.user.name : "Admin";
+        await pushHistory(req.params.id, historyEntry(
+          "manual_assigned_from_queue",
+          "Manually assigned from queue to " + (qAgent && qAgent.name ? qAgent.name : "agent") + " by " + qByName,
+          qByName,
+          qAgent && qAgent.name ? qAgent.name : ""
+        ));
+        broadcast("unassigned_updated", { leadId: String(req.params.id) });
+      } catch(hErr) { /* non-fatal */ }
+    }
     // Sync agent's own assignments[] entry on any action
     if (req.user.role === "sales" || req.user.role === "team_leader") {
       var assignUpdate = { "assignments.$.lastActionAt": new Date(), "assignments.$.rotationTimer": new Date() };
@@ -2527,6 +2612,135 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     res.status(500).json({ error: e.message });
   }
 });
+
+// ===== MANUAL ASSIGNMENT WINDOW — BACKGROUND SWEEPER =====
+// Picks the next Tier 1 agent for ONE queued lead whose window expired.
+// Returns {ok:true, agentId, agentName} on success, {ok:false, error} on skip.
+// Shares the same tier-cascade + skip-rules logic as POST /api/leads/:id/auto-rotate,
+// restricted to the "first assignment" case (queued leads have no prior agent).
+async function autoAssignQueuedLead(leadId) {
+  try {
+    var lead = await Lead.findById(leadId).lean();
+    if (!lead) return { ok: false, error: "not_found" };
+    if (lead.agentId) return { ok: false, error: "already_assigned" };
+    if (lead.archived) return { ok: false, error: "archived" };
+    if (lead.rotationStopped) return { ok: false, error: "rotation_stopped" };
+
+    var settings = await getRotationSettings();
+    if (settings.autoRotationEnabled === false) return { ok: false, error: "rotation_disabled" };
+    if (settings.autoRotationPausedUntil && new Date(settings.autoRotationPausedUntil) > new Date()) {
+      return { ok: false, error: "rotation_paused" };
+    }
+
+    var allTierIds = [].concat(settings.tiers.tier1.agents, settings.tiers.tier2.agents, settings.tiers.tier3.agents);
+    if (!allTierIds.length) return { ok: false, error: "no_rotation_order" };
+    var candidateDocs = await User.find({ _id: { $in: allTierIds } }).select("_id name title role active lastSeen").lean();
+    var byId = {};
+    candidateDocs.forEach(function(u){ byId[String(u._id)] = u; });
+
+    var sr = settings.smartSkipRules || {};
+    var nowTs = new Date();
+    var withinHours = isWithinWorkingHours(settings.workingHours, nowTs);
+    var tryTier = function(tier){
+      var ids = Array.isArray(tier.agents) ? tier.agents : [];
+      var n = ids.length;
+      if (!n) return null;
+      var start = ((tier.lastIdx + 1) % n + n) % n;
+      for (var step = 0; step < n; step++) {
+        var idx = (start + step) % n;
+        var uid = String(ids[idx]);
+        var u = byId[uid];
+        if (!u || u.active === false) continue;
+        if (["sales","team_leader"].indexOf(u.role) < 0) continue;
+        if (Number(sr.skipIfOfflineHours) > 0 && u.lastSeen) {
+          var offH = (nowTs.getTime() - new Date(u.lastSeen).getTime()) / 3600000;
+          if (offH > Number(sr.skipIfOfflineHours)) continue;
+        }
+        if (sr.respectWorkingHours && !withinHours) continue;
+        return { user: u, idx: idx };
+      }
+      return null;
+    };
+    var pick = null, tierKey = null;
+    ["tier1","tier2","tier3"].some(function(k){
+      var got = tryTier(settings.tiers[k]);
+      if (got) { pick = got; tierKey = k; return true; }
+      return false;
+    });
+    if (!pick) return { ok: false, error: "exhausted" };
+
+    var targetAgentId = String(pick.user._id);
+    var firstAssignment = {
+      agentId: new mongoose.Types.ObjectId(targetAgentId),
+      status: "NewLead",
+      notes: "", budget: "", callbackTime: "", lastFeedback: "",
+      nextCallAt: null, agentHistory: [],
+      assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(),
+      noRotation: false
+    };
+    // Atomic: require the lead to still be unassigned. Clears the queue expiry
+    // in the same write so another sweeper tick can't double-assign.
+    var result = await Lead.findOneAndUpdate(
+      { _id: leadId, agentId: null },
+      {
+        $set: {
+          agentId: new mongoose.Types.ObjectId(targetAgentId),
+          lastRotationAt: new Date(),
+          manualWindowExpiresAt: null
+        },
+        $push: { assignments: firstAssignment }
+      },
+      { new: true }
+    );
+    if (!result) return { ok: false, error: "concurrent" };
+
+    try {
+      await pushHistory(leadId, historyEntry(
+        "assigned",
+        "Auto-assigned to " + pick.user.name + " by System (manual window expired)",
+        "System",
+        pick.user.name
+      ));
+    } catch(e) { /* non-fatal */ }
+    try {
+      var pUpd = {};
+      pUpd["value.tiers." + tierKey + ".lastIdx"] = pick.idx;
+      if (tierKey === "tier1") pUpd["value.lastAssignedIdx"] = pick.idx;
+      await AppSetting.updateOne({ key: "rotation" }, { $set: pUpd });
+    } catch(e) { /* non-fatal */ }
+    return { ok: true, agentId: targetAgentId, agentName: pick.user.name };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : "exception" };
+  }
+}
+
+// Sweeper tick: finds expired queue leads and auto-assigns each in isolation.
+// One lead failing (no agent, paused rotation, etc.) never stops the loop.
+async function sweepExpiredQueue() {
+  try {
+    var expired = await Lead.find({
+      agentId: null,
+      archived: false,
+      manualWindowExpiresAt: { $ne: null, $lt: new Date() }
+    }).select("_id").limit(50).lean();
+    if (!expired.length) return;
+    var assigned = 0;
+    for (var i = 0; i < expired.length; i++) {
+      var r = await autoAssignQueuedLead(expired[i]._id);
+      if (r.ok) assigned++;
+    }
+    if (assigned > 0) {
+      try { broadcast("unassigned_updated", { swept: assigned }); } catch(e) {}
+    }
+  } catch (e) {
+    console.error("[queue sweeper]", e && e.message ? e.message : e);
+  }
+}
+// Runs every 60s, but only after the Mongo connection is live.
+var QUEUE_SWEEP_INTERVAL_MS = 60 * 1000;
+setInterval(function(){
+  if (mongoose.connection && mongoose.connection.readyState === 1) sweepExpiredQueue();
+}, QUEUE_SWEEP_INTERVAL_MS);
 
 // Admin cleanup: remove duplicate leads by phone, keep oldest
 app.post("/api/admin/cleanup-duplicates", auth, adminOnly, async function(req, res) {
@@ -3327,16 +3541,36 @@ app.post("/api/fb-webhook", async function(req, res) {
                   if (existing) {
                     console.log("FB lead skipped — duplicate phone:", fbPhone);
                   } else {
-                    // Rotation-eligible roles: sales, team_leader, manager. NEVER sales_admin.
-                    var agents = await User.find({ role: { $in: ["sales","team_leader","manager"] }, active: true });
+                    // Manual Assignment Window: if enabled, route FB leads to
+                    // the unassigned queue instead of immediate auto-pick.
+                    var fbSettings = null;
+                    try { fbSettings = await getRotationSettings(); } catch(e) {}
+                    var fbWindowMins = fbSettings ? Number(fbSettings.manualAssignmentWindowMinutes || 0) : 0;
                     var agentId = null;
-                    if (agents.length > 0) {
-                      var counts = await Promise.all(agents.map(function(a) { return Lead.countDocuments({ agentId: a._id }); }));
-                      agentId = agents[counts.indexOf(Math.min(...counts))]._id;
+                    if (fbWindowMins <= 0) {
+                      // Rotation-eligible roles: sales, team_leader, manager. NEVER sales_admin.
+                      var agents = await User.find({ role: { $in: ["sales","team_leader","manager"] }, active: true });
+                      if (agents.length > 0) {
+                        var counts = await Promise.all(agents.map(function(a) { return Lead.countDocuments({ agentId: a._id }); }));
+                        agentId = agents[counts.indexOf(Math.min(...counts))]._id;
+                      }
                     }
-                    var newLead = await Lead.create({ name: leadData.name || "Facebook Lead", phone: fbPhone, email: leadData.email || "", source: "Facebook", status: "Potential", agentId: agentId, lastActivityTime: new Date(), notes: "Facebook Lead Ads", assignments: agentId ? [{ agentId: agentId, status: "NewLead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [] });
-                    await Activity.create({ userId: agentId, leadId: newLead._id, type: "note", note: "Facebook Lead Ads" });
-                    console.log("FB lead saved:", newLead.name);
+                    var newLead = await Lead.create({
+                      name: leadData.name || "Facebook Lead",
+                      phone: fbPhone,
+                      email: leadData.email || "",
+                      source: "Facebook",
+                      status: "Potential",
+                      agentId: agentId,
+                      lastActivityTime: new Date(),
+                      notes: "Facebook Lead Ads",
+                      assignments: agentId ? [{ agentId: agentId, status: "NewLead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
+                      manualWindowExpiresAt: (fbWindowMins > 0 && !agentId) ? new Date(Date.now() + fbWindowMins*60000) : null
+                    });
+                    if (agentId) {
+                      await Activity.create({ userId: agentId, leadId: newLead._id, type: "note", note: "Facebook Lead Ads" });
+                    }
+                    console.log("FB lead saved:", newLead.name, fbWindowMins > 0 && !agentId ? "(queued)" : "");
                   }
                 }
               }
