@@ -7105,30 +7105,41 @@ var SettingsPage = function(p) {
               ? hRow([<div key="m" style={Object.assign({},nodeStyle("manager"),{opacity:0.5,fontStyle:"italic"})}>No Sales Managers</div>])
               : hRow(byRole.manager.map(function(u){return <div key={gid(u)} style={nodeStyle("manager")}>{u.name} · Sales Manager</div>;}))
             }
+            {/* Team Leader row (only if any TL exists) */}
             {byRole.team_leader.length>0 && hDown}
-
-            {/* Team Leader row */}
             {byRole.team_leader.length>0 && hRow(byRole.team_leader.map(function(tl){
               var teamLabel = tl.teamName ? (" ("+tl.teamName+")") : "";
               return <div key={gid(tl)} style={nodeStyle("tl")}>{tl.name} · TL{teamLabel}</div>;
             }))}
 
-            {/* Team cards — one per Team Leader with their Sales members */}
-            {byRole.team_leader.length>0 && <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))",gap:10,marginTop:14}}>
-              {byRole.team_leader.map(function(tl){
-                var members = childrenOf(gid(tl),"sales");
-                var teamName = tl.teamName || (tl.name + " Team");
-                return <div key={gid(tl)} style={{background:"#fff",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,padding:"10px 12px"}}>
-                  <div style={{fontSize:11,fontWeight:500,color:"#3C3489",marginBottom:6}}>{teamName}</div>
-                  <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-                    {members.length===0
-                      ? <span style={{fontSize:10,color:"#999",fontStyle:"italic"}}>No sales members</span>
-                      : members.map(function(m){return <span key={gid(m)} style={{fontSize:10,padding:"2px 6px",background:"#E6F1FB",color:"#185FA5",borderRadius:8}}>{m.name}</span>;})
-                    }
-                  </div>
-                </div>;
-              })}
-            </div>}
+            {/* Team cards grid — direct-sales-under-manager cards AND TL-led team cards.
+                A Sales Manager can have Sales reporting DIRECTLY to them alongside Team
+                Leaders; show both as distinct cards. Direct-reports cards use manager
+                amber (#854F0B) to signal they're attached to the manager, not a TL. */}
+            {(function(){
+              var cards = [];
+              byRole.manager.forEach(function(mgr){
+                var direct = childrenOf(gid(mgr),"sales");
+                if(direct.length) cards.push({key:"direct-"+gid(mgr),teamName:"Direct Reports · "+mgr.name,accent:"#854F0B",members:direct});
+              });
+              byRole.team_leader.forEach(function(tl){
+                cards.push({key:"tl-"+gid(tl),teamName:tl.teamName||(tl.name+" Team"),accent:"#3C3489",members:childrenOf(gid(tl),"sales")});
+              });
+              if(!cards.length) return null;
+              return <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))",gap:10,marginTop:14}}>
+                {cards.map(function(tc){
+                  return <div key={tc.key} style={{background:"#fff",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,padding:"10px 12px"}}>
+                    <div style={{fontSize:11,fontWeight:500,color:tc.accent,marginBottom:6}}>{tc.teamName}</div>
+                    <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                      {tc.members.length===0
+                        ? <span style={{fontSize:10,color:"#999",fontStyle:"italic"}}>No sales members</span>
+                        : tc.members.map(function(m){return <span key={gid(m)} style={{fontSize:10,padding:"2px 6px",background:"#E6F1FB",color:"#185FA5",borderRadius:8}}>{m.name}</span>;})
+                      }
+                    </div>
+                  </div>;
+                })}
+              </div>;
+            })()}
 
             <div style={{marginTop:14,display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap"}}>
               <button type="button" disabled title="Coming in later tab" style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:8,cursor:"not-allowed",color:"#1a1a1a",fontFamily:"inherit",opacity:0.6}}>+ Add Team</button>
@@ -7193,7 +7204,37 @@ var SettingsPage = function(p) {
           }
         </div>;
       })()}
-      {activeTab==="integrations"&&placeholder("🔌","Integrations","Google Sheets, Facebook Lead Ads, WhatsApp — coming soon.")}
+      {activeTab==="integrations"&&(function(){
+        var integrations = [
+          {id:"gs", name:"Google Sheets",     sub:"Lead intake via Apps Script",        tile:"GS", tBg:"#EAF6F0", tFg:"#0F6E56", status:"connected"},
+          {id:"fb", name:"Facebook Lead Ads", sub:"via Make.com scenario",              tile:"FB", tBg:"#E6F1FB", tFg:"#185FA5", status:"connected"},
+          {id:"wa", name:"WhatsApp API",      sub:"Outbound callbacks & reminders",     tile:"WA", tBg:"#E1F5EE", tFg:"#0F6E56", status:"disconnected"}
+        ];
+        var pill = function(status){
+          if(status==="connected")    return {label:"Connected",    bg:"#EAF6F0", fg:"#0F6E56"};
+          if(status==="disconnected") return {label:"Disconnected", bg:"#EEEEEA", fg:"#666"};
+          return {label:"Error",                                    bg:"#FCEBEB", fg:"#A32D2D"};
+        };
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>External integrations</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:12}}>Third-party services that feed leads into the CRM or push notifications out.</div>
+          <div style={{display:"grid",gap:10}}>
+            {integrations.map(function(it){
+              var pl = pill(it.status);
+              return <div key={it.id} style={{background:"#F7F7F5",borderRadius:8,padding:14,display:"flex",alignItems:"center",gap:12}}>
+                <div style={{width:36,height:36,background:it.tBg,color:it.tFg,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:500,fontSize:11,flexShrink:0}}>{it.tile}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:500}}>{it.name}</div>
+                  <div style={{fontSize:12,color:"#666"}}>{it.sub}</div>
+                </div>
+                <span style={{fontSize:11,background:pl.bg,color:pl.fg,padding:"3px 8px",borderRadius:10,fontWeight:500,flexShrink:0}}>{pl.label}</span>
+                <button type="button" disabled title="Integration settings ship later"
+                  style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:8,cursor:"not-allowed",color:"#1a1a1a",fontFamily:"inherit",opacity:0.6,flexShrink:0}}>Configure</button>
+              </div>;
+            })}
+          </div>
+        </div>;
+      })()}
       {activeTab==="rules"       &&placeholder("📋","Business Rules","Toggle-based rules — coming soon.")}
       {activeTab==="audit"       &&placeholder("📜","Audit Log","Settings change history — coming soon.")}
 
