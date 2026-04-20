@@ -6468,9 +6468,11 @@ var SettingsPage = function(p) {
   var getSaved = function(k,def){ try{ return localStorage.getItem('crm_set_'+k)||def; }catch(e){return def;} };
   // Rotation eligibility (spec v3): only sales + team_leader receive leads.
   var salesAgentsForSetting = p.users ? p.users.filter(function(u){return (u.role==="sales"||u.role==="team_leader")&&u.active;}) : [];
-  var [company,setCompany]=useState(function(){return getSaved('company','شركة ARO العقارية');});
+  var [company,setCompany]=useState(function(){return getSaved('company','ARO Investment');});
   var [em,setEm]=useState(function(){return getSaved('email','admin@aro.com');});
   var [ph,setPh]=useState(function(){return getSaved('phone','01012345678');});
+  var [timezone,setTimezone]=useState(function(){return getSaved('timezone','Cairo (GMT+2)');});
+  var [currency,setCurrency]=useState(function(){return getSaved('currency','EGP · Egyptian Pound');});
   // Rotation settings live in MongoDB — single source of truth for every user.
   // Start with empty/defaults; useEffect below hydrates from /api/settings/rotation.
   var [tier1,setTier1]=useState([]);
@@ -6599,6 +6601,8 @@ var SettingsPage = function(p) {
       localStorage.setItem('crm_set_company',company);
       localStorage.setItem('crm_set_email',em);
       localStorage.setItem('crm_set_phone',ph);
+      localStorage.setItem('crm_set_timezone',timezone);
+      localStorage.setItem('crm_set_currency',currency);
     }catch(e){}
     try{
       await apiFetch("/api/settings/rotation","PUT",{
@@ -6634,41 +6638,100 @@ var SettingsPage = function(p) {
   var rotInpStyle={width:60,padding:"4px 8px",borderRadius:7,border:"1px solid #E2E8F0",fontSize:13,textAlign:"center"};
 
   var tabs=[
-    {id:"general",     label:"General",        icon:"⚙️"},
-    {id:"rotation",    label:"Rotation",       icon:"🔄"},
-    {id:"team",        label:"Team & Roles",   icon:"👥"},
-    {id:"integrations",label:"Integrations",   icon:"🔌"},
-    {id:"rules",       label:"Business Rules", icon:"📋"},
-    {id:"audit",       label:"Audit Log",      icon:"📜"}
+    {id:"general",     label:"General"},
+    {id:"rotation",    label:"Rotation"},
+    {id:"team",        label:"Team & Roles"},
+    {id:"integrations",label:"Integrations"},
+    {id:"rules",       label:"Business Rules"},
+    {id:"audit",       label:"Audit Log"}
   ];
-  var tabBtn=function(tab){var act=activeTab===tab.id;return <button key={tab.id} onClick={function(){setActiveTab(tab.id);}}
-    style={{padding:"8px 14px",borderRadius:10,border:"none",background:act?C.accent:"#F1F5F9",
-      color:act?"#fff":C.textLight,fontSize:12,fontWeight:act?700:500,
-      cursor:"pointer",display:"flex",alignItems:"center",gap:5,flexShrink:0}}>
-    <span>{tab.icon}</span>{tab.label}
-  </button>;};
+  // Tab chip: white-on-gray, active = white bg with 0.5px border. Matches mockup .tab.
+  var tabBtn=function(tab){
+    var act=activeTab===tab.id;
+    return <div key={tab.id} onClick={function(){setActiveTab(tab.id);}}
+      style={{padding:"8px 14px",fontSize:13,cursor:"pointer",borderRadius:8,whiteSpace:"nowrap",userSelect:"none",flexShrink:0,
+        color:act?"#1a1a1a":"#666",fontWeight:act?500:400,
+        background:act?"#fff":"transparent",
+        border:"0.5px solid "+(act?"rgba(0,0,0,0.1)":"transparent")}}>
+      {tab.label}
+    </div>;
+  };
   var placeholder=function(icon,title,msg){return <div style={{padding:"40px 20px",textAlign:"center",color:C.textLight}}>
     <div style={{fontSize:40,marginBottom:10}}>{icon}</div>
     <div style={{fontSize:14,fontWeight:700,color:C.text,marginBottom:4}}>{title}</div>
     <div style={{fontSize:12}}>{msg}</div>
   </div>;};
-  var showSave=activeTab==="general"||activeTab==="rotation"||activeTab==="rules";
+  return <div style={{padding:"24px 16px 40px",fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+    <div style={{maxWidth:1200,margin:"0 auto"}}>
+      <div style={{background:"#fff",borderRadius:12,border:"0.5px solid rgba(0,0,0,0.1)",overflow:"hidden"}}>
+        {/* Header */}
+        <div style={{padding:"18px 22px",borderBottom:"0.5px solid rgba(0,0,0,0.1)",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+          <div>
+            <div style={{fontSize:17,fontWeight:500,color:"#1a1a1a"}}>{t.settings}</div>
+            <div style={{fontSize:13,color:"#666",marginTop:2}}>{company||"ARO"} · Admin</div>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            {saved&&<span style={{fontSize:12,color:"#0F6E56",background:"#EAF6F0",padding:"4px 10px",borderRadius:8,fontWeight:500}}>✓ Saved</span>}
+            {saveError&&<span title={saveError} style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>Save failed</span>}
+            <button type="button" onClick={doSave} disabled={loading} style={{fontSize:12,padding:"6px 14px",border:"0.5px solid rgba(24,95,165,0.3)",background:"#E6F1FB",color:"#185FA5",borderRadius:8,cursor:loading?"not-allowed":"pointer",fontWeight:500,fontFamily:"inherit"}}>Publish</button>
+          </div>
+        </div>
 
-  return <div style={{ padding:"18px 16px 40px" }}>
-    <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.settings}</h2>
+        {/* Tabs */}
+        <div style={{display:"flex",gap:4,padding:"10px 14px",borderBottom:"0.5px solid rgba(0,0,0,0.1)",background:"#F7F7F5",overflowX:"auto"}}>
+          {tabs.map(tabBtn)}
+        </div>
 
-    {/* Tab bar */}
-    <div style={{ display:"flex", gap:6, marginBottom:16, overflowX:"auto", paddingBottom:4 }}>
-      {tabs.map(tabBtn)}
-    </div>
-
-    <Card style={{ maxWidth: (activeTab==="rotation"||activeTab==="team") ? 1200 : 560 }}>
-      {activeTab==="general"&&<div>
-        <Inp label={t.companyName} value={company} onChange={function(e){setCompany(e.target.value);}}/>
-        <Inp label={t.email} value={em} onChange={function(e){setEm(e.target.value);}}/>
-        <Inp label={t.phone} value={ph} onChange={function(e){setPh(e.target.value);}}/>
-        <Inp label={t.language} type="select" value={p.lang} onChange={function(e){p.setLang(e.target.value);}} options={[{value:"ar",label:"Arabic"},{value:"en",label:"English"}]}/>
-      </div>}
+        {/* Panel */}
+        <div style={{padding:22,background:"#fff"}}>
+      {activeTab==="general"&&(function(){
+        var fieldLabel = {fontSize:12,color:"#666",display:"block",marginBottom:6};
+        var inputStyle = {padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",fontFamily:"inherit",width:"100%",boxSizing:"border-box"};
+        return <div>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Company</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:14}}>Basic info and regional preferences.</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,maxWidth:700}}>
+            <div>
+              <label style={fieldLabel}>Company name</label>
+              <input type="text" value={company} onChange={function(e){setCompany(e.target.value);}} style={inputStyle}/>
+            </div>
+            <div>
+              <label style={fieldLabel}>Email</label>
+              <input type="text" value={em} onChange={function(e){setEm(e.target.value);}} style={inputStyle}/>
+            </div>
+            <div>
+              <label style={fieldLabel}>Phone</label>
+              <input type="text" value={ph} onChange={function(e){setPh(e.target.value);}} style={inputStyle}/>
+            </div>
+            <div>
+              <label style={fieldLabel}>Timezone</label>
+              <select value={timezone} onChange={function(e){setTimezone(e.target.value);}} style={inputStyle}>
+                <option>Cairo (GMT+2)</option>
+                <option>Dubai (GMT+4)</option>
+                <option>Riyadh (GMT+3)</option>
+                <option>London (GMT+0)</option>
+              </select>
+            </div>
+            <div>
+              <label style={fieldLabel}>Currency</label>
+              <select value={currency} onChange={function(e){setCurrency(e.target.value);}} style={inputStyle}>
+                <option>EGP · Egyptian Pound</option>
+                <option>USD · US Dollar</option>
+                <option>EUR · Euro</option>
+                <option>SAR · Saudi Riyal</option>
+                <option>AED · UAE Dirham</option>
+              </select>
+            </div>
+            <div>
+              <label style={fieldLabel}>Language</label>
+              <select value={p.lang} onChange={function(e){p.setLang(e.target.value);}} style={inputStyle}>
+                <option value="en">English</option>
+                <option value="ar">العربية</option>
+              </select>
+            </div>
+          </div>
+        </div>;
+      })()}
 
       {activeTab==="rotation"&&(function(){
         // ───── Derived values ─────
@@ -7518,10 +7581,9 @@ var SettingsPage = function(p) {
         </div>;
       })()}
 
-      {saved&&<div style={{marginBottom:12,padding:"10px 14px",background:"#DCFCE7",borderRadius:10,color:"#15803D",fontSize:13,fontWeight:600}}>✅ Saved successfully</div>}
-      {saveError&&<div style={{marginBottom:12,padding:"10px 14px",background:"#FEE2E2",borderRadius:10,color:"#B91C1C",fontSize:13,fontWeight:600}}>❌ {saveError}</div>}
-      {showSave&&<Btn onClick={doSave} disabled={loading}>{t.save}</Btn>}
-    </Card>
+        </div>
+      </div>
+    </div>
   </div>;
 };
 
