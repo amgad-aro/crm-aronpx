@@ -8824,7 +8824,7 @@ export default function CRMApp() {
         //   no_rotation_order    — admin hasn't configured a list yet
         //   concurrent_rotation  — another request already rotated this lead; we mustn't rotate again
         var msg = String(e && e.message || "");
-        var silent = ["exhausted","no_rotation_order","concurrent_rotation","stopped_age","rotation_disabled","rotation_paused"];
+        var silent = ["exhausted","no_rotation_order","concurrent_rotation","stopped_age","rotation_disabled","rotation_paused","cooldown","not_eligible","locked"];
         if (!silent.some(function(k){return msg.indexOf(k)>=0;})) console.error("Rotation error:", e);
       }
       finally{ rotatingNow.delete(lid); }
@@ -8872,7 +8872,6 @@ export default function CRMApp() {
         var l = salesLeads[i];
         var lid = gid(l);
         if(rotatedThisCycle.has(lid)) continue;
-        var lastAct = new Date(l.lastActivityTime||0).getTime();
 
         // ── Hard stops (mirrors backend) ──
         // 1. noRotation on current assignment
@@ -8891,7 +8890,21 @@ export default function CRMApp() {
         if(l.isVIP) continue;
         // Skip locked leads
         if(l.locked) continue;
-        // 5. all agents exhausted — checked inside doRotate/pickAgent
+        // 5. 1h cooldown — freshly-rotated leads get a grace period.
+        //    GET /api/leads doesn't overlay lastRotationAt for any role, so
+        //    every browser sees the same true value here.
+        if (l.lastRotationAt && (now - new Date(l.lastRotationAt).getTime()) < HOUR) continue;
+        // 6. all agents exhausted — checked inside doRotate/pickAgent
+
+        // Resolve the CURRENT agent's action clock from their assignments[]
+        // slice. Top-level l.lastActivityTime is polluted by cross-agent
+        // writes (admin edits, activity logs) and isn't reset on rotation, so
+        // admin-view browsers saw a stale value and fired false rotations.
+        // Fall back to top-level only if no slice exists (pre-assignments
+        // legacy rows) — matches server-side fallback.
+        var lastAct = (lCurAssign && lCurAssign.lastActionAt)
+          ? new Date(lCurAssign.lastActionAt).getTime()
+          : new Date(l.lastActivityTime||0).getTime();
 
         // ── RULE 1: NoAnswer x(naCount) → rotate after naHours ──────────
         if(l.status==="NoAnswer"){

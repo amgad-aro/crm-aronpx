@@ -2542,6 +2542,105 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       return res.status(400).json({ error: "stopped_age", message: "Rotation blocked — lead older than " + stopDays + " days" });
     }
 
+    // ── Eligibility + cooldown re-verification (server-side invariant) ──
+    // /auto-rotate used to trust its callers. Client browsers with stale
+    // top-level `lastActivityTime` (admin view has no per-agent overlay) were
+    // firing rotations on freshly-rotated leads, cascading them through tiers.
+    // Enforce the same thresholds the client sweeper and bulk-redistribute use.
+    //
+    // Explicit admin intent — reason="manual" from admin/sales_admin — bypasses
+    // both checks, since the same user could hit /rotate to get the same effect.
+    // Only first-assignment (no currentAid) skips eligibility — no prior agent
+    // to have a clock on.
+    var bypassEligibility = (req.user.role === "admin" || req.user.role === "sales_admin") && reason === "manual";
+    if (currentAid && !bypassEligibility) {
+      var nowTs = new Date();
+      var HOUR_MS = 60*60*1000;
+      var DAY_MS  = 24*HOUR_MS;
+
+      // Cooldown: no re-rotation within 1 hour of the last rotation.
+      if (lead.lastRotationAt && (nowTs - new Date(lead.lastRotationAt)) < HOUR_MS) {
+        return res.status(409).json({ error: "cooldown", message: "Rotated less than 1h ago" });
+      }
+
+      // Per-slice clock, with top-level fallback for legacy leads that never
+      // got an assignments[] entry for their current agent.
+      var curSlice = currentAssignment;
+      if (!curSlice) {
+        curSlice = {
+          status:       lead.status,
+          lastActionAt: lead.lastActivityTime,
+          callbackTime: lead.callbackTime,
+          noRotation:   false
+        };
+      }
+      var naCountThreshold = Number(settings.naCount) || 2;
+      var naHoursThreshold = Number(settings.naHours) || 1;
+      var niDays    = Number(settings.niDays)   || 1;
+      var noActDays = Number(settings.noActDays)|| 2;
+      var cbDays    = Number(settings.cbDays)   || 1;
+      var hotDays   = Number(settings.hotDays)  || 2;
+
+      var lastActMs = curSlice.lastActionAt ? new Date(curSlice.lastActionAt).getTime() : 0;
+      var hasClock  = lastActMs > 0;
+      var ageMs     = hasClock ? (nowTs.getTime() - lastActMs) : 0;
+      var sliceStatus = String(curSlice.status || "");
+      var eligible = false;
+      var notEligibleReason = null;
+
+      switch (sliceStatus) {
+        case "NoAnswer": {
+          var naActs = await Activity.find({
+            leadId: lead._id,
+            type:   "status_change",
+            note:   { $regex: /^\[NoAnswer\]/ }
+          }).select("createdAt").lean();
+          if (naActs.length < naCountThreshold) notEligibleReason = "NoAnswer: activity count below naCount";
+          else {
+            var latestNa = 0;
+            naActs.forEach(function(a){ var t = new Date(a.createdAt).getTime(); if (t > latestNa) latestNa = t; });
+            if (!latestNa)                                    notEligibleReason = "NoAnswer: no valid timestamp";
+            else if ((nowTs.getTime() - latestNa) < naHoursThreshold*HOUR_MS) notEligibleReason = "NoAnswer: latest activity too recent";
+            else eligible = true;
+          }
+          break;
+        }
+        case "NotInterested":
+          if (!hasClock)                 notEligibleReason = "NotInterested: no lastActionAt";
+          else if (ageMs < niDays*DAY_MS) notEligibleReason = "NotInterested: lastActionAt too recent";
+          else eligible = true;
+          break;
+        case "NewLead":
+          if (!hasClock)                    notEligibleReason = "NewLead: no lastActionAt";
+          else if (ageMs < noActDays*DAY_MS) notEligibleReason = "NewLead: lastActionAt too recent";
+          else eligible = true;
+          break;
+        case "CallBack": {
+          if (!curSlice.callbackTime) notEligibleReason = "CallBack: callbackTime not set";
+          else {
+            var cbMs = new Date(curSlice.callbackTime).getTime();
+            if (!cbMs)                                         notEligibleReason = "CallBack: callbackTime unparseable";
+            else if ((nowTs.getTime() - cbMs) < cbDays*DAY_MS) notEligibleReason = "CallBack: not yet overdue";
+            else eligible = true;
+          }
+          break;
+        }
+        case "HotCase":
+        case "Potential":
+        case "MeetingDone":
+          if (!hasClock)                  notEligibleReason = sliceStatus + ": no lastActionAt";
+          else if (ageMs < hotDays*DAY_MS) notEligibleReason = sliceStatus + ": lastActionAt too recent";
+          else eligible = true;
+          break;
+        default:
+          notEligibleReason = "status not in eligible list: \"" + (sliceStatus || "(empty)") + "\"";
+      }
+
+      if (!eligible) {
+        return res.status(409).json({ error: "not_eligible", reason: notEligibleReason });
+      }
+    }
+
     // Build the exclusion set: current agent + every assignment this lead has ever carried + previousAgentIds.
     var exclusion = new Set();
     if (currentAid) exclusion.add(currentAid);
