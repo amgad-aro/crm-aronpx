@@ -725,11 +725,25 @@ app.get("/api/dashboard/sales-ranking", auth, async function(req, res) {
     var to   = parseDate(req.query.to);
     var rangeMatch = (from || to) ? (function(){ var r = {}; if(from) r.$gte = from; if(to) r.$lte = to; return r; })() : null;
 
-    // Sales users CRM-wide — no team / reportsTo restriction.
-    var salesUsers = await User.find({ role: "sales", active: { $ne: false } })
-      .select("_id name title")
-      .sort({ name: 1 })
-      .lean();
+    // Sales users — CRM-wide by default. For team_leader callers, narrow to
+    // self + direct sales so the ranking shows only their team.
+    var salesUsers;
+    if (req.user && req.user.role === "team_leader") {
+      var tlUid = new mongoose.Types.ObjectId(req.user.id);
+      var tlSelf = await User.findById(tlUid).select("_id name title role active").lean();
+      var tlSales = await User.find({ reportsTo: tlUid, active: { $ne: false } })
+        .select("_id name title role")
+        .sort({ name: 1 })
+        .lean();
+      salesUsers = [];
+      if (tlSelf && tlSelf.active !== false) salesUsers.push(tlSelf);
+      tlSales.forEach(function(u){ salesUsers.push(u); });
+    } else {
+      salesUsers = await User.find({ role: "sales", active: { $ne: false } })
+        .select("_id name title")
+        .sort({ name: 1 })
+        .lean();
+    }
     if (!salesUsers.length) return res.json([]);
     var salesIds = salesUsers.map(function(u){ return u._id; });
 
@@ -813,73 +827,82 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     if (!req.user || !req.user.id) return res.status(401).json({ error: "No user" });
     var uid = new mongoose.Types.ObjectId(req.user.id);
 
-    // CARD 1 — My Leads: assigned to me AND (createdAt OR any assignment to me) falls in range.
+    // TL scope: strict team_leader only. Everyone else keeps self-only behaviour.
+    // scopeIds = [self, ...direct sales]; agentExpr/userExpr substitute in every match.
+    var scopeIds = [uid];
+    if (req.user.role === "team_leader") {
+      var tlDirectSales = await User.find({ reportsTo: uid }).select("_id").lean();
+      tlDirectSales.forEach(function(s){ scopeIds.push(s._id); });
+    }
+    var agentExpr = scopeIds.length > 1 ? { $in: scopeIds } : uid;
+    var userExpr  = scopeIds.length > 1 ? { $in: scopeIds } : uid;
+
+    // CARD 1 — My Leads: assigned to scope AND (createdAt OR any in-scope assignment) falls in range.
     var myLeadsPipeline = [
-      { $match: { agentId: uid, archived: { $ne: true }, source: { $ne: "Daily Request" } } }
+      { $match: { agentId: agentExpr, archived: { $ne: true }, source: { $ne: "Daily Request" } } }
     ];
     if (rangeMatch) {
       myLeadsPipeline.push({ $match: {
         $or: [
           { createdAt: rangeMatch },
-          { assignments: { $elemMatch: { agentId: uid, assignedAt: rangeMatch } } }
+          { assignments: { $elemMatch: { agentId: agentExpr, assignedAt: rangeMatch } } }
         ]
       }});
     }
     myLeadsPipeline.push({ $count: "c" });
     var myLeadsP = Lead.aggregate(myLeadsPipeline);
 
-    // CARD 2 — Daily Requests: DRs owned by me, created in range.
-    var myDrsMatch = { agentId: uid, archived: { $ne: true } };
+    // CARD 2 — Daily Requests: DRs owned by scope, created in range.
+    var myDrsMatch = { agentId: agentExpr, archived: { $ne: true } };
     if (rangeMatch) myDrsMatch.createdAt = rangeMatch;
     var myDrsP = DailyRequest.countDocuments(myDrsMatch);
 
     // CARD 3 — Followups: mirror the notification bell (src/App.js:6790). Leads
-    // assigned to me, not archived, status not in {DoneDeal, NotInterested, EOI},
+    // assigned to scope, not archived, status not in {DoneDeal, NotInterested, EOI},
     // lastActivityTime >= 2 days ago. No range filter — same as the bell.
     var twoDaysAgo = new Date(Date.now() - 2*24*60*60*1000);
     var myFollowupsP = Lead.countDocuments({
-      agentId: uid,
+      agentId: agentExpr,
       archived: { $ne: true },
       status: { $nin: ["DoneDeal", "NotInterested", "EOI"] },
       lastActivityTime: { $lte: twoDaysAgo }
     });
 
     // CARD 4 — Interested: leads + DRs with status in {HotCase, Potential},
-    // agent = me, created in range (across both collections).
-    var intLeadMatch = { agentId: uid, archived: { $ne: true }, status: { $in: ["Potential", "HotCase"] } };
+    // agent in scope, created in range (across both collections).
+    var intLeadMatch = { agentId: agentExpr, archived: { $ne: true }, status: { $in: ["Potential", "HotCase"] } };
     if (rangeMatch) intLeadMatch.createdAt = rangeMatch;
     var intLeadsP = Lead.countDocuments(intLeadMatch);
-    var intDrMatch = { agentId: uid, archived: { $ne: true }, status: { $in: ["Potential", "HotCase"] } };
+    var intDrMatch = { agentId: agentExpr, archived: { $ne: true }, status: { $in: ["Potential", "HotCase"] } };
     if (rangeMatch) intDrMatch.createdAt = rangeMatch;
     var intDrsP = DailyRequest.countDocuments(intDrMatch);
 
     // CARD 5 — Meetings: Meeting Done OR Meeting Scheduled.
     //   Done:       lead/DR with hadMeeting === true OR status === "MeetingDone"
     //               (dated by meetingDoneAt, falling back to updatedAt, within range).
-    //   Scheduled:  Task documents with type "meeting" authored by me, createdAt in range.
+    //   Scheduled:  Task documents with type "meeting" authored in scope, createdAt in range.
     var meetLeadPipeline = [
-      { $match: { agentId: uid, archived: { $ne: true }, $or: [ { hadMeeting: true }, { status: "MeetingDone" } ] } },
+      { $match: { agentId: agentExpr, archived: { $ne: true }, $or: [ { hadMeeting: true }, { status: "MeetingDone" } ] } },
       { $addFields: { meetAt: { $ifNull: ["$meetingDoneAt", "$updatedAt"] } } }
     ];
     if (rangeMatch) meetLeadPipeline.push({ $match: { meetAt: rangeMatch } });
     meetLeadPipeline.push({ $count: "c" });
     var meetLeadsP = Lead.aggregate(meetLeadPipeline);
     var meetDrPipeline = [
-      { $match: { agentId: uid, archived: { $ne: true }, $or: [ { hadMeeting: true }, { status: "MeetingDone" } ] } },
+      { $match: { agentId: agentExpr, archived: { $ne: true }, $or: [ { hadMeeting: true }, { status: "MeetingDone" } ] } },
       { $addFields: { meetAt: { $ifNull: ["$meetingDoneAt", "$updatedAt"] } } }
     ];
     if (rangeMatch) meetDrPipeline.push({ $match: { meetAt: rangeMatch } });
     meetDrPipeline.push({ $count: "c" });
     var meetDrsP = DailyRequest.aggregate(meetDrPipeline);
-    var meetTaskMatch = { userId: uid, type: "meeting" };
+    var meetTaskMatch = { userId: userExpr, type: "meeting" };
     if (rangeMatch) meetTaskMatch.createdAt = rangeMatch;
     var meetSchedP = Task.countDocuments(meetTaskMatch);
 
     // Per-status breakdown for the "My Leads — Status" + "Conversion Funnel"
-    // cards. Same scope as Card 1 (agent=me, archived=false, source!=DR,
-    // createdAt in range). Returned as a { status: count } map.
+    // cards. Same scope as Card 1.
     var byStatusPipeline = [
-      { $match: { agentId: uid, archived: { $ne: true }, source: { $ne: "Daily Request" } } }
+      { $match: { agentId: agentExpr, archived: { $ne: true }, source: { $ne: "Daily Request" } } }
     ];
     if (rangeMatch) byStatusPipeline.push({ $match: { createdAt: rangeMatch } });
     byStatusPipeline.push({ $group: { _id: "$status", c: { $sum: 1 } } });
@@ -894,9 +917,11 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     var curQNum = qParam ? parseInt(qParam[1]) : (Math.floor(new Date().getMonth()/3) + 1);
     var qKey = "Q" + curQNum;
 
-    var userP = User.findById(uid).select("qTargets").lean();
+    // Target: for TL, sum quarterly targets across self + direct sales so the
+    // progress bar reflects the whole team's quota. Single-doc fetch for others.
+    var usersP = User.find({ _id: { $in: scopeIds } }).select("qTargets").lean();
     var myDealsPipeline = [
-      { $match: { agentId: uid, status: "DoneDeal" } },
+      { $match: { agentId: agentExpr, status: "DoneDeal" } },
       { $addFields: {
           dealAt: {
             $cond: [
@@ -915,7 +940,7 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
       myLeadsP, myDrsP, myFollowupsP,
       intLeadsP, intDrsP,
       meetLeadsP, meetDrsP, meetSchedP,
-      userP, myDealsP, byStatusP
+      usersP, myDealsP, byStatusP
     ]);
     var pickCount = function(arr){ return (arr && arr[0] && arr[0].c) || 0; };
     var myLeadsC    = pickCount(parts[0]);
@@ -923,7 +948,7 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     var myFupsC     = parts[2] || 0;
     var interestedC = (parts[3]||0) + (parts[4]||0);
     var meetingsC   = pickCount(parts[5]) + pickCount(parts[6]) + (parts[7]||0);
-    var userDoc     = parts[8] || {};
+    var scopeUsers  = parts[8] || [];
     var myDeals     = parts[9] || [];
     var byStatus = { NewLead:0, Potential:0, HotCase:0, CallBack:0, MeetingDone:0, NotInterested:0, NoAnswer:0, DoneDeal:0 };
     (parts[10] || []).forEach(function(r){ if (r && r._id) byStatus[r._id] = r.c; });
@@ -935,7 +960,9 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
       return s + parseBudget(d.budget) * w * split;
     }, 0);
 
-    var target = (userDoc.qTargets && Number(userDoc.qTargets[qKey])) || 0;
+    var target = scopeUsers.reduce(function(s,u){
+      return s + ((u.qTargets && Number(u.qTargets[qKey])) || 0);
+    }, 0);
     var targetProgress = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
 
     res.json({

@@ -2474,7 +2474,7 @@ var DashboardPage = function(p) {
   // Refresh on the same 30s cadence as the activity feed.
   useEffect(function(){
     if (!p.token) return;
-    if (!isOnlyAdmin && p.cu.role !== "manager" && p.cu.role !== "team_leader") return;
+    if (!isOnlyAdmin && p.cu.role !== "manager") return;
     var cancelled = false;
     var load = function(){
       apiFetch("/api/leads/untouched","GET",null,p.token)
@@ -2714,7 +2714,12 @@ var DashboardPage = function(p) {
 
     // ============ MY DATA ============
     var myUidS = String(p.cu._id||p.cu.id);
-    var allMyLeads = leads.filter(function(l){
+    // Team leader: server already scoped p.leads to self + direct sales, so
+    // the team's leads ARE "my" data for dashboard purposes. Filtering further
+    // by an assignments.some(...===myUidS) check would drop every team-sales lead
+    // (TL doesn't hold their own assignment slice) and leave the dashboard empty.
+    var isTL = p.cu.role === "team_leader";
+    var allMyLeads = isTL ? leads.slice() : leads.filter(function(l){
       return l.assignments && l.assignments.some(function(a){
         var aid = a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
         return String(aid)===myUidS;
@@ -2785,11 +2790,14 @@ var DashboardPage = function(p) {
       if (ev.indexOf("created")>=0||ev.indexOf("create")>=0) return "\u2728";
       return "\ud83d\udd14";
     };
+    // For TL: accept history entries authored by any team member (self + direct sales).
+    var tlMemberNames = isTL ? new Set((p.myTeamUsers||[]).map(function(u){return String(u.name||"");}).filter(Boolean)) : null;
     var myRecentActsS = [];
     allMyLeads.forEach(function(l){
       (l.history||[]).forEach(function(h){
         if (!h || !h.timestamp) return;
-        if (String(h.byUser||"")!==myNameS) return;
+        var by = String(h.byUser||"");
+        if (isTL ? !tlMemberNames.has(by) : by!==myNameS) return;
         if (!inRangeS(h.timestamp)) return;
         myRecentActsS.push({
           lead: l,
@@ -7624,7 +7632,11 @@ var KPIsPage = function(p) {
   var [selQ, setSelQ] = useState(curQ);
   var [selYear, setSelYear] = useState(curYear);
 
-  var qTarget = getEffectiveQTarget(myUser, p.users, selQ);
+  // Team leader target: sum of every team member's quarterly target so the
+  // progress bar reflects the whole team's quota, matching aggregated deals.
+  var qTarget = isTeamLeader
+    ? (p.myTeamUsers||[]).reduce(function(s,u){ return s + (getEffectiveQTarget(u, p.users, selQ)||0); }, 0)
+    : getEffectiveQTarget(myUser, p.users, selQ);
 
   // Filter by selected Q and year
   var qDeals = myDeals.filter(function(d){
@@ -7764,6 +7776,66 @@ var KPIsPage = function(p) {
       </Card>;})}
     </div>
 
+    {/* Team members grid — team_leader only. Mirrors the admin Sales Team
+        MemberCard design (gradient hero + white stats panel) using the 8
+        .kpi-page-v2 .kpi-grad-N classes already defined above. */}
+    {p.cu.role === "team_leader" && (p.myTeamUsers||[]).length > 1 && <div style={{ marginTop:20 }}>
+      <div style={{ fontSize:13, fontWeight:700, color:"#0f172a", marginBottom:10, textTransform:"uppercase", letterSpacing:"0.04em" }}>Team Members</div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(240px, 1fr))", gap:12 }}>
+        {(p.myTeamUsers||[]).filter(function(u){ return String(gid(u)) !== uid; }).map(function(a){
+          var auid = String(gid(a));
+          var aLeads = p.leads.filter(function(l){ var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||""); return aid===auid && !l.archived && l.source!=="Daily Request"; });
+          var aDeals = aLeads.filter(function(l){ return l.status==="DoneDeal"; });
+          var aQDeals = aDeals.filter(function(d){ var dd=d.updatedAt||d.createdAt; return dd && getQ(dd)===selQ && getYear(dd)===selYear; });
+          var aQRev = aQDeals.reduce(function(s,d){ var w=getProjectWeight(d.project,d); var sp=getDealSplitFromObj(d); return s+parseBudget(d.budget)*w*(sp?0.5:1); }, 0);
+          var aTarget = getEffectiveQTarget(a, p.users, selQ);
+          var aProg = aTarget>0 ? Math.min(100, Math.round(aQRev/aTarget*100)) : 0;
+          var aCalls = p.activities.filter(function(ac){ var aauid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId; return String(aauid)===auid && ac.type==="call"; }).length;
+          var aTotalRev = aDeals.reduce(function(s,d){ var w=getProjectWeight(d.project,d); var sp=getDealSplitFromObj(d); return s+parseBudget(d.budget)*w*(sp?0.5:1); }, 0);
+          var aGrad = kpiGradFor(auid);
+          var aInitials = (a.name||"?").split(" ").slice(0,2).map(function(x){return x[0]||"";}).join("").toUpperCase();
+          var aOnline = a.lastSeen && (Date.now()-new Date(a.lastSeen).getTime()) < 3*60*1000;
+          var aRoleLabel = a.title || ({sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer",admin:"Admin"}[a.role]||"");
+          return <div key={auid} style={{ borderRadius:16, overflow:"hidden", background:"#fff", boxShadow:"0 2px 10px rgba(0,0,0,0.08)" }}>
+            <div className={aGrad} style={{ padding:"18px 14px 16px", position:"relative", display:"flex", flexDirection:"column", alignItems:"center", gap:6 }}>
+              {aOnline && <span title="Online" style={{ position:"absolute", top:10, right:12, width:9, height:9, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 0 2px rgba(255,255,255,0.45)" }}/>}
+              <div style={{ width:44, height:44, borderRadius:12, background:"rgba(255,255,255,0.22)", color:"#fff", border:"2px solid rgba(255,255,255,0.35)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:800 }}>{aInitials}</div>
+              <div style={{ fontSize:13, fontWeight:700, color:"#fff", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{a.name}</div>
+              <div style={{ fontSize:10, color:"rgba(255,255,255,0.85)", textTransform:"uppercase", letterSpacing:"0.04em" }}>{aRoleLabel}</div>
+            </div>
+            <div style={{ background:"#fff", padding:"14px 14px 16px" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6 }}>
+                <span style={{ fontSize:10, fontWeight:600, color:"#64748b", textTransform:"uppercase", letterSpacing:"0.04em" }}>{selQ} Target</span>
+                <span style={{ fontSize:10, fontWeight:700, color:"#334155" }}>{aTarget>0?aTarget.toLocaleString()+" EGP":"Not set"}</span>
+              </div>
+              <div style={{ height:4, background:"#e2e8f0", borderRadius:2, marginBottom:10, overflow:"hidden" }}>
+                <div className={aGrad} style={{ height:"100%", width:aProg+"%", borderRadius:2, transition:"width 0.6s" }}/>
+              </div>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:12 }}>
+                <span style={{ fontSize:18, fontWeight:800, color:aQRev>0?"#0f172a":"#94a3b8" }}>{(aQRev/1000000).toFixed(2)}M</span>
+                <span style={{ fontSize:12, fontWeight:700, color:"#64748b" }}>{aProg}%</span>
+              </div>
+              <div style={{ height:1, background:"#e2e8f0", marginBottom:10, transform:"scaleY(0.5)" }}/>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:6 }}>
+                {[
+                  { v:aLeads.length, l:"Leads", isDeals:false },
+                  { v:aDeals.length, l:"Deals", isDeals:true },
+                  { v:(aTotalRev/1000000).toFixed(1)+"M", l:"Total", isDeals:false },
+                  { v:aCalls, l:"Calls", isDeals:false }
+                ].map(function(s,i){
+                  var isZero = (s.v === 0) || (s.v === "0.0M") || (s.v === "0M") || (s.v === "0");
+                  var color = s.isDeals ? (s.v > 0 ? "#15803d" : "#cbd5e1") : (isZero ? "#cbd5e1" : "#0f172a");
+                  return <div key={i} style={{ textAlign:"center" }}>
+                    <div style={{ fontSize:16, fontWeight:800, color:color, lineHeight:1.1 }}>{s.v}</div>
+                    <div style={{ fontSize:8, fontWeight:600, color:"#94a3b8", textTransform:"uppercase", letterSpacing:"0.06em", marginTop:4 }}>{s.l}</div>
+                  </div>;
+                })}
+              </div>
+            </div>
+          </div>;
+        })}
+      </div>
+    </div>}
 
     {/* Q Deals list */}
     {qDeals.length>0&&<Card style={{ marginTop:16 }}>
