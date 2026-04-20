@@ -161,12 +161,14 @@ var Task = mongoose.model("Task", new mongoose.Schema({
 },{timestamps:true}));
 
 var Notification = mongoose.model("Notification", new mongoose.Schema({
-  type:{type:String,required:true}, // "deal" or "rotation"
+  type:{type:String,required:true}, // "deal" | "rotation" | "new_lead"
   leadName:{type:String,default:""},
   leadId:{type:String,default:""},
   agentName:{type:String,default:""},
   fromName:{type:String,default:""},
   toName:{type:String,default:""},
+  // Recipient-scoped notifications (new_lead). null = broadcast (deal/rotation).
+  toAgentId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
   status:{type:String,default:""},
   budget:{type:String,default:""},
   reason:{type:String,default:""},
@@ -588,6 +590,31 @@ async function pushHistory(leadId, entries) {
     await Lead.updateOne({ _id: leadId }, { $push: { history: { $each: arr } } });
   } catch(e) {
     console.error("[history push]", e && e.message ? e.message : e);
+  }
+}
+
+// Per-agent "new lead assigned" notification. Skips admin/sales_admin targets
+// (they have the rotation bell for oversight and don't need per-lead pings).
+// Non-fatal: a notification failure never blocks the rotation write.
+async function emitNewLeadNotif(args) {
+  try {
+    var toAgentId = args && args.toAgentId;
+    if (!toAgentId) return;
+    var targetUser = await User.findById(toAgentId).select("role name").lean();
+    if (!targetUser) return;
+    if (targetUser.role === "admin" || targetUser.role === "sales_admin") return;
+    await Notification.create({
+      type:      "new_lead",
+      leadId:    args.leadId ? String(args.leadId) : "",
+      leadName:  args.leadName || "",
+      toAgentId: toAgentId,
+      toName:    targetUser.name || "",
+      fromName:  args.fromName || "",
+      reason:    args.reason || ""
+    });
+    try { broadcast("notification_updated", {}); } catch(e) {}
+  } catch(e) {
+    console.error("[new-lead notif]", e && e.message ? e.message : e);
   }
 }
 
@@ -2091,6 +2118,13 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // the String(object) !== String(id) false-positive reassignment below.
     req.body.agentId       = normId(req.body.agentId);
     req.body.splitAgent2Id = normId(req.body.splitAgent2Id);
+    // The 🔒 lock is restricted to admin / sales_admin / team_leader / manager.
+    // Silently drop the field from other roles so a sales client can't bypass
+    // the UI gate — the rest of the PUT still applies.
+    if (req.body.locked !== undefined &&
+        ["admin","sales_admin","team_leader","manager"].indexOf(req.user.role) < 0) {
+      delete req.body.locked;
+    }
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty unless explicitly reassigning
     if (!update.agentId) delete update.agentId;
@@ -2207,7 +2241,26 @@ app.put("/api/leads/:id", auth, async function(req, res) {
           qAgent && qAgent.name ? qAgent.name : ""
         ));
         broadcast("unassigned_updated", { leadId: String(req.params.id) });
+        emitNewLeadNotif({
+          leadId:   req.params.id,
+          leadName: (oldLead && oldLead.name) ? oldLead.name : "",
+          toAgentId: req.body.agentId,
+          fromName: qByName,
+          reason:   "manual_queue_assign"
+        });
       } catch(hErr) { /* non-fatal */ }
+    }
+    // Manual admin reassign (agentId changed on an already-assigned lead) —
+    // notify the new agent. oldLead was loaded above when tracked fields changed.
+    if (pushOnReassign && req.body.agentId && oldLead && oldLead.agentId) {
+      var reassignByName = (req.user && req.user.name) ? req.user.name : "Admin";
+      emitNewLeadNotif({
+        leadId:    req.params.id,
+        leadName:  oldLead.name || "",
+        toAgentId: req.body.agentId,
+        fromName:  reassignByName,
+        reason:    "manual_reassign"
+      });
     }
     // Sync agent's own assignments[] entry on any action
     if (req.user.role === "sales" || req.user.role === "team_leader") {
@@ -2390,6 +2443,13 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
         firstByName,
         firstToName
       ));
+      emitNewLeadNotif({
+        leadId:    lead._id,
+        leadName:  lead.name || "",
+        toAgentId: targetAgentId,
+        fromName:  firstByName,
+        reason:    "manual_rotate_first"
+      });
       return res.json({ success: true, firstAssignment: true, lead: lead });
     }
 
@@ -2401,6 +2461,10 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     var currentAssignment = (lead.assignments || []).find(function(a) { return String(a.agentId) === String(lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId); });
     if (currentAssignment && currentAssignment.noRotation && req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(400).json({ error: "noRotation", message: "Rotation blocked — noRotation flag set" });
+    }
+    // ── HARD STOP 1b: top-level lock (🔒 button) — same admin override policy ──
+    if (lead.locked === true && req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(400).json({ error: "locked", message: "Rotation blocked — lead is locked" });
     }
     // ── HARD STOP 2: globalStatus === eoi ──
     if (lead.globalStatus === "eoi") {
@@ -2474,6 +2538,13 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
       req.user.name || "System",
       newAgentName
     ));
+    emitNewLeadNotif({
+      leadId:    req.params.id,
+      leadName:  lead.name || "",
+      toAgentId: targetAgentId,
+      fromName:  oldAgentName || (req.user.name || "System"),
+      reason:    "manual_rotate"
+    });
 
     var updated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(updated);
@@ -2506,6 +2577,11 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     }
     if (currentAssignment && currentAssignment.noRotation && req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(400).json({ error: "noRotation", message: "Rotation blocked — noRotation flag set" });
+    }
+    // Top-level lock — written by the 🔒 button on the lead panel. Same
+    // admin/sales_admin override policy as the per-slice noRotation flag.
+    if (lead.locked === true && req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(400).json({ error: "locked", message: "Rotation blocked — lead is locked" });
     }
     if (lead.globalStatus === "eoi")      return res.status(400).json({ error: "eoi",      message: "Rotation blocked — lead is EOI" });
     if (lead.globalStatus === "donedeal") return res.status(400).json({ error: "donedeal", message: "Rotation blocked — lead is Done Deal" });
@@ -2625,6 +2701,13 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
         firstByName,
         targetUser.name
       ));
+      emitNewLeadNotif({
+        leadId:    firstResult._id,
+        leadName:  firstResult.name || "",
+        toAgentId: targetAgentId,
+        fromName:  firstByName,
+        reason:    "auto_rotate_first"
+      });
       // Advance the pool's round-robin pointer so the next rotation resumes
       // after this agent. Tier 1 picks also mirror to legacy lastAssignedIdx.
       try {
@@ -2728,6 +2811,13 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       req.user.name || "System",
       targetUser.name
     ));
+    emitNewLeadNotif({
+      leadId:    req.params.id,
+      leadName:  (lead && lead.name) || "",
+      toAgentId: targetAgentId,
+      fromName:  oldAgentName || (req.user.name || "System"),
+      reason:    "auto_rotate"
+    });
     // Advance the pool's round-robin pointer — next rotation (in this batch
     // or any future one) resumes from (foundIdx + 1) % N so assignments fan out.
     try {
@@ -2792,7 +2882,7 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
     // filter on archived / agentId / source / globalStatus / rotationStopped /
     // createdAt / lastRotationAt — those are stage counters below.
     var allLeads = await Lead.find({})
-      .select("_id name agentId archived source globalStatus rotationStopped createdAt lastRotationAt assignments status lastActivityTime callbackTime previousAgentIds")
+      .select("_id name agentId archived source globalStatus rotationStopped locked createdAt lastRotationAt assignments status lastActivityTime callbackTime previousAgentIds")
       .lean();
 
     var excluded = {
@@ -2801,6 +2891,7 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
       dailyRequestSource: 0,
       eoiOrDoneDeal: 0,
       rotationStopped: 0,
+      locked: 0,
       tooYoung_lessThan45days: 0,
       lastRotationWithin1h: 0,
       noCurrentSliceAndNoFallback: 0,
@@ -2814,6 +2905,9 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
       if (l.source === "Daily Request")                              { excluded.dailyRequestSource++; continue; }
       if (l.globalStatus === "eoi" || l.globalStatus === "donedeal") { excluded.eoiOrDoneDeal++; continue; }
       if (l.rotationStopped === true)                                { excluded.rotationStopped++; continue; }
+      // Top-level lock. The bulk op is a batch action, not a single-lead admin
+      // override — locked leads are pinned and skipped unconditionally.
+      if (l.locked === true)                                         { excluded.locked++; continue; }
       if (!l.createdAt || new Date(l.createdAt) < ageCutoff)         { excluded.tooYoung_lessThan45days++; continue; }
       if (l.lastRotationAt && new Date(l.lastRotationAt) >= rotatedGuard) { excluded.lastRotationWithin1h++; continue; }
 
@@ -3015,6 +3109,13 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
           targetUser.name
         ));
       } catch (hErr) { /* non-fatal */ }
+      emitNewLeadNotif({
+        leadId:    lead._id,
+        leadName:  lead.name || "",
+        toAgentId: pickedId,
+        fromName:  byName,
+        reason:    "bulk_redistribute"
+      });
     }
 
     res.json({ total: total, distributed: distributed, skipped: skipped, perAgent: perAgent, diagnostic: diagnostic });
@@ -3035,6 +3136,9 @@ async function autoAssignQueuedLead(leadId) {
     if (lead.agentId) return { ok: false, error: "already_assigned" };
     if (lead.archived) return { ok: false, error: "archived" };
     if (lead.rotationStopped) return { ok: false, error: "rotation_stopped" };
+    // Top-level lock. The sweeper runs as System (no user role), so no override
+    // — a locked lead never auto-assigns from the queue.
+    if (lead.locked === true) return { ok: false, error: "locked" };
 
     var settings = await getRotationSettings();
     // Manual window sweeper is first-assignment only (agentId=null), independent of master rotation switch and pause — those only gate agent-to-agent rotation.
@@ -3111,6 +3215,13 @@ async function autoAssignQueuedLead(leadId) {
         pick.user.name
       ));
     } catch(e) { /* non-fatal */ }
+    emitNewLeadNotif({
+      leadId:    leadId,
+      leadName:  (lead && lead.name) || "",
+      toAgentId: targetAgentId,
+      fromName:  "System",
+      reason:    "queue_sweeper"
+    });
     try {
       var pUpd = {};
       if (poolKey === "tier1") {
@@ -3812,6 +3923,9 @@ app.get("/api/notifications", auth, async function(req, res) {
     var type = req.query.type || null;
     var query = {};
     if (type) query.type = type;
+    // Recipient-scoped: new_lead notifications are only visible to the target
+    // agent. Other types (deal / rotation) stay broadcast as before.
+    if (type === "new_lead") query.toAgentId = new mongoose.Types.ObjectId(uid);
     // Return the full history, newest first. Cap is defensive only.
     var limit = Math.min(parseInt(req.query.limit) || 2000, 5000);
     var notifs = await Notification.find(query).sort({ createdAt: -1 }).limit(limit).lean();
