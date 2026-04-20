@@ -6639,7 +6639,7 @@ var SettingsPage = function(p) {
       {tabs.map(tabBtn)}
     </div>
 
-    <Card style={{ maxWidth: activeTab==="rotation" ? 1200 : 560 }}>
+    <Card style={{ maxWidth: (activeTab==="rotation"||activeTab==="team") ? 1200 : 560 }}>
       {activeTab==="general"&&<div>
         <Inp label={t.companyName} value={company} onChange={function(e){setCompany(e.target.value);}}/>
         <Inp label={t.email} value={em} onChange={function(e){setEm(e.target.value);}}/>
@@ -7029,7 +7029,170 @@ var SettingsPage = function(p) {
         </div>;
       })()}
 
-      {activeTab==="team"        &&placeholder("👥","Team & Roles","Hierarchy and permissions — coming soon.")}
+      {activeTab==="team"&&(function(){
+        // ───── Hierarchy data (pulled from User.role + User.reportsTo) ─────
+        var users = (p.users||[]).filter(function(u){return u.active;});
+        var byRole = {admin:[],sales_admin:[],director:[],manager:[],team_leader:[],sales:[]};
+        users.forEach(function(u){ if(byRole[u.role]) byRole[u.role].push(u); });
+        var rtId = function(u){ if(!u.reportsTo) return ""; return u.reportsTo._id ? String(u.reportsTo._id) : String(u.reportsTo); };
+        var childrenOf = function(parentId, role){ return users.filter(function(u){return u.role===role && rtId(u)===String(parentId);}); };
+
+        // Deletion preview: pick first manager as an example
+        var previewMgr  = byRole.manager[0] || null;
+        var previewTLs  = previewMgr ? childrenOf(gid(previewMgr),"team_leader") : [];
+        var previewSales = previewTLs.reduce(function(acc,tl){return acc.concat(childrenOf(gid(tl),"sales"));},[]);
+
+        // ───── Node renderer ─────
+        var nodeStyle = function(kind){
+          var map={
+            admin:    {bg:"#FCEBEB",fg:"#A32D2D",fontSize:12,padding:"10px 14px",minWidth:160},
+            director: {bg:"#E1F5EE",fg:"#0F6E56",fontSize:12,padding:"10px 14px",minWidth:160},
+            manager:  {bg:"#FAEEDA",fg:"#854F0B",fontSize:12,padding:"10px 14px",minWidth:160},
+            tl:       {bg:"#EEEDFE",fg:"#3C3489",fontSize:11,padding:"8px 10px",  minWidth:140}
+          }[kind];
+          return {padding:map.padding,borderRadius:8,background:map.bg,color:map.fg,fontSize:map.fontSize,fontWeight:500,display:"flex",alignItems:"center",gap:6,minWidth:map.minWidth,justifyContent:"center"};
+        };
+        var hRow  = function(nodes){return <div style={{display:"flex",gap:12,justifyContent:"center",marginBottom:6,flexWrap:"wrap"}}>{nodes}</div>;};
+        var hDown = <div style={{textAlign:"center",color:"#999",fontSize:18,lineHeight:1,padding:"4px 0"}}>↓</div>;
+
+        // ───── Permissions matrix data ─────
+        var permRows = [
+          {label:"View own data",     vals:["✓","✓","✓","✓","✓","✓"]},
+          {label:"View team data",    vals:["ALL","ALL","ALL UNDER","TEAMS UNDER","OWN TEAM","—"]},
+          {label:"Edit lead data",    vals:["✓","✓","—","—","—","OWN"]},
+          {label:"Reassign lead",     vals:["✓","✓","ALL UNDER","TEAMS UNDER","OWN TEAM","—"]},
+          {label:"Change lead status",vals:["✓","✓","ALL UNDER","TEAMS UNDER","OWN TEAM","OWN"]},
+          {label:"Convert Hot → EOI", vals:["✓","✓","ALL UNDER","TEAMS UNDER","OWN TEAM","OWN"],highlight:"green",bold:true},
+          {label:"Convert EOI → Deal",vals:["✓","✓","ALL UNDER","TEAMS UNDER","OWN TEAM","OWN"],highlight:"green",bold:true},
+          {label:"Approve EOI",       vals:["✓","✓","—","—","—","—"]},
+          {label:"Approve Deal",      vals:["✓","✓","—","—","—","—"]},
+          {label:"Cancel EOI / Deal", vals:["✓","✓","—","—","—","—"]},
+          {label:"Delete lead",       vals:["✓","—","—","—","—","—"]},
+          {label:"Delete user",       vals:["✓","—","—","—","—","—"]},
+          {label:"Edit commissions",  vals:["✓","—","—","—","—","—"]},
+          {label:"Receive rotation",  vals:["—","—","—","—","✓","✓"],highlight:"blue",bold:true}
+        ];
+        var roleCols = ["Admin","Sales Admin","Director","Manager","Team Leader","Sales"];
+        var cellFor = function(v){
+          if(v==="✓")     return <span style={{color:"#0F6E56",fontWeight:500,fontSize:13}}>✓</span>;
+          if(v==="—")     return <span style={{color:"#999"}}>—</span>;
+          /* scope label */ return <span style={{color:"#0F6E56",fontWeight:500,fontSize:9,letterSpacing:"0.3px"}}>{v}</span>;
+        };
+        var rowBg = function(h){ if(h==="green") return "#EAF6F0"; if(h==="blue") return "#E6F1FB"; return "transparent"; };
+
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          {/* ══ Team hierarchy ══ */}
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Team hierarchy</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:10}}>6-level structure: Admin → Sales Director → Managers → Team Leaders → Sales</div>
+
+          <div style={{padding:24,background:"#F7F7F5",borderRadius:8,marginBottom:16}}>
+            {/* Admin row */}
+            {byRole.admin.length===0
+              ? hRow([<div key="a" style={Object.assign({},nodeStyle("admin"),{opacity:0.5,fontStyle:"italic"})}>No admin</div>])
+              : hRow(byRole.admin.map(function(u){return <div key={gid(u)} style={nodeStyle("admin")}>{u.name} · Admin</div>;}))
+            }
+            {hDown}
+
+            {/* Sales Director row */}
+            {byRole.director.length===0
+              ? hRow([<div key="d" style={Object.assign({},nodeStyle("director"),{opacity:0.5,fontStyle:"italic"})}>No Sales Director yet</div>])
+              : hRow(byRole.director.map(function(u){return <div key={gid(u)} style={nodeStyle("director")}>{u.name} · Sales Director</div>;}))
+            }
+            {hDown}
+
+            {/* Sales Manager row (multiple possible) */}
+            {byRole.manager.length===0
+              ? hRow([<div key="m" style={Object.assign({},nodeStyle("manager"),{opacity:0.5,fontStyle:"italic"})}>No Sales Managers</div>])
+              : hRow(byRole.manager.map(function(u){return <div key={gid(u)} style={nodeStyle("manager")}>{u.name} · Sales Manager</div>;}))
+            }
+            {byRole.team_leader.length>0 && hDown}
+
+            {/* Team Leader row */}
+            {byRole.team_leader.length>0 && hRow(byRole.team_leader.map(function(tl){
+              var teamLabel = tl.teamName ? (" ("+tl.teamName+")") : "";
+              return <div key={gid(tl)} style={nodeStyle("tl")}>{tl.name} · TL{teamLabel}</div>;
+            }))}
+
+            {/* Team cards — one per Team Leader with their Sales members */}
+            {byRole.team_leader.length>0 && <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))",gap:10,marginTop:14}}>
+              {byRole.team_leader.map(function(tl){
+                var members = childrenOf(gid(tl),"sales");
+                var teamName = tl.teamName || (tl.name + " Team");
+                return <div key={gid(tl)} style={{background:"#fff",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,padding:"10px 12px"}}>
+                  <div style={{fontSize:11,fontWeight:500,color:"#3C3489",marginBottom:6}}>{teamName}</div>
+                  <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                    {members.length===0
+                      ? <span style={{fontSize:10,color:"#999",fontStyle:"italic"}}>No sales members</span>
+                      : members.map(function(m){return <span key={gid(m)} style={{fontSize:10,padding:"2px 6px",background:"#E6F1FB",color:"#185FA5",borderRadius:8}}>{m.name}</span>;})
+                    }
+                  </div>
+                </div>;
+              })}
+            </div>}
+
+            <div style={{marginTop:14,display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap"}}>
+              <button type="button" disabled title="Coming in later tab" style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:8,cursor:"not-allowed",color:"#1a1a1a",fontFamily:"inherit",opacity:0.6}}>+ Add Team</button>
+              <button type="button" disabled title="Coming in later tab" style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:8,cursor:"not-allowed",color:"#1a1a1a",fontFamily:"inherit",opacity:0.6}}>+ Add Manager</button>
+              <button type="button" disabled title="Coming in later tab" style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:8,cursor:"not-allowed",color:"#1a1a1a",fontFamily:"inherit",opacity:0.6}}>Edit hierarchy</button>
+            </div>
+          </div>
+
+          {/* Info box */}
+          <div style={{background:"#E6F1FB",borderLeft:"3px solid #185FA5",padding:"10px 14px",borderRadius:8,fontSize:12,color:"#185FA5",marginBottom:16,lineHeight:1.5}}>
+            <b>Multiple Sales Managers:</b> A Sales Director can oversee multiple Sales Managers. Each Manager can have multiple Team Leaders under them. A Team Leader leads one team of Sales agents.
+          </div>
+
+          {/* ══ Permissions matrix ══ */}
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Permissions matrix</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:10}}>Scope: ALL = everyone · ALL UNDER = everything in Director's chain · TEAMS UNDER = all Manager's teams · OWN TEAM = Team Leader's team · OWN = own records</div>
+
+          <div style={{overflowX:"auto",marginBottom:24}}>
+            <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+              <thead style={{background:"#F7F7F5"}}>
+                <tr>
+                  <th style={{textAlign:"left",padding:"10px 8px",fontWeight:500,fontSize:11,color:"#666",minWidth:180}}>Action</th>
+                  {roleCols.map(function(r){return <th key={r} style={{textAlign:"center",padding:"10px 8px",fontWeight:500,fontSize:11,color:"#666"}}>{r}</th>;})}
+                </tr>
+              </thead>
+              <tbody>
+                {permRows.map(function(row,i){
+                  var hBg = rowBg(row.highlight);
+                  var actionColor = row.highlight==="blue" ? "#185FA5" : "#1a1a1a";
+                  return <tr key={i} style={{background:hBg}}>
+                    <td style={{padding:"8px",borderTop:"0.5px solid rgba(0,0,0,0.1)",fontSize:11,fontWeight:row.bold?500:400,color:actionColor}}>
+                      {row.bold ? <b>{row.label}</b> : row.label}
+                    </td>
+                    {row.vals.map(function(v,j){return <td key={j} style={{padding:"8px",borderTop:"0.5px solid rgba(0,0,0,0.1)",fontSize:11,textAlign:"center"}}>{cellFor(v)}</td>;})}
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* ══ User deletion confirmation preview ══ */}
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>User deletion confirmation preview</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:10}}>Cascade effects vary by role</div>
+
+          {previewMgr
+            ? <div style={{background:"#FCEBEB",border:"0.5px solid rgba(163,45,45,0.3)",borderRadius:12,padding:"14px 16px",maxWidth:540}}>
+                <div style={{fontSize:14,fontWeight:500,color:"#A32D2D",marginBottom:10}}>Delete {previewMgr.name}?</div>
+                <div style={{fontSize:13,color:"#A32D2D",lineHeight:1.7,marginBottom:12}}>
+                  This user is a <b>Sales Manager</b>. Affected items:<br/>
+                  • {previewTLs.length} Team Leader{previewTLs.length===1?"":"s"} under them → flagged for new Manager assignment<br/>
+                  • {previewSales.length} Sales in those teams → hierarchy chain broken<br/>
+                  • 0 active leads (Managers don't receive rotation)<br/>
+                  • Historical Deals approvals → preserved as "Ex-{previewMgr.name}"
+                </div>
+                <div style={{fontSize:12,color:"#A32D2D",opacity:0.85,marginBottom:14,lineHeight:1.5}}>You must assign the orphaned Team Leaders to another Manager before the hierarchy is complete again.</div>
+                <div style={{display:"flex",gap:8}}>
+                  <button type="button" disabled style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:8,cursor:"not-allowed",color:"#1a1a1a",fontFamily:"inherit",opacity:0.7}}>Cancel</button>
+                  <button type="button" disabled style={{fontSize:12,padding:"6px 12px",border:"0.5px solid #A32D2D",background:"#A32D2D",borderRadius:8,cursor:"not-allowed",color:"#fff",fontWeight:500,fontFamily:"inherit",opacity:0.8}} title="Preview only — actual deletion lives in Users page">Delete &amp; Flag Orphans</button>
+                </div>
+              </div>
+            : <div style={{background:"#F7F7F5",border:"0.5px dashed rgba(0,0,0,0.1)",borderRadius:8,padding:"14px 16px",fontSize:12,color:"#666",maxWidth:540}}>No Sales Managers in the roster yet — add one in the Users page to preview the cascade.</div>
+          }
+        </div>;
+      })()}
       {activeTab==="integrations"&&placeholder("🔌","Integrations","Google Sheets, Facebook Lead Ads, WhatsApp — coming soon.")}
       {activeTab==="rules"       &&placeholder("📋","Business Rules","Toggle-based rules — coming soon.")}
       {activeTab==="audit"       &&placeholder("📜","Audit Log","Settings change history — coming soon.")}
