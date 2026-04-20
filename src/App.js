@@ -2667,7 +2667,18 @@ var DashboardPage = function(p) {
     var myRankTotal = rankRows.length;
     var myRankRow = myRankIdx >= 0 ? rankRows[myRankIdx] : {deals:0,meetings:0,score:0};
     var title = mode === "admin" ? "Rank Team" : "My Rank vs Team";
-    return <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+    // Admin mode shares a grid row with other cards that stretch to the
+    // tallest sibling (Management Alerts / Callback Compliance / Leads by
+    // Status). Make the card a flex column so the rank list can flex:1 and
+    // fill the full card height with internal scrolling. Sales mode keeps
+    // its original fixed-max layout untouched.
+    var isAdminMode = mode === "admin";
+    var cardStyle = {background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"};
+    if (isAdminMode) { cardStyle.display = "flex"; cardStyle.flexDirection = "column"; cardStyle.height = "100%"; }
+    var listStyle = isAdminMode
+      ? {display:"flex",flexDirection:"column",gap:6,flex:1,minHeight:0,overflowY:"auto"}
+      : {display:"flex",flexDirection:"column",gap:6,maxHeight:360,overflowY:"auto"};
+    return <div className="crm-dash-card" style={cardStyle}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
         <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>{title}</div>
         <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{rangeLabel}</div>
@@ -2676,7 +2687,7 @@ var DashboardPage = function(p) {
         <span style={{fontSize:34,fontWeight:800,color:myRank===1?"#15803D":myRank>0&&myRank<=3?"#1D4ED8":"#334155",lineHeight:1}}>{myRank>0?"#"+myRank:"\u2014"}</span>
         <span style={{fontSize:13,color:"#64748B"}}>out of {myRankTotal} sales agents</span>
       </div>}
-      <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:360,overflowY:"auto"}}>
+      <div style={listStyle}>
         {loading && <div style={{fontSize:12,color:"#94A3B8",padding:"6px 0"}}>Loading ranking\u2026</div>}
         {rankRows.map(function(r,i){
           var isMe = mode === "sales" && String(r.uid)===myUid;
