@@ -668,6 +668,10 @@ var ROTATION_DEFAULTS = {
     tier2: { agents: [], lastIdx: -1 },
     tier3: { agents: [], lastIdx: -1 }
   },
+  // Round-robin pointer for the flattened Tier2+Tier3 pool. Count-based picker
+  // uses this when rotationCount >= 2, or when rotationCount < 2 but all
+  // Tier 1 agents have already handled the lead.
+  combined23LastIdx: -1,
   autoRotationEnabled: true,
   autoRotationPausedUntil: null,
   workingHours: {
@@ -725,6 +729,7 @@ async function getRotationSettings() {
     cbDays:    Number(v.cbDays    != null ? v.cbDays    : D.cbDays),
     hotDays:   Number(v.hotDays   != null ? v.hotDays   : D.hotDays),
     lastAssignedIdx: (typeof v.lastAssignedIdx === "number") ? v.lastAssignedIdx : -1,
+    combined23LastIdx: (typeof v.combined23LastIdx === "number") ? v.combined23LastIdx : -1,
     tiers: tiers,
     autoRotationEnabled:     v.autoRotationEnabled !== false,
     autoRotationPausedUntil: v.autoRotationPausedUntil || null,
@@ -811,6 +816,8 @@ app.put("/api/settings/rotation", auth, async function(req, res) {
       cbDays:    clamp(b.cbDays,    D.cbDays,    1, 365),
       hotDays:   clamp(b.hotDays,   D.hotDays,   1, 365),
       lastAssignedIdx: tiers.tier1.lastIdx,
+      // Server-managed pointer; never sent from UI. Preserve across writes.
+      combined23LastIdx: (typeof prevValue.combined23LastIdx === "number") ? prevValue.combined23LastIdx : -1,
       tiers: tiers,
       autoRotationEnabled:     b.autoRotationEnabled !== false,
       autoRotationPausedUntil: b.autoRotationPausedUntil ? new Date(b.autoRotationPausedUntil) : null,
@@ -2539,14 +2546,16 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     // round-robin pointer. Skip rules are applied per-candidate; "skipped"
     // agents leave the pointer untouched.
     var sr = settings.smartSkipRules || {};
-    // Availability-based skip rules (vacation/offline/working-hours) have been
-    // permanently removed from the picker. Only identity/role/active/exclusion
-    // gates apply here.
-    var tryTier = function(tier){
-      var ids = Array.isArray(tier.agents) ? tier.agents : [];
+    // Count-based tier selection:
+    //   rotationCount < 2 (first 2 rotations)  → Tier 1 preferred, combined T2+T3 fallback
+    //   rotationCount >= 2 (third rotation+)   → combined T2+T3 only, no fallback to Tier 1
+    // Availability-based skip rules (vacation/offline/working-hours) are
+    // permanently removed. Only identity/role/active/exclusion gates apply.
+    var rotCount = Number(lead.rotationCount || 0);
+    var tryPool = function(ids, lastIdx){
+      if (!Array.isArray(ids) || !ids.length) return null;
       var n = ids.length;
-      if (!n) return null;
-      var start = ((tier.lastIdx + 1) % n + n) % n;
+      var start = ((lastIdx + 1) % n + n) % n;
       for (var step = 0; step < n; step++) {
         var idx = (start + step) % n;
         var uid = String(ids[idx]);
@@ -2558,14 +2567,28 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       }
       return null;
     };
-    var pick = null;
-    var tierKey = null;
-    ["tier1","tier2","tier3"].some(function(k){
-      var got = tryTier(settings.tiers[k]);
-      if (got) { pick = got; tierKey = k; return true; }
-      return false;
+    // Flatten T2+T3 into a single deduped ring. An agent listed in both tiers
+    // should occupy one slot — the Tier 2 position wins (first-seen).
+    var combined23 = [];
+    var seen23 = {};
+    [].concat(settings.tiers.tier2.agents, settings.tiers.tier3.agents).forEach(function(id){
+      var s = String(id);
+      if (!seen23[s]) { seen23[s] = true; combined23.push(s); }
     });
-    if (!pick) return res.status(409).json({ error: "exhausted", message: "No eligible agent in any tier" });
+    var pick = null;
+    var poolKey = null;
+    if (rotCount < 2) {
+      pick = tryPool(settings.tiers.tier1.agents, settings.tiers.tier1.lastIdx);
+      if (pick) { poolKey = "tier1"; }
+      else {
+        pick = tryPool(combined23, settings.combined23LastIdx);
+        if (pick) poolKey = "combined23";
+      }
+    } else {
+      pick = tryPool(combined23, settings.combined23LastIdx);
+      if (pick) poolKey = "combined23";
+    }
+    if (!pick) return res.status(409).json({ error: "exhausted", message: "No eligible agent — all tier agents have already handled this lead" });
     var targetUser = pick.user;
     var foundIdx   = pick.idx;
 
@@ -2602,8 +2625,18 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
         firstByName,
         targetUser.name
       ));
-      // Advance the global pointer so the next rotation picks up after this agent.
-      try { var pUpd = {}; pUpd["value.tiers." + tierKey + ".lastIdx"] = foundIdx; if (tierKey === "tier1") pUpd["value.lastAssignedIdx"] = foundIdx; await AppSetting.updateOne({ key: "rotation" }, { $set: pUpd }); } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
+      // Advance the pool's round-robin pointer so the next rotation resumes
+      // after this agent. Tier 1 picks also mirror to legacy lastAssignedIdx.
+      try {
+        var pUpd = {};
+        if (poolKey === "tier1") {
+          pUpd["value.tiers.tier1.lastIdx"] = foundIdx;
+          pUpd["value.lastAssignedIdx"] = foundIdx;
+        } else {
+          pUpd["value.combined23LastIdx"] = foundIdx;
+        }
+        await AppSetting.updateOne({ key: "rotation" }, { $set: pUpd });
+      } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
       var firstPopulated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
       return res.json({ success: true, firstAssignment: true, targetAgentId: targetAgentId, lead: firstPopulated });
     }
@@ -2695,9 +2728,18 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       req.user.name || "System",
       targetUser.name
     ));
-    // Advance the global round-robin pointer — next rotation (in this batch or
-    // any future one) resumes from (foundIdx + 1) % N so assignments fan out.
-    try { var pUpd2 = {}; pUpd2["value.tiers." + tierKey + ".lastIdx"] = foundIdx; if (tierKey === "tier1") pUpd2["value.lastAssignedIdx"] = foundIdx; await AppSetting.updateOne({ key: "rotation" }, { $set: pUpd2 }); } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
+    // Advance the pool's round-robin pointer — next rotation (in this batch
+    // or any future one) resumes from (foundIdx + 1) % N so assignments fan out.
+    try {
+      var pUpd2 = {};
+      if (poolKey === "tier1") {
+        pUpd2["value.tiers.tier1.lastIdx"] = foundIdx;
+        pUpd2["value.lastAssignedIdx"] = foundIdx;
+      } else {
+        pUpd2["value.combined23LastIdx"] = foundIdx;
+      }
+      await AppSetting.updateOne({ key: "rotation" }, { $set: pUpd2 });
+    } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
     var updated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json({ success: true, targetAgentId: targetAgentId, lead: updated });
   } catch(e) {
@@ -2744,22 +2786,23 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
     });
     if (!agentPool.length) return res.status(409).json({ error: "no_agents", message: "No eligible agents in rotation tiers" });
 
-    // Candidate leads: assigned, not archived, not stopped, within age cutoff,
-    // and not rotated in the last hour. Status filter narrows the scan to
-    // buckets that have per-status eligibility rules.
-    var eligibleStatuses = ["NewLead","NoAnswer","NotInterested","CallBack","HotCase","Potential","MeetingDone"];
+    // Candidate leads: assigned, not archived, not stopped, not EOI/DoneDeal,
+    // within age cutoff, and not rotated in the last hour. No top-level status
+    // filter — eligibility resolves per-agent from assignments[current], since
+    // top-level lead.status drifts after rotations (new assignments start with
+    // "NewLead" while top-level retains the previous agent's last-sent status).
     var candidateLeads = await Lead.find({
       agentId: { $ne: null },
       archived: { $ne: true },
       rotationStopped: { $ne: true },
-      status: { $in: eligibleStatuses },
+      globalStatus: { $nin: ["eoi", "donedeal"] },
       createdAt: { $gte: ageCutoff },
       $or: [
         { lastRotationAt: { $exists: false } },
         { lastRotationAt: null },
         { lastRotationAt: { $lt: rotatedGuard } }
       ]
-    }).select("_id agentId status lastActivityTime callbackTime previousAgentIds assignments").lean();
+    }).select("_id agentId assignments previousAgentIds").lean();
 
     // NoAnswer eligibility needs per-lead activity counts. Pull status_change
     // activities tagged [NoAnswer] for just the candidate set in one query.
@@ -2786,10 +2829,27 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
     var cbDays   = Number(settings.cbDays)   || 1;
     var hotDays  = Number(settings.hotDays)  || 2;
 
+    // Per-agent clock. The current agent's slice is the one whose agentId
+    // matches the lead's top-level agentId. Status / lastActionAt /
+    // callbackTime all come from that slice — NOT top-level lead fields,
+    // which are polluted by cross-agent writes (admin edits, activity logs,
+    // DR mirror syncs, etc.). noRotation on the slice is a per-agent lock and
+    // must be respected.
+    var currentSliceOf = function(l){
+      var curAid = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId || "");
+      if (!curAid) return null;
+      return (l.assignments || []).find(function(a){
+        var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+        return String(aid || "") === curAid;
+      }) || null;
+    };
     var isEligible = function(l){
-      var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
+      var cur = currentSliceOf(l);
+      if (!cur) return false;
+      if (cur.noRotation) return false;
+      var lastAct = cur.lastActionAt ? new Date(cur.lastActionAt).getTime() : 0;
       var ageMs   = lastAct ? (now.getTime() - lastAct) : Infinity;
-      switch (l.status) {
+      switch (String(cur.status || "")) {
         case "NoAnswer": {
           var slot = naByLead[String(l._id)];
           if (!slot) return false;
@@ -2800,8 +2860,8 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
         case "NotInterested": return ageMs >= (niDays*DAY);
         case "NewLead":       return ageMs >= (noActDays*DAY);
         case "CallBack": {
-          if (!l.callbackTime) return false;
-          var cb = new Date(l.callbackTime).getTime();
+          if (!cur.callbackTime) return false;
+          var cb = new Date(cur.callbackTime).getTime();
           if (!cb) return false;
           return (now.getTime() - cb) >= (cbDays*DAY);
         }
@@ -2921,13 +2981,14 @@ async function autoAssignQueuedLead(leadId) {
     var byId = {};
     candidateDocs.forEach(function(u){ byId[String(u._id)] = u; });
 
-    // Availability-based skip rules (vacation/offline/working-hours) have been
-    // permanently removed from the picker. Only identity/role/active gates apply.
-    var tryTier = function(tier){
-      var ids = Array.isArray(tier.agents) ? tier.agents : [];
+    // Queued leads are always first-assignment (rotationCount=0), so the
+    // count-based picker always lands in the "rotCount < 2" branch: try Tier 1
+    // first, fall through to combined Tier 2+3. Availability-based skip rules
+    // (vacation/offline/working-hours) are permanently removed.
+    var tryPool = function(ids, lastIdx){
+      if (!Array.isArray(ids) || !ids.length) return null;
       var n = ids.length;
-      if (!n) return null;
-      var start = ((tier.lastIdx + 1) % n + n) % n;
+      var start = ((lastIdx + 1) % n + n) % n;
       for (var step = 0; step < n; step++) {
         var idx = (start + step) % n;
         var uid = String(ids[idx]);
@@ -2938,12 +2999,19 @@ async function autoAssignQueuedLead(leadId) {
       }
       return null;
     };
-    var pick = null, tierKey = null;
-    ["tier1","tier2","tier3"].some(function(k){
-      var got = tryTier(settings.tiers[k]);
-      if (got) { pick = got; tierKey = k; return true; }
-      return false;
+    var combined23 = [];
+    var seen23 = {};
+    [].concat(settings.tiers.tier2.agents, settings.tiers.tier3.agents).forEach(function(id){
+      var s = String(id);
+      if (!seen23[s]) { seen23[s] = true; combined23.push(s); }
     });
+    var pick = tryPool(settings.tiers.tier1.agents, settings.tiers.tier1.lastIdx);
+    var poolKey = null;
+    if (pick) { poolKey = "tier1"; }
+    else {
+      pick = tryPool(combined23, settings.combined23LastIdx);
+      if (pick) poolKey = "combined23";
+    }
     if (!pick) return { ok: false, error: "exhausted" };
 
     var targetAgentId = String(pick.user._id);
@@ -2981,8 +3049,12 @@ async function autoAssignQueuedLead(leadId) {
     } catch(e) { /* non-fatal */ }
     try {
       var pUpd = {};
-      pUpd["value.tiers." + tierKey + ".lastIdx"] = pick.idx;
-      if (tierKey === "tier1") pUpd["value.lastAssignedIdx"] = pick.idx;
+      if (poolKey === "tier1") {
+        pUpd["value.tiers.tier1.lastIdx"] = pick.idx;
+        pUpd["value.lastAssignedIdx"] = pick.idx;
+      } else {
+        pUpd["value.combined23LastIdx"] = pick.idx;
+      }
       await AppSetting.updateOne({ key: "rotation" }, { $set: pUpd });
     } catch(e) { /* non-fatal */ }
     return { ok: true, agentId: targetAgentId, agentName: pick.user.name };
