@@ -3067,11 +3067,23 @@ var DashboardPage = function(p) {
     return t>=rangeStart && t<=rangeEnd;
   }).length;
   var dealsFiltered = dealsFromLeads + dealsFromDR;
-  // Overdue: leads with overdue callback + DR with overdue dueDate not completed
-  var overdueLeads = allLeadsUntimed.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now&&!["MeetingDone","DoneDeal","EOI"].includes(l.status);}).length;
+  // Overdue: leads/DRs whose callbackTime is past now AND falls inside the
+  // active period [rangeStart, rangeEnd]. Without the range bound the count
+  // would ignore the dashboard filter and always show "all overdue ever".
+  var overdueLeads = allLeadsUntimed.filter(function(l){
+    if (!l.callbackTime) return false;
+    if (["MeetingDone","DoneDeal","EOI"].includes(l.status)) return false;
+    var cb = new Date(l.callbackTime).getTime();
+    if (isNaN(cb)) return false;
+    return cb < now && cb >= rangeStart && cb <= rangeEnd;
+  }).length;
   var overdueDR = (p.dailyReqs||[]).filter(function(r){
     var d = r.dueDate||r.callbackTime;
-    return d && new Date(d).getTime()<now && r.status!=="Meeting" && r.status!=="MeetingDone" && r.status!=="DoneDeal";
+    if (!d) return false;
+    if (r.status==="Meeting"||r.status==="MeetingDone"||r.status==="DoneDeal") return false;
+    var cb = new Date(d).getTime();
+    if (isNaN(cb)) return false;
+    return cb < now && cb >= rangeStart && cb <= rangeEnd;
   }).length;
   var overdueFiltered = overdueLeads + overdueDR;
   var callbacksFiltered = fLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).toDateString()===nowD.toDateString();}).length;
