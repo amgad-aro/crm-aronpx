@@ -1361,6 +1361,8 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
 
 app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
   try {
+    // Orphan-safe: detach subordinates so the tree stays intact without the parent.
+    await User.updateMany({ reportsTo: req.params.id }, { $set: { reportsTo: null } });
     var deletedUser = await User.findByIdAndDelete(req.params.id);
     emitUserDeleted(deletedUser);
     res.json({ ok: true });

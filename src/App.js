@@ -687,7 +687,7 @@ var SidebarIcon = function(id, active){
 };
 
 var Sidebar = function(p) {
-  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var isSales = p.cu.role==="sales";
   var isSalesOrTL = p.cu.role==="sales"||p.cu.role==="team_leader";
   var items = [
@@ -1214,7 +1214,7 @@ var Header = function(p) {
 
 // ===== LEAD FORM (shared for add/edit) =====
 var LeadForm = function(p) {
-  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
+  var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [form, setForm] = useState((function(){
     var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", eoiDate:"", eoiDeposit:"", downPaymentPct:"", installmentYears:"" };
@@ -1499,7 +1499,7 @@ var LeadsPage = function(p) {
   var sc = visibleStatuses(STATUSES(t), p.cu&&p.cu.role).filter(function(s){ return s.value!=="Deal Cancelled"; });
   // Top filter-tab options — also hide EOI and DoneDeal (they have their own pages).
   var tabSc = sc.filter(function(s){ return s.value!=="EOI" && s.value!=="DoneDeal"; });
-  var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var isManager = p.cu.role==="manager"||p.cu.role==="team_leader";
   var myTeamUsers = p.myTeamUsers || salesUsers;
@@ -1606,7 +1606,7 @@ var LeadsPage = function(p) {
     var lid=gid(selected);
     apiFetch("/api/leads/"+lid+"/full-history","GET",null,p.token).then(function(hist){
       var all=hist||[];
-      var isAdminRole=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
+      var isAdminRole=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader";
       if(!isAdminRole){
         var rotTime=selected.lastRotationAt?new Date(selected.lastRotationAt).getTime():0;
         all=all.filter(function(a){
@@ -1690,7 +1690,7 @@ var LeadsPage = function(p) {
 
   var openHistory = async function(lead) {
     setHistoryLead(lead); setShowHistory(true); setFullHistory([]); setHistoryLoading(true);
-    var isAdminRole = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
+    var isAdminRole = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader";
     try {
       var hist = await apiFetch("/api/leads/"+gid(lead)+"/full-history","GET",null,p.token);
       var all = hist||[];
@@ -3966,7 +3966,7 @@ var DashboardPage = function(p) {
 
 // ===== EOI PAGE =====
 var EOIPage = function(p) {
-  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [eoiTab,setEoiTab]=useState("approved");
   // Scope: anything that has an eoiStatus (Pending / Approved / Deal Cancelled)
   // OR is currently status=EOI (legacy rows without eoiStatus set yet).
@@ -4474,7 +4474,7 @@ var calcCommission = function(user, allDeals, allUsers, forQ) {
 };
 
 var DealsPage = function(p) {
-  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [dealTab,setDealTab]=useState("active"); // "active" | "cancelled"
   var [dealCancelling,setDealCancelling]=useState(false);
   // Include every record that the rest of the CRM already treats as a deal:
@@ -5173,7 +5173,7 @@ var TasksPage = function(p) {
 
 
 var ArchivePage = function(p) {
-  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
+  var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader";
   var isOnlyAdmin=p.cu.role==="admin";
   var archived = p.leads.filter(function(l){ return l.archived; });
   var [archivedDR,setArchivedDR]=useState([]);
@@ -5264,7 +5264,7 @@ var DailyRequestsPage = function(p) {
   var t=p.t;
   // Dropdown and tabs both drop "Deal Cancelled" from DRs entirely.
   var sc=visibleStatuses(DR_STATUSES(t), p.cu&&p.cu.role).filter(function(s){ return s.value!=="Deal Cancelled"; });
-  var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
+  var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [requests,setRequests]=useState([]);
   var [loading,setLoading]=useState(true);
@@ -5873,7 +5873,7 @@ var UsersPage = function(p) {
         </td>
         <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(u.role!=="admin")toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
         <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:displayName});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} disabled={p.cu.role==="sales_admin"&&u.role==="admin"} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:p.cu.role==="sales_admin"&&u.role==="admin"?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", opacity:p.cu.role==="sales_admin"&&u.role==="admin"?0.3:1 }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button>
-              <button onClick={function(){setTeamModal({userId:uid,userName:u.name,teamId:u.teamId||"",teamName:u.teamName||"",reportsTo:u.reportsTo||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Edit Team"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(u.username!=="amgad")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.username!=="amgad"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.username==="amgad"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
+              <button onClick={function(){setTeamModal({userId:uid,userName:u.name,userRole:u.role,teamId:u.teamId||"",teamName:u.teamName||"",reportsTo:u.reportsTo||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Edit Team"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(u.username!=="amgad")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.username!=="amgad"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.username==="amgad"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
       </tr>;})}
       </tbody>
     </table></div></Card>
@@ -5897,16 +5897,22 @@ var UsersPage = function(p) {
       </div>
     </Modal>}
     {teamModal&&<Modal show={true} onClose={function(){setTeamModal(null);}} title={"👥 Edit Team — "+teamModal.userName}>
-      {/* reportsTo */}
-      <div style={{marginBottom:12}}>
+      {/* reportsTo — hidden for top-level (admin/sales_admin/director) and non-hierarchy (viewer) roles */}
+      {teamModal.userRole!=="admin"&&teamModal.userRole!=="sales_admin"&&teamModal.userRole!=="director"&&teamModal.userRole!=="viewer"&&<div style={{marginBottom:12}}>
         <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>Reports To (Direct Manager)</label>
         <select value={teamModal.reportsTo||""} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{reportsTo:e.target.value||null});});}}
           style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:13,background:"#fff",boxSizing:"border-box"}}>
           <option value="">— No (Top Manager) —</option>
-          {p.users.filter(function(u){return (u.role==="manager"||u.role==="team_leader")&&gid(u)!==teamModal.userId;}).map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name} ({u.title||u.role})</option>;})}
+          {p.users.filter(function(u){
+            if(gid(u)===teamModal.userId) return false;
+            if(teamModal.userRole==="manager") return u.role==="director";
+            if(teamModal.userRole==="team_leader") return u.role==="manager";
+            if(teamModal.userRole==="sales") return u.role==="manager"||u.role==="team_leader";
+            return false;
+          }).map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name} ({u.title||u.role})</option>;})}
         </select>
         <div style={{fontSize:10,color:"#8B5CF6",marginTop:4}}>Empty = Top Manager. Set = Team Leader sees only direct team.</div>
-      </div>
+      </div>}
       <div style={{marginBottom:12}}>
         <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>Team Code (optional)</label>
         <input type="text" placeholder="e.g. team-a" value={teamModal.teamId} onChange={function(e){setTeamModal(function(prev){return Object.assign({},prev,{teamId:e.target.value});});}}
@@ -6047,7 +6053,7 @@ var ReportsPage = function(p) {
 
 var TeamPage = function(p) {
   var t=p.t;
-  var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="manager"||p.cu.role==="team_leader";
+  var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader";
   var allDeals=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
   var getQ=function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
   var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
