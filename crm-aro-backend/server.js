@@ -1076,40 +1076,6 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
   }
 });
 
-// Returns [userId, ...all users who report up to them, recursively].
-// Used by any endpoint that needs "self + everyone under me" visibility.
-// Guards: max 10 BFS iterations + seen-set so any reportsTo cycle
-// (self-loop or A->B->A) can't spin forever. If the reportsTo graph is
-// empty for this user, fall back to teamId membership so legacy users
-// with no hierarchy wiring still get a sensible team scope.
-async function visibleAgentIds(userId) {
-  var u = await User.findById(userId).lean();
-  if (!u) return [userId];
-  var ids = [u._id];
-  var seen = {}; seen[String(u._id)] = true;
-  var frontier = [u._id];
-  for (var depth = 0; depth < 10 && frontier.length > 0; depth++) {
-    var next = await User.find({ reportsTo: { $in: frontier } }).lean();
-    var fresh = [];
-    next.forEach(function(n){
-      var k = String(n._id);
-      if (!seen[k]) { seen[k] = true; ids.push(n._id); fresh.push(n._id); }
-    });
-    if (fresh.length === 0) break;
-    frontier = fresh;
-  }
-  // Legacy fallback: no one reports to this user AND they have a teamId —
-  // pull every active member of that team so their dashboard isn't empty.
-  if (ids.length === 1 && u.teamId) {
-    var teamMembers = await User.find({ teamId: u.teamId }).lean();
-    teamMembers.forEach(function(m){
-      var k = String(m._id);
-      if (!seen[k]) { seen[k] = true; ids.push(m._id); }
-    });
-  }
-  return ids;
-}
-
 // ===== LEAD ROUTES =====
 app.get("/api/leads", auth, async function(req, res) {
   try {
@@ -1126,11 +1092,49 @@ app.get("/api/leads", auth, async function(req, res) {
       // overlay below. Unassigned leads (no entries) are naturally excluded.
       query["assignments.agentId"] = new mongoose.Types.ObjectId(uid);
 
-    } else if (role === "team_leader" || role === "manager" || role === "director") {
-      var ids = await visibleAgentIds(uid);
-      query.agentId = { $in: ids };
+    } else if (role === "team_leader") {
+      // Team leader sees only their direct sales
+      var tlUser = await User.findById(uid).lean();
+      if (!tlUser) return res.status(404).json({ error: "User not found" });
+      var visibleAgentIds = [tlUser._id];
+      var directSales = await User.find({ reportsTo: tlUser._id }).lean();
+      directSales.forEach(function(s) { visibleAgentIds.push(s._id); });
+      query.agentId = { $in: visibleAgentIds };
+
+    } else if (role === "manager") {
+      var managerUser = await User.findById(uid).lean();
+      if (!managerUser) return res.status(404).json({ error: "User not found" });
+
+      var visibleAgentIds = [managerUser._id];
+
+      // METHOD 1: Use reportsTo hierarchy (new system)
+      var hasReportsTo = false;
+      var directReports = await User.find({ reportsTo: managerUser._id }).lean();
+      if (directReports.length > 0) {
+        hasReportsTo = true;
+        directReports.forEach(function(u) { visibleAgentIds.push(u._id); });
+        // If this manager has team leaders under him, get their sales too
+        if (!managerUser.reportsTo) {
+          var tlIds = directReports.map(function(u) { return u._id; });
+          var salesUnderTLs = await User.find({ reportsTo: { $in: tlIds } }).lean();
+          salesUnderTLs.forEach(function(s) { visibleAgentIds.push(s._id); });
+        }
+      }
+
+      // METHOD 2: Fallback to teamId (old system) if no reportsTo relationships found
+      if (!hasReportsTo && managerUser.teamId) {
+        var teamMembers = await User.find({ teamId: managerUser.teamId }).lean();
+        teamMembers.forEach(function(u) { visibleAgentIds.push(u._id); });
+      }
+
+      // Deduplicate
+      var uniqueIds = visibleAgentIds.filter(function(id, i, arr) {
+        return arr.findIndex(function(x) { return String(x) === String(id); }) === i;
+      });
+
+      query.agentId = { $in: uniqueIds };
     }
-    // admin / sales_admin: no filter
+    // admin: no filter
 
     // Pagination
     var page = parseInt(req.query.page) || 1;
@@ -2673,13 +2677,7 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
 app.get("/api/tasks", auth, async function(req, res) {
   try {
     var query = {};
-    if (req.user.role === "sales") {
-      query.userId = req.user.id;
-    } else if (["team_leader","manager","director"].indexOf(req.user.role) >= 0) {
-      var ids = await visibleAgentIds(req.user.id);
-      query.userId = { $in: ids };
-    }
-    // admin / sales_admin: no filter
+    if (req.user.role === "sales") { query.userId = req.user.id; }
     var tasks = await Task.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 });
     res.json(tasks);
   } catch (e) {
@@ -2732,12 +2730,7 @@ app.get("/api/stats", auth, async function(req, res) {
       // still show up in their stats — same visibility rule as GET /api/leads.
       leadQuery["assignments.agentId"] = new mongoose.Types.ObjectId(req.user.id);
       actQuery.userId = req.user.id;
-    } else if (["team_leader","manager","director"].indexOf(req.user.role) >= 0) {
-      var ids = await visibleAgentIds(req.user.id);
-      leadQuery.agentId = { $in: ids };
-      actQuery.userId = { $in: ids };
     }
-    // admin / sales_admin: no filter
     var totalLeads = await Lead.countDocuments(leadQuery);
     var potential = await Lead.countDocuments(Object.assign({ status: "Potential" }, leadQuery));
     var hotCase = await Lead.countDocuments(Object.assign({ status: "HotCase" }, leadQuery));
@@ -3565,25 +3558,16 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
 
 app.get("/api/dashboard/sales", auth, async function(req, res) {
   try {
-    var uid = req.user.id; var role = req.user.role; var now = new Date(); var DAY=86400000; var MONTH=30*DAY;
+    var uid = req.user.id; var now = new Date(); var DAY=86400000; var MONTH=30*DAY;
     var todayStart = new Date(); todayStart.setHours(0,0,0,0);
 
-    // Scope: sales see only themselves; hierarchy roles see self + chain.
-    var scopeIds = (["team_leader","manager","director"].indexOf(role) >= 0)
-      ? await visibleAgentIds(uid)
-      : [new mongoose.Types.ObjectId(uid)];
-    var scopeIdStrs = scopeIds.map(function(x){ return String(x); });
-
-    var myLeads = await Lead.find({archived:false, agentId:{$in: scopeIds}}).lean();
-    var allActs = await Activity.find({userId:{$in: scopeIds}}).lean();
+    var myLeads = await Lead.find({archived:false,agentId:new mongoose.Types.ObjectId(uid)}).lean();
+    var allActs = await Activity.find({userId:uid}).lean();
     var allUsers = await User.find({active:true,role:{$in:["sales","sales_admin"]}}).lean();
     var allLeads = await Lead.find({archived:false}).lean();
 
-    // Returns the assignment slice owned by whichever chain member currently holds the lead.
-    var getMyAssign = function(l){return (l.assignments||[]).find(function(a){
-      var aid = String(a.agentId&&a.agentId._id?a.agentId._id:a.agentId);
-      return scopeIdStrs.indexOf(aid) >= 0;
-    });};
+    // Get my assignment data for each lead
+    var getMyAssign = function(l){return (l.assignments||[]).find(function(a){return String(a.agentId&&a.agentId._id?a.agentId._id:a.agentId)===String(uid);});};
 
     // KPIs
     var myDr = allActs.filter(function(a){return a.type==="daily_request";}).length;
