@@ -6502,6 +6502,15 @@ var SettingsPage = function(p) {
   // UI-only (not yet persisted server-side — backend ignores manualAssignmentWindowMinutes today)
   var [manualWindowMin,setManualWindowMin]=useState(15);
   var [simulateOpen,setSimulateOpen]=useState(false);
+  // Business Rules tab — UI-only toggles (backend enforces the locked ones regardless)
+  var [bizRules,setBizRules]=useState({
+    excludeArchived:   true,  // rotation exclusions
+    cancelReturnsHot:  true,  // cancel behavior
+    cancelForcedRot:   true,
+    maxRotationsPerLead:0,    // limits (0 = no cap)
+    salesEoiToPending: true,  // workflow
+    doneRemovesEoi:    true
+  });
   var [saved,setSaved]=useState(false);
   var [saveError,setSaveError]=useState("");
   var [loading,setLoading]=useState(true);
@@ -7235,7 +7244,146 @@ var SettingsPage = function(p) {
           </div>
         </div>;
       })()}
-      {activeTab==="rules"       &&placeholder("📋","Business Rules","Toggle-based rules — coming soon.")}
+      {activeTab==="rules"&&(function(){
+        var setBR = function(k,v){setBizRules(function(prev){var next=Object.assign({},prev);next[k]=v;return next;});};
+
+        // Switch pill — green ON, neutral gray OFF. Grayed + locked cursor when disabled.
+        var switchPill = function(on, onClick, disabled){
+          return <div
+            onClick={disabled ? undefined : onClick}
+            title={disabled ? "Locked — cannot be disabled" : "Toggle"}
+            style={{width:36,height:20,borderRadius:10,position:"relative",
+              cursor: disabled ? "not-allowed" : "pointer",
+              flexShrink:0,
+              background: on ? (disabled ? "#A0A0A0" : "#0F6E56") : "#CBD5E1",
+              opacity: disabled ? 0.7 : 1,
+              transition: "background 0.15s"}}>
+            <span style={{display:"block",width:14,height:14,background:"#fff",borderRadius:"50%",position:"absolute",top:3,left: on ? 19 : 3,transition:"left 0.15s"}}/>
+          </div>;
+        };
+
+        // Rule row: label + optional description + switch on the right. Optional locked + redTone.
+        var ruleRow = function(opts){
+          var locked  = !!opts.locked;
+          var redTone = !!opts.redTone;
+          return <div style={{
+            display:"flex", alignItems:"center", gap:12, padding:"12px 14px",
+            background: redTone && locked ? "rgba(252,235,235,0.6)" : (locked ? "#F7F7F5" : "#fff"),
+            border: locked
+              ? "0.5px dashed " + (redTone ? "rgba(163,45,45,0.4)" : "rgba(0,0,0,0.1)")
+              : "0.5px solid rgba(0,0,0,0.08)",
+            borderRadius:8, marginBottom:6
+          }}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:500,color:redTone?"#A32D2D":"#1a1a1a",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                <span>{opts.label}</span>
+                {locked && <span style={{fontSize:10,padding:"2px 6px",borderRadius:4,
+                  background: redTone ? "#FCEBEB" : "#EEEEEA",
+                  color: redTone ? "#A32D2D" : "#666",fontWeight:500}}>LOCKED</span>}
+              </div>
+              {opts.desc && <div style={{fontSize:11,color:redTone?"#A32D2D":"#666",marginTop:2,lineHeight:1.5,opacity:redTone?0.9:1}}>{opts.desc}</div>}
+              {opts.inline && <div style={{marginTop:6}}>{opts.inline}</div>}
+            </div>
+            {switchPill(opts.on, opts.onClick, locked)}
+          </div>;
+        };
+
+        var sectionHdr = function(text, redTone){return <div style={{fontSize:12,color:redTone?"#A32D2D":"#666",marginBottom:8,textTransform:"uppercase",letterSpacing:"0.3px",fontWeight:500}}>{text}</div>;};
+
+        var inlineNum = function(val,setter,min,max,suffix){return <span style={{fontSize:11,color:"#666",display:"inline-flex",alignItems:"center",gap:6}}>
+          <input type="number" min={min} max={max} value={val} onChange={function(e){setter(Number(e.target.value)||0);}}
+            style={{width:56,padding:"4px 8px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:6,fontSize:12,background:"#fff",textAlign:"center",fontFamily:"inherit"}}/>
+          <span>{suffix}</span>
+        </span>;};
+
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Business rules</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:10}}>Core business logic — locked rules cannot be disabled</div>
+
+          <div style={{background:"#E6F1FB",borderLeft:"3px solid #185FA5",padding:"10px 14px",borderRadius:8,fontSize:12,color:"#185FA5",marginBottom:16,lineHeight:1.5}}>
+            These rules govern lead flow, permissions, and rotation exclusions. Locked rules are system-critical.
+          </div>
+
+          {/* ── Rotation exclusions ── */}
+          <div style={{marginBottom:20}}>
+            {sectionHdr("Rotation exclusions")}
+            {ruleRow({label:"Exclude Done Deals", desc:"Leads marked DoneDeal never enter rotation — they stay locked with the closing agent.", on:true, locked:true})}
+            {ruleRow({label:"Exclude EOIs",       desc:"Leads with an active EOI stay with the current agent until approved or cancelled.",      on:true, locked:true})}
+            {ruleRow({label:"Exclude Archived leads", desc:"Archived leads are read-only and skip rotation entirely.", on:bizRules.excludeArchived, onClick:function(){setBR("excludeArchived",!bizRules.excludeArchived);}})}
+            {ruleRow({label:"Stop rotation after N days in CRM", desc:"After this age a lead stops rotating and stays with its current agent. Synced with the Rotation tab.", on:rotStopDays>0, onClick:function(){setRotStopDays(rotStopDays>0?0:45);},
+              inline: rotStopDays>0 ? inlineNum(rotStopDays,setRotStopDays,1,3650,"days") : null})}
+          </div>
+
+          {/* ── Cancel behavior ── */}
+          <div style={{marginBottom:20}}>
+            {sectionHdr("Cancel behavior")}
+            {ruleRow({label:"Admin + Sales Admin only", desc:"Only these roles can cancel a Deal or an EOI. Others see view-only within their scope.", on:true, locked:true})}
+            {ruleRow({label:"Cancel returns lead to Hot Case", desc:"Cancelled Deal/EOI resets the lead's status so it rejoins the pipeline.", on:bizRules.cancelReturnsHot, onClick:function(){setBR("cancelReturnsHot",!bizRules.cancelReturnsHot);}})}
+            {ruleRow({label:"Forced rotation overrides one-shot rule", desc:"Cancel triggers a rotation that may assign to an agent who already handled the lead.", on:bizRules.cancelForcedRot, onClick:function(){setBR("cancelForcedRot",!bizRules.cancelForcedRot);}})}
+            <div style={{background:"#FAEEDA",borderLeft:"3px solid #854F0B",padding:"10px 14px",borderRadius:8,fontSize:12,color:"#854F0B",marginTop:10,lineHeight:1.5}}>
+              Cancel is admin-only for data integrity. The forced-rotation override is what makes cancelled leads reach a fresh agent.
+            </div>
+          </div>
+
+          {/* ── Rotation limits ── */}
+          <div style={{marginBottom:20}}>
+            {sectionHdr("Rotation limits")}
+            {ruleRow({label:"Halt after N× consecutive Not Interested",
+              desc:"Stops rotation on a lead once this threshold hits. Synced with the Rotation tab.",
+              on:srHaltNI>0, onClick:function(){setSrHaltNI(srHaltNI>0?0:3);},
+              inline: srHaltNI>0 ? inlineNum(srHaltNI,setSrHaltNI,1,20,"× Not Interested") : null})}
+            {ruleRow({label:"Max rotations per lead",
+              desc:"Caps the total number of rotation events a single lead can trigger. 0 = no cap.",
+              on:bizRules.maxRotationsPerLead>0,
+              onClick:function(){setBR("maxRotationsPerLead", bizRules.maxRotationsPerLead>0 ? 0 : 10);},
+              inline: bizRules.maxRotationsPerLead>0
+                ? inlineNum(bizRules.maxRotationsPerLead, function(v){setBR("maxRotationsPerLead",v);}, 1, 100, "rotations")
+                : null})}
+            {ruleRow({label:"Skip agents offline longer than N hours",
+              desc:"Agents whose last heartbeat is older than this are skipped in rotation. Synced with the Rotation tab.",
+              on:srOffH>0, onClick:function(){setSrOffH(srOffH>0?0:4);},
+              inline: srOffH>0 ? inlineNum(srOffH,setSrOffH,1,168,"hours") : null})}
+            {ruleRow({label:"Halt rotation when all agents have handled the lead",
+              desc:"When every agent in every tier has already handled the lead, rotation halts and admin is notified.",
+              on:srHaltAll, onClick:function(){setSrHaltAll(!srHaltAll);}})}
+          </div>
+
+          {/* ── Workflow rules ── */}
+          <div style={{marginBottom:20}}>
+            {sectionHdr("Workflow rules")}
+            {ruleRow({label:"Sales → Pending for EOI conversion",
+              desc:"Sales-initiated EOIs land in Pending state awaiting Admin / Sales Admin approval before lock-in.",
+              on:bizRules.salesEoiToPending, onClick:function(){setBR("salesEoiToPending",!bizRules.salesEoiToPending);}})}
+            {ruleRow({label:"Admin approves EOI and Deal",
+              desc:"Every EOI and every Deal requires Admin or Sales Admin approval before it activates.",
+              on:true, locked:true})}
+            {ruleRow({label:"Done Deal removes item from EOI page",
+              desc:"Once a deal closes, the originating EOI disappears from the EOI listing.",
+              on:bizRules.doneRemovesEoi, onClick:function(){setBR("doneRemovesEoi",!bizRules.doneRemovesEoi);}})}
+          </div>
+
+          {/* ── User deletion cascade — locked, red-toned card ── */}
+          <div style={{marginBottom:20,padding:"12px 14px",background:"#FCEBEB",border:"0.5px solid rgba(163,45,45,0.3)",borderRadius:12}}>
+            {sectionHdr("User deletion cascade", true)}
+            {ruleRow({label:"Active Leads & Daily Requests become 'No Agent'",
+              desc:"Ownership clears on delete — admin must manually reassign.",
+              on:true, locked:true, redTone:true})}
+            {ruleRow({label:"Historical Deals and EOIs preserve original agent as 'Ex-{name}'",
+              desc:"Closed deals and EOIs keep their original agent label for commission and reporting.",
+              on:true, locked:true, redTone:true})}
+            {ruleRow({label:"Cascade orphan flags for deleted TLs / Managers / Directors",
+              desc:"Sales under a deleted TL get teamLeaderId=null; same for managerId / directorId.",
+              on:true, locked:true, redTone:true})}
+            {ruleRow({label:"Confirmation dialog required",
+              desc:"Admin sees a counts-of-affected-items preview before the delete goes through.",
+              on:true, locked:true, redTone:true})}
+          </div>
+
+          <div style={{background:"#FCEBEB",borderLeft:"3px solid #A32D2D",padding:"10px 14px",borderRadius:8,fontSize:12,color:"#A32D2D",lineHeight:1.5}}>
+            Locked rules protect critical data integrity. They cannot be disabled from the UI.
+          </div>
+        </div>;
+      })()}
       {activeTab==="audit"       &&placeholder("📜","Audit Log","Settings change history — coming soon.")}
 
       {saved&&<div style={{marginBottom:12,padding:"10px 14px",background:"#DCFCE7",borderRadius:10,color:"#15803D",fontSize:13,fontWeight:600}}>✅ Saved successfully</div>}
