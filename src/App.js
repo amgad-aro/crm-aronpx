@@ -1603,6 +1603,16 @@ var LeadsPage = function(p) {
 
   useEffect(function(){ if(p.initSelected){setSelected(p.initSelected);} },[p.initSelected]);
 
+  // Consume one-shot agent filter from Admin Dashboard drill-down clicks.
+  useEffect(function(){
+    if (p.initAgentFilter) {
+      setAgentFilter(p.initAgentFilter);
+      setNoAgentFilter(false);
+      if (p.setInitAgentFilter) p.setInitAgentFilter(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.initAgentFilter]);
+
   // Fetch full history when a lead is selected
   useEffect(function(){
     if(!selected){setPanelHistory([]);return;}
@@ -2582,8 +2592,19 @@ var DashboardPage = function(p) {
   var dayNames=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   var todayIdx=new Date().getDay();
   var weekDays=Array.from({length:7},function(_,i){return dayNames[(todayIdx-6+i+7)%7];});
-  var kpiCard=function(label,value,sub,bg,vc,onClick){
-    var bars=[30,45,55,40,65,70,85];
+  var kpiCard=function(label,value,sub,bg,vc,onClick,barsData){
+    // barsData (optional): 7 numeric counts ending today. Admin dashboard
+    // passes real weekday lead counts; sales path falls through to the
+    // decorative preset. All-zero → flat min-height row so the card never
+    // renders a collapsed sparkline.
+    var bars;
+    if (barsData && barsData.length===7) {
+      var _mx = Math.max.apply(null, barsData);
+      bars = _mx>0 ? barsData.map(function(n){return Math.max(12, Math.round(n/_mx*100));})
+                   : [12,12,12,12,12,12,12];
+    } else {
+      bars = [30,45,55,40,65,70,85];
+    }
     // bg is now a CSS gradient string. vc is kept for the small spark-bar
     // and weekday strip below the number, since both inherit from the card
     // accent. Title/value/sub follow the new white-on-gradient spec.
@@ -3451,21 +3472,37 @@ var DashboardPage = function(p) {
         <div ref={quarterDropdownRef} style={{position:"relative"}}>
           <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:12,padding:isMobile?"8px 12px":"6px 14px",minHeight:isMobile?36:undefined,border:(typeof filter==="string"&&filter.indexOf("Q")===0)?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:(typeof filter==="string"&&filter.indexOf("Q")===0)?"#EFF6FF":"#fff",color:(typeof filter==="string"&&filter.indexOf("Q")===0)?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:(typeof filter==="string"&&filter.indexOf("Q")===0)?600:500,flexShrink:0}}>{(typeof filter==="string"&&filter.indexOf("Q")===0)?filter:"Quarter"} &#9662;</button>
           {qOpen&&<div style={{position:"absolute",top:"calc(100% + 4px)",right:0,background:"#fff",border:"1px solid #E2E8F0",borderRadius:10,minWidth:120,zIndex:99,boxShadow:"0 4px 16px rgba(0,0,0,0.08)"}}>
-            {["Q1 2026","Q2 2026","Q3 2026","Q4 2026"].map(function(q){return <div key={q} onClick={function(){setFilter(q);setQOpen(false);}} style={{padding:"8px 14px",fontSize:12,color:"#334155",cursor:"pointer"}}>{q}</div>;})}
+            {(function(){var _y=nowD.getFullYear();return ["Q1 "+_y,"Q2 "+_y,"Q3 "+_y,"Q4 "+_y];})().map(function(q){return <div key={q} onClick={function(){setFilter(q);setQOpen(false);}} style={{padding:"8px 14px",fontSize:12,color:"#334155",cursor:"pointer"}}>{q}</div>;})}
           </div>}
         </div>
       </div>
     </div>
 
     {sec("Key Metrics")}
-    <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2,1fr)":"repeat(auto-fit,minmax(160px,1fr))",gap:isMobile?10:14,marginBottom:0}}>
-      {kpiCard("Leads",fLeads.length,"in period","linear-gradient(135deg, #43c6db, #3b5cb8)","#ffffff",function(){p.nav("leads");})}
-      {kpiCard("Daily Requests",drFiltered,"in period","linear-gradient(135deg, #56ab2f, #a8e063)","#ffffff",function(){p.nav("dailyReq");})}
-      {kpiCard("Interested",interestedFiltered,Math.round(interestedFiltered/fTotal*100)+"%","linear-gradient(135deg, #f46b45, #eea849)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");})}
-      {kpiCard("Meetings",meetingsFiltered,Math.round(meetingsFiltered/fTotal*100)+"%","linear-gradient(135deg, #a18cd1, #e8a4c8)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");})}
-      {kpiCard("Overdue",overdueFiltered,"late callbacks","linear-gradient(135deg, #e52d27, #b31217)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");})}
-      {kpiCard("Deals",dealsFiltered,fTotal>0?((dealsFiltered/fTotal)*100).toFixed(1)+"%":"0%","linear-gradient(135deg, #f953c6, #b91d73)","#ffffff",function(){p.nav("deals");})}
-    </div>
+    {(function(){
+      // Sparkline bars: lead counts per day for the last 7 days, scoped to the
+      // current period filter (fLeads). Position 6 = today, position 0 = 6
+      // days ago — matches the Sun..Sat weekday strip rendered under each card.
+      var _todayStartMs = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate(), 0,0,0,0).getTime();
+      var _spark = [0,0,0,0,0,0,0];
+      fLeads.forEach(function(l){
+        if (!l.createdAt) return;
+        var _t = new Date(l.createdAt).getTime();
+        if (isNaN(_t)) return;
+        var _dd = Math.floor((_todayStartMs - _t)/DAY);
+        if (_dd < 0) _dd = 0;
+        if (_dd > 6) return;
+        _spark[6 - _dd]++;
+      });
+      return <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2,1fr)":"repeat(auto-fit,minmax(160px,1fr))",gap:isMobile?10:14,marginBottom:0}}>
+        {kpiCard("Leads",fLeads.length,"in period","linear-gradient(135deg, #43c6db, #3b5cb8)","#ffffff",function(){p.nav("leads");},_spark)}
+        {kpiCard("Daily Requests",drFiltered,"in period","linear-gradient(135deg, #56ab2f, #a8e063)","#ffffff",function(){p.nav("dailyReq");},_spark)}
+        {kpiCard("Interested",interestedFiltered,Math.round(interestedFiltered/fTotal*100)+"%","linear-gradient(135deg, #f46b45, #eea849)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");},_spark)}
+        {kpiCard("Meetings",meetingsFiltered,Math.round(meetingsFiltered/fTotal*100)+"%","linear-gradient(135deg, #a18cd1, #e8a4c8)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");},_spark)}
+        {kpiCard("Overdue",overdueFiltered,"late callbacks","linear-gradient(135deg, #e52d27, #b31217)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");},_spark)}
+        {kpiCard("Deals",dealsFiltered,fTotal>0?((dealsFiltered/fTotal)*100).toFixed(1)+"%":"0%","linear-gradient(135deg, #f953c6, #b91d73)","#ffffff",function(){p.nav("deals");},_spark)}
+      </div>;
+    })()}
 
     {sec("Campaigns & Pipeline")}
     <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit, minmax(300px, 1fr))",gap:isMobile?10:14,marginBottom:14}}>
@@ -3683,7 +3720,7 @@ var DashboardPage = function(p) {
         var initials=(a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
         var qBg = a.quality>=80?"#DCFCE7":a.quality>=60?"#FEF3C7":"#FEE2E2";
         var qFg = a.quality>=80?"#166534":a.quality>=60?"#92400E":"#991B1B";
-        return <div key={a.uid} style={{display:"grid",gridTemplateColumns:isMobile?"36px 150px repeat(14, 56px)":"36px 160px repeat(14, minmax(0, 1fr))",gap:4,alignItems:"center",padding:"10px 0",borderBottom:"1px solid #F8FAFC",width:isMobile?"max-content":"100%",minWidth:isMobile?980:undefined}}>
+        return <div key={a.uid} onClick={function(){ if(p.setInitAgentFilter) p.setInitAgentFilter(a.uid); if(p.setFilter) p.setFilter("all"); if(p.nav) p.nav("leads"); }} style={{display:"grid",gridTemplateColumns:isMobile?"36px 150px repeat(14, 56px)":"36px 160px repeat(14, minmax(0, 1fr))",gap:4,alignItems:"center",padding:"10px 0",borderBottom:"1px solid #F8FAFC",width:isMobile?"max-content":"100%",minWidth:isMobile?980:undefined,cursor:"pointer"}}>
           <div style={{fontSize:11,color:"#888",textAlign:"center",fontWeight:500}}>{i+1}</div>
           <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
             <div style={{width:30,height:30,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>{initials}</div>
@@ -3841,7 +3878,7 @@ var DashboardPage = function(p) {
                 var avC=["#1D4ED8","#166534","#92400E","#5B21B6","#9F1239"][i%5];
                 var rc = rateColor(x.rate);
                 var isWorst = i===0 && x.missed>0;
-                return <div key={x.uid||i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:i<leaderboard.length-1?"1px solid #F8FAFC":"none"}}>
+                return <div key={x.uid||i} onClick={function(){ if(p.setInitAgentFilter) p.setInitAgentFilter(x.uid); if(p.setFilter) p.setFilter("CallBack"); if(p.nav) p.nav("leads"); }} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:i<leaderboard.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
                   <div style={{fontSize:11,color:"#888",width:16,textAlign:"center",fontWeight:600,flexShrink:0}}>{i+1}</div>
                   <div style={{width:28,height:28,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{initialsOfName(x.name)}</div>
                   <div style={{flex:1,minWidth:0}}>
@@ -3896,7 +3933,7 @@ var DashboardPage = function(p) {
           });
           var denom = Math.max(1,assignTotal);
           var rows=[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"],["No Answer","NoAnswer","#CBD5E1"],["EOI","EOI","#0EA5E9"],["Done Deal","DoneDeal","#065F46"]];
-          return rows.map(function(s){return bRow(s[0],assignSc[s[1]]||0,denom,s[2]);});
+          return rows.map(function(s){return bRow(s[0],assignSc[s[1]]||0,denom,s[2],function(){ if(p.setFilter) p.setFilter(s[1]); if(p.nav) p.nav("leads"); });});
         })()}
       </>)}
     </div>
@@ -8127,7 +8164,11 @@ export default function CRMApp() {
   // One-shot initial filter for the Daily Requests page — set from the Sales
   // Dashboard click handlers; the page consumes it on mount and clears it.
   var [drInitFilter,setDrInitFilter]=useState(null);
-  useEffect(function(){ if (page && page!=="leads") setLeadSpecialFilter(null); },[page]);
+  // One-shot initial agent filter for the Leads page — set by Admin Dashboard
+  // drill-down clicks (Agent Performance row, Callback Compliance row). Leads
+  // page consumes it on mount and clears it.
+  var [initAgentFilter,setInitAgentFilter]=useState(null);
+  useEffect(function(){ if (page && page!=="leads") { setLeadSpecialFilter(null); setInitAgentFilter(null); } },[page]);
   var [leadsPage,setLeadsPage]=useState(1); var [leadsTotal,setLeadsTotal]=useState(0); var [leadsTotalPages,setLeadsTotalPages]=useState(0);
   var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
@@ -8804,7 +8845,7 @@ export default function CRMApp() {
   var myId = String(currentUser.id||currentUser._id||"");
   var myTeamUsers = users; // server handles all filtering per role
 
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:dailyReqs};
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:dailyReqs};
 
   var renderPage=function(){
     switch(currentPage){
