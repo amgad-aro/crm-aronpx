@@ -6580,6 +6580,8 @@ var SettingsPage = function(p) {
   var [srHaltAll,setSrHaltAll]=useState(true);
   var [manualWindowMin,setManualWindowMin]=useState(15);
   var [simulateOpen,setSimulateOpen]=useState(false);
+  var [redistBusy,setRedistBusy]=useState(false);
+  var [redistResult,setRedistResult]=useState(null); // {total,distributed,skipped,perAgent}
   // Audit Log tab
   var [auditEntries,setAuditEntries]=useState([]);   // populated from /api/settings/audit when endpoint ships
   var [auditLoaded,setAuditLoaded]=useState(false);
@@ -7058,8 +7060,59 @@ var SettingsPage = function(p) {
                 style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:8,cursor:"pointer",color:"#1a1a1a",fontFamily:"inherit"}}>Pause 2h</button>
               <button type="button" onClick={function(){setAutoRotEnabled(false); setPausedUntil(null);}}
                 style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(163,45,45,0.3)",background:"#FCEBEB",borderRadius:8,cursor:"pointer",color:"#A32D2D",fontFamily:"inherit"}}>Stop</button>
+              {p.cu && p.cu.role==="admin" && (
+                <button type="button" disabled={redistBusy}
+                  onClick={async function(){
+                    if(redistBusy) return;
+                    if(!window.confirm("This will evenly distribute all pending rotation-eligible leads across all agents. Continue?")) return;
+                    setRedistBusy(true);
+                    try {
+                      var r = await apiFetch("/api/leads/bulk-redistribute-backlog","POST",{},p.token);
+                      setRedistResult(r || { total:0, distributed:0, skipped:0, perAgent:{} });
+                    } catch(e) {
+                      window.alert("Redistribution failed: "+(e && e.message ? e.message : "unknown error"));
+                    } finally {
+                      setRedistBusy(false);
+                    }
+                  }}
+                  style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(15,110,86,0.35)",background:redistBusy?"#D6E8E0":"#EAF6F0",borderRadius:8,cursor:redistBusy?"wait":"pointer",color:"#0F6E56",fontFamily:"inherit",fontWeight:500}}>
+                  {redistBusy ? "Redistributing…" : "Redistribute Backlog"}
+                </button>
+              )}
             </div>
           </div>
+
+          {/* ══ Redistribute result modal ══ */}
+          {redistResult && (function(){
+            var rows = Object.keys(redistResult.perAgent||{}).map(function(uid){
+              var u = (p.users||[]).find(function(x){return gid(x)===uid;});
+              return { uid: uid, name: u ? u.name : uid, count: Number(redistResult.perAgent[uid])||0 };
+            }).sort(function(a,b){ return b.count - a.count; });
+            return <div onClick={function(){setRedistResult(null);}}
+              style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9999}}>
+              <div onClick={function(e){e.stopPropagation();}}
+                style={{background:"#fff",borderRadius:12,padding:20,width:"min(460px, 90vw)",maxHeight:"80vh",overflow:"auto",boxShadow:"0 20px 48px rgba(0,0,0,0.25)",fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+                <div style={{fontSize:16,fontWeight:600,marginBottom:10,color:"#0F6E56"}}>Backlog redistribution complete</div>
+                <div style={{fontSize:13,color:"#1a1a1a",marginBottom:14,lineHeight:1.6}}>
+                  Distributed <b>{redistResult.distributed}</b> of <b>{redistResult.total}</b> eligible leads. Skipped <b>{redistResult.skipped}</b> (no available agent — all had already handled the lead).
+                </div>
+                <div style={{fontSize:12,fontWeight:500,color:"#666",marginBottom:6}}>Per agent</div>
+                <div style={{border:"0.5px solid rgba(0,0,0,0.08)",borderRadius:8,overflow:"hidden"}}>
+                  {rows.length===0 ? <div style={{padding:"10px 12px",fontSize:12,color:"#999"}}>No agents received leads.</div>
+                    : rows.map(function(r, i){
+                        return <div key={r.uid} style={{display:"flex",justifyContent:"space-between",padding:"8px 12px",borderTop:i===0?"none":"0.5px solid rgba(0,0,0,0.06)",fontSize:13}}>
+                          <span>{r.name}</span>
+                          <span style={{fontWeight:500,color:r.count>0?"#0F6E56":"#999"}}>{r.count}</span>
+                        </div>;
+                      })}
+                </div>
+                <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}>
+                  <button type="button" onClick={function(){setRedistResult(null);}}
+                    style={{fontSize:13,padding:"8px 16px",border:"0.5px solid rgba(0,0,0,0.1)",background:"#1a1a1a",color:"#fff",borderRadius:8,cursor:"pointer",fontFamily:"inherit"}}>Close</button>
+                </div>
+              </div>
+            </div>;
+          })()}
 
           {/* ══ Manual assignment window (blue) ══ */}
           <div style={{background:"#E6F1FB",border:"0.5px solid rgba(24,95,165,0.3)",borderRadius:12,padding:"14px 16px",marginBottom:18}}>

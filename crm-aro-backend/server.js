@@ -2539,20 +2539,9 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     // round-robin pointer. Skip rules are applied per-candidate; "skipped"
     // agents leave the pointer untouched.
     var sr = settings.smartSkipRules || {};
-    var nowTs = new Date();
-    var withinHours = isWithinWorkingHours(settings.workingHours, nowTs);
-    // Active-vacation prefetch: one query, scoped to candidate ids. On DB
-    // error we fall back to an empty set (fail-safe: rotation doesn't halt).
-    var vacSet = new Set();
-    if (sr.skipOnVacation) {
-      try {
-        var vRows = await AgentVacation.find({
-          agentId: { $in: allTierIds },
-          startDate: { $lte: nowTs }, endDate: { $gte: nowTs }
-        }).select("agentId").lean();
-        vRows.forEach(function(r){ vacSet.add(String(r.agentId)); });
-      } catch (vErr) { vacSet = new Set(); }
-    }
+    // Availability-based skip rules (vacation/offline/working-hours) have been
+    // permanently removed from the picker. Only identity/role/active/exclusion
+    // gates apply here.
     var tryTier = function(tier){
       var ids = Array.isArray(tier.agents) ? tier.agents : [];
       var n = ids.length;
@@ -2565,12 +2554,6 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
         var u = byId[uid];
         if (!u || u.active === false) continue;
         if (["sales","team_leader"].indexOf(u.role) < 0) continue; // managers/directors excluded per spec
-        if (Number(sr.skipIfOfflineHours) > 0 && u.lastSeen) {
-          var offH = (nowTs.getTime() - new Date(u.lastSeen).getTime()) / 3600000;
-          if (offH > Number(sr.skipIfOfflineHours)) continue;
-        }
-        if (sr.respectWorkingHours && !withinHours) continue;
-        if (sr.skipOnVacation && vacSet.has(uid)) continue;
         return { user: u, idx: idx };
       }
       return null;
@@ -2722,6 +2705,200 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
   }
 });
 
+// ===== ONE-TIME BULK REDISTRIBUTION =====
+// Admin-triggered sweep that evenly spreads the rotation-eligible backlog
+// across all tier agents (tier1+tier2+tier3 combined). Not gated by the master
+// rotation switch or pause window — this is an explicit admin action.
+// Scope: agent-to-agent only (leads with agentId set). Unassigned leads
+// (agentId:null) are handled by the manual-window sweeper and left alone here.
+app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
+  try {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Admin only" });
+
+    var settings = await getRotationSettings();
+    var now = new Date();
+    var DAY = 24*60*60*1000;
+    var HOUR = 60*60*1000;
+    var stopDays = Number(settings.rotationStopAfterDays) || 45;
+    var ageCutoff = new Date(now.getTime() - stopDays*DAY);
+    var rotatedGuard = new Date(now.getTime() - 1*HOUR);
+
+    // Build the agent pool from all three tiers. Dedupe while preserving order
+    // so tier1 agents come first in the ring.
+    var tierOrder = [].concat(
+      (settings.tiers.tier1.agents || []),
+      (settings.tiers.tier2.agents || []),
+      (settings.tiers.tier3.agents || [])
+    );
+    var seen = {};
+    var tierIds = [];
+    tierOrder.forEach(function(id){ var s = String(id); if (!seen[s]) { seen[s] = true; tierIds.push(s); } });
+    if (!tierIds.length) return res.status(409).json({ error: "no_rotation_order", message: "No rotation order configured" });
+
+    var agentDocs = await User.find({ _id: { $in: tierIds } }).select("_id name role active").lean();
+    var agentById = {};
+    agentDocs.forEach(function(u){ agentById[String(u._id)] = u; });
+    var agentPool = tierIds.filter(function(id){
+      var u = agentById[id];
+      return !!u && u.active !== false && (u.role === "sales" || u.role === "team_leader");
+    });
+    if (!agentPool.length) return res.status(409).json({ error: "no_agents", message: "No eligible agents in rotation tiers" });
+
+    // Candidate leads: assigned, not archived, not stopped, within age cutoff,
+    // and not rotated in the last hour. Status filter narrows the scan to
+    // buckets that have per-status eligibility rules.
+    var eligibleStatuses = ["NewLead","NoAnswer","NotInterested","CallBack","HotCase","Potential","MeetingDone"];
+    var candidateLeads = await Lead.find({
+      agentId: { $ne: null },
+      archived: { $ne: true },
+      rotationStopped: { $ne: true },
+      status: { $in: eligibleStatuses },
+      createdAt: { $gte: ageCutoff },
+      $or: [
+        { lastRotationAt: { $exists: false } },
+        { lastRotationAt: null },
+        { lastRotationAt: { $lt: rotatedGuard } }
+      ]
+    }).select("_id agentId status lastActivityTime callbackTime previousAgentIds assignments").lean();
+
+    // NoAnswer eligibility needs per-lead activity counts. Pull status_change
+    // activities tagged [NoAnswer] for just the candidate set in one query.
+    var leadIds = candidateLeads.map(function(l){ return l._id; });
+    var naByLead = {};
+    if (leadIds.length) {
+      var naActs = await Activity.find({
+        leadId: { $in: leadIds },
+        type: "status_change",
+        note: { $regex: /^\[NoAnswer\]/ }
+      }).select("leadId createdAt").lean();
+      naActs.forEach(function(a){
+        var k = String(a.leadId);
+        var slot = naByLead[k] || (naByLead[k] = { count: 0, latest: null });
+        slot.count += 1;
+        if (!slot.latest || new Date(a.createdAt) > slot.latest) slot.latest = new Date(a.createdAt);
+      });
+    }
+
+    var naCountThreshold = Number(settings.naCount) || 2;
+    var naHoursThreshold = Number(settings.naHours) || 1;
+    var niDays   = Number(settings.niDays)   || 1;
+    var noActDays= Number(settings.noActDays)|| 2;
+    var cbDays   = Number(settings.cbDays)   || 1;
+    var hotDays  = Number(settings.hotDays)  || 2;
+
+    var isEligible = function(l){
+      var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
+      var ageMs   = lastAct ? (now.getTime() - lastAct) : Infinity;
+      switch (l.status) {
+        case "NoAnswer": {
+          var slot = naByLead[String(l._id)];
+          if (!slot) return false;
+          if (slot.count < naCountThreshold) return false;
+          if (!slot.latest) return false;
+          return (now.getTime() - slot.latest.getTime()) >= (naHoursThreshold*HOUR);
+        }
+        case "NotInterested": return ageMs >= (niDays*DAY);
+        case "NewLead":       return ageMs >= (noActDays*DAY);
+        case "CallBack": {
+          if (!l.callbackTime) return false;
+          var cb = new Date(l.callbackTime).getTime();
+          if (!cb) return false;
+          return (now.getTime() - cb) >= (cbDays*DAY);
+        }
+        case "HotCase":
+        case "Potential":
+        case "MeetingDone":   return ageMs >= (hotDays*DAY);
+        default: return false;
+      }
+    };
+
+    var eligibleLeads = candidateLeads.filter(isEligible);
+    var total = eligibleLeads.length;
+
+    // Shuffle once for fairness so ordering in DB doesn't skew who-gets-what.
+    for (var i = eligibleLeads.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = eligibleLeads[i]; eligibleLeads[i] = eligibleLeads[j]; eligibleLeads[j] = tmp;
+    }
+
+    var perAgent = {};
+    agentPool.forEach(function(id){ perAgent[id] = 0; });
+    var distributed = 0;
+    var skipped = 0;
+    var ringPtr = 0;
+    var ringLen = agentPool.length;
+    var byName = req.user && req.user.name ? req.user.name : "Admin";
+
+    for (var li = 0; li < eligibleLeads.length; li++) {
+      var lead = eligibleLeads[li];
+      var currentAid = lead.agentId && lead.agentId._id ? String(lead.agentId._id) : String(lead.agentId || "");
+      var exclusion = {};
+      if (currentAid) exclusion[currentAid] = true;
+      (lead.previousAgentIds || []).forEach(function(id){ if (id) exclusion[String(id)] = true; });
+      (lead.assignments || []).forEach(function(a){
+        var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+        if (aid) exclusion[String(aid)] = true;
+      });
+
+      var pickedId = null;
+      for (var step = 0; step < ringLen; step++) {
+        var candidate = agentPool[(ringPtr + step) % ringLen];
+        if (!exclusion[candidate]) { pickedId = candidate; ringPtr = (ringPtr + step + 1) % ringLen; break; }
+      }
+      if (!pickedId) { skipped++; continue; }
+
+      var targetUser = agentById[pickedId];
+      var newAssignment = {
+        agentId: new mongoose.Types.ObjectId(pickedId),
+        status: "NewLead",
+        assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(),
+        noRotation: false,
+        notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null,
+        agentHistory: []
+      };
+      var rotationLog = {
+        action: "Bulk redistribution",
+        fromAgent: "",
+        toAgent: targetUser.name,
+        reason: "bulk_redistribute_backlog",
+        by: byName,
+        date: new Date()
+      };
+      var pushOps = { assignments: newAssignment, agentHistory: rotationLog };
+      if (currentAid) pushOps.previousAgentIds = new mongoose.Types.ObjectId(currentAid);
+
+      var writeRes = await Lead.findOneAndUpdate(
+        { _id: lead._id, agentId: currentAid ? new mongoose.Types.ObjectId(currentAid) : null, rotationStopped: { $ne: true } },
+        {
+          $set: {
+            agentId: new mongoose.Types.ObjectId(pickedId),
+            lastRotationAt: new Date()
+          },
+          $inc: { rotationCount: 1 },
+          $push: pushOps
+        },
+        { new: true }
+      );
+      if (!writeRes) { skipped++; continue; }
+
+      distributed++;
+      perAgent[pickedId] = (perAgent[pickedId] || 0) + 1;
+      try {
+        await pushHistory(lead._id, historyEntry(
+          "rotated",
+          "Bulk redistribution — reassigned to " + targetUser.name + " by " + byName,
+          byName,
+          targetUser.name
+        ));
+      } catch (hErr) { /* non-fatal */ }
+    }
+
+    res.json({ total: total, distributed: distributed, skipped: skipped, perAgent: perAgent });
+  } catch (e) {
+    res.status(500).json({ error: e && e.message ? e.message : "bulk_redistribute_failed" });
+  }
+});
+
 // ===== MANUAL ASSIGNMENT WINDOW — BACKGROUND SWEEPER =====
 // Picks the next Tier 1 agent for ONE queued lead whose window expired.
 // Returns {ok:true, agentId, agentName} on success, {ok:false, error} on skip.
@@ -2744,21 +2921,8 @@ async function autoAssignQueuedLead(leadId) {
     var byId = {};
     candidateDocs.forEach(function(u){ byId[String(u._id)] = u; });
 
-    var sr = settings.smartSkipRules || {};
-    var nowTs = new Date();
-    var withinHours = isWithinWorkingHours(settings.workingHours, nowTs);
-    // Active-vacation prefetch (same pattern as /auto-rotate). Fail-safe to
-    // empty set on DB error so queue processing doesn't halt.
-    var vacSet = new Set();
-    if (sr.skipOnVacation) {
-      try {
-        var vRows = await AgentVacation.find({
-          agentId: { $in: allTierIds },
-          startDate: { $lte: nowTs }, endDate: { $gte: nowTs }
-        }).select("agentId").lean();
-        vRows.forEach(function(r){ vacSet.add(String(r.agentId)); });
-      } catch (vErr) { vacSet = new Set(); }
-    }
+    // Availability-based skip rules (vacation/offline/working-hours) have been
+    // permanently removed from the picker. Only identity/role/active gates apply.
     var tryTier = function(tier){
       var ids = Array.isArray(tier.agents) ? tier.agents : [];
       var n = ids.length;
@@ -2770,12 +2934,6 @@ async function autoAssignQueuedLead(leadId) {
         var u = byId[uid];
         if (!u || u.active === false) continue;
         if (["sales","team_leader"].indexOf(u.role) < 0) continue;
-        if (Number(sr.skipIfOfflineHours) > 0 && u.lastSeen) {
-          var offH = (nowTs.getTime() - new Date(u.lastSeen).getTime()) / 3600000;
-          if (offH > Number(sr.skipIfOfflineHours)) continue;
-        }
-        if (sr.respectWorkingHours && !withinHours) continue;
-        if (sr.skipOnVacation && vacSet.has(uid)) continue;
         return { user: u, idx: idx };
       }
       return null;
