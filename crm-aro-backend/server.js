@@ -175,6 +175,64 @@ var AppSetting = mongoose.model("AppSetting", new mongoose.Schema({
   value:{type:mongoose.Schema.Types.Mixed,default:{}}
 },{timestamps:true}));
 
+// SettingsAudit — one row per changed field on a settings save. Powers the
+// Settings → Audit Log tab and the rollback endpoint.
+var settingsAuditSchema = new mongoose.Schema({
+  timestamp:  { type: Date, default: Date.now, index: -1 },
+  actorId:    { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  actorName:  { type: String, default: "" },
+  field:      { type: String, required: true },
+  oldValue:   { type: mongoose.Schema.Types.Mixed },
+  newValue:   { type: mongoose.Schema.Types.Mixed },
+  rolledBack: { type: Boolean, default: false }
+}, { timestamps: true });
+var SettingsAudit = mongoose.model("SettingsAudit", settingsAuditSchema);
+
+// Flatten a plain object into dotted-path leaves. Arrays are treated as leaf
+// values (compared as a whole) so an audit entry for "tiers.tier1.agents"
+// captures the full before/after list in one row.
+function flattenSettings(obj, prefix, out) {
+  out = out || {};
+  prefix = prefix || "";
+  if (obj === null || obj === undefined) { if (prefix) out[prefix] = obj; return out; }
+  if (Array.isArray(obj) || typeof obj !== "object" || obj instanceof Date) {
+    if (prefix) out[prefix] = obj;
+    return out;
+  }
+  var keys = Object.keys(obj);
+  if (keys.length === 0) { if (prefix) out[prefix] = obj; return out; }
+  keys.forEach(function(k){
+    flattenSettings(obj[k], prefix ? prefix + "." + k : k, out);
+  });
+  return out;
+}
+
+// Rotation pointers are bumped on every lead rotation tick — excluded so they
+// don't drown real admin edits in the audit log.
+var AUDIT_IGNORE_FIELDS = {
+  "lastAssignedIdx": true,
+  "tiers.tier1.lastIdx": true,
+  "tiers.tier2.lastIdx": true,
+  "tiers.tier3.lastIdx": true
+};
+
+function diffSettings(prev, next) {
+  var a = flattenSettings(prev || {});
+  var b = flattenSettings(next || {});
+  var paths = {};
+  Object.keys(a).forEach(function(k){ paths[k] = true; });
+  Object.keys(b).forEach(function(k){ paths[k] = true; });
+  var changes = [];
+  Object.keys(paths).forEach(function(p){
+    if (AUDIT_IGNORE_FIELDS[p]) return;
+    var oldV = a[p];
+    var newV = b[p];
+    if (JSON.stringify(oldV) === JSON.stringify(newV)) return;
+    changes.push({ field: p, oldValue: oldV === undefined ? null : oldV, newValue: newV === undefined ? null : newV });
+  });
+  return changes;
+}
+
 var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
   email:{type:String,default:""}, budget:{type:String,default:""}, propertyType:{type:String,default:""},
@@ -705,8 +763,87 @@ app.put("/api/settings/rotation", auth, async function(req, res) {
       rotationStopAfterDays:   clamp(b.rotationStopAfterDays, D.rotationStopAfterDays, 1, 3650)
     };
     await AppSetting.findOneAndUpdate({ key: "rotation" }, { $set: { value: value } }, { upsert: true, new: true });
+    try {
+      var changes = diffSettings(prevValue, value);
+      if (changes.length) {
+        var actorName = (req.user && req.user.name) ? req.user.name : "Admin";
+        var actorId   = (req.user && req.user.id) ? req.user.id : null;
+        var rows = changes.map(function(c){
+          return { actorId: actorId, actorName: actorName, field: c.field, oldValue: c.oldValue, newValue: c.newValue, timestamp: new Date() };
+        });
+        await SettingsAudit.insertMany(rows, { ordered: false });
+      }
+    } catch (auditErr) {
+      console.error("[settings audit]", auditErr && auditErr.message ? auditErr.message : auditErr);
+    }
     try { broadcast("settings_updated", { key: "rotation", value: value }); } catch(e) {}
     res.json(value);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== SETTINGS AUDIT LOG =====
+// Admin + Sales Admin can read. Returns the 200 most recent entries newest first.
+app.get("/api/settings/audit", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    var rows = await SettingsAudit.find({}).sort({ timestamp: -1 }).limit(200).populate("actorId", "name").lean();
+    var out = rows.map(function(r){
+      var name = r.actorName;
+      if (!name && r.actorId && typeof r.actorId === "object" && r.actorId.name) name = r.actorId.name;
+      return {
+        _id: r._id,
+        timestamp: r.timestamp,
+        actorId: r.actorId && r.actorId._id ? r.actorId._id : r.actorId,
+        actorName: name || "",
+        field: r.field,
+        oldValue: r.oldValue,
+        newValue: r.newValue,
+        rolledBack: !!r.rolledBack
+      };
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Rollback a single audit entry: reapply its oldValue at `field` on the
+// rotation settings doc, mark the original entry rolledBack, and log a new
+// audit entry describing the rollback itself.
+app.post("/api/settings/audit/:id/rollback", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Admin only" });
+    var entry = await SettingsAudit.findById(req.params.id);
+    if (!entry) return res.status(404).json({ error: "Audit entry not found" });
+    if (entry.rolledBack) return res.status(400).json({ error: "Already rolled back" });
+
+    var path = "value." + entry.field;
+    var setOp = {}; setOp[path] = entry.oldValue;
+    await AppSetting.findOneAndUpdate({ key: "rotation" }, { $set: setOp }, { upsert: true });
+
+    entry.rolledBack = true;
+    await entry.save();
+
+    try {
+      await SettingsAudit.create({
+        actorId: (req.user && req.user.id) ? req.user.id : null,
+        actorName: (req.user && req.user.name) ? req.user.name : "Admin",
+        field: entry.field,
+        oldValue: entry.newValue,
+        newValue: entry.oldValue,
+        timestamp: new Date()
+      });
+    } catch (auditErr) {
+      console.error("[settings audit rollback]", auditErr && auditErr.message ? auditErr.message : auditErr);
+    }
+
+    var updated = await getRotationSettings();
+    try { broadcast("settings_updated", { key: "rotation", value: updated }); } catch(e) {}
+    res.json(updated);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
