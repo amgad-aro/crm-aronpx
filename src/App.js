@@ -6499,6 +6499,9 @@ var SettingsPage = function(p) {
   var [srHandled,setSrHandled]=useState(true);
   var [srHaltNI,setSrHaltNI]=useState(3);
   var [srHaltAll,setSrHaltAll]=useState(true);
+  // UI-only (not yet persisted server-side — backend ignores manualAssignmentWindowMinutes today)
+  var [manualWindowMin,setManualWindowMin]=useState(15);
+  var [simulateOpen,setSimulateOpen]=useState(false);
   var [saved,setSaved]=useState(false);
   var [saveError,setSaveError]=useState("");
   var [loading,setLoading]=useState(true);
@@ -6636,7 +6639,7 @@ var SettingsPage = function(p) {
       {tabs.map(tabBtn)}
     </div>
 
-    <Card style={{ maxWidth:560 }}>
+    <Card style={{ maxWidth: activeTab==="rotation" ? 1200 : 560 }}>
       {activeTab==="general"&&<div>
         <Inp label={t.companyName} value={company} onChange={function(e){setCompany(e.target.value);}}/>
         <Inp label={t.email} value={em} onChange={function(e){setEm(e.target.value);}}/>
@@ -6644,229 +6647,387 @@ var SettingsPage = function(p) {
         <Inp label={t.language} type="select" value={p.lang} onChange={function(e){p.setLang(e.target.value);}} options={[{value:"ar",label:"Arabic"},{value:"en",label:"English"}]}/>
       </div>}
 
-      {activeTab==="rotation"&&<div>
-        {/* Master rotation card — status + Pause 2h + Stop */}
-        {(function(){
-          var pausedActive = pausedUntil && new Date(pausedUntil) > new Date();
-          var on = autoRotEnabled && !pausedActive;
-          var statusTxt = !autoRotEnabled ? "Auto-Rotation is OFF"
-                        : pausedActive ? ("Paused until " + new Date(pausedUntil).toLocaleString("en-GB",{hour:"2-digit",minute:"2-digit",day:"2-digit",month:"short"}))
-                        : "Auto-Rotation is active";
-          var subTxt = !autoRotEnabled ? "Leads will not auto-rotate until turned back on."
-                     : pausedActive ? "All rotation triggers are suppressed until the pause expires."
-                     : ((tier1.length+tier2.length+tier3.length) + " agents across 3 tiers");
-          return <div style={{
-            background: on?"#EAF6F0":"#FCEBEB",
-            border:"0.5px solid "+(on?"rgba(15,110,86,0.3)":"rgba(163,45,45,0.3)"),
-            borderRadius:12, padding:"14px 16px", marginBottom:14,
-            display:"flex", justifyContent:"space-between", alignItems:"center", gap:12
+      {activeTab==="rotation"&&(function(){
+        // ───── Derived values ─────
+        var pausedActive = pausedUntil && new Date(pausedUntil) > new Date();
+        var masterOn = autoRotEnabled && !pausedActive;
+        var allLeads = p.leads || [];
+        var nowMs = Date.now();
+        var WEEK_MS = 7*24*60*60*1000;
+
+        var rotationsThisWeek = 0, autoAssignedWeek = 0, manualWeek = 0;
+        allLeads.forEach(function(l){
+          (l.agentHistory||[]).forEach(function(h){
+            if(!h || h.action!=="Rotation" || !h.date) return;
+            if((nowMs - new Date(h.date).getTime()) >= WEEK_MS) return;
+            rotationsThisWeek++;
+            var r = String(h.reason||"").toLowerCase();
+            if(r==="manual" || r.indexOf("manual")===0) manualWeek++; else autoAssignedWeek++;
+          });
+        });
+        var haltedLeads = allLeads.filter(function(l){return l.rotationStopped===true;}).length;
+        var exhaustedLeads = allLeads.filter(function(l){return l.rotationExhausted===true;}).length;
+        var stoppedByAge = allLeads.filter(function(l){
+          if(!l.createdAt||l.archived) return false;
+          if(l.status==="DoneDeal"||l.globalStatus==="donedeal"||l.globalStatus==="eoi") return false;
+          return (nowMs - new Date(l.createdAt).getTime()) > rotStopDays*24*60*60*1000;
+        }).length;
+
+        var nextInLineIdx = tier1.length>0 ? (((tier1LastIdx+1)%tier1.length+tier1.length)%tier1.length) : -1;
+        var lastAssignedUser = (tier1LastIdx>=0 && tier1LastIdx<tier1.length)
+          ? (p.users||[]).find(function(u){return String(gid(u))===String(tier1[tier1LastIdx]);})
+          : null;
+
+        var roleBadgeOf = function(role){
+          if(role==="team_leader") return {label:"TEAM LEADER", bg:"#EEEDFE", fg:"#3C3489"};
+          if(role==="sales")       return {label:"SALES",       bg:"#E6F1FB", fg:"#185FA5"};
+          if(role==="manager")     return {label:"MANAGER",     bg:"#FAEEDA", fg:"#854F0B"};
+          return {label:String(role||"").toUpperCase(), bg:"#EEEEEA", fg:"#666"};
+        };
+        var initialsOf = function(n){return String(n||"?").split(" ").slice(0,2).map(function(s){return (s[0]||"").toUpperCase();}).join("");};
+        var activeFor  = function(uid){return allLeads.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return String(a)===String(uid)&&!l.archived;}).length;};
+        var isOnlineNow = function(u){return u && u.lastSeen && (nowMs-new Date(u.lastSeen).getTime()) < 3*60*1000;};
+
+        var tierMeta = {
+          tier1:{label:"Top — first priority",  sub:"Round-robin: each agent takes one lead in turn", bg:"#EAF6F0", border:"rgba(15,110,86,0.3)", num:"#0F6E56", text:"#0F6E56"},
+          tier2:{label:"Regular",                sub:"Activates only when all Tier 1 unavailable",     bg:"#E6F1FB", border:"rgba(24,95,165,0.3)", num:"#185FA5", text:"#185FA5"},
+          tier3:{label:"New / Training",         sub:"Only when Tier 1 and 2 unavailable",             bg:"#F7F7F5", border:"rgba(0,0,0,0.1)",     num:"#666",    text:"#1a1a1a"}
+        };
+        var tierArrs = {tier1:tier1, tier2:tier2, tier3:tier3};
+
+        var simulatedList = (function(){
+          if(!simulateOpen || tier1.length===0) return [];
+          var out=[], idx=tier1LastIdx;
+          for(var i=0;i<10;i++){
+            idx = (idx+1) % tier1.length;
+            var uid = tier1[idx];
+            var u = (p.users||[]).find(function(x){return String(gid(x))===String(uid);});
+            if(u) out.push(u);
+          }
+          return out;
+        })();
+
+        var feedItems = (p.rotNotifs||[]).slice(0,6);
+
+        // ───── agent row ─────
+        var renderAgentRow = function(tierKey, uid, idx){
+          var u=(p.users||[]).find(function(x){return String(gid(x))===String(uid);});
+          if(!u) return null;
+          var rb = roleBadgeOf(u.role);
+          var isNext     = (tierKey==="tier1" && idx===nextInLineIdx);
+          var isTookLast = (tierKey==="tier1" && idx===tier1LastIdx && tier1LastIdx>=0);
+          var active = activeFor(uid);
+          var online = isOnlineNow(u);
+          var team = u.teamName || "";
+          var dragging = dragFrom && dragFrom.tier===tierKey && dragFrom.idx===idx;
+          var hover    = dropOn   && dropOn.tier===tierKey && dropOn.idx===idx && !dragging;
+          var meta = tierMeta[tierKey];
+          var infoParts = [];
+          if(team) infoParts.push(team);
+          infoParts.push(active+" active");
+          if(isNext) infoParts.push("NEXT IN LINE");
+          else if(isTookLast) infoParts.push("took last lead");
+          return <div key={uid}
+            draggable={true}
+            onDragStart={function(e){ setDragFrom({tier:tierKey,idx:idx}); try{e.dataTransfer.effectAllowed="move";}catch(_){} }}
+            onDragOver={function(e){ e.preventDefault(); if(!dropOn||dropOn.tier!==tierKey||dropOn.idx!==idx) setDropOn({tier:tierKey,idx:idx}); try{e.dataTransfer.dropEffect="move";}catch(_){} }}
+            onDragLeave={function(){ if(dropOn&&dropOn.tier===tierKey&&dropOn.idx===idx) setDropOn(null); }}
+            onDrop={function(e){ e.preventDefault(); e.stopPropagation(); moveAgent(dragFrom,{tier:tierKey,idx:idx}); setDragFrom(null); setDropOn(null); }}
+            onDragEnd={function(){ setDragFrom(null); setDropOn(null); }}
+            style={{display:"flex",alignItems:"center",gap:10,padding:isNext?"7px 9px":"8px 10px",background:"#fff",borderRadius:8,marginBottom:4,cursor:"grab",userSelect:"none",
+              border: isNext ? "2px solid #0F6E56" : (hover ? "1.5px solid "+meta.num : "0.5px solid rgba(0,0,0,0.05)"),
+              opacity: dragging?0.5:1}}>
+            <span style={{color:"#999",cursor:"grab",fontSize:13,flexShrink:0}}>⋮⋮</span>
+            <div style={{width:30,height:30,borderRadius:"50%",background:meta.num,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:500,flexShrink:0}}>{initialsOf(u.name)}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:500,display:"flex",alignItems:"center",gap:0,flexWrap:"wrap"}}>
+                <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</span>
+                <span style={{fontSize:9,padding:"2px 6px",borderRadius:10,fontWeight:500,letterSpacing:"0.3px",background:rb.bg,color:rb.fg,marginLeft:6}}>{rb.label}</span>
+              </div>
+              <div style={{fontSize:11,color:isNext?"#0F6E56":"#666",fontWeight:isNext?500:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                {infoParts.join(" · ")}
+              </div>
+            </div>
+            <button type="button"
+              title="Vacation (coming soon)"
+              style={{fontSize:11,padding:"3px 8px",borderRadius:8,background:"transparent",border:"0.5px solid rgba(0,0,0,0.1)",color:"#666",cursor:"not-allowed",flexShrink:0,fontFamily:"inherit",opacity:0.6}}
+              onClick={function(e){e.stopPropagation();}}>Vacation</button>
+            <button type="button"
+              title="Remove from rotation"
+              style={{fontSize:11,padding:"3px 8px",borderRadius:8,background:"transparent",border:"0.5px solid rgba(163,45,45,0.3)",color:"#A32D2D",cursor:"pointer",flexShrink:0,fontFamily:"inherit"}}
+              onClick={function(e){e.stopPropagation(); removeFromAllTiers(uid);}}>Remove</button>
+            <div title={online?"Online":"Offline"} style={{width:8,height:8,borderRadius:"50%",background:online?"#0F6E56":"#999",flexShrink:0}}/>
+          </div>;
+        };
+
+        // ───── tier box ─────
+        var renderTier = function(k){
+          var m = tierMeta[k]; var agents = tierArrs[k];
+          var isEmptyHover = dropOn && dropOn.tier===k && agents.length===0;
+          return <div key={k}
+            onDragOver={function(e){ if(agents.length===0){ e.preventDefault(); setDropOn({tier:k,idx:0}); } }}
+            onDrop={function(e){ if(agents.length===0){ e.preventDefault(); moveAgent(dragFrom,{tier:k,idx:0}); setDragFrom(null); setDropOn(null); } }}
+            style={{background:m.bg,border:"0.5px solid "+m.border,borderRadius:12,marginBottom:10,overflow:"hidden"}}>
+            <div style={{padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{width:26,height:26,borderRadius:"50%",background:m.num,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:500}}>{k.slice(-1)}</div>
+                <div>
+                  <div style={{fontSize:13,fontWeight:500,color:m.text}}>{m.label}</div>
+                  <div style={{fontSize:11,color:m.text,opacity:0.8}}>{m.sub}</div>
+                </div>
+              </div>
+              <div style={{fontSize:11,color:m.text,fontWeight:500}}>{agents.length} agent{agents.length===1?"":"s"}</div>
+            </div>
+            <div style={{padding:"0 8px 8px 8px"}}>
+              {agents.length===0
+                ? <div style={{fontSize:11,color:m.text,opacity:0.7,padding:"10px 6px",textAlign:"center",fontStyle:"italic",border:"1px dashed "+m.border,borderRadius:8,background:isEmptyHover?"rgba(255,255,255,0.6)":"rgba(255,255,255,0.4)"}}>Drop agents here{isEmptyHover?" ⤵":""}</div>
+                : agents.map(function(uid,idx){return renderAgentRow(k,uid,idx);})
+              }
+            </div>
+          </div>;
+        };
+
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          {/* ══ Master Auto-Rotation card ══ */}
+          <div style={{
+            background:masterOn?"#EAF6F0":"#FCEBEB",
+            border:"0.5px solid "+(masterOn?"rgba(15,110,86,0.3)":"rgba(163,45,45,0.3)"),
+            borderRadius:12,padding:"14px 16px",marginBottom:14,
+            display:"flex",justifyContent:"space-between",alignItems:"center",gap:12
           }}>
             <div style={{display:"flex",alignItems:"center",gap:12,flex:1,minWidth:0}}>
               <div onClick={function(){setAutoRotEnabled(!autoRotEnabled); if(!autoRotEnabled) setPausedUntil(null);}}
                 title="Toggle auto-rotation"
                 style={{width:40,height:22,borderRadius:11,cursor:"pointer",position:"relative",flexShrink:0,
                   background:autoRotEnabled?"#0F6E56":"#94A3B8",transition:"background 0.15s"}}>
-                <span style={{display:"block",width:16,height:16,background:"#fff",borderRadius:"50%",position:"absolute",
-                  top:3,left:autoRotEnabled?21:3,transition:"left 0.15s"}}/>
+                <span style={{display:"block",width:16,height:16,background:"#fff",borderRadius:"50%",position:"absolute",top:3,left:autoRotEnabled?21:3,transition:"left 0.15s"}}/>
               </div>
               <div style={{minWidth:0}}>
-                <div style={{fontSize:13,fontWeight:600,color:on?"#0F6E56":"#A32D2D"}}>{statusTxt}</div>
-                <div style={{fontSize:11,color:on?"#0F6E56":"#A32D2D",opacity:0.8,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{subTxt}</div>
+                <div style={{fontSize:14,fontWeight:500,color:masterOn?"#0F6E56":"#A32D2D"}}>
+                  {!autoRotEnabled ? "Auto-Rotation is OFF" : (pausedActive ? "Auto-Rotation paused" : "Auto-Rotation is active")}
+                </div>
+                <div style={{fontSize:12,color:masterOn?"#0F6E56":"#A32D2D",opacity:0.85,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  {!autoRotEnabled
+                    ? "Leads will not auto-rotate until turned back on."
+                    : pausedActive
+                      ? ("Paused until "+new Date(pausedUntil).toLocaleString("en-GB",{hour:"2-digit",minute:"2-digit",day:"2-digit",month:"short"}))
+                      : (lastAssignedUser && tier1.length>0
+                          ? ("Round-robin pointer at "+String(lastAssignedUser.name||"").split(" ")[0]+" ("+(tier1LastIdx+1)+"/"+tier1.length+") · "+rotationsThisWeek+" rotations this week")
+                          : (rotationsThisWeek+" rotations this week · "+(tier1.length+tier2.length+tier3.length)+" agents across 3 tiers"))}
+                </div>
               </div>
             </div>
             <div style={{display:"flex",gap:6,flexShrink:0}}>
-              <button onClick={function(){setAutoRotEnabled(true); setPausedUntil(new Date(Date.now()+2*60*60*1000).toISOString());}}
-                style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"#fff",borderRadius:8,cursor:"pointer",color:"#1a1a1a"}}>Pause 2h</button>
-              <button onClick={function(){setAutoRotEnabled(false); setPausedUntil(null);}}
-                style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(163,45,45,0.3)",background:"#FCEBEB",borderRadius:8,cursor:"pointer",color:"#A32D2D",fontWeight:500}}>Stop</button>
+              <button type="button" onClick={function(){setAutoRotEnabled(true); setPausedUntil(new Date(Date.now()+2*60*60*1000).toISOString());}}
+                style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:8,cursor:"pointer",color:"#1a1a1a",fontFamily:"inherit"}}>Pause 2h</button>
+              <button type="button" onClick={function(){setAutoRotEnabled(false); setPausedUntil(null);}}
+                style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(163,45,45,0.3)",background:"#FCEBEB",borderRadius:8,cursor:"pointer",color:"#A32D2D",fontFamily:"inherit"}}>Stop</button>
             </div>
-          </div>;
-        })()}
+          </div>
 
-        {/* Tier boxes — Tier 1 (Top), Tier 2 (Regular), Tier 3 (New) */}
-        {(function(){
-          var tierMeta={
-            tier1:{label:"Top — first priority",   sub:"Round-robin within tier",                     bg:"#EAF6F0", brd:"rgba(15,110,86,0.3)", num:"#0F6E56", txt:"#0F6E56"},
-            tier2:{label:"Regular",                 sub:"Activates only when all Tier 1 unavailable",  bg:"#E6F1FB", brd:"rgba(24,95,165,0.3)", num:"#185FA5", txt:"#185FA5"},
-            tier3:{label:"New / Training",          sub:"Only when Tier 1 and 2 unavailable",          bg:"#F8FAFC", brd:"rgba(0,0,0,0.1)",     num:"#64748B", txt:"#475569"}
-          };
-          var tierArrs={tier1:tier1,tier2:tier2,tier3:tier3};
-          var nextInLineIdx = tier1.length>0 ? (((tier1LastIdx+1)%tier1.length+tier1.length)%tier1.length) : -1;
-
-          var renderRow=function(tierKey,uid,idx){
-            var u=(p.users||[]).find(function(x){return String(gid(x))===String(uid);});
-            if(!u) return null;
-            var isNext = (tierKey==="tier1" && idx===nextInLineIdx);
-            var initials=(u.name||"?").split(" ").slice(0,2).map(function(s){return (s[0]||"").toUpperCase();}).join("");
-            var roleLabel=({admin:"ADMIN",manager:"MANAGER",team_leader:"TEAM LEADER",sales:"SALES",viewer:"VIEWER"}[u.role]||(u.role||"").toUpperCase());
-            var roleBgMap={team_leader:"#EEEDFE",sales:"#E6F1FB",manager:"#FAEEDA"};
-            var roleFgMap={team_leader:"#3C3489",sales:"#185FA5",manager:"#854F0B"};
-            var dragging = dragFrom && dragFrom.tier===tierKey && dragFrom.idx===idx;
-            var hover    = dropOn   && dropOn.tier===tierKey && dropOn.idx===idx && !dragging;
-            return <div key={uid}
-              draggable={true}
-              onDragStart={function(e){ setDragFrom({tier:tierKey,idx:idx}); try{e.dataTransfer.effectAllowed="move";}catch(_){} }}
-              onDragOver={function(e){ e.preventDefault(); if(!dropOn||dropOn.tier!==tierKey||dropOn.idx!==idx) setDropOn({tier:tierKey,idx:idx}); try{e.dataTransfer.dropEffect="move";}catch(_){} }}
-              onDragLeave={function(){ if(dropOn&&dropOn.tier===tierKey&&dropOn.idx===idx) setDropOn(null); }}
-              onDrop={function(e){ e.preventDefault(); e.stopPropagation(); moveAgent(dragFrom,{tier:tierKey,idx:idx}); setDragFrom(null); setDropOn(null); }}
-              onDragEnd={function(){ setDragFrom(null); setDropOn(null); }}
-              style={{display:"flex",alignItems:"center",gap:10,padding:isNext?"7px 9px":"8px 10px",background:"#fff",borderRadius:8,marginBottom:4,cursor:"grab",userSelect:"none",
-                border: isNext ? "2px solid #0F6E56" : (hover ? "1.5px solid "+tierMeta[tierKey].num : "0.5px solid rgba(0,0,0,0.05)"),
-                opacity: dragging?0.5:1}}>
-              <span style={{color:"#999",cursor:"grab",fontSize:13,flexShrink:0}}>⋮⋮</span>
-              <div style={{width:30,height:30,borderRadius:"50%",background:tierMeta[tierKey].num,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:500,flexShrink:0}}>{initials}</div>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:13,fontWeight:500,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-                  <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</span>
-                  {roleLabel && <span style={{fontSize:9,padding:"2px 6px",borderRadius:10,fontWeight:500,letterSpacing:"0.3px",background:roleBgMap[u.role]||"#EEEEEA",color:roleFgMap[u.role]||"#666"}}>{roleLabel}</span>}
-                </div>
-                <div style={{fontSize:11,color:isNext?"#0F6E56":"#666",fontWeight:isNext?600:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                  {isNext ? "NEXT IN LINE" : (u.title||"")}
-                </div>
+          {/* ══ Manual assignment window (blue) ══ */}
+          <div style={{background:"#E6F1FB",border:"0.5px solid rgba(24,95,165,0.3)",borderRadius:12,padding:"14px 16px",marginBottom:18}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <div style={{fontSize:13,fontWeight:500,color:"#185FA5"}}>Manual assignment window</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <span style={{fontSize:12,color:"#185FA5"}}>Auto-assign after</span>
+                <input type="number" min={0} max={1440} value={manualWindowMin}
+                  onChange={function(e){setManualWindowMin(Number(e.target.value)||0);}}
+                  style={{width:60,padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",fontFamily:"inherit"}}/>
+                <span style={{fontSize:12,color:"#185FA5"}}>minutes</span>
               </div>
-              <button onClick={function(){removeFromAllTiers(uid);}} title="Remove from rotation"
-                style={{background:"none",border:"none",color:"#DC2626",fontSize:16,cursor:"pointer",padding:"2px 6px",lineHeight:1}}>×</button>
-            </div>;
-          };
+            </div>
+            <div style={{fontSize:11,color:"#185FA5",opacity:0.85,lineHeight:1.5}}>Applies to all sources. Admin and Sales Admin assign manually within this window. After timeout, system auto-assigns to Tier 1 round-robin.</div>
+          </div>
 
-          return ["tier1","tier2","tier3"].map(function(k){
-            var m=tierMeta[k]; var agents=tierArrs[k];
-            var isEmptyHover = dropOn && dropOn.tier===k && agents.length===0;
-            return <div key={k}
-              onDragOver={function(e){ if(agents.length===0){ e.preventDefault(); setDropOn({tier:k,idx:0}); } }}
-              onDrop={function(e){ if(agents.length===0){ e.preventDefault(); moveAgent(dragFrom,{tier:k,idx:0}); setDragFrom(null); setDropOn(null); } }}
-              style={{background:m.bg,border:"0.5px solid "+m.brd,borderRadius:12,marginBottom:10,overflow:"hidden"}}>
-              <div style={{padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <div style={{display:"flex",alignItems:"center",gap:10}}>
-                  <div style={{width:26,height:26,borderRadius:"50%",background:m.num,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:500}}>{k.slice(-1)}</div>
-                  <div>
-                    <div style={{fontSize:13,fontWeight:500,color:m.txt}}>{m.label}</div>
-                    <div style={{fontSize:11,color:m.txt,opacity:0.8}}>{m.sub}</div>
-                  </div>
-                </div>
-                <div style={{fontSize:11,color:m.txt,fontWeight:500}}>{agents.length} agent{agents.length===1?"":"s"}</div>
+          {/* ══ Two-column: priority tiers (2fr) + live feed/metrics (1fr) ══ */}
+          <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:20,marginBottom:24}}>
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:10}}>
+                <div style={{fontSize:14,fontWeight:500}}>Priority tiers</div>
+                <div style={{fontSize:11,color:"#666"}}>Only Team Leaders &amp; Sales · Directors/Managers excluded</div>
               </div>
-              <div style={{padding:"0 8px 8px 8px",background:isEmptyHover?"rgba(255,255,255,0.6)":"transparent"}}>
-                {agents.length===0
-                  ? <div style={{fontSize:11,color:m.txt,opacity:0.7,padding:"10px 6px",textAlign:"center",fontStyle:"italic",border:"1px dashed "+m.brd,borderRadius:8,background:"rgba(255,255,255,0.4)"}}>Drop agents here{isEmptyHover?" ⤵":""}</div>
-                  : agents.map(function(uid,idx){return renderRow(k,uid,idx);})
-                }
-              </div>
-            </div>;
-          });
-        })()}
-
-        {/* Remaining agents → one-click add to Tier 1 */}
-        {(function(){
-          var inAny = new Set([].concat(tier1,tier2,tier3).map(String));
-          var remaining=salesAgentsForSetting.filter(function(u){return !inAny.has(String(gid(u)));});
-          if(!remaining.length) return null;
-          return <div style={{marginBottom:14,marginTop:4}}>
-            <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>➕ Add agent to rotation (goes to Tier 1)</label>
-            <div style={{border:"1px dashed #E2E8F0",borderRadius:10,padding:"8px 8px",background:"#FAFBFC",maxHeight:160,overflowY:"auto"}}>
-              {remaining.map(function(u){
-                var uid=String(gid(u));
-                return <div key={uid} onClick={function(){appendToTier(uid,"tier1");}} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 8px",cursor:"pointer",borderRadius:7,marginBottom:2}}>
-                  <span style={{fontSize:16,color:C.accent,fontWeight:700,lineHeight:1}}>+</span>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:13,fontWeight:500,color:"#334155",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</div>
-                    <div style={{fontSize:11,color:C.textLight,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.title||""}</div>
-                  </div>
+              {renderTier("tier1")}
+              {renderTier("tier2")}
+              {renderTier("tier3")}
+              {(function(){
+                var inAny = new Set([].concat(tier1,tier2,tier3).map(String));
+                var remaining = salesAgentsForSetting.filter(function(u){return !inAny.has(String(gid(u)));});
+                if(!remaining.length) return null;
+                return <div style={{marginTop:8,border:"1px dashed rgba(0,0,0,0.1)",borderRadius:8,background:"#F7F7F5",maxHeight:160,overflowY:"auto"}}>
+                  <div style={{padding:"8px 10px",fontSize:11,fontWeight:500,color:"#666",borderBottom:"0.5px solid rgba(0,0,0,0.05)"}}>+ Add agent to rotation ({remaining.length} available — click to add to Tier 1)</div>
+                  {remaining.map(function(u){
+                    var uid=String(gid(u)); var rb=roleBadgeOf(u.role);
+                    return <div key={uid} onClick={function(){appendToTier(uid,"tier1");}}
+                      style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",cursor:"pointer",borderBottom:"0.5px solid rgba(0,0,0,0.05)"}}>
+                      <span style={{color:"#0F6E56",fontSize:15,fontWeight:500,flexShrink:0}}>+</span>
+                      <div style={{flex:1,minWidth:0,fontSize:12,display:"flex",alignItems:"center",gap:6}}>
+                        <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</span>
+                        <span style={{fontSize:9,padding:"2px 6px",borderRadius:10,fontWeight:500,background:rb.bg,color:rb.fg}}>{rb.label}</span>
+                      </div>
+                      <span style={{fontSize:11,color:"#999",flexShrink:0}}>→ Tier 1</span>
+                    </div>;
+                  })}
                 </div>;
+              })()}
+            </div>
+
+            <div>
+              {/* Live feed */}
+              <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Live feed</div>
+              <div style={{background:"#F7F7F5",borderRadius:8,padding:10,lineHeight:1.7,minHeight:60}}>
+                {feedItems.length===0
+                  ? <div style={{fontSize:11,color:"#999",fontStyle:"italic",padding:"6px 0"}}>No recent rotations.</div>
+                  : feedItems.map(function(n,i){
+                      var ts = n.createdAt||n.timestamp||n.date;
+                      var time = ts ? new Date(ts).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}) : "";
+                      var reason = String(n.reason||"").toLowerCase();
+                      var dotColor = "#185FA5"; var tagTxt = "T1"; var tagBg="#EAF6F0"; var tagFg="#0F6E56";
+                      var shortId = n.leadId ? String(n.leadId).slice(-4) : "—";
+                      var txt = "#"+shortId+" → "+(n.toName||"—");
+                      if(reason.indexOf("cancel")>=0){ dotColor="#854F0B"; txt=(n.leadName||"Lead")+" Cancel → re-rotate"; tagTxt=""; }
+                      else if(reason.indexOf("exhausted")>=0){ dotColor="#A32D2D"; txt=(n.leadName||"Lead")+" rotation EXHAUSTED"; tagTxt=""; }
+                      else if(reason==="manual" || reason.indexOf("manual")===0){ dotColor="#0F6E56"; tagTxt=""; }
+                      return <div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0",color:"#666",fontSize:11}}>
+                        <span style={{width:5,height:5,borderRadius:"50%",background:dotColor,flexShrink:0}}/>
+                        <span style={{color:"#1a1a1a",fontWeight:500,minWidth:32}}>{time}</span>
+                        <span style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{txt}</span>
+                        {tagTxt && <span style={{background:tagBg,color:tagFg,padding:"1px 5px",borderRadius:3,fontSize:10,fontWeight:500,flexShrink:0}}>{tagTxt}</span>}
+                      </div>;
+                    })}
+              </div>
+
+              {/* This week metrics */}
+              <div style={{fontSize:14,fontWeight:500,marginTop:14,marginBottom:8}}>This week</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6}}>
+                {[
+                  {l:"Auto-assigned", v:autoAssignedWeek},
+                  {l:"Manual",        v:manualWeek},
+                  {l:"Skipped",       v:"—"},
+                  {l:"Halted",        v:haltedLeads},
+                  {l:"Exhausted",     v:exhaustedLeads},
+                  {l:"45d stopped",   v:stoppedByAge}
+                ].map(function(m,i){return <div key={i} style={{background:"#F7F7F5",padding:"8px 10px",borderRadius:8}}>
+                  <div style={{fontSize:10,color:"#666"}}>{m.l}</div>
+                  <div style={{fontSize:18,fontWeight:500,marginTop:2}}>{m.v}</div>
+                </div>;})}
+              </div>
+
+              <button type="button" onClick={function(){setSimulateOpen(!simulateOpen);}}
+                style={{marginTop:10,width:"100%",fontSize:12,padding:"8px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:8,cursor:"pointer",color:"#1a1a1a",fontFamily:"inherit"}}>
+                {simulateOpen?"Hide simulation":"Simulate next 10"}
+              </button>
+              {simulateOpen && <div style={{marginTop:8,background:"#F7F7F5",borderRadius:8,padding:10}}>
+                {simulatedList.length===0
+                  ? <div style={{fontSize:11,color:"#999"}}>Add agents to Tier 1 to simulate.</div>
+                  : simulatedList.map(function(u,i){return <div key={i} style={{fontSize:11,color:"#1a1a1a",padding:"3px 0",display:"flex",gap:6}}>
+                      <span style={{color:"#666",minWidth:24}}>{(i+1)+"."}</span>
+                      <span>{u.name}</span>
+                    </div>;})
+                }
+              </div>}
+            </div>
+          </div>
+
+          {/* ══ Rotation durations ══ */}
+          <div style={{marginBottom:20}}>
+            <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Rotation durations</div>
+            <div style={{fontSize:12,color:"#666",marginBottom:10}}>Applies to Hot Case, Potential, Meeting, CallBack, No Answer, No Contact, and Not Interested</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              {[
+                {label:"No Answer — times before rotation",val:rotNoAnswerCount,set:setRotNoAnswerCount,max:100},
+                {label:"No Answer — wait after last (hrs)",val:rotNoAnswerHours,set:setRotNoAnswerHours,max:720},
+                {label:"Not Interested — return after (days)",val:rotNotIntDays,set:setRotNotIntDays,max:365},
+                {label:"No Contact — rotate after (days)",val:rotNoActDays,set:setRotNoActDays,max:365},
+                {label:"CallBack overdue — rotate after (days)",val:rotCbDays,set:setRotCbDays,max:365},
+                {label:"Hot / Potential / Meeting no action (days)",val:rotHotDays,set:setRotHotDays,max:365,bold:true}
+              ].map(function(row){return <div key={row.label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"#F7F7F5",padding:"8px 10px",borderRadius:8,color:"#666",gap:8,fontSize:12}}>
+                <span style={{fontWeight:row.bold?500:400,color:row.bold?"#1a1a1a":"#666"}}>{row.label}</span>
+                <input type="number" min={1} max={row.max} value={row.val} onChange={function(e){row.set(Number(e.target.value));}}
+                  style={{width:56,padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",textAlign:"center",fontFamily:"inherit"}}/>
+              </div>;})}
+              {/* 45-day row spans 2 cols, highlighted yellow */}
+              <div style={{gridColumn:"span 2",display:"flex",justifyContent:"space-between",alignItems:"center",background:"#FAEEDA",padding:"8px 10px",borderRadius:8,color:"#854F0B",gap:8,fontSize:12}}>
+                <span style={{fontWeight:500}}>Stop rotation after (days in CRM) — lead stays with current agent</span>
+                <input type="number" min={1} max={3650} value={rotStopDays} onChange={function(e){setRotStopDays(Number(e.target.value));}}
+                  style={{width:56,padding:"6px 10px",border:"0.5px solid rgba(133,79,11,0.3)",borderRadius:8,fontSize:13,background:"#fff",textAlign:"center",fontFamily:"inherit"}}/>
+              </div>
+            </div>
+          </div>
+
+          {/* ══ Smart skip rules ══ */}
+          <div style={{marginBottom:20}}>
+            <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Smart skip rules</div>
+            <div style={{fontSize:12,color:"#666",marginBottom:10}}>Applied to each candidate before assignment. Unchecked rules are ignored by the backend.</div>
+            <div style={{background:"#F7F7F5",borderRadius:8,padding:14,display:"grid",gap:12,fontSize:13}}>
+              <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                <input type="checkbox" checked={srVac} onChange={function(e){setSrVac(e.target.checked);}}/>
+                <span>Skip if agent is on vacation <span style={{color:"#999",fontSize:11,marginLeft:4}}>(no-op until vacation management ships)</span></span>
+              </label>
+              <label style={{display:"flex",alignItems:"center",gap:10}}>
+                <input type="checkbox" checked={srOffH>0} onChange={function(e){setSrOffH(e.target.checked?4:0);}}/>
+                <span>Skip if agent offline more than</span>
+                <input type="number" min={0} max={168} value={srOffH} onChange={function(e){setSrOffH(Number(e.target.value)||0);}}
+                  style={{width:50,padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",textAlign:"center",fontFamily:"inherit"}}/>
+                <span>hours</span>
+              </label>
+              <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                <input type="checkbox" checked={srHours} onChange={function(e){setSrHours(e.target.checked);}}/>
+                <span>Respect working hours</span>
+              </label>
+              <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                <input type="checkbox" checked={srHandled} onChange={function(e){setSrHandled(e.target.checked);}}/>
+                <span>Skip agents who already handled this lead</span>
+              </label>
+              <label style={{display:"flex",alignItems:"center",gap:10}}>
+                <input type="checkbox" checked={srHaltNI>0} onChange={function(e){setSrHaltNI(e.target.checked?3:0);}}/>
+                <span>Halt rotation after</span>
+                <input type="number" min={0} max={20} value={srHaltNI} onChange={function(e){setSrHaltNI(Number(e.target.value)||0);}}
+                  style={{width:50,padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",textAlign:"center",fontFamily:"inherit"}}/>
+                <span>× Not Interested</span>
+              </label>
+              <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                <input type="checkbox" checked={srHaltAll} onChange={function(e){setSrHaltAll(e.target.checked);}}/>
+                <span>Halt rotation when all agents have handled the lead</span>
+              </label>
+            </div>
+          </div>
+
+          {/* ══ Working hours ══ */}
+          <div style={{marginBottom:20}}>
+            <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Working hours</div>
+            <div style={{fontSize:12,color:"#666",marginBottom:10}}>Company default. Per-agent overrides live in Team &amp; Roles (coming soon).</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+              {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(function(d){
+                var on = whDays.indexOf(d)>=0;
+                return <div key={d}
+                  onClick={function(){setWhDays(function(prev){return prev.indexOf(d)>=0 ? prev.filter(function(x){return x!==d;}) : prev.concat([d]);});}}
+                  style={{padding:"6px 12px",background:on?"#E6F1FB":"#fff",border:"0.5px solid "+(on?"rgba(24,95,165,0.3)":"rgba(0,0,0,0.1)"),borderRadius:8,fontSize:12,cursor:"pointer",color:on?"#185FA5":"#666",fontWeight:on?500:400,userSelect:"none"}}>{d}</div>;
               })}
             </div>
-          </div>;
-        })()}
-
-        {/* Working hours */}
-        <div style={{marginBottom:14,padding:"14px 16px",background:"#F8FAFC",borderRadius:12,border:"1px solid #E8ECF1"}}>
-          <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:4}}>🕒 Company Working Hours</div>
-          <div style={{fontSize:11,color:C.textLight,marginBottom:10}}>Used by the "Respect working hours" skip rule. Per-agent overrides live in Team &amp; Roles (coming soon).</div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
-            {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(function(d){
-              var on = whDays.indexOf(d)>=0;
-              return <button key={d} type="button"
-                onClick={function(){setWhDays(function(prev){return prev.indexOf(d)>=0 ? prev.filter(function(x){return x!==d;}) : prev.concat([d]);});}}
-                style={{padding:"6px 12px",background:on?"#E6F1FB":"#fff",border:"0.5px solid "+(on?"rgba(24,95,165,0.3)":"#E2E8F0"),borderRadius:8,fontSize:12,cursor:"pointer",color:on?"#185FA5":C.textLight,fontWeight:on?500:400}}>{d}</button>;
-            })}
-          </div>
-          <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-            <div style={{display:"flex",alignItems:"center",gap:6}}>
-              <span style={{fontSize:12,color:C.textLight}}>From</span>
-              <input type="time" value={whFrom} onChange={function(e){setWhFrom(e.target.value);}} style={{padding:"6px 10px",border:"0.5px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff"}}/>
-            </div>
-            <div style={{display:"flex",alignItems:"center",gap:6}}>
-              <span style={{fontSize:12,color:C.textLight}}>to</span>
-              <input type="time" value={whTo} onChange={function(e){setWhTo(e.target.value);}} style={{padding:"6px 10px",border:"0.5px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff"}}/>
-            </div>
-            <div style={{display:"flex",alignItems:"center",gap:6}}>
-              <span style={{fontSize:12,color:C.textLight}}>After-hours</span>
-              <select value={whAfter} onChange={function(e){setWhAfter(e.target.value);}} style={{padding:"6px 10px",border:"0.5px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff"}}>
-                <option value="queue">Queue until next shift</option>
-                <option value="oncall">Route to on-call agent</option>
-              </select>
+            <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <span style={{fontSize:12,color:"#666"}}>From</span>
+                <input type="time" value={whFrom} onChange={function(e){setWhFrom(e.target.value);}}
+                  style={{padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",fontFamily:"inherit"}}/>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <span style={{fontSize:12,color:"#666"}}>to</span>
+                <input type="time" value={whTo} onChange={function(e){setWhTo(e.target.value);}}
+                  style={{padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",fontFamily:"inherit"}}/>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <span style={{fontSize:12,color:"#666"}}>After-hours</span>
+                <select value={whAfter} onChange={function(e){setWhAfter(e.target.value);}}
+                  style={{padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",fontFamily:"inherit"}}>
+                  <option value="queue">Queue until next shift</option>
+                  <option value="oncall">Route to on-call agent</option>
+                </select>
+              </div>
             </div>
           </div>
-        </div>
-
-        {/* Smart skip rules */}
-        <div style={{marginBottom:14,padding:"14px 16px",background:"#F8FAFC",borderRadius:12,border:"1px solid #E8ECF1"}}>
-          <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:4}}>🚦 Smart Skip Rules</div>
-          <div style={{fontSize:11,color:C.textLight,marginBottom:10}}>Applied to each candidate before assignment. Unchecked rules are ignored by the backend.</div>
-          <label style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",fontSize:13,color:C.text,cursor:"pointer"}}>
-            <input type="checkbox" checked={srVac} onChange={function(e){setSrVac(e.target.checked);}}/>
-            <span>Skip if agent is on vacation <span style={{color:C.textLight,fontSize:11,marginLeft:6}}>(no-op until vacation management ships)</span></span>
-          </label>
-          <label style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",fontSize:13,color:C.text}}>
-            <input type="checkbox" checked={srOffH>0} onChange={function(e){setSrOffH(e.target.checked?4:0);}}/>
-            <span>Skip if agent offline more than</span>
-            <input type="number" min={0} max={168} value={srOffH} onChange={function(e){setSrOffH(Number(e.target.value)||0);}} style={{width:56,padding:"4px 8px",borderRadius:7,border:"0.5px solid #E2E8F0",fontSize:13,textAlign:"center"}}/>
-            <span style={{fontSize:11,color:C.textLight}}>hours (0 = off)</span>
-          </label>
-          <label style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",fontSize:13,color:C.text,cursor:"pointer"}}>
-            <input type="checkbox" checked={srHours} onChange={function(e){setSrHours(e.target.checked);}}/>
-            <span>Respect company working hours</span>
-          </label>
-          <label style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",fontSize:13,color:C.text,cursor:"pointer"}}>
-            <input type="checkbox" checked={srHandled} onChange={function(e){setSrHandled(e.target.checked);}}/>
-            <span>Skip agents who already handled this lead</span>
-          </label>
-          <label style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",fontSize:13,color:C.text}}>
-            <input type="checkbox" checked={srHaltNI>0} onChange={function(e){setSrHaltNI(e.target.checked?3:0);}}/>
-            <span>Halt rotation after</span>
-            <input type="number" min={0} max={20} value={srHaltNI} onChange={function(e){setSrHaltNI(Number(e.target.value)||0);}} style={{width:56,padding:"4px 8px",borderRadius:7,border:"0.5px solid #E2E8F0",fontSize:13,textAlign:"center"}}/>
-            <span style={{fontSize:11,color:C.textLight}}>× consecutive Not Interested (0 = off)</span>
-          </label>
-          <label style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",fontSize:13,color:C.text,cursor:"pointer"}}>
-            <input type="checkbox" checked={srHaltAll} onChange={function(e){setSrHaltAll(e.target.checked);}}/>
-            <span>Halt rotation when all agents have handled the lead</span>
-          </label>
-        </div>
-
-        {/* Rotation Durations (existing 6 + new 45-day stop) */}
-        <div style={{marginBottom:13,padding:"14px 16px",background:"#F8FAFC",borderRadius:12,border:"1px solid #E8ECF1"}}>
-          <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:12}}>⚙️ Auto-Rotation Durations</div>
-          {[
-            {label:"No Answer — times before rotation",val:rotNoAnswerCount,set:setRotNoAnswerCount,unit:"times",max:100},
-            {label:"No Answer — wait after last attempt",val:rotNoAnswerHours,set:setRotNoAnswerHours,unit:"hrs",max:720},
-            {label:"Not Interested — return after",val:rotNotIntDays,set:setRotNotIntDays,unit:"days",max:365},
-            {label:"No Contact — rotate after",val:rotNoActDays,set:setRotNoActDays,unit:"days",max:365},
-            {label:"CallBack overdue — rotate after",val:rotCbDays,set:setRotCbDays,unit:"days",max:365},
-            {label:"Potential/HotCase/Meeting no action — rotate after",val:rotHotDays,set:setRotHotDays,unit:"days",max:365},
-            {label:"Stop rotation after — lead stays with current agent",val:rotStopDays,set:setRotStopDays,unit:"days in CRM",max:3650,highlight:true}
-          ].map(function(row){return <div key={row.label} style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9,gap:10,
-            padding:row.highlight?"8px 10px":"0",
-            background:row.highlight?"#FAEEDA":"transparent",
-            borderRadius:row.highlight?8:0,
-            border:row.highlight?"0.5px solid rgba(133,79,11,0.3)":"none"}}>
-            <span style={{fontSize:12,color:row.highlight?"#854F0B":C.text,flex:1,fontWeight:row.highlight?500:400}}>{row.label}</span>
-            <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
-              <input type="number" min={1} max={row.max} value={row.val} onChange={function(e){row.set(Number(e.target.value));}} style={rotInpStyle}/>
-              <span style={{fontSize:11,color:row.highlight?"#854F0B":C.textLight}}>{row.unit}</span>
-            </div>
-          </div>;})}
-        </div>
-      </div>}
+        </div>;
+      })()}
 
       {activeTab==="team"        &&placeholder("👥","Team & Roles","Hierarchy and permissions — coming soon.")}
       {activeTab==="integrations"&&placeholder("🔌","Integrations","Google Sheets, Facebook Lead Ads, WhatsApp — coming soon.")}
