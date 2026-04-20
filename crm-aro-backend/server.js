@@ -2736,10 +2736,7 @@ async function autoAssignQueuedLead(leadId) {
     if (lead.rotationStopped) return { ok: false, error: "rotation_stopped" };
 
     var settings = await getRotationSettings();
-    if (settings.autoRotationEnabled === false) return { ok: false, error: "rotation_disabled" };
-    if (settings.autoRotationPausedUntil && new Date(settings.autoRotationPausedUntil) > new Date()) {
-      return { ok: false, error: "rotation_paused" };
-    }
+    // Manual window sweeper is first-assignment only (agentId=null), independent of master rotation switch and pause — those only gate agent-to-agent rotation.
 
     var allTierIds = [].concat(settings.tiers.tier1.agents, settings.tiers.tier2.agents, settings.tiers.tier3.agents);
     if (!allTierIds.length) return { ok: false, error: "no_rotation_order" };
