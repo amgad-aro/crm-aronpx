@@ -2786,27 +2786,72 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
     });
     if (!agentPool.length) return res.status(409).json({ error: "no_agents", message: "No eligible agents in rotation tiers" });
 
-    // Candidate leads: assigned, not archived, not stopped, not EOI/DoneDeal,
-    // within age cutoff, and not rotated in the last hour. No top-level status
-    // filter — eligibility resolves per-agent from assignments[current], since
-    // top-level lead.status drifts after rotations (new assignments start with
-    // "NewLead" while top-level retains the previous agent's last-sent status).
-    var candidateLeads = await Lead.find({
-      agentId: { $ne: null },
-      archived: { $ne: true },
-      rotationStopped: { $ne: true },
-      globalStatus: { $nin: ["eoi", "donedeal"] },
-      createdAt: { $gte: ageCutoff },
-      $or: [
-        { lastRotationAt: { $exists: false } },
-        { lastRotationAt: null },
-        { lastRotationAt: { $lt: rotatedGuard } }
-      ]
-    }).select("_id agentId assignments previousAgentIds status lastActivityTime callbackTime").lean();
+    // DIAGNOSTIC MODE — full funnel visibility.
+    // Pull every Lead doc with no pre-filter; count each exclusion stage in JS
+    // so the UI can see exactly where leads drop out. Do NOT apply any DB-level
+    // filter on archived / agentId / source / globalStatus / rotationStopped /
+    // createdAt / lastRotationAt — those are stage counters below.
+    var allLeads = await Lead.find({})
+      .select("_id name agentId archived source globalStatus rotationStopped createdAt lastRotationAt assignments status lastActivityTime callbackTime previousAgentIds")
+      .lean();
 
-    // NoAnswer eligibility needs per-lead activity counts. Pull status_change
-    // activities tagged [NoAnswer] for just the candidate set in one query.
-    var leadIds = candidateLeads.map(function(l){ return l._id; });
+    var excluded = {
+      archived: 0,
+      noAgent: 0,
+      dailyRequestSource: 0,
+      eoiOrDoneDeal: 0,
+      rotationStopped: 0,
+      tooYoung_lessThan45days: 0,
+      lastRotationWithin1h: 0,
+      noCurrentSliceAndNoFallback: 0,
+      noRotationFlag: 0
+    };
+    var passed = [];
+    for (var i = 0; i < allLeads.length; i++) {
+      var l = allLeads[i];
+      if (l.archived === true)                                       { excluded.archived++; continue; }
+      if (!l.agentId)                                                { excluded.noAgent++; continue; }
+      if (l.source === "Daily Request")                              { excluded.dailyRequestSource++; continue; }
+      if (l.globalStatus === "eoi" || l.globalStatus === "donedeal") { excluded.eoiOrDoneDeal++; continue; }
+      if (l.rotationStopped === true)                                { excluded.rotationStopped++; continue; }
+      if (!l.createdAt || new Date(l.createdAt) < ageCutoff)         { excluded.tooYoung_lessThan45days++; continue; }
+      if (l.lastRotationAt && new Date(l.lastRotationAt) >= rotatedGuard) { excluded.lastRotationWithin1h++; continue; }
+
+      // Resolve current slice; fall back to top-level fields for legacy leads.
+      var curAid = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId || "");
+      var cur = (l.assignments || []).find(function(a){
+        var aid = a && a.agentId && a.agentId._id ? a.agentId._id : (a && a.agentId);
+        return String(aid || "") === curAid;
+      }) || null;
+      if (!cur) {
+        if (!l.status && !l.lastActivityTime) { excluded.noCurrentSliceAndNoFallback++; continue; }
+        cur = {
+          status:       l.status,
+          lastActionAt: l.lastActivityTime,
+          callbackTime: l.callbackTime,
+          noRotation:   false,
+          __fallback: true
+        };
+      }
+      if (cur.noRotation === true) { excluded.noRotationFlag++; continue; }
+
+      l._cur = cur;
+      l._curAid = curAid;
+      passed.push(l);
+    }
+
+    // Status breakdown of the passing pool (using per-agent slice status,
+    // with top-level fallback for legacy leads).
+    var byStatus = { NewLead:0, NotInterested:0, CallBack:0, HotCase:0, Potential:0, MeetingDone:0, NoAnswer:0, other:0 };
+    passed.forEach(function(l){
+      var s = String(l._cur.status || "");
+      if (byStatus[s] != null) byStatus[s]++;
+      else byStatus.other++;
+    });
+
+    // NoAnswer eligibility needs per-lead activity counts. Scope to the
+    // passing pool only — one batch query.
+    var leadIds = passed.map(function(l){ return l._id; });
     var naByLead = {};
     if (leadIds.length) {
       var naActs = await Activity.find({
@@ -2829,61 +2874,70 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
     var cbDays   = Number(settings.cbDays)   || 1;
     var hotDays  = Number(settings.hotDays)  || 2;
 
-    // Per-agent clock. The current agent's slice is the one whose agentId
-    // matches the lead's top-level agentId. Status / lastActionAt /
-    // callbackTime all come from that slice — NOT top-level lead fields,
-    // which are polluted by cross-agent writes (admin edits, activity logs,
-    // DR mirror syncs, etc.). noRotation on the slice is a per-agent lock and
-    // must be respected.
-    var currentSliceOf = function(l){
-      var curAid = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId || "");
-      if (!curAid) return null;
-      return (l.assignments || []).find(function(a){
-        var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
-        return String(aid || "") === curAid;
-      }) || null;
-    };
-    var isEligible = function(l){
-      var cur = currentSliceOf(l);
-      // Legacy fallback: lead has agentId but no matching assignments[] slice
-      // (pre-assignments-system leads). Use top-level fields as the agent's
-      // clock — that's the only action timestamp these rows carry.
-      if (!cur) {
-        cur = {
-          status:       l.status,
-          lastActionAt: l.lastActivityTime,
-          callbackTime: l.callbackTime,
-          noRotation:   false
-        };
-      }
-      if (cur.noRotation) return false;
+    var byRule = { newLead: 0, notInt: 0, callBack: 0, hot: 0, noAns: 0 };
+    var notEligibleReasons = {};
+    var bumpReason = function(k){ notEligibleReasons[k] = (notEligibleReasons[k] || 0) + 1; };
+
+    var eligibleLeads = [];
+    passed.forEach(function(l){
+      var cur = l._cur;
       var lastAct = cur.lastActionAt ? new Date(cur.lastActionAt).getTime() : 0;
-      var ageMs   = lastAct ? (now.getTime() - lastAct) : Infinity;
-      switch (String(cur.status || "")) {
+      var hasClock = lastAct > 0;
+      var ageMs = hasClock ? (now.getTime() - lastAct) : 0;
+      var status = String(cur.status || "");
+
+      switch (status) {
         case "NoAnswer": {
           var slot = naByLead[String(l._id)];
-          if (!slot) return false;
-          if (slot.count < naCountThreshold) return false;
-          if (!slot.latest) return false;
-          return (now.getTime() - slot.latest.getTime()) >= (naHoursThreshold*HOUR);
+          if (!slot)                                                                       { bumpReason("NoAnswer: no [NoAnswer] activities logged"); return; }
+          if (slot.count < naCountThreshold)                                               { bumpReason("NoAnswer: activity count below naCount"); return; }
+          if (!slot.latest)                                                                 { bumpReason("NoAnswer: latest activity timestamp missing"); return; }
+          if ((now.getTime() - slot.latest.getTime()) < naHoursThreshold*HOUR)             { bumpReason("NoAnswer: latest activity too recent (< naHours)"); return; }
+          byRule.noAns++; eligibleLeads.push(l); break;
         }
-        case "NotInterested": return ageMs >= (niDays*DAY);
-        case "NewLead":       return ageMs >= (noActDays*DAY);
+        case "NotInterested": {
+          if (!hasClock)               { bumpReason("NotInterested: no lastActionAt and no lastActivityTime"); return; }
+          if (ageMs < niDays*DAY)      { bumpReason("NotInterested: lastActionAt too recent (< niDays)"); return; }
+          byRule.notInt++; eligibleLeads.push(l); break;
+        }
+        case "NewLead": {
+          if (!hasClock)               { bumpReason("NewLead: no lastActionAt and no lastActivityTime"); return; }
+          if (ageMs < noActDays*DAY)   { bumpReason("NewLead: lastActionAt too recent (< noActDays)"); return; }
+          byRule.newLead++; eligibleLeads.push(l); break;
+        }
         case "CallBack": {
-          if (!cur.callbackTime) return false;
+          if (!cur.callbackTime)                  { bumpReason("CallBack: callbackTime not set"); return; }
           var cb = new Date(cur.callbackTime).getTime();
-          if (!cb) return false;
-          return (now.getTime() - cb) >= (cbDays*DAY);
+          if (!cb)                                { bumpReason("CallBack: callbackTime unparseable"); return; }
+          if ((now.getTime() - cb) < cbDays*DAY)  { bumpReason("CallBack: not yet cbDays overdue"); return; }
+          byRule.callBack++; eligibleLeads.push(l); break;
         }
         case "HotCase":
         case "Potential":
-        case "MeetingDone":   return ageMs >= (hotDays*DAY);
-        default: return false;
+        case "MeetingDone": {
+          if (!hasClock)               { bumpReason(status + ": no lastActionAt and no lastActivityTime"); return; }
+          if (ageMs < hotDays*DAY)     { bumpReason(status + ": lastActionAt too recent (< hotDays)"); return; }
+          byRule.hot++; eligibleLeads.push(l); break;
+        }
+        default:
+          bumpReason("status not in eligible list: \"" + (status || "(empty)") + "\"");
+      }
+    });
+
+    var total = eligibleLeads.length;
+    var diagnostic = {
+      totalLeadsScanned: allLeads.length,
+      excluded: excluded,
+      passed: passed.length,
+      byStatus: byStatus,
+      eligible: { byRule: byRule, total: total },
+      notEligibleReasons: notEligibleReasons,
+      thresholds: {
+        naCount: naCountThreshold, naHours: naHoursThreshold,
+        niDays: niDays, noActDays: noActDays, cbDays: cbDays, hotDays: hotDays,
+        rotationStopAfterDays: stopDays
       }
     };
-
-    var eligibleLeads = candidateLeads.filter(isEligible);
-    var total = eligibleLeads.length;
 
     // Shuffle once for fairness so ordering in DB doesn't skew who-gets-what.
     for (var i = eligibleLeads.length - 1; i > 0; i--) {
@@ -2963,7 +3017,7 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
       } catch (hErr) { /* non-fatal */ }
     }
 
-    res.json({ total: total, distributed: distributed, skipped: skipped, perAgent: perAgent });
+    res.json({ total: total, distributed: distributed, skipped: skipped, perAgent: perAgent, diagnostic: diagnostic });
   } catch (e) {
     res.status(500).json({ error: e && e.message ? e.message : "bulk_redistribute_failed" });
   }

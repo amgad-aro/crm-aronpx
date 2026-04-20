@@ -7084,25 +7084,87 @@ var SettingsPage = function(p) {
               var u = (p.users||[]).find(function(x){return gid(x)===uid;});
               return { uid: uid, name: u ? u.name : uid, count: Number(redistResult.perAgent[uid])||0 };
             }).sort(function(a,b){ return b.count - a.count; });
+            var diag = redistResult.diagnostic || null;
+            var sectionTitle = {fontSize:12,fontWeight:600,color:"#444",marginTop:14,marginBottom:6,letterSpacing:"0.3px",textTransform:"uppercase"};
+            var kvBox = {border:"0.5px solid rgba(0,0,0,0.08)",borderRadius:8,overflow:"hidden"};
+            var kvRow = function(k, v, i, highlight){
+              return <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 12px",borderTop:i===0?"none":"0.5px solid rgba(0,0,0,0.06)",fontSize:12,background:highlight?"#FFF7E6":"transparent"}}>
+                <span style={{color:"#555"}}>{k}</span>
+                <span style={{fontWeight:500,color:Number(v)>0?"#1a1a1a":"#999"}}>{v}</span>
+              </div>;
+            };
             return <div onClick={function(){setRedistResult(null);}}
               style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9999}}>
               <div onClick={function(e){e.stopPropagation();}}
-                style={{background:"#fff",borderRadius:12,padding:20,width:"min(460px, 90vw)",maxHeight:"80vh",overflow:"auto",boxShadow:"0 20px 48px rgba(0,0,0,0.25)",fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
-                <div style={{fontSize:16,fontWeight:600,marginBottom:10,color:"#0F6E56"}}>Backlog redistribution complete</div>
-                <div style={{fontSize:13,color:"#1a1a1a",marginBottom:14,lineHeight:1.6}}>
-                  Distributed <b>{redistResult.distributed}</b> of <b>{redistResult.total}</b> eligible leads. Skipped <b>{redistResult.skipped}</b> (no available agent — all had already handled the lead).
+                style={{background:"#fff",borderRadius:12,padding:20,width:"min(560px, 94vw)",maxHeight:"90vh",overflow:"auto",boxShadow:"0 20px 48px rgba(0,0,0,0.25)",fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+                <div style={{fontSize:16,fontWeight:600,marginBottom:10,color:"#0F6E56"}}>Backlog redistribution — diagnostic</div>
+                <div style={{fontSize:13,color:"#1a1a1a",marginBottom:6,lineHeight:1.6}}>
+                  Distributed <b>{redistResult.distributed}</b> of <b>{redistResult.total}</b> eligible leads. Skipped <b>{redistResult.skipped}</b>.
                 </div>
-                <div style={{fontSize:12,fontWeight:500,color:"#666",marginBottom:6}}>Per agent</div>
-                <div style={{border:"0.5px solid rgba(0,0,0,0.08)",borderRadius:8,overflow:"hidden"}}>
-                  {rows.length===0 ? <div style={{padding:"10px 12px",fontSize:12,color:"#999"}}>No agents received leads.</div>
+
+                {diag && (<>
+                  <div style={sectionTitle}>Funnel</div>
+                  <div style={kvBox}>
+                    {kvRow("Total leads scanned", diag.totalLeadsScanned, 0)}
+                    {kvRow("  − archived", diag.excluded.archived, 1)}
+                    {kvRow("  − noAgent (no agentId)", diag.excluded.noAgent, 1)}
+                    {kvRow("  − source = Daily Request", diag.excluded.dailyRequestSource, 1)}
+                    {kvRow("  − globalStatus eoi/donedeal", diag.excluded.eoiOrDoneDeal, 1)}
+                    {kvRow("  − rotationStopped = true", diag.excluded.rotationStopped, 1)}
+                    {kvRow("  − older than " + (diag.thresholds?diag.thresholds.rotationStopAfterDays:"45") + " days", diag.excluded.tooYoung_lessThan45days, 1)}
+                    {kvRow("  − lastRotationAt within 1h", diag.excluded.lastRotationWithin1h, 1)}
+                    {kvRow("  − no current slice & no fallback", diag.excluded.noCurrentSliceAndNoFallback, 1)}
+                    {kvRow("  − noRotation flag on slice", diag.excluded.noRotationFlag, 1)}
+                    {kvRow("Passed all DB filters", diag.passed, 1, true)}
+                  </div>
+
+                  <div style={sectionTitle}>Status of passing pool</div>
+                  <div style={kvBox}>
+                    {Object.keys(diag.byStatus).map(function(k, i){ return kvRow(k, diag.byStatus[k], i); })}
+                  </div>
+
+                  <div style={sectionTitle}>Eligible by rule</div>
+                  <div style={kvBox}>
+                    {kvRow("NewLead (noActDays)", diag.eligible.byRule.newLead, 0)}
+                    {kvRow("NotInterested (niDays)", diag.eligible.byRule.notInt, 1)}
+                    {kvRow("CallBack (cbDays)", diag.eligible.byRule.callBack, 1)}
+                    {kvRow("Hot/Potential/MeetingDone (hotDays)", diag.eligible.byRule.hot, 1)}
+                    {kvRow("NoAnswer (naCount/naHours)", diag.eligible.byRule.noAns, 1)}
+                    {kvRow("TOTAL eligible", diag.eligible.total, 1, true)}
+                  </div>
+
+                  <div style={sectionTitle}>Not-eligible reasons</div>
+                  <div style={kvBox}>
+                    {Object.keys(diag.notEligibleReasons).length===0
+                      ? <div style={{padding:"8px 12px",fontSize:12,color:"#999"}}>None (every passing lead matched a rule).</div>
+                      : Object.keys(diag.notEligibleReasons)
+                          .sort(function(a,b){ return diag.notEligibleReasons[b] - diag.notEligibleReasons[a]; })
+                          .map(function(k, i){ return kvRow(k, diag.notEligibleReasons[k], i); })}
+                  </div>
+
+                  <div style={sectionTitle}>Thresholds in use</div>
+                  <div style={kvBox}>
+                    {Object.keys(diag.thresholds||{}).map(function(k, i){ return kvRow(k, diag.thresholds[k], i); })}
+                  </div>
+                </>)}
+
+                <div style={sectionTitle}>Per agent (distributed)</div>
+                <div style={kvBox}>
+                  {rows.length===0 ? <div style={{padding:"8px 12px",fontSize:12,color:"#999"}}>No agents received leads.</div>
                     : rows.map(function(r, i){
-                        return <div key={r.uid} style={{display:"flex",justifyContent:"space-between",padding:"8px 12px",borderTop:i===0?"none":"0.5px solid rgba(0,0,0,0.06)",fontSize:13}}>
-                          <span>{r.name}</span>
+                        return <div key={r.uid} style={{display:"flex",justifyContent:"space-between",padding:"6px 12px",borderTop:i===0?"none":"0.5px solid rgba(0,0,0,0.06)",fontSize:12}}>
+                          <span style={{color:"#555"}}>{r.name}</span>
                           <span style={{fontWeight:500,color:r.count>0?"#0F6E56":"#999"}}>{r.count}</span>
                         </div>;
                       })}
                 </div>
-                <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}>
+
+                <div style={{display:"flex",justifyContent:"flex-end",marginTop:14,gap:8}}>
+                  <button type="button"
+                    onClick={function(){
+                      try { navigator.clipboard.writeText(JSON.stringify(redistResult, null, 2)); } catch(e) {}
+                    }}
+                    style={{fontSize:12,padding:"8px 14px",border:"0.5px solid rgba(0,0,0,0.15)",background:"#fff",color:"#1a1a1a",borderRadius:8,cursor:"pointer",fontFamily:"inherit"}}>Copy JSON</button>
                   <button type="button" onClick={function(){setRedistResult(null);}}
                     style={{fontSize:13,padding:"8px 16px",border:"0.5px solid rgba(0,0,0,0.1)",background:"#1a1a1a",color:"#fff",borderRadius:8,cursor:"pointer",fontFamily:"inherit"}}>Close</button>
                 </div>
