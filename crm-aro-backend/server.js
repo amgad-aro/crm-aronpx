@@ -193,6 +193,20 @@ var settingsAuditSchema = new mongoose.Schema({
 }, { timestamps: true });
 var SettingsAudit = mongoose.model("SettingsAudit", settingsAuditSchema);
 
+// AgentVacation — per-agent date ranges where the agent is excluded from
+// auto-rotation. Admin / Sales Admin write; rotation picker reads via
+// isOnVacation() (30s cached) + a per-sweep bulk prefetch.
+var agentVacationSchema = new mongoose.Schema({
+  agentId:   { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  startDate: { type: Date, required: true },
+  endDate:   { type: Date, required: true },
+  reason:    { type: String, default: "" },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  createdAt: { type: Date, default: Date.now }
+});
+agentVacationSchema.index({ agentId: 1, endDate: 1 });
+var AgentVacation = mongoose.model("AgentVacation", agentVacationSchema);
+
 // Flatten a plain object into dotted-path leaves. Arrays are treated as leaf
 // values (compared as a whole) so an audit entry for "tiers.tier1.agents"
 // captures the full before/after list in one row.
@@ -460,6 +474,38 @@ function adminOnly(req, res, next) {
     return res.status(403).json({ error: "Admin only" });
   }
   next();
+}
+
+// Vacation admin gate — tighter than adminOnly. Managers/TLs intentionally
+// excluded; only full Admin or Sales Admin can create/delete vacations.
+function vacationAdmin(req, res, next) {
+  if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+    return res.status(403).json({ error: "Admin or Sales Admin only" });
+  }
+  next();
+}
+
+// isOnVacation(agentId) — 30s cached lookup used outside the rotation picker.
+// Inside the picker we do a single bulk prefetch per sweep instead (see
+// auto-rotate / autoAssignQueuedLead). Cache is invalidated on any write to
+// /api/vacations via bustVacationCache().
+var _vacCache = { at: 0, activeIds: null };
+function bustVacationCache() { _vacCache.at = 0; _vacCache.activeIds = null; }
+async function isOnVacation(agentId) {
+  try {
+    var now = Date.now();
+    if (!_vacCache.activeIds || (now - _vacCache.at) > 30000) {
+      var d = new Date();
+      var rows = await AgentVacation.find({
+        startDate: { $lte: d }, endDate: { $gte: d }
+      }).select("agentId").lean();
+      _vacCache.activeIds = new Set(rows.map(function(r){ return String(r.agentId); }));
+      _vacCache.at = now;
+    }
+    return _vacCache.activeIds.has(String(agentId));
+  } catch (e) {
+    return false; // fail-safe: DB error must not halt rotation
+  }
 }
 
 function leadUploadImageValidation(req, res, next) {
@@ -855,6 +901,78 @@ app.post("/api/settings/audit/:id/rollback", auth, async function(req, res) {
     var updated = await getRotationSettings();
     try { broadcast("settings_updated", { key: "rotation", value: updated }); } catch(e) {}
     res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== AGENT VACATIONS =====
+// Admin + Sales Admin manage date ranges where an agent is excluded from
+// auto-rotation. Rotation integration lives in the /auto-rotate endpoint and
+// the queued-lead sweeper (both check a bulk-prefetched active-vacation set).
+
+// List upcoming + active vacations. History (past ranges) is intentionally
+// not exposed for now — the admin UI only surfaces current/future entries.
+app.get("/api/vacations", auth, vacationAdmin, async function(req, res) {
+  try {
+    var rows = await AgentVacation.find({ endDate: { $gte: new Date() } })
+      .populate("agentId", "name role title")
+      .populate("createdBy", "name")
+      .sort({ startDate: 1 })
+      .lean();
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/vacations", auth, vacationAdmin, async function(req, res) {
+  try {
+    var b = req.body || {};
+    if (!b.agentId || !mongoose.Types.ObjectId.isValid(String(b.agentId))) {
+      return res.status(400).json({ error: "agentId required" });
+    }
+    var start = b.startDate ? new Date(b.startDate) : null;
+    var end   = b.endDate   ? new Date(b.endDate)   : null;
+    if (!start || isNaN(start.getTime()) || !end || isNaN(end.getTime())) {
+      return res.status(400).json({ error: "startDate and endDate required" });
+    }
+    // startDate stays at 00:00 local (as sent). endDate is coerced to end-of-day
+    // so a vacation "today → tomorrow" covers both days through 23:59:59.
+    end.setHours(23, 59, 59, 999);
+    if (end < start) return res.status(400).json({ error: "endDate must be >= startDate" });
+
+    var agent = await User.findById(b.agentId).select("_id role active").lean();
+    if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+    var created = await AgentVacation.create({
+      agentId:   agent._id,
+      startDate: start,
+      endDate:   end,
+      reason:    (b.reason || "").toString().slice(0, 500),
+      createdBy: (req.user && req.user.id) ? req.user.id : null
+    });
+    bustVacationCache();
+
+    var full = await AgentVacation.findById(created._id)
+      .populate("agentId", "name role title")
+      .populate("createdBy", "name")
+      .lean();
+    res.json(full);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/vacations/:id", auth, vacationAdmin, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
+      return res.status(400).json({ error: "Invalid id" });
+    }
+    var result = await AgentVacation.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: "Vacation not found" });
+    bustVacationCache();
+    res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2444,6 +2562,18 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     var sr = settings.smartSkipRules || {};
     var nowTs = new Date();
     var withinHours = isWithinWorkingHours(settings.workingHours, nowTs);
+    // Active-vacation prefetch: one query, scoped to candidate ids. On DB
+    // error we fall back to an empty set (fail-safe: rotation doesn't halt).
+    var vacSet = new Set();
+    if (sr.skipOnVacation) {
+      try {
+        var vRows = await AgentVacation.find({
+          agentId: { $in: allTierIds },
+          startDate: { $lte: nowTs }, endDate: { $gte: nowTs }
+        }).select("agentId").lean();
+        vRows.forEach(function(r){ vacSet.add(String(r.agentId)); });
+      } catch (vErr) { vacSet = new Set(); }
+    }
     var tryTier = function(tier){
       var ids = Array.isArray(tier.agents) ? tier.agents : [];
       var n = ids.length;
@@ -2461,7 +2591,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
           if (offH > Number(sr.skipIfOfflineHours)) continue;
         }
         if (sr.respectWorkingHours && !withinHours) continue;
-        // skipOnVacation: no-op until vacation collection exists (Team & Roles tab)
+        if (sr.skipOnVacation && vacSet.has(uid)) continue;
         return { user: u, idx: idx };
       }
       return null;
@@ -2641,6 +2771,18 @@ async function autoAssignQueuedLead(leadId) {
     var sr = settings.smartSkipRules || {};
     var nowTs = new Date();
     var withinHours = isWithinWorkingHours(settings.workingHours, nowTs);
+    // Active-vacation prefetch (same pattern as /auto-rotate). Fail-safe to
+    // empty set on DB error so queue processing doesn't halt.
+    var vacSet = new Set();
+    if (sr.skipOnVacation) {
+      try {
+        var vRows = await AgentVacation.find({
+          agentId: { $in: allTierIds },
+          startDate: { $lte: nowTs }, endDate: { $gte: nowTs }
+        }).select("agentId").lean();
+        vRows.forEach(function(r){ vacSet.add(String(r.agentId)); });
+      } catch (vErr) { vacSet = new Set(); }
+    }
     var tryTier = function(tier){
       var ids = Array.isArray(tier.agents) ? tier.agents : [];
       var n = ids.length;
@@ -2657,6 +2799,7 @@ async function autoAssignQueuedLead(leadId) {
           if (offH > Number(sr.skipIfOfflineHours)) continue;
         }
         if (sr.respectWorkingHours && !withinHours) continue;
+        if (sr.skipOnVacation && vacSet.has(uid)) continue;
         return { user: u, idx: idx };
       }
       return null;

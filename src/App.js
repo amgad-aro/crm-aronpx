@@ -6728,6 +6728,74 @@ var SettingsPage = function(p) {
     return function(){ cancelled=true; };
   },[p.token]);
 
+  // Vacation state — admin/sales_admin only. Loaded on mount; refreshed after
+  // every create/cancel. Active set is derived on render for the agent badge.
+  var [vacations,setVacations]=useState([]);
+  var [vacModalAgent,setVacModalAgent]=useState(null); // user object when modal open
+  var [vacStart,setVacStart]=useState("");
+  var [vacEnd,setVacEnd]=useState("");
+  var [vacReason,setVacReason]=useState("");
+  var [vacSaving,setVacSaving]=useState(false);
+  var [vacError,setVacError]=useState("");
+  var canManageVacations = p.cu && (p.cu.role==="admin" || p.cu.role==="sales_admin");
+  var loadVacations = function(){
+    if(!canManageVacations || !p.token) return;
+    apiFetch("/api/vacations","GET",null,p.token)
+      .then(function(rows){ setVacations(Array.isArray(rows)?rows:[]); })
+      .catch(function(){});
+  };
+  useEffect(function(){ loadVacations(); /* eslint-disable-next-line */ },[p.token, p.cu && p.cu.role]);
+  var activeVacSet = (function(){
+    var now = new Date();
+    var s = new Set();
+    (vacations||[]).forEach(function(v){
+      if(!v || !v.agentId) return;
+      var start = new Date(v.startDate), end = new Date(v.endDate);
+      if(start <= now && now <= end){
+        var aid = v.agentId && v.agentId._id ? v.agentId._id : v.agentId;
+        s.add(String(aid));
+      }
+    });
+    return s;
+  })();
+  var openVacModal = function(uid){
+    var u = (p.users||[]).find(function(x){return String(gid(x))===String(uid);});
+    if(!u) return;
+    setVacError("");
+    var today = new Date().toISOString().slice(0,10);
+    setVacStart(today); setVacEnd(today); setVacReason("");
+    setVacModalAgent(u);
+  };
+  var closeVacModal = function(){ setVacModalAgent(null); setVacError(""); };
+  var saveVacation = async function(){
+    if(!vacModalAgent) return;
+    if(!vacStart || !vacEnd){ setVacError("Start and end date required"); return; }
+    if(new Date(vacEnd) < new Date(vacStart)){ setVacError("End must be ≥ start"); return; }
+    setVacSaving(true); setVacError("");
+    try {
+      await apiFetch("/api/vacations","POST",{
+        agentId: gid(vacModalAgent),
+        startDate: vacStart,
+        endDate: vacEnd,
+        reason: vacReason
+      }, p.token);
+      closeVacModal();
+      loadVacations();
+    } catch(e) {
+      setVacError((e && e.message) || "Failed to save");
+    } finally {
+      setVacSaving(false);
+    }
+  };
+  var cancelVacation = async function(id){
+    if(!id) return;
+    if(!window.confirm("Cancel this vacation?")) return;
+    try {
+      await apiFetch("/api/vacations/"+id,"DELETE",null,p.token);
+      loadVacations();
+    } catch(e) { alert((e&&e.message)||"Failed"); }
+  };
+
   // Tier-aware drag state: source and destination each tracked with {tier,idx}.
   var [dragFrom,setDragFrom]=useState(null);
   var [dropOn,setDropOn]=useState(null);
@@ -6991,15 +7059,19 @@ var SettingsPage = function(p) {
               <div style={{fontSize:13,fontWeight:500,display:"flex",alignItems:"center",gap:0,flexWrap:"wrap"}}>
                 <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</span>
                 <span style={{fontSize:9,padding:"2px 6px",borderRadius:10,fontWeight:500,letterSpacing:"0.3px",background:rb.bg,color:rb.fg,marginLeft:6}}>{rb.label}</span>
+                {activeVacSet.has(String(uid)) && <span title="Currently on vacation — skipped by auto-rotation"
+                  style={{fontSize:9,padding:"2px 6px",borderRadius:10,fontWeight:500,letterSpacing:"0.3px",background:"#FAEEDA",color:"#854F0B",marginLeft:6}}>On Vacation</span>}
               </div>
               <div style={{fontSize:11,color:isNext?"#0F6E56":"#666",fontWeight:isNext?500:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                 {infoParts.join(" · ")}
               </div>
             </div>
-            <button type="button"
-              title="Vacation (coming soon)"
-              style={{fontSize:11,padding:"3px 8px",borderRadius:8,background:"transparent",border:"0.5px solid rgba(0,0,0,0.1)",color:"#666",cursor:"not-allowed",flexShrink:0,fontFamily:"inherit",opacity:0.6}}
-              onClick={function(e){e.stopPropagation();}}>Vacation</button>
+            {canManageVacations
+              ? <button type="button"
+                  title="Schedule vacation"
+                  style={{fontSize:11,padding:"3px 8px",borderRadius:8,background:"transparent",border:"0.5px solid rgba(133,79,11,0.3)",color:"#854F0B",cursor:"pointer",flexShrink:0,fontFamily:"inherit"}}
+                  onClick={function(e){e.stopPropagation(); openVacModal(uid);}}>Vacation</button>
+              : null}
             <button type="button"
               title="Remove from rotation"
               style={{fontSize:11,padding:"3px 8px",borderRadius:8,background:"transparent",border:"0.5px solid rgba(163,45,45,0.3)",color:"#A32D2D",cursor:"pointer",flexShrink:0,fontFamily:"inherit"}}
@@ -7190,6 +7262,41 @@ var SettingsPage = function(p) {
             </div>
           </div>
 
+          {/* ══ Agent vacations ══ admin/sales_admin only */}
+          {canManageVacations && <div style={{marginBottom:20}}>
+            <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Agent vacations</div>
+            <div style={{fontSize:12,color:"#666",marginBottom:10}}>
+              Schedule time off for an agent. When "Skip if agent is on vacation" is enabled, active vacations are skipped by auto-rotation. Click "Vacation" on any agent row above to add one.
+            </div>
+            <div style={{background:"#F7F7F5",borderRadius:8,padding:vacations.length?6:14}}>
+              {vacations.length===0
+                ? <div style={{fontSize:12,color:"#999",fontStyle:"italic",textAlign:"center"}}>No upcoming or active vacations.</div>
+                : vacations.map(function(v){
+                    var ag = v.agentId || {};
+                    var aid = ag && ag._id ? String(ag._id) : String(ag);
+                    var start = new Date(v.startDate), end = new Date(v.endDate);
+                    var now = new Date();
+                    var isActive = start <= now && now <= end;
+                    var fmt = function(d){ return d.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}); };
+                    return <div key={String(v._id)} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",background:"#fff",borderRadius:8,marginBottom:4,border:"0.5px solid rgba(0,0,0,0.05)"}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:13,fontWeight:500,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                          <span>{ag.name || "(unknown)"}</span>
+                          {isActive && <span style={{fontSize:9,padding:"2px 6px",borderRadius:10,fontWeight:500,letterSpacing:"0.3px",background:"#FAEEDA",color:"#854F0B"}}>On Vacation</span>}
+                        </div>
+                        <div style={{fontSize:11,color:"#666",marginTop:2}}>
+                          {fmt(start)} → {fmt(end)}{v.reason?(" · "+v.reason):""}
+                        </div>
+                      </div>
+                      <button type="button"
+                        style={{fontSize:11,padding:"3px 8px",borderRadius:8,background:"transparent",border:"0.5px solid rgba(163,45,45,0.3)",color:"#A32D2D",cursor:"pointer",flexShrink:0,fontFamily:"inherit"}}
+                        onClick={function(){cancelVacation(String(v._id));}}>Cancel</button>
+                    </div>;
+                  })
+              }
+            </div>
+          </div>}
+
           {/* ══ Rotation durations ══ */}
           <div style={{marginBottom:20}}>
             <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Rotation durations</div>
@@ -7223,7 +7330,7 @@ var SettingsPage = function(p) {
             <div style={{background:"#F7F7F5",borderRadius:8,padding:14,display:"grid",gap:12,fontSize:13}}>
               <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <input type="checkbox" checked={srVac} onChange={function(e){setSrVac(e.target.checked);}}/>
-                <span>Skip if agent is on vacation <span style={{color:"#999",fontSize:11,marginLeft:4}}>(no-op until vacation management ships)</span></span>
+                <span>Skip if agent is on vacation</span>
               </label>
               <label style={{display:"flex",alignItems:"center",gap:10}}>
                 <input type="checkbox" checked={srOffH>0} onChange={function(e){setSrOffH(e.target.checked?4:0);}}/>
@@ -7287,6 +7394,44 @@ var SettingsPage = function(p) {
               </div>
             </div>
           </div>
+
+          {/* ══ Vacation modal — opened from any agent row ══ */}
+          {vacModalAgent && <div onClick={closeVacModal}
+            style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+            <div onClick={function(e){e.stopPropagation();}}
+              style={{background:"#fff",borderRadius:12,padding:20,width:400,maxWidth:"92vw",boxShadow:"0 10px 40px rgba(0,0,0,0.2)"}}>
+              <div style={{fontSize:15,fontWeight:500,marginBottom:4}}>Schedule vacation</div>
+              <div style={{fontSize:12,color:"#666",marginBottom:14}}>
+                Agent: <span style={{color:"#1a1a1a",fontWeight:500}}>{vacModalAgent.name}</span>
+              </div>
+              <div style={{display:"grid",gap:10,marginBottom:14}}>
+                <label style={{fontSize:12,color:"#666",display:"flex",flexDirection:"column",gap:4}}>
+                  Start date
+                  <input type="date" value={vacStart} onChange={function(e){setVacStart(e.target.value);}}
+                    style={{padding:"7px 10px",border:"0.5px solid rgba(0,0,0,0.15)",borderRadius:8,fontSize:13,fontFamily:"inherit"}}/>
+                </label>
+                <label style={{fontSize:12,color:"#666",display:"flex",flexDirection:"column",gap:4}}>
+                  End date <span style={{fontSize:11,color:"#999"}}>(inclusive — covers through 23:59)</span>
+                  <input type="date" value={vacEnd} onChange={function(e){setVacEnd(e.target.value);}}
+                    style={{padding:"7px 10px",border:"0.5px solid rgba(0,0,0,0.15)",borderRadius:8,fontSize:13,fontFamily:"inherit"}}/>
+                </label>
+                <label style={{fontSize:12,color:"#666",display:"flex",flexDirection:"column",gap:4}}>
+                  Reason <span style={{fontSize:11,color:"#999"}}>(optional)</span>
+                  <textarea value={vacReason} onChange={function(e){setVacReason(e.target.value);}} rows={2} maxLength={500}
+                    style={{padding:"7px 10px",border:"0.5px solid rgba(0,0,0,0.15)",borderRadius:8,fontSize:13,fontFamily:"inherit",resize:"vertical"}}/>
+                </label>
+              </div>
+              {vacError && <div style={{fontSize:12,color:"#A32D2D",marginBottom:10}}>{vacError}</div>}
+              <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
+                <button type="button" onClick={closeVacModal} disabled={vacSaving}
+                  style={{fontSize:13,padding:"7px 14px",borderRadius:8,background:"transparent",border:"0.5px solid rgba(0,0,0,0.15)",color:"#1a1a1a",cursor:"pointer",fontFamily:"inherit"}}>Cancel</button>
+                <button type="button" onClick={saveVacation} disabled={vacSaving}
+                  style={{fontSize:13,padding:"7px 14px",borderRadius:8,background:"#0F6E56",border:"0.5px solid #0F6E56",color:"#fff",cursor:vacSaving?"wait":"pointer",fontFamily:"inherit",fontWeight:500}}>
+                  {vacSaving?"Saving…":"Save"}
+                </button>
+              </div>
+            </div>
+          </div>}
         </div>;
       })()}
 
