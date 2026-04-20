@@ -868,42 +868,23 @@ var CallbackBell = function(p) {
 
   var allItems = overdue.concat(nowItems).concat(upcoming).concat(noContact);
 
-  // New-lead notifications (per-agent rotation pings). Sales/team_leader only
-  // receive these; admin/sales_admin get an empty list from the server.
-  var newLeadNotifs = p.newLeadNotifs || [];
-  var unseenNew = newLeadNotifs.filter(function(n){return !n.seen;}).length;
-
   var filtered;
   if(tab==="overdue") filtered = overdue;
   else if(tab==="now") filtered = nowItems;
   else if(tab==="upcoming") filtered = upcoming;
   else if(tab==="nocontact") filtered = noContact;
-  else if(tab==="newlead") filtered = []; // rendered separately below
   else filtered = allItems;
 
   var visible = filtered.slice(0, limit);
-  var totalCount = allItems.length + unseenNew;
+  var totalCount = allItems.length;
 
   var tabs = [
-    {key:"all", label:"All", count:allItems.length},
-    {key:"newlead", label:"New Leads", count:newLeadNotifs.length},
+    {key:"all", label:"All", count:totalCount},
     {key:"overdue", label:"Delay", count:overdue.length},
     {key:"now", label:"Now", count:nowItems.length},
     {key:"upcoming", label:"Upcoming", count:upcoming.length},
     {key:"nocontact", label:"No Contact", count:noContact.length}
   ];
-
-  // Mark all new-lead notifications seen when the user switches to that tab.
-  useEffect(function(){
-    if (tab !== "newlead") return;
-    if (unseenNew === 0) return;
-    apiFetch("/api/notifications/mark-seen", "PUT", { type: "new_lead" }, p.token)
-      .then(function(){
-        if (p.setNewLeadNotifs) p.setNewLeadNotifs(function(prev){
-          return (prev||[]).map(function(n){ return Object.assign({}, n, { seen: true }); });
-        });
-      }).catch(function(){});
-  }, [tab]);
 
   var getType = function(l){
     if(overdue.indexOf(l)!==-1) return "overdue";
@@ -941,31 +922,6 @@ var CallbackBell = function(p) {
         </div>
       </div>
       <div style={{ overflowY:"auto", flex:1, padding:"8px 12px" }}>
-        {tab==="newlead" ? (newLeadNotifs.length===0
-          ? <div style={{ padding:"40px 20px", textAlign:"center" }}>
-              <div style={{ fontSize:40, marginBottom:12 }}>📬</div>
-              <div style={{ fontSize:14, fontWeight:600, color:C.text, marginBottom:4 }}>No new leads yet</div>
-              <div style={{ fontSize:12, color:C.textLight }}>You'll see newly assigned leads here</div>
-            </div>
-          : newLeadNotifs.slice(0, limit).map(function(n){
-              var openLead = function(){
-                p.setShowNotif(false);
-                if (!n.leadId) return;
-                var target = (p.leads||[]).find(function(x){return gid(x)===String(n.leadId);}) || { _id: n.leadId, name: n.leadName||"" };
-                setTimeout(function(){ if (p.onLeadClick) p.onLeadClick(target); }, 50);
-              };
-              return <div key={n._id||n.leadId+"-"+(n.createdAt||"")} onClick={openLead}
-                style={{ background:n.seen?"#fff":"#EFF6FF", borderLeft:"4px solid #2563EB", borderRadius:12, padding:"12px 14px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
-                <div style={{ width:36, height:36, borderRadius:"50%", background:"#DBEAFE", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>📬</div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:14, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>New lead assigned{n.leadName?": "+n.leadName:""}</div>
-                  <div style={{ fontSize:12, color:C.textLight, marginTop:2 }}>{n.fromName?"From "+n.fromName:""}{n.reason?" · "+n.reason:""}</div>
-                  <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>{timeAgo(n.createdAt,p.t)}</div>
-                </div>
-                {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#2563EB", flexShrink:0 }}/>}
-              </div>;
-            })
-        ) : (<>
         {totalCount===0&&<div style={{ padding:"40px 20px", textAlign:"center" }}>
           <div style={{ fontSize:40, marginBottom:12 }}>🎉</div>
           <div style={{ fontSize:14, fontWeight:600, color:C.text, marginBottom:4 }}>All clear!</div>
@@ -992,7 +948,6 @@ var CallbackBell = function(p) {
           </div>;
         })}
         {filtered.length>limit&&<button onClick={function(e){e.stopPropagation();setLimit(function(v){return v+30;});}} style={{ width:"100%", padding:"10px", border:"none", borderRadius:8, background:"#F1F5F9", color:"#374151", fontSize:12, fontWeight:600, cursor:"pointer", marginTop:4 }}>Show More ({filtered.length-limit} remaining)</button>}
-        </>)}
       </div>
     </div>}
   </div>;
@@ -1255,7 +1210,7 @@ var Header = function(p) {
       </div>}
 
       {/* BELL 1 — Callbacks (isolated component) */}
-      <CallbackBell t={p.t} leads={p.leads} dailyRequests={p.dailyRequests} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick} newLeadNotifs={p.newLeadNotifs} setNewLeadNotifs={p.setNewLeadNotifs} token={p.token}/>
+      <CallbackBell t={p.t} leads={p.leads} dailyRequests={p.dailyRequests} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>
     </div>
   </div>;
 };
@@ -8356,10 +8311,6 @@ export default function CRMApp() {
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
   var [rotNotifs,setRotNotifs]=useState([]);
-  // Per-agent "new lead assigned" notifications. Shown in the Callbacks bell
-  // for sales / team_leader; admin and sales_admin don't receive them (they
-  // have the rotation bell for oversight).
-  var [newLeadNotifs,setNewLeadNotifs]=useState([]);
   // Client-side "last seen" markers for the Deal and Rotation bells. Stored per
   // user in localStorage so the badge clears across reloads on the same device.
   // Deal badge is driven by live lead/DR state (see buildDealItems), not the
@@ -8403,7 +8354,6 @@ export default function CRMApp() {
   var loadNotifications = function(tok){
     apiFetch("/api/notifications?type=deal","GET",null,tok).then(function(data){if(data)setDealNotifs(data);}).catch(function(){});
     apiFetch("/api/notifications?type=rotation","GET",null,tok).then(function(data){if(data)setRotNotifs(data);}).catch(function(){});
-    apiFetch("/api/notifications?type=new_lead","GET",null,tok).then(function(data){if(data)setNewLeadNotifs(data);}).catch(function(){});
   };
 
   useEffect(function(){
@@ -9030,7 +8980,7 @@ export default function CRMApp() {
   var myId = String(currentUser.id||currentUser._id||"");
   var myTeamUsers = users; // server handles all filtering per role
 
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,newLeadNotifs:newLeadNotifs,setNewLeadNotifs:setNewLeadNotifs,dailyReqs:dailyReqs};
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:dailyReqs};
 
   var renderPage=function(){
     switch(currentPage){
@@ -9106,7 +9056,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} token={token} newLeadNotifs={newLeadNotifs} setNewLeadNotifs={setNewLeadNotifs} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs.filter(function(n){return !rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore;})} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen&&(!rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore);}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){var now=Date.now();setRotHiddenBefore(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_rot_hidden_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={(function(){var items=buildDealItems(leads,dailyReqs,currentUser,myTeamUsers);var cutoff=lastSeenDealAt||0;return items.filter(function(it){return new Date(it.time||0).getTime()>cutoff;}).length;})()} onDealNotifSeen={function(){var now=Date.now();setLastSeenDealAt(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_deal_seen_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs.filter(function(n){return !rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore;})} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen&&(!rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore);}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){var now=Date.now();setRotHiddenBefore(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_rot_hidden_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={(function(){var items=buildDealItems(leads,dailyReqs,currentUser,myTeamUsers);var cutoff=lastSeenDealAt||0;return items.filter(function(it){return new Date(it.time||0).getTime()>cutoff;}).length;})()} onDealNotifSeen={function(){var now=Date.now();setLastSeenDealAt(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_deal_seen_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
