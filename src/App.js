@@ -679,8 +679,6 @@ var SidebarIcon = function(id, active){
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="5.5" cy="6" r="2.5" stroke={col} strokeWidth={sw}/><circle cx="12.5" cy="6" r="2.5" stroke={col} strokeWidth={sw}/><path d="M1 15c0-2.5 2-4.5 4.5-4.5M17 15c0-2.5-2-4.5-4.5-4.5M9 15c0-2.5 2-4.5 4.5-4.5" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     case "archive":
       return <svg style={base} viewBox="0 0 18 18" fill="none"><rect x="2" y="2" width="14" height="14" rx="3" stroke={col} strokeWidth={sw}/><path d="M6 9h6" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
-    case "queue":
-      return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7" stroke={col} strokeWidth={sw}/><path d="M9 5v4l2.5 1.5" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     case "settings":
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="2.5" stroke={col} strokeWidth={sw}/><path d="M9 2v1.5M9 14.5V16M2 9h1.5M14.5 9H16M4.1 4.1l1.1 1.1M12.8 12.8l1.1 1.1M4.1 13.9l1.1-1.1M12.8 5.2l1.1-1.1" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     default:
@@ -706,7 +704,6 @@ var Sidebar = function(p) {
     isAdmin&&{id:"team",label:t.team,adminSection:true},
     isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
     isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
-    isOnlyAdmin&&{id:"queue",label:"Queue",adminSection:true},
     p.cu.role==="admin"&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
@@ -744,10 +741,6 @@ var Sidebar = function(p) {
       {item.id==="leads" && leadsCount>0 && <div style={{ marginLeft:"auto", background:"#EF4444", borderRadius:10, padding:"1px 7px", fontSize:10, fontWeight:700, color:"#fff", display:"flex", alignItems:"center", gap:3 }}>
         <div style={{ width:4, height:4, borderRadius:"50%", background:"#fff" }}/>
         {leadsCount}
-      </div>}
-      {item.id==="queue" && Number(p.queueCount||0)>0 && <div style={{ marginLeft:"auto", background:"#F59E0B", borderRadius:10, padding:"1px 7px", fontSize:10, fontWeight:700, color:"#fff", display:"flex", alignItems:"center", gap:3 }}>
-        <div style={{ width:4, height:4, borderRadius:"50%", background:"#fff" }}/>
-        {p.queueCount}
       </div>}
     </button>;
   };
@@ -6478,152 +6471,6 @@ var ProjectsPage = function(p) {
   </div>;
 };
 
-// ===== QUEUE PAGE (Manual Assignment Window) =====
-// Admin-only. Shows leads created without an agent while the manual-assignment
-// window is active. Each row ticks down to 0 — on expiry the backend sweeper
-// auto-rotates the lead to Tier 1. Admin can assign early from the dropdown.
-var QueuePage = function(p) {
-  var [rows,setRows] = useState([]);
-  var [tier1Agents,setTier1Agents] = useState([]);
-  var [loading,setLoading] = useState(true);
-  var [error,setError] = useState("");
-  var [assigning,setAssigning] = useState({}); // { [leadId]: agentId being saved }
-  var [now,setNow] = useState(Date.now());
-
-  var load = useCallback(function(){
-    apiFetch("/api/leads/unassigned","GET",null,p.token)
-      .then(function(data){
-        if (Array.isArray(data)) {
-          setRows(data);
-          if (p.onQueueChange) p.onQueueChange(data.length);
-        }
-      })
-      .catch(function(e){ setError((e&&e.message)||"Failed to load"); })
-      .finally(function(){ setLoading(false); });
-  },[p.token]);
-
-  useEffect(function(){
-    load();
-    var fetchInt = setInterval(load, 15*1000); // keep the list fresh
-    var tickInt  = setInterval(function(){ setNow(Date.now()); }, 1000); // countdown tick
-    return function(){ clearInterval(fetchInt); clearInterval(tickInt); };
-  },[load]);
-
-  // Tier 1 is the authoritative assign-to list. Fallback to all active sales/TL
-  // if the settings endpoint fails or Tier 1 is empty.
-  useEffect(function(){
-    var cancelled = false;
-    apiFetch("/api/settings/rotation","GET",null,p.token).then(function(s){
-      if (cancelled) return;
-      var ids = (s && s.tiers && s.tiers.tier1 && Array.isArray(s.tiers.tier1.agents)) ? s.tiers.tier1.agents.map(String) : [];
-      var byId = {};
-      (p.users||[]).forEach(function(u){ byId[String(u._id||u.id)] = u; });
-      var list = ids.map(function(id){ return byId[String(id)]; }).filter(function(u){ return u && u.active!==false && (u.role==="sales"||u.role==="team_leader"); });
-      if (list.length === 0) {
-        list = (p.users||[]).filter(function(u){ return u.active!==false && (u.role==="sales"||u.role==="team_leader"); });
-      }
-      setTier1Agents(list);
-    }).catch(function(){
-      var list = (p.users||[]).filter(function(u){ return u.active!==false && (u.role==="sales"||u.role==="team_leader"); });
-      setTier1Agents(list);
-    });
-    return function(){ cancelled = true; };
-  },[p.token, p.users]);
-
-  var doAssign = function(leadId, agentId){
-    if (!leadId || !agentId) return;
-    setAssigning(function(prev){ var n = Object.assign({},prev); n[leadId] = agentId; return n; });
-    apiFetch("/api/leads/"+leadId, "PUT", { agentId: agentId }, p.token, p.csrfToken)
-      .then(function(){
-        setRows(function(prev){
-          var next = prev.filter(function(r){ return String(r._id) !== String(leadId); });
-          if (p.onQueueChange) p.onQueueChange(next.length);
-          return next;
-        });
-      })
-      .catch(function(e){ setError((e&&e.message)||"Assign failed"); })
-      .finally(function(){
-        setAssigning(function(prev){ var n = Object.assign({},prev); delete n[leadId]; return n; });
-      });
-  };
-
-  var fmtCountdown = function(expMs){
-    var ms = expMs - now;
-    if (ms <= 0) return { text: "Expired", red: true, urgent: true };
-    var totalSec = Math.floor(ms/1000);
-    var m = Math.floor(totalSec/60);
-    var s = totalSec % 60;
-    return { text: m + "m " + (s<10?"0":"") + s + "s left", red: ms < 120*1000, urgent: ms < 30*1000 };
-  };
-
-  var cardStyle = { background:"#fff", borderRadius:14, padding:18, boxShadow:"0 1px 3px rgba(0,0,0,0.05)", border:"1px solid "+C.border };
-  var thStyle = { textAlign:"left", fontSize:11, fontWeight:600, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, padding:"10px 12px", borderBottom:"1px solid "+C.border };
-  var tdStyle = { padding:"12px", fontSize:13, color:C.text, borderBottom:"1px solid "+C.border, verticalAlign:"middle" };
-
-  return <div style={{ padding:20, maxWidth:1200, margin:"0 auto" }}>
-    <style>{"@keyframes qpulse { 0%,100% { opacity:1 } 50% { opacity:0.55 } }"}</style>
-    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
-      <div>
-        <h1 style={{ fontSize:22, fontWeight:700, color:C.text, margin:0 }}>Assignment Queue</h1>
-        <div style={{ fontSize:12, color:C.textLight, marginTop:4 }}>
-          Leads awaiting manual assignment. Auto-routes to Tier 1 when the window expires.
-        </div>
-      </div>
-      <div style={{ fontSize:13, fontWeight:600, color:C.text, background:"#F8FAFC", border:"1px solid "+C.border, borderRadius:10, padding:"8px 14px" }}>
-        {rows.length} queued
-      </div>
-    </div>
-    {error && <div style={{ background:"#FEE2E2", color:"#991B1B", padding:"10px 14px", borderRadius:10, marginBottom:14, fontSize:13 }}>{error}</div>}
-    <div style={cardStyle}>
-      {loading ? <div style={{ padding:30, textAlign:"center", color:C.textLight }}>Loading…</div>
-      : rows.length === 0 ? <div style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No leads in the queue.</div>
-      : <div style={{ overflowX:"auto" }}>
-        <table style={{ width:"100%", borderCollapse:"collapse" }}>
-          <thead><tr>
-            <th style={thStyle}>Name</th>
-            <th style={thStyle}>Phone</th>
-            <th style={thStyle}>Source</th>
-            <th style={thStyle}>Created</th>
-            <th style={thStyle}>Time Left</th>
-            <th style={thStyle}>Assign To</th>
-            <th style={thStyle}></th>
-          </tr></thead>
-          <tbody>
-            {rows.map(function(r){
-              var cd = fmtCountdown(new Date(r.manualWindowExpiresAt).getTime());
-              var selId = assigning[r._id] || "";
-              var isSaving = !!assigning[r._id];
-              return <tr key={r._id} style={{ background: cd.urgent ? "rgba(239,68,68,0.06)" : "transparent" }}>
-                <td style={tdStyle}><div style={{ fontWeight:600 }}>{r.name||"—"}</div></td>
-                <td style={tdStyle}>{r.phone||"—"}</td>
-                <td style={tdStyle}>{r.source||"—"}</td>
-                <td style={tdStyle}>{r.createdAt ? new Date(r.createdAt).toLocaleString() : "—"}</td>
-                <td style={Object.assign({}, tdStyle, { fontWeight:700, color: cd.red ? C.danger : C.text, animation: cd.urgent ? "qpulse 1s infinite" : "none" })}>{cd.text}</td>
-                <td style={tdStyle}>
-                  <select
-                    defaultValue=""
-                    onChange={function(e){ var v = e.target.value; if (v) doAssign(r._id, v); }}
-                    disabled={isSaving}
-                    style={{ width:"100%", padding:"7px 10px", border:"1px solid "+C.border, borderRadius:8, fontSize:13, background:"#fff" }}>
-                    <option value="">Select agent…</option>
-                    {tier1Agents.map(function(u){
-                      var uid = String(u._id||u.id);
-                      return <option key={uid} value={uid}>{u.name}{u.title?" — "+u.title:""}</option>;
-                    })}
-                  </select>
-                </td>
-                <td style={tdStyle}>
-                  {isSaving ? <span style={{ fontSize:12, color:C.textLight }}>Assigning…</span> : null}
-                </td>
-              </tr>;
-            })}
-          </tbody>
-        </table>
-      </div>}
-    </div>
-  </div>;
-};
-
 var SettingsPage = function(p) {
   var t=p.t;
   var getSaved = function(k,def){ try{ return localStorage.getItem('crm_set_'+k)||def; }catch(e){return def;} };
@@ -8279,7 +8126,6 @@ export default function CRMApp() {
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
   var [rotNotifs,setRotNotifs]=useState([]);
-  var [queueCount,setQueueCount]=useState(0);
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
   var [sidebarOpen,setSidebarOpen]=useState(false);
@@ -8672,21 +8518,6 @@ export default function CRMApp() {
     return function(){clearInterval(interval);};
   },[token, currentUser, leads, tasks]);
 
-  // ===== UNASSIGNED QUEUE BADGE (Manual Assignment Window) =====
-  // Polls every 30s so the sidebar badge stays fresh between QueuePage visits.
-  useEffect(function(){
-    if(!token||!currentUser||(currentUser.role!=="admin"&&currentUser.role!=="sales_admin")) return;
-    var cancelled=false;
-    var tick=function(){
-      apiFetch("/api/leads/unassigned","GET",null,token)
-        .then(function(rows){ if(!cancelled && Array.isArray(rows)) setQueueCount(rows.length); })
-        .catch(function(){});
-    };
-    tick();
-    var qInt = setInterval(tick, 30*1000);
-    return function(){ cancelled=true; clearInterval(qInt); };
-  },[token, currentUser]);
-
   // ===== DAILY REPORT NOTIFICATION (9 PM for admin) =====
   useEffect(function(){
     if(!token||!currentUser||(currentUser.role!=="admin"&&currentUser.role!=="sales_admin")) return;
@@ -8965,7 +8796,6 @@ export default function CRMApp() {
       case "team": return <TeamPage {...sp}/>;
       case "users": return <UsersPage {...sp}/>;
       case "archive": return <ArchivePage {...sp}/>;
-      case "queue": return isOnlyAdmin ? <QueuePage {...sp} onQueueChange={setQueueCount}/> : <DashboardPage {...sp}/>;
       case "settings": return currentUser.role==="admin" ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
       default: return <DashboardPage {...sp}/>;
     }
@@ -9018,7 +8848,7 @@ export default function CRMApp() {
       </div>
       <button onClick={function(){setShowPwaBanner(false);try{localStorage.setItem("crm_pwa_dismissed","1");}catch(e){}}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, color:"#fff", padding:"6px 12px", fontSize:12, cursor:"pointer", flexShrink:0 }}>Got it</button>
     </div>}
-    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={leads} queueCount={queueCount}/>
+    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={leads}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
       <QuickPhoneSearch leads={leads} dailyReqs={dailyReqs} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>

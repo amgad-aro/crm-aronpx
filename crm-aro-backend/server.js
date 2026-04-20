@@ -1662,29 +1662,6 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
 });
 
 // ===== ADD LEAD =====
-// ===== UNASSIGNED QUEUE (Manual Assignment Window) =====
-// Leads created with no agent while manualAssignmentWindowMinutes > 0 land here.
-// Admins have `manualAssignmentWindowMinutes` to manually assign before the
-// background sweeper auto-rotates the lead to Tier 1.
-app.get("/api/leads/unassigned", auth, async function(req, res) {
-  try {
-    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
-      return res.status(403).json({ error: "Admin only" });
-    }
-    var rows = await Lead.find({
-      agentId: null,
-      archived: false,
-      manualWindowExpiresAt: { $ne: null, $gt: new Date() }
-    })
-      .sort({ manualWindowExpiresAt: 1 })
-      .select("_id name phone phone2 email source project notes createdAt manualWindowExpiresAt")
-      .lean();
-    res.json(rows);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 app.post("/api/leads", auth, async function(req, res) {
   try {
     console.log("NEW LEAD body:", JSON.stringify(req.body));
