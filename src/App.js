@@ -6940,18 +6940,31 @@ var SettingsPage = function(p) {
                 var inAny = new Set([].concat(tier1,tier2,tier3).map(String));
                 var remaining = salesAgentsForSetting.filter(function(u){return !inAny.has(String(gid(u)));});
                 if(!remaining.length) return null;
-                return <div style={{marginTop:8,border:"1px dashed rgba(0,0,0,0.1)",borderRadius:8,background:"#F7F7F5",maxHeight:160,overflowY:"auto"}}>
-                  <div style={{padding:"8px 10px",fontSize:11,fontWeight:500,color:"#666",borderBottom:"0.5px solid rgba(0,0,0,0.05)"}}>+ Add agent to rotation ({remaining.length} available — click to add to Tier 1)</div>
+                // Per-tier "add" button — styled with the tier's accent so it's visually obvious
+                // which tier the agent is going to land in.
+                var tierAddBtn = function(uid, key, label, bg, brd, fg){
+                  return <button type="button" key={key}
+                    onClick={function(e){e.stopPropagation(); appendToTier(uid,key);}}
+                    title={"Add to "+label}
+                    style={{fontSize:11,padding:"4px 8px",border:"0.5px solid "+brd,background:bg,color:fg,borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontWeight:500,flexShrink:0}}>
+                    → {label}
+                  </button>;
+                };
+                return <div style={{marginTop:8,border:"1px dashed rgba(0,0,0,0.1)",borderRadius:8,background:"#F7F7F5",maxHeight:200,overflowY:"auto"}}>
+                  <div style={{padding:"8px 10px",fontSize:11,fontWeight:500,color:"#666",borderBottom:"0.5px solid rgba(0,0,0,0.05)"}}>Add agent to rotation ({remaining.length} available — pick a target tier)</div>
                   {remaining.map(function(u){
                     var uid=String(gid(u)); var rb=roleBadgeOf(u.role);
-                    return <div key={uid} onClick={function(){appendToTier(uid,"tier1");}}
-                      style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",cursor:"pointer",borderBottom:"0.5px solid rgba(0,0,0,0.05)"}}>
-                      <span style={{color:"#0F6E56",fontSize:15,fontWeight:500,flexShrink:0}}>+</span>
+                    return <div key={uid}
+                      style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",borderBottom:"0.5px solid rgba(0,0,0,0.05)"}}>
                       <div style={{flex:1,minWidth:0,fontSize:12,display:"flex",alignItems:"center",gap:6}}>
                         <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</span>
-                        <span style={{fontSize:9,padding:"2px 6px",borderRadius:10,fontWeight:500,background:rb.bg,color:rb.fg}}>{rb.label}</span>
+                        <span style={{fontSize:9,padding:"2px 6px",borderRadius:10,fontWeight:500,background:rb.bg,color:rb.fg,flexShrink:0}}>{rb.label}</span>
                       </div>
-                      <span style={{fontSize:11,color:"#999",flexShrink:0}}>→ Tier 1</span>
+                      <div style={{display:"flex",gap:4,flexShrink:0}}>
+                        {tierAddBtn(uid,"tier1","Tier 1","#EAF6F0","rgba(15,110,86,0.3)","#0F6E56")}
+                        {tierAddBtn(uid,"tier2","Tier 2","#E6F1FB","rgba(24,95,165,0.3)","#185FA5")}
+                        {tierAddBtn(uid,"tier3","Tier 3","#F7F7F5","rgba(0,0,0,0.15)",       "#666")}
+                      </div>
                     </div>;
                   })}
                 </div>;
