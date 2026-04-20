@@ -7,6 +7,21 @@ var jwt = require("jsonwebtoken");
 var http = require("http");
 var WebSocketLib = require("ws");
 
+// Coerce anything the frontend sends for an ObjectId-typed field into a
+// 24-hex string or null. Handles: empty string, populated {_id, name, ...}
+// objects returned from a prior populate(), ObjectId instances, plain 24-hex
+// strings. Anything else → null so callers can treat as "unset".
+function normId(val) {
+  if (val === null || val === undefined || val === "") return null;
+  if (typeof val === "object") {
+    if (val._id) val = val._id;
+    else if (typeof val.toString === "function") val = val.toString();
+    else return null;
+  }
+  var s = String(val);
+  return mongoose.Types.ObjectId.isValid(s) ? s : null;
+}
+
 // ===== REAL-TIME BROADCASTER =====
 // Actual implementation is set below once the WebSocket server is created.
 // Schema hooks (defined a few lines down) call broadcast() — it's a no-op until the server starts.
@@ -1366,9 +1381,11 @@ app.post("/api/leads", auth, async function(req, res) {
     // their own list on the next refresh (the sales visibility filter hides
     // anything whose current agentId is not their own user id). Default to the
     // caller so the lead they just created stays in their list.
-    var agentId = (req.body.agentId && req.body.agentId !== "")
-      ? new mongoose.Types.ObjectId(req.body.agentId)
-      : null;
+    // Normalize agentId — frontend may send empty string (unassigned), a
+    // populated {_id, name, ...} object (when editing, though this path is
+    // create-only), or a plain id string.
+    var normalizedAgent = normId(req.body.agentId);
+    var agentId = normalizedAgent ? new mongoose.Types.ObjectId(normalizedAgent) : null;
     if (!agentId && (req.user.role === "sales" || req.user.role === "team_leader" || req.user.role === "manager") && mongoose.Types.ObjectId.isValid(req.user.id)) {
       agentId = new mongoose.Types.ObjectId(req.user.id);
     }
@@ -1755,6 +1772,12 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     if (req.body.status === "Deal Cancelled" && req.user.role !== "admin") {
       return res.status(403).json({ error: "Only admin can set Deal Cancelled status" });
     }
+    // Normalize ObjectId fields the frontend may have sent as populated
+    // objects (happens on edit — p.initial is the lead with populated agentId)
+    // or empty strings. Prevents CastError on findByIdAndUpdate and prevents
+    // the String(object) !== String(id) false-positive reassignment below.
+    req.body.agentId       = normId(req.body.agentId);
+    req.body.splitAgent2Id = normId(req.body.splitAgent2Id);
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty unless explicitly reassigning
     if (!update.agentId) delete update.agentId;
@@ -2817,6 +2840,9 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
     if (req.body.status === "Deal Cancelled" && req.user.role !== "admin") {
       return res.status(403).json({ error: "Only admin can set Deal Cancelled status" });
     }
+    // Normalize agentId — on edit the frontend can send a populated
+    // {_id, name, ...} object from a prior populate(), which would CastError.
+    req.body.agentId = normId(req.body.agentId);
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty — only update if explicitly provided and valid
     if (!update.agentId) delete update.agentId;
