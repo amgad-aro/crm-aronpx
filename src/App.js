@@ -1586,6 +1586,7 @@ var LeadsPage = function(p) {
       if (spT==="stale48h") return (l.assignments||[]).some(function(a){ return a.lastActionAt && (nowMs - new Date(a.lastActionAt).getTime()) > 48*3600*1000; });
       if (spT==="noRotation") return (l.assignments||[]).some(function(a){ return a.noRotation===true; });
       if (spT==="rotatedThisMonth") return (l.agentHistory||[]).some(function(h){ return h && h.date && new Date(h.date).getTime() >= monthStartMs; });
+      if (spT==="interested") return l.status==="HotCase" || l.status==="Potential";
       return true;
     });
   }
@@ -1774,7 +1775,7 @@ var LeadsPage = function(p) {
 
   var specialFilterLabel = (function(){
     if (!p.specialFilter||!p.specialFilter.type) return "";
-    var m = {untouched:"Untouched leads (no activity since assignment)",missingFeedback:"Missing feedback (empty notes)",stale48h:"Stale leads \u2014 no activity 48h+",noRotation:"Locked leads (noRotation flag)",rotatedThisMonth:"Rotated this month"};
+    var m = {untouched:"Untouched leads (no activity since assignment)",missingFeedback:"Missing feedback (empty notes)",stale48h:"Stale leads \u2014 no activity 48h+",noRotation:"Locked leads (noRotation flag)",rotatedThisMonth:"Rotated this month",interested:"Interested leads (HotCase + Potential)"};
     return m[p.specialFilter.type]||p.specialFilter.type;
   })();
   return <div style={{ padding:"18px 16px 40px" }}>
@@ -2508,8 +2509,10 @@ var DashboardPage = function(p) {
     if (!p.token) return;
     // Re-derive the active range here so the effect only depends on `filter`.
     var nd = new Date(); var cY = nd.getFullYear(); var cM = nd.getMonth(); var cD = nd.getDate();
-    var daysSinceMon = (nd.getDay() + 6) % 7;
-    var weekStart  = new Date(cY, cM, cD - daysSinceMon, 0,0,0,0);
+    // Week anchor = Saturday (Egypt convention) — matches the activities-feed
+    // useEffect above and the sales render block below.
+    var daysSinceSat = (nd.getDay() - 6 + 7) % 7;
+    var weekStart  = new Date(cY, cM, cD - daysSinceSat, 0,0,0,0);
     var todayStart = new Date(cY, cM, cD, 0,0,0,0);
     var todayEnd   = new Date(cY, cM, cD, 23,59,59,999);
     var yestStart  = new Date(cY, cM, cD-1, 0,0,0,0);
@@ -2691,7 +2694,17 @@ var DashboardPage = function(p) {
         {loading && <div style={{fontSize:12,color:"#94A3B8",padding:"6px 0"}}>Loading ranking\u2026</div>}
         {rankRows.map(function(r,i){
           var isMe = mode === "sales" && String(r.uid)===myUid;
-          return <div key={r.uid} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:8,background:isMe?"#EFF6FF":"transparent",border:isMe?"1px solid #BFDBFE":"1px solid transparent"}}>
+          // Sales mode: rows are clickable. Own row opens own leads unfiltered;
+          // others route through initAgentFilter (the leads page will show an
+          // empty set for a sales user since the backend scopes leads to self,
+          // but admin/TL/manager viewing this same widget get the expected drill-in).
+          var onRowClick = mode === "sales" ? function(){
+            if (isMe) { p.setFilter && p.setFilter("all"); p.nav("leads"); return; }
+            if (p.setInitAgentFilter) p.setInitAgentFilter(r.uid);
+            p.setFilter && p.setFilter("all");
+            p.nav("leads");
+          } : null;
+          return <div key={r.uid} onClick={onRowClick} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:8,background:isMe?"#EFF6FF":"transparent",border:isMe?"1px solid #BFDBFE":"1px solid transparent",cursor:onRowClick?"pointer":"default"}}>
             <div style={{width:22,height:22,borderRadius:"50%",background:i===0?"#FBBF24":i===1?"#E2E8F0":i===2?"#F59E0B":"#F1F5F9",color:i<=2?"#0F172A":"#64748B",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{i+1}</div>
             <div style={{flex:1,minWidth:0,fontSize:12,fontWeight:isMe?700:500,color:isMe?"#1D4ED8":"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isMe?(r.name||p.cu.name)+" (you)":r.name}</div>
             <div title={"Activities "+(r.activities||0)+" \u00b7 Calls "+(r.calls||0)+" \u00b7 Meetings "+(r.meetings||0)+" \u00b7 DRs "+(r.dailyRequests||0)} style={{fontSize:12,fontWeight:800,color:"#1D4ED8",minWidth:28,textAlign:"right"}}>{r.score||0}</div>
@@ -2718,8 +2731,10 @@ var DashboardPage = function(p) {
     var curMS = nowDS.getMonth();
     var curDS = nowDS.getDate();
     var jsDayS = nowDS.getDay();              // 0=Sun..6=Sat
-    var daysSinceMonS = (jsDayS + 6) % 7;     // Mon=0, Tue=1, ... Sun=6
-    var weekStartS = new Date(curYS, curMS, curDS - daysSinceMonS, 0,0,0,0);
+    // Week anchor = Saturday (Egypt convention). Sat=0, Sun=1, ... Fri=6.
+    // Must match the two useEffects above so backend range === rendered range.
+    var daysSinceSatS = (jsDayS - 6 + 7) % 7;
+    var weekStartS = new Date(curYS, curMS, curDS - daysSinceSatS, 0,0,0,0);
     var todayStartS = new Date(curYS, curMS, curDS, 0,0,0,0);
     var todayEndS   = new Date(curYS, curMS, curDS, 23,59,59,999);
     var yestStartS  = new Date(curYS, curMS, curDS-1, 0,0,0,0);
@@ -2744,8 +2759,11 @@ var DashboardPage = function(p) {
     }
     var inRangeS = function(d){ if(!d) return false; var t = new Date(d).getTime(); return !isNaN(t) && t>=rangeStartS && t<=rangeEndS; };
 
-    // All four quarters of the current year — always shown.
-    var quarterOptionsS = ["Q1 "+curYS, "Q2 "+curYS, "Q3 "+curYS, "Q4 "+curYS];
+    // Current year + prior year quarters — sales may want to audit historical periods.
+    var quarterOptionsS = [
+      "Q1 "+curYS, "Q2 "+curYS, "Q3 "+curYS, "Q4 "+curYS,
+      "Q1 "+(curYS-1), "Q2 "+(curYS-1), "Q3 "+(curYS-1), "Q4 "+(curYS-1)
+    ];
 
     // ============ MY DATA ============
     var myUidS = String(p.cu._id||p.cu.id);
@@ -2777,7 +2795,17 @@ var DashboardPage = function(p) {
     // These lists are "now state" — independent of the date range filter.
     var urgent2    = allMyLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);}).slice(0,5);
     var urgentNew2 = allMyLeads.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*3600000;}).slice(0,3);
-    var schedule2  = allMyLeads.filter(function(l){return l.callbackTime&&!l.archived&&new Date(l.callbackTime).toDateString()===new Date().toDateString();}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);}).slice(0,7);
+    // Schedule card — callbacks whose scheduled time falls in the active filter
+    // range. Title updates alongside (see scheduleTitle2 below).
+    var schedule2  = allMyLeads.filter(function(l){return l.callbackTime&&!l.archived&&inRangeS(l.callbackTime);}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);}).slice(0,7);
+    var scheduleTitle2 = (function(){
+      if (filter==="today") return "Today's Schedule";
+      if (filter==="yesterday") return "Yesterday's Schedule";
+      if (filter==="week") return "This Week's Schedule";
+      if (filter==="month") return "This Month's Schedule";
+      if (typeof filter==="string" && /^Q\d\s+\d{4}$/.test(filter)) return filter+" Schedule";
+      return "Schedule";
+    })();
     var statusColors2={"NewLead":"#1565C0","Potential":"#00796B","HotCase":"#E65100","CallBack":"#6A1B9A","MeetingDone":"#2E7D32","NotInterested":"#EF4444","NoAnswer":"#94A3B8","DoneDeal":"#065F46"};
 
     // ============ MY RANK VS TEAM (CRM-wide, from backend) ============
@@ -2846,6 +2874,48 @@ var DashboardPage = function(p) {
     myRecentActsS.sort(function(a,b){return new Date(b.timestamp).getTime()-new Date(a.timestamp).getTime();});
     myRecentActsS = myRecentActsS.slice(0,20);
 
+    // ============ 7-DAY SPARKLINES (real counts, ending today) ============
+    // Position 6 = today, position 0 = 6 days ago. Each KPI card gets its own
+    // array so bars reflect that metric's daily shape, not a shared proxy.
+    var _todayStartMsS = new Date(nowDS.getFullYear(), nowDS.getMonth(), nowDS.getDate(), 0,0,0,0).getTime();
+    var spark7 = function(items, getTs){
+      var out = [0,0,0,0,0,0,0];
+      (items||[]).forEach(function(x){
+        var raw = getTs(x); if (!raw) return;
+        var t = new Date(raw).getTime(); if (isNaN(t)) return;
+        var dd = Math.floor((_todayStartMsS - t)/DAY);
+        if (dd < 0) dd = 0; if (dd > 6) return;
+        out[6 - dd]++;
+      });
+      return out;
+    };
+    // Scope DRs to self (TL already scoped server-side). p.dailyReqs is the full
+    // visible set; for sales role the backend returns own-only.
+    var myDrsScopedS = (p.dailyReqs||[]).filter(function(r){
+      if (isTL) return true;
+      var aid = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
+      return String(aid) === myUidS;
+    });
+    var sparkLeadsS    = spark7(allMyLeads, function(l){ return l.createdAt; });
+    var sparkDrsS      = spark7(myDrsScopedS, function(r){ return r.createdAt; });
+    // Followups has no inherent "per-day" meaning (it's a current-state count),
+    // so bars show followup-type history events per day as a proxy for activity.
+    var followupEventsS = [];
+    allMyLeads.forEach(function(l){
+      (l.history||[]).forEach(function(h){
+        if (!h || !h.timestamp) return;
+        var by = String(h.byUser||"");
+        if (isTL ? !tlMemberNames.has(by) : by !== myNameS) return;
+        var ev = String(h.event||"").toLowerCase();
+        if (ev.indexOf("call")<0 && ev.indexOf("callback")<0 && ev.indexOf("note")<0 && ev.indexOf("feedback")<0 && ev.indexOf("status")<0) return;
+        followupEventsS.push(h);
+      });
+    });
+    var sparkFollowupsS = spark7(followupEventsS, function(h){ return h.timestamp; });
+    var sparkIntS      = spark7(allMyLeads.filter(function(l){return l.status==="HotCase"||l.status==="Potential";}), function(l){ return l.createdAt; });
+    var sparkMeetS     = spark7(allMyLeads.filter(function(l){return l.hadMeeting===true||l.status==="MeetingDone";}), function(l){ return l.meetingDoneAt||l.updatedAt||l.createdAt; });
+    var sparkDealsS    = spark7(allMyLeads.filter(function(l){return l.status==="DoneDeal";}), function(l){ return l.dealDate||l.updatedAt||l.createdAt; });
+
     return <div className="crm-dash crm-dash-sales" style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100vw",boxSizing:"border-box",overflowX:"hidden"}}>
       {/* Header — clock now sits to the RIGHT of the date on the same line. */}
       <div className="crm-dash-header" style={{display:"flex",alignItems:isMobile?"stretch":"center",justifyContent:"space-between",marginBottom:isMobile?14:20,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
@@ -2885,16 +2955,28 @@ var DashboardPage = function(p) {
         var myFupsCnt     = Number(st.followups||0);
         var myIntCnt      = Number(st.interested||0);
         var myMeetCnt     = Number(st.meetings||0);
-        var myTarget      = Number(st.target||0);
-        var myProgress    = Number(st.targetProgress||0);
+        var myTargetQ     = Number(st.target||0);      // quarterly target from backend
+        var myAchieved    = Number(st.achieved||0);    // achieved in active range (backend scopes deals by from/to)
+        // Pro-rate target to the active filter. Backend only knows the quarter's
+        // target; we scale it here so progress % is meaningful for Today/Week/Month.
+        // 22 working days/month, 4 weeks/month — standard Egypt sales planning.
+        var monthlyT = myTargetQ/3;
+        var scaledTarget, scaledLabel;
+        if (filter==="today" || filter==="yesterday") { scaledTarget = monthlyT/22; scaledLabel = "Daily"; }
+        else if (filter==="week")                      { scaledTarget = monthlyT/4;  scaledLabel = "Weekly"; }
+        else if (filter==="month")                     { scaledTarget = monthlyT;    scaledLabel = "Monthly"; }
+        else                                            { scaledTarget = myTargetQ;   scaledLabel = "Quarterly"; }
+        var scaledProgress = scaledTarget>0 ? Math.min(999, Math.round((myAchieved/scaledTarget)*100)) : 0;
+        var fmtT = function(n){ if (n>=1000000) return (n/1000000).toFixed(1)+"M"; if (n>=1000) return Math.round(n/1000)+"K"; return Math.round(n); };
+        var targetSub = scaledTarget>0 ? (scaledLabel+" \u00b7 of "+fmtT(scaledTarget)) : "Not set";
         var pctOf = function(n){ return myLeadsCnt>0 ? Math.round(n/myLeadsCnt*100)+"%" : "0%"; };
         return <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2, minmax(0, 1fr))":"repeat(auto-fit,minmax(130px,1fr))",gap:isMobile?8:10,marginBottom:isMobile?14:20}}>
-          {kpiCard("My Leads",       myLeadsCnt, rangeLabelS,                         "#1565C0","#ffffff",function(){p.setFilter&&p.setFilter("all");p.nav("leads");})}
-          {kpiCard("Daily Requests", myDrsCnt,   rangeLabelS,                         "#00796B","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("all");p.nav("dailyReq");})}
-          {kpiCard("Followups",      myFupsCnt,  rangeLabelS,                         "#E65100","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("CallBack");p.nav("dailyReq");})}
-          {kpiCard("Interested",     myIntCnt,   pctOf(myIntCnt),                     "#6A1B9A","#ffffff",function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");})}
-          {kpiCard("Meetings",       myMeetCnt,  pctOf(myMeetCnt),                    "#2E7D32","#ffffff",function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");})}
-          {kpiCard("Target",         myProgress+"%", myTarget>0?("of "+(myTarget/1000000).toFixed(1)+"M"):"Not set", "#AD1457","#ffffff",function(){p.nav("kpis");})}
+          {kpiCard("My Leads",       myLeadsCnt, rangeLabelS,                         "#1565C0","#ffffff",function(){p.setFilter&&p.setFilter("all");p.nav("leads");}, sparkLeadsS)}
+          {kpiCard("Daily Requests", myDrsCnt,   rangeLabelS,                         "#00796B","#ffffff",function(){if(p.setDrInitFilter)p.setDrInitFilter("all");p.nav("dailyReq");}, sparkDrsS)}
+          {kpiCard("Followups",      myFupsCnt,  "Stale > 2d",                        "#E65100","#ffffff",function(){p.setFilter&&p.setFilter("CallBack");p.nav("leads");}, sparkFollowupsS)}
+          {kpiCard("Interested",     myIntCnt,   pctOf(myIntCnt),                     "#6A1B9A","#ffffff",function(){if(p.setSpecialFilter)p.setSpecialFilter({type:"interested"});p.setFilter&&p.setFilter("all");p.nav("leads");}, sparkIntS)}
+          {kpiCard("Meetings",       myMeetCnt,  pctOf(myMeetCnt),                    "#2E7D32","#ffffff",function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");}, sparkMeetS)}
+          {kpiCard("Target",         scaledProgress+"%", targetSub,                   "#AD1457","#ffffff",function(){p.nav("kpis");}, sparkDealsS)}
         </div>;
       })()}
 
@@ -2917,8 +2999,8 @@ var DashboardPage = function(p) {
           </div>;})}
         </div>
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udcc5"} Today's Schedule</div>
-          {schedule2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No callbacks scheduled today</div>}
+          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udcc5"} {scheduleTitle2}</div>
+          {schedule2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No callbacks scheduled in this range</div>}
           {schedule2.map(function(l,i){
             var t2=l.callbackTime?new Date(l.callbackTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"\u2014";
             var isLate2=l.callbackTime&&new Date(l.callbackTime).getTime()<now;
@@ -2939,7 +3021,8 @@ var DashboardPage = function(p) {
             <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{rangeLabelS}</div>
           </div>
           {[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"]].map(function(s){return bRow(s[0],mySC2[s[1]]||0,myTotal2,s[2],function(){p.setFilter&&p.setFilter(s[1]);p.nav("leads");});}) }
-          <div style={{borderTop:"1px solid #F1F5F9",marginTop:8,paddingTop:8,display:"flex",gap:14,fontSize:11}}>
+          <div style={{borderTop:"1px solid #F1F5F9",marginTop:8,paddingTop:8,display:"flex",gap:14,alignItems:"center",fontSize:11,flexWrap:"wrap"}}>
+            <span title="Current state — ignores the date filter above" style={{fontSize:9,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:"0.08em",background:"#F1F5F9",padding:"2px 6px",borderRadius:4}}>NOW</span>
             <span onClick={function(){p.setFilter&&p.setFilter("CallBack");p.nav("leads");}} style={{color:"#64748B",cursor:"pointer"}}>Overdue: <span style={{color:"#EF4444",fontWeight:700}}>{myOv2}</span></span>
             <span onClick={function(){p.setFilter&&p.setFilter("NewLead");p.nav("leads");}} style={{color:"#64748B",cursor:"pointer"}}>Untouched: <span style={{color:"#3B82F6",fontWeight:700}}>{allMyLeads.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*DAY;}).length}</span></span>
           </div>
