@@ -2819,17 +2819,21 @@ var DashboardPage = function(p) {
     var rankLoadingS   = salesRanking===null;
 
     // ============ CONVERSION FUNNEL (real, range-scoped, backend-sourced) ============
-    // - New Lead   = byStatus.NewLead
+    // Five pipeline stages, each counting leads currently in that stage (snapshot,
+    // not lifetime). Stage 1 denominator drives the right-column %.
+    // - Total      = myTotal2 (backend myLeads, range-scoped)
     // - Interested = byStatus.HotCase + byStatus.Potential
-    // - Meeting    = backend "meetings" (hadMeeting OR MeetingDone, dated in range) — matches Card 5 semantics
+    // - Meeting    = byStatus.MeetingDone (snapshot, not backend "meetings" which also counts scheduled Tasks)
+    // - EOI        = byStatus.EOI
     // - Deal       = byStatus.DoneDeal
     var funnelRowsS = [
-      { l:"New Lead",     v:(mySC2["NewLead"]||0),                     c:"#DBEAFE", tc:"#1E40AF", nav:function(){p.setFilter&&p.setFilter("NewLead");p.nav("leads");} },
-      { l:"Interested",   v:((mySC2["HotCase"]||0)+(mySC2["Potential"]||0)), c:"#FEF3C7", tc:"#92400E", nav:function(){p.setFilter&&p.setFilter("Potential");p.nav("leads");} },
-      { l:"Meeting",      v:myMeet2,                                   c:"#D1FAE5", tc:"#065F46", nav:function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");} },
-      { l:"Deal",         v:(mySC2["DoneDeal"]||0),                    c:"#FFE4E6", tc:"#9F1239", nav:function(){p.nav("deals");} }
+      { l:"Total",        v:myTotal2,                                                    c:"#DBEAFE", tc:"#1E40AF", nav:function(){p.setFilter&&p.setFilter("all");p.nav("leads");} },
+      { l:"Interested",   v:((mySC2["HotCase"]||0)+(mySC2["Potential"]||0)),             c:"#FEF3C7", tc:"#92400E", nav:function(){if(p.setSpecialFilter)p.setSpecialFilter({type:"interested"});p.setFilter&&p.setFilter("all");p.nav("leads");} },
+      { l:"Meeting Done", v:(mySC2["MeetingDone"]||0),                                   c:"#D1FAE5", tc:"#065F46", nav:function(){p.setFilter&&p.setFilter("MeetingDone");p.nav("leads");} },
+      { l:"EOI",          v:(mySC2["EOI"]||0),                                           c:"#FAE8FF", tc:"#6B21A8", nav:function(){p.setFilter&&p.setFilter("EOI");p.nav("leads");} },
+      { l:"Deal",         v:(mySC2["DoneDeal"]||0),                                      c:"#FFE4E6", tc:"#9F1239", nav:function(){p.nav("deals");} }
     ];
-    var funnelMaxS = Math.max(funnelRowsS[0].v, funnelRowsS[1].v, funnelRowsS[2].v, funnelRowsS[3].v, 1);
+    var funnelMaxS = Math.max.apply(null, funnelRowsS.map(function(r){return r.v;}).concat([1]));
 
     // ============ RECENT ACTIVITY (real, from lead.history entries by me) ============
     var myNameS = p.cu.name||"";
@@ -3020,7 +3024,17 @@ var DashboardPage = function(p) {
             <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>My Leads {"\u2014"} Status</div>
             <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{rangeLabelS}</div>
           </div>
-          {[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"]].map(function(s){return bRow(s[0],mySC2[s[1]]||0,myTotal2,s[2],function(){p.setFilter&&p.setFilter(s[1]);p.nav("leads");});}) }
+          {[
+            ["New Lead","NewLead","#3B82F6"],
+            ["Potential","Potential","#10B981"],
+            ["Hot Case","HotCase","#F59E0B"],
+            ["Call Back","CallBack","#EF4444"],
+            ["Meeting","MeetingDone","#8B5CF6"],
+            ["EOI","EOI","#A855F7"],
+            ["Done Deal","DoneDeal","#059669"],
+            ["No Answer","NoAnswer","#64748B"],
+            ["Not Int.","NotInterested","#94A3B8"]
+          ].map(function(s){return bRow(s[0],mySC2[s[1]]||0,myTotal2,s[2],function(){p.setFilter&&p.setFilter(s[1]);p.nav("leads");});})}
           <div style={{borderTop:"1px solid #F1F5F9",marginTop:8,paddingTop:8,display:"flex",gap:14,alignItems:"center",fontSize:11,flexWrap:"wrap"}}>
             <span title="Current state — ignores the date filter above" style={{fontSize:9,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:"0.08em",background:"#F1F5F9",padding:"2px 6px",borderRadius:4}}>NOW</span>
             <span onClick={function(){p.setFilter&&p.setFilter("CallBack");p.nav("leads");}} style={{color:"#64748B",cursor:"pointer"}}>Overdue: <span style={{color:"#EF4444",fontWeight:700}}>{myOv2}</span></span>
