@@ -2006,10 +2006,12 @@ var LeadsPage = function(p) {
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
                       {isOnlyAdmin&&<option value="">— No Agent —</option>}
                       {(function(){
-                        // Bug 1 — hide current owner so dropdown can't submit a same-agent rotation.
-                        var curAid = lead.agentId && lead.agentId._id ? String(lead.agentId._id) : String(lead.agentId||"");
+                        // Include the current owner in options so the <select> can display
+                        // their name as the current value. Server-side /rotate returns 400
+                        // "same_agent" if an admin tries to rotate to the current owner, so
+                        // the guard doesn't need to live in the UI.
                         var pool = isOnlyAdmin ? salesUsers : (p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";});
-                        return pool.filter(function(u){ return String(gid(u)) !== curAid; }).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
+                        return pool.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
                       })()}
                     </select>
                   </td>}
@@ -2082,10 +2084,11 @@ var LeadsPage = function(p) {
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
               {isOnlyAdmin&&<option value="">— No Agent —</option>}
               {(function(){
-                // Bug 1 — hide current owner so dropdown can't submit a same-agent rotation.
-                var curAidSel = selected.agentId && selected.agentId._id ? String(selected.agentId._id) : String(selected.agentId||"");
+                // Include the current owner in options so the <select> can display
+                // their name as the current value. Server-side /rotate returns 400
+                // "same_agent" if an admin tries to rotate to the current owner.
                 var poolSel = isOnlyAdmin ? (p.myTeamUsers||salesUsers) : (p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";});
-                return poolSel.filter(function(u){ return String(gid(u)) !== curAidSel; }).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
+                return poolSel.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
               })()}
             </select>
           </div>}
