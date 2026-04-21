@@ -591,6 +591,23 @@ async function pushHistory(leadId, entries) {
   }
 }
 
+// ===== REASSIGNMENT INVARIANTS =====
+// Single source of truth for "has this agent ever held this lead?". Used by
+// every reassign endpoint — /rotate, /auto-rotate, /bulk-reassign, and the
+// PUT /api/leads/:id fallback — so the "no return to previous agent" rule is
+// uniformly enforced. Admin override (force flag) bypasses, but the caller is
+// responsible for logging that override into the history timeline.
+function wasPreviouslyAssigned(lead, agentId) {
+  if (!lead || !agentId) return false;
+  var id = String(agentId);
+  var prevIds = (lead.previousAgentIds || []).map(function(x){ return String(x); });
+  var assignedIds = (lead.assignments || []).map(function(a){
+    var aid = a && a.agentId && a.agentId._id ? a.agentId._id : (a && a.agentId);
+    return String(aid || "");
+  });
+  return prevIds.indexOf(id) >= 0 || assignedIds.indexOf(id) >= 0;
+}
+
 // ===== PHONE DUPLICATE CHECK HELPER =====
 // Treat both phone and phone2 as reserved identifiers. Normalize by trimming so
 // "0100 " and "0100" are the same. Includes archived so soft-deleted leads still
@@ -1462,6 +1479,10 @@ app.get("/api/leads", auth, async function(req, res) {
       // caller has no assignments[] entry (defence in depth: the list query
       // already guarantees a matching slice, but if a data-inconsistency
       // produces a match without an entry, we must still not leak).
+      // Pre-fetch caller's name so lead.history can be filtered to entries
+      // authored by them only (Bug 2 — rotation events by admin must not leak).
+      var salesSelf = await User.findById(uid).select({ name: 1 }).lean();
+      var salesSelfName = salesSelf ? String(salesSelf.name || "") : "";
       data = leads.map(function(l) {
         var obj = Object.assign({}, l);
         var myAssign = (obj.assignments || []).find(function(a) {
@@ -1491,6 +1512,17 @@ app.get("/api/leads", auth, async function(req, res) {
         obj.previousAgentIds = [];
         obj.rotationCount = 0;
         obj.lastRotationAt = null;
+        // Filter lead.history: drop rotation/assignment events entirely (sales
+        // must not see who held the lead before), keep only events authored by
+        // the caller themselves. Sales dashboard Recent Activity / sparklines
+        // already filter by byUser === myName, so this is compatible.
+        obj.history = (obj.history || []).filter(function(h){
+          if (!h) return false;
+          var ev = String(h.event || "");
+          if (ev === "rotated" || ev === "assigned" || ev === "reassigned") return false;
+          if (salesSelfName && String(h.byUser || "") !== salesSelfName) return false;
+          return true;
+        });
         return obj;
       });
     } else {
@@ -1633,6 +1665,18 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       obj.previousAgentIds = [];
       obj.rotationCount = 0;
       obj.lastRotationAt = null;
+      // Filter lead.history (Bug 2): drop rotation/assignment events and any
+      // entry not authored by the caller. Mirrors the list-endpoint filter
+      // above so single-lead GET can't leak what the list already hid.
+      var salesSelfDoc = await User.findById(uid).select({ name: 1 }).lean();
+      var salesSelfName2 = salesSelfDoc ? String(salesSelfDoc.name || "") : "";
+      obj.history = (obj.history || []).filter(function(h){
+        if (!h) return false;
+        var ev = String(h.event || "");
+        if (ev === "rotated" || ev === "assigned" || ev === "reassigned") return false;
+        if (salesSelfName2 && String(h.byUser || "") !== salesSelfName2) return false;
+        return true;
+      });
       return res.json(obj);
     }
     // Admin / manager / team_leader: overlay top-level notes & lastFeedback
@@ -1799,9 +1843,10 @@ app.post("/api/leads", auth, async function(req, res) {
 // ===== BULK REASSIGN (must be before /:id) =====
 app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
   try {
-    var { leadIds, agentId } = req.body;
+    var { leadIds, agentId, force } = req.body;
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
     var agentObjId = new mongoose.Types.ObjectId(agentId);
+    var isAdminForce = force === true && (req.user.role === "admin" || req.user.role === "sales_admin");
     var newAssignment = {
       agentId: agentObjId,
       status: "NewLead",
@@ -1816,11 +1861,20 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
       nextCallAt: null,
       agentHistory: []
     };
+    var byName = req.user.name || "Admin";
+    var skippedSelf = 0, skippedPrevious = 0, reassigned = 0, notFound = 0;
     // Update top-level fields AND push new assignments entry
     for (var i = 0; i < leadIds.length; i++) {
       var lead = await Lead.findById(leadIds[i]).lean();
-      if (!lead) continue;
+      if (!lead) { notFound++; continue; }
       var oldAgentId = lead.agentId;
+      // Skip: already the current owner (Bug 1 — no self-reassign).
+      // Force does NOT bypass same-agent: pushing a duplicate assignments[]
+      // slice for the current owner serves no purpose.
+      if (oldAgentId && String(oldAgentId) === String(agentId)) { skippedSelf++; continue; }
+      // Skip: previously held this lead (Bug 3 — no return to past agent),
+      // unless admin explicitly forced.
+      if (!isAdminForce && wasPreviouslyAssigned(lead, agentId)) { skippedPrevious++; continue; }
       var updateOps = {
         // Top-level notes/lastFeedback are no longer authoritative — the new agent's
         // clean slice comes from a fresh assignments[] entry (see newAssignment), and
@@ -1842,7 +1896,7 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
           fromAgent: oldAgentName,
           toAgent: newAgentName,
           reason: "manual",
-          by: req.user.name || "Admin",
+          by: byName,
           date: new Date()
         };
       } else {
@@ -1851,11 +1905,11 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
       }
       await Lead.findByIdAndUpdate(leadIds[i], updateOps);
       // Admin timeline: one entry per lead so bulk ops are audit-able.
-      var byName = req.user.name || "Admin";
+      var suffix = isAdminForce ? " (bulk reassign) [admin force override]" : " (bulk reassign)";
       if (oldAgentId) {
         await pushHistory(leadIds[i], historyEntry(
           "rotated",
-          "Rotated from " + oldAgentName + " to " + newAgentName + " by " + byName + " (bulk reassign)",
+          "Rotated from " + oldAgentName + " to " + newAgentName + " by " + byName + suffix,
           byName,
           newAgentName
         ));
@@ -1867,9 +1921,19 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
           newAgentName
         ));
       }
+      reassigned++;
     }
-    await Activity.create({ userId: req.user.id, type: "reassign", note: "Bulk reassign — " + leadIds.length + " leads" });
-    res.json({ ok: true, count: leadIds.length });
+    await Activity.create({ userId: req.user.id, type: "reassign", note: "Bulk reassign — " + reassigned + "/" + leadIds.length + " leads" });
+    res.json({
+      ok: true,
+      total: leadIds.length,
+      reassigned: reassigned,
+      skippedSelf: skippedSelf,
+      skippedPrevious: skippedPrevious,
+      notFound: notFound,
+      // Back-compat: older clients key off `count`.
+      count: reassigned
+    });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2111,6 +2175,8 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // to the agent who wrote it).
     delete update.notes;
     delete update.lastFeedback;
+    // Control flag — never persist on the lead doc.
+    delete update.force;
     // Load the existing lead if any tracked field could change — needed both
     // for status/rotation logic AND to log accurate admin audit entries.
     var oldLead = null;
@@ -2173,6 +2239,12 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // Track agent history when agent changes (fallback — should go through /rotate)
     var pushOnReassign = null;
     if (req.body.agentId && oldLead && oldLead.agentId && String(oldLead.agentId) !== String(req.body.agentId)) {
+      // Enforce the same invariants /rotate does — this fallback path must not
+      // be a backdoor around them. Admin/sales_admin can bypass via force:true.
+      var putIsAdminForce = req.body.force === true && (req.user.role === "admin" || req.user.role === "sales_admin");
+      if (!putIsAdminForce && wasPreviouslyAssigned(oldLead, req.body.agentId)) {
+        return res.status(400).json({ error: "already_assigned", message: "Target agent already had this lead" });
+      }
       update.lastRotationAt = new Date();
       update.rotationCount = (oldLead.rotationCount || 0) + 1;
       update.reassignedAt = new Date();
@@ -2368,10 +2440,13 @@ app.delete("/api/leads/:id/assignment/:agentId", auth, adminOnly, async function
 // ===== ROTATE LEAD =====
 app.post("/api/leads/:id/rotate", auth, async function(req, res) {
   try {
-    var { targetAgentId, reason } = req.body;
+    var { targetAgentId, reason, force } = req.body;
     if (!targetAgentId) return res.status(400).json({ error: "targetAgentId required" });
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title");
     if (!lead) return res.status(404).json({ error: "Lead not found" });
+    // Admin override: only admin/sales_admin can bypass the same-agent and
+    // previously-assigned guards. All other callers are hard-gated below.
+    var isAdminForce = force === true && (req.user.role === "admin" || req.user.role === "sales_admin");
 
     // Business rule: sales_admin is an administrative role and must NEVER receive rotated leads.
     // Only sales / team_leader / manager are eligible; the target must also be active.
@@ -2425,9 +2500,13 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     if (lead.createdAt && (new Date() - new Date(lead.createdAt)) > 30*24*60*60*1000) {
       return res.status(400).json({ error: "expired", message: "Rotation blocked — lead older than 30 days" });
     }
-    // ── HARD STOP 5: all agents exhausted ──
-    var prevIds = (lead.previousAgentIds || []).map(function(id) { return String(id); });
-    if (prevIds.includes(String(targetAgentId))) {
+    // ── HARD STOP 5: same agent (Bug 1 — can't rotate a lead to its current owner) ──
+    var currentOwnerId = lead.agentId && lead.agentId._id ? String(lead.agentId._id) : String(lead.agentId||"");
+    if (!isAdminForce && currentOwnerId && String(targetAgentId) === currentOwnerId) {
+      return res.status(400).json({ error: "same_agent", message: "Target agent is already the current owner" });
+    }
+    // ── HARD STOP 6: previously assigned (Bug 3 — no return to a past agent) ──
+    if (!isAdminForce && wasPreviouslyAssigned(lead, targetAgentId)) {
       return res.status(400).json({ error: "already_assigned", message: "Target agent already had this lead" });
     }
 
@@ -2479,9 +2558,13 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     });
 
     // Admin timeline — rotation event (fromAgent → toAgent, by whom, why).
+    // When isAdminForce is true the same-agent / previously-assigned guards
+    // were bypassed; annotate the timeline so the override is auditable.
+    var rotMsg = "Rotated from " + oldAgentName + " to " + newAgentName + " by " + (req.user.name || "System") + " (" + rotationReason + ")";
+    if (isAdminForce) rotMsg += " [admin force override]";
     await pushHistory(req.params.id, historyEntry(
       "rotated",
-      "Rotated from " + oldAgentName + " to " + newAgentName + " by " + (req.user.name || "System") + " (" + rotationReason + ")",
+      rotMsg,
       req.user.name || "System",
       newAgentName
     ));

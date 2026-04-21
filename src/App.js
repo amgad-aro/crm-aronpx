@@ -1761,13 +1761,30 @@ var LeadsPage = function(p) {
     setImporting(false); e.target.value="";
   };
 
-  var doBulkReassign = async function() {
+  var doBulkReassign = async function(force) {
     if(!bulkAgent||selected2.length===0) return;
     try {
-      await apiFetch("/api/leads/bulk-reassign","PUT",{leadIds:selected2,agentId:bulkAgent},p.token,p.csrfToken);
+      var body = {leadIds:selected2, agentId:bulkAgent};
+      if (force === true) body.force = true;
+      var res = await apiFetch("/api/leads/bulk-reassign","PUT",body,p.token,p.csrfToken);
+      // Backend returns { total, reassigned, skippedSelf, skippedPrevious, notFound }.
+      // When skippedPrevious > 0 and we haven't already forced, offer the admin
+      // an explicit confirm-and-force retry. skippedSelf is silent — same-agent
+      // skips are never overridable (no point re-pushing an assignment to the
+      // current owner).
+      var skippedPrev = res && typeof res.skippedPrevious === "number" ? res.skippedPrevious : 0;
+      if (!force && skippedPrev > 0) {
+        var ok = window.confirm(skippedPrev + " lead" + (skippedPrev===1?" has":"s have") + " already been handled by the selected agent. Force reassign anyway?");
+        if (ok) { await doBulkReassign(true); return; }
+      }
       var updAgent=p.users.find(function(u){return gid(u)===bulkAgent;});
       p.setLeads(function(prev){return prev.map(function(l){return selected2.includes(gid(l))?Object.assign({},l,{agentId:updAgent||bulkAgent}):l;});});
       setSelected2([]); setShowBulk(false);
+      // Surface the breakdown so the admin can see what actually happened.
+      var summary = (res && typeof res.reassigned === "number")
+        ? ("Reassigned "+res.reassigned+"/"+res.total+(res.skippedSelf?(" · "+res.skippedSelf+" skipped (same agent)"):"")+(!force&&skippedPrev?(" · "+skippedPrev+" skipped (previously held)"):"")+(res.notFound?(" · "+res.notFound+" not found"):""))
+        : null;
+      if (summary) alert(summary);
     } catch(e){alert(e.message);}
   };
 
@@ -1988,7 +2005,12 @@ var LeadsPage = function(p) {
                       try{var rotRes=await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);try{var freshLead=await apiFetch("/api/leads/"+gid(lead),"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?freshLead:l;});});if(selected&&gid(selected)===gid(lead))setSelected(freshLead);}}catch(fe){}if(rotRes.firstAssignment)return;if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
                       {isOnlyAdmin&&<option value="">— No Agent —</option>}
-                      {(isOnlyAdmin?salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
+                      {(function(){
+                        // Bug 1 — hide current owner so dropdown can't submit a same-agent rotation.
+                        var curAid = lead.agentId && lead.agentId._id ? String(lead.agentId._id) : String(lead.agentId||"");
+                        var pool = isOnlyAdmin ? salesUsers : (p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";});
+                        return pool.filter(function(u){ return String(gid(u)) !== curAid; }).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
+                      })()}
                     </select>
                   </td>}
                   <td style={{ padding:"10px 12px", fontSize:11, color:C.accent, textAlign:"left", whiteSpace:"nowrap" }}>{timeAgo(lead.lastActivityTime,t)}</td>
@@ -2059,7 +2081,12 @@ var LeadsPage = function(p) {
               try{var rotRes=await apiFetch("/api/leads/"+gid(selected)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);try{var freshLead=await apiFetch("/api/leads/"+gid(selected),"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?freshLead:l;});});setSelected(freshLead);}}catch(fe){}if(rotRes.firstAssignment)return;if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
               {isOnlyAdmin&&<option value="">— No Agent —</option>}
-              {(isOnlyAdmin?p.myTeamUsers||salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
+              {(function(){
+                // Bug 1 — hide current owner so dropdown can't submit a same-agent rotation.
+                var curAidSel = selected.agentId && selected.agentId._id ? String(selected.agentId._id) : String(selected.agentId||"");
+                var poolSel = isOnlyAdmin ? (p.myTeamUsers||salesUsers) : (p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";});
+                return poolSel.filter(function(u){ return String(gid(u)) !== curAidSel; }).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
+              })()}
             </select>
           </div>}
           {/* Assigned Agents — admin remove + full feedback history */}
