@@ -3406,6 +3406,11 @@ app.get("/api/activities", auth, async function(req, res) {
     var uid = req.user.id;
     if (role === "sales") {
       query.userId = uid;
+      // Strip rotation noise from every sales-facing activity feed. Matches
+      // the filter on /api/leads/:id/full-history so Today's Activities,
+      // Recent Activity, and any global activity list stay rotation-free.
+      query.type = { $ne: "reassign" };
+      query.note = { $not: /^🔄 Auto Rotation/ };
     } else if (role === "team_leader") {
       // Team leader sees activities of their direct sales only
       var directSales = await User.find({ reportsTo: uid }).lean();
@@ -3549,7 +3554,14 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
     }
 
     var activityQuery = { leadId: oid };
-    if (isSales) activityQuery.userId = new mongoose.Types.ObjectId(uid);
+    if (isSales) {
+      activityQuery.userId = new mongoose.Types.ObjectId(uid);
+      // Strip rotation noise: sales must never see reassign/auto-rotation rows
+      // even when they authored them (their own client fired the rotation cron,
+      // so userId matches — authorship alone can't gate visibility here).
+      activityQuery.type = { $ne: "reassign" };
+      activityQuery.note = { $not: /^🔄 Auto Rotation/ };
+    }
 
     var activities = await Activity.find(activityQuery)
       .populate("userId", "name title")
@@ -3636,7 +3648,14 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
       }
       lead.history.forEach(function(h, idx) {
         if (!h) return;
-        if (isSales && (!myName || String(h.byUser || "") !== myName)) return;
+        if (isSales) {
+          // Drop rotation/assignment events outright — sales must not learn
+          // the lead was ever held by anyone else, even when their own name
+          // is stamped as byUser (auto-rotate fires as the outgoing agent).
+          var ev = String(h.event || "");
+          if (ev === "rotated" || ev === "assigned" || ev === "reassigned") return;
+          if (!myName || String(h.byUser || "") !== myName) return;
+        }
         historyEntries.push({
           _id: "hist-" + idx + "-" + String(h.timestamp || ""),
           leadId: oid,
