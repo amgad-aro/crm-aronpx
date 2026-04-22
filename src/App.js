@@ -5746,8 +5746,8 @@ var DailyRequestsPage = function(p) {
         }
         if(isDoneDeal) upData.dealDate = new Date().toISOString().slice(0,10);
         r = await apiFetch("/api/daily-requests/"+gid(r),"PUT",upData,p.token);
-        // Upload any EOI documents against the Lead mirror the PUT just built.
-        if(isEOI && Array.isArray(form.eoiDocFiles) && form.eoiDocFiles.length>0){
+        // Upload any attached documents (EOI or DoneDeal) against the Lead mirror the PUT just built.
+        if((isEOI||isDoneDeal) && Array.isArray(form.eoiDocFiles) && form.eoiDocFiles.length>0){
           try {
             var leadsResp = await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);
             var mirrorLead = (leadsResp&&leadsResp.data||[]).find(function(l){return l.phone===r.phone && l.source==="Daily Request";});
@@ -5756,10 +5756,10 @@ var DailyRequestsPage = function(p) {
                 var ff = form.eoiDocFiles[di];
                 if(!ff||!ff.fileData) continue;
                 try { await apiFetch("/api/leads/"+gid(mirrorLead)+"/eoi-documents","POST",{fileData:ff.fileData,fileName:ff.fileName||""},p.token); }
-                catch(docErr){ console.error("EOI doc upload failed:", docErr.message); }
+                catch(docErr){ console.error("Document upload failed:", docErr.message); }
               }
             }
-          } catch(lookupErr){ console.error("EOI mirror lookup failed:", lookupErr.message); }
+          } catch(lookupErr){ console.error("Mirror lookup failed:", lookupErr.message); }
         }
         // Refresh the leads list so the EOI / Deals page picks up the mirror.
         try { var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token); if(fresh&&fresh.data) p.setLeads(fresh.data); } catch(freshErr){}
@@ -6098,39 +6098,12 @@ var DailyRequestsPage = function(p) {
         <Inp label={"💰 Amount (EGP) *"} req value={form.dealBudget} onChange={function(e){setForm(function(f){return Object.assign({},f,{dealBudget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/>
         {form.status==="EOI"&&<Inp label={"📅 EOI Date"} type="date" value={form.eoiDateInput} onChange={function(e){setForm(function(f){return Object.assign({},f,{eoiDateInput:e.target.value});})}}/>}
         {form.status==="EOI"&&<Inp label={"💵 Deposit (EGP)"} value={form.eoiDeposit} onChange={function(e){setForm(function(f){return Object.assign({},f,{eoiDeposit:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/>}
-        {form.status==="EOI"&&<div style={{ marginBottom:13 }}>
-          <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📎 Upload EOI Documents</label>
-          <label style={{ display:"block", padding:"9px 12px", borderRadius:10, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:13, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
-            Select files (images or PDF)
-            <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" multiple style={{ display:"none" }} onChange={function(e){
-              var picked = Array.from(e.target.files||[]);
-              if (!picked.length) return;
-              var tooBig = picked.find(function(ff){return ff.size>6*1024*1024;});
-              if (tooBig) { alert("Each file must be under 6MB ("+tooBig.name+")"); e.target.value=""; return; }
-              Promise.all(picked.map(function(ff){
-                return new Promise(function(resolve,reject){
-                  var rd=new FileReader();
-                  rd.onload=function(ev){resolve({fileData:ev.target.result, fileName:ff.name});};
-                  rd.onerror=function(){reject(new Error("Read failed: "+ff.name));};
-                  rd.readAsDataURL(ff);
-                });
-              })).then(function(loaded){
-                setForm(function(f){return Object.assign({},f,{eoiDocFiles:(f.eoiDocFiles||[]).concat(loaded)});});
-              }).catch(function(ex){ alert(ex.message||"Failed to read files"); });
-              try{ e.target.value=""; }catch(er){}
-            }}/>
-          </label>
-          {form.eoiDocFiles&&form.eoiDocFiles.length>0&&<div style={{ marginTop:8, padding:"8px 10px", background:"#F8FAFC", borderRadius:8, border:"1px solid #E2E8F0" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>{form.eoiDocFiles.length} file{form.eoiDocFiles.length===1?"":"s"} selected — uploaded on Save</div>
-            {form.eoiDocFiles.map(function(ff,idx){
-              var isPdf = ff.fileData && ff.fileData.indexOf("application/pdf")>=0;
-              return <div key={idx} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, padding:"4px 0", borderTop:idx>0?"1px solid #F1F5F9":"none" }}>
-                <div style={{ fontSize:12, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1 }}>{isPdf?"📕":"🖼️"} {ff.fileName}</div>
-                <button onClick={function(){setForm(function(fs){return Object.assign({},fs,{eoiDocFiles:(fs.eoiDocFiles||[]).filter(function(_,i){return i!==idx;})});});}} style={{ background:"none", border:"none", color:C.danger, fontSize:14, cursor:"pointer", padding:"0 4px", lineHeight:1 }} title="Remove">×</button>
-              </div>;
-            })}
-          </div>}
-        </div>}
+        <DocumentsUpload
+          files={form.eoiDocFiles||[]}
+          onChange={function(next){setForm(function(f){return Object.assign({},f,{eoiDocFiles:next});});}}
+          label={form.status==="EOI"?"📎 Upload EOI Documents":"📎 Upload Deal Documents"}
+          wrapperStyle={{ marginBottom:13 }}
+        />
       </div>}
       {form.status!=="EOI"&&form.status!=="DoneDeal"&&<Inp label={t.callbackTime} req type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/>}
       {form.status==="EOI"||form.status==="DoneDeal"
