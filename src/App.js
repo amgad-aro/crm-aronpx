@@ -5630,15 +5630,15 @@ var DailyRequestsPage = function(p) {
   var addReq=async function(){
     if(!form.name||!form.phone)return;
     if(!form.area.trim()){alert("Area is required");return;}
-    if(!form.callbackTime){alert("Callback is required");return;}
-    if(!form.notes.trim()){alert("Feedback is required");return;}
     var isEOI      = form.status==="EOI";
     var isDoneDeal = form.status==="DoneDeal";
     var dealLike   = isEOI||isDoneDeal;
-    if(dealLike){
-      if(!(form.dealBudget||"").trim()){alert("Amount is required");return;}
-    } else {
+    if(!dealLike){
+      if(!form.callbackTime){alert("Callback is required");return;}
+      if(!form.notes.trim()){alert("Feedback is required");return;}
       if(!form.budget.trim()){alert("Budget is required");return;}
+    } else {
+      if(!(form.dealBudget||"").trim()){alert("Amount is required");return;}
     }
     setSaving(true);
     try{
@@ -5653,7 +5653,7 @@ var DailyRequestsPage = function(p) {
         name:form.name||"",
         phone:form.phone||"",
         phone2:form.phone2||"",
-        propertyType:form.propertyType||"",
+        propertyType: dealLike ? "" : (form.propertyType||""),
         area:form.area||"",
         budget:initialBudget,
         notes:form.notes||"",
@@ -6016,7 +6016,7 @@ var DailyRequestsPage = function(p) {
         <div style={{ gridColumn:"1/-1" }}><Inp label={"Name"} req value={form.name} onChange={function(e){setForm(function(f){return Object.assign({},f,{name:e.target.value});})}}/></div>
         <Inp label={"Phone"} req value={form.phone} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone:e.target.value});})}} placeholder=""/>
         <Inp label={"Alt. Phone"} value={form.phone2} onChange={function(e){setForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}} placeholder=""/>
-        <Inp label={"Property Type"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- Select -"};})}/>
+        {form.status!=="EOI"&&form.status!=="DoneDeal"&&<Inp label={"Property Type"} type="select" value={form.propertyType} onChange={function(e){setForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- Select -"};})}/>}
         <Inp label={"Location"} req value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder=""/>
         {form.status!=="EOI"&&form.status!=="DoneDeal"&&<div style={{ gridColumn:"1/-1" }}><Inp label={"Budget"} req value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>}
       </div>
@@ -6062,8 +6062,10 @@ var DailyRequestsPage = function(p) {
           </div>}
         </div>}
       </div>}
-      <Inp label={t.callbackTime} req type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/>
-      <Inp label={"Feedback *"} req type="textarea" value={form.notes} onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/>
+      {form.status!=="EOI"&&form.status!=="DoneDeal"&&<Inp label={t.callbackTime} req type="datetime-local" value={form.callbackTime} onChange={function(e){setForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/>}
+      {form.status==="EOI"||form.status==="DoneDeal"
+        ? <Inp label={"Feedback"} type="textarea" value={form.notes} onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/>
+        : <Inp label={"Feedback *"} req type="textarea" value={form.notes} onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/>}
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addReq} loading={saving} style={{ flex:1 }}>Add Number</Btn></div>
     </Modal>
     <Modal show={showBulk} onClose={function(){setShowBulk(false);}} title={"Bulk Reassign"}>
