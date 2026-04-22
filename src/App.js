@@ -6119,6 +6119,20 @@ var DailyRequestsPage = function(p) {
 };
 
 // ===== USERS =====
+var JOB_TITLES = [
+  { label:"Property Advisor",        role:"sales" },
+  { label:"Property Consultant",     role:"sales" },
+  { label:"Senior Sales",            role:"sales" },
+  { label:"Supervisor",              role:"sales" },
+  { label:"Team Leader",             role:"team_leader" },
+  { label:"Sr. Team Leader",         role:"team_leader" },
+  { label:"Associate Sales Manager", role:"manager" },
+  { label:"Sales Manager",           role:"manager" },
+  { label:"Sr. Sales Manager",       role:"manager" },
+  { label:"Sales Director",          role:"director" }
+];
+var ROLE_FOR_TITLE = JOB_TITLES.reduce(function(a,j){ a[j.label]=j.role; return a; }, {});
+
 var UsersPage = function(p) {
   var t=p.t; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"; var [showAdd,setShowAdd]=useState(false); var [saving,setSaving]=useState(false);
   var [nU,setNU]=useState({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15,teamId:"",teamName:""});
@@ -6127,6 +6141,16 @@ var UsersPage = function(p) {
   var [pwMsg,setPwMsg]=useState(""); var [pwSaving,setPwSaving]=useState(false);
   var [teamModal,setTeamModal]=useState(null); // {userId, userName, teamId, teamName, reportsTo}
   var [teamSaving,setTeamSaving]=useState(false);
+  var [editModal,setEditModal]=useState(null); // {userId, userName, title, role}
+  var [editSaving,setEditSaving]=useState(false);
+  var saveUserEdit=async function(){
+    if(!editModal)return; setEditSaving(true);
+    try{
+      var upd=await apiFetch("/api/users/"+editModal.userId,"PUT",{title:editModal.title,role:editModal.role},p.token);
+      p.setUsers(function(prev){return prev.map(function(x){return gid(x)===editModal.userId?Object.assign({},x,{title:editModal.title,role:editModal.role}):x;});});
+      setEditModal(null);
+    }catch(e){alert(e.message);} setEditSaving(false);
+  };
   var saveTeam=async function(){
     if(!teamModal)return; setTeamSaving(true);
     try{
@@ -6192,6 +6216,7 @@ var UsersPage = function(p) {
         </td>
         <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(u.role!=="admin")toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
         <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:displayName});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} disabled={p.cu.role==="sales_admin"&&u.role==="admin"} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:p.cu.role==="sales_admin"&&u.role==="admin"?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", opacity:p.cu.role==="sales_admin"&&u.role==="admin"?0.3:1 }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button>
+              {isOnlyAdmin&&<button onClick={function(){setEditModal({userId:uid,userName:displayName,title:u.title||"",role:u.role||"sales"});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.edit||"Edit"}><Edit size={12} color={C.accent}/></button>}
               <button onClick={function(){setTeamModal({userId:uid,userName:u.name,userRole:u.role,teamId:u.teamId||"",teamName:u.teamName||"",reportsTo:u.reportsTo||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Edit Team"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(u.username!=="amgad")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.username!=="amgad"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.username==="amgad"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
       </tr>;})}
       </tbody>
@@ -6214,6 +6239,20 @@ var UsersPage = function(p) {
         <Btn outline onClick={function(){setQtModal(null);}} style={{ flex:1 }}>Cancel</Btn>
         <Btn onClick={function(){saveQTargets(gid(qtModal.user),qtModal.targets).then(function(){setQtModal(null);});}} style={{ flex:1 }}>✅ Save</Btn>
       </div>
+    </Modal>}
+    {editModal&&<Modal show={true} onClose={function(){setEditModal(null);}} title={"✏️ Edit User — "+editModal.userName}>
+      <Inp label={t.title} type="select" value={editModal.title}
+        onChange={function(e){
+          var newTitle=e.target.value;
+          var mapped=ROLE_FOR_TITLE[newTitle];
+          setEditModal(function(prev){return Object.assign({},prev,{title:newTitle},mapped?{role:mapped}:{});});
+        }}
+        options={[{value:"",label:"- Select Job Title -"}].concat(JOB_TITLES.map(function(j){return {value:j.label,label:j.label};}))}/>
+      <Inp label={t.role} type="select" value={editModal.role}
+        onChange={function(e){setEditModal(function(prev){return Object.assign({},prev,{role:e.target.value});});}}
+        options={[{value:"admin",label:t.admin},{value:"sales_admin",label:"Sales Admin"},{value:"director",label:"Sales Director"},{value:"manager",label:t.salesManager},{value:"team_leader",label:"Team Leader"},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/>
+      <div style={{fontSize:11,color:C.textLight,marginTop:-6,marginBottom:12}}>Selecting a Job Title auto-sets the Role. You can override the Role for edge cases.</div>
+      <div style={{display:"flex",gap:10}}><Btn outline onClick={function(){setEditModal(null);}} style={{flex:1}}>{t.cancel}</Btn><Btn onClick={saveUserEdit} loading={editSaving} style={{flex:1}}>{t.save}</Btn></div>
     </Modal>}
     {teamModal&&<Modal show={true} onClose={function(){setTeamModal(null);}} title={"👥 Edit Team — "+teamModal.userName}>
       {/* reportsTo — hidden for top-level (admin/sales_admin/director) and non-hierarchy (viewer) roles */}
@@ -6256,7 +6295,13 @@ var UsersPage = function(p) {
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.name} req value={nU.name} onChange={function(e){setNU(Object.assign({},nU,{name:e.target.value}));}}/></div>
         <Inp label={t.username} req value={nU.username} onChange={function(e){setNU(Object.assign({},nU,{username:e.target.value}));}}/>
         <Inp label={t.password} value={nU.password} onChange={function(e){setNU(Object.assign({},nU,{password:e.target.value}));}}/>
-        <Inp label={t.title} value={nU.title} onChange={function(e){setNU(Object.assign({},nU,{title:e.target.value}));}}/>
+        <Inp label={t.title} type="select" value={nU.title}
+          onChange={function(e){
+            var newTitle=e.target.value;
+            var mapped=ROLE_FOR_TITLE[newTitle];
+            setNU(Object.assign({},nU,{title:newTitle},mapped?{role:mapped}:{}));
+          }}
+          options={[{value:"",label:"- Select Job Title -"}].concat(JOB_TITLES.map(function(j){return {value:j.label,label:j.label};}))}/>
         <Inp label={t.email} value={nU.email} onChange={function(e){setNU(Object.assign({},nU,{email:e.target.value}));}}/>
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.phone} value={nU.phone} onChange={function(e){setNU(Object.assign({},nU,{phone:e.target.value}));}}/></div>
         <Inp label={t.monthlyTarget} type="number" value={nU.monthlyTarget} onChange={function(e){setNU(Object.assign({},nU,{monthlyTarget:Number(e.target.value)}));}}/>
