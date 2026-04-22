@@ -441,7 +441,7 @@ var StatusModal = function(p) {
     if (needsBudgetFields && !potInstalment.trim()){ setErr("Please enter the Installments"); return; }
     setSaving(true);
     var extra = (isDoneDeal||isEOI)
-      ? { project: dealProject, notes: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput, eoiDocumentFiles: isEOI ? eoiDocFiles : [] }
+      ? { project: dealProject, unitType: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput, eoiDocumentFiles: isEOI ? eoiDocFiles : [] }
       : (needsPotFields && (potBudget||potDeposit||potInstalment))
         ? { budget: potBudget, deposit: potDeposit, instalment: potInstalment }
         : {};
@@ -1651,7 +1651,7 @@ var LeadsPage = function(p) {
       if(extra) {
         if(extra.budget)     upData.budget     = extra.budget;
         if(extra.project)    upData.project    = extra.project;
-        if(extra.notes)      upData.notes      = extra.notes;
+        if(extra.unitType)   upData.unitType   = extra.unitType;
         if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
         if(extra.deposit) {
           upData.notes = (upData.notes?upData.notes+" | ":"")+"Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
@@ -4405,7 +4405,7 @@ var EOIPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}</td>
             {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}>{d.phone}</td>}
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
-            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.notes||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.unitType||d.notes||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success, textAlign:"left" }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.eoiDeposit||"-"}</td>
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>{getAg(d)}</td>}
@@ -5548,7 +5548,7 @@ var DailyRequestsPage = function(p) {
       if(extra){
         if(extra.budget)    updateData.budget=extra.budget;
         if(extra.project)   updateData.project=extra.project;
-        if(extra.notes)     updateData.notes=(updateData.notes?updateData.notes+" | ":"")+extra.notes;
+        if(extra.unitType)  updateData.unitType=extra.unitType;
         if(extra.eoiDeposit) updateData.eoiDeposit=extra.eoiDeposit;
         if(extra.deposit){
           var paymentInfo="Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
@@ -5669,7 +5669,7 @@ var DailyRequestsPage = function(p) {
           budget: form.dealBudget||"",
           project: form.dealProject||""
         };
-        if(form.dealUnitType) upData.notes=(form.notes?form.notes+" | ":"")+form.dealUnitType;
+        if(form.dealUnitType) upData.unitType=form.dealUnitType;
         if(isEOI){
           if(form.eoiDeposit) upData.eoiDeposit=form.eoiDeposit;
           upData.eoiDate = form.eoiDateInput ? new Date(form.eoiDateInput).toISOString() : new Date().toISOString();
