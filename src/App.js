@@ -1253,8 +1253,13 @@ var LeadForm = function(p) {
   // second submission before it ever hits the network.
   var inflight = useRef(false);
   var isReq = p.isReq||false;
-  var isEOIForm = p.initialStatus==="EOI"||(p.editId&&p.initial&&p.initial.status==="EOI");
-  var isDoneDealForm = p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal");
+  // Effective status: forced initialStatus (EOI / Deals pages) wins, else edited lead's status,
+  // else the form's own status picker (Add Lead modal). Lets EOI/DoneDeal-gated UI react live.
+  var effectiveStatus = p.initialStatus || (p.editId&&p.initial ? p.initial.status : form.status) || "";
+  var isEOIForm = effectiveStatus==="EOI";
+  var isDoneDealForm = effectiveStatus==="DoneDeal";
+  // Only Add Lead (no forced status, not editing) shows a status picker.
+  var showStatusPicker = !p.initialStatus && !p.editId;
 
   var checkDup = async function(phone) {
     if (phone.length < 8) { setDupWarning(null); return; }
@@ -1278,7 +1283,9 @@ var LeadForm = function(p) {
     inflight.current = true;
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||"NewLead"), phone2: form.phone2||"" });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||form.status||"NewLead"), phone2: form.phone2||"" });
+      // Strip client-only fields the API doesn't need
+      delete payload.documentFiles;
       // Keep deal metadata in payload so it saves to DB
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token, p.csrfToken)
@@ -1295,6 +1302,17 @@ var LeadForm = function(p) {
           if (result._id) cache[String(result._id)] = payload.phone2;
           localStorage.setItem('phone2_cache', JSON.stringify(cache));
         } catch(e) {}
+      }
+      // Upload any documents attached in the form (EOI or DoneDeal)
+      if (result && result._id && Array.isArray(form.documentFiles) && form.documentFiles.length>0) {
+        for (var di=0; di<form.documentFiles.length; di++) {
+          var ff = form.documentFiles[di];
+          if (!ff || !ff.fileData) continue;
+          try {
+            var withDocs = await apiFetch("/api/leads/"+gid(result)+"/eoi-documents","POST",{fileData:ff.fileData, fileName:ff.fileName||""},p.token);
+            if (withDocs && withDocs._id) result = withDocs;
+          } catch(docErr) { console.error("Document upload failed:", docErr.message); }
+        }
       }
       p.onSave(result);
     } catch(e) { alert(e.message); }
@@ -1314,15 +1332,27 @@ var LeadForm = function(p) {
       <Inp label={isEOIForm?"💰 Amount (EGP)":t.budget} req={isEOIForm} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
     </div>
     <Inp label="Campaign Name" value={form.campaign||""} onChange={function(e){upd("campaign",e.target.value);}} placeholder="e.g. Campaign A April"/>
+    {showStatusPicker&&<Inp label="Status" type="select" value={form.status||"NewLead"} onChange={function(e){upd("status",e.target.value);}} options={[
+      {value:"NewLead",label:"New Lead"},
+      {value:"Potential",label:"Potential"},
+      {value:"HotCase",label:"Hot Case"},
+      {value:"EOI",label:"EOI"},
+      {value:"DoneDeal",label:"Done Deal"}
+    ]}/>}
     <Inp label={t.project} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder=""/>
     {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     {isEOIForm&&<Inp label="📅 EOI Date" type="date" value={form.eoiDate||""} onChange={function(e){upd("eoiDate",e.target.value);}}/>}
     {isEOIForm&&<Inp label="💵 Deposit (EGP)" req value={form.eoiDeposit||""} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("eoiDeposit",r?Number(r).toLocaleString():"");}} placeholder=""/>}
+    {(isEOIForm||isDoneDealForm)&&<DocumentsUpload
+      files={form.documentFiles||[]}
+      onChange={function(next){upd("documentFiles",next);}}
+      label={isEOIForm?"📎 Upload EOI Documents":"📎 Upload Deal Documents"}
+    />}
     {!isEOIForm&&!isDoneDealForm&&<Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>}
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
-    {(p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal"))&&<Inp label="Deal Date" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
-    {(p.initialStatus==="DoneDeal"||(p.editId&&p.initial&&p.initial.status==="DoneDeal"))&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
+    {isDoneDealForm&&<Inp label="Deal Date" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
+    {isDoneDealForm&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
       <Inp label="Down Payment %" value={form.downPaymentPct||""} onChange={function(e){upd("downPaymentPct",e.target.value.replace(/[^0-9.]/g,""));}} placeholder="e.g. 10"/>
       <Inp label="Installment Years" value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
     </div>}
