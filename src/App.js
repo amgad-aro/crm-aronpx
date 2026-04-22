@@ -1344,11 +1344,6 @@ var LeadForm = function(p) {
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     {isEOIForm&&<Inp label="📅 EOI Date" type="date" value={form.eoiDate||""} onChange={function(e){upd("eoiDate",e.target.value);}}/>}
     {isEOIForm&&<Inp label="💵 Deposit (EGP)" req value={form.eoiDeposit||""} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("eoiDeposit",r?Number(r).toLocaleString():"");}} placeholder=""/>}
-    {(isEOIForm||isDoneDealForm)&&<DocumentsUpload
-      files={form.documentFiles||[]}
-      onChange={function(next){upd("documentFiles",next);}}
-      label={isEOIForm?"📎 Upload EOI Documents":"📎 Upload Deal Documents"}
-    />}
     {!isEOIForm&&!isDoneDealForm&&<Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>}
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
     {isDoneDealForm&&<Inp label="Deal Date" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}}/>}
@@ -1356,6 +1351,11 @@ var LeadForm = function(p) {
       <Inp label="Down Payment %" value={form.downPaymentPct||""} onChange={function(e){upd("downPaymentPct",e.target.value.replace(/[^0-9.]/g,""));}} placeholder="e.g. 10"/>
       <Inp label="Installment Years" value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
     </div>}
+    {(isEOIForm||isDoneDealForm)&&<DocumentsUpload
+      files={form.documentFiles||[]}
+      onChange={function(next){upd("documentFiles",next);}}
+      label={isEOIForm?"📎 Upload EOI Documents":"📎 Upload Deal Documents"}
+    />}
     <div style={{ display:"flex", gap:10 }}>
       <Btn outline onClick={p.onClose} style={{ flex:1 }}>{t.cancel}</Btn>
       <Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.editId?t.save:t.add}</Btn>
