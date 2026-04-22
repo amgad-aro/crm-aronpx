@@ -4242,7 +4242,7 @@ var EOIPage = function(p) {
   };
 
   var cancelEOI=async function(lead){
-    if(p.cu.role!=="admin") { alert("Only admin can cancel an EOI"); return; }
+    if(p.cu.role!=="admin"&&p.cu.role!=="sales_admin") { alert("Only admin can cancel an EOI"); return; }
     if(!window.confirm("Cancel this EOI? The lead will return to Hot Case status and be rotated to another agent.")) return;
     setCancelling(true);
     try{
@@ -4262,7 +4262,7 @@ var EOIPage = function(p) {
   };
 
   var convertToDeal=async function(lead){
-    if(p.cu.role!=="admin"&&p.cu.role!=="sales") { alert("Only admin or sales can convert an EOI to a deal"); return; }
+    if(p.cu.role!=="admin"&&p.cu.role!=="sales_admin"&&p.cu.role!=="sales") { alert("Only admin or sales can convert an EOI to a deal"); return; }
     if(lead.eoiStatus!=="Approved") { alert("EOI must be Approved before converting to a Done Deal"); return; }
     if(!window.confirm("Convert this EOI to a Done Deal? The lead will move to the Deals page.")) return;
     setConvertingDeal(true);
@@ -4387,7 +4387,7 @@ var EOIPage = function(p) {
               convertToDeal (no new status value). The button MUST call both
               stopPropagation and preventDefault so the outer card's onClick
               (which opens the details panel) doesn't fire on the same click. */}
-          {(p.cu.role==="admin"||p.cu.role==="sales")&&<button onClick={function(e){e.stopPropagation();e.preventDefault();convertToDeal(d);}} onMouseDown={function(e){e.stopPropagation();}} onTouchStart={function(e){e.stopPropagation();}} disabled={convertingDeal} style={{ marginTop:10, width:"100%", padding:"8px 12px", borderRadius:9, border:"none", background:"#15803D", color:"#fff", fontSize:12, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1 }}>
+          {(p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="sales")&&<button onClick={function(e){e.stopPropagation();e.preventDefault();convertToDeal(d);}} onMouseDown={function(e){e.stopPropagation();}} onTouchStart={function(e){e.stopPropagation();}} disabled={convertingDeal} style={{ marginTop:10, width:"100%", padding:"8px 12px", borderRadius:9, border:"none", background:"#15803D", color:"#fff", fontSize:12, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1 }}>
             {convertingDeal?"Converting…":"✅ Convert to Deal"}
           </button>}
         </div>;
@@ -4422,7 +4422,7 @@ var EOIPage = function(p) {
                     stopPropagation on the button itself is belt-and-suspenders
                     alongside the td's stopPropagation — keeps the row's
                     detail-panel onClick from firing on the same click. */}
-                {(p.cu.role==="admin"||p.cu.role==="sales")&&<button onClick={function(e){e.stopPropagation();e.preventDefault();convertToDeal(d);}} onMouseDown={function(e){e.stopPropagation();}} disabled={convertingDeal} title="Convert to Deal" style={{ padding:"6px 10px", borderRadius:6, border:"none", background:"#15803D", color:"#fff", fontSize:11, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1, whiteSpace:"nowrap" }}>
+                {(p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="sales")&&<button onClick={function(e){e.stopPropagation();e.preventDefault();convertToDeal(d);}} onMouseDown={function(e){e.stopPropagation();}} disabled={convertingDeal} title="Convert to Deal" style={{ padding:"6px 10px", borderRadius:6, border:"none", background:"#15803D", color:"#fff", fontSize:11, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1, whiteSpace:"nowrap" }}>
                   {convertingDeal?"…":"Convert to Deal"}
                 </button>}
                 {isAdmin&&<button onClick={function(){setEditLead(d);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Edit size={13} color={C.info}/></button>}
@@ -4446,7 +4446,7 @@ var EOIPage = function(p) {
               if (isCancelled) return <span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ EOI Cancelled</span>;
               var isDoneDeal = selectedEOI.status==="DoneDeal";
               return <>
-                {p.cu.role==="admin"&&<div style={{ display:"flex", gap:6 }}>
+                {(p.cu.role==="admin"||p.cu.role==="sales_admin")&&<div style={{ display:"flex", gap:6 }}>
                   <button onClick={function(){if(!isDoneDeal) toggleApproved(selectedEOI,"eoiApproved");}} disabled={isDoneDeal} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:isDoneDeal?"default":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:isDoneDeal?0.7:1 }}>
                     {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
                   </button>
@@ -5136,7 +5136,7 @@ var DealsPage = function(p) {
       <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
-          {(p.cu.role==="admin")&&<div style={{ display:"flex", gap:6 }}>
+          {(p.cu.role==="admin"||p.cu.role==="sales_admin")&&<div style={{ display:"flex", gap:6 }}>
             {(function(){
               var isCancelled = selectedDeal.dealStatus==="Deal Cancelled" || selectedDeal.status==="Deal Cancelled";
               if (isCancelled) return <span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ Deal Cancelled</span>;

@@ -2013,7 +2013,7 @@ app.post("/api/leads/:id/delete-deal-image", auth, async function(req, res) {
 // ===== EOI CANCEL (admin) — restores pre-EOI status on the lead, keeps record visible under EOI Deal Cancelled =====
 app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
   try {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Only admin can cancel an EOI" });
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") return res.status(403).json({ error: "Only admin can cancel an EOI" });
     var existing = await Lead.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Lead not found" });
     // Rule: any cancel returns the lead to HotCase — preEoiStatus is ignored.
@@ -2038,7 +2038,7 @@ app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
 
 app.post("/api/daily-requests/:id/eoi-cancel", auth, async function(req, res) {
   try {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Only admin can cancel an EOI" });
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") return res.status(403).json({ error: "Only admin can cancel an EOI" });
     var existing = await DailyRequest.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Daily Request not found" });
     // Rule: any cancel returns the DR to HotCase — preEoiStatus is ignored.
@@ -2062,7 +2062,7 @@ app.post("/api/daily-requests/:id/eoi-cancel", auth, async function(req, res) {
 // ===== EOI -> DONE DEAL (admin) — converts an approved EOI to a Done Deal =====
 app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
   try {
-    if (req.user.role !== "admin" && req.user.role !== "sales") return res.status(403).json({ error: "Only admin or sales can convert an EOI to a deal" });
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin" && req.user.role !== "sales") return res.status(403).json({ error: "Only admin or sales can convert an EOI to a deal" });
     var existing = await Lead.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Lead not found" });
     if (existing.eoiStatus !== "Approved") return res.status(400).json({ error: "EOI must be Approved before it can be converted to a Done Deal" });
@@ -2099,7 +2099,7 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
 // ===== DEAL CANCEL (admin) — restores pre-DoneDeal status, keeps lead in Deals page's Deal Cancelled tab =====
 app.post("/api/leads/:id/deal-cancel", auth, async function(req, res) {
   try {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Only admin can cancel a deal" });
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") return res.status(403).json({ error: "Only admin can cancel a deal" });
     var existing = await Lead.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Lead not found" });
     // Rule: any cancel returns the lead to HotCase — preDealStatus is ignored.
@@ -2124,7 +2124,7 @@ app.post("/api/leads/:id/deal-cancel", auth, async function(req, res) {
 
 app.post("/api/daily-requests/:id/deal-cancel", auth, async function(req, res) {
   try {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Only admin can cancel a deal" });
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") return res.status(403).json({ error: "Only admin can cancel a deal" });
     var existing = await DailyRequest.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Daily Request not found" });
     // Rule: any cancel returns the DR to HotCase — preDealStatus is ignored.
@@ -2147,7 +2147,7 @@ app.post("/api/daily-requests/:id/deal-cancel", auth, async function(req, res) {
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
     // Admin-only gate: "Deal Cancelled" can only be set by admin users.
-    if (req.body.status === "Deal Cancelled" && req.user.role !== "admin") {
+    if (req.body.status === "Deal Cancelled" && req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(403).json({ error: "Only admin can set Deal Cancelled status" });
     }
     // Normalize ObjectId fields the frontend may have sent as populated
@@ -3854,7 +3854,7 @@ app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req
 app.put("/api/daily-requests/:id", auth, async function(req, res) {
   try {
     // Admin-only gate: "Deal Cancelled" can only be set by admin users.
-    if (req.body.status === "Deal Cancelled" && req.user.role !== "admin") {
+    if (req.body.status === "Deal Cancelled" && req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(403).json({ error: "Only admin can set Deal Cancelled status" });
     }
     // Normalize agentId — on edit the frontend can send a populated
