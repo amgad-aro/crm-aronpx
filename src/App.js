@@ -393,6 +393,48 @@ var Inp = function(p) {
 var Btn = function(p) { return <button onClick={p.onClick} disabled={p.loading||p.disabled} style={Object.assign({ padding:"9px 18px", borderRadius:10, border:p.outline?"1px solid #E2E8F0":"none", background:p.outline?"#fff":p.danger?C.danger:p.success?C.success:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", color:p.outline?C.textLight:"#fff", fontSize:13, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:7, justifyContent:"center", opacity:p.loading||p.disabled?0.65:1 }, p.style||{})}>{p.children}</button>; };
 var Loader = function() { return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", padding:80 }}><div style={{ width:36, height:36, borderRadius:"50%", border:"3px solid #E8ECF1", borderTopColor:C.accent, animation:"spin 0.8s linear infinite" }}/></div>; };
 
+// Upload widget: dashed dropzone + 6MB cap + file list with remove. Value is [{fileData, fileName}].
+var DocumentsUpload = function(p) {
+  var files = p.files || [];
+  var label = p.label || "📎 Upload Documents";
+  var onPick = function(e){
+    var picked = Array.from(e.target.files||[]);
+    if (!picked.length) return;
+    var tooBig = picked.find(function(f){return f.size>6*1024*1024;});
+    if (tooBig) { if(p.onError) p.onError("Each file must be under 6MB ("+tooBig.name+")"); else alert("Each file must be under 6MB ("+tooBig.name+")"); e.target.value=""; return; }
+    Promise.all(picked.map(function(f){
+      return new Promise(function(resolve,reject){
+        var r=new FileReader();
+        r.onload=function(ev){resolve({fileData:ev.target.result, fileName:f.name});};
+        r.onerror=function(){reject(new Error("Read failed: "+f.name));};
+        r.readAsDataURL(f);
+      });
+    })).then(function(loaded){
+      p.onChange(files.concat(loaded));
+      if(p.onError) p.onError("");
+    }).catch(function(ex){ if(p.onError) p.onError(ex.message||"Failed to read files"); else alert(ex.message||"Failed to read files"); });
+    try{ e.target.value=""; }catch(er){}
+  };
+  var removeAt = function(idx){ p.onChange(files.filter(function(_,i){return i!==idx;})); };
+  return <div style={Object.assign({ marginBottom:11 }, p.wrapperStyle||{})}>
+    <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>{label}</label>
+    <label style={{ display:"block", padding:"9px 12px", borderRadius:10, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:13, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+      Select files (images or PDF)
+      <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" multiple style={{ display:"none" }} onChange={onPick}/>
+    </label>
+    {files.length>0&&<div style={{ marginTop:8, padding:"8px 10px", background:"#F8FAFC", borderRadius:8, border:"1px solid #E2E8F0" }}>
+      <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>{files.length} file{files.length===1?"":"s"} selected — uploaded on Save</div>
+      {files.map(function(f,idx){
+        var isPdf = f.fileData && f.fileData.indexOf("application/pdf")>=0;
+        return <div key={idx} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, padding:"4px 0", borderTop:idx>0?"1px solid #F1F5F9":"none" }}>
+          <div style={{ fontSize:12, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1 }}>{isPdf?"📕":"🖼️"} {f.fileName}</div>
+          <button onClick={function(){removeAt(idx);}} style={{ background:"none", border:"none", color:C.danger, fontSize:14, cursor:"pointer", padding:"0 4px", lineHeight:1 }} title="Remove">×</button>
+        </div>;
+      })}
+    </div>}
+  </div>;
+};
+
 // Status change requires mandatory comment
 var StatusModal = function(p) {
   var [comment, setComment] = useState("");
@@ -441,7 +483,7 @@ var StatusModal = function(p) {
     if (needsBudgetFields && !potInstalment.trim()){ setErr("Please enter the Installments"); return; }
     setSaving(true);
     var extra = (isDoneDeal||isEOI)
-      ? { project: dealProject, unitType: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput, eoiDocumentFiles: isEOI ? eoiDocFiles : [] }
+      ? { project: dealProject, unitType: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput, eoiDocumentFiles: (isEOI||isDoneDeal) ? eoiDocFiles : [] }
       : (needsPotFields && (potBudget||potDeposit||potInstalment))
         ? { budget: potBudget, deposit: potDeposit, instalment: potInstalment }
         : {};
@@ -572,40 +614,12 @@ var StatusModal = function(p) {
           onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setEoiDeposit(r?Number(r).toLocaleString():"");}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
       </div>}
-      {isEOI&&<div style={{ marginBottom:11 }}>
-        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📎 Upload EOI Documents</label>
-        <label style={{ display:"block", padding:"9px 12px", borderRadius:10, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:13, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
-          Select files (images or PDF)
-          <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" multiple style={{ display:"none" }} onChange={function(e){
-            var picked = Array.from(e.target.files||[]);
-            if (!picked.length) return;
-            var tooBig = picked.find(function(f){return f.size>6*1024*1024;});
-            if (tooBig) { setErr("Each file must be under 6MB ("+tooBig.name+")"); e.target.value=""; return; }
-            Promise.all(picked.map(function(f){
-              return new Promise(function(resolve,reject){
-                var r=new FileReader();
-                r.onload=function(ev){resolve({fileData:ev.target.result, fileName:f.name});};
-                r.onerror=function(){reject(new Error("Read failed: "+f.name));};
-                r.readAsDataURL(f);
-              });
-            })).then(function(loaded){
-              setEoiDocFiles(function(prev){return prev.concat(loaded);});
-              setErr("");
-            }).catch(function(ex){ setErr(ex.message||"Failed to read files"); });
-            try{ e.target.value=""; }catch(er){}
-          }}/>
-        </label>
-        {eoiDocFiles.length>0&&<div style={{ marginTop:8, padding:"8px 10px", background:"#F8FAFC", borderRadius:8, border:"1px solid #E2E8F0" }}>
-          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>{eoiDocFiles.length} file{eoiDocFiles.length===1?"":"s"} selected — uploaded on Save</div>
-          {eoiDocFiles.map(function(f,idx){
-            var isPdf = f.fileData && f.fileData.indexOf("application/pdf")>=0;
-            return <div key={idx} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, padding:"4px 0", borderTop:idx>0?"1px solid #F1F5F9":"none" }}>
-              <div style={{ fontSize:12, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1 }}>{isPdf?"📕":"🖼️"} {f.fileName}</div>
-              <button onClick={function(){setEoiDocFiles(function(prev){return prev.filter(function(_,i){return i!==idx;});});}} style={{ background:"none", border:"none", color:C.danger, fontSize:14, cursor:"pointer", padding:"0 4px", lineHeight:1 }} title="Remove">×</button>
-            </div>;
-          })}
-        </div>}
-      </div>}
+      {(isEOI||isDoneDeal)&&<DocumentsUpload
+        files={eoiDocFiles}
+        onChange={setEoiDocFiles}
+        onError={setErr}
+        label={isEOI?"📎 Upload EOI Documents":"📎 Upload Deal Documents"}
+      />}
     </div>}
 
     {err&&<div style={{ color:C.danger, fontSize:12, marginBottom:12, padding:"8px 12px", background:"#FEF2F2", borderRadius:8 }}>⚠️ {err}</div>}
