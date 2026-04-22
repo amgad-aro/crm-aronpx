@@ -5392,6 +5392,26 @@ var ArchivePage = function(p) {
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:false}):l;});});
     }catch(e){alert(e.message);}
   };
+  var canDelete = p.cu.role==="admin" || p.cu.role==="sales_admin";
+  var deleteLead=async function(lid){
+    if(!window.confirm("Delete this record permanently? This cannot be undone.")) return;
+    try{
+      await apiFetch("/api/leads/"+lid,"DELETE",null,p.token);
+      p.setLeads(function(prev){return prev.filter(function(l){return gid(l)!==lid;});});
+    }catch(e){alert(e.message);}
+  };
+  var deleteDR=async function(rid){
+    if(!window.confirm("Delete this record permanently? This cannot be undone.")) return;
+    try{
+      await apiFetch("/api/daily-requests/"+rid,"DELETE",null,p.token);
+      try{
+        var ids=JSON.parse(localStorage.getItem("crm_dr_archived")||"[]");
+        ids=ids.filter(function(x){return x!==rid;});
+        localStorage.setItem("crm_dr_archived",JSON.stringify(ids));
+      }catch(e){}
+      setArchivedDR(function(prev){return prev.filter(function(r){return gid(r)!==rid;});});
+    }catch(e){alert(e.message);}
+  };
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.archive} ({archived.length})</h2>
@@ -5423,7 +5443,10 @@ var ArchivePage = function(p) {
           <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{l.project}</td>
           <td style={{ padding:"11px 12px" }}><Badge bg={so.bg} color={so.color}>{so.label}</Badge></td>
           {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12 }}>{ag}</td>}
-          <td style={{ padding:"11px 12px" }}><Btn onClick={function(){restore(lid);}} style={{ padding:"5px 12px", fontSize:11 }}><RotateCcw size={12}/> {t.restore}</Btn></td>
+          <td style={{ padding:"11px 12px" }}><div style={{ display:"flex", gap:6, alignItems:"center" }}>
+            <Btn onClick={function(){restore(lid);}} style={{ padding:"5px 12px", fontSize:11 }}><RotateCcw size={12}/> {t.restore}</Btn>
+            {canDelete&&<button onClick={function(){deleteLead(lid);}} title="Delete permanently" style={{ width:28, height:28, borderRadius:6, border:"1px solid "+C.danger, background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Trash2 size={13} color={C.danger}/></button>}
+          </div></td>
         </tr>;
       })}</tbody>
     </table></div></Card>}
@@ -5441,7 +5464,10 @@ var ArchivePage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight }}>{r.area||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.success, fontWeight:600 }}>{r.budget||"-"}</td>
             <td style={{ padding:"11px 12px" }}><Badge bg={so.bg} color={so.color}>{so.label}</Badge></td>
-            <td style={{ padding:"11px 12px" }}><Btn onClick={function(){restoreDR(rid);}} style={{ padding:"5px 12px", fontSize:11 }}><RotateCcw size={12}/> Restore</Btn></td>
+            <td style={{ padding:"11px 12px" }}><div style={{ display:"flex", gap:6, alignItems:"center" }}>
+              <Btn onClick={function(){restoreDR(rid);}} style={{ padding:"5px 12px", fontSize:11 }}><RotateCcw size={12}/> Restore</Btn>
+              {canDelete&&<button onClick={function(){deleteDR(rid);}} title="Delete permanently" style={{ width:28, height:28, borderRadius:6, border:"1px solid "+C.danger, background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Trash2 size={13} color={C.danger}/></button>}
+            </div></td>
           </tr>;
         })}</tbody>
       </table></div></Card>
