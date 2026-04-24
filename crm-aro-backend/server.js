@@ -1455,6 +1455,16 @@ app.get("/api/leads", auth, async function(req, res) {
     }
     // admin: no filter
 
+    // Standalone "Locked Only" filter: when set, only return leads whose
+    // rotation-lock flag is true. Role-based visibility above is still
+    // enforced (access control is not a user filter), but any other filter
+    // query params are ignored per the standalone contract.
+    // Restricted to admin / sales_admin; other roles silently have the
+    // param ignored so they can't bypass the hidden UI control.
+    if (req.query.lockedOnly === "true" && (role === "admin" || role === "sales_admin")) {
+      query.locked = true;
+    }
+
     // Pagination
     var page = parseInt(req.query.page) || 1;
     var limit = parseInt(req.query.limit) || 1000;

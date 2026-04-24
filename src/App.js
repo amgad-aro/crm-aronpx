@@ -1584,6 +1584,7 @@ var LeadsPage = function(p) {
   var [noAgentFilter, setNoAgentFilter] = useState(false);
   var [agentFilter, setAgentFilter] = useState("");
   var [sortBy, setSortBy] = useState("lastActivity");
+  var [lockedOnly, setLockedOnly] = useState(false);
   var [panelHistory, setPanelHistory] = useState([]);
   var fileRef = useRef(null);
 
@@ -1602,42 +1603,49 @@ var LeadsPage = function(p) {
     if(isReq && (p.cu.role==="manager"||p.cu.role==="team_leader") && !l.agentId) return false;
     return true;
   });
-  var filtered = p.leadFilter==="all"
-    ? allVisible
-    : p.leadFilter==="MeetingDone"
-      // Permanent meeting filter: strictly hadMeeting === true. A lead is
-      // tagged on its first transition into MeetingDone and the flag is
-      // never cleared, so this captures every historical meeting regardless
-      // of the current status. Legacy rows are backfilled on server start.
-      ? allVisible.filter(function(l){return l.hadMeeting===true;})
-      : allVisible.filter(function(l){return l.status===p.leadFilter;});
-  // Management-alerts special filter (from dashboard)
-  if (p.specialFilter && p.specialFilter.type) {
-    var spT = p.specialFilter.type;
-    var nowMs = Date.now();
-    var monthStartMs = new Date(new Date().getFullYear(), new Date().getMonth(), 1, 0, 0, 0, 0).getTime();
-    filtered = filtered.filter(function(l){
-      if (spT==="untouched") {
-        var asgn = l.assignments||[];
-        if (asgn.length===0) return true;
-        return asgn.every(function(a){
-          if (!a.lastActionAt) return true;
-          if (a.assignedAt && new Date(a.lastActionAt).getTime()===new Date(a.assignedAt).getTime()) return true;
-          return false;
-        });
-      }
-      if (spT==="missingFeedback") return (l.assignments||[]).some(function(a){ return !a.notes || String(a.notes).trim()===""; });
-      if (spT==="stale48h") return (l.assignments||[]).some(function(a){ return a.lastActionAt && (nowMs - new Date(a.lastActionAt).getTime()) > 48*3600*1000; });
-      if (spT==="noRotation") return (l.assignments||[]).some(function(a){ return a.noRotation===true; });
-      if (spT==="rotatedThisMonth") return (l.agentHistory||[]).some(function(h){ return h && h.date && new Date(h.date).getTime() >= monthStartMs; });
-      if (spT==="interested") return l.status==="HotCase" || l.status==="Potential";
-      return true;
-    });
+  var filtered;
+  if (lockedOnly) {
+    // Standalone filter: ignore every other user-applied filter and show only
+    // leads where the rotation-lock flag is set.
+    filtered = allVisible.filter(function(l){return l.locked===true;});
+  } else {
+    filtered = p.leadFilter==="all"
+      ? allVisible
+      : p.leadFilter==="MeetingDone"
+        // Permanent meeting filter: strictly hadMeeting === true. A lead is
+        // tagged on its first transition into MeetingDone and the flag is
+        // never cleared, so this captures every historical meeting regardless
+        // of the current status. Legacy rows are backfilled on server start.
+        ? allVisible.filter(function(l){return l.hadMeeting===true;})
+        : allVisible.filter(function(l){return l.status===p.leadFilter;});
+    // Management-alerts special filter (from dashboard)
+    if (p.specialFilter && p.specialFilter.type) {
+      var spT = p.specialFilter.type;
+      var nowMs = Date.now();
+      var monthStartMs = new Date(new Date().getFullYear(), new Date().getMonth(), 1, 0, 0, 0, 0).getTime();
+      filtered = filtered.filter(function(l){
+        if (spT==="untouched") {
+          var asgn = l.assignments||[];
+          if (asgn.length===0) return true;
+          return asgn.every(function(a){
+            if (!a.lastActionAt) return true;
+            if (a.assignedAt && new Date(a.lastActionAt).getTime()===new Date(a.assignedAt).getTime()) return true;
+            return false;
+          });
+        }
+        if (spT==="missingFeedback") return (l.assignments||[]).some(function(a){ return !a.notes || String(a.notes).trim()===""; });
+        if (spT==="stale48h") return (l.assignments||[]).some(function(a){ return a.lastActionAt && (nowMs - new Date(a.lastActionAt).getTime()) > 48*3600*1000; });
+        if (spT==="noRotation") return (l.assignments||[]).some(function(a){ return a.noRotation===true; });
+        if (spT==="rotatedThisMonth") return (l.agentHistory||[]).some(function(h){ return h && h.date && new Date(h.date).getTime() >= monthStartMs; });
+        if (spT==="interested") return l.status==="HotCase" || l.status==="Potential";
+        return true;
+      });
+    }
+    filtered = filtered.filter(function(l){return matchSearch(l,p.search);});
+    if (vipFilter) filtered = filtered.filter(function(l){return l.isVIP;});
+    if (noAgentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return !aid; });
+    if (agentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return aid===agentFilter; });
   }
-  filtered = filtered.filter(function(l){return matchSearch(l,p.search);});
-  if (vipFilter) filtered = filtered.filter(function(l){return l.isVIP;});
-  if (noAgentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return !aid; });
-  if (agentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return aid===agentFilter; });
   filtered = filtered.slice().sort(function(a,b){
     if (sortBy==="lastActivity") return new Date(b.lastActivityTime||0)-new Date(a.lastActivityTime||0);
     if (sortBy==="newest") return new Date(b.createdAt||0)-new Date(a.createdAt||0);
@@ -1657,6 +1665,16 @@ var LeadsPage = function(p) {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.initAgentFilter]);
+
+  // Locked Only is mutually exclusive with search: if the user types anything
+  // in the header search while it's active, drop out of Locked Only so the
+  // search result is applied against the full list.
+  useEffect(function(){
+    if (lockedOnly && p.search && String(p.search).trim().length>0) {
+      setLockedOnly(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.search]);
 
   // Fetch full history when a lead is selected
   useEffect(function(){
@@ -1870,7 +1888,7 @@ var LeadsPage = function(p) {
             : s.v==="MeetingDone"
               ? allVisible.filter(function(l){return l.hadMeeting===true;}).length
               : allVisible.filter(function(l){return l.status===s.v;}).length;
-          return <button key={s.v} onClick={function(){p.setFilter(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:p.leadFilter===s.v?C.accent:"#E8ECF1", background:p.leadFilter===s.v?C.accent+"12":"#fff", color:p.leadFilter===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
+          return <button key={s.v} onClick={function(){setLockedOnly(false);p.setFilter(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:p.leadFilter===s.v?C.accent:"#E8ECF1", background:p.leadFilter===s.v?C.accent+"12":"#fff", color:p.leadFilter===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
         })}
       </div>
       <div style={{ display:"flex", gap:7, flexWrap:"wrap" }}>
@@ -1895,18 +1913,30 @@ var LeadsPage = function(p) {
       </div>
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
-        <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+        <select value={sortBy} onChange={function(e){setLockedOnly(false);setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
           <option value="lastActivity">⏱ Last Activity</option>
           <option value="newest">🆕 Newest</option>
           <option value="oldest">📅 Oldest</option>
           <option value="name">🔤 Name</option>
         </select>
-        {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);setNoAgentFilter(false);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+        {isAdmin&&<select value={agentFilter} onChange={function(e){setLockedOnly(false);setAgentFilter(e.target.value);setNoAgentFilter(false);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
           <option value="">👤 All Agents</option>
           {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
         </select>}
-        {isOnlyAdmin&&<button onClick={function(){setNoAgentFilter(!noAgentFilter);setAgentFilter("");}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:noAgentFilter?"#EF4444":"#E8ECF1", background:noAgentFilter?"#FEE2E2":"#fff", color:noAgentFilter?"#B91C1C":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>🚫 No Agent {noAgentFilter?"✓":""}</button>}
-        <button onClick={function(){setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP Only {vipFilter?"✓":""}</button>
+        {isOnlyAdmin&&<button onClick={function(){setLockedOnly(false);setNoAgentFilter(!noAgentFilter);setAgentFilter("");}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:noAgentFilter?"#EF4444":"#E8ECF1", background:noAgentFilter?"#FEE2E2":"#fff", color:noAgentFilter?"#B91C1C":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>🚫 No Agent {noAgentFilter?"✓":""}</button>}
+        <button onClick={function(){setLockedOnly(false);setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP Only {vipFilter?"✓":""}</button>
+        {isOnlyAdmin&&<button onClick={function(){
+          if (!lockedOnly) {
+            // Turning ON — clear every other user-applied filter.
+            p.setFilter("all");
+            setAgentFilter("");
+            setNoAgentFilter(false);
+            setVipFilter(false);
+            setSortBy("lastActivity");
+            if (p.setSearch) p.setSearch("");
+          }
+          setLockedOnly(!lockedOnly);
+        }} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:lockedOnly?"#EC4899":"#E8ECF1", background:lockedOnly?"#FCE7F3":"#fff", color:lockedOnly?"#BE185D":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>🔒 Locked Only{lockedOnly?" ("+filtered.length+")":""}</button>}
       </div>
     </div>
     {importMsg&&<div style={{ marginBottom:10, padding:"9px 14px", background:importMsg.startsWith("✅")?"#DCFCE7":"#FEE2E2", color:importMsg.startsWith("✅")?"#15803D":"#B91C1C", borderRadius:9, fontSize:13 }}>{importMsg}</div>}
@@ -9311,7 +9341,7 @@ export default function CRMApp() {
   var myId = String(currentUser.id||currentUser._id||"");
   var myTeamUsers = users; // server handles all filtering per role
 
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:dailyReqs};
+  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:dailyReqs};
 
   var renderPage=function(){
     switch(currentPage){
