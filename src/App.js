@@ -6642,12 +6642,23 @@ var TeamPage = function(p) {
     {/* Manager groups */}
     {visibleManagers.map(function(mgr){
       var muid=gid(mgr); var team=getSalesUnder(muid); var isExpanded=expandedManager===muid;
+      // Mirror MemberCard's per-team aggregation exactly so the header total
+      // equals the manager/TL card's TOTAL: same matchesAgent (primary OR
+      // splitAgent2Id on any team member), same getDealDate source, same
+      // share-based reducer (project weight + 0.5x for splits).
+      var allTeamIds=new Set([muid].concat(team.map(function(u){return gid(u);})));
       var mDeals=allDeals.filter(function(d){
-        var allTeamIds=new Set([muid].concat(team.map(function(u){return gid(u);})));
         var aid=d.agentId&&d.agentId._id?String(d.agentId._id):String(d.agentId||"");
-        var dd=d.updatedAt||d.createdAt; return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear&&allTeamIds.has(aid);
+        var splitId=String(d.splitAgent2Id&&d.splitAgent2Id._id?d.splitAgent2Id._id:d.splitAgent2Id||"");
+        if(!(allTeamIds.has(aid)||(splitId&&allTeamIds.has(splitId)))) return false;
+        var dd=getDealDate(d);
+        return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;
       });
-      var mRev=mDeals.reduce(function(s,d){return s+parseBudget(d.budget);},0);
+      var mRev=mDeals.reduce(function(s,d){
+        var w=getProjectWeight(d.project,d);
+        var sp=getDealSplitFromObj(d);
+        return s+parseBudget(d.budget)*w*(sp?0.5:1);
+      },0);
       var mTarget=getEffectiveQTarget(mgr,p.users,viewQ);
       var mProg=mTarget>0?Math.min(100,Math.round(mRev/mTarget*100)):0;
       var isOnline=mgr.lastSeen&&(Date.now()-new Date(mgr.lastSeen).getTime())<3*60*1000;
