@@ -4751,7 +4751,14 @@ var DealsPage = function(p) {
   var deals = dealTab==="cancelled" ? cancelledDeals : activeDeals;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
-  var total=deals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
+  // Admin / Sales Admin: full top-line budget per deal — no project weight
+  // and no split halving. This is the gross deal volume the company booked.
+  // All other roles keep the share-based view (their slice of revenue).
+  var total=deals.reduce(function(s,d){
+    if(isOnlyAdmin) return s+parseBudget(d.budget);
+    var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);
+    return s+parseBudget(d.budget)*w*(sp?0.5:1);
+  },0);
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [showAdd,setShowAdd]=useState(false);
   var [editDeal,setEditDeal]=useState(null);
@@ -4790,7 +4797,11 @@ var DealsPage = function(p) {
     if(dealAgent){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;if(aid!==dealAgent)return false;}
     return true;
   });
-  var filteredTotal=filteredDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
+  var filteredTotal=filteredDeals.reduce(function(s,d){
+    if(isOnlyAdmin) return s+parseBudget(d.budget);
+    var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);
+    return s+parseBudget(d.budget)*w*(sp?0.5:1);
+  },0);
 
   // Get stages from the lead document (server-side, shared across admins). Falls back to legacy localStorage if the lead doesn't have one yet.
   var getStages=function(lid){
