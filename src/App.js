@@ -6642,22 +6642,24 @@ var TeamPage = function(p) {
     {/* Manager groups */}
     {visibleManagers.map(function(mgr){
       var muid=gid(mgr); var team=getSalesUnder(muid); var isExpanded=expandedManager===muid;
-      // Mirror MemberCard's per-team aggregation exactly so the header total
-      // equals the manager/TL card's TOTAL: same matchesAgent (primary OR
-      // splitAgent2Id on any team member), same getDealDate source, same
-      // share-based reducer (project weight + 0.5x for splits).
-      var allTeamIds=new Set([muid].concat(team.map(function(u){return gid(u);})));
-      var mDeals=allDeals.filter(function(d){
-        var aid=d.agentId&&d.agentId._id?String(d.agentId._id):String(d.agentId||"");
-        var splitId=String(d.splitAgent2Id&&d.splitAgent2Id._id?d.splitAgent2Id._id:d.splitAgent2Id||"");
-        if(!(allTeamIds.has(aid)||(splitId&&allTeamIds.has(splitId)))) return false;
-        var dd=getDealDate(d);
-        return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;
-      });
-      var mRev=mDeals.reduce(function(s,d){
-        var w=getProjectWeight(d.project,d);
-        var sp=getDealSplitFromObj(d);
-        return s+parseBudget(d.budget)*w*(sp?0.5:1);
+      // Header total = sum across each direct member's share-based total
+      // (manager + their direct reports). Both halves of a within-team split
+      // count — each member's iteration adds their own 50%, so the deal
+      // contributes its full value when both sides are inside the team. A
+      // split with an outsider only contributes the inside member's 50%.
+      // Equivalent to summing every member-card's TOTAL value.
+      var memberIds=[muid].concat(team.map(function(u){return gid(u);}));
+      var mRev=memberIds.reduce(function(total,mid){
+        return total+allDeals.reduce(function(s,d){
+          var aid=d.agentId&&d.agentId._id?String(d.agentId._id):String(d.agentId||"");
+          var splitId=String(d.splitAgent2Id&&d.splitAgent2Id._id?d.splitAgent2Id._id:d.splitAgent2Id||"");
+          if(aid!==mid&&splitId!==mid) return s;
+          var dd=getDealDate(d);
+          if(!dd||getQ(dd)!==viewQ||new Date(dd).getFullYear()!==viewYear) return s;
+          var w=getProjectWeight(d.project,d);
+          var sp=getDealSplitFromObj(d);
+          return s+parseBudget(d.budget)*w*(sp?0.5:1);
+        },0);
       },0);
       var mTarget=getEffectiveQTarget(mgr,p.users,viewQ);
       var mProg=mTarget>0?Math.min(100,Math.round(mRev/mTarget*100)):0;
