@@ -1607,6 +1607,17 @@ var LeadJourney = function(p) {
     return new Date(a.createdAt) - new Date(b.createdAt);
   });
 
+  // Resolve the actual lead-holder for an assignment event. The backend
+  // stamps userId.name with the ACTOR (could be an admin pressing "rotate"),
+  // and agentName with h.toAgent (the sales person actually receiving the
+  // lead). Era ownership must follow agentName, not userId.name.
+  var resolveAgentName = function(ev){
+    if (ev.agentName && String(ev.agentName).trim()) return String(ev.agentName).trim();
+    if (ev.toAgent && String(ev.toAgent).trim()) return String(ev.toAgent).trim();
+    if (ev.source !== "history" && ev.userId && ev.userId.name) return ev.userId.name;
+    return "Unknown";
+  };
+
   var eras = [];
   var cur = null;
   sorted.forEach(function(ev){
@@ -1615,7 +1626,7 @@ var LeadJourney = function(p) {
     if (isAssign) {
       var note = ev.note || "";
       cur = {
-        agentName: ev.toAgent || (ev.userId && ev.userId.name) || "Unknown",
+        agentName: resolveAgentName(ev),
         fromAgent: ev.fromAgent || null,
         assignType: type,
         isRotation: type==="rotated" || type==="reassigned",
@@ -1645,6 +1656,54 @@ var LeadJourney = function(p) {
       };
       eras.push(cur);
     }
+  });
+
+  // Dedupe events within each era. Backend writes some logical actions to
+  // BOTH the Activity collection and lead.history; the merged feed surfaces
+  // both copies. Match: same type, same actor, same non-empty content,
+  // timestamps within 10s. Keep the earliest occurrence.
+  eras.forEach(function(era){
+    var keep = [];
+    for (var di = 0; di < era.events.length; di++) {
+      var dEv = era.events[di];
+      var dContent = String(dEv.note || dEv.feedback || "").trim();
+      var dT = new Date(dEv.createdAt).getTime();
+      var isDup = false;
+      for (var dj = 0; dj < keep.length; dj++) {
+        var pe = keep[dj];
+        if (pe.type !== dEv.type) continue;
+        var peContent = String(pe.note || pe.feedback || "").trim();
+        if (!dContent || !peContent || dContent !== peContent) continue;
+        var actorMatch = false;
+        if (pe.userId && dEv.userId && pe.userId._id && dEv.userId._id) {
+          actorMatch = String(pe.userId._id) === String(dEv.userId._id);
+        } else if (pe.userId && dEv.userId && pe.userId.name && dEv.userId.name) {
+          actorMatch = pe.userId.name === dEv.userId.name;
+        }
+        if (!actorMatch) continue;
+        if (Math.abs(dT - new Date(pe.createdAt).getTime()) <= 10000) { isDup = true; break; }
+      }
+      if (!isDup) keep.push(dEv);
+    }
+    era.events = keep;
+  });
+
+  // Drop "phantom" eras with no actual sales work — these come from admin
+  // hops where the receiving agent never acted before the next rotation
+  // (or from misattributed history rows where the actor was an admin).
+  // Real eras have at least one work-type event. EXCEPTION: never drop the
+  // current (last) era — even an empty one is the present holder.
+  var workTypes = { status_change:1, feedback:1, feedback_added:1, call:1, meeting:1, callback_scheduled:1, note:1 };
+  eras = eras.filter(function(era, i, arr){
+    if (i === arr.length - 1) return true;
+    return era.events.some(function(ev){ return !!workTypes[ev.type]; });
+  });
+
+  // After dropping phantom eras, point each surviving era's fromAgent at the
+  // previous SURVIVING era's agent — so the rotation separator reads
+  // "Rotated <prevSurvivor> → <nextSurvivor>", skipping the admin hop.
+  eras.forEach(function(era, i){
+    if (i > 0) era.fromAgent = eras[i-1].agentName;
   });
 
   eras.forEach(function(era, i){
@@ -1686,7 +1745,7 @@ var LeadJourney = function(p) {
 
   var orderedEras = isPanel ? eras : eras.slice().reverse();
 
-  var renderEvent = function(ev, era, idx){
+  var renderEvent = function(ev, era, idx, noTopBorder){
     var type = ev.type;
     var body = null;
     if (type === "assigned" || type === "first_assigned") {
@@ -1697,11 +1756,9 @@ var LeadJourney = function(p) {
     } else if (type === "status_change") {
       var to = extractStatus(ev) || "NewLead";
       var from = extractFromStatus(ev);
-      body = <div style={{ fontSize:bodyFs, color:C.text }}>
-        Status {from ? <span style={{ color:sColor(from), fontWeight:700 }}>{sLabel(from)}</span> : <span style={{ color:C.textLight }}>—</span>}
-        {" → "}
-        <span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span>
-      </div>;
+      body = from
+        ? <div style={{ fontSize:bodyFs, color:C.text }}>Status <span style={{ color:sColor(from), fontWeight:700 }}>{sLabel(from)}</span>{" → "}<span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span></div>
+        : <div style={{ fontSize:bodyFs, color:C.text }}>Status set to <span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span></div>;
     } else if (type === "feedback_added" || type === "feedback") {
       var whileStatus = "NewLead";
       var tFb = new Date(ev.createdAt).getTime();
@@ -1733,7 +1790,8 @@ var LeadJourney = function(p) {
     } else {
       body = <div style={{ fontSize:bodyFs, color:C.text }}>{ev.note || type}</div>;
     }
-    return <div key={ev._id || (era.agentName+"-"+idx)} style={{ display:"flex", gap:10, padding:"6px 0", borderTop:idx===0?"none":"1px solid rgba(0,0,0,0.04)" }}>
+    var hideTop = (typeof noTopBorder === "boolean") ? noTopBorder : (idx === 0);
+    return <div key={ev._id || (era.agentName+"-"+idx)} style={{ display:"flex", gap:10, padding:"6px 0", borderTop:hideTop?"none":"1px solid rgba(0,0,0,0.04)" }}>
       <div style={{ flexShrink:0, width:isPanel?84:96, fontSize:metaFs, color:C.textLight, paddingTop:2 }}>{fmtTs(ev.createdAt)}</div>
       <div style={{ flex:1, minWidth:0 }}>{body}</div>
     </div>;
@@ -1760,7 +1818,11 @@ var LeadJourney = function(p) {
       marginBottom:10,
       position:"relative"
     };
-    var rows = [];
+    // Build rows in chronological order (events + silence pills computed
+    // from chrono gaps), then reverse for display so newest events sit on
+    // top. The silence pill stays between the same two neighbors visually,
+    // just with its order flipped.
+    var chronoItems = [];
     var GAP = 48 * 60 * 60 * 1000;
     era.events.forEach(function(ev, i){
       if (i > 0) {
@@ -1771,24 +1833,35 @@ var LeadJourney = function(p) {
           var gapMs = new Date(ev.createdAt) - new Date(prev.createdAt);
           if (gapMs > GAP) {
             var days = Math.round(gapMs / (24*60*60*1000));
-            rows.push(<div key={"silence-"+idx+"-"+i} style={{ display:"flex", justifyContent:"center", margin:"8px 0" }}>
-              <div style={{
-                display:"inline-flex", alignItems:"center", gap:6,
-                padding:"6px 12px", borderRadius:14,
-                border:"1px dashed #BA7517", background:"#FAEEDA",
-                color:"#633806", fontStyle:"italic", fontSize:10
-              }}>
-                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#BA7517" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10"/>
-                  <polyline points="12 6 12 12 16 14"/>
-                </svg>
-                — {days} day{days===1?"":"s"} of silence —
+            chronoItems.push({ kind:"silence", node:
+              <div key={"silence-"+idx+"-"+i} style={{ display:"flex", justifyContent:"center", margin:"8px 0" }}>
+                <div style={{
+                  display:"inline-flex", alignItems:"center", gap:6,
+                  padding:"6px 12px", borderRadius:14,
+                  border:"1px dashed #BA7517", background:"#FAEEDA",
+                  color:"#633806", fontStyle:"italic", fontSize:10
+                }}>
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#BA7517" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"/>
+                    <polyline points="12 6 12 12 16 14"/>
+                  </svg>
+                  — {days} day{days===1?"":"s"} of silence —
+                </div>
               </div>
-            </div>);
+            });
           }
         }
       }
-      rows.push(renderEvent(ev, era, i));
+      chronoItems.push({ kind:"event", ev: ev, chronoIdx: i });
+    });
+    var displayItems = chronoItems.slice().reverse();
+    var rows = [];
+    var firstEventSeen = false;
+    displayItems.forEach(function(item){
+      if (item.kind === "silence") { rows.push(item.node); return; }
+      var noTopBorder = !firstEventSeen;
+      firstEventSeen = true;
+      rows.push(renderEvent(item.ev, era, item.chronoIdx, noTopBorder));
     });
     return <div key={"era-"+idx} style={cardStyle}>
       {conflict && <div style={{
