@@ -1539,6 +1539,354 @@ var PhoneCell = function(p) {
   >{show ? p.phone : masked}</span>;
 };
 
+// ===== LEAD JOURNEY =====
+// Unified grouped-by-agent-era view of a lead's audit trail. Replaces the old
+// rotation-history card, side-panel activity list, and full-history modal body.
+var LeadJourney = function(p) {
+  var events = p.events || [];
+  var lead = p.lead;
+  var isAdmin = p.isAdminRole;
+  var variant = p.variant || "panel";
+  var isPanel = variant === "panel";
+  var setShowCompare = p.setShowCompare || function(){};
+
+  var bodyFs = isPanel ? 11 : 12;
+  var metaFs = isPanel ? 10 : 11;
+  var eraPad = isPanel ? "10px 12px" : "14px 16px";
+  var maxW = isPanel ? "100%" : 620;
+
+  var statusLabelMap = {
+    NewLead:"New Lead", NoAnswer:"No Answer", NotInterested:"Not Interested",
+    CallBack:"Call Back", HotCase:"Hot Case", MeetingDone:"Meeting Done", DoneDeal:"Done Deal"
+  };
+  var statusColorMap = {
+    NewLead:"#5F5E5A", Potential:"#185FA5", NoAnswer:"#854F0B", NotInterested:"#A32D2D",
+    CallBack:"#BA7517", HotCase:"#D85A30", MeetingDone:"#0F6E56", DoneDeal:"#04342C", EOI:"#04342C",
+    "New Lead":"#5F5E5A","No Answer":"#854F0B","Not Interested":"#A32D2D","Call Back":"#BA7517",
+    "Hot Case":"#D85A30","Meeting Done":"#0F6E56","Done Deal":"#04342C","Deal Cancelled":"#A32D2D"
+  };
+  var sLabel = function(s){ return statusLabelMap[s] || s || "New Lead"; };
+  var sColor = function(s){ return statusColorMap[s] || statusColorMap[sLabel(s)] || "#5F5E5A"; };
+  var extractStatus = function(ev){
+    if (!ev) return null;
+    if (ev.toStatus) return ev.toStatus;
+    if (ev.status) return ev.status;
+    var note = ev.note || "";
+    var m = note.match(/^\s*\[([^\]]+)\]/);
+    return m ? m[1].trim() : null;
+  };
+  var extractFromStatus = function(ev){
+    if (!ev) return null;
+    if (ev.fromStatus) return ev.fromStatus;
+    return null;
+  };
+  var parseReason = function(note){
+    if (!note) return null;
+    var m = note.match(/\(([^)]+)\)\s*$/);
+    return m ? m[1].trim() : null;
+  };
+  var isAutoReason = function(note){ return /by\s+System|\bauto\b/i.test(note||""); };
+  var fmtTs = function(d){
+    if (!d) return "";
+    var dt = new Date(d);
+    return dt.toLocaleString("en-US",{month:"short",day:"numeric"}) + " · " +
+      dt.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"});
+  };
+  var fmtShort = function(d){
+    if (!d) return "";
+    return new Date(d).toLocaleString("en-US",{month:"short",day:"numeric"});
+  };
+  var fmtRange = function(start, end, isCurrent){
+    var s = fmtShort(start);
+    var e = isCurrent ? "now" : fmtShort(end);
+    if (s && e) return s + " – " + e;
+    return s || e || "";
+  };
+
+  var sorted = events.slice().sort(function(a,b){
+    return new Date(a.createdAt) - new Date(b.createdAt);
+  });
+
+  var eras = [];
+  var cur = null;
+  sorted.forEach(function(ev){
+    var type = ev.type;
+    var isAssign = type==="assigned" || type==="first_assigned" || type==="rotated" || type==="reassigned";
+    if (isAssign) {
+      var note = ev.note || "";
+      cur = {
+        agentName: ev.toAgent || (ev.userId && ev.userId.name) || "Unknown",
+        fromAgent: ev.fromAgent || null,
+        assignType: type,
+        isRotation: type==="rotated" || type==="reassigned",
+        reason: parseReason(note),
+        auto: isAutoReason(note) ? "auto" : "manual",
+        source: ev.source || ((type==="first_assigned" && lead) ? lead.source : null),
+        startedAt: ev.createdAt,
+        endedAt: ev.createdAt,
+        events: [ev]
+      };
+      eras.push(cur);
+    } else if (cur) {
+      cur.events.push(ev);
+      cur.endedAt = ev.createdAt;
+    } else {
+      cur = {
+        agentName: (ev.userId && ev.userId.name) || (lead && lead.agentId && lead.agentId.name) || "Unknown",
+        fromAgent: null,
+        assignType: null,
+        isRotation: false,
+        reason: null,
+        auto: null,
+        source: lead ? lead.source : null,
+        startedAt: ev.createdAt,
+        endedAt: ev.createdAt,
+        events: [ev]
+      };
+      eras.push(cur);
+    }
+  });
+
+  eras.forEach(function(era, i){
+    era.isCurrent = (i === eras.length - 1);
+    var last = null;
+    for (var j = era.events.length - 1; j >= 0; j--) {
+      if (era.events[j].type === "status_change") { last = extractStatus(era.events[j]); break; }
+    }
+    era.endedAtStatus = last || "NewLead";
+  });
+
+  // Conflict detection: flag a later era when previous era ended in strong engagement
+  // but current era reaches a negative outcome.
+  var strongStatuses = { HotCase:1, MeetingDone:1, DoneDeal:1, EOI:1, "Hot Case":1, "Meeting Done":1, "Done Deal":1 };
+  var negativeStatuses = { NotInterested:1, NoAnswer:1, "Not Interested":1, "No Answer":1 };
+  for (var ci = 1; ci < eras.length; ci++) {
+    var prevEra = eras[ci-1];
+    var thisEra = eras[ci];
+    if (!strongStatuses[prevEra.endedAtStatus]) continue;
+    var hitsNegative = thisEra.events.some(function(ev){
+      if (ev.type !== "status_change") return false;
+      var s = extractStatus(ev);
+      return !!negativeStatuses[s];
+    });
+    if (hitsNegative) {
+      thisEra.isConflict = true;
+      thisEra.conflictPrevStatus = prevEra.endedAtStatus;
+    }
+  }
+
+  // Sales: keep only the caller's current era.
+  if (!isAdmin) {
+    eras = eras.filter(function(e){ return e.isCurrent; });
+  }
+
+  if (eras.length === 0) {
+    return <div style={{ fontSize:bodyFs, color:C.textLight, textAlign:"center", padding:14 }}>No history</div>;
+  }
+
+  var orderedEras = isPanel ? eras : eras.slice().reverse();
+
+  var renderEvent = function(ev, era, idx){
+    var type = ev.type;
+    var body = null;
+    if (type === "assigned" || type === "first_assigned") {
+      var src = (type === "first_assigned" && era.source) ? " · source: " + era.source : "";
+      body = <div style={{ fontSize:bodyFs, color:C.text }}>Assigned fresh as <span style={{ color:sColor("NewLead"), fontWeight:700 }}>New Lead</span>{src}</div>;
+    } else if (type === "rotated" || type === "reassigned") {
+      body = <div style={{ fontSize:bodyFs, color:C.text }}>Assigned fresh as <span style={{ color:sColor("NewLead"), fontWeight:700 }}>New Lead</span></div>;
+    } else if (type === "status_change") {
+      var to = extractStatus(ev) || "NewLead";
+      var from = extractFromStatus(ev);
+      body = <div style={{ fontSize:bodyFs, color:C.text }}>
+        Status {from ? <span style={{ color:sColor(from), fontWeight:700 }}>{sLabel(from)}</span> : <span style={{ color:C.textLight }}>—</span>}
+        {" → "}
+        <span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span>
+      </div>;
+    } else if (type === "feedback_added" || type === "feedback") {
+      var whileStatus = "NewLead";
+      var tFb = new Date(ev.createdAt).getTime();
+      for (var k = 0; k < era.events.length; k++) {
+        var ek = era.events[k];
+        if (ek.type === "status_change" && new Date(ek.createdAt).getTime() <= tFb) {
+          var s = extractStatus(ek);
+          if (s) whileStatus = s;
+        }
+      }
+      body = <div>
+        <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+          <span style={{ fontWeight:700 }}>Feedback</span>
+          <span style={{ fontSize:metaFs, padding:"1px 6px", borderRadius:5, background:sColor(whileStatus)+"18", color:sColor(whileStatus), fontWeight:600 }}>while {sLabel(whileStatus)}</span>
+        </div>
+        {(ev.feedback || ev.note) && <div style={{ marginTop:4, padding:"6px 9px", background:"#F8FAFC", borderRadius:8, fontSize:bodyFs, color:C.text, border:"1px solid #EEF1F5" }}>{ev.feedback || ev.note}</div>}
+      </div>;
+    } else if (type === "callback_scheduled") {
+      var cbTime = ev.scheduledFor || ev.time || ev.callbackTime || null;
+      var cbLabel = cbTime ? new Date(cbTime).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : (ev.note || "");
+      body = <div style={{ fontSize:bodyFs, color:C.text }}>Callback scheduled for <span style={{ fontWeight:700 }}>{cbLabel}</span></div>;
+    } else if (type === "note") {
+      body = <div>
+        <div style={{ fontSize:bodyFs, color:C.text, fontWeight:700 }}>Note</div>
+        {ev.note && <div style={{ marginTop:4, padding:"6px 9px", background:"#F8FAFC", borderRadius:8, fontSize:bodyFs, color:C.text, border:"1px solid #EEF1F5" }}>{ev.note}</div>}
+      </div>;
+    } else if (type === "call" || type === "meeting") {
+      body = <div style={{ fontSize:bodyFs, color:C.text }}>{ev.note || (type==="call"?"Call":"Meeting")}</div>;
+    } else {
+      body = <div style={{ fontSize:bodyFs, color:C.text }}>{ev.note || type}</div>;
+    }
+    return <div key={ev._id || (era.agentName+"-"+idx)} style={{ display:"flex", gap:10, padding:"6px 0", borderTop:idx===0?"none":"1px solid rgba(0,0,0,0.04)" }}>
+      <div style={{ flexShrink:0, width:isPanel?84:96, fontSize:metaFs, color:C.textLight, paddingTop:2 }}>{fmtTs(ev.createdAt)}</div>
+      <div style={{ flex:1, minWidth:0 }}>{body}</div>
+    </div>;
+  };
+
+  var renderEra = function(era, idx){
+    var initials = (era.agentName||"?").split(/\s+/).filter(Boolean).map(function(w){return w[0]||"";}).slice(0,2).join("").toUpperCase() || "?";
+    var bgColor = era.isCurrent ? "#E1F5EE" : "#FBFBFA";
+    var borderColor = era.isCurrent ? "#1D9E75" : "#888780";
+    var conflict = era.isConflict && isAdmin;
+    var cardStyle = conflict ? {
+      border:"2px solid #A32D2D",
+      borderLeft:"4px solid #A32D2D",
+      background:"#FCEBEB",
+      borderRadius:10,
+      padding:eraPad,
+      marginBottom:10,
+      position:"relative"
+    } : {
+      borderLeft:"3px solid "+borderColor,
+      background:bgColor,
+      borderRadius:10,
+      padding:eraPad,
+      marginBottom:10,
+      position:"relative"
+    };
+    var rows = [];
+    var GAP = 48 * 60 * 60 * 1000;
+    era.events.forEach(function(ev, i){
+      if (i > 0) {
+        var prev = era.events[i-1];
+        var prevType = prev.type;
+        var prevIsAssign = prevType==="assigned" || prevType==="first_assigned" || prevType==="rotated" || prevType==="reassigned";
+        if (!prevIsAssign) {
+          var gapMs = new Date(ev.createdAt) - new Date(prev.createdAt);
+          if (gapMs > GAP) {
+            var days = Math.round(gapMs / (24*60*60*1000));
+            rows.push(<div key={"silence-"+idx+"-"+i} style={{ display:"flex", justifyContent:"center", margin:"8px 0" }}>
+              <div style={{
+                display:"inline-flex", alignItems:"center", gap:6,
+                padding:"6px 12px", borderRadius:14,
+                border:"1px dashed #BA7517", background:"#FAEEDA",
+                color:"#633806", fontStyle:"italic", fontSize:10
+              }}>
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#BA7517" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <polyline points="12 6 12 12 16 14"/>
+                </svg>
+                — {days} day{days===1?"":"s"} of silence —
+              </div>
+            </div>);
+          }
+        }
+      }
+      rows.push(renderEvent(ev, era, i));
+    });
+    return <div key={"era-"+idx} style={cardStyle}>
+      {conflict && <div style={{
+        position:"absolute", top:-10, left:8,
+        background:"#A32D2D", color:"#fff", fontSize:10,
+        padding:"2px 8px", borderRadius:10, fontWeight:700
+      }}>⚠ Conflict</div>}
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+        <div style={{ width:28, height:28, borderRadius:"50%", background:avatarColor(era.agentName), color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, flexShrink:0 }}>{initials}</div>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:bodyFs, fontWeight:700, color:C.text }}>{era.agentName}</div>
+          <div style={{ fontSize:metaFs, color:C.textLight, marginTop:1 }}>
+            {fmtRange(era.startedAt, era.endedAt, era.isCurrent)} · {era.events.length} action{era.events.length===1?"":"s"} · ended at <span style={{ color:sColor(era.endedAtStatus), fontWeight:600 }}>{sLabel(era.endedAtStatus)}</span>
+          </div>
+        </div>
+        <div style={{ flexShrink:0, fontSize:metaFs, fontWeight:700, padding:"2px 8px", borderRadius:10, background:era.isCurrent?"#1D9E75":"#888780", color:"#fff" }}>{era.isCurrent?"Current":"Previous"}</div>
+      </div>
+      {conflict && <div style={{ fontSize:10, color:"#A32D2D", fontStyle:"italic", marginBottom:8 }}>
+        Previous agent had {sLabel(era.conflictPrevStatus)} — investigate
+      </div>}
+      <div>{rows}</div>
+    </div>;
+  };
+
+  var renderSeparator = function(era, key){
+    var reason = era.reason || "Manual reassignment";
+    var auto = era.auto || "manual";
+    var from = era.fromAgent || "Unassigned";
+    var to = era.agentName || "Unknown";
+    return <div key={key} style={{ margin:"6px 0 12px", padding:"8px 12px", background:"#FAEEDA", color:"#633806", borderRadius:10, fontSize:metaFs, lineHeight:1.45 }}>
+      <div style={{ fontWeight:700 }}>↻ Rotated {from} → {to} · status reset to New Lead</div>
+      <div style={{ marginTop:3, opacity:0.92 }}>Reason: {reason} · {auto} · {fmtTs(era.startedAt)}</div>
+    </div>;
+  };
+
+  var rankOf = function(s){
+    var r = { DoneDeal:8, "Done Deal":8, EOI:7, MeetingDone:6, "Meeting Done":6, HotCase:5, "Hot Case":5, CallBack:4, "Call Back":4, Potential:3, NewLead:2, "New Lead":2, NoAnswer:1, "No Answer":1, NotInterested:0, "Not Interested":0 };
+    return (r[s] == null) ? -1 : r[s];
+  };
+  var buildSummary = function(){
+    if (!eras.length) return null;
+    var rotations = eras.length - 1;
+    var firstTs = new Date(eras[0].startedAt).getTime();
+    var lastTs = new Date(eras[eras.length-1].endedAt).getTime();
+    var spanDays = Math.max(1, Math.round((lastTs - firstTs) / (24*60*60*1000)));
+    var bestEra = eras[0];
+    eras.forEach(function(e){ if (rankOf(e.endedAtStatus) > rankOf(bestEra.endedAtStatus)) bestEra = e; });
+    var curStatus = (lead && lead.status) || "NewLead";
+    if (rotations === 0) {
+      return "Never rotated. Held by " + eras[0].agentName + " for " + spanDays + " day" + (spanDays===1?"":"s") + " — currently " + sLabel(curStatus) + ".";
+    }
+    var bestLabel = bestEra.isCurrent ? bestEra.agentName + " (current)" : bestEra.agentName + " (" + sLabel(bestEra.endedAtStatus) + ")";
+    return "Rotated " + rotations + " time" + (rotations===1?"":"s") + " in " + spanDays + " day" + (spanDays===1?"":"s") + ". Best engagement with " + bestLabel + " — currently " + sLabel(curStatus) + ".";
+  };
+  var summary = isAdmin ? buildSummary() : null;
+  var canCompare = isAdmin && eras.length >= 2;
+
+  var out = [];
+  if (canCompare) {
+    out.push(<div key="cmp-row" style={{ display:"flex", justifyContent:"flex-end", marginBottom:8 }}>
+      <button onClick={function(){ setShowCompare(lead, eras); }} style={{
+        display:"inline-flex", alignItems:"center", gap:6,
+        padding:"4px 10px", border:"1px solid #CBD5E1", borderRadius:8,
+        background:"#fff", cursor:"pointer", fontSize:metaFs, color:C.text, fontWeight:600
+      }}>
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="3" width="7" height="7"/>
+          <rect x="14" y="3" width="7" height="7"/>
+          <rect x="3" y="14" width="7" height="7"/>
+          <rect x="14" y="14" width="7" height="7"/>
+        </svg>
+        Compare agents
+      </button>
+    </div>);
+  }
+  if (summary) {
+    out.push(<div key="summary" style={{
+      background:"linear-gradient(135deg, #E6F1FB 0%, #F0F7FF 100%)",
+      borderLeft:"3px solid #185FA5",
+      borderRadius:10, padding:"10px 12px", marginBottom:10
+    }}>
+      <div style={{ fontSize:9, fontWeight:700, color:"#185FA5", letterSpacing:1, textTransform:"uppercase", marginBottom:4 }}>Summary</div>
+      <div style={{ fontSize:bodyFs, color:C.text, lineHeight:1.5 }}>{summary}</div>
+    </div>);
+  }
+  orderedEras.forEach(function(era, i){
+    out.push(renderEra(era, i));
+    if (i < orderedEras.length - 1) {
+      var newer = isPanel ? orderedEras[i+1] : orderedEras[i];
+      if (newer && newer.isRotation) {
+        out.push(renderSeparator(newer, "sep-"+i));
+      }
+    }
+  });
+
+  return <div style={{ maxWidth:maxW }}>{out}</div>;
+};
+
 // ===== LEADS PAGE =====
 var LeadsPage = function(p) {
   var t = p.t;
@@ -1577,6 +1925,19 @@ var LeadsPage = function(p) {
   var [historyLead, setHistoryLead] = useState(null);
   var [fullHistory, setFullHistory] = useState([]);
   var [historyLoading, setHistoryLoading] = useState(false);
+  var [showCompare, setShowCompare] = useState(false);
+  var [compareLead, setCompareLead] = useState(null);
+  var [compareEras, setCompareEras] = useState([]);
+  var openCompare = function(leadObj, erasArr){
+    setCompareLead(leadObj || null);
+    setCompareEras(erasArr || []);
+    setShowCompare(true);
+  };
+  var closeCompare = function(){
+    setShowCompare(false);
+    setCompareLead(null);
+    setCompareEras([]);
+  };
   var [quickForm, setQuickForm] = useState({name:"",phone:"",project:PROJECTS[0],source:"Facebook"});
   var [quickSaving, setQuickSaving] = useState(false);
   var [notifGranted, setNotifGranted] = useState(typeof Notification!=="undefined"&&Notification.permission==="granted");
@@ -1990,9 +2351,6 @@ var LeadsPage = function(p) {
                 style={{ flex:1, padding:"11px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:13, fontWeight:700, border:"1px solid #22C55E60", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="#15803D"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> WhatsApp
               </button>
-              <button onClick={function(e){e.stopPropagation();openHistory(lead);}} style={{ padding:"11px 14px", borderRadius:10, background:"#F3E8FF", color:"#7C3AED", fontSize:13, fontWeight:700, border:"1px solid #DDD6FE", cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
-                📋
-              </button>
             </div>
           </div>;
         })}
@@ -2098,9 +2456,6 @@ var LeadsPage = function(p) {
                       </span>;
                     })() : <span style={{ color:C.textLight }}>-</span>}
                   </td>}
-                  <td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();}}>
-                    <button onClick={function(e){e.stopPropagation();openHistory(lead);}} style={{ padding:"4px 8px", borderRadius:7, background:"#F3E8FF", color:"#7C3AED", fontSize:12, border:"1px solid #DDD6FE", cursor:"pointer" }} title="History">📋</button>
-                  </td>
                 </tr>;
               })}
             </tbody>
@@ -2227,53 +2582,9 @@ var LeadsPage = function(p) {
             <button onClick={function(){openHistory(selected);}} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid #E2E8F0", background:"#F3E8FF", fontSize:13, cursor:"pointer" }} title="History">📋</button>
           </div>
 
-          {/* Agent History — admin only */}
-          {isOnlyAdmin&&selected.agentHistory&&selected.agentHistory.length>0&&<div style={{ marginTop:14, padding:10, background:"#F5F3FF", borderRadius:10, border:"1px solid #DDD6FE" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:"#7C3AED", marginBottom:8 }}>🔄 Rotation History ({selected.agentHistory.filter(function(h){return h.action==="Rotation";}).length})</div>
-            {selected.agentHistory.slice().reverse().map(function(h,i){
-              if(h.action==="Rotation"){
-                var reasonLabel=h.reason==="auto_timeout"?"Auto Timeout":h.reason==="no_rotation_override"?"Admin Override":"Manual";
-                return <div key={i} style={{ padding:"8px 0", borderBottom:"1px solid #EDE9FE" }}>
-                  <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{h.fromAgent||"Unassigned"} → {h.toAgent||"Unknown"}</div>
-                  <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>
-                    <span style={{ background:h.reason==="auto_timeout"?"#FEF3C7":h.reason==="no_rotation_override"?"#FEE2E2":"#E0E7FF", color:h.reason==="auto_timeout"?"#B45309":h.reason==="no_rotation_override"?"#DC2626":"#4338CA", padding:"1px 6px", borderRadius:6, fontSize:9, fontWeight:600, marginRight:4 }}>{reasonLabel}</span>
-                    <span>by {h.by||"System"}</span>
-                  </div>
-                  <div style={{ fontSize:9, color:C.textLight, marginTop:3 }}>{h.date?new Date(h.date).toLocaleString("en-GB"):""}</div>
-                </div>;
-              }
-              // Legacy format fallback
-              return <div key={i} style={{ padding:"8px 0", borderBottom:"1px solid #EDE9FE" }}>
-                <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{h.agentName||h.note||"Unknown"}</div>
-                <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>
-                  {h.status&&<span style={{ background:"#E0E7FF", color:"#4338CA", padding:"1px 6px", borderRadius:6, fontSize:9, fontWeight:600, marginRight:4 }}>{h.status}</span>}
-                  {h.budget&&<span style={{ color:C.success, fontWeight:600 }}>{h.budget} EGP</span>}
-                </div>
-                {h.feedback&&<div style={{ fontSize:11, color:C.text, marginTop:4, padding:"4px 8px", background:"#fff", borderRadius:6 }}>💬 {h.feedback}</div>}
-                <div style={{ fontSize:9, color:C.textLight, marginTop:3 }}>
-                  {h.assignedAt?new Date(h.assignedAt).toLocaleDateString("en-GB"):""}
-                  {h.removedAt?" → "+new Date(h.removedAt).toLocaleDateString("en-GB"):""}
-                  {h.date?new Date(h.date).toLocaleString("en-GB"):""}
-                </div>
-              </div>;
-            })}
-          </div>}
-
-          {/* Activity Log — full history */}
+          {/* Lead Journey — grouped by agent era */}
           <div style={{ marginTop:14 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-              <span style={{ fontSize:11, color:C.textLight, fontWeight:600 }}>{t.clientHistory} ({panelHistory.length})</span>
-              {isOnlyAdmin&&selected&&(selected.rotationCount||0)>0&&<span style={{ fontSize:9, background:"#FEF3C7", color:"#B45309", padding:"2px 6px", borderRadius:6, fontWeight:600 }}>🔄 {selected.rotationCount} transfers</span>}
-            </div>
-            {panelHistory.length===0&&<div style={{ fontSize:11, color:C.textLight, textAlign:"center", padding:12 }}>No history</div>}
-            {panelHistory.map(function(a,i){var uname=a.userId&&a.userId.name?a.userId.name:"";return <div key={a._id||i} style={{ fontSize:10, padding:"8px 0", borderBottom:"1px solid #F8FAFC" }}>
-              <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
-                <span style={{ flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔"}</span>
-                <span style={{ flex:1 }}>{a.note}</span>
-                <span style={{ color:C.textLight, flexShrink:0 }}>{timeAgo(a.createdAt,t)}</span>
-              </div>
-              {uname&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>{uname} · {new Date(a.createdAt).toLocaleDateString("en-GB")}</div>}
-            </div>;})}
+            <LeadJourney events={panelHistory} lead={selected} currentUser={p.cu} isAdminRole={isAdmin} variant="panel" setShowCompare={openCompare} />
           </div>
         </div>
       </Card>}
@@ -2281,30 +2592,57 @@ var LeadsPage = function(p) {
 
     {/* Full History Modal */}
     {showHistory&&historyLead&&<Modal show={true} onClose={function(){setShowHistory(false);setHistoryLead(null);}} title={"📋 Lead History — "+historyLead.name} w={520}>
-      {historyLoading&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>Loading...</div>}
-      {!historyLoading&&fullHistory.length===0&&<div style={{ textAlign:"center", padding:30, color:C.textLight }}>No activity history</div>}
-      {!historyLoading&&fullHistory.length>0&&<div style={{ maxHeight:500, overflowY:"auto" }}>
-        <div style={{ fontSize:11, color:C.textLight, marginBottom:10, padding:"6px 10px", background:"#F8FAFC", borderRadius:8 }}>
-          {fullHistory.length} activity — من الأحدث للأقدم
-        </div>
-        {fullHistory.slice().reverse().map(function(a,i){
-          var uname=a.userId&&a.userId.name?a.userId.name:"";
-          var icon=a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔";
-          return <div key={a._id||i} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
-            <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
-              <span style={{ fontSize:16, flexShrink:0 }}>{icon}</span>
-              <div style={{ flex:1 }}>
-                <div style={{ fontSize:12, fontWeight:500, color:C.text }}>{a.note}</div>
-                <div style={{ fontSize:10, color:C.textLight, marginTop:3, display:"flex", gap:8, flexWrap:"wrap" }}>
-                  {uname&&<span style={{ fontWeight:700, color:C.accent }}>👤 {uname}</span>}
-                  <span>📅 {a.createdAt?new Date(a.createdAt).toLocaleDateString("en-GB")+" "+new Date(a.createdAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):""}</span>
-                </div>
-              </div>
-            </div>
-          </div>;
-        })}
-      </div>}
+      {historyLoading ? <div style={{ textAlign:"center", padding:30, color:C.textLight }}>Loading...</div>
+        : <div style={{ maxHeight:500, overflowY:"auto" }}>
+          <LeadJourney events={fullHistory} lead={historyLead} currentUser={p.cu} isAdminRole={isAdmin} variant="modal" setShowCompare={openCompare} />
+        </div>}
     </Modal>}
+
+    {/* Agent Comparison Modal */}
+    {showCompare&&compareLead&&(function(){
+      var cmpStatusColor = function(s){
+        var m = { NewLead:"#5F5E5A", Potential:"#185FA5", NoAnswer:"#854F0B", NotInterested:"#A32D2D", CallBack:"#BA7517", HotCase:"#D85A30", MeetingDone:"#0F6E56", DoneDeal:"#04342C", EOI:"#04342C", "New Lead":"#5F5E5A","No Answer":"#854F0B","Not Interested":"#A32D2D","Call Back":"#BA7517","Hot Case":"#D85A30","Meeting Done":"#0F6E56","Done Deal":"#04342C" };
+        return m[s] || "#5F5E5A";
+      };
+      var cmpStatusLabel = function(s){
+        var m = { NewLead:"New Lead", NoAnswer:"No Answer", NotInterested:"Not Interested", CallBack:"Call Back", HotCase:"Hot Case", MeetingDone:"Meeting Done", DoneDeal:"Done Deal" };
+        return m[s] || s || "New Lead";
+      };
+      return <Modal show={true} onClose={closeCompare} title={"Agent Comparison — "+compareLead.name} w={520}>
+        {compareEras.length===0 ? <div style={{ textAlign:"center", padding:30, color:C.textLight }}>No eras to compare</div> : <div style={{ overflowX:"auto" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+            <thead>
+              <tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+                <th style={{ textAlign:"left", padding:"8px 10px", fontWeight:700, color:C.text, fontSize:11 }}>Agent</th>
+                <th style={{ textAlign:"right", padding:"8px 10px", fontWeight:700, color:C.text, fontSize:11 }}>Days held</th>
+                <th style={{ textAlign:"right", padding:"8px 10px", fontWeight:700, color:C.text, fontSize:11 }}>Actions</th>
+                <th style={{ textAlign:"left", padding:"8px 10px", fontWeight:700, color:C.text, fontSize:11 }}>Ended at</th>
+              </tr>
+            </thead>
+            <tbody>
+              {compareEras.map(function(era, i){
+                var daysHeld = Math.max(1, Math.ceil((new Date(era.endedAt) - new Date(era.startedAt)) / (24*60*60*1000)));
+                var actions = (era.events||[]).filter(function(ev){
+                  var t = ev.type;
+                  return t!=="assigned" && t!=="first_assigned" && t!=="rotated" && t!=="reassign" && t!=="reassigned";
+                }).length;
+                var rowBg = era.isCurrent ? "#E1F5EE" : (i%2===0 ? "#fff" : "#FBFBFA");
+                var agentColor = era.isCurrent ? "#04342C" : C.text;
+                return <tr key={"cmp-"+i} style={{ background:rowBg, borderBottom:"1px solid #F1F5F9" }}>
+                  <td style={{ padding:"10px", color:agentColor, fontWeight:era.isCurrent?700:600 }}>
+                    {era.agentName}
+                    {era.isCurrent && <span style={{ marginLeft:6, fontWeight:700, fontSize:10, color:"#04342C" }}>· current</span>}
+                  </td>
+                  <td style={{ padding:"10px", textAlign:"right", color:C.text }}>{daysHeld}</td>
+                  <td style={{ padding:"10px", textAlign:"right", color:C.text }}>{actions}</td>
+                  <td style={{ padding:"10px", color:cmpStatusColor(era.endedAtStatus), fontWeight:600 }}>{cmpStatusLabel(era.endedAtStatus)}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>}
+      </Modal>;
+    })()}
 
     {/* Bulk WhatsApp Templates Modal */}
     {showBulkWa&&<Modal show={true} onClose={function(){setShowBulkWa(false);setBulkWaTemplate(null);}} title={"💬 "+t.bulkWhatsApp+" ("+selected2.length+")"}>
