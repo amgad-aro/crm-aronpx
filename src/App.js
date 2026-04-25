@@ -6542,14 +6542,37 @@ var TeamPage = function(p) {
       if(isManagerCard && teamUids) return aid===uid||teamUids.has(aid)||(splitId&&(splitId===uid||teamUids.has(splitId)));
       return aid===uid||splitId===uid;
     };
+    // For manager cards, revenue is the per-member share sum (matches the
+    // header): a within-team split contributes both halves because each
+    // member's iteration adds their 50%. Distinct DEALS counts (qDeals.length /
+    // allAgentDeals.length) keep the team-wide matchesAgent set so a single
+    // split deal between two team members is still counted as 1 deal.
+    var perMemberShare = isManagerCard ? function(filterFn){
+      var memberIds=[uid].concat(Array.from(teamUids||[]));
+      return memberIds.reduce(function(total,mid){
+        return total+allDeals.reduce(function(s,d){
+          var aid=String(d.agentId&&d.agentId._id?d.agentId._id:d.agentId||"");
+          var splitId=String(d.splitAgent2Id&&d.splitAgent2Id._id?d.splitAgent2Id._id:d.splitAgent2Id||"");
+          if(aid!==mid&&splitId!==mid) return s;
+          if(!filterFn(d)) return s;
+          var w=getProjectWeight(d.project,d);
+          var sp=getDealSplitFromObj(d);
+          return s+parseBudget(d.budget)*w*(sp?0.5:1);
+        },0);
+      },0);
+    } : null;
     var al=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return String(aid)===uid&&!l.archived;});
     var calls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return String(auid)===uid&&ac.type==="call";}).length;
     var qTarget=getEffectiveQTarget(a,p.users,viewQ);
     var qDeals=allDeals.filter(function(d){if(!matchesAgent(d))return false;var dd=getDealDate(d);return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;});
-    var qRevenue=qDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
+    var qRevenue=isManagerCard
+      ? perMemberShare(function(d){var dd=getDealDate(d);return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;})
+      : qDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
     var qProg=qTarget>0?Math.min(100,Math.round((qRevenue/qTarget)*100)):0;
     var allAgentDeals=allDeals.filter(function(d){return matchesAgent(d);});
-    var totalRevenue=allAgentDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
+    var totalRevenue=isManagerCard
+      ? perMemberShare(function(){return true;})
+      : allAgentDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
     var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<2*60*1000;
     var lastSeenStr=a.lastSeen?("Last seen: "+new Date(a.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" — "+timeAgo(a.lastSeen,p.t)):"Never logged in";
     var initials = (a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
