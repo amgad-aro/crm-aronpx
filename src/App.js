@@ -5101,9 +5101,16 @@ var DealsPage = function(p) {
                 var isSalesRole=p.cu.role==="sales"||p.cu.role==="team_leader";
                 // Sales sees effective amount only, admin sees both
                 if(isSalesRole&&showEffective){
+                  // For a split, show "+OtherAgent" — primary sees the split partner,
+                  // split partner sees the primary. Both still get the "Split" indicator.
+                  var meId=String(p.cu.id||"");
+                  var primaryId=String(d.agentId&&d.agentId._id?d.agentId._id:d.agentId||"");
+                  var primaryName=(d.agentId&&d.agentId.name)?d.agentId.name:"";
+                  var otherName=split?(primaryId===meId?(split.agent2Name||""):primaryName):"";
                   return <div>
                     <div style={{ color:C.success }}>{effectiveBv.toLocaleString()}</div>
                     <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>من {bv.toLocaleString()}</div>
+                    {split&&otherName&&<div style={{ fontSize:10, color:"#8B5CF6", fontWeight:600, marginTop:1 }}>🤝 +{otherName}</div>}
                   </div>;
                 }
                 return <div>
@@ -6391,7 +6398,7 @@ var ReportsPage = function(p) {
     var uid=gid(u);
     var uNew=periodLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.source!=="Daily Request";});
     var uDailyReq=periodLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.source==="Daily Request";});
-    var uDeals=periodDeals.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid;});
+    var uDeals=periodDeals.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");var sp=String(l.splitAgent2Id&&l.splitAgent2Id._id?l.splitAgent2Id._id:l.splitAgent2Id||"");return a===uid||sp===uid;});
     // Permanent meeting source of truth: hadMeeting flag + meetingDoneAt
     // (the original transition timestamp). Never derives from current status,
     // so a lead that later moved to EOI / DoneDeal / etc. still counts. Falls
@@ -6520,8 +6527,9 @@ var TeamPage = function(p) {
     }).map(function(u){return String(u._id);})) : null;
     var matchesAgent = function(d){
       var aid=String(d.agentId&&d.agentId._id?d.agentId._id:d.agentId||"");
-      if(isManagerCard && teamUids) return aid===uid||teamUids.has(aid);
-      return aid===uid;
+      var splitId=String(d.splitAgent2Id&&d.splitAgent2Id._id?d.splitAgent2Id._id:d.splitAgent2Id||"");
+      if(isManagerCard && teamUids) return aid===uid||teamUids.has(aid)||(splitId&&(splitId===uid||teamUids.has(splitId)));
+      return aid===uid||splitId===uid;
     };
     var al=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return String(aid)===uid&&!l.archived;});
     var calls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return String(auid)===uid&&ac.type==="call";}).length;
@@ -8292,8 +8300,9 @@ var KPIsPage = function(p) {
   var teamUids = isTeamLeader ? new Set((p.myTeamUsers||[]).map(function(u){return String(u._id);})) : null;
   var myLeads = p.leads.filter(function(l){
     var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
-    if(isTeamLeader && teamUids) return teamUids.has(aid)&&!l.archived&&l.source!=="Daily Request";
-    return aid===uid&&!l.archived&&l.source!=="Daily Request";
+    var splitId=String(l.splitAgent2Id&&l.splitAgent2Id._id?l.splitAgent2Id._id:l.splitAgent2Id||"");
+    if(isTeamLeader && teamUids) return (teamUids.has(aid)||(splitId&&teamUids.has(splitId)))&&!l.archived&&l.source!=="Daily Request";
+    return (aid===uid||splitId===uid)&&!l.archived&&l.source!=="Daily Request";
   });
   var myDeals = myLeads.filter(function(l){return l.status==="DoneDeal";});
   var myActs = p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return auid===uid;});
