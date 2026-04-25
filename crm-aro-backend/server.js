@@ -1211,7 +1211,14 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     // progress bar reflects the whole team's quota. Single-doc fetch for others.
     var usersP = User.find({ _id: { $in: scopeIds } }).select("qTargets").lean();
     var myDealsPipeline = [
-      { $match: { agentId: agentExpr, status: "DoneDeal" } },
+      { $match: {
+          status: "DoneDeal",
+          // Match deals where the scope is the primary agent OR the split agent.
+          // The reducer below halves split deals so each side counts only their
+          // share — splitAgent2Id-only matches still attribute the agent's 50%
+          // toward their target.
+          $or: [ { agentId: agentExpr }, { splitAgent2Id: agentExpr } ]
+      } },
       { $addFields: {
           dealAt: {
             $cond: [
@@ -1409,7 +1416,14 @@ app.get("/api/leads", auth, async function(req, res) {
       // on assignments.agentId keeps the lead visible to every agent who has
       // (or ever had) an entry — each sees only their own slice via the
       // overlay below. Unassigned leads (no entries) are naturally excluded.
-      query["assignments.agentId"] = new mongoose.Types.ObjectId(uid);
+      // Also include leads where the caller is the split agent on a Done Deal,
+      // even if they were never rotated to the lead — splits store the second
+      // agent only on splitAgent2Id, with no assignments[] entry.
+      var saleUid = new mongoose.Types.ObjectId(uid);
+      query.$or = [
+        { "assignments.agentId": saleUid },
+        { splitAgent2Id: saleUid }
+      ];
 
     } else if (role === "team_leader") {
       // Team leader sees only their direct sales
@@ -1418,7 +1432,10 @@ app.get("/api/leads", auth, async function(req, res) {
       var visibleAgentIds = [tlUser._id];
       var directSales = await User.find({ reportsTo: tlUser._id }).lean();
       directSales.forEach(function(s) { visibleAgentIds.push(s._id); });
-      query.agentId = { $in: visibleAgentIds };
+      query.$or = [
+        { agentId: { $in: visibleAgentIds } },
+        { splitAgent2Id: { $in: visibleAgentIds } }
+      ];
 
     } else if (role === "manager") {
       var managerUser = await User.findById(uid).lean();
@@ -1451,7 +1468,10 @@ app.get("/api/leads", auth, async function(req, res) {
         return arr.findIndex(function(x) { return String(x) === String(id); }) === i;
       });
 
-      query.agentId = { $in: uniqueIds };
+      query.$or = [
+        { agentId: { $in: uniqueIds } },
+        { splitAgent2Id: { $in: uniqueIds } }
+      ];
     }
     // admin: no filter
 
@@ -1642,13 +1662,16 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       // Access is granted by presence of an assignments[] entry for the caller,
       // NOT by top-level agentId (which moves to the new owner on rotation).
       // This keeps the lead reachable for the previous agent while still
-      // blocking anyone who has never held it.
+      // blocking anyone who has never held it. Split agents (splitAgent2Id)
+      // also get access — they may not have an assignments[] entry yet.
       var obj = Object.assign({}, lead);
       var myAssign = (obj.assignments || []).find(function(a) {
         var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
         return String(aid) === uid;
       });
-      if (!myAssign) return res.status(404).json({ error: "Not found" });
+      var splitId2 = lead.splitAgent2Id && lead.splitAgent2Id._id ? lead.splitAgent2Id._id : lead.splitAgent2Id;
+      var isSplitAgent = splitId2 && String(splitId2) === uid;
+      if (!myAssign && !isSplitAgent) return res.status(404).json({ error: "Not found" });
 
       // Wipe top-level per-agent text unconditionally before the overlay so
       // another agent's notes / feedback can never leak through a stale
@@ -1656,22 +1679,26 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       obj.notes = "";
       obj.lastFeedback = "";
 
-      var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
-      obj.status = assignStatus || obj.status;
-      obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
-      obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
-      obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
-      obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
-      obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
-      if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
-      if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
-      // Rewrite agentId so the old agent sees themselves as the owner even
-      // after rotation — never exposes the new owner's identity.
-      obj.agentId = myAssign.agentId;
+      if (myAssign) {
+        var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
+        obj.status = assignStatus || obj.status;
+        obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
+        obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+        obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
+        obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
+        obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
+        if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
+        if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+        // Rewrite agentId so the old agent sees themselves as the owner even
+        // after rotation — never exposes the new owner's identity.
+        obj.agentId = myAssign.agentId;
+      }
+      // Split-only access (no slice): keep top-level fields, including agentId
+      // pointing at the primary agent so the deal card shows "<primary> +<self>".
 
       // Strip every other agent's data + rotation metadata.
-      obj.agentHistory = (myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
-      obj.assignments = [myAssign];
+      obj.agentHistory = (myAssign && myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
+      obj.assignments = myAssign ? [myAssign] : [];
       obj.previousAgentIds = [];
       obj.rotationCount = 0;
       obj.lastRotationAt = null;
