@@ -1603,6 +1603,74 @@ var LeadJourney = function(p) {
     return s || e || "";
   };
 
+  // Per-era expand/collapse state. Keyed by the era's index in the rendered
+  // order. Default empty → all eras start collapsed (showing newest 5).
+  var [expandedEras, setExpandedEras] = useState({});
+
+  // Two events share an actor when their userId._ids match (preferred) or,
+  // when _ids are missing on either side, when their userId.names match.
+  var sameActor = function(a, b){
+    if (!a || !b || !a.userId || !b.userId) return false;
+    if (a.userId._id && b.userId._id) return String(a.userId._id) === String(b.userId._id);
+    if (a.userId.name && b.userId.name) return a.userId.name === b.userId.name;
+    return false;
+  };
+
+  // Parse a rotation event's note into { isAuto, actor, reason }. Note formats
+  // emitted by the backend look like:
+  //   "Rotated from X to Y by System (3x No Answer)"            (auto)
+  //   "Rotated from X to Y by <admin name>"                     (manual)
+  //   "Rotated from X to Y by <admin name> (<reason>)"          (manual)
+  //   "Bulk redistribution — reassigned to <name> by <name>"    (manual bulk)
+  //   "Auto Rotation | From: X → To: Y | Reason: <reason>"      (auto, alt)
+  var parseRotation = function(note){
+    if (!note) return { isAuto: false, actor: null, reason: null };
+    var hasAutoRot = /auto\s*rotation/i.test(note);
+    var isAuto = /by\s+system/i.test(note) || hasAutoRot;
+    var actor = null;
+    if (hasAutoRot) {
+      actor = "System";
+    } else {
+      var byMatch = note.match(/by\s+(.+?)(?:\s*\(|$)/i);
+      if (byMatch) actor = byMatch[1].trim();
+    }
+    var reason = null;
+    var lastParen = note.match(/\(([^)]+)\)\s*$/);
+    if (lastParen) {
+      reason = lastParen[1].trim();
+    } else {
+      var rMatch = note.match(/Reason:\s*(.+?)(?:\s*\||$)/i);
+      if (rMatch) reason = rMatch[1].trim();
+    }
+    return { isAuto: isAuto, actor: actor, reason: reason };
+  };
+
+  // Translate raw auto-rotation reason codes (the parenthesized substring of
+  // the rotation note) into human-readable English. Substring + case-
+  // insensitive so we match whether the backend writes "auto_timeout",
+  // "Auto Timeout", or "timeout (3 days)". Empty input returns the
+  // "no reason recorded" fallback used when an auto rotation didn't supply
+  // a reason. Manual reasons are NOT translated — they're admin free-text.
+  var translateAutoReason = function(raw){
+    if (!raw || !String(raw).trim()) return "No reason recorded";
+    var s = String(raw).toLowerCase();
+    if (s.indexOf("timeout") !== -1 || s.indexOf("auto_timeout") !== -1) return "Sales agent did not contact lead for 1+ days";
+    if (s.indexOf("3x no answer") !== -1 || s.indexOf("3x_no_answer") !== -1) return "3 No Answer entries in 48 hours";
+    if (s.indexOf("not interested streak") !== -1 || s.indexOf("not_interested_streak") !== -1) return "Marked Not Interested 2+ times";
+    if (s.indexOf("callback overdue") !== -1 || s.indexOf("callback_overdue") !== -1) return "Missed callback by 1+ days";
+    if (s.indexOf("cooldown") !== -1) return "Cooldown expired, redistributed";
+    return raw;
+  };
+
+  // Map a User.role enum value to a display label. Returns null for unknown
+  // or missing roles — callers omit the parenthesized role suffix in that
+  // case rather than guessing.
+  var roleLabel = function(role){
+    if (!role) return null;
+    var map = { admin:"Admin", sales_admin:"Sales Admin", manager:"Manager", director:"Director", team_leader:"Team Leader", sales:"Sales" };
+    return map[role] || null;
+  };
+
   var sorted = events.slice().sort(function(a,b){
     return new Date(a.createdAt) - new Date(b.createdAt);
   });
@@ -1632,6 +1700,8 @@ var LeadJourney = function(p) {
         isRotation: type==="rotated" || type==="reassigned",
         reason: parseReason(note),
         auto: isAutoReason(note) ? "auto" : "manual",
+        rotationMeta: parseRotation(note),
+        actor: ev.userId ? { name: ev.userId.name || null, role: ev.userId.role || null } : null,
         source: ev.source || ((type==="first_assigned" && lead) ? lead.source : null),
         startedAt: ev.createdAt,
         endedAt: ev.createdAt,
@@ -1674,13 +1744,7 @@ var LeadJourney = function(p) {
         if (pe.type !== dEv.type) continue;
         var peContent = String(pe.note || pe.feedback || "").trim();
         if (!dContent || !peContent || dContent !== peContent) continue;
-        var actorMatch = false;
-        if (pe.userId && dEv.userId && pe.userId._id && dEv.userId._id) {
-          actorMatch = String(pe.userId._id) === String(dEv.userId._id);
-        } else if (pe.userId && dEv.userId && pe.userId.name && dEv.userId.name) {
-          actorMatch = pe.userId.name === dEv.userId.name;
-        }
-        if (!actorMatch) continue;
+        if (!sameActor(pe, dEv)) continue;
         if (Math.abs(dT - new Date(pe.createdAt).getTime()) <= 10000) { isDup = true; break; }
       }
       if (!isDup) keep.push(dEv);
@@ -1704,6 +1768,41 @@ var LeadJourney = function(p) {
   // "Rotated <prevSurvivor> → <nextSurvivor>", skipping the admin hop.
   eras.forEach(function(era, i){
     if (i > 0) era.fromAgent = eras[i-1].agentName;
+  });
+
+  // Group consecutive same-actor events written within 60s of each other into
+  // a single composite "action". Backend frequently writes one user action as
+  // 4-6 history rows (status_change + callback_scheduled + feedback_added +
+  // mirror copies in Activity). Grouping collapses them into one row, and
+  // shrinks the era's "X actions" count to match logical user activity.
+  // Era boundaries (assigned/first_assigned/rotated/reassigned) are NEVER
+  // groupable — they always render as their own row.
+  var GRP_GAP_MS = 60 * 1000;
+  var GROUPABLE_TYPES = { status_change:1, feedback:1, feedback_added:1, callback_scheduled:1, note:1, call:1, meeting:1 };
+  var isGroupable = function(t){ return !!GROUPABLE_TYPES[t]; };
+  eras.forEach(function(era){
+    var groups = [];
+    era.events.forEach(function(ev){
+      var last = groups[groups.length - 1];
+      var canJoin = false;
+      if (last) {
+        var lastEv = last.subEvents[last.subEvents.length - 1];
+        var tDelta = Math.abs(new Date(ev.createdAt) - new Date(lastEv.createdAt));
+        canJoin = isGroupable(lastEv.type) && isGroupable(ev.type) && sameActor(lastEv, ev) && tDelta <= GRP_GAP_MS;
+      }
+      if (canJoin) {
+        last.subEvents.push(ev);
+      } else {
+        groups.push({
+          _id: (ev._id ? String(ev._id) + "-grp" : ("grp-" + groups.length)),
+          createdAt: ev.createdAt,
+          actor: ev.userId || null,
+          subEvents: [ev]
+        });
+      }
+    });
+    groups.forEach(function(g){ g.isGroup = g.subEvents.length > 1; });
+    era.actions = groups;
   });
 
   eras.forEach(function(era, i){
@@ -1745,6 +1844,90 @@ var LeadJourney = function(p) {
 
   var orderedEras = isPanel ? eras : eras.slice().reverse();
 
+  // Compute the status the lead held when a feedback row was written, by
+  // scanning chronological status_changes inside the same era up to that
+  // event's timestamp. Used by feedback rendering for the "while X" badge.
+  var whileStatusFor = function(ev, era){
+    var whileStatus = "NewLead";
+    var tFb = new Date(ev.createdAt).getTime();
+    for (var k = 0; k < era.events.length; k++) {
+      var ek = era.events[k];
+      if (ek.type === "status_change" && new Date(ek.createdAt).getTime() <= tFb) {
+        var s = extractStatus(ek);
+        if (s) whileStatus = s;
+      }
+    }
+    return whileStatus;
+  };
+
+  // Layout B — labeled multi-line block rendering for one sub-event inside a
+  // composite group row. Each sub-event becomes a block with a "Category:"
+  // label; feedback / note bodies sit in a muted panel below the label.
+  // The `group` arg gives access to sibling sub-events so we can suppress
+  // the "while X" badge when a status_change in the same group already
+  // shows the matching destination status (badge would be redundant).
+  var renderSubLine = function(ev, era, group){
+    var type = ev.type;
+    var labelStyle = { fontWeight:700, color:C.text };
+    var mutedBox = { marginTop:4, padding:"6px 9px", background:"#F8FAFC", borderRadius:8, fontSize:bodyFs, color:C.text, border:"1px solid #EEF1F5" };
+    if (type === "status_change") {
+      var to = extractStatus(ev) || "NewLead";
+      var from = extractFromStatus(ev);
+      return <div style={{ fontSize:bodyFs, color:C.text }}>
+        <span style={labelStyle}>Status:</span>{" "}
+        {from ? <><span style={{ color:sColor(from), fontWeight:700 }}>{sLabel(from)}</span>{" → "}</> : null}
+        <span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span>
+      </div>;
+    }
+    if (type === "feedback" || type === "feedback_added") {
+      var ws = whileStatusFor(ev, era);
+      var suppressBadge = !!(group && group.subEvents && group.subEvents.some(function(s){
+        return s.type === "status_change" && extractStatus(s) === ws;
+      }));
+      var fbText = ev.feedback || ev.note || "";
+      return <div>
+        <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+          <span style={labelStyle}>Feedback:</span>
+          {!suppressBadge && <span style={{ fontSize:metaFs, padding:"1px 6px", borderRadius:5, background:sColor(ws)+"18", color:sColor(ws), fontWeight:600 }}>while {sLabel(ws)}</span>}
+        </div>
+        {fbText && <div style={mutedBox}>{fbText}</div>}
+      </div>;
+    }
+    if (type === "callback_scheduled") {
+      var cbTime = ev.scheduledFor || ev.time || ev.callbackTime || null;
+      var cbLabel = cbTime ? new Date(cbTime).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : (ev.note || "");
+      return <div style={{ fontSize:bodyFs, color:C.text }}>
+        <span style={labelStyle}>Callback:</span> {cbLabel}
+      </div>;
+    }
+    if (type === "note") {
+      return <div>
+        <div style={{ fontSize:bodyFs, color:C.text }}><span style={labelStyle}>Note:</span></div>
+        {ev.note && <div style={mutedBox}>{ev.note}</div>}
+      </div>;
+    }
+    if (type === "call") {
+      return <div style={{ fontSize:bodyFs, color:C.text }}>
+        <span style={labelStyle}>Call:</span> {ev.note || "Call initiated"}
+      </div>;
+    }
+    if (type === "meeting") {
+      return <div style={{ fontSize:bodyFs, color:C.text }}>
+        <span style={labelStyle}>Meeting:</span> {ev.note || "Meeting"}
+      </div>;
+    }
+    if (type === "assigned" || type === "first_assigned") {
+      var src = (type === "first_assigned" && era.source) ? " · source: " + era.source : "";
+      return <div style={{ fontSize:bodyFs, color:C.text }}>Assigned fresh as <span style={{ color:sColor("NewLead"), fontWeight:700 }}>New Lead</span>{src}</div>;
+    }
+    if (type === "rotated" || type === "reassigned") {
+      return <div style={{ fontSize:bodyFs, color:C.text }}>Assigned fresh as <span style={{ color:sColor("NewLead"), fontWeight:700 }}>New Lead</span></div>;
+    }
+    return <div style={{ fontSize:bodyFs, color:C.text }}>{ev.note || type}</div>;
+  };
+
+  // Render a single event the original way (label + muted panel for
+  // feedback / note text). Used when an action group has only one sub-event.
   var renderEvent = function(ev, era, idx, noTopBorder){
     var type = ev.type;
     var body = null;
@@ -1760,19 +1943,11 @@ var LeadJourney = function(p) {
         ? <div style={{ fontSize:bodyFs, color:C.text }}>Status <span style={{ color:sColor(from), fontWeight:700 }}>{sLabel(from)}</span>{" → "}<span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span></div>
         : <div style={{ fontSize:bodyFs, color:C.text }}>Status set to <span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span></div>;
     } else if (type === "feedback_added" || type === "feedback") {
-      var whileStatus = "NewLead";
-      var tFb = new Date(ev.createdAt).getTime();
-      for (var k = 0; k < era.events.length; k++) {
-        var ek = era.events[k];
-        if (ek.type === "status_change" && new Date(ek.createdAt).getTime() <= tFb) {
-          var s = extractStatus(ek);
-          if (s) whileStatus = s;
-        }
-      }
+      var whileStatusS = whileStatusFor(ev, era);
       body = <div>
         <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
           <span style={{ fontWeight:700 }}>Feedback</span>
-          <span style={{ fontSize:metaFs, padding:"1px 6px", borderRadius:5, background:sColor(whileStatus)+"18", color:sColor(whileStatus), fontWeight:600 }}>while {sLabel(whileStatus)}</span>
+          <span style={{ fontSize:metaFs, padding:"1px 6px", borderRadius:5, background:sColor(whileStatusS)+"18", color:sColor(whileStatusS), fontWeight:600 }}>while {sLabel(whileStatusS)}</span>
         </div>
         {(ev.feedback || ev.note) && <div style={{ marginTop:4, padding:"6px 9px", background:"#F8FAFC", borderRadius:8, fontSize:bodyFs, color:C.text, border:"1px solid #EEF1F5" }}>{ev.feedback || ev.note}</div>}
       </div>;
@@ -1797,6 +1972,35 @@ var LeadJourney = function(p) {
     </div>;
   };
 
+  // Render one action (a group of 1+ events). Single-event groups fall
+  // through to the existing renderEvent layout. Multi-event groups render as
+  // a single row whose right column is a stack of labeled sub-event blocks
+  // ordered by category (Status → Feedback → Callback → Note → Call →
+  // Meeting), with chronological order preserved within each category.
+  var SUB_CATEGORY_ORDER = { status_change:0, feedback:1, feedback_added:1, callback_scheduled:2, note:3, call:4, meeting:5 };
+  var renderAction = function(action, era, chronoIdx, noTopBorder){
+    if (!action.isGroup) {
+      return renderEvent(action.subEvents[0], era, chronoIdx, noTopBorder);
+    }
+    var hideTop = (typeof noTopBorder === "boolean") ? noTopBorder : (chronoIdx === 0);
+    var ordered = action.subEvents.slice().sort(function(a, b){
+      var ca = (SUB_CATEGORY_ORDER[a.type] != null) ? SUB_CATEGORY_ORDER[a.type] : 99;
+      var cb = (SUB_CATEGORY_ORDER[b.type] != null) ? SUB_CATEGORY_ORDER[b.type] : 99;
+      if (ca !== cb) return ca - cb;
+      return new Date(a.createdAt) - new Date(b.createdAt);
+    });
+    return <div key={action._id} style={{ display:"flex", gap:10, padding:"6px 0", borderTop:hideTop?"none":"1px solid rgba(0,0,0,0.04)" }}>
+      <div style={{ flexShrink:0, width:isPanel?84:96, fontSize:metaFs, color:C.textLight, paddingTop:2 }}>{fmtTs(action.createdAt)}</div>
+      <div style={{ flex:1, minWidth:0 }}>
+        {ordered.map(function(sub, si){
+          return <div key={si} style={{ padding:"3px 0", lineHeight:1.5 }}>
+            {renderSubLine(sub, era, action)}
+          </div>;
+        })}
+      </div>
+    </div>;
+  };
+
   var renderEra = function(era, idx){
     var initials = (era.agentName||"?").split(/\s+/).filter(Boolean).map(function(w){return w[0]||"";}).slice(0,2).join("").toUpperCase() || "?";
     var bgColor = era.isCurrent ? "#E1F5EE" : "#FBFBFA";
@@ -1818,19 +2022,22 @@ var LeadJourney = function(p) {
       marginBottom:10,
       position:"relative"
     };
-    // Build rows in chronological order (events + silence pills computed
-    // from chrono gaps), then reverse for display so newest events sit on
-    // top. The silence pill stays between the same two neighbors visually,
-    // just with its order flipped.
+    var actions = era.actions || [];
+    var actionsCount = actions.length;
+    // Build rows in chronological order (actions + silence pills computed
+    // from chrono gaps), then reverse for display so newest actions sit on
+    // top. Silence pills are placed between consecutive groups based on the
+    // gap from the previous group's last sub-event to this group's first.
     var chronoItems = [];
     var GAP = 48 * 60 * 60 * 1000;
-    era.events.forEach(function(ev, i){
+    actions.forEach(function(action, i){
       if (i > 0) {
-        var prev = era.events[i-1];
-        var prevType = prev.type;
+        var prevAction = actions[i-1];
+        var prevLast = prevAction.subEvents[prevAction.subEvents.length - 1];
+        var prevType = prevLast.type;
         var prevIsAssign = prevType==="assigned" || prevType==="first_assigned" || prevType==="rotated" || prevType==="reassigned";
         if (!prevIsAssign) {
-          var gapMs = new Date(ev.createdAt) - new Date(prev.createdAt);
+          var gapMs = new Date(action.createdAt) - new Date(prevLast.createdAt);
           if (gapMs > GAP) {
             var days = Math.round(gapMs / (24*60*60*1000));
             chronoItems.push({ kind:"silence", node:
@@ -1852,17 +2059,60 @@ var LeadJourney = function(p) {
           }
         }
       }
-      chronoItems.push({ kind:"event", ev: ev, chronoIdx: i });
+      chronoItems.push({ kind:"action", action: action, chronoIdx: i });
     });
     var displayItems = chronoItems.slice().reverse();
+
+    // Collapse to the newest 5 actions when the era has more than 5. Silence
+    // pills that sit between two visible actions stay; pills that would land
+    // adjacent to a hidden action are dropped (achieved naturally by slicing
+    // up to and including the 5th action seen in display order).
+    var isExpanded = !!expandedEras[idx];
+    var visibleItems;
+    if (actionsCount > 5 && !isExpanded) {
+      visibleItems = [];
+      var actionsSeen = 0;
+      for (var vi = 0; vi < displayItems.length; vi++) {
+        var di = displayItems[vi];
+        if (di.kind === "action") {
+          actionsSeen++;
+          if (actionsSeen > 5) break;
+        }
+        visibleItems.push(di);
+      }
+    } else {
+      visibleItems = displayItems;
+    }
+
     var rows = [];
     var firstEventSeen = false;
-    displayItems.forEach(function(item){
+    visibleItems.forEach(function(item){
       if (item.kind === "silence") { rows.push(item.node); return; }
       var noTopBorder = !firstEventSeen;
       firstEventSeen = true;
-      rows.push(renderEvent(item.ev, era, item.chronoIdx, noTopBorder));
+      rows.push(renderAction(item.action, era, item.chronoIdx, noTopBorder));
     });
+
+    var toggleBtn = null;
+    if (actionsCount > 5) {
+      toggleBtn = <button key={"toggle-"+idx} onClick={function(){
+        setExpandedEras(function(prev){
+          var next = Object.assign({}, prev);
+          next[idx] = !prev[idx];
+          return next;
+        });
+      }} onMouseEnter={function(e){ e.currentTarget.style.background = "#F8FAFC"; }}
+         onMouseLeave={function(e){ e.currentTarget.style.background = "transparent"; }}
+         style={{
+        display:"block", width:"100%", marginTop:8,
+        padding:8, border:"1px dashed #888780", background:"transparent",
+        color:"#5F5E5A", fontSize:11, borderRadius:8, cursor:"pointer",
+        fontFamily:"inherit"
+      }}>
+        {isExpanded ? "Show less ▴" : ("Show all " + actionsCount + " actions ▾")}
+      </button>;
+    }
+
     return <div key={"era-"+idx} style={cardStyle}>
       {conflict && <div style={{
         position:"absolute", top:-10, left:8,
@@ -1874,7 +2124,7 @@ var LeadJourney = function(p) {
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontSize:bodyFs, fontWeight:700, color:C.text }}>{era.agentName}</div>
           <div style={{ fontSize:metaFs, color:C.textLight, marginTop:1 }}>
-            {fmtRange(era.startedAt, era.endedAt, era.isCurrent)} · {era.events.length} action{era.events.length===1?"":"s"} · ended at <span style={{ color:sColor(era.endedAtStatus), fontWeight:600 }}>{sLabel(era.endedAtStatus)}</span>
+            {fmtRange(era.startedAt, era.endedAt, era.isCurrent)} · {actionsCount} action{actionsCount===1?"":"s"} · ended at <span style={{ color:sColor(era.endedAtStatus), fontWeight:600 }}>{sLabel(era.endedAtStatus)}</span>
           </div>
         </div>
         <div style={{ flexShrink:0, fontSize:metaFs, fontWeight:700, padding:"2px 8px", borderRadius:10, background:era.isCurrent?"#1D9E75":"#888780", color:"#fff" }}>{era.isCurrent?"Current":"Previous"}</div>
@@ -1883,17 +2133,38 @@ var LeadJourney = function(p) {
         Previous agent had {sLabel(era.conflictPrevStatus)} — investigate
       </div>}
       <div>{rows}</div>
+      {toggleBtn}
     </div>;
   };
 
   var renderSeparator = function(era, key){
-    var reason = era.reason || "Manual reassignment";
-    var auto = era.auto || "manual";
+    var meta = era.rotationMeta || { isAuto: era.auto === "auto", actor: null, reason: era.reason };
     var from = era.fromAgent || "Unassigned";
     var to = era.agentName || "Unknown";
+    var ts = fmtTs(era.startedAt);
+    var line2;
+    if (meta.isAuto) {
+      // Auto rotations have no meaningful actor — the rotation cron runs as
+      // the outgoing agent. Skip the "by X" segment entirely.
+      line2 = "Auto-rotated · " + translateAutoReason(meta.reason) + " · " + ts;
+    } else {
+      // Manual rotations: prefer era.actor (captured at era creation, has
+      // structured name + role). Fall back to the parsed note actor when the
+      // userId wasn't populated. Role label is omitted when unknown rather
+      // than guessed.
+      var actorName = (era.actor && era.actor.name) || meta.actor || null;
+      var actorRoleLabel = era.actor ? roleLabel(era.actor.role) : null;
+      var prefix;
+      if (actorName) {
+        prefix = "Manually rotated by " + actorName + (actorRoleLabel ? (" (" + actorRoleLabel + ")") : "");
+      } else {
+        prefix = "Manually rotated";
+      }
+      line2 = prefix + " · " + ts;
+    }
     return <div key={key} style={{ margin:"6px 0 12px", padding:"8px 12px", background:"#FAEEDA", color:"#633806", borderRadius:10, fontSize:metaFs, lineHeight:1.45 }}>
       <div style={{ fontWeight:700 }}>↻ Rotated {from} → {to} · status reset to New Lead</div>
-      <div style={{ marginTop:3, opacity:0.92 }}>Reason: {reason} · {auto} · {fmtTs(era.startedAt)}</div>
+      <div style={{ marginTop:3, opacity:0.92 }}>{line2}</div>
     </div>;
   };
 
@@ -2695,10 +2966,9 @@ var LeadsPage = function(p) {
             <tbody>
               {compareEras.map(function(era, i){
                 var daysHeld = Math.max(1, Math.ceil((new Date(era.endedAt) - new Date(era.startedAt)) / (24*60*60*1000)));
-                var actions = (era.events||[]).filter(function(ev){
-                  var t = ev.type;
-                  return t!=="assigned" && t!=="first_assigned" && t!=="rotated" && t!=="reassign" && t!=="reassigned";
-                }).length;
+                // Match the era header: count groups, including era-start
+                // assign groups. The number tracks distinct user actions.
+                var actions = (era.actions||[]).length;
                 var rowBg = era.isCurrent ? "#E1F5EE" : (i%2===0 ? "#fff" : "#FBFBFA");
                 var agentColor = era.isCurrent ? "#04342C" : C.text;
                 return <tr key={"cmp-"+i} style={{ background:rowBg, borderBottom:"1px solid #F1F5F9" }}>
