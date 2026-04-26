@@ -1842,7 +1842,11 @@ var LeadJourney = function(p) {
     return <div style={{ fontSize:bodyFs, color:C.textLight, textAlign:"center", padding:14 }}>No history</div>;
   }
 
-  var orderedEras = isPanel ? eras : eras.slice().reverse();
+  // Both panel and modal variants render newest era at the top → oldest at
+  // the bottom. The separator between adjacent eras is placed AFTER the
+  // newer one (`orderedEras[i]`) and BEFORE the older one, and shows the
+  // rotation that produced that newer era.
+  var orderedEras = eras.slice().reverse();
 
   // Compute the status the lead held when a feedback row was written, by
   // scanning chronological status_changes inside the same era up to that
@@ -2221,7 +2225,7 @@ var LeadJourney = function(p) {
   orderedEras.forEach(function(era, i){
     out.push(renderEra(era, i));
     if (i < orderedEras.length - 1) {
-      var newer = isPanel ? orderedEras[i+1] : orderedEras[i];
+      var newer = orderedEras[i];
       if (newer && newer.isRotation) {
         out.push(renderSeparator(newer, "sep-"+i));
       }
