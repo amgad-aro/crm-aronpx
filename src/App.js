@@ -3385,8 +3385,6 @@ var DashboardPage = function(p) {
   var hourNow = new Date().getHours();
   var greeting = hourNow<6 ? "Good Night \ud83d\ude34" : hourNow<12 ? "Good Morning \u2600\ufe0f" : hourNow<18 ? "Good Afternoon \ud83c\udf24\ufe0f" : hourNow<24 ? "Good Evening \ud83c\udf19" : "Good Night \ud83d\ude34";
 
-  if(!leads.length) return <div style={{padding:40,textAlign:"center",color:"#94A3B8",fontSize:14}}>Loading data...</div>;
-
   var total=leads.length;
   var sc={};
   leads.forEach(function(l){sc[l.status]=(sc[l.status]||0)+1;});
