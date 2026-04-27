@@ -1567,6 +1567,8 @@ var LeadJourney = function(p) {
   var events = p.events || [];
   var lead = p.lead;
   var isAdmin = p.isAdminRole;
+  var currentUser = p.currentUser;
+  var allUsers = p.allUsers || [];
   var variant = p.variant || "panel";
   var isPanel = variant === "panel";
   var setShowCompare = p.setShowCompare || function(){};
@@ -1784,9 +1786,26 @@ var LeadJourney = function(p) {
     return era.events.some(function(ev){ return !!workTypes[ev.type]; });
   });
 
-  // After dropping phantom eras, point each surviving era's fromAgent at the
-  // previous SURVIVING era's agent — so the rotation separator reads
-  // "Rotated <prevSurvivor> → <nextSurvivor>", skipping the admin hop.
+  // Team_leader scope: drop any era whose agent isn't on this TL's team. The
+  // backend already scopes leads/users to the TL's team, but the journey
+  // panel renders the lead's full history — including eras held by agents
+  // outside the team — and that history must be hidden too.
+  // Match the era's agent (era.agentName, the receiving sales person) against
+  // allUsers by name to recover an _id, then test it against the scope set.
+  // No exception for the current (last) era — the rule is strict.
+  var teamScope = getTeamScopeIds(currentUser, allUsers);
+  if (teamScope) {
+    eras = eras.filter(function(era){
+      var agentMatch = (allUsers || []).find(function(u){ return u && u.name === era.agentName; });
+      var agentId = agentMatch ? String(agentMatch._id) : "";
+      return teamScope.has(agentId);
+    });
+  }
+
+  // After dropping phantom eras (and any out-of-team eras for team_leader),
+  // point each surviving era's fromAgent at the previous SURVIVING era's
+  // agent — so the rotation separator reads "Rotated <prevSurvivor> →
+  // <nextSurvivor>", skipping the admin hop and any out-of-team eras.
   eras.forEach(function(era, i){
     if (i > 0) era.fromAgent = eras[i-1].agentName;
   });
@@ -2953,7 +2972,7 @@ var LeadsPage = function(p) {
 
           {/* Lead Journey — grouped by agent era */}
           <div style={{ marginTop:14 }}>
-            <LeadJourney events={panelHistory} lead={selected} currentUser={p.cu} isAdminRole={isAdmin} variant="panel" setShowCompare={openCompare} />
+            <LeadJourney events={panelHistory} lead={selected} currentUser={p.cu} allUsers={p.users} isAdminRole={isAdmin} variant="panel" setShowCompare={openCompare} />
           </div>
         </div>
       </Card>}
@@ -2963,7 +2982,7 @@ var LeadsPage = function(p) {
     {showHistory&&historyLead&&<Modal show={true} onClose={function(){setShowHistory(false);setHistoryLead(null);}} title={"📋 Lead History — "+historyLead.name} w={520}>
       {historyLoading ? <div style={{ textAlign:"center", padding:30, color:C.textLight }}>Loading...</div>
         : <div style={{ maxHeight:500, overflowY:"auto" }}>
-          <LeadJourney events={fullHistory} lead={historyLead} currentUser={p.cu} isAdminRole={isAdmin} variant="modal" setShowCompare={openCompare} />
+          <LeadJourney events={fullHistory} lead={historyLead} currentUser={p.cu} allUsers={p.users} isAdminRole={isAdmin} variant="modal" setShowCompare={openCompare} />
         </div>}
     </Modal>}
 
