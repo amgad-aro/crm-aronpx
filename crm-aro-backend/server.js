@@ -2614,53 +2614,65 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
 
 // ===== AUTO-ROTATE (server picks next agent from the ordered rotation list) =====
 // The rotation order lives in AppSetting (key "rotation", field reassignAgents)
-// and is an ORDERED array of user ids. This endpoint walks that list top-to-bottom
+// and is an ORDERED array of user ids. The helper walks that list top-to-bottom
 // and assigns the lead to the first agent who has never handled it. "Previously
 // handled" = any id in lead.assignments[].agentId, lead.previousAgentIds, or the
 // current lead.agentId. If every agent in the list has already had the lead,
 // rotation stops and the lead is left as-is.
 //
 // INVARIANT: ONE rotation event = exactly ONE new assignment to ONE agent.
-// The scan loop below has a `break` on first match, and the mutation is a
-// single atomic findOneAndUpdate guarded on the lead's current agentId so
-// two concurrent requests can't both append an assignment to the same lead.
-app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
+// The scan loop has a `break` on first match, and the mutation is a single
+// atomic findOneAndUpdate guarded on the lead's current agentId so two
+// concurrent callers can't both append an assignment to the same lead.
+//
+// `autoRotateLead` is the shared core. It's called from:
+//   • POST /api/leads/:id/auto-rotate  (browser-triggered, see endpoint below)
+//   • sweepAutoRotation()              (server cron, every 5 min)
+// Returns a structured result instead of touching res — the endpoint maps it
+// to HTTP. opts.role + opts.reason gate the same admin-bypass paths the
+// endpoint used to read off req.user; the sweeper passes neither and so
+// behaves as a non-admin caller with reason="auto_timeout".
+async function autoRotateLead(leadId, byName, opts) {
   try {
-    var reason = (req.body && req.body.reason) || "auto_timeout";
-    var lead = await Lead.findById(req.params.id).populate("agentId", "name title");
-    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    opts = opts || {};
+    var reason = opts.reason || "auto_timeout";
+    var role   = opts.role   || "";
+    byName = byName || "System";
+
+    var lead = await Lead.findById(leadId).populate("agentId", "name title");
+    if (!lead) return { ok: false, status: 404, error: "Lead not found" };
 
     // Hard stops mirror the manual /rotate endpoint — same invariants apply.
     var currentAid = lead.agentId && lead.agentId._id ? String(lead.agentId._id) : String(lead.agentId||"");
     var currentAssignment = (lead.assignments || []).find(function(a) { return String(a.agentId) === currentAid; });
     if (lead.rotationStopped === true) {
-      return res.status(409).json({ error: "rotation_stopped", message: "Rotation permanently stopped on this lead (3 consecutive Not Interested)" });
+      return { ok: false, status: 409, error: "rotation_stopped", message: "Rotation permanently stopped on this lead (3 consecutive Not Interested)" };
     }
-    if (currentAssignment && currentAssignment.noRotation && req.user.role !== "admin" && req.user.role !== "sales_admin") {
-      return res.status(400).json({ error: "noRotation", message: "Rotation blocked — noRotation flag set" });
+    if (currentAssignment && currentAssignment.noRotation && role !== "admin" && role !== "sales_admin") {
+      return { ok: false, status: 400, error: "noRotation", message: "Rotation blocked — noRotation flag set" };
     }
     // Top-level lock — written by the 🔒 button on the lead panel. Same
     // admin/sales_admin override policy as the per-slice noRotation flag.
-    if (lead.locked === true && req.user.role !== "admin" && req.user.role !== "sales_admin") {
-      return res.status(400).json({ error: "locked", message: "Rotation blocked — lead is locked" });
+    if (lead.locked === true && role !== "admin" && role !== "sales_admin") {
+      return { ok: false, status: 400, error: "locked", message: "Rotation blocked — lead is locked" };
     }
-    if (lead.globalStatus === "eoi")      return res.status(400).json({ error: "eoi",      message: "Rotation blocked — lead is EOI" });
-    if (lead.globalStatus === "donedeal") return res.status(400).json({ error: "donedeal", message: "Rotation blocked — lead is Done Deal" });
+    if (lead.globalStatus === "eoi")      return { ok: false, status: 400, error: "eoi",      message: "Rotation blocked — lead is EOI" };
+    if (lead.globalStatus === "donedeal") return { ok: false, status: 400, error: "donedeal", message: "Rotation blocked — lead is Done Deal" };
 
     // Load rotation settings once (normalized + migrated). Master switch and
     // pause window gate everything below — nothing rotates while disabled.
     var settings = await getRotationSettings();
     if (settings.autoRotationEnabled === false) {
-      return res.status(409).json({ error: "rotation_disabled", message: "Auto-rotation is turned off" });
+      return { ok: false, status: 409, error: "rotation_disabled", message: "Auto-rotation is turned off" };
     }
     if (settings.autoRotationPausedUntil && new Date(settings.autoRotationPausedUntil) > new Date()) {
-      return res.status(409).json({ error: "rotation_paused", message: "Auto-rotation is paused until " + settings.autoRotationPausedUntil });
+      return { ok: false, status: 409, error: "rotation_paused", message: "Auto-rotation is paused until " + settings.autoRotationPausedUntil };
     }
 
     // Configurable age cutoff (was hardcoded 30 days, spec Rule 5 says 45).
     var stopDays = Number(settings.rotationStopAfterDays) || 45;
     if (lead.createdAt && (new Date() - new Date(lead.createdAt)) > stopDays*24*60*60*1000) {
-      return res.status(400).json({ error: "stopped_age", message: "Rotation blocked — lead older than " + stopDays + " days" });
+      return { ok: false, status: 400, error: "stopped_age", message: "Rotation blocked — lead older than " + stopDays + " days" };
     }
 
     // ── Eligibility + cooldown re-verification (server-side invariant) ──
@@ -2673,7 +2685,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     // both checks, since the same user could hit /rotate to get the same effect.
     // Only first-assignment (no currentAid) skips eligibility — no prior agent
     // to have a clock on.
-    var bypassEligibility = (req.user.role === "admin" || req.user.role === "sales_admin") && reason === "manual";
+    var bypassEligibility = (role === "admin" || role === "sales_admin") && reason === "manual";
     if (currentAid && !bypassEligibility) {
       var nowTs = new Date();
       var HOUR_MS = 60*60*1000;
@@ -2681,7 +2693,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
 
       // Cooldown: no re-rotation within 1 hour of the last rotation.
       if (lead.lastRotationAt && (nowTs - new Date(lead.lastRotationAt)) < HOUR_MS) {
-        return res.status(409).json({ error: "cooldown", message: "Rotated less than 1h ago" });
+        return { ok: false, status: 409, error: "cooldown", message: "Rotated less than 1h ago" };
       }
 
       // Per-slice clock, with top-level fallback for legacy leads that never
@@ -2758,7 +2770,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       }
 
       if (!eligible) {
-        return res.status(409).json({ error: "not_eligible", reason: notEligibleReason });
+        return { ok: false, status: 409, error: "not_eligible", reason: notEligibleReason };
       }
     }
 
@@ -2773,7 +2785,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
 
     // All candidate ids across tiers (one query).
     var allTierIds = [].concat(settings.tiers.tier1.agents, settings.tiers.tier2.agents, settings.tiers.tier3.agents);
-    if (!allTierIds.length) return res.status(409).json({ error: "no_rotation_order", message: "No rotation order configured" });
+    if (!allTierIds.length) return { ok: false, status: 409, error: "no_rotation_order", message: "No rotation order configured" };
     var candidateDocs = await User.find({ _id: { $in: allTierIds } }).select("_id name title role active lastSeen").lean();
     var byId = {};
     candidateDocs.forEach(function(u){ byId[String(u._id)] = u; });
@@ -2824,7 +2836,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       pick = tryPool(combined23, settings.combined23LastIdx);
       if (pick) poolKey = "combined23";
     }
-    if (!pick) return res.status(409).json({ error: "exhausted", message: "No eligible agent — all tier agents have already handled this lead" });
+    if (!pick) return { ok: false, status: 409, error: "exhausted", message: "No eligible agent — all tier agents have already handled this lead" };
     var targetUser = pick.user;
     var foundIdx   = pick.idx;
 
@@ -2844,7 +2856,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
         noRotation: false
       };
       var firstResult = await Lead.findOneAndUpdate(
-        { _id: req.params.id, agentId: null },
+        { _id: leadId, agentId: null },
         {
           $set: { agentId: new mongoose.Types.ObjectId(targetAgentId), lastRotationAt: new Date() },
           $push: { assignments: firstAssignment }
@@ -2852,13 +2864,12 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
         { new: true }
       );
       if (!firstResult) {
-        return res.status(409).json({ error: "concurrent_rotation", message: "Lead was modified by another request — retry" });
+        return { ok: false, status: 409, error: "concurrent_rotation", message: "Lead was modified by another request — retry" };
       }
-      var firstByName = (req.user && req.user.name) ? req.user.name : "System";
       await pushHistory(firstResult._id, historyEntry(
         "assigned",
-        "Assigned to " + targetUser.name + " by " + firstByName + " (auto-rotate)",
-        firstByName,
+        "Assigned to " + targetUser.name + " by " + byName + " (auto-rotate)",
+        byName,
         targetUser.name
       ));
       // Advance the pool's round-robin pointer so the next rotation resumes
@@ -2873,8 +2884,8 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
         }
         await AppSetting.updateOne({ key: "rotation" }, { $set: pUpd });
       } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
-      var firstPopulated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
-      return res.json({ success: true, firstAssignment: true, targetAgentId: targetAgentId, lead: firstPopulated });
+      var firstPopulated = await Lead.findById(leadId).populate("agentId", "name title").populate("assignments.agentId", "name title");
+      return { ok: true, status: 200, body: { success: true, firstAssignment: true, targetAgentId: targetAgentId, lead: firstPopulated } };
     }
 
     // ── Regular rotation path ──
@@ -2905,21 +2916,21 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     if (haltThreshold > 0 && nextStreak >= haltThreshold) {
       // Flip the kill switch; do NOT rotate.
       var stopResult = await Lead.findOneAndUpdate(
-        { _id: req.params.id, agentId: oldAgentId, rotationStopped: { $ne: true } },
+        { _id: leadId, agentId: oldAgentId, rotationStopped: { $ne: true } },
         { $set: { notInterestedStreak: nextStreak, rotationStopped: true } },
         { new: true }
       );
       if (stopResult) {
         try {
-          await pushHistory(req.params.id, historyEntry(
+          await pushHistory(leadId, historyEntry(
             "rotation_stopped",
             "Rotation permanently stopped — 3 consecutive Not Interested outcomes",
-            req.user.name || "System",
+            byName,
             ""
           ));
         } catch(hErr) { /* non-fatal */ }
       }
-      return res.status(409).json({ error: "rotation_stopped", message: "Rotation permanently stopped on this lead (3 consecutive Not Interested)" });
+      return { ok: false, status: 409, error: "rotation_stopped", message: "Rotation permanently stopped on this lead (3 consecutive Not Interested)" };
     }
 
     var newAssignment = {
@@ -2935,7 +2946,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       fromAgent: oldAgentName,
       toAgent: targetUser.name,
       reason: reason,
-      by: req.user.name || "System",
+      by: byName,
       date: new Date()
     };
     var pushOps = { assignments: newAssignment, agentHistory: rotationLog };
@@ -2943,7 +2954,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       pushOps.previousAgentIds = oldAgentId;
     }
     var guardedResult = await Lead.findOneAndUpdate(
-      { _id: req.params.id, agentId: oldAgentId },
+      { _id: leadId, agentId: oldAgentId },
       {
         $set: {
           agentId: new mongoose.Types.ObjectId(targetAgentId),
@@ -2956,12 +2967,12 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       { new: true }
     );
     if (!guardedResult) {
-      return res.status(409).json({ error: "concurrent_rotation", message: "Lead was already rotated by another request" });
+      return { ok: false, status: 409, error: "concurrent_rotation", message: "Lead was already rotated by another request" };
     }
-    await pushHistory(req.params.id, historyEntry(
+    await pushHistory(leadId, historyEntry(
       "rotated",
-      "Rotated from " + oldAgentName + " to " + targetUser.name + " by " + (req.user.name || "System") + " (" + reason + ")",
-      req.user.name || "System",
+      "Rotated from " + oldAgentName + " to " + targetUser.name + " by " + byName + " (" + reason + ")",
+      byName,
       targetUser.name
     ));
     // Advance the pool's round-robin pointer — next rotation (in this batch
@@ -2976,11 +2987,24 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
       }
       await AppSetting.updateOne({ key: "rotation" }, { $set: pUpd2 });
     } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
-    var updated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
-    res.json({ success: true, targetAgentId: targetAgentId, lead: updated });
-  } catch(e) {
-    res.status(500).json({ error: e.message });
+    var updated = await Lead.findById(leadId).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    return { ok: true, status: 200, body: { success: true, targetAgentId: targetAgentId, lead: updated } };
+  } catch (e) {
+    return { ok: false, status: 500, error: e && e.message ? e.message : "exception" };
   }
+}
+
+// Thin HTTP wrapper around autoRotateLead. Same auth, same response shape,
+// same error codes as before — the helper returns a status + body the wrapper
+// just unwraps.
+app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
+  var reason = (req.body && req.body.reason) || "auto_timeout";
+  var r = await autoRotateLead(req.params.id, req.user.name || "System", { reason: reason, role: req.user.role });
+  if (r.ok) return res.status(r.status || 200).json(r.body);
+  var payload = { error: r.error };
+  if (r.message) payload.message = r.message;
+  if (r.reason)  payload.reason  = r.reason;
+  return res.status(r.status || 500).json(payload);
 });
 
 // ===== ONE-TIME BULK REDISTRIBUTION =====
@@ -3397,6 +3421,63 @@ var QUEUE_SWEEP_INTERVAL_MS = 60 * 1000;
 setInterval(function(){
   if (mongoose.connection && mongoose.connection.readyState === 1) sweepExpiredQueue();
 }, QUEUE_SWEEP_INTERVAL_MS);
+
+// ===== AGENT-TO-AGENT AUTO-ROTATION SWEEPER =====
+// Without this, rotation only fires when a browser is open and the frontend
+// hits /api/leads/:id/auto-rotate. Leads whose rules have triggered while
+// nobody has the CRM open just sit forever. This sweep runs every 5 minutes
+// regardless of online users and rotates anything that's eligible.
+//
+// All decision logic is delegated to autoRotateLead() so business rules
+// (thresholds, streaks, tiers, cooldowns) stay in exactly one place. The
+// helper's atomic findOneAndUpdate guards make this safe to run concurrently
+// with browser-triggered rotations — duplicate triggers no-op with
+// error:"concurrent_rotation".
+async function sweepAutoRotation() {
+  try {
+    // Bail early if rotation is globally paused or disabled. The helper
+    // checks this too (defense in depth) but doing it here saves us from
+    // querying + iterating candidates only to skip every single one.
+    var settings = await getRotationSettings();
+    if (settings.autoRotationEnabled === false) return;
+    if (settings.autoRotationPausedUntil && new Date(settings.autoRotationPausedUntil) > new Date()) return;
+
+    // Coarse pre-filter — the helper still re-checks each one. limit:200
+    // bounds per-tick work; leftovers pick up on the next tick (5 min later).
+    var candidates = await Lead.find({
+      agentId: { $ne: null },
+      archived: false,
+      locked: { $ne: true },
+      rotationStopped: { $ne: true }
+    }).select("_id").limit(200).lean();
+
+    if (!candidates.length) return;
+
+    var rotated = 0;
+    var skipped = 0;
+    for (var i = 0; i < candidates.length; i++) {
+      try {
+        var r = await autoRotateLead(candidates[i]._id, "System");
+        if (r && r.ok) rotated++;
+        else skipped++;
+      } catch (innerErr) {
+        skipped++;
+      }
+    }
+
+    if (rotated > 0) {
+      try { broadcast("rotation_swept", { rotated: rotated }); } catch(e) {}
+      console.log("[rotation sweep] rotated " + rotated + " leads, skipped " + skipped);
+    }
+  } catch (e) {
+    console.error("[rotation sweep]", e && e.message ? e.message : e);
+  }
+}
+
+var ROTATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+setInterval(function(){
+  if (mongoose.connection && mongoose.connection.readyState === 1) sweepAutoRotation();
+}, ROTATION_SWEEP_INTERVAL_MS);
 
 // Admin cleanup: remove duplicate leads by phone, keep oldest
 app.post("/api/admin/cleanup-duplicates", auth, adminOnly, async function(req, res) {
