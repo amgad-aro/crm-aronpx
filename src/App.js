@@ -222,6 +222,27 @@ var Avatar = function(p){
 };
 var gid = function(o) { if(!o) return null; return String(o._id || o.id || ""); };
 
+// Returns the set of user IDs a team_leader is allowed to see data for —
+// themselves plus active sales/team_leader users whose reportsTo points at
+// them. Returns null for every other role; callers treat null as "no scope
+// filter, pass data through". Used at the App root to scope leads, users,
+// activities, and daily requests before they're handed to pages, so any
+// out-of-team data that leaks past the backend (e.g. a WS broadcast — the
+// server's per-client filter is sales-only, so team_leader sockets receive
+// the unfiltered firehose) is dropped before pages render.
+var getTeamScopeIds = function(currentUser, allUsers) {
+  if (!currentUser || currentUser.role !== "team_leader") return null;
+  var tlId = String(currentUser.id || currentUser._id || "");
+  var ids = new Set([tlId]);
+  (allUsers || []).forEach(function(u){
+    if (!u || !u.active) return;
+    if (u.role !== "sales" && u.role !== "team_leader") return;
+    var rt = u.reportsTo && u.reportsTo._id ? String(u.reportsTo._id) : String(u.reportsTo || "");
+    if (rt === tlId) ids.add(String(u._id));
+  });
+  return ids;
+};
+
 // WhatsApp chooser — shows popup to pick WhatsApp or WhatsApp Business
 var WaChooser = function(p) {
   if(!p.show) return null;
@@ -10100,9 +10121,29 @@ export default function CRMApp() {
   var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",settings:t.settings};
   // Server already filters users by role — p.users IS the team
   var myId = String(currentUser.id||currentUser._id||"");
-  var myTeamUsers = users; // server handles all filtering per role
 
-  var sp={t,leads,setLeads,users,setUsers,activities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:dailyReqs};
+  // Team-leader scope (defense in depth) — backend scopes /api/users,
+  // /api/leads, /api/activities, and /api/daily-requests for team_leader
+  // callers, but the WS broadcaster's per-client filter is sales-only, so a
+  // team_leader socket receives every lead_updated/dr_updated/activity_created
+  // event in the system. Without this filter, a sales_admin saving a deal
+  // for an out-of-team agent would prepend that lead into a TL's local state
+  // and surface across LeadsPage, DealsPage, EOIPage, dashboards, KPIs, and
+  // the Sales Team cards. tlScope is null for every other role, in which
+  // case the raw arrays pass through unchanged.
+  var tlScope = getTeamScopeIds(currentUser, users);
+  var leadInScope = function(l){
+    var aid=String(l&&l.agentId&&l.agentId._id?l.agentId._id:(l&&l.agentId)||"");
+    var sid=String(l&&l.splitAgent2Id&&l.splitAgent2Id._id?l.splitAgent2Id._id:(l&&l.splitAgent2Id)||"");
+    return tlScope.has(aid)||(!!sid&&tlScope.has(sid));
+  };
+  var scopedLeads     = tlScope ? leads.filter(leadInScope) : leads;
+  var scopedUsers     = tlScope ? users.filter(function(u){return tlScope.has(String((u&&u._id)||""));}) : users;
+  var scopedActivities= tlScope ? (activities||[]).filter(function(a){var auid=String(a&&a.userId&&a.userId._id?a.userId._id:(a&&a.userId)||"");return tlScope.has(auid);}) : activities;
+  var scopedDailyReqs = tlScope ? (dailyReqs||[]).filter(function(r){var aid=String(r&&r.agentId&&r.agentId._id?r.agentId._id:(r&&r.agentId)||"");return tlScope.has(aid);}) : dailyReqs;
+  var myTeamUsers = scopedUsers;
+
+  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs};
 
   var renderPage=function(){
     switch(currentPage){
@@ -10172,13 +10213,13 @@ export default function CRMApp() {
       </div>
       <button onClick={function(){setShowPwaBanner(false);try{localStorage.setItem("crm_pwa_dismissed","1");}catch(e){}}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, color:"#fff", padding:"6px 12px", fontSize:12, cursor:"pointer", flexShrink:0 }}>Got it</button>
     </div>}
-    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={leads}/>
+    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
-      <QuickPhoneSearch leads={leads} dailyReqs={dailyReqs} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
+      <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={leads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs.filter(function(n){return !rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore;})} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen&&(!rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore);}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){var now=Date.now();setRotHiddenBefore(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_rot_hidden_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={dailyReqs} myTeamUsers={myTeamUsers} unseenDeals={(function(){var items=buildDealItems(leads,dailyReqs,currentUser,myTeamUsers);var cutoff=lastSeenDealAt||0;return items.filter(function(it){return new Date(it.time||0).getTime()>cutoff;}).length;})()} onDealNotifSeen={function(){var now=Date.now();setLastSeenDealAt(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_deal_seen_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs.filter(function(n){return !rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore;})} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen&&(!rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore);}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){var now=Date.now();setRotHiddenBefore(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_rot_hidden_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={(function(){var items=buildDealItems(scopedLeads,scopedDailyReqs,currentUser,myTeamUsers);var cutoff=lastSeenDealAt||0;return items.filter(function(it){return new Date(it.time||0).getTime()>cutoff;}).length;})()} onDealNotifSeen={function(){var now=Date.now();setLastSeenDealAt(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_deal_seen_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
