@@ -7216,10 +7216,13 @@ var TeamPage = function(p) {
   var MemberCard = function(mp){
     var a=mp.user; var uid=String(gid(a));
     var isManagerCard = a.role==="manager"||a.role==="team_leader";
-    // For manager card: get all team member IDs
+    // For manager card: get all team member IDs. Filter mirrors getSalesUnder
+    // (line 7194) — active sales/team_leader only — so MemberCard counts
+    // match the manager-group header (mRev) and don't inflate when an
+    // inactive or wrong-role user happens to point reportsTo at this manager.
     var teamUids = isManagerCard ? new Set(p.users.filter(function(u){
       var rt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
-      return rt===uid;
+      return u.active && (u.role==="sales"||u.role==="team_leader") && rt===uid;
     }).map(function(u){return String(u._id);})) : null;
     var matchesAgent = function(d){
       var aid=String(d.agentId&&d.agentId._id?d.agentId._id:d.agentId||"");
