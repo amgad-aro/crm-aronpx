@@ -7227,23 +7227,26 @@ var TeamPage = function(p) {
     var matchesAgent = function(d){
       var aid=String(d.agentId&&d.agentId._id?d.agentId._id:d.agentId||"");
       var splitId=String(d.splitAgent2Id&&d.splitAgent2Id._id?d.splitAgent2Id._id:d.splitAgent2Id||"");
-      if (d && d.name === "test") {
-        var __dbgResult = (isManagerCard && teamUids) ? (aid===uid||teamUids.has(aid)||(splitId&&(splitId===uid||teamUids.has(splitId)))) : (aid===uid||splitId===uid);
-        console.log("[DEBUG matchesAgent test deal]", { deal: d, uid: uid, teamUids: Array.from(teamUids||[]), result: !!__dbgResult });
+      if(isManagerCard && teamUids){
+        // teamUids is a snapshot of p.users built once at the top of this
+        // MemberCard call. Belt-and-suspenders: re-verify at match time that
+        // the candidate's CURRENT reportsTo still resolves to this team
+        // leader's uid. The rule is universal — a team leader must only see
+        // deals from agents who currently report to them — and this guard
+        // makes a misattribution impossible even if teamUids ever drifts.
+        var stillUnder=function(id){
+          var u=p.users.find(function(x){return String(x._id)===id;});
+          if(!u||!u.active) return false;
+          if(u.role!=="sales"&&u.role!=="team_leader") return false;
+          var rt=u.reportsTo&&u.reportsTo._id?String(u.reportsTo._id):String(u.reportsTo||"");
+          return rt===uid;
+        };
+        return aid===uid
+          ||(teamUids.has(aid)&&stillUnder(aid))
+          ||(!!splitId&&(splitId===uid||(teamUids.has(splitId)&&stillUnder(splitId))));
       }
-      if(isManagerCard && teamUids) return aid===uid||teamUids.has(aid)||(splitId&&(splitId===uid||teamUids.has(splitId)));
       return aid===uid||splitId===uid;
     };
-    if (isManagerCard) {
-      console.log("[DEBUG MemberCard manager]", { name: a.name, uid: uid, teamUids: Array.from(teamUids||[]) });
-      allDeals.forEach(function(d){
-        if (!matchesAgent(d)) return;
-        var __aid=String(d.agentId&&d.agentId._id?d.agentId._id:d.agentId||"");
-        var __splitId=String(d.splitAgent2Id&&d.splitAgent2Id._id?d.splitAgent2Id._id:d.splitAgent2Id||"");
-        var __via = __aid===uid ? "uid" : ((teamUids&&teamUids.has(__aid)) ? "teamUids" : (__splitId===uid ? "split-uid" : ((teamUids&&teamUids.has(__splitId)) ? "split-teamUids" : "unknown")));
-        console.log("[DEBUG MemberCard match]", { dealName: d.name, agentIdRaw: d.agentId, agentIdResolved: __aid, splitAgent2IdResolved: __splitId, via: __via });
-      });
-    }
     // For manager cards, revenue is the per-member share sum (matches the
     // header): a within-team split contributes both halves because each
     // member's iteration adds their 50%. Distinct DEALS counts (qDeals.length /
