@@ -1403,6 +1403,54 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
 });
 
 // ===== LEAD ROUTES =====
+
+// Phase P — stale-lead visibility filter. Hides a lead from sales /
+// manager / team_leader views once the holding agent's assignment slice
+// has had no action for 7+ days. Admin and sales_admin always see
+// everything. VISIBILITY ONLY — rotation logic is unaffected and the
+// lead's agentId / assignments[] in the DB never change because of this
+// rule. When/if rotation rules eventually fire (3x NoAnswer streaks,
+// callback overdue, etc. — separate code paths) the lead rotates
+// normally; until then it stays technically assigned to the same agent,
+// just invisible to them.
+var STALE_LEAD_MS = 7 * 24 * 60 * 60 * 1000;
+function getAssignmentLastActionAt(a) {
+  if (!a) return 0;
+  var ts = 0;
+  function bump(v) {
+    if (!v) return;
+    var t = new Date(v).getTime();
+    if (!isNaN(t) && t > ts) ts = t;
+  }
+  bump(a.lastActionAt);
+  bump(a.assignedAt);
+  var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
+  for (var i = 0; i < hist.length; i++) {
+    var h = hist[i];
+    if (!h) continue;
+    bump(h.createdAt || h.at || h.timestamp);
+  }
+  return ts;
+}
+function isAssignmentStale(a, nowMs) {
+  if (!a) return false;
+  var last = getAssignmentLastActionAt(a);
+  if (!last) return false;
+  return (nowMs - last) > STALE_LEAD_MS;
+}
+function findAssignmentForAgent(lead, agentId) {
+  if (!lead || !agentId) return null;
+  var aidStr = String(agentId && agentId._id ? agentId._id : agentId);
+  var arr = lead.assignments || [];
+  for (var i = 0; i < arr.length; i++) {
+    var a = arr[i];
+    if (!a) continue;
+    var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+    if (String(aid) === aidStr) return a;
+  }
+  return null;
+}
+
 app.get("/api/leads", auth, async function(req, res) {
   try {
     var query = {};
@@ -1492,6 +1540,33 @@ app.get("/api/leads", auth, async function(req, res) {
 
     var total = await Lead.countDocuments(query);
     var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+
+    // Phase P — drop leads whose holding slice is stale for the requesting
+    // role. Admin / sales_admin (and any other non-listed role) are exempt.
+    // sales: gate on the caller's OWN slice. Split-only access (no slice,
+    //   only splitAgent2Id) bypasses — the rule has no slice to evaluate.
+    // manager / team_leader: gate on the lead's CURRENT holder's slice.
+    // total is reduced by the page-level exclusions; for the default
+    // limit (1000) this is exact, and pagination is rarely paged beyond.
+    if (role === "sales" || role === "manager" || role === "team_leader") {
+      var nowMsP = Date.now();
+      var preCount = leads.length;
+      leads = leads.filter(function(l) {
+        if (role === "sales") {
+          var splitId = l.splitAgent2Id && l.splitAgent2Id._id ? l.splitAgent2Id._id : l.splitAgent2Id;
+          if (splitId && String(splitId) === String(uid)) return true;
+          var myAssign = findAssignmentForAgent(l, uid);
+          if (!myAssign) return false;
+          return !isAssignmentStale(myAssign, nowMsP);
+        }
+        var holderId = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
+        if (!holderId) return true;
+        var holderAssign = findAssignmentForAgent(l, holderId);
+        if (!holderAssign) return true;
+        return !isAssignmentStale(holderAssign, nowMsP);
+      });
+      total = Math.max(0, total - (preCount - leads.length));
+    }
 
     // For sales agents: overlay their own assignments[] entry, then strip every
     // trace of other agents (history, prior assignments, rotation counters).
@@ -1672,6 +1747,10 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       var splitId2 = lead.splitAgent2Id && lead.splitAgent2Id._id ? lead.splitAgent2Id._id : lead.splitAgent2Id;
       var isSplitAgent = splitId2 && String(splitId2) === uid;
       if (!myAssign && !isSplitAgent) return res.status(404).json({ error: "Not found" });
+      // Phase P — caller's own slice is stale: hide. Split-only access bypasses.
+      if (myAssign && !isSplitAgent && isAssignmentStale(myAssign, Date.now())) {
+        return res.status(404).json({ error: "Not found" });
+      }
 
       // Wipe top-level per-agent text unconditionally before the overlay so
       // another agent's notes / feedback can never leak through a stale
@@ -1720,8 +1799,9 @@ app.get("/api/leads/:id", auth, async function(req, res) {
     // from the current owner's assignment slice (top-level is no longer written).
     var adminObj = Object.assign({}, lead);
     var adminHolderId = adminObj.agentId && adminObj.agentId._id ? adminObj.agentId._id : adminObj.agentId;
+    var adminHolderAssign = null;
     if (adminHolderId) {
-      var adminHolderAssign = (adminObj.assignments || []).find(function(a) {
+      adminHolderAssign = (adminObj.assignments || []).find(function(a) {
         var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
         return String(aid) === String(adminHolderId);
       });
@@ -1729,6 +1809,12 @@ app.get("/api/leads/:id", auth, async function(req, res) {
         if (adminHolderAssign.notes) adminObj.notes = adminHolderAssign.notes;
         if (adminHolderAssign.lastFeedback) adminObj.lastFeedback = adminHolderAssign.lastFeedback;
       }
+    }
+    // Phase P — manager / team_leader: hide when current holder's slice is
+    // stale. Admin / sales_admin / viewer / director continue to see it.
+    if ((role === "manager" || role === "team_leader") && adminHolderAssign &&
+        isAssignmentStale(adminHolderAssign, Date.now())) {
+      return res.status(404).json({ error: "Not found" });
     }
     res.json(adminObj);
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -3928,6 +4014,15 @@ app.get("/api/daily-requests", auth, async function(req, res) {
         direct.forEach(function(s){ visibleIds.push(s._id); });
       }
       query.agentId = { $in: visibleIds }; // only assigned ones
+    }
+    // Phase P — hide DRs with no activity in 7+ days from sales / manager /
+    // team_leader. DR has no assignments[] slices, so lastActivityTime is the
+    // canonical action timestamp (defaults to Date.now on create, refreshed
+    // by every PUT /api/daily-requests/:id and every status/feedback/EOI hop).
+    // Admin / sales_admin always see everything.
+    if (req.user.role === "sales" || req.user.role === "manager" || req.user.role === "team_leader") {
+      var drCutoff = new Date(Date.now() - STALE_LEAD_MS);
+      query.lastActivityTime = { $gt: drCutoff };
     }
     var requests = await DailyRequest.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
     res.json(requests);
