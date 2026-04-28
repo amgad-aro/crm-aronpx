@@ -7725,6 +7725,9 @@ var SettingsPage = function(p) {
   var [srHaltNI,setSrHaltNI]=useState(3);
   var [srHaltAll,setSrHaltAll]=useState(true);
   var [manualWindowMin,setManualWindowMin]=useState(15);
+  // Phase Q — days of inactivity by holding sales after which a lead disappears
+  // from sales / manager / team_leader views. Admin / sales_admin always see all.
+  var [staleLeadDays,setStaleLeadDays]=useState(7);
   var [simulateOpen,setSimulateOpen]=useState(false);
   var [redistBusy,setRedistBusy]=useState(false);
   var [redistResult,setRedistResult]=useState(null); // {total,distributed,skipped,perAgent}
@@ -7774,6 +7777,7 @@ var SettingsPage = function(p) {
       setRotHotDays(Number(s.hotDays)||2);
       setRotStopDays(Number(s.rotationStopAfterDays)||45);
       if(s.manualAssignmentWindowMinutes!=null) setManualWindowMin(Number(s.manualAssignmentWindowMinutes)||0);
+      if(s.staleLeadDays!=null) setStaleLeadDays(Number(s.staleLeadDays)||7);
       setAutoRotEnabled(s.autoRotationEnabled!==false);
       setPausedUntil(s.autoRotationPausedUntil||null);
       var w=s.workingHours||{};
@@ -7912,6 +7916,7 @@ var SettingsPage = function(p) {
         hotDays: Number(rotHotDays),
         rotationStopAfterDays: Number(rotStopDays),
         manualAssignmentWindowMinutes: Number(manualWindowMin)||0,
+        staleLeadDays: Number(staleLeadDays)||7,
         autoRotationEnabled: autoRotEnabled,
         autoRotationPausedUntil: pausedUntil,
         workingHours: { days: whDays, from: whFrom, to: whTo, afterHoursBehavior: whAfter },
@@ -8495,6 +8500,17 @@ var SettingsPage = function(p) {
                   style={{width:56,padding:"6px 10px",border:"0.5px solid rgba(133,79,11,0.3)",borderRadius:8,fontSize:13,background:"#fff",textAlign:"center",fontFamily:"inherit"}}/>
               </div>
             </div>
+          </div>
+
+          {/* ══ Stale lead visibility (Phase Q) ══ */}
+          <div style={{background:"#F1ECF7",border:"0.5px solid rgba(95,55,160,0.3)",borderRadius:12,padding:"14px 16px",marginBottom:18}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <div style={{fontSize:13,fontWeight:500,color:"#5F37A0"}}>Stale Lead Threshold (days)</div>
+              <input type="number" min={1} max={365} step={1} value={staleLeadDays}
+                onChange={function(e){var v=Math.floor(Number(e.target.value)); if(!isFinite(v)||v<1)v=1; if(v>365)v=365; setStaleLeadDays(v);}}
+                style={{width:60,padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",textAlign:"center",fontFamily:"inherit"}}/>
+            </div>
+            <div style={{fontSize:11,color:"#5F37A0",opacity:0.85,lineHeight:1.5}}>Leads with no action by the holding sales for more than this many days are hidden from sales, manager, and team leader views. Admin and sales_admin always see all leads. The rotation system is not affected.</div>
           </div>
 
           {/* ══ Smart skip rules ══ */}

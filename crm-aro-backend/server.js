@@ -709,7 +709,11 @@ var ROTATION_DEFAULTS = {
   // Minutes the admin has to manually assign a newly-created lead before the
   // background sweeper auto-rotates it to Tier 1. 0 = disabled (legacy behavior
   // — new leads without an agent are unassigned/immediate-rotate as before).
-  manualAssignmentWindowMinutes: 15
+  manualAssignmentWindowMinutes: 15,
+  // Phase Q — days of inactivity by the holding agent after which a lead
+  // disappears from sales / manager / team_leader views. Admin / sales_admin
+  // are exempt. Visibility filter only — does NOT trigger rotation.
+  staleLeadDays: 7
 };
 async function getRotationSettings() {
   var doc = await AppSetting.findOne({ key: "rotation" }).lean();
@@ -753,7 +757,8 @@ async function getRotationSettings() {
     workingHours:            Object.assign({}, D.workingHours, v.workingHours || {}),
     smartSkipRules:          Object.assign({}, D.smartSkipRules, v.smartSkipRules || {}),
     rotationStopAfterDays:   Number(v.rotationStopAfterDays != null ? v.rotationStopAfterDays : D.rotationStopAfterDays),
-    manualAssignmentWindowMinutes: Number(v.manualAssignmentWindowMinutes != null ? v.manualAssignmentWindowMinutes : D.manualAssignmentWindowMinutes)
+    manualAssignmentWindowMinutes: Number(v.manualAssignmentWindowMinutes != null ? v.manualAssignmentWindowMinutes : D.manualAssignmentWindowMinutes),
+    staleLeadDays: Number(v.staleLeadDays != null ? v.staleLeadDays : D.staleLeadDays)
   };
 }
 
@@ -841,7 +846,10 @@ app.put("/api/settings/rotation", auth, async function(req, res) {
       workingHours:            wh,
       smartSkipRules:          sr,
       rotationStopAfterDays:   clamp(b.rotationStopAfterDays, D.rotationStopAfterDays, 1, 3650),
-      manualAssignmentWindowMinutes: clamp(b.manualAssignmentWindowMinutes, D.manualAssignmentWindowMinutes, 0, 120)
+      manualAssignmentWindowMinutes: clamp(b.manualAssignmentWindowMinutes, D.manualAssignmentWindowMinutes, 0, 120),
+      // Phase Q — fall back to previously stored value when input is missing
+      // or invalid (clamp returns its `def` arg on NaN / out-of-range).
+      staleLeadDays: clamp(b.staleLeadDays, (typeof prevValue.staleLeadDays === "number" ? prevValue.staleLeadDays : D.staleLeadDays), 1, 365)
     };
     await AppSetting.findOneAndUpdate({ key: "rotation" }, { $set: { value: value } }, { upsert: true, new: true });
     try {
@@ -1406,14 +1414,21 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
 
 // Phase P — stale-lead visibility filter. Hides a lead from sales /
 // manager / team_leader views once the holding agent's assignment slice
-// has had no action for 7+ days. Admin and sales_admin always see
-// everything. VISIBILITY ONLY — rotation logic is unaffected and the
-// lead's agentId / assignments[] in the DB never change because of this
-// rule. When/if rotation rules eventually fire (3x NoAnswer streaks,
-// callback overdue, etc. — separate code paths) the lead rotates
+// has had no action for the configured threshold (default 7 days; tunable
+// in Settings → Rotation → "Stale Lead Threshold"). Admin and sales_admin
+// always see everything. VISIBILITY ONLY — rotation logic is unaffected
+// and the lead's agentId / assignments[] in the DB never change because
+// of this rule. When/if rotation rules eventually fire (3x NoAnswer
+// streaks, callback overdue, etc. — separate code paths) the lead rotates
 // normally; until then it stays technically assigned to the same agent,
 // just invisible to them.
-var STALE_LEAD_MS = 7 * 24 * 60 * 60 * 1000;
+async function getStaleLeadMs() {
+  var s = await getRotationSettings();
+  var days = s && s.staleLeadDays ? Number(s.staleLeadDays) : 7;
+  if (!days || days < 1) days = 7;
+  if (days > 365) days = 365;
+  return days * 24 * 60 * 60 * 1000;
+}
 function getAssignmentLastActionAt(a) {
   if (!a) return 0;
   var ts = 0;
@@ -1432,11 +1447,11 @@ function getAssignmentLastActionAt(a) {
   }
   return ts;
 }
-function isAssignmentStale(a, nowMs) {
+function isAssignmentStale(a, nowMs, staleMs) {
   if (!a) return false;
   var last = getAssignmentLastActionAt(a);
   if (!last) return false;
-  return (nowMs - last) > STALE_LEAD_MS;
+  return (nowMs - last) > staleMs;
 }
 function findAssignmentForAgent(lead, agentId) {
   if (!lead || !agentId) return null;
@@ -1456,6 +1471,7 @@ app.get("/api/leads", auth, async function(req, res) {
     var query = {};
     var role = req.user.role;
     var uid = req.user.id;
+    var STALE_LEAD_MS = await getStaleLeadMs();
 
     if (role === "sales") {
       // Match by per-agent assignments[] slice, NOT the top-level agentId.
@@ -1557,13 +1573,13 @@ app.get("/api/leads", auth, async function(req, res) {
           if (splitId && String(splitId) === String(uid)) return true;
           var myAssign = findAssignmentForAgent(l, uid);
           if (!myAssign) return false;
-          return !isAssignmentStale(myAssign, nowMsP);
+          return !isAssignmentStale(myAssign, nowMsP, STALE_LEAD_MS);
         }
         var holderId = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
         if (!holderId) return true;
         var holderAssign = findAssignmentForAgent(l, holderId);
         if (!holderAssign) return true;
-        return !isAssignmentStale(holderAssign, nowMsP);
+        return !isAssignmentStale(holderAssign, nowMsP, STALE_LEAD_MS);
       });
       total = Math.max(0, total - (preCount - leads.length));
     }
@@ -1733,6 +1749,7 @@ app.get("/api/leads/:id", auth, async function(req, res) {
     if (!lead) return res.status(404).json({ error: "Not found" });
     var role = req.user.role;
     var uid = String(req.user.id);
+    var STALE_LEAD_MS = await getStaleLeadMs();
     if (role === "sales") {
       // Access is granted by presence of an assignments[] entry for the caller,
       // NOT by top-level agentId (which moves to the new owner on rotation).
@@ -1748,7 +1765,7 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       var isSplitAgent = splitId2 && String(splitId2) === uid;
       if (!myAssign && !isSplitAgent) return res.status(404).json({ error: "Not found" });
       // Phase P — caller's own slice is stale: hide. Split-only access bypasses.
-      if (myAssign && !isSplitAgent && isAssignmentStale(myAssign, Date.now())) {
+      if (myAssign && !isSplitAgent && isAssignmentStale(myAssign, Date.now(), STALE_LEAD_MS)) {
         return res.status(404).json({ error: "Not found" });
       }
 
@@ -1813,7 +1830,7 @@ app.get("/api/leads/:id", auth, async function(req, res) {
     // Phase P — manager / team_leader: hide when current holder's slice is
     // stale. Admin / sales_admin / viewer / director continue to see it.
     if ((role === "manager" || role === "team_leader") && adminHolderAssign &&
-        isAssignmentStale(adminHolderAssign, Date.now())) {
+        isAssignmentStale(adminHolderAssign, Date.now(), STALE_LEAD_MS)) {
       return res.status(404).json({ error: "Not found" });
     }
     res.json(adminObj);
@@ -4015,12 +4032,14 @@ app.get("/api/daily-requests", auth, async function(req, res) {
       }
       query.agentId = { $in: visibleIds }; // only assigned ones
     }
-    // Phase P — hide DRs with no activity in 7+ days from sales / manager /
-    // team_leader. DR has no assignments[] slices, so lastActivityTime is the
-    // canonical action timestamp (defaults to Date.now on create, refreshed
-    // by every PUT /api/daily-requests/:id and every status/feedback/EOI hop).
+    // Phase P — hide DRs with no activity in N+ days from sales / manager /
+    // team_leader (N is the configured staleLeadDays, default 7). DR has no
+    // assignments[] slices, so lastActivityTime is the canonical action
+    // timestamp (defaults to Date.now on create, refreshed by every
+    // PUT /api/daily-requests/:id and every status/feedback/EOI hop).
     // Admin / sales_admin always see everything.
     if (req.user.role === "sales" || req.user.role === "manager" || req.user.role === "team_leader") {
+      var STALE_LEAD_MS = await getStaleLeadMs();
       var drCutoff = new Date(Date.now() - STALE_LEAD_MS);
       query.lastActivityTime = { $gt: drCutoff };
     }
