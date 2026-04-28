@@ -4032,17 +4032,6 @@ app.get("/api/daily-requests", auth, async function(req, res) {
       }
       query.agentId = { $in: visibleIds }; // only assigned ones
     }
-    // Phase P — hide DRs with no activity in N+ days from sales / manager /
-    // team_leader (N is the configured staleLeadDays, default 7). DR has no
-    // assignments[] slices, so lastActivityTime is the canonical action
-    // timestamp (defaults to Date.now on create, refreshed by every
-    // PUT /api/daily-requests/:id and every status/feedback/EOI hop).
-    // Admin / sales_admin always see everything.
-    if (req.user.role === "sales" || req.user.role === "manager" || req.user.role === "team_leader") {
-      var STALE_LEAD_MS = await getStaleLeadMs();
-      var drCutoff = new Date(Date.now() - STALE_LEAD_MS);
-      query.lastActivityTime = { $gt: drCutoff };
-    }
     var requests = await DailyRequest.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
     res.json(requests);
   } catch(e) { res.status(500).json({ error: e.message }); }
