@@ -2361,6 +2361,16 @@ var LeadsPage = function(p) {
     var s = currentHolderSlice(lead);
     return (s && s.lastFeedback) ? s.lastFeedback : "";
   };
+  // "New Lead" tab is for first-time leads only — current status NewLead AND
+  // never rotated. A lead with 2+ assignment slices, or any non-zero
+  // rotationCount, is hidden even though rotation resets the status to NewLead.
+  var isGenuineNewLead = function(lead) {
+    if (currentStatus(lead) !== "NewLead") return false;
+    var assignCount = ((lead && lead.assignments) || []).length;
+    if (assignCount > 1) return false;
+    if (lead && lead.rotationCount && lead.rotationCount > 0) return false;
+    return true;
+  };
   // Most recent activity timestamp the date-filter chips should respect.
   var lastActivityAt = function(lead) {
     var s = currentHolderSlice(lead);
@@ -2460,7 +2470,9 @@ var LeadsPage = function(p) {
     // slice is MeetingDone" per Phase S spec.
     filtered = p.leadFilter==="all"
       ? allVisible
-      : allVisible.filter(function(l){ return currentStatus(l) === p.leadFilter; });
+      : p.leadFilter==="NewLead"
+        ? allVisible.filter(isGenuineNewLead)
+        : allVisible.filter(function(l){ return currentStatus(l) === p.leadFilter; });
     // Management-alerts special filter (from dashboard)
     if (p.specialFilter && p.specialFilter.type) {
       var spT = p.specialFilter.type;
@@ -2760,6 +2772,7 @@ var LeadsPage = function(p) {
           var cnt;
           if (s.v==="all") cnt = allVisible.length;
           else if (s.v==="important") cnt = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; }).length;
+          else if (s.v==="NewLead") cnt = allVisible.filter(isGenuineNewLead).length;
           else cnt = allVisible.filter(function(l){ return currentStatus(l)===s.v; }).length;
           return <button key={s.v} onClick={function(){setLockedOnly(false);p.setFilter(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:p.leadFilter===s.v?C.accent:"#E8ECF1", background:p.leadFilter===s.v?C.accent+"12":"#fff", color:p.leadFilter===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
         })}
