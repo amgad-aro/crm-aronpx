@@ -2335,7 +2335,101 @@ var LeadsPage = function(p) {
   var [sortBy, setSortBy] = useState("lastActivity");
   var [lockedOnly, setLockedOnly] = useState(false);
   var [panelHistory, setPanelHistory] = useState([]);
+  var [dateRange, setDateRange] = useState("all"); // today | yesterday | week | month | quarter | all
   var fileRef = useRef(null);
+
+  // ---- Helpers: read status / feedback / activity from the CURRENT holder's
+  // assignment slice (not stale top-level fields). Defined once here, reused
+  // everywhere the table needs to show what the present holder sees.
+  var currentHolderSlice = function(lead) {
+    if (!lead || !lead.agentId) return null;
+    var holderId = String(lead.agentId._id || lead.agentId);
+    var arr = lead.assignments || [];
+    for (var i = 0; i < arr.length; i++) {
+      var a = arr[i];
+      if (!a) continue;
+      var aid = a.agentId && a.agentId._id ? String(a.agentId._id) : String(a.agentId || "");
+      if (aid === holderId) return a;
+    }
+    return null;
+  };
+  var currentStatus = function(lead) {
+    var s = currentHolderSlice(lead);
+    return (s && s.status) ? s.status : ((lead && lead.status) || "NewLead");
+  };
+  var currentFeedback = function(lead) {
+    var s = currentHolderSlice(lead);
+    return (s && s.lastFeedback) ? s.lastFeedback : "";
+  };
+  // Most recent activity timestamp the date-filter chips should respect.
+  var lastActivityAt = function(lead) {
+    var s = currentHolderSlice(lead);
+    var t1 = s && s.lastActionAt ? new Date(s.lastActionAt).getTime() : 0;
+    var t2 = lead && lead.updatedAt ? new Date(lead.updatedAt).getTime() : 0;
+    var t3 = lead && lead.createdAt ? new Date(lead.createdAt).getTime() : 0;
+    return Math.max(t1, t2, t3);
+  };
+  // Build the [start, end] window the date-filter chip represents in local time.
+  var dateRangeWindow = function(key) {
+    if (key === "all") return null;
+    var now = new Date();
+    var startOfDay = function(d){ return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0); };
+    var endOfDay = function(d){ return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999); };
+    if (key === "today") return [startOfDay(now).getTime(), endOfDay(now).getTime()];
+    if (key === "yesterday") {
+      var y = new Date(now); y.setDate(y.getDate()-1);
+      return [startOfDay(y).getTime(), endOfDay(y).getTime()];
+    }
+    if (key === "week") {
+      // ISO week: Monday 00:00 → end of today
+      var dow = now.getDay(); // 0 Sun .. 6 Sat
+      var diffToMon = (dow + 6) % 7;
+      var mon = new Date(now); mon.setDate(now.getDate() - diffToMon);
+      return [startOfDay(mon).getTime(), endOfDay(now).getTime()];
+    }
+    if (key === "month") {
+      var first = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+      return [first.getTime(), endOfDay(now).getTime()];
+    }
+    if (key === "quarter") {
+      var qStartMonth = Math.floor(now.getMonth()/3)*3;
+      var qFirst = new Date(now.getFullYear(), qStartMonth, 1, 0, 0, 0, 0);
+      return [qFirst.getTime(), endOfDay(now).getTime()];
+    }
+    return null;
+  };
+  // Detect every qualifying mark (HotCase / Potential / MeetingDone) ever
+  // recorded against any assignment slice — current status OR historical
+  // status_change in agentHistory[]. Returns array sorted oldest-first.
+  var QUALIFYING = { HotCase:1, Potential:1, MeetingDone:1 };
+  var qualifyingMarks = function(lead) {
+    var marks = [];
+    var assignments = (lead && lead.assignments) || [];
+    assignments.forEach(function(a){
+      if (!a) return;
+      var aName = (a.agentId && a.agentId.name) ? a.agentId.name : "";
+      var aId = a.agentId && a.agentId._id ? String(a.agentId._id) : String(a.agentId || "");
+      // Signal 1: the slice currently carries a qualifying status.
+      if (QUALIFYING[a.status]) {
+        var ts = a.lastActionAt ? new Date(a.lastActionAt).getTime()
+               : a.assignedAt ? new Date(a.assignedAt).getTime() : 0;
+        marks.push({ status:a.status, agentName:aName, agentId:aId, date:ts, feedback:a.lastFeedback||"" });
+      }
+      // Signal 2: historical status_change entries logged in this slice.
+      (a.agentHistory || []).forEach(function(h){
+        if (!h) return;
+        var note = String(h.note || "");
+        Object.keys(QUALIFYING).forEach(function(qs){
+          var spaced = qs.replace(/([A-Z])/g, " $1").trim(); // "HotCase" → "Hot Case"
+          if (note.indexOf(qs) >= 0 || note.indexOf(spaced) >= 0) {
+            var ts2 = h.createdAt ? new Date(h.createdAt).getTime() : 0;
+            marks.push({ status:qs, agentName:aName, agentId:aId, date:ts2, feedback:a.lastFeedback||"" });
+          }
+        });
+      });
+    });
+    return marks.sort(function(x,y){ return x.date - y.date; });
+  };
 
   // ---- Filter logic (uses state values above) ----
   var allVisible = p.leads.filter(function(l){
@@ -2357,16 +2451,16 @@ var LeadsPage = function(p) {
     // Standalone filter: ignore every other user-applied filter and show only
     // leads where the rotation-lock flag is set.
     filtered = allVisible.filter(function(l){return l.locked===true;});
+  } else if (p.leadFilter === "important") {
+    // Important tab: every lead that EVER had a qualifying mark on any slice.
+    filtered = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; });
   } else {
+    // Status tabs filter by the CURRENT holder's slice status, not the stale
+    // top-level field. "Meeting Done" tab now strictly means "current holder's
+    // slice is MeetingDone" per Phase S spec.
     filtered = p.leadFilter==="all"
       ? allVisible
-      : p.leadFilter==="MeetingDone"
-        // Permanent meeting filter: strictly hadMeeting === true. A lead is
-        // tagged on its first transition into MeetingDone and the flag is
-        // never cleared, so this captures every historical meeting regardless
-        // of the current status. Legacy rows are backfilled on server start.
-        ? allVisible.filter(function(l){return l.hadMeeting===true;})
-        : allVisible.filter(function(l){return l.status===p.leadFilter;});
+      : allVisible.filter(function(l){ return currentStatus(l) === p.leadFilter; });
     // Management-alerts special filter (from dashboard)
     if (p.specialFilter && p.specialFilter.type) {
       var spT = p.specialFilter.type;
@@ -2395,7 +2489,34 @@ var LeadsPage = function(p) {
     if (noAgentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return !aid; });
     if (agentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return aid===agentFilter; });
   }
+  // Date-range chips. For the Important tab the chip filters by the
+  // qualifying-mark date; for every other tab it filters by the lead's most
+  // recent activity time.
+  (function(){
+    var win = dateRangeWindow(dateRange);
+    if (!win) return;
+    if (p.leadFilter === "important") {
+      filtered = filtered.filter(function(l){
+        var marks = qualifyingMarks(l);
+        if (!marks.length) return false;
+        var first = marks[0].date || 0;
+        return first >= win[0] && first <= win[1];
+      });
+    } else {
+      filtered = filtered.filter(function(l){
+        var t = lastActivityAt(l);
+        return t >= win[0] && t <= win[1];
+      });
+    }
+  })();
   filtered = filtered.slice().sort(function(a,b){
+    if (p.leadFilter === "important") {
+      // Important tab sorts by qualifying date, newest first.
+      var aMarks = qualifyingMarks(a); var bMarks = qualifyingMarks(b);
+      var aTs = aMarks.length ? aMarks[0].date : 0;
+      var bTs = bMarks.length ? bMarks[0].date : 0;
+      return bTs - aTs;
+    }
     if (sortBy==="lastActivity") return new Date(b.lastActivityTime||0)-new Date(a.lastActivityTime||0);
     if (sortBy==="newest") return new Date(b.createdAt||0)-new Date(a.createdAt||0);
     if (sortBy==="oldest") return new Date(a.createdAt||0)-new Date(b.createdAt||0);
@@ -2631,15 +2752,31 @@ var LeadsPage = function(p) {
     <div style={{ position:"sticky", top:64, zIndex:90, background:"#F8FAFC", margin:"0 -16px 14px", padding:"8px 16px 8px", borderBottom:"1px solid #E8ECF1", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
       <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:8 }}>
       <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
-        {[{v:"all",l:t.all}].concat(tabSc.map(function(s){return{v:s.value,l:s.label};})).map(function(s){
-          var cnt=s.v==="all"
-            ? allVisible.length
-            : s.v==="MeetingDone"
-              ? allVisible.filter(function(l){return l.hadMeeting===true;}).length
-              : allVisible.filter(function(l){return l.status===s.v;}).length;
+        {(function(){
+          var base = [{v:"all",l:t.all}].concat(tabSc.map(function(s){return{v:s.value,l:s.label};}));
+          if (isAdmin) base.push({v:"important",l:"⭐ Important"});
+          return base;
+        })().map(function(s){
+          var cnt;
+          if (s.v==="all") cnt = allVisible.length;
+          else if (s.v==="important") cnt = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; }).length;
+          else cnt = allVisible.filter(function(l){ return currentStatus(l)===s.v; }).length;
           return <button key={s.v} onClick={function(){setLockedOnly(false);p.setFilter(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:p.leadFilter===s.v?C.accent:"#E8ECF1", background:p.leadFilter===s.v?C.accent+"12":"#fff", color:p.leadFilter===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
         })}
       </div>
+      {isAdmin&&<div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+        {[
+          {v:"all",l:"All Time"},
+          {v:"today",l:"Today"},
+          {v:"yesterday",l:"Yesterday"},
+          {v:"week",l:"This Week"},
+          {v:"month",l:"This Month"},
+          {v:"quarter",l:"This Quarter"}
+        ].map(function(d){
+          var on = dateRange===d.v;
+          return <button key={d.v} onClick={function(){setDateRange(d.v);}} style={{ padding:"4px 9px", borderRadius:14, border:"1px solid", borderColor:on?C.info:"#E8ECF1", background:on?"#EFF6FF":"#fff", color:on?"#1D4ED8":C.textLight, fontSize:11, fontWeight:on?600:500, cursor:"pointer" }}>{d.l}</button>;
+        })}
+      </div>}
       <div style={{ display:"flex", gap:7, flexWrap:"wrap" }}>
         {selected2.length>0&&isAdmin&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> {t.bulkReassign} ({selected2.length})</Btn>}
         {selected2.length>0&&isOnlyAdmin&&<Btn outline onClick={async function(){
@@ -2694,10 +2831,53 @@ var LeadsPage = function(p) {
       {/* Status dropdown overlay */}
       {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
     {/* Table */}
-      {p.isMobile&&!selected?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:"4px 16px", maxWidth:480, margin:"0 auto", width:"100%", boxSizing:"border-box" }}>
+      {p.leadFilter==="important"?<Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
+        <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?720:900 }}>
+            <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.name}</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.phone}</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>First Marked By</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>First Mark Date</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>First Status</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:160 }}>Feedback</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>Current Status</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>Current Agent</th>
+            </tr></thead>
+            <tbody>
+              {filtered.length===0&&<tr><td colSpan={8} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No important leads</td></tr>}
+              {filtered.map(function(lead){
+                var lid=gid(lead);
+                var marks=qualifyingMarks(lead);
+                var first=marks[0]||{};
+                var curSt=currentStatus(lead);
+                var curSo=sc.find(function(s){return s.value===curSt;})||sc[0];
+                var firstSo=sc.find(function(s){return s.value===first.status;})||{label:first.status||"",bg:"#F1F5F9",color:"#64748B"};
+                var firstDate=first.date?new Date(first.date).toLocaleDateString("en-GB"):"—";
+                var curAgentName=lead.agentId&&lead.agentId.name?lead.agentId.name:(function(){var u=p.users.find(function(x){return gid(x)===lead.agentId;});return u?u.name:"—";})();
+                var isSel=selected&&gid(selected)===lid;
+                return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent" }}>
+                  <td style={{ padding:"10px 12px", fontSize:13, fontWeight:600, color:C.text, textAlign:"left", whiteSpace:"nowrap" }}>{lead.name}</td>
+                  <td style={{ padding:"10px 12px", fontSize:13, fontWeight:600, textAlign:"left", whiteSpace:"nowrap", direction:"ltr" }}><PhoneCell phone={lead.phone}/></td>
+                  <td style={{ padding:"10px 12px", fontSize:12, color:C.text, textAlign:"left", whiteSpace:"nowrap" }}>{first.agentName||"—"}</td>
+                  <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{firstDate}</td>
+                  <td style={{ padding:"10px 12px", textAlign:"left" }}>
+                    <span style={{ background:firstSo.bg, color:firstSo.color, padding:"3px 9px", borderRadius:14, fontSize:11, fontWeight:600, whiteSpace:"nowrap" }}>{firstSo.label||first.status||"—"}</span>
+                  </td>
+                  <td style={{ padding:"10px 12px", fontSize:12, color:C.text, textAlign:"left", maxWidth:240, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{first.feedback||<span style={{color:"#CBD5E1"}}>—</span>}</td>
+                  <td style={{ padding:"10px 12px", textAlign:"left" }}>
+                    <span style={{ background:curSo.bg, color:curSo.color, padding:"3px 9px", borderRadius:14, fontSize:11, fontWeight:600, whiteSpace:"nowrap", border:"1px dashed "+curSo.color }}>{curSo.label}</span>
+                  </td>
+                  <td style={{ padding:"10px 12px", fontSize:12, color:C.text, textAlign:"left", whiteSpace:"nowrap" }}>{curAgentName}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>:p.isMobile&&!selected?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:"4px 16px", maxWidth:480, margin:"0 auto", width:"100%", boxSizing:"border-box" }}>
         {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>No data</div>}
         {filtered.map(function(lead){
-          var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0]; var isVIP=lead.isVIP;
+          var lid=gid(lead); var curSt=currentStatus(lead); var curFb=currentFeedback(lead); var so=sc.find(function(s){return s.value===curSt;})||sc[0]; var isVIP=lead.isVIP;
           var lastAct=lead.lastActivityTime?timeAgo(lead.lastActivityTime,t):"—";
           var actColor=lead.lastActivityTime&&(Date.now()-new Date(lead.lastActivityTime).getTime())>3*24*60*60*1000?C.danger:C.accent;
           var borderCol=isVIP?"#F59E0B":so.color||"#E8ECF1";
@@ -2725,8 +2905,8 @@ var LeadsPage = function(p) {
               </div>
               <span style={{ fontSize:11, color:actColor, fontWeight:600 }}>🕐 {lastAct}</span>
             </div>
-            {/* Last Feedback */}
-            {lead.lastFeedback&&<div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8, padding:"6px 10px", background:"#F8FAFC", borderRadius:8, borderLeft:"3px solid "+C.accent }}>💬 {lead.lastFeedback}</div>}
+            {/* Last Feedback (current holder's slice) */}
+            {curFb&&<div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8, padding:"6px 10px", background:"#F8FAFC", borderRadius:8, borderLeft:"3px solid "+C.accent }}>💬 {curFb}</div>}
             {/* Callback time */}
             {lead.callbackTime&&(function(){var ci=callbackColor(lead.callbackTime);return <div style={{ fontSize:11, fontWeight:600, color:ci?ci.color:C.textLight, marginBottom:8, padding:"4px 10px", background:ci?ci.bg:"#F8FAFC", borderRadius:8 }}>📞 {lead.callbackTime.slice(0,16).replace("T"," ")}</div>;})()}
             {/* Action buttons */}
@@ -2762,7 +2942,7 @@ var LeadsPage = function(p) {
             <tbody>
               {filtered.length===0&&<tr><td colSpan={10} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No data</td></tr>}
               {filtered.map(function(lead){
-                var lid=gid(lead); var so=sc.find(function(s){return s.value===lead.status;})||sc[0];
+                var lid=gid(lead); var curSt=currentStatus(lead); var curFb=currentFeedback(lead); var so=sc.find(function(s){return s.value===curSt;})||sc[0];
                 var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
                 var isRotated = isOnlyAdmin && lead.previousAgentIds && lead.previousAgentIds.filter(function(x){ return x != null; }).length > 0;
                 return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":isRotated?"#FFF7ED":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
@@ -2804,9 +2984,9 @@ var LeadsPage = function(p) {
                       </span>
                       {statusDrop===lid&&<div style={{ position:"fixed", top:"50%", left:"50%", transform:"translate(-50%,-50%)", zIndex:500, background:"#fff", borderRadius:14, padding:8, minWidth:180, boxShadow:"0 16px 48px rgba(0,0,0,0.22)", border:"1px solid #E8ECF1" }} onClick={function(e){e.stopPropagation();}}>
                         <div style={{ fontSize:12, fontWeight:600, color:C.textLight, padding:"6px 10px 10px", borderBottom:"1px solid #F1F5F9", marginBottom:4 }}>{t.changeStatus}</div>
-                        {sc.map(function(s){return <div key={s.value} onClick={function(e){e.stopPropagation();setSelected(lead);reqStatus(lid,s.value);setStatusDrop(null);}} style={{ padding:"9px 12px", borderRadius:9, cursor:"pointer", display:"flex", alignItems:"center", gap:10, background:lead.status===s.value?s.bg:"transparent", fontSize:13, fontWeight:lead.status===s.value?600:400 }}
-                          onMouseEnter={function(e){if(lead.status!==s.value)e.currentTarget.style.background="#F8FAFC";}}
-                          onMouseLeave={function(e){if(lead.status!==s.value)e.currentTarget.style.background=lead.status===s.value?s.bg:"transparent";}}>
+                        {sc.map(function(s){return <div key={s.value} onClick={function(e){e.stopPropagation();setSelected(lead);reqStatus(lid,s.value);setStatusDrop(null);}} style={{ padding:"9px 12px", borderRadius:9, cursor:"pointer", display:"flex", alignItems:"center", gap:10, background:curSt===s.value?s.bg:"transparent", fontSize:13, fontWeight:curSt===s.value?600:400 }}
+                          onMouseEnter={function(e){if(curSt!==s.value)e.currentTarget.style.background="#F8FAFC";}}
+                          onMouseLeave={function(e){if(curSt!==s.value)e.currentTarget.style.background=curSt===s.value?s.bg:"transparent";}}>
                           <span style={{ width:10, height:10, borderRadius:"50%", background:s.color, flexShrink:0 }}/><span style={{ color:s.color }}>{s.label}</span>
                         </div>;})}
                         <div style={{ borderTop:"1px solid #F1F5F9", marginTop:4, paddingTop:4 }}><button onClick={function(e){e.stopPropagation();setStatusDrop(null);}} style={{ width:"100%", padding:"7px", borderRadius:8, border:"none", background:"#F1F5F9", cursor:"pointer", fontSize:12, color:C.textLight }}>{t.cancel}</button></div>
@@ -2814,7 +2994,7 @@ var LeadsPage = function(p) {
                     </div>
                     {(function(){if(!isOnlyAdmin||!lead.assignments||lead.assignments.length<=1)return null;var SP=["MeetingDone","HotCase","Potential","CallBack","NoAnswer","NotInterested","NewLead"];var SL={"MeetingDone":"Meeting Done","HotCase":"Hot Case","Potential":"Potential","CallBack":"Call Back","NoAnswer":"No Answer","NotInterested":"Not Interested","NewLead":"New Lead"};var curIdx=SP.indexOf(lead.status);var bestIdx=SP.length;for(var ai=0;ai<lead.assignments.length;ai++){var si=SP.indexOf(lead.assignments[ai].status);if(si>=0&&si<bestIdx)bestIdx=si;}if(bestIdx>=curIdx||bestIdx>=SP.length)return null;return <span style={{background:"#F1F5F9",color:"#64748B",padding:"2px 6px",borderRadius:8,fontSize:10,fontWeight:500,marginLeft:4,whiteSpace:"nowrap"}}>was: {SL[SP[bestIdx]]||SP[bestIdx]}</span>;})()}
                   </td>
-                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:13, fontWeight:700, color:C.text, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{lead.lastFeedback||<span style={{color:"#CBD5E1", fontWeight:400}}>-</span>}</td>}
+                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:13, fontWeight:700, color:C.text, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{curFb||<span style={{color:"#CBD5E1", fontWeight:400}}>-</span>}</td>}
                   {!p.isMobile&&isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
