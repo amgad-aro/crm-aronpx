@@ -2913,6 +2913,18 @@ async function autoRotateLead(leadId, byName, opts) {
     var byId = {};
     candidateDocs.forEach(function(u){ byId[String(u._id)] = u; });
 
+    // Active vacations — one bulk query per call. Anyone whose window covers
+    // "now" is excluded from the destination picker for the duration of their
+    // vacation. Leads do NOT wait for the agent to return — picker advances to
+    // the next tier slot, same as inactive/wrong-role candidates.
+    var nowVac = new Date();
+    var vacRows = await AgentVacation.find({
+      agentId: { $in: allTierIds },
+      startDate: { $lte: nowVac },
+      endDate:   { $gte: nowVac }
+    }).select("agentId").lean();
+    var onVacationIds = new Set(vacRows.map(function(r){ return String(r.agentId); }));
+
     // Tier cascade: try Tier 1, then 2, then 3. Each tier has its own
     // round-robin pointer. Skip rules are applied per-candidate; "skipped"
     // agents leave the pointer untouched.
@@ -2920,8 +2932,6 @@ async function autoRotateLead(leadId, byName, opts) {
     // Count-based tier selection:
     //   rotationCount < 2 (first 2 rotations)  → Tier 1 preferred, combined T2+T3 fallback
     //   rotationCount >= 2 (third rotation+)   → combined T2+T3 only, no fallback to Tier 1
-    // Availability-based skip rules (vacation/offline/working-hours) are
-    // permanently removed. Only identity/role/active/exclusion gates apply.
     var rotCount = Number(lead.rotationCount || 0);
     var tryPool = function(ids, lastIdx){
       if (!Array.isArray(ids) || !ids.length) return null;
@@ -2934,6 +2944,7 @@ async function autoRotateLead(leadId, byName, opts) {
         var u = byId[uid];
         if (!u || u.active === false) continue;
         if (["sales","team_leader"].indexOf(u.role) < 0) continue; // managers/directors excluded per spec
+        if (onVacationIds.has(uid)) continue;                       // active vacation — re-enters automatically once endDate passes
         return { user: u, idx: idx };
       }
       return null;
@@ -3435,10 +3446,20 @@ async function autoAssignQueuedLead(leadId) {
     var byId = {};
     candidateDocs.forEach(function(u){ byId[String(u._id)] = u; });
 
+    // Active vacations — one bulk query, same exclusion as agent-to-agent
+    // rotation. A queued lead skips a vacationing tier-1 candidate and falls
+    // through to the next slot (or combined T2+T3) just like inactive/wrong-role.
+    var nowVac = new Date();
+    var vacRows = await AgentVacation.find({
+      agentId: { $in: allTierIds },
+      startDate: { $lte: nowVac },
+      endDate:   { $gte: nowVac }
+    }).select("agentId").lean();
+    var onVacationIds = new Set(vacRows.map(function(r){ return String(r.agentId); }));
+
     // Queued leads are always first-assignment (rotationCount=0), so the
     // count-based picker always lands in the "rotCount < 2" branch: try Tier 1
-    // first, fall through to combined Tier 2+3. Availability-based skip rules
-    // (vacation/offline/working-hours) are permanently removed.
+    // first, fall through to combined Tier 2+3.
     var tryPool = function(ids, lastIdx){
       if (!Array.isArray(ids) || !ids.length) return null;
       var n = ids.length;
@@ -3449,6 +3470,7 @@ async function autoAssignQueuedLead(leadId) {
         var u = byId[uid];
         if (!u || u.active === false) continue;
         if (["sales","team_leader"].indexOf(u.role) < 0) continue;
+        if (onVacationIds.has(uid)) continue;
         return { user: u, idx: idx };
       }
       return null;
