@@ -2820,7 +2820,18 @@ async function autoRotateLead(leadId, byName, opts) {
       var lastActMs = curSlice.lastActionAt ? new Date(curSlice.lastActionAt).getTime() : 0;
       var hasClock  = lastActMs > 0;
       var ageMs     = hasClock ? (nowTs.getTime() - lastActMs) : 0;
-      var sliceStatus = String(curSlice.status || "");
+      // Slice status mirror is not always synced (admin/sales_admin status
+      // writes don't reach the slice — see PUT /api/leads/:id ~L2433; new
+      // slices created on rotation default to "NewLead" — see L2658, L3072).
+      // Fall back to lead.status when the slice is missing or still shows the
+      // default NewLead, so CallBack / NoAnswer / HotCase rules driven by
+      // admin writes still match the right switch case. Slice non-NewLead
+      // values stay authoritative — sales-driven changes win over stale
+      // top-level fields.
+      var rawSliceStatus = String(curSlice.status || "");
+      var sliceStatus = (!rawSliceStatus || rawSliceStatus === "NewLead")
+        ? String(lead.status || "NewLead")
+        : rawSliceStatus;
       var eligible = false;
       var notEligibleReason = null;
 
