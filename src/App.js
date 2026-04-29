@@ -1596,11 +1596,19 @@ var LeadJourney = function(p) {
     if (ev.status) return ev.status;
     var note = ev.note || "";
     var m = note.match(/^\s*\[([^\]]+)\]/);
-    return m ? m[1].trim() : null;
+    if (m) return m[1].trim();
+    // History description form: "Status changed X → Y by Z" (X may be "—"
+    // when no prior status). Captures the destination status only.
+    var m2 = note.match(/Status\s+changed\s+\S+\s+(?:→|->)\s+(\S+?)(?:\s+by\s+|\s*$)/i);
+    if (m2) return m2[1].trim();
+    return null;
   };
   var extractFromStatus = function(ev){
     if (!ev) return null;
     if (ev.fromStatus) return ev.fromStatus;
+    var note = ev.note || "";
+    var m = note.match(/Status\s+changed\s+(\S+?)\s+(?:→|->)\s+\S+/i);
+    if (m && m[1] !== "—") return m[1].trim();
     return null;
   };
   var parseReason = function(note){
@@ -1609,6 +1617,16 @@ var LeadJourney = function(p) {
     return m ? m[1].trim() : null;
   };
   var isAutoReason = function(note){ return /by\s+System|\bauto\b/i.test(note||""); };
+  // Strip "Feedback by <name>: " / "Note by <name>: " prefixes the backend
+  // bakes into history-source descriptions. The era header already shows
+  // the agent's name and avatar, so the prefix is redundant noise inside
+  // the muted body panel. Display-only — the stored value is unchanged.
+  var stripActorPrefix = function(text){
+    if (text == null) return text;
+    return String(text)
+      .replace(/^Feedback\s+by\s+[^:]+:\s*/i, "")
+      .replace(/^Note\s+by\s+[^:]+:\s*/i, "");
+  };
   var fmtTs = function(d){
     if (!d) return "";
     var dt = new Date(d);
@@ -1858,16 +1876,37 @@ var LeadJourney = function(p) {
   // both copies. Match: same logical category (or one of the allowed
   // cross-category pairs above), same actor, same non-empty content,
   // timestamps within 10s. Keep the earliest occurrence.
+  // Status-change special case: two status_change rows with the same
+  // target status, same actor, within 10s collapse even when their note
+  // text differs (Activity row writes "[CallBack] note" while history
+  // row writes "Status changed X → Y by Z"). Prefer the row that carries
+  // BOTH from and to states — it shows the transition.
   eras.forEach(function(era){
     var keep = [];
     for (var di = 0; di < era.events.length; di++) {
       var dEv = era.events[di];
       var dContent = String(dEv.note || dEv.feedback || "").trim();
       var dT = new Date(dEv.createdAt).getTime();
+      var dCat = eventCategory(dEv.type);
       var isDup = false;
+      var replaceIdx = -1;
       for (var dj = 0; dj < keep.length; dj++) {
         var pe = keep[dj];
-        var cA = eventCategory(pe.type), cB = eventCategory(dEv.type);
+        var cA = eventCategory(pe.type), cB = dCat;
+        var peT = new Date(pe.createdAt).getTime();
+        // Status-change merger — runs before the content-based path so it
+        // catches Activity ↔ history pairs whose note strings don't match.
+        if (cA === "status_change" && cB === "status_change") {
+          var dStatus = extractStatus(dEv);
+          var peStatus = extractStatus(pe);
+          if (dStatus && peStatus && dStatus === peStatus &&
+              sameActor(pe, dEv) && Math.abs(dT - peT) <= 10000) {
+            var dHasFrom = !!extractFromStatus(dEv);
+            var peHasFrom = !!extractFromStatus(pe);
+            if (dHasFrom && !peHasFrom) { replaceIdx = dj; break; }
+            isDup = true; break;
+          }
+        }
         if (cA !== cB) {
           var pair1 = cA + "|" + cB;
           if (!ALLOWED_CROSS_CAT[pair1]) continue;
@@ -1875,9 +1914,10 @@ var LeadJourney = function(p) {
         var peContent = String(pe.note || pe.feedback || "").trim();
         if (!dContent || !peContent || dContent !== peContent) continue;
         if (!sameActor(pe, dEv)) continue;
-        if (Math.abs(dT - new Date(pe.createdAt).getTime()) <= 10000) { isDup = true; break; }
+        if (Math.abs(dT - peT) <= 10000) { isDup = true; break; }
       }
-      if (!isDup) keep.push(dEv);
+      if (replaceIdx >= 0) keep[replaceIdx] = dEv;
+      else if (!isDup) keep.push(dEv);
     }
     era.events = keep;
   });
@@ -2035,7 +2075,7 @@ var LeadJourney = function(p) {
       var suppressBadge = !!(group && group.subEvents && group.subEvents.some(function(s){
         return s.type === "status_change" && extractStatus(s) === ws;
       }));
-      var fbText = ev.feedback || ev.note || "";
+      var fbText = stripActorPrefix(ev.feedback || ev.note || "");
       return <div>
         <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
           <span style={labelStyle}>Feedback:</span>
@@ -2052,9 +2092,10 @@ var LeadJourney = function(p) {
       </div>;
     }
     if (type === "note") {
+      var noteText = stripActorPrefix(ev.note || "");
       return <div>
         <div style={{ fontSize:bodyFs, color:C.text }}><span style={labelStyle}>Note:</span></div>
-        {ev.note && <div style={mutedBox}>{ev.note}</div>}
+        {noteText && <div style={mutedBox}>{noteText}</div>}
       </div>;
     }
     if (type === "call") {
@@ -2095,21 +2136,23 @@ var LeadJourney = function(p) {
         : <div style={{ fontSize:bodyFs, color:C.text }}>Status set to <span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span></div>;
     } else if (type === "feedback_added" || type === "feedback") {
       var whileStatusS = whileStatusFor(ev, era);
+      var fbBody = stripActorPrefix(ev.feedback || ev.note || "");
       body = <div>
         <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
           <span style={{ fontWeight:700 }}>Feedback</span>
           <span style={{ fontSize:metaFs, padding:"1px 6px", borderRadius:5, background:sColor(whileStatusS)+"18", color:sColor(whileStatusS), fontWeight:600 }}>while {sLabel(whileStatusS)}</span>
         </div>
-        {(ev.feedback || ev.note) && <div style={{ marginTop:4, padding:"6px 9px", background:"#F8FAFC", borderRadius:8, fontSize:bodyFs, color:C.text, border:"1px solid #EEF1F5" }}>{ev.feedback || ev.note}</div>}
+        {fbBody && <div style={{ marginTop:4, padding:"6px 9px", background:"#F8FAFC", borderRadius:8, fontSize:bodyFs, color:C.text, border:"1px solid #EEF1F5" }}>{fbBody}</div>}
       </div>;
     } else if (type === "callback_scheduled") {
       var cbTime = ev.scheduledFor || ev.time || ev.callbackTime || null;
       var cbLabel = cbTime ? new Date(cbTime).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : (ev.note || "");
       body = <div style={{ fontSize:bodyFs, color:C.text }}>Callback scheduled for <span style={{ fontWeight:700 }}>{cbLabel}</span></div>;
     } else if (type === "note") {
+      var noteBody = stripActorPrefix(ev.note || "");
       body = <div>
         <div style={{ fontSize:bodyFs, color:C.text, fontWeight:700 }}>Note</div>
-        {ev.note && <div style={{ marginTop:4, padding:"6px 9px", background:"#F8FAFC", borderRadius:8, fontSize:bodyFs, color:C.text, border:"1px solid #EEF1F5" }}>{ev.note}</div>}
+        {noteBody && <div style={{ marginTop:4, padding:"6px 9px", background:"#F8FAFC", borderRadius:8, fontSize:bodyFs, color:C.text, border:"1px solid #EEF1F5" }}>{noteBody}</div>}
       </div>;
     } else if (type === "call" || type === "meeting") {
       body = <div style={{ fontSize:bodyFs, color:C.text }}>{ev.note || (type==="call"?"Call":"Meeting")}</div>;
@@ -2174,6 +2217,43 @@ var LeadJourney = function(p) {
       position:"relative"
     };
     var actions = era.actions || [];
+    // Collapse repeated NewLead displays inside one era. The era starts as
+    // NewLead by definition (the assignment row reads "Assigned fresh as
+    // New Lead"); every subsequent status_change to NewLead is redundant
+    // noise. Walk chronologically, keep the first event whose displayed
+    // status resolves to NewLead, drop later ones. Other eras keep their
+    // own first NewLead entry independently.
+    var resolvesToNewLead = function(ev){
+      var t = ev && ev.type;
+      if (t === "status_change" || t === "status_changed") {
+        var s = extractStatus(ev) || "NewLead";
+        return s === "NewLead" || s === "New Lead";
+      }
+      if (t === "assigned" || t === "first_assigned" || t === "rotated" || t === "reassigned") return true;
+      return false;
+    };
+    var seenNewLead = false;
+    var filteredActions = [];
+    actions.forEach(function(action){
+      var keptSubs = [];
+      action.subEvents.forEach(function(se){
+        if (resolvesToNewLead(se)) {
+          if (!seenNewLead) { seenNewLead = true; keptSubs.push(se); }
+        } else {
+          keptSubs.push(se);
+        }
+      });
+      if (keptSubs.length === 0) return;
+      if (keptSubs.length === action.subEvents.length) {
+        filteredActions.push(action);
+      } else {
+        filteredActions.push(Object.assign({}, action, {
+          subEvents: keptSubs,
+          isGroup: keptSubs.length > 1
+        }));
+      }
+    });
+    actions = filteredActions;
     var actionsCount = actions.length;
     // Build rows in chronological order (actions + silence pills computed
     // from chrono gaps), then reverse for display so newest actions sit on
