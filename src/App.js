@@ -1639,21 +1639,42 @@ var LeadJourney = function(p) {
     return false;
   };
 
-  // Parse a rotation event's note into { isAuto, actor, reason }. Note formats
+  // Parse a rotation event into { isAuto, actor, reason }. Note formats
   // emitted by the backend look like:
-  //   "Rotated from X to Y by System (3x No Answer)"            (auto)
+  //   "Rotated from X to Y by System (3x No Answer)"            (auto, explicit)
+  //   "Rotated from X to Y by <outgoing agent> (3x_no_answer)"  (auto, cron impersonates outgoing)
   //   "Rotated from X to Y by <admin name>"                     (manual)
   //   "Rotated from X to Y by <admin name> (<reason>)"          (manual)
   //   "Bulk redistribution — reassigned to <name> by <name>"    (manual bulk)
   //   "Auto Rotation | From: X → To: Y | Reason: <reason>"      (auto, alt)
-  var parseRotation = function(note){
+  // The cron runs as the OUTGOING sales agent, so notes can read "by <agent>"
+  // even on auto rotations. Cover that with: any auto-reason marker in the
+  // note OR the actor's role being sales/team_leader (neither can manually
+  // rotate, so a rotation logged with that actor must be the cron).
+  var parseRotation = function(ev){
+    var note = (ev && ev.note) || "";
     if (!note) return { isAuto: false, actor: null, reason: null };
     var hasAutoRot = /auto\s*rotation/i.test(note);
-    var isAuto = /by\s+system/i.test(note) || hasAutoRot;
+    // Auto markers — explicit "by System" wording AND every reason code/keyword
+    // that translateAutoReason recognizes (timeout, 3x no answer, not
+    // interested streak, callback overdue, cooldown), plus rotation-cron
+    // wording. Whitespace, hyphen, and underscore variants all match.
+    var hasAutoMarker = /by\s+system|auto[\s\-_]?rotat|auto[\s\-_]?timeout|rotation[\s\-_]?cron|3x[\s\-_]?no[\s\-_]?answer|not[\s\-_]?interested[\s\-_]?streak|callback[\s\-_]?overdue|cooldown/i.test(note);
+    // Resolve the actor's role. Activity / history rows don't populate
+    // userId.role, so fall back to looking up the actor by name in allUsers.
+    var actorRole = "";
+    if (ev && ev.userId && ev.userId.role) {
+      actorRole = String(ev.userId.role);
+    } else if (ev && ev.userId && ev.userId.name) {
+      var u = (allUsers || []).find(function(x){ return x && x.name === ev.userId.name; });
+      if (u && u.role) actorRole = String(u.role);
+    }
+    var actorIsSales = actorRole === "sales" || actorRole === "team_leader";
+    var isAuto = hasAutoMarker || actorIsSales;
     var actor = null;
     if (hasAutoRot) {
       actor = "System";
-    } else {
+    } else if (!isAuto) {
       var byMatch = note.match(/by\s+(.+?)(?:\s*\(|$)/i);
       if (byMatch) actor = byMatch[1].trim();
     }
@@ -1709,6 +1730,37 @@ var LeadJourney = function(p) {
     return "Unknown";
   };
 
+  // Resolve the receiving agent's _id for an assignment event. History rows
+  // only carry the receiver's NAME (h.toAgent), so we look up the _id via
+  // allUsers by name. Activity-source assignment rows often hold the actor
+  // (admin) on userId, not the receiver — same name-lookup path is safer.
+  var resolveAgentId = function(ev){
+    var n = (ev.agentName && String(ev.agentName).trim()) ||
+            (ev.toAgent && String(ev.toAgent).trim()) ||
+            (ev.source !== "history" && ev.userId && ev.userId.name) || "";
+    if (n) {
+      var u = (allUsers || []).find(function(x){ return x && x.name === n; });
+      if (u && u._id) return String(u._id);
+    }
+    if (ev.source !== "history" && ev.userId && ev.userId._id) return String(ev.userId._id);
+    return "";
+  };
+
+  // Resolve the AUTHOR _id of any event. Activity rows populate userId._id;
+  // history rows carry only userId.name (= h.byUser) → name lookup; synthesized
+  // assignmentEntries already include _id. Returns "" when the author can't be
+  // identified (e.g. system-only rows with no actor name).
+  var resolveAuthorId = function(ev){
+    if (!ev || !ev.userId) return "";
+    if (ev.userId._id) return String(ev.userId._id);
+    if (typeof ev.userId === "string") return ev.userId;
+    if (ev.userId.name) {
+      var u = (allUsers || []).find(function(x){ return x && x.name === ev.userId.name; });
+      if (u && u._id) return String(u._id);
+    }
+    return "";
+  };
+
   var eras = [];
   var cur = null;
   sorted.forEach(function(ev){
@@ -1716,14 +1768,16 @@ var LeadJourney = function(p) {
     var isAssign = type==="assigned" || type==="first_assigned" || type==="rotated" || type==="reassigned";
     if (isAssign) {
       var note = ev.note || "";
+      var rotMeta = parseRotation(ev);
       cur = {
         agentName: resolveAgentName(ev),
+        agentId: resolveAgentId(ev),
         fromAgent: ev.fromAgent || null,
         assignType: type,
         isRotation: type==="rotated" || type==="reassigned",
         reason: parseReason(note),
-        auto: isAutoReason(note) ? "auto" : "manual",
-        rotationMeta: parseRotation(note),
+        auto: rotMeta.isAuto ? "auto" : "manual",
+        rotationMeta: rotMeta,
         actor: ev.userId ? { name: ev.userId.name || null, role: ev.userId.role || null } : null,
         source: ev.source || ((type==="first_assigned" && lead) ? lead.source : null),
         startedAt: ev.createdAt,
@@ -1732,11 +1786,36 @@ var LeadJourney = function(p) {
       };
       eras.push(cur);
     } else if (cur) {
-      cur.events.push(ev);
-      cur.endedAt = ev.createdAt;
+      // Route the event to the era of the agent who actually authored it,
+      // not just the era that happens to be open at this timestamp. The
+      // backend sometimes surfaces a previous holder's slice writes (via
+      // assignments[] synthesis) at timestamps that fall inside a later
+      // holder's era — those rows belong in the prior holder's era, not
+      // the current one.
+      var evUid = resolveAuthorId(ev);
+      var curEraAgentId = cur.agentId ? String(cur.agentId) : "";
+      if (!evUid || !curEraAgentId || evUid === curEraAgentId) {
+        cur.events.push(ev);
+        cur.endedAt = ev.createdAt;
+      } else {
+        var targetEra = null;
+        for (var bi = eras.length - 1; bi >= 0; bi--) {
+          var prevEra = eras[bi];
+          var prevAgentId = prevEra.agentId ? String(prevEra.agentId) : "";
+          if (prevAgentId && prevAgentId === evUid) { targetEra = prevEra; break; }
+        }
+        if (targetEra) {
+          targetEra.events.push(ev);
+          // Don't update endedAt of past era — preserve its boundary.
+        } else {
+          cur.events.push(ev);
+          cur.endedAt = ev.createdAt;
+        }
+      }
     } else {
       cur = {
         agentName: (ev.userId && ev.userId.name) || (lead && lead.agentId && lead.agentId.name) || "Unknown",
+        agentId: resolveAuthorId(ev),
         fromAgent: null,
         assignType: null,
         isRotation: false,
@@ -1751,9 +1830,33 @@ var LeadJourney = function(p) {
     }
   });
 
+  // Map an event type to its logical category. The backend writes a single
+  // user gesture as several typed rows (status_change in Activity vs.
+  // status_changed in history; feedback in Activity vs. feedback_added in
+  // history). Bucketing by category lets dedup collapse those duplicates.
+  var eventCategory = function(t){
+    if (t === "feedback" || t === "feedback_added") return "feedback";
+    if (t === "note") return "note";
+    if (t === "status_change" || t === "status_changed") return "status_change";
+    if (t === "callback_scheduled") return "callback";
+    if (t === "call") return "call";
+    if (t === "meeting") return "meeting";
+    return t || "other";
+  };
+  // Cross-category whitelist: when the same actor writes the same non-empty
+  // content as both a note and a feedback (or status_change), within 10s,
+  // it's the same logical gesture surfaced through different sinks. Other
+  // category pairings stay segregated.
+  var ALLOWED_CROSS_CAT = {
+    "note|feedback":1, "feedback|note":1,
+    "note|status_change":1, "status_change|note":1,
+    "feedback|status_change":1, "status_change|feedback":1
+  };
+
   // Dedupe events within each era. Backend writes some logical actions to
   // BOTH the Activity collection and lead.history; the merged feed surfaces
-  // both copies. Match: same type, same actor, same non-empty content,
+  // both copies. Match: same logical category (or one of the allowed
+  // cross-category pairs above), same actor, same non-empty content,
   // timestamps within 10s. Keep the earliest occurrence.
   eras.forEach(function(era){
     var keep = [];
@@ -1764,7 +1867,11 @@ var LeadJourney = function(p) {
       var isDup = false;
       for (var dj = 0; dj < keep.length; dj++) {
         var pe = keep[dj];
-        if (pe.type !== dEv.type) continue;
+        var cA = eventCategory(pe.type), cB = eventCategory(dEv.type);
+        if (cA !== cB) {
+          var pair1 = cA + "|" + cB;
+          if (!ALLOWED_CROSS_CAT[pair1]) continue;
+        }
         var peContent = String(pe.note || pe.feedback || "").trim();
         if (!dContent || !peContent || dContent !== peContent) continue;
         if (!sameActor(pe, dEv)) continue;
