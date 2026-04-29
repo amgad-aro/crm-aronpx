@@ -2826,17 +2826,32 @@ async function autoRotateLead(leadId, byName, opts) {
 
       switch (sliceStatus) {
         case "NoAnswer": {
-          var naActs = await Activity.find({
-            leadId: lead._id,
-            type:   "status_change",
-            note:   { $regex: /^\[NoAnswer\]/ }
-          }).select("createdAt").lean();
-          if (naActs.length < naCountThreshold) notEligibleReason = "NoAnswer: activity count below naCount";
+          // Count from the per-slice agentHistory[] instead of the Activity
+          // collection. The collection-scan version only saw status changes
+          // that went through the two client paths writing a "[NoAnswer] ..."
+          // prefix; agentHistory is populated server-side on every status
+          // change (see PUT /api/leads/:id ~L2444), so it's the reliable
+          // source of truth for "did this agent log a NoAnswer outcome".
+          var sliceHistory = Array.isArray(curSlice.agentHistory) ? curSlice.agentHistory : [];
+          var naEntries = sliceHistory.filter(function(h){
+            if (!h || h.type !== "status_change") return false;
+            return /no\s*answer/i.test(String(h.note || ""));
+          });
+          if (naEntries.length < naCountThreshold) notEligibleReason = "NoAnswer: count " + naEntries.length + " below threshold " + naCountThreshold;
           else {
             var latestNa = 0;
-            naActs.forEach(function(a){ var t = new Date(a.createdAt).getTime(); if (t > latestNa) latestNa = t; });
-            if (!latestNa)                                    notEligibleReason = "NoAnswer: no valid timestamp";
-            else if ((nowTs.getTime() - latestNa) < naHoursThreshold*HOUR_MS) notEligibleReason = "NoAnswer: latest activity too recent";
+            naEntries.forEach(function(h){
+              var t = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
+              if (t > latestNa) latestNa = t;
+            });
+            if (!latestNa) {
+              // Legacy entries with no timestamp — use the slice's clock so
+              // we don't lock the lead out of rotation forever.
+              var fb = new Date(curSlice.lastActionAt || curSlice.assignedAt || 0).getTime();
+              if (fb) latestNa = fb;
+            }
+            if (!latestNa)                                                   notEligibleReason = "NoAnswer: no valid timestamp";
+            else if ((nowTs.getTime() - latestNa) < naHoursThreshold*HOUR_MS) notEligibleReason = "NoAnswer: latest entry too recent";
             else eligible = true;
           }
           break;
@@ -2852,9 +2867,14 @@ async function autoRotateLead(leadId, byName, opts) {
           else eligible = true;
           break;
         case "CallBack": {
-          if (!curSlice.callbackTime) notEligibleReason = "CallBack: callbackTime not set";
+          // Slice mirror is only synced on sales/team_leader writes (see PUT
+          // /api/leads/:id ~L2433). When admin/sales_admin sets the callback
+          // time, lead.callbackTime updates but the slice stays blank — fall
+          // back to the lead-level value so those leads still rotate.
+          var effectiveCb = curSlice.callbackTime || lead.callbackTime || null;
+          if (!effectiveCb) notEligibleReason = "CallBack: callbackTime not set";
           else {
-            var cbMs = new Date(curSlice.callbackTime).getTime();
+            var cbMs = new Date(effectiveCb).getTime();
             if (!cbMs)                                         notEligibleReason = "CallBack: callbackTime unparseable";
             else if ((nowTs.getTime() - cbMs) < cbDays*DAY_MS) notEligibleReason = "CallBack: not yet overdue";
             else eligible = true;
