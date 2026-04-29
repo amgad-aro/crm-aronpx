@@ -2362,13 +2362,37 @@ var LeadsPage = function(p) {
     return (s && s.lastFeedback) ? s.lastFeedback : "";
   };
   // "New Lead" tab is for first-time leads only — current status NewLead AND
-  // never rotated. A lead with 2+ assignment slices, or any non-zero
-  // rotationCount, is hidden even though rotation resets the status to NewLead.
+  // never rotated AND no action yet taken on the slice. A lead with 2+
+  // assignment slices, any non-zero rotationCount, or any feedback / notes /
+  // callback / status_change / note / feedback / call entry on the holder's
+  // slice is hidden even though it may still read as NewLead.
   var isGenuineNewLead = function(lead) {
+    if (!lead) return false;
     if (currentStatus(lead) !== "NewLead") return false;
     var assignCount = ((lead && lead.assignments) || []).length;
     if (assignCount > 1) return false;
     if (lead && lead.rotationCount && lead.rotationCount > 0) return false;
+
+    // No action yet — slice must be pristine.
+    var slice = currentHolderSlice(lead);
+    if (!slice) return true; // no slice yet, definitely fresh
+
+    if (slice.lastFeedback && String(slice.lastFeedback).trim()) return false;
+    if (slice.notes && String(slice.notes).trim()) return false;
+    if (slice.callbackTime) return false;
+
+    var hist = Array.isArray(slice.agentHistory) ? slice.agentHistory : [];
+    var hasAction = hist.some(function(h){
+      if (!h || !h.type) return false;
+      var t = h.type;
+      return t === "status_change"
+          || t === "feedback_added" || t === "feedback"
+          || t === "note"
+          || t === "call"
+          || t === "callback_scheduled";
+    });
+    if (hasAction) return false;
+
     return true;
   };
   // Most recent activity timestamp the date-filter chips should respect.
