@@ -2834,6 +2834,11 @@ async function autoRotateLead(leadId, byName, opts) {
         : rawSliceStatus;
       var eligible = false;
       var notEligibleReason = null;
+      // The actual rule that fires for this rotation. Overrides the caller's
+      // opts.reason in the history note so the journey shows e.g. "callback
+      // time passed" instead of the generic "auto_timeout" the client always
+      // sends. Stays null when bypassEligibility is in effect (admin force).
+      var firedRule = null;
 
       switch (sliceStatus) {
         case "NoAnswer": {
@@ -2863,19 +2868,19 @@ async function autoRotateLead(leadId, byName, opts) {
             }
             if (!latestNa)                                                   notEligibleReason = "NoAnswer: no valid timestamp";
             else if ((nowTs.getTime() - latestNa) < naHoursThreshold*HOUR_MS) notEligibleReason = "NoAnswer: latest entry too recent";
-            else eligible = true;
+            else { eligible = true; firedRule = "no_answer_streak"; }
           }
           break;
         }
         case "NotInterested":
           if (!hasClock)                 notEligibleReason = "NotInterested: no lastActionAt";
           else if (ageMs < niDays*DAY_MS) notEligibleReason = "NotInterested: lastActionAt too recent";
-          else eligible = true;
+          else { eligible = true; firedRule = "not_interested_return"; }
           break;
         case "NewLead":
           if (!hasClock)                    notEligibleReason = "NewLead: no lastActionAt";
           else if (ageMs < noActDays*DAY_MS) notEligibleReason = "NewLead: lastActionAt too recent";
-          else eligible = true;
+          else { eligible = true; firedRule = "no_action_timeout"; }
           break;
         case "CallBack": {
           // Slice mirror is only synced on sales/team_leader writes (see PUT
@@ -2888,7 +2893,7 @@ async function autoRotateLead(leadId, byName, opts) {
             var cbMs = new Date(effectiveCb).getTime();
             if (!cbMs)                                         notEligibleReason = "CallBack: callbackTime unparseable";
             else if ((nowTs.getTime() - cbMs) < cbDays*DAY_MS) notEligibleReason = "CallBack: not yet overdue";
-            else eligible = true;
+            else { eligible = true; firedRule = "callback_overdue"; }
           }
           break;
         }
@@ -2897,7 +2902,7 @@ async function autoRotateLead(leadId, byName, opts) {
         case "MeetingDone":
           if (!hasClock)                  notEligibleReason = sliceStatus + ": no lastActionAt";
           else if (ageMs < hotDays*DAY_MS) notEligibleReason = sliceStatus + ": lastActionAt too recent";
-          else eligible = true;
+          else { eligible = true; firedRule = "hot_no_action"; }
           break;
         default:
           notEligibleReason = "status not in eligible list: \"" + (sliceStatus || "(empty)") + "\"";
@@ -2906,6 +2911,11 @@ async function autoRotateLead(leadId, byName, opts) {
       if (!eligible) {
         return { ok: false, status: 409, error: "not_eligible", reason: notEligibleReason };
       }
+      // Replace the caller-supplied reason (always "auto_timeout" from the
+      // browser cron, "manual" from admin force) with the rule code that
+      // actually matched. The history-note builder reads `reason` directly,
+      // so this propagates into lead.history and onto the journey display.
+      if (firedRule) reason = firedRule;
     }
 
     // Build the exclusion set: current agent + every assignment this lead has ever carried + previousAgentIds.

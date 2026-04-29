@@ -1709,17 +1709,29 @@ var LeadJourney = function(p) {
 
   // Translate raw auto-rotation reason codes (the parenthesized substring of
   // the rotation note) into human-readable English. Substring + case-
-  // insensitive so we match whether the backend writes "auto_timeout",
-  // "Auto Timeout", or "timeout (3 days)". Empty input returns the
-  // "no reason recorded" fallback used when an auto rotation didn't supply
-  // a reason. Manual reasons are NOT translated — they're admin free-text.
+  // insensitive so we match whether the backend writes "no_action_timeout",
+  // "No Action Timeout", or "auto_timeout (legacy)". Empty input returns
+  // the "no reason recorded" fallback used when an auto rotation didn't
+  // supply a reason. Manual reasons are NOT translated — they're admin
+  // free-text.
+  // Order matters: the rule-specific codes are checked before the legacy
+  // generic ones because "no_action_timeout" contains "timeout" and would
+  // otherwise be swallowed by the legacy fallback.
   var translateAutoReason = function(raw){
     if (!raw || !String(raw).trim()) return "No reason recorded";
     var s = String(raw).toLowerCase();
-    if (s.indexOf("timeout") !== -1 || s.indexOf("auto_timeout") !== -1) return "Sales agent did not contact lead for 1+ days";
-    if (s.indexOf("3x no answer") !== -1 || s.indexOf("3x_no_answer") !== -1) return "3 No Answer entries in 48 hours";
-    if (s.indexOf("not interested streak") !== -1 || s.indexOf("not_interested_streak") !== -1) return "Marked Not Interested 2+ times";
-    if (s.indexOf("callback overdue") !== -1 || s.indexOf("callback_overdue") !== -1) return "Missed callback by 1+ days";
+    // Rule-specific codes — the actual rule that fired (Phase BB).
+    if (s.indexOf("no_answer_streak") !== -1)      return "No-Answer threshold reached";
+    if (s.indexOf("not_interested_return") !== -1) return "Not Interested cooldown ended";
+    if (s.indexOf("no_action_timeout") !== -1)     return "No action taken on the lead";
+    if (s.indexOf("callback_overdue") !== -1 || s.indexOf("callback overdue") !== -1) return "Callback time passed";
+    if (s.indexOf("hot_no_action") !== -1)         return "No action on Hot/Potential/Meeting lead";
+    // Legacy fallbacks — pre-Phase BB history entries used generic codes.
+    // Map them to the same human-readable strings so old rotations render
+    // consistently with new ones.
+    if (s.indexOf("3x no answer") !== -1 || s.indexOf("3x_no_answer") !== -1)               return "No-Answer threshold reached";
+    if (s.indexOf("not interested streak") !== -1 || s.indexOf("not_interested_streak") !== -1) return "Not Interested cooldown ended";
+    if (s.indexOf("auto_timeout") !== -1 || s.indexOf("timeout") !== -1)                    return "No action taken on the lead";
     if (s.indexOf("cooldown") !== -1) return "Cooldown expired, redistributed";
     return raw;
   };
@@ -10372,7 +10384,7 @@ export default function CRMApp() {
       try{
         var fromName = lead.agentId&&lead.agentId.name?lead.agentId.name:"Agent";
         var timeStr=new Date().toLocaleString("en-GB");
-        var result = await apiFetch("/api/leads/"+lid+"/auto-rotate","POST",{ reason: "auto_timeout" }, token);
+        var result = await apiFetch("/api/leads/"+lid+"/auto-rotate","POST",{ reason: "client_triggered" }, token);
         // Server returns { exhausted } / 409 when every in-list agent has already handled the lead — treat as silent stop.
         if (!result || !result.targetAgentId) return;
         var toUser = users.find(function(u){return String(gid(u))===String(result.targetAgentId);});
