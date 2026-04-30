@@ -9967,8 +9967,8 @@ export default function CRMApp() {
 
   // Fetch notifications from DB
   var loadNotifications = function(tok){
-    apiFetch("/api/notifications?type=deal","GET",null,tok).then(function(data){if(data)setDealNotifs(data);}).catch(function(){});
-    apiFetch("/api/notifications?type=rotation","GET",null,tok).then(function(data){if(data)setRotNotifs(data);}).catch(function(){});
+    apiFetch("/api/notifications?type=deal","GET",null,tok).then(function(data){if(data)setDealNotifs(data);}).catch(function(e){ console.error("Notifications (deal) fetch failed:", e); });
+    apiFetch("/api/notifications?type=rotation","GET",null,tok).then(function(data){if(data)setRotNotifs(data);}).catch(function(e){ console.error("Notifications (rotation) fetch failed:", e); });
   };
 
   useEffect(function(){
@@ -10021,8 +10021,9 @@ export default function CRMApp() {
       var results=await Promise.all([
         apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,tok),
         apiFetch("/api/users","GET",null,tok),
-        apiFetch("/api/activities?page="+activitiesPage+"&limit=20","GET",null,tok),
-        apiFetch("/api/tasks","GET",null,tok)
+        apiFetch("/api/activities?page="+activitiesPage+"&limit=1000","GET",null,tok),
+        apiFetch("/api/tasks","GET",null,tok),
+        apiFetch("/api/daily-requests","GET",null,tok).catch(function(e){ console.error("DR fetch failed:", e); return []; })
       ]);
       // Use userOverride if passed (avoids React state timing issue)
       var effectiveUser = userOverride || currentUser;
@@ -10044,7 +10045,7 @@ export default function CRMApp() {
       setActivitiesTotal(results[2].total || 0);
       setActivitiesTotalPages(results[2].totalPages || 0);
       setTasks(results[3]);
-      try{ var drData = await apiFetch("/api/daily-requests","GET",null,tok); setDailyReqs(drData||[]); }catch(e){}
+      setDailyReqs(results[4] || []);
     } catch(e){setDataError(e.message);}
     setLoading(false);
     isInitialLoadRef.current = false;
@@ -10055,8 +10056,8 @@ export default function CRMApp() {
         apiFetch("/api/leads/backfill-feedback","GET",null,tok).then(function(){
           localStorage.setItem(bfKey,"1");
           // Reload leads to pick up backfilled data
-          apiFetch("/api/leads?page=1&limit=1000","GET",null,tok).then(function(r){if(r&&r.data)setLeads(r.data);}).catch(function(){});
-        }).catch(function(){});
+          apiFetch("/api/leads?page=1&limit=1000","GET",null,tok).then(function(r){if(r&&r.data)setLeads(r.data);}).catch(function(e){ console.error("Leads reload after backfill failed:", e); });
+        }).catch(function(e){ console.error("Backfill-feedback fetch failed:", e); });
       }
     }catch(e){}
   },[leadsPage, activitiesPage]);
