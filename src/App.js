@@ -10441,12 +10441,16 @@ export default function CRMApp() {
         var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,token);
         if(fresh&&fresh.data) setLeads(fresh.data);
       }catch(e){
-        // These 409s are expected and safe to swallow — the lead is already in the right place.
-        //   exhausted            — every in-list agent has already handled this lead
-        //   no_rotation_order    — admin hasn't configured a list yet
-        //   concurrent_rotation  — another request already rotated this lead; we mustn't rotate again
+        // All backend /auto-rotate 409 keys are expected and safe to swallow —
+        // they mean the backend cron, another tab, or a guard already handled the lead.
+        // apiFetch throws Error(data.error), so we match on the error key string
+        // (apiFetch discards the HTTP status, so we can't gate on e.status === 409).
+        //   exhausted, no_rotation_order, no_agents, concurrent_rotation,
+        //   rotation_stopped, rotation_disabled, rotation_paused, cooldown,
+        //   not_eligible, stopped_age, locked
+        // Any other rotation error (network failure, 5xx, 403, etc.) still logs.
         var msg = String(e && e.message || "");
-        var silent = ["exhausted","no_rotation_order","concurrent_rotation","stopped_age","rotation_disabled","rotation_paused","cooldown","not_eligible","locked"];
+        var silent = ["exhausted","no_rotation_order","no_agents","concurrent_rotation","rotation_stopped","stopped_age","rotation_disabled","rotation_paused","cooldown","not_eligible","locked"];
         if (!silent.some(function(k){return msg.indexOf(k)>=0;})) console.error("Rotation error:", e);
       }
       finally{ rotatingNow.delete(lid); }
