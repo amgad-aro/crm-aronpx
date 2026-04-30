@@ -10049,15 +10049,21 @@ export default function CRMApp() {
     } catch(e){setDataError(e.message);}
     setLoading(false);
     isInitialLoadRef.current = false;
-    // Backfill lastFeedback for existing leads (once per browser)
+    // Backfill lastFeedback for existing leads (once per browser, admin only)
     try{
       var bfKey="crm_feedback_backfilled";
-      if(!localStorage.getItem(bfKey)){
+      var u = userOverride || currentUser;
+      var isAdminUser = u && (u.role === "admin" || u.role === "sales_admin");
+      if(!localStorage.getItem(bfKey) && isAdminUser){
         apiFetch("/api/leads/backfill-feedback","GET",null,tok).then(function(){
           localStorage.setItem(bfKey,"1");
           // Reload leads to pick up backfilled data
           apiFetch("/api/leads?page=1&limit=1000","GET",null,tok).then(function(r){if(r&&r.data)setLeads(r.data);}).catch(function(e){ console.error("Leads reload after backfill failed:", e); });
-        }).catch(function(e){ console.error("Backfill-feedback fetch failed:", e); });
+        }).catch(function(e){
+          console.error("Backfill-feedback fetch failed:", e);
+          // Set the gate even on failure so we don't retry every page load
+          localStorage.setItem(bfKey, "failed");
+        });
       }
     }catch(e){}
   },[leadsPage, activitiesPage]);

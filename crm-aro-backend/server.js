@@ -1754,6 +1754,27 @@ app.get("/api/leads/untouched", auth, adminOnly, async function(req, res) {
   }
 });
 
+// ===== BACKFILL LAST FEEDBACK =====
+// Must be registered BEFORE /api/leads/:id — otherwise Express matches the
+// ":id" pattern first and tries to ObjectId-cast "backfill-feedback".
+app.get("/api/leads/backfill-feedback", auth, adminOnly, async function(req, res) {
+  try {
+    var leads = await Lead.find({ $or: [{ lastFeedback: "" }, { lastFeedback: { $exists: false } }] }).lean();
+    var updated = 0;
+    for (var i = 0; i < leads.length; i++) {
+      var act = await Activity.findOne({ leadId: leads[i]._id, type: "status_change", note: { $regex: /^\[.*?\]\s*.+/ } }).sort({ createdAt: -1 }).lean();
+      if (act && act.note) {
+        var txt = act.note.replace(/^\[.*?\]\s*/, "").trim();
+        if (txt) {
+          await Lead.findByIdAndUpdate(leads[i]._id, { $set: { lastFeedback: txt } });
+          updated++;
+        }
+      }
+    }
+    res.json({ ok: true, updated: updated, total: leads.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== SINGLE LEAD GET (with per-agent overlay) =====
 app.get("/api/leads/:id", auth, async function(req, res) {
   try {
@@ -4402,25 +4423,6 @@ app.post("/api/fix-manager-teams", auth, adminOnly, async function(req, res) {
     }
     res.json({ ok: true, fixed: fixed });
   } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// ===== BACKFILL LAST FEEDBACK =====
-app.get("/api/leads/backfill-feedback", auth, adminOnly, async function(req, res) {
-  try {
-    var leads = await Lead.find({ $or: [{ lastFeedback: "" }, { lastFeedback: { $exists: false } }] }).lean();
-    var updated = 0;
-    for (var i = 0; i < leads.length; i++) {
-      var act = await Activity.findOne({ leadId: leads[i]._id, type: "status_change", note: { $regex: /^\[.*?\]\s*.+/ } }).sort({ createdAt: -1 }).lean();
-      if (act && act.note) {
-        var txt = act.note.replace(/^\[.*?\]\s*/, "").trim();
-        if (txt) {
-          await Lead.findByIdAndUpdate(leads[i]._id, { $set: { lastFeedback: txt } });
-          updated++;
-        }
-      }
-    }
-    res.json({ ok: true, updated: updated, total: leads.length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ===== ARCHIVE LEAD =====
