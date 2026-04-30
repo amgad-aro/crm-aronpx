@@ -1453,6 +1453,16 @@ function isAssignmentStale(a, nowMs, staleMs) {
   if (!last) return false;
   return (nowMs - last) > staleMs;
 }
+// EOIs (contract-signing stage) and DoneDeals (completed sales) must remain
+// visible to the assigned sales regardless of activity age — they bypass the
+// Phase P stale-lead filter entirely.
+function isEoiOrDoneDeal(lead) {
+  if (!lead) return false;
+  if (lead.globalStatus === "eoi" || lead.globalStatus === "donedeal") return true;
+  if (lead.status === "EOI" || lead.status === "DoneDeal") return true;
+  if (lead.eoiStatus && String(lead.eoiStatus).length > 0) return true;
+  return false;
+}
 function findAssignmentForAgent(lead, agentId) {
   if (!lead || !agentId) return null;
   var aidStr = String(agentId && agentId._id ? agentId._id : agentId);
@@ -1573,12 +1583,14 @@ app.get("/api/leads", auth, async function(req, res) {
           if (splitId && String(splitId) === String(uid)) return true;
           var myAssign = findAssignmentForAgent(l, uid);
           if (!myAssign) return false;
+          if (isEoiOrDoneDeal(l)) return true;
           return !isAssignmentStale(myAssign, nowMsP, STALE_LEAD_MS);
         }
         var holderId = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
         if (!holderId) return true;
         var holderAssign = findAssignmentForAgent(l, holderId);
         if (!holderAssign) return true;
+        if (isEoiOrDoneDeal(l)) return true;
         return !isAssignmentStale(holderAssign, nowMsP, STALE_LEAD_MS);
       });
       total = Math.max(0, total - (preCount - leads.length));
@@ -1765,7 +1777,8 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       var isSplitAgent = splitId2 && String(splitId2) === uid;
       if (!myAssign && !isSplitAgent) return res.status(404).json({ error: "Not found" });
       // Phase P — caller's own slice is stale: hide. Split-only access bypasses.
-      if (myAssign && !isSplitAgent && isAssignmentStale(myAssign, Date.now(), STALE_LEAD_MS)) {
+      // EOIs / DoneDeals also bypass — they must remain visible regardless of age.
+      if (myAssign && !isSplitAgent && !isEoiOrDoneDeal(lead) && isAssignmentStale(myAssign, Date.now(), STALE_LEAD_MS)) {
         return res.status(404).json({ error: "Not found" });
       }
 
@@ -1829,7 +1842,9 @@ app.get("/api/leads/:id", auth, async function(req, res) {
     }
     // Phase P — manager / team_leader: hide when current holder's slice is
     // stale. Admin / sales_admin / viewer / director continue to see it.
+    // EOIs / DoneDeals also bypass — they must remain visible regardless of age.
     if ((role === "manager" || role === "team_leader") && adminHolderAssign &&
+        !isEoiOrDoneDeal(lead) &&
         isAssignmentStale(adminHolderAssign, Date.now(), STALE_LEAD_MS)) {
       return res.status(404).json({ error: "Not found" });
     }
