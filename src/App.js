@@ -4386,13 +4386,49 @@ var DashboardPage = function(p) {
   var allLeadsUntimed = leads; // all non-archived leads for overall counts
   // Meetings: leads with "Meeting Done" status in assignments + DR with status "Meeting"
   var meetingsFromLeads = allLeadsUntimed.filter(function(l){
-    return (l.assignments||[]).some(function(a){return a.status==="Meeting Done"||a.status==="MeetingDone";})||l.status==="MeetingDone";
-  }).filter(function(l){
-    // If filtered, check if the status change falls in range
-    if (filter==="today" || filter==="yesterday" || filter==="week" || filter==="month" || (typeof filter==="string"&&filter.indexOf("Q")===0)) {
-      return statusChangedInRange(l,"Meeting Done") || statusChangedInRange(l,"MeetingDone") || (l.updatedAt && new Date(l.updatedAt).getTime()>=rangeStart && new Date(l.updatedAt).getTime()<=rangeEnd);
+    // For "all time" view, keep current MeetingDone status as the signal
+    if (!filter || filter === "all" || filter === "alltime") {
+      return (l.assignments||[]).some(function(a){
+        return a.status==="Meeting Done"||a.status==="MeetingDone";
+      }) || l.status==="MeetingDone";
     }
-    return true;
+
+    // For ranged filters, require an actual transition to MeetingDone
+    // within the selected window.
+
+    // Check assignment slices' agentHistory for status_change -> MeetingDone
+    var foundInAssignments = (l.assignments || []).some(function(a){
+      return (a.agentHistory || []).some(function(h){
+        if (!h) return false;
+        var note = String(h.note || "");
+        var isStatusChange = h.type === "status_change"
+          || /status\s*changed/i.test(note)
+          || /^Status:\s*Meeting/i.test(note);
+        if (!isStatusChange) return false;
+        var hasMeetingDone = /meeting\s*done|meetingdone/i.test(note);
+        if (!hasMeetingDone) return false;
+        var t = new Date(h.createdAt || h.at || h.date || 0).getTime();
+        return t >= rangeStart && t <= rangeEnd;
+      });
+    });
+    if (foundInAssignments) return true;
+
+    // Check top-level lead.history for status_change to MeetingDone
+    var foundInHistory = (l.history || []).some(function(h){
+      if (!h) return false;
+      var note = String(h.note || h.description || "");
+      var isStatusChange = h.event === "status_change"
+        || h.type === "status_change"
+        || /status\s*changed/i.test(note);
+      if (!isStatusChange) return false;
+      var hasMeetingDone = /meeting\s*done|meetingdone/i.test(note);
+      if (!hasMeetingDone) return false;
+      var t = new Date(h.createdAt || h.at || h.date || 0).getTime();
+      return t >= rangeStart && t <= rangeEnd;
+    });
+    if (foundInHistory) return true;
+
+    return false;
   }).length;
   var meetingsFromDR = (p.dailyReqs||[]).filter(function(r){
     var rt=r.createdAt?new Date(r.createdAt).getTime():0;
