@@ -1044,7 +1044,7 @@ var HeaderSearch = function(p) {
       {so && <span style={{ background:so.bg, color:so.color, fontSize:10, fontWeight:700, padding:"2px 7px", borderRadius:6, flexShrink:0 }}>{so.label}</span>}
     </div>;
   };
-  return <div ref={wrapRef} style={{ position:"relative", width:260 }}>
+  return <div ref={wrapRef} style={{ position:"relative", width:(p.width||260) }}>
     <div style={{ display:"flex", alignItems:"center", gap:7, background:"#F1F5F9", borderRadius:10, padding:"7px 14px", width:"100%", boxSizing:"border-box" }}>
       <Search size={14} color={C.textLight}/>
       <input placeholder={t.search} value={p.search||""} onFocus={function(){setOpen(true);}} onChange={function(e){p.setSearch(e.target.value);setOpen(true);}} style={{ border:"none", background:"transparent", outline:"none", fontSize:13, color:C.text, width:"100%" }}/>
@@ -1140,7 +1140,8 @@ var Header = function(p) {
     setTimeout(function(){document.addEventListener("mousedown",fn);},0);
     return function(){document.removeEventListener("mousedown",fn);};
   },[p.showDealNotif,p.showRotNotif]);
-  return <div style={{ height:64, background:"#fff", borderBottom:"1px solid #E8ECF1", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 16px", position:"sticky", top:0, zIndex:100, gap:10 }}>
+  return <div style={{ position:"sticky", top:0, zIndex:100, background:"#fff" }}>
+  <div style={{ height:64, background:"#fff", borderBottom:"1px solid #E8ECF1", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 16px", gap:10 }}>
     <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
       {p.isMobile&&<button onClick={p.onMenu} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}><Menu size={18} color={C.text}/></button>}
       <h1 style={{ fontSize:p.isMobile?15:19, fontWeight:700, color:C.text, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.title}</h1>
@@ -1253,6 +1254,10 @@ var Header = function(p) {
       {/* BELL 1 — Callbacks (isolated component) */}
       <CallbackBell t={p.t} leads={p.leads} dailyRequests={p.dailyRequests} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>
     </div>
+  </div>
+  {p.isMobile&&<div style={{ padding:"8px", background:"#fff", borderBottom:"1px solid #E5E7EB" }}>
+    <HeaderSearch width="100%" t={t} search={p.search} setSearch={p.setSearch} leads={p.leads} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRItemClick||p.onDRClick}/>
+  </div>}
   </div>;
 };
 
