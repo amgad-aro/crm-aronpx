@@ -2,6 +2,7 @@ require("dotenv").config();
 var express = require("express");
 var mongoose = require("mongoose");
 var cors = require("cors");
+var compression = require("compression");
 var bcrypt = require("bcryptjs");
 var jwt = require("jsonwebtoken");
 var http = require("http");
@@ -287,6 +288,9 @@ DailyRequest.collection.createIndex({ agentId: 1, createdAt: -1 }).catch(functio
 DailyRequest.collection.createIndex({ createdAt: -1 }).catch(function(){});
 
 var app = express();
+// gzip every response. Mounted first so it wraps all subsequent middleware
+// and route handlers. Cuts /api/leads payload (~10 MB JSON) ~8-10x on the wire.
+app.use(compression());
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
