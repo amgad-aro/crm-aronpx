@@ -132,6 +132,12 @@ Lead.collection.createIndex({ globalStatus: 1 }).catch(function(){});
 Lead.collection.createIndex({ archived: 1, agentId: 1 }).catch(function(){});
 Lead.collection.createIndex({ "assignments.agentId": 1, createdAt: -1 }).catch(function(){});
 
+// Phase II indexes — User.reportsTo + Lead.splitAgent2Id (Activity + DailyRequest
+// indexes registered further down once those models are declared).
+User.collection.createIndex({ reportsTo: 1 }).catch(function(){});
+Lead.collection.createIndex({ splitAgent2Id: 1 }).catch(function(){});
+Lead.collection.createIndex({ splitAgent2Id: 1, createdAt: -1 }).catch(function(){});
+
 // Safety-net unique index on phone. Partial filter skips empty strings so the
 // constraint only applies to rows with a real phone value. If pre-existing
 // duplicates cause creation to fail, log and continue — the app-level guard in
@@ -271,6 +277,14 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   preDealStatus:{type:String,default:""},
   dealStatus:{type:String,default:""}
 },{timestamps:true}));
+
+// Phase II indexes — Activity + DailyRequest. Declared here because the models
+// above are referenced; matches the additive pattern used for Lead at the top
+// of this file.
+Activity.collection.createIndex({ userId: 1, createdAt: -1 }).catch(function(){});
+Activity.collection.createIndex({ leadId: 1, createdAt: -1 }).catch(function(){});
+DailyRequest.collection.createIndex({ agentId: 1, createdAt: -1 }).catch(function(){});
+DailyRequest.collection.createIndex({ createdAt: -1 }).catch(function(){});
 
 var app = express();
 app.use(cors(corsOptions));
@@ -1564,8 +1578,14 @@ app.get("/api/leads", auth, async function(req, res) {
     var limit = parseInt(req.query.limit) || 1000;
     var skip = (page - 1) * limit;
 
-    var total = await Lead.countDocuments(query);
     var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+    // Skip the second round-trip when the page already contains the entire
+    // result set — the common case for sales/team_leader/manager whose visible
+    // slice is well under the default limit (1000). Pagination semantics
+    // preserved for callers that exceed the page.
+    var total = (page === 1 && leads.length < limit)
+      ? leads.length
+      : await Lead.countDocuments(query);
 
     // Phase P — drop leads whose holding slice is stale for the requesting
     // role. Admin / sales_admin (and any other non-listed role) are exempt.

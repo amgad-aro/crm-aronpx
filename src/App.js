@@ -1082,10 +1082,15 @@ var buildDealItems = function(leads, dailyRequests, cu, myTeamUsers) {
     if (!isEOI && !isDeal) return;
     if (l.eoiStatus==="EOI Cancelled" && !isDeal) return;
     var kind = isDeal ? "DoneDeal" : (l.eoiStatus || "Pending");
+    // Use the closure date (dealDate / eoiDate) so editing a closed deal
+    // doesn't bump it back to the top of the notification panel via updatedAt.
+    // createdAt fallback covers legacy rows from before dealDate/eoiDate were
+    // captured — they sort lower than recent closures, never resurface.
+    var leadTime = isDeal ? (l.dealDate || l.createdAt) : (l.eoiDate || l.createdAt);
     items.push({
       _id: gid(l), leadId: gid(l), leadName: l.name,
       agentName: agentNameOf(l), budget: l.budget || "",
-      kind: kind, time: l.updatedAt || l.lastActivityTime || l.createdAt,
+      kind: kind, time: leadTime,
       phone: l.phone || ""
     });
     if (l.phone) seenLeadKeys[l.phone] = true;
@@ -1098,10 +1103,11 @@ var buildDealItems = function(leads, dailyRequests, cu, myTeamUsers) {
     if (!isEOI && !isDeal) return;
     if (r.eoiStatus==="EOI Cancelled" && !isDeal) return;
     var kind = isDeal ? "DoneDeal" : (r.eoiStatus || "Pending");
+    var drTime = isDeal ? (r.dealDate || r.createdAt) : (r.eoiDate || r.createdAt);
     items.push({
       _id: gid(r), leadId: gid(r), leadName: r.name,
       agentName: agentNameOf(r), budget: r.budget || "",
-      kind: kind, isDR: true, time: r.updatedAt || r.lastActivityTime || r.createdAt,
+      kind: kind, isDR: true, time: drTime,
       phone: r.phone || ""
     });
   });
