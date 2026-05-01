@@ -65,6 +65,11 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
   email:{type:String,default:""}, status:{type:String,default:"NewLead"},
   source:{type:String,default:"Facebook"}, project:{type:String,default:""}, unitType:{type:String,default:""}, campaign:{type:String,default:""},
+  // Inbound webhook fields — populated by POST /api/leads/inbound when leads
+  // arrive from facebook/instagram/tiktok/snapchat/whatsapp. externalId is the
+  // platform's lead id (used together with source for dedupe).
+  externalId:{type:String,default:""}, formId:{type:String,default:""},
+  adName:{type:String,default:""}, adsetName:{type:String,default:""},
   agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, budget:{type:String,default:""},
   notes:{type:String,default:""}, callbackTime:{type:String,default:""},
   lastActivityTime:{type:Date,default:Date.now}, archived:{type:Boolean,default:false}, isVIP:{type:Boolean,default:false},
@@ -132,6 +137,16 @@ Lead.collection.createIndex({ createdAt: -1 }).catch(function(){});
 Lead.collection.createIndex({ globalStatus: 1 }).catch(function(){});
 Lead.collection.createIndex({ archived: 1, agentId: 1 }).catch(function(){});
 Lead.collection.createIndex({ "assignments.agentId": 1, createdAt: -1 }).catch(function(){});
+
+// Inbound dedupe — sparse so manually-created leads (no externalId) don't share
+// the index. Compound (externalId, source) matches the inbound dedupe query and
+// allows the same external id across different platforms.
+Lead.collection.createIndex(
+  { externalId: 1, source: 1 },
+  { sparse: true, partialFilterExpression: { externalId: { $type: "string", $gt: "" } }, name: "inbound_externalId_source" }
+).catch(function(e){
+  console.error("[externalId index] not created:", e && e.message ? e.message : e);
+});
 
 // Phase II indexes — User.reportsTo + Lead.splitAgent2Id (Activity + DailyRequest
 // indexes registered further down once those models are declared).
@@ -2038,6 +2053,133 @@ app.post("/api/leads", auth, async function(req, res) {
       });
     }
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== INBOUND LEADS (social-media webhooks) =====
+// Public webhook for facebook/instagram/tiktok/snapchat/whatsapp/manual ingestions.
+// Creates leads with status="NewLead" and no agent — they then enter the existing
+// rotation flow naturally via the manual-assignment window + auto-rotate sweeper.
+// We deliberately do NOT call any rotation code from here; routing is handled by
+// the same machinery that handles unassigned leads created through POST /api/leads.
+//
+// TODO(security): this endpoint is public for now — add a shared-secret token
+// check (header or query param) before any production traffic flips on.
+var INBOUND_RATE_TRACKER = {};
+app.post("/api/leads/inbound", async function(req, res) {
+  var body = req.body || {};
+  var sourceRaw = String(body.source == null ? "" : body.source).trim();
+  var phoneRaw  = String(body.phone  == null ? "" : body.phone ).trim();
+  var source = sourceRaw.toLowerCase();
+  try {
+    if (!source || !phoneRaw) {
+      console.log("[INBOUND] " + (source||"-") + " | " + (phoneRaw||"-") + " | error");
+      return res.status(400).json({ error: "source and phone are required" });
+    }
+
+    // Burst detector — guards against the duplicate-storm incident (~1000 dupes
+    // in seconds). In-process per-source counter, sliding 1-second window.
+    var now = Date.now();
+    var bucket = INBOUND_RATE_TRACKER[source];
+    if (!bucket || (now - bucket.startMs) >= 1000) {
+      bucket = { startMs: now, count: 0 };
+      INBOUND_RATE_TRACKER[source] = bucket;
+    }
+    bucket.count++;
+    if (bucket.count >= 5) {
+      console.warn("[INBOUND RATE WARN] source=" + source + " | " + bucket.count + " leads in " + (now - bucket.startMs) + "ms — possible duplicate storm");
+    }
+
+    // Phone normalization: strip leading "+20" / "00", spaces, dashes, then keep
+    // digits only and take the last 10 — yields the local-format dedupe key.
+    var digitsOnly = phoneRaw.replace(/^\+?20/, "").replace(/^00/, "").replace(/[\s\-]/g, "").replace(/\D/g, "");
+    var phoneKey = digitsOnly.slice(-10);
+
+    var externalId = body.externalId == null ? "" : String(body.externalId).trim();
+
+    // Dedupe #1 — same (externalId, source) pair already ingested. Sparse index
+    // makes this point-lookup cheap.
+    if (externalId) {
+      var dupEx = await Lead.findOne({ externalId: externalId, source: source }).lean();
+      if (dupEx) {
+        console.log("[INBOUND] " + source + " | " + phoneRaw + " | duplicate");
+        return res.json({ status: "duplicate", leadId: String(dupEx._id) });
+      }
+    }
+
+    // Dedupe #2 — phone already in the system (any format). Suffix-match on the
+    // last 10 digits collapses "0100…", "+20100…", "0020100…" into one lead.
+    // phoneKey is digits-only (regex-safe, no escaping needed).
+    if (phoneKey && phoneKey.length >= 7) {
+      var dupPhone = await Lead.findOne({
+        $or: [
+          { phone:  { $regex: phoneKey + "$" } },
+          { phone2: { $regex: phoneKey + "$" } }
+        ]
+      }).lean();
+      if (dupPhone) {
+        console.log("[INBOUND] " + source + " | " + phoneRaw + " | duplicate");
+        return res.json({ status: "duplicate", leadId: String(dupPhone._id) });
+      }
+    }
+
+    // Manual-assignment window: same logic as POST /api/leads when admin creates
+    // an unassigned lead. We are reading rotation settings, NOT changing them.
+    var rotSettings = null;
+    try { rotSettings = await getRotationSettings(); } catch(_e) {}
+    var windowMins = rotSettings ? Number(rotSettings.manualAssignmentWindowMinutes || 0) : 0;
+
+    var lead = await Lead.create({
+      name: String(body.name || "").trim() || phoneRaw || "Unknown",
+      phone: phoneRaw,
+      email: body.email || "",
+      status: "NewLead",
+      source: source,
+      campaign: body.campaign || "",
+      formId: body.formId || "",
+      externalId: externalId,
+      adName: body.adName || "",
+      adsetName: body.adsetName || "",
+      agentId: null,
+      assignments: [],
+      lastActivityTime: new Date(),
+      archived: false,
+      isVIP: false,
+      expiresAt: new Date(Date.now() + 30*24*60*60*1000),
+      globalStatus: "active",
+      manualWindowExpiresAt: windowMins > 0 ? new Date(Date.now() + windowMins*60000) : null
+    });
+
+    // Mirror the audit-timeline entry from POST /api/leads so inbound leads show
+    // up in admin history with the same shape as manually-created ones.
+    try {
+      var initEvent = windowMins > 0 ? "queued" : "created";
+      var initDesc = "Lead received from " + source
+        + (body.campaign ? " (campaign: " + body.campaign + ")" : "")
+        + (windowMins > 0 ? " — queued for manual assignment (" + windowMins + "m window)" : " — No Agent");
+      var initEntry = historyEntry(initEvent, initDesc, "Inbound:" + source, "No Agent");
+      initEntry.timestamp = lead.createdAt || new Date();
+      await pushHistory(lead._id, initEntry);
+    } catch (he) {
+      console.error("[INBOUND] history append failed:", he && he.message ? he.message : he);
+    }
+
+    console.log("[INBOUND] " + source + " | " + phoneRaw + " | created");
+    return res.json({ status: "created", leadId: String(lead._id) });
+  } catch (e) {
+    // Mongo duplicate-key (E11000) — race against the unique phone index. Treat
+    // as a duplicate so the caller's retry logic doesn't loop on a real conflict.
+    if (e && (e.code === 11000 || String(e.message || "").indexOf("E11000") !== -1)) {
+      console.log("[INBOUND] " + source + " | " + phoneRaw + " | duplicate");
+      try {
+        var existing = await Lead.findOne({ phone: phoneRaw }).lean();
+        return res.json({ status: "duplicate", leadId: existing ? String(existing._id) : null });
+      } catch (_) {
+        return res.json({ status: "duplicate", leadId: null });
+      }
+    }
+    console.error("[INBOUND] " + source + " | " + phoneRaw + " | error:", e && e.message ? e.message : e);
+    return res.status(500).json({ status: "error", error: e && e.message ? e.message : String(e) });
   }
 });
 
