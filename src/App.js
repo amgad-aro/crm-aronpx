@@ -7689,21 +7689,13 @@ var TeamPage = function(p) {
   var [viewYear,setViewYear]=useState(curYear);
   var [editQModal,setEditQModal]=useState(null);
   var [expandedManager,setExpandedManager]=useState(null); // uid of expanded manager
-  // Unassign-all confirm flow — admin / sales_admin only. unassignModal is
-  // {user, leadCount} when open, null otherwise; unassigning is the in-flight flag.
+  // Hide-all confirm flow — admin / sales_admin only. Triggers the same
+  // visibility-hide effect as the Phase P 7-day staleness rule, immediately,
+  // for every lead the agent sees. Backend sets assignments[].hiddenManually
+  // on each non-EOI/DoneDeal slice; admin's view here is unaffected.
   var [unassignModal,setUnassignModal]=useState(null);
   var [unassigning,setUnassigning]=useState(false);
   var canUnassignAll = p.cu.role==="admin" || p.cu.role==="sales_admin";
-  // Mirrors the backend exclusion: a lead stays with the agent when it has a
-  // Done Deal (status === "DoneDeal") or an active EOI (eoiStatus Pending or
-  // Approved). Used both for the modal preview count and for the local
-  // setLeads update after success.
-  var isUnassignSkipped = function(l){
-    if (l && l.status === "DoneDeal") return true;
-    var es = l && l.eoiStatus;
-    if (es === "Pending" || es === "Approved") return true;
-    return false;
-  };
   var doUnassignAll = async function(){
     if (!unassignModal || unassigning) return;
     setUnassigning(true);
@@ -7711,19 +7703,11 @@ var TeamPage = function(p) {
       var u = unassignModal.user;
       var uid = String(gid(u));
       var res = await apiFetch("/api/agents/"+uid+"/unassign-all-leads","POST",null,p.token,p.csrfToken);
-      var n = (res && typeof res.unassigned==="number") ? res.unassigned : 0;
-      var s = (res && typeof res.skipped==="number") ? res.skipped : 0;
-      // Locally clear agentId on the affected (non-archived, not skipped)
-      // leads so the card's lead count refreshes immediately without a refetch.
-      p.setLeads(function(prev){return prev.map(function(l){
-        var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
-        if(String(aid)===uid && !l.archived && !isUnassignSkipped(l)) return Object.assign({},l,{agentId:null});
-        return l;
-      });});
+      var n = (res && typeof res.hidden==="number") ? res.hidden : 0;
       setUnassignModal(null);
-      alert("Unassigned "+n+" lead"+(n===1?"":"s")+" from "+(u.name||"")+". "+s+" lead"+(s===1?"":"s")+" with Done Deals or active EOIs were kept with the agent.");
+      alert("Hidden "+n+" lead"+(n===1?"":"s")+" from "+(u.name||"")+".");
     } catch(e) {
-      alert(e.message||"Failed to unassign leads");
+      alert(e.message||"Failed to hide leads");
     } finally {
       setUnassigning(false);
     }
@@ -7843,13 +7827,11 @@ var TeamPage = function(p) {
       <div style={{ background:"#fff", padding:"14px 14px 16px" }}>
         {isAdmin && <button onClick={function(){var qt=getQTargets(uid);setEditQModal({user:a,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
           style={{ width:"100%", padding:"8px 0", borderRadius:8, border:"none", background:"#f1f5f9", color:"#1e3a5f", fontSize:10, fontWeight:700, cursor:"pointer", marginBottom:8 }}>🎯 Edit Targets</button>}
-        {/* Unassign-all — admin / sales_admin only, sales agent cards only.
-            al.length is the lead count rendered on the card, so the modal
-            message and the backend update use the same definition (current
-            primary agent, non-archived). */}
-        {canUnassignAll && !isManagerCard && <button onClick={function(){setUnassignModal({user:a,leadCount:al.length});}}
-          style={{ width:"100%", padding:"8px 0", borderRadius:8, border:"1px solid #FECACA", background:"#FEF2F2", color:"#B91C1C", fontSize:10, fontWeight:700, cursor:al.length>0?"pointer":"not-allowed", marginBottom:12, opacity:al.length>0?1:0.55 }}
-          disabled={al.length===0} title={al.length===0?"No leads to unassign":""}>↩ Unassign all leads</button>}
+        {/* Hide-all — admin / sales_admin only, sales agent cards only.
+            Backend computes the actual count after applying the EOI/DoneDeal
+            exclusion, so we always allow the click and report the result. */}
+        {canUnassignAll && !isManagerCard && <button onClick={function(){setUnassignModal({user:a});}}
+          style={{ width:"100%", padding:"8px 0", borderRadius:8, border:"1px solid #FECACA", background:"#FEF2F2", color:"#B91C1C", fontSize:10, fontWeight:700, cursor:"pointer", marginBottom:12 }}>↩ Hide all leads</button>}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6 }}>
           <span style={{ fontSize:10, fontWeight:600, color:"#64748b", textTransform:"uppercase", letterSpacing:"0.04em" }}>{viewQ} Target</span>
           <span style={{ fontSize:10, fontWeight:700, color:"#334155" }}>{qTarget>0?qTarget.toLocaleString()+" EGP":"Not set"}</span>
@@ -8023,13 +8005,13 @@ var TeamPage = function(p) {
       </div>
     </Modal>}
 
-    {unassignModal&&<Modal show={true} onClose={function(){if(!unassigning)setUnassignModal(null);}} title={"↩ Unassign all leads"}>
+    {unassignModal&&<Modal show={true} onClose={function(){if(!unassigning)setUnassignModal(null);}} title={"↩ Hide all leads"}>
       <div style={{ fontSize:13, color:C.text, lineHeight:1.55, marginBottom:18 }}>
-        This will remove <b>{unassignModal.user.name}</b> from all leads currently assigned to them, EXCEPT leads with Done Deals or active EOIs (those stay with the agent to preserve commission tracking). The leads stay in the system and other agents who share these leads are not affected.
+        Hide all leads from <b>{unassignModal.user.name}</b>? This applies the same effect as 7 days of inactivity to all leads currently visible to this agent. Notes, Done Deals, and active EOIs are preserved.
       </div>
       <div style={{ display:"flex", gap:10 }}>
         <Btn outline onClick={function(){setUnassignModal(null);}} disabled={unassigning} style={{ flex:1 }}>Cancel</Btn>
-        <Btn danger onClick={doUnassignAll} loading={unassigning} style={{ flex:1 }}>{unassigning?"Unassigning…":"Unassign all"}</Btn>
+        <Btn danger onClick={doUnassignAll} loading={unassigning} style={{ flex:1 }}>{unassigning?"Hiding…":"Hide all"}</Btn>
       </div>
     </Modal>}
   </div>;

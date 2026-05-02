@@ -118,7 +118,14 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
     noRotation:{type:Boolean,default:false},
     nextCallAt:{type:Date,default:null},
     assignedAt:{type:Date,default:Date.now},
-    agentHistory:{type:[mongoose.Schema.Types.Mixed],default:[]}
+    agentHistory:{type:[mongoose.Schema.Types.Mixed],default:[]},
+    // Sibling rule to the Phase P 7-day staleness check. Set true by the
+    // admin-triggered POST /api/agents/:id/unassign-all-leads endpoint to
+    // produce the same hide-effect immediately. Read-time only — checked
+    // alongside isAssignmentStale in the same call sites; bypassed by
+    // isEoiOrDoneDeal exactly like the 7-day rule. Sticky: cleared only by
+    // a fresh $push of the slice (rotation), never auto-cleared.
+    hiddenManually:{type:Boolean,default:false}
   }],
   previousAgentIds:[{type:mongoose.Schema.Types.ObjectId,ref:"User"}],
   globalStatus:{type:String,default:"active"},
@@ -1496,6 +1503,18 @@ function isEoiOrDoneDeal(lead) {
   if (lead.eoiStatus && String(lead.eoiStatus).length > 0) return true;
   return false;
 }
+// Single source of truth for "should this slice be hidden at read time?".
+// Combines the Phase P staleness rule with the manual hide flag set by
+// POST /api/agents/:id/unassign-all-leads. EOI/DoneDeal leads bypass both —
+// preserving commission/contract visibility regardless of how the slice
+// became hidden.
+function isSliceHidden(lead, slice, nowMs, staleMs) {
+  if (!slice) return false;
+  if (isEoiOrDoneDeal(lead)) return false;
+  if (slice.hiddenManually === true) return true;
+  if (isAssignmentStale(slice, nowMs, staleMs)) return true;
+  return false;
+}
 function findAssignmentForAgent(lead, agentId) {
   if (!lead || !agentId) return null;
   var aidStr = String(agentId && agentId._id ? agentId._id : agentId);
@@ -1622,15 +1641,13 @@ app.get("/api/leads", auth, async function(req, res) {
           if (splitId && String(splitId) === String(uid)) return true;
           var myAssign = findAssignmentForAgent(l, uid);
           if (!myAssign) return false;
-          if (isEoiOrDoneDeal(l)) return true;
-          return !isAssignmentStale(myAssign, nowMsP, STALE_LEAD_MS);
+          return !isSliceHidden(l, myAssign, nowMsP, STALE_LEAD_MS);
         }
         var holderId = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
         if (!holderId) return true;
         var holderAssign = findAssignmentForAgent(l, holderId);
         if (!holderAssign) return true;
-        if (isEoiOrDoneDeal(l)) return true;
-        return !isAssignmentStale(holderAssign, nowMsP, STALE_LEAD_MS);
+        return !isSliceHidden(l, holderAssign, nowMsP, STALE_LEAD_MS);
       });
       total = Math.max(0, total - (preCount - leads.length));
     }
@@ -1836,9 +1853,10 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       var splitId2 = lead.splitAgent2Id && lead.splitAgent2Id._id ? lead.splitAgent2Id._id : lead.splitAgent2Id;
       var isSplitAgent = splitId2 && String(splitId2) === uid;
       if (!myAssign && !isSplitAgent) return res.status(404).json({ error: "Not found" });
-      // Phase P — caller's own slice is stale: hide. Split-only access bypasses.
-      // EOIs / DoneDeals also bypass — they must remain visible regardless of age.
-      if (myAssign && !isSplitAgent && !isEoiOrDoneDeal(lead) && isAssignmentStale(myAssign, Date.now(), STALE_LEAD_MS)) {
+      // Phase P — caller's own slice is stale or manually hidden: hide.
+      // Split-only access bypasses (no slice to evaluate). EOIs / DoneDeals
+      // also bypass via isSliceHidden — they must remain visible regardless.
+      if (myAssign && !isSplitAgent && isSliceHidden(lead, myAssign, Date.now(), STALE_LEAD_MS)) {
         return res.status(404).json({ error: "Not found" });
       }
 
@@ -1901,11 +1919,10 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       }
     }
     // Phase P — manager / team_leader: hide when current holder's slice is
-    // stale. Admin / sales_admin / viewer / director continue to see it.
-    // EOIs / DoneDeals also bypass — they must remain visible regardless of age.
+    // stale or manually hidden. Admin / sales_admin / viewer / director
+    // continue to see it. EOIs / DoneDeals bypass via isSliceHidden.
     if ((role === "manager" || role === "team_leader") && adminHolderAssign &&
-        !isEoiOrDoneDeal(lead) &&
-        isAssignmentStale(adminHolderAssign, Date.now(), STALE_LEAD_MS)) {
+        isSliceHidden(lead, adminHolderAssign, Date.now(), STALE_LEAD_MS)) {
       return res.status(404).json({ error: "Not found" });
     }
     res.json(adminObj);
@@ -2280,14 +2297,17 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ===== UNASSIGN ALL LEADS FROM AN AGENT =====
-// Admin / Sales Admin only. Clears agentId on every non-archived lead currently
-// owned by :id, EXCEPT leads with a linked Done Deal (status === "DoneDeal") or
-// an active EOI (eoiStatus in ["Pending","Approved"]). Those stay with the
-// agent so commission tracking remains intact. Surgical: only agentId is touched
-// — status, notes, callbackTime, assignments[], history, splitAgent2Id are all
-// left intact. Does NOT trigger rotation/redistribution. One Activity row is
-// written for audit.
+// ===== HIDE ALL LEADS FROM AN AGENT =====
+// Admin / Sales Admin only. Manually triggers the same hide-effect as the
+// Phase P 7-day staleness rule, but immediately and for every lead the agent
+// currently sees. Mechanism: set assignments[].hiddenManually = true on every
+// slice belonging to this agent on a non-EOI/DoneDeal lead. Read-time filters
+// (GET /api/leads + GET /api/leads/:id) treat hiddenManually as a sibling
+// signal to staleness via isSliceHidden(), and isEoiOrDoneDeal exempts
+// DoneDeals + active EOIs identically — preserving commission/contract
+// visibility exactly as the 7-day rule does. Does NOT touch agentId,
+// notes, status, callbackTime, history, or any other field. Does NOT
+// trigger rotation. One Activity row is written for audit.
 app.post("/api/agents/:id/unassign-all-leads", auth, async function(req, res) {
   try {
     if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
@@ -2301,33 +2321,43 @@ app.post("/api/agents/:id/unassign-all-leads", auth, async function(req, res) {
     if (!agent) return res.status(404).json({ error: "Agent not found" });
     var agentName = agent.name || "Unknown";
     var byName = (req.user && req.user.name) ? req.user.name : "Admin";
+    var agentObjId = new mongoose.Types.ObjectId(agentId);
 
-    // Done Deal: status === "DoneDeal" (cancelling a deal restores status to
-    // preDealStatus, so a "DoneDeal" status here always means closed/won).
-    // Active EOI: eoiStatus is "Pending" or "Approved" — "EOI Cancelled" and
-    // converted-to-deal (eoiStatus cleared to "") are not active.
-    var baseFilter = { agentId: agentId, archived: false };
-    var totalAssigned = await Lead.countDocuments(baseFilter);
-    var unassignFilter = Object.assign({}, baseFilter, {
-      status: { $ne: "DoneDeal" },
-      eoiStatus: { $nin: ["Pending", "Approved"] }
-    });
-    var result = await Lead.updateMany(unassignFilter, { $set: { agentId: null } });
-    var unassigned = (result && (typeof result.modifiedCount === "number" ? result.modifiedCount : result.nModified)) || 0;
-    var skipped = Math.max(0, totalAssigned - unassigned);
+    // Match leads where the agent has at least one slice that (a) isn't
+    // already hiddenManually and (b) sits on a non-EOI/DoneDeal lead. The
+    // EOI/DoneDeal exclusion mirrors isEoiOrDoneDeal() exactly: any non-empty
+    // eoiStatus, status === EOI/DoneDeal, or globalStatus === eoi/donedeal
+    // bypasses. Setting the flag on a bypassed slice would be a no-op at
+    // read time (isSliceHidden returns false for them) — so we skip them
+    // both for cleanliness and so the count we return matches the leads
+    // that actually disappear from the agent's view.
+    var matchFilter = {
+      status: { $nin: ["EOI", "DoneDeal"] },
+      globalStatus: { $nin: ["eoi", "donedeal"] },
+      eoiStatus: { $in: [null, ""] },
+      assignments: {
+        $elemMatch: { agentId: agentObjId, hiddenManually: { $ne: true } }
+      }
+    };
+    var result = await Lead.updateMany(
+      matchFilter,
+      { $set: { "assignments.$[el].hiddenManually": true } },
+      { arrayFilters: [{ "el.agentId": agentObjId, "el.hiddenManually": { $ne: true } }] }
+    );
+    var hidden = (result && (typeof result.modifiedCount === "number" ? result.modifiedCount : result.nModified)) || 0;
 
     try {
       await Activity.create({
         userId: req.user.id,
         type: "reassign",
-        note: "Unassigned " + unassigned + " lead" + (unassigned===1?"":"s") + " from " + agentName +
-              " (" + skipped + " kept due to Done Deal or active EOI) by " + byName
+        note: "Hidden " + hidden + " lead" + (hidden===1?"":"s") + " from " + agentName +
+              " (manual 7-day-hide trigger) by " + byName
       });
     } catch (e) {
       console.error("[unassign-all-leads activity]", e && e.message ? e.message : e);
     }
 
-    res.json({ unassigned: unassigned, skipped: skipped, agentName: agentName });
+    res.json({ hidden: hidden, agentName: agentName });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
