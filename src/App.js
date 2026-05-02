@@ -2188,20 +2188,41 @@ var LeadJourney = function(p) {
   // rotation that produced that newer era.
   var orderedEras = eras.slice().reverse();
 
-  // Compute the status the lead held when a feedback row was written, by
-  // scanning chronological status_changes inside the same era up to that
-  // event's timestamp. Used by feedback rendering for the "while X" badge.
+  // Compute the status the lead held when a feedback row was written. Used
+  // by the "while X" badge on feedback rows. Scans status_change events
+  // across ALL eras (not just the era of `ev`) — a lead inherited via
+  // rotation may have had its status set by a previous agent, and that
+  // event lives in the previous agent's era. The badge reflects lead
+  // status at time of write, not era-scoped slice status.
+  // Type-name compatibility:
+  //   - Activity records and per-slice agentHistory entries use "status_change".
+  //   - lead.history entries pushed by PUT use "status_changed" (with -ed).
+  // Both spellings are matched.
+  // Fallback when nothing matches: lead.status (the current top-level value)
+  // when available, else "NewLead". Privacy is preserved: this function only
+  // reads events the client already received from /full-history (server-side
+  // role-filtered) and only outputs a status string — never an author, note,
+  // or any other slice/private content.
   var whileStatusFor = function(ev, era){
-    var whileStatus = "NewLead";
     var tFb = new Date(ev.createdAt).getTime();
-    for (var k = 0; k < era.events.length; k++) {
-      var ek = era.events[k];
-      if (ek.type === "status_change" && new Date(ek.createdAt).getTime() <= tFb) {
-        var s = extractStatus(ek);
-        if (s) whileStatus = s;
+    var best = null; var bestT = -Infinity;
+    for (var ei = 0; ei < eras.length; ei++) {
+      var e = eras[ei];
+      for (var k = 0; k < e.events.length; k++) {
+        var ek = e.events[k];
+        var ekType = ek && ek.type;
+        if (ekType !== "status_change" && ekType !== "status_changed") continue;
+        var t = new Date(ek.createdAt).getTime();
+        if (!isFinite(t) || t > tFb) continue;
+        if (t > bestT) {
+          var s = extractStatus(ek);
+          if (s) { best = s; bestT = t; }
+        }
       }
     }
-    return whileStatus;
+    if (best) return best;
+    if (lead && lead.status) return lead.status;
+    return "NewLead";
   };
 
   // Layout B — labeled multi-line block rendering for one sub-event inside a
@@ -3571,7 +3592,20 @@ var LeadsPage = function(p) {
               </div>;
             })}
           </div>}
-          {/* Details - grid on mobile */}
+          {/* Notes (with optional "from <Manager>" tag when a managerial author
+              wrote the current note via the feedback endpoint). Rendered above
+              the Details split so both mobile and desktop layouts show it
+              identically — the desktop branch's plain key/value list can't
+              accommodate the tag. */}
+          {selected.notes&&<div style={{ background:"#FFFBEB", borderRadius:12, padding:"12px 14px", border:"1px solid #FDE68A", marginBottom:12 }}>
+            <div style={{ fontSize:10, color:"#92400E", fontWeight:600, marginBottom:4, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <span>📝 Notes</span>
+              {selected.notesAuthorRole && selected.notesAuthorRole !== "sales" && selected.notesAuthorName && <span style={{ fontSize:10, color:"#6D28D9", fontWeight:700 }}>· from {selected.notesAuthorName}</span>}
+            </div>
+            <div style={{ fontSize:13, color:C.text }}>{selected.notes}</div>
+          </div>}
+          {/* Details - grid on mobile, key/value list on desktop. Notes is
+              rendered above this block in both layouts so the tag shows. */}
           {p.isMobile?<div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
               {[{l:"Campaign",v:selected.campaign,icon:"📣"},{l:"Project",v:selected.project,icon:"🏗"},{l:t.budget,v:selected.budget,icon:"💰"},{l:t.source,v:isAdmin?selected.source:null,icon:"📢"},{l:t.agent,v:getAgentName(selected),icon:"👤"},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):null,icon:"📞"},{l:"Last Contact",v:selected.lastActivityTime?timeAgo(selected.lastActivityTime,t):null,icon:"🕐"},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):null:null,icon:"📅"}].map(function(f){return f.v?<div key={f.l} style={{ background:"#F8FAFC", borderRadius:12, padding:"10px 12px", border:"1px solid #E8ECF1" }}>
@@ -3579,14 +3613,7 @@ var LeadsPage = function(p) {
                 <div style={{ fontSize:12, fontWeight:700, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
               </div>:null;})}
             </div>
-            {selected.notes&&<div style={{ background:"#FFFBEB", borderRadius:12, padding:"12px 14px", border:"1px solid #FDE68A", marginBottom:12 }}>
-              <div style={{ fontSize:10, color:"#92400E", fontWeight:600, marginBottom:4, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                <span>📝 Notes</span>
-                {selected.notesAuthorRole && selected.notesAuthorRole !== "sales" && selected.notesAuthorName && <span style={{ fontSize:10, color:"#6D28D9", fontWeight:700 }}>· from {selected.notesAuthorName}</span>}
-              </div>
-              <div style={{ fontSize:13, color:C.text }}>{selected.notes}</div>
-            </div>}
-          </div>:[{l:"Campaign",v:selected.campaign},{l:t.project,v:selected.project},{l:t.budget,v:selected.budget},{l:t.source,v:isAdmin?selected.source:null},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"Last Contact",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("en-GB")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
+          </div>:[{l:"Campaign",v:selected.campaign},{l:t.project,v:selected.project},{l:t.budget,v:selected.budget},{l:t.source,v:isAdmin?selected.source:null},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"Last Contact",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("en-GB")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null}].map(function(f){
             return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span></div>:null;
           })}
           {/* WhatsApp Templates */}
