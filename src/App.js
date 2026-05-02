@@ -10262,7 +10262,7 @@ export default function CRMApp() {
     apiFetch("/api/notifications","POST",notif,token).then(function(saved){
       if(saved) setRotNotifs(function(prev){return [Object.assign({},saved,{seen:false})].concat(prev).slice(0,50);});
     }).catch(function(){});
-    showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
+    if (!(currentUser && currentUser.role === "sales")) showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
   };
   var rotatingNow = useRef(new Set()).current;
   var notifyRotationRef = useRef(notifyRotation);
