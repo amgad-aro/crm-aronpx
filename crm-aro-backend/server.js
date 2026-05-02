@@ -2379,6 +2379,58 @@ app.post("/api/agents/:id/unassign-all-leads", auth, async function(req, res) {
   }
 });
 
+// ===== TEMPORARY DEBUG ENDPOINT =====
+// Returns the raw Lead doc + all assignments[] for diagnosing why a specific
+// lead isn't visible to its sales agent. Admin / Sales Admin only. Remove
+// after the Hide-all-leads + Done Deal visibility issue is resolved.
+app.get("/api/debug/lead/:id", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin or Sales Admin only" });
+    }
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "Invalid lead id" });
+    }
+    var lead = await Lead.findById(req.params.id)
+      .populate("agentId", "name role")
+      .populate("splitAgent2Id", "name role")
+      .populate("assignments.agentId", "name role")
+      .lean();
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    res.json({
+      _id: lead._id,
+      name: lead.name,
+      phone: lead.phone,
+      source: lead.source,
+      status: lead.status,
+      globalStatus: lead.globalStatus,
+      eoiStatus: lead.eoiStatus,
+      dealStatus: lead.dealStatus,
+      preDealStatus: lead.preDealStatus,
+      preEoiStatus: lead.preEoiStatus,
+      archived: lead.archived,
+      agentId: lead.agentId,
+      splitAgent2Id: lead.splitAgent2Id,
+      dealDate: lead.dealDate,
+      createdAt: lead.createdAt,
+      updatedAt: lead.updatedAt,
+      assignments: (lead.assignments || []).map(function(a) {
+        return {
+          agentId: a.agentId,
+          status: a.status,
+          hiddenManually: a.hiddenManually === true,
+          lastActionAt: a.lastActionAt,
+          assignedAt: a.assignedAt,
+          notes: a.notes,
+          callbackTime: a.callbackTime
+        };
+      })
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== UPDATE LEAD =====
 // ===== IMAGE UPLOAD (base64) =====
 app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async function(req, res) {
