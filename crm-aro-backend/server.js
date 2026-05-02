@@ -125,7 +125,25 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
     // alongside isAssignmentStale in the same call sites; bypassed by
     // isEoiOrDoneDeal exactly like the 7-day rule. Sticky: cleared only by
     // a fresh $push of the slice (rotation), never auto-cleared.
-    hiddenManually:{type:Boolean,default:false}
+    hiddenManually:{type:Boolean,default:false},
+    // Author of the slice's CURRENT notes/lastFeedback. Set by the feedback
+    // endpoint when a manager writes to this slice; cleared (set to the slice's
+    // own agent) when the agent themselves writes via PUT. Empty strings/null
+    // when the agent wrote (legacy + sales path) — UI uses this to render a
+    // "from <Manager>" tag for the agent.
+    notesAuthorId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+    notesAuthorName:{type:String,default:""},
+    notesAuthorRole:{type:String,default:""}
+  }],
+  // Author-scoped private notes. Each entry visible to its author only —
+  // server filters at read time on every endpoint that returns the lead.
+  // Append-only; managers cannot delete other managers' entries.
+  privateNotes:[{
+    authorId:{type:mongoose.Schema.Types.ObjectId,ref:"User",required:true},
+    authorName:{type:String,default:""},
+    authorRole:{type:String,default:""},
+    text:{type:String,required:true},
+    createdAt:{type:Date,default:Date.now}
   }],
   previousAgentIds:[{type:mongoose.Schema.Types.ObjectId,ref:"User"}],
   globalStatus:{type:String,default:"active"},
@@ -646,6 +664,36 @@ function wasPreviouslyAssigned(lead, agentId) {
     return String(aid || "");
   });
   return prevIds.indexOf(id) >= 0 || assignedIds.indexOf(id) >= 0;
+}
+
+// ===== FEEDBACK TARGET PERMISSION HELPER =====
+// Validates whether `caller` (admin/sales_admin/manager/team_leader) is
+// allowed to address `targetUser` via "Send to specific sales" on the
+// feedback endpoint. Targets must be active sales agents; managers can only
+// reach sales in their own org (direct reports OR sales reporting through
+// their team leaders); team_leaders can only reach their direct reports.
+// Returns { ok, reason }.
+async function canSendFeedbackToTarget(callerRole, callerId, targetUser) {
+  if (!targetUser || !targetUser.active) return { ok: false, reason: "target_inactive" };
+  if (targetUser.role !== "sales") return { ok: false, reason: "target_not_sales" };
+  // sales_admin is read-only — gate is also at the endpoint, but exclude here too.
+  if (callerRole === "sales_admin") return { ok: false, reason: "sales_admin_read_only" };
+  if (callerRole === "admin") return { ok: true };
+  var targetReportsTo = targetUser.reportsTo;
+  if (!targetReportsTo) return { ok: false, reason: "target_has_no_manager" };
+  var trtStr = String(targetReportsTo._id || targetReportsTo);
+  var callerStr = String(callerId);
+  if (callerRole === "team_leader") {
+    return trtStr === callerStr ? { ok: true } : { ok: false, reason: "target_not_in_tl_team" };
+  }
+  if (callerRole === "manager") {
+    if (trtStr === callerStr) return { ok: true };
+    // target reports to a TL — check if that TL reports to this manager.
+    var tl = await User.findById(trtStr).select("reportsTo role").lean();
+    if (tl && String(tl.reportsTo || "") === callerStr) return { ok: true };
+    return { ok: false, reason: "target_not_in_manager_org" };
+  }
+  return { ok: false, reason: "caller_role_not_managerial" };
 }
 
 // ===== PHONE DUPLICATE CHECK HELPER =====
@@ -1737,6 +1785,11 @@ app.get("/api/leads", auth, async function(req, res) {
           obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
           if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
           if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+          // Surface the slice's notes author so the agent's UI can render a
+          // "from <Manager>" tag when the current note came from above.
+          obj.notesAuthorId   = myAssign.notesAuthorId   || null;
+          obj.notesAuthorName = myAssign.notesAuthorName || "";
+          obj.notesAuthorRole = myAssign.notesAuthorRole || "";
           // After rotation the top-level agentId points to the NEW owner; the
           // old agent must see themselves as the owner to keep the view clean.
           obj.agentId = myAssign.agentId;
@@ -1747,6 +1800,8 @@ app.get("/api/leads", auth, async function(req, res) {
         obj.previousAgentIds = [];
         obj.rotationCount = 0;
         obj.lastRotationAt = null;
+        // Sales never see privateNotes (those are author-scoped to managers).
+        obj.privateNotes = [];
         // Filter lead.history: drop rotation/assignment events entirely (sales
         // must not see who held the lead before), keep only events authored by
         // the caller themselves. Sales dashboard Recent Activity / sparklines
@@ -1768,15 +1823,24 @@ app.get("/api/leads", auth, async function(req, res) {
       data = leads.map(function(l) {
         var obj = Object.assign({}, l);
         var holderId = obj.agentId && obj.agentId._id ? obj.agentId._id : obj.agentId;
-        if (!holderId) return obj;
-        var holderAssign = (obj.assignments || []).find(function(a) {
-          var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
-          return String(aid) === String(holderId);
-        });
-        if (holderAssign) {
-          if (holderAssign.notes) obj.notes = holderAssign.notes;
-          if (holderAssign.lastFeedback) obj.lastFeedback = holderAssign.lastFeedback;
+        if (holderId) {
+          var holderAssign = (obj.assignments || []).find(function(a) {
+            var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+            return String(aid) === String(holderId);
+          });
+          if (holderAssign) {
+            if (holderAssign.notes) obj.notes = holderAssign.notes;
+            if (holderAssign.lastFeedback) obj.lastFeedback = holderAssign.lastFeedback;
+            obj.notesAuthorId   = holderAssign.notesAuthorId   || null;
+            obj.notesAuthorName = holderAssign.notesAuthorName || "";
+            obj.notesAuthorRole = holderAssign.notesAuthorRole || "";
+          }
         }
+        // Per-author privateNotes filter — each manager only ever sees their own.
+        obj.privateNotes = (obj.privateNotes || []).filter(function(n) {
+          var aid = n && n.authorId && n.authorId._id ? n.authorId._id : (n && n.authorId);
+          return String(aid || "") === String(uid);
+        });
         return obj;
       });
     }
@@ -1935,6 +1999,9 @@ app.get("/api/leads/:id", auth, async function(req, res) {
         obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
         if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
         if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+        obj.notesAuthorId   = myAssign.notesAuthorId   || null;
+        obj.notesAuthorName = myAssign.notesAuthorName || "";
+        obj.notesAuthorRole = myAssign.notesAuthorRole || "";
         // Rewrite agentId so the old agent sees themselves as the owner even
         // after rotation — never exposes the new owner's identity.
         obj.agentId = myAssign.agentId;
@@ -1948,6 +2015,8 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       obj.previousAgentIds = [];
       obj.rotationCount = 0;
       obj.lastRotationAt = null;
+      // Sales never see privateNotes.
+      obj.privateNotes = [];
       // Filter lead.history (Bug 2): drop rotation/assignment events and any
       // entry not authored by the caller. Mirrors the list-endpoint filter
       // above so single-lead GET can't leak what the list already hid.
@@ -1975,6 +2044,9 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       if (adminHolderAssign) {
         if (adminHolderAssign.notes) adminObj.notes = adminHolderAssign.notes;
         if (adminHolderAssign.lastFeedback) adminObj.lastFeedback = adminHolderAssign.lastFeedback;
+        adminObj.notesAuthorId   = adminHolderAssign.notesAuthorId   || null;
+        adminObj.notesAuthorName = adminHolderAssign.notesAuthorName || "";
+        adminObj.notesAuthorRole = adminHolderAssign.notesAuthorRole || "";
       }
     }
     // Phase P — manager / team_leader: hide when current holder's slice is
@@ -1984,6 +2056,11 @@ app.get("/api/leads/:id", auth, async function(req, res) {
         isSliceHidden(lead, adminHolderAssign, Date.now(), STALE_LEAD_MS)) {
       return res.status(404).json({ error: "Not found" });
     }
+    // Per-author privateNotes filter — each manager only ever sees their own.
+    adminObj.privateNotes = (adminObj.privateNotes || []).filter(function(n) {
+      var aid = n && n.authorId && n.authorId._id ? n.authorId._id : (n && n.authorId);
+      return String(aid || "") === String(uid);
+    });
     res.json(adminObj);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -2497,6 +2574,120 @@ app.post("/api/leads/:id/delete-deal-image", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== MANAGERIAL FEEDBACK =====
+// Admin / Sales Admin / Manager / Team Leader write feedback in two modes:
+// 1) "private"  — store in lead.privateNotes[], visible only to the author.
+// 2) "to_sales" — write to the target sales agent's assignments[] slice
+//                 (replacing the slice's notes/lastFeedback) so the agent
+//                 sees it as feedback on their lead. Author metadata is
+//                 recorded so the agent can render a "from <Manager>" tag.
+// Sales role does NOT use this endpoint — they save feedback via PUT to
+// their own slice (existing path).
+app.post("/api/leads/:id/feedback", auth, async function(req, res) {
+  try {
+    var role = req.user.role;
+    if (role === "sales") {
+      return res.status(400).json({ error: "sales_uses_put", message: "Sales role: use PUT /api/leads/:id" });
+    }
+    if (role === "sales_admin") {
+      // Sales Admin is read-only on feedback by design — purely administrative
+      // role with no operational write on lead notes/feedback.
+      return res.status(403).json({ error: "sales_admin_read_only", message: "Sales Admin role does not write feedback" });
+    }
+    if (role !== "admin" && role !== "manager" && role !== "team_leader") {
+      return res.status(403).json({ error: "forbidden", message: "Managerial write roles only (admin/manager/team_leader)" });
+    }
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "invalid_lead_id" });
+    }
+    var text = String((req.body && req.body.text) || "").trim();
+    if (!text) return res.status(400).json({ error: "text_required" });
+    if (text.length > 5000) return res.status(400).json({ error: "text_too_long", message: "Max 5000 chars" });
+    var visibility = String((req.body && req.body.visibility) || "");
+    if (visibility !== "private" && visibility !== "to_sales") {
+      return res.status(400).json({ error: "invalid_visibility", message: "Use 'private' or 'to_sales'" });
+    }
+
+    var lead = await Lead.findById(req.params.id).lean();
+    if (!lead) return res.status(404).json({ error: "lead_not_found" });
+
+    var callerId = req.user.id;
+    var callerName = req.user.name || "";
+
+    if (visibility === "private") {
+      await Lead.updateOne(
+        { _id: req.params.id },
+        { $push: { privateNotes: {
+          authorId: new mongoose.Types.ObjectId(callerId),
+          authorName: callerName,
+          authorRole: role,
+          text: text,
+          createdAt: new Date()
+        }}}
+      );
+    } else {
+      // visibility === "to_sales"
+      var targetAgentId = (req.body && req.body.targetAgentId) ? String(req.body.targetAgentId) : "";
+      if (!mongoose.Types.ObjectId.isValid(targetAgentId)) {
+        return res.status(400).json({ error: "invalid_target_agent" });
+      }
+      // Target must have a slice on this lead.
+      var hasSlice = (lead.assignments || []).some(function(a) {
+        var aid = a && a.agentId && a.agentId._id ? a.agentId._id : (a && a.agentId);
+        return String(aid || "") === targetAgentId;
+      });
+      if (!hasSlice) return res.status(400).json({ error: "target_has_no_slice", message: "Target sales agent has no slice on this lead" });
+      // Target must be a sales agent + addressable by this caller.
+      var targetUser = await User.findById(targetAgentId).select("role active reportsTo name").lean();
+      var perm = await canSendFeedbackToTarget(role, callerId, targetUser);
+      if (!perm.ok) return res.status(403).json({ error: perm.reason });
+
+      var targetObjId = new mongoose.Types.ObjectId(targetAgentId);
+      var callerObjId = new mongoose.Types.ObjectId(callerId);
+      var now = new Date();
+      await Lead.updateOne(
+        { _id: req.params.id },
+        {
+          $set: {
+            "assignments.$[el].notes":           text,
+            "assignments.$[el].lastFeedback":    text,
+            "assignments.$[el].notesAuthorId":   callerObjId,
+            "assignments.$[el].notesAuthorName": callerName,
+            "assignments.$[el].notesAuthorRole": role,
+            "assignments.$[el].lastActionAt":    now
+          },
+          $push: {
+            "assignments.$[el].agentHistory": {
+              type: "feedback",
+              note: text,
+              createdAt: now,
+              authorId: callerObjId,
+              authorName: callerName,
+              authorRole: role
+            }
+          }
+        },
+        { arrayFilters: [{ "el.agentId": targetObjId }] }
+      );
+    }
+
+    var updated = await Lead.findById(req.params.id)
+      .populate("agentId", "name title")
+      .populate("assignments.agentId", "name title")
+      .lean();
+    // Filter privateNotes to caller-only before returning (mirrors GET).
+    if (updated && Array.isArray(updated.privateNotes)) {
+      updated.privateNotes = updated.privateNotes.filter(function(n) {
+        var aid = n && n.authorId && n.authorId._id ? n.authorId._id : (n && n.authorId);
+        return String(aid || "") === String(callerId);
+      });
+    }
+    res.json({ ok: true, lead: updated });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== EOI CANCEL (admin) — restores pre-EOI status on the lead, keeps record visible under EOI Deal Cancelled =====
 app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
   try {
@@ -2636,6 +2827,20 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // Admin-only gate: "Deal Cancelled" can only be set by admin users.
     if (req.body.status === "Deal Cancelled" && req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(403).json({ error: "Only admin can set Deal Cancelled status" });
+    }
+    // Managerial roles must use POST /api/leads/:id/feedback for notes/feedback
+    // (visibility selector — private vs. send-to-specific-sales). Silently
+    // dropping these here used to hide the bug; reject loudly so the frontend
+    // can route correctly. Sales/team_leader continue through the slice-sync
+    // block below — TL's PUT only saves when they have an own slice; if not,
+    // the slice-sync becomes a no-op and the frontend must use the feedback
+    // endpoint instead.
+    if ((req.user.role === "admin" || req.user.role === "sales_admin" || req.user.role === "manager") &&
+        (req.body.notes !== undefined || req.body.lastFeedback !== undefined)) {
+      return res.status(400).json({
+        error: "use_feedback_endpoint",
+        message: "Use POST /api/leads/:id/feedback for managerial feedback (visibility selector)"
+      });
     }
     // Normalize ObjectId fields the frontend may have sent as populated
     // objects (happens on edit — p.initial is the lead with populated agentId)
@@ -2785,6 +2990,13 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       if (req.body.callbackTime !== undefined) assignUpdate["assignments.$.callbackTime"] = req.body.callbackTime;
       if (req.body.lastFeedback !== undefined) assignUpdate["assignments.$.lastFeedback"] = req.body.lastFeedback;
       if (req.body.noRotation !== undefined) assignUpdate["assignments.$.noRotation"] = req.body.noRotation;
+      // The agent themselves wrote it — clear any prior managerial author tag
+      // so the next read renders without the "from <Manager>" badge.
+      if (req.body.notes !== undefined || req.body.lastFeedback !== undefined) {
+        assignUpdate["assignments.$.notesAuthorId"]   = null;
+        assignUpdate["assignments.$.notesAuthorName"] = "";
+        assignUpdate["assignments.$.notesAuthorRole"] = "";
+      }
       var assignOps = { $set: assignUpdate };
       // Append to per-agent agentHistory on status change or note
       if (req.body.status || req.body.notes || req.body.lastFeedback) {

@@ -222,6 +222,98 @@ var Avatar = function(p){
 };
 var gid = function(o) { if(!o) return null; return String(o._id || o.id || ""); };
 
+// Resolve the sales agents on `lead` that the caller (managerial role) is
+// allowed to address via "Send to specific sales". Mirrors the backend
+// canSendFeedbackToTarget rule:
+//   admin/sales_admin → any sales agent with a slice on this lead
+//   manager           → sales whose reportsTo is the manager OR a TL under them
+//   team_leader       → sales whose reportsTo is the caller
+// Returns [] for every other role / unsupported case.
+var getEligibleSalesTargets = function(lead, cu, users) {
+  if (!lead || !cu) return [];
+  var role = cu.role;
+  // sales_admin is read-only on feedback by design — never allowed to address.
+  if (role !== "admin" && role !== "manager" && role !== "team_leader") return [];
+  var sliceIds = ((lead.assignments || [])
+    .map(function(a){ var aid = a && a.agentId && a.agentId._id ? a.agentId._id : (a && a.agentId); return String(aid || ""); })
+    .filter(Boolean));
+  var sliceSet = {}; sliceIds.forEach(function(id){ sliceSet[id] = true; });
+  var sliceUsers = (users || []).filter(function(u){
+    if (!u || !u.active || u.role !== "sales") return false;
+    return !!sliceSet[String(gid(u))];
+  });
+  if (role === "admin") return sliceUsers;
+  var cuId = String(cu.id || gid(cu));
+  if (role === "team_leader") {
+    return sliceUsers.filter(function(u){
+      var rt = u.reportsTo && u.reportsTo._id ? u.reportsTo._id : u.reportsTo;
+      return String(rt || "") === cuId;
+    });
+  }
+  // manager: direct reports + sales under TLs that report to this manager
+  var tlIdsUnderMe = (users || []).filter(function(u){
+    if (!u || u.role !== "team_leader") return false;
+    var rt = u.reportsTo && u.reportsTo._id ? u.reportsTo._id : u.reportsTo;
+    return String(rt || "") === cuId;
+  }).map(function(u){ return String(gid(u)); });
+  var allowedRTs = {}; allowedRTs[cuId] = true;
+  tlIdsUnderMe.forEach(function(id){ allowedRTs[id] = true; });
+  return sliceUsers.filter(function(u){
+    var rt = u.reportsTo && u.reportsTo._id ? u.reportsTo._id : u.reportsTo;
+    return !!allowedRTs[String(rt || "")];
+  });
+};
+
+// Inline feedback composer used by the StatusModal (when a managerial role
+// is changing status) and by the standalone "Add Feedback" modal. Renders
+// the visibility selector + targetAgentId dropdown above a textarea.
+// For sales role: renders ONLY the textarea — same UI as before this feature.
+// onChange receives ({ text, visibility, targetAgentId }) on every keystroke.
+var FeedbackComposer = function(p) {
+  var role = p.cu && p.cu.role;
+  // sales_admin is excluded — read-only on feedback. They get the same plain
+  // textarea sales sees here, but the parent page never sends a save through
+  // this component for them (the "Add Feedback" button is hidden too).
+  var isManagerial = role === "admin" || role === "manager" || role === "team_leader";
+  // Team Leader on their own personal lead is treated as agent (no selector).
+  var leadAgentId = p.lead && p.lead.agentId && p.lead.agentId._id ? p.lead.agentId._id : (p.lead && p.lead.agentId);
+  var isOwnLead = role === "team_leader" && String(leadAgentId || "") === String(p.cu.id || gid(p.cu));
+  var showSelector = isManagerial && !isOwnLead;
+  var eligible = showSelector ? getEligibleSalesTargets(p.lead, p.cu, p.users || []) : [];
+  var rows = p.rows || 3;
+  var placeholder = p.placeholder || "";
+  if (!showSelector) {
+    return <textarea rows={rows} placeholder={placeholder} value={p.value && p.value.text || ""}
+      onChange={function(e){ p.onChange({ text: e.target.value, visibility: "private", targetAgentId: "" }); }}
+      style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>;
+  }
+  var v = p.value || { text:"", visibility:"private", targetAgentId:"" };
+  var canSendToSales = eligible.length > 0;
+  return <div>
+    <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:8, padding:"8px 10px", background:"#F1F5F9", borderRadius:10, border:"1px solid #E2E8F0" }}>
+      <div style={{ fontSize:11, fontWeight:700, color:"#475569", textTransform:"uppercase", letterSpacing:"0.04em" }}>Visibility</div>
+      <label style={{ display:"flex", alignItems:"center", gap:8, fontSize:13, color:C.text, cursor:"pointer" }}>
+        <input type="radio" name={"vis-"+(p.id||"f")} checked={v.visibility==="private"}
+          onChange={function(){ p.onChange({ text:v.text, visibility:"private", targetAgentId:"" }); }}/>
+        <span><b>Just me</b> <span style={{ color:C.textLight, fontSize:11 }}>— private note, only you see it</span></span>
+      </label>
+      <label style={{ display:"flex", alignItems:"center", gap:8, fontSize:13, color:canSendToSales?C.text:C.textLight, cursor:canSendToSales?"pointer":"not-allowed" }}>
+        <input type="radio" name={"vis-"+(p.id||"f")} checked={v.visibility==="to_sales"} disabled={!canSendToSales}
+          onChange={function(){ p.onChange({ text:v.text, visibility:"to_sales", targetAgentId: v.targetAgentId || (eligible[0] ? String(gid(eligible[0])) : "") }); }}/>
+        <span><b>Send to specific sales</b>{canSendToSales ? "" : <span style={{ color:C.textLight, fontSize:11 }}> — no eligible sales on this lead</span>}</span>
+        {v.visibility==="to_sales" && canSendToSales && <select value={v.targetAgentId||""}
+          onChange={function(e){ p.onChange({ text:v.text, visibility:"to_sales", targetAgentId:e.target.value }); }}
+          style={{ marginLeft:8, padding:"4px 8px", borderRadius:7, border:"1px solid #CBD5E1", fontSize:12, background:"#fff" }}>
+          {eligible.map(function(u){ return <option key={gid(u)} value={gid(u)}>{u.name}</option>; })}
+        </select>}
+      </label>
+    </div>
+    <textarea rows={rows} placeholder={placeholder} value={v.text}
+      onChange={function(e){ p.onChange(Object.assign({}, v, { text: e.target.value })); }}
+      style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
+  </div>;
+};
+
 // Returns the set of user IDs a team_leader is allowed to see data for —
 // themselves plus active sales/team_leader users whose reportsTo points at
 // them. Returns null for every other role; callers treat null as "no scope
@@ -459,6 +551,11 @@ var DocumentsUpload = function(p) {
 // Status change requires mandatory comment
 var StatusModal = function(p) {
   var [comment, setComment] = useState("");
+  // Managerial visibility for the comment. For sales role / TL on own lead,
+  // these are unused (FeedbackComposer renders only the textarea); but tracked
+  // here in one shape so the parent's onConfirm always receives the same args.
+  var [fbVisibility, setFbVisibility] = useState("private");
+  var [fbTargetAgentId, setFbTargetAgentId] = useState("");
   var [cbTime, setCbTime] = useState("");
   var [dealProject, setDealProject] = useState("");
   var [dealUnitType, setDealUnitType] = useState("");
@@ -488,6 +585,7 @@ var StatusModal = function(p) {
   useEffect(function(){
     setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit(""); setEoiDateInput(""); setEoiDocFiles([]); setRejectNote("");
     setPotBudget(""); setPotDeposit(""); setPotInstalment(""); setErr("");
+    setFbVisibility("private"); setFbTargetAgentId("");
   },[p.show]);
 
   var fmtNum = function(val, set){ return function(e){ var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,""); set(r?Number(r).toLocaleString():""); setErr(""); }; };
@@ -509,7 +607,17 @@ var StatusModal = function(p) {
         ? { budget: potBudget, deposit: potDeposit, instalment: potInstalment }
         : {};
     var finalComment = isReject&&rejectNote.trim() ? comment.trim()+" — "+rejectNote.trim() : comment.trim();
-    await p.onConfirm(finalComment, cbTime, extra);
+    var fb = { text: finalComment, visibility: fbVisibility, targetAgentId: fbTargetAgentId };
+    // Validation: managerial role choosing "Send to specific sales" must pick
+    // a target. sales_admin excluded — they're read-only on feedback.
+    var role = p.cu && p.cu.role;
+    var isMgr = role === "admin" || role === "manager" || role === "team_leader";
+    var leadAgentId = p.lead && p.lead.agentId && p.lead.agentId._id ? p.lead.agentId._id : (p.lead && p.lead.agentId);
+    var isOwnLead = role === "team_leader" && String(leadAgentId || "") === String((p.cu && p.cu.id) || "");
+    if (isMgr && !isOwnLead && finalComment && fb.visibility === "to_sales" && !fb.targetAgentId) {
+      setErr("Pick a sales agent to send the feedback to"); setSaving(false); return;
+    }
+    await p.onConfirm(finalComment, cbTime, extra, fb);
     setSaving(false);
   };
 
@@ -554,8 +662,9 @@ var StatusModal = function(p) {
     </div>}
     {needsComment&&<div style={{ marginBottom:12 }}>
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 Feedback <span style={{color:C.danger}}>*</span></label>
-      <textarea rows={3} placeholder="" value={comment} onChange={function(e){setComment(e.target.value);setErr("");}}
-        style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
+      <FeedbackComposer id="needsComment" cu={p.cu} lead={p.lead} users={p.users}
+        value={{text:comment, visibility:fbVisibility, targetAgentId:fbTargetAgentId}} rows={3}
+        onChange={function(v){ setComment(v.text); setFbVisibility(v.visibility); setFbTargetAgentId(v.targetAgentId); setErr(""); }}/>
     </div>}
 
     {/* Potential / HotCase: budget + deposit + instalment (only when no budget set yet) */}
@@ -583,8 +692,9 @@ var StatusModal = function(p) {
     {/* CallBack / NoAnswer: optional comment */}
     {needsCb&&<div style={{ marginBottom:12 }}>
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 Feedback (optional)</label>
-      <textarea rows={2} placeholder="" value={comment} onChange={function(e){setComment(e.target.value);}}
-        style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
+      <FeedbackComposer id="needsCb" cu={p.cu} lead={p.lead} users={p.users}
+        value={{text:comment, visibility:fbVisibility, targetAgentId:fbTargetAgentId}} rows={2}
+        onChange={function(v){ setComment(v.text); setFbVisibility(v.visibility); setFbTargetAgentId(v.targetAgentId); }}/>
     </div>}
 
     {/* NotInterested: reason required */}
@@ -599,8 +709,9 @@ var StatusModal = function(p) {
       </div>
       <div style={{ marginTop:10 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 Feedback <span style={{color:C.danger}}>*</span></label>
-        <textarea rows={2} placeholder="" value={rejectNote} onChange={function(e){setRejectNote(e.target.value);setErr("");}}
-          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
+        <FeedbackComposer id="rejectNote" cu={p.cu} lead={p.lead} users={p.users}
+          value={{text:rejectNote, visibility:fbVisibility, targetAgentId:fbTargetAgentId}} rows={2}
+          onChange={function(v){ setRejectNote(v.text); setFbVisibility(v.visibility); setFbTargetAgentId(v.targetAgentId); setErr(""); }}/>
       </div>
     </div>}
 
@@ -1318,6 +1429,25 @@ var LeadForm = function(p) {
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||form.status||"NewLead"), phone2: form.phone2||"" });
       // Strip client-only fields the API doesn't need
       delete payload.documentFiles;
+      // Managerial roles editing an existing lead: strip notes/lastFeedback
+      // — the backend now hard-rejects those fields via PUT for these roles
+      // (admin/sales_admin/manager). They use the dedicated feedback flow on
+      // the lead detail panel instead. sales_admin is fully read-only on
+      // feedback so this strip applies to all three. team_leader is allowed
+      // through PUT only when the lead is their own personal book; otherwise
+      // they should use the feedback button as well — strip here to avoid
+      // hitting the backend 400 on team-lead edits.
+      if (p.editId && p.cu) {
+        var cuRole = p.cu.role;
+        var leadAgentId = (p.initial && p.initial.agentId && p.initial.agentId._id ? p.initial.agentId._id : (p.initial && p.initial.agentId)) || "";
+        var tlOnOwn = cuRole === "team_leader" && String(leadAgentId) === String(p.cu.id || "");
+        var stripFeedback = (cuRole === "admin" || cuRole === "sales_admin" || cuRole === "manager")
+          || (cuRole === "team_leader" && !tlOnOwn);
+        if (stripFeedback) {
+          delete payload.notes;
+          delete payload.lastFeedback;
+        }
+      }
       // Keep deal metadata in payload so it saves to DB
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token, p.csrfToken)
@@ -2505,6 +2635,14 @@ var LeadsPage = function(p) {
   var [statusDrop, setStatusDrop] = useState(null);
   var [showAdd, setShowAdd] = useState(false);
   var [editLead, setEditLead] = useState(null);
+  // Standalone managerial feedback modal — open from the lead detail panel
+  // for admin/SA/manager/TL (TL only when not on their own personal lead) so
+  // they can write a private note or send-to-specific-sales without changing
+  // status. Sales role uses the existing inline path (StatusModal).
+  var [feedbackModal, setFeedbackModal] = useState(null); // {lead}
+  var [fbForm, setFbForm] = useState({ text:"", visibility:"private", targetAgentId:"" });
+  var [fbSaving, setFbSaving] = useState(false);
+  var [fbErr, setFbErr] = useState("");
   var [showStatusPicker, setShowStatusPicker] = useState(false);
   var [showStatusComment, setShowStatusComment] = useState(false);
   var [pendingStatus, setPendingStatus] = useState(null);
@@ -2819,11 +2957,28 @@ var LeadsPage = function(p) {
     setPendingStatus({leadId:lid,newStatus:st}); setShowStatusComment(true);
   };
 
-  var confirmStatus = async function(comment, cbTime, extra) {
+  var confirmStatus = async function(comment, cbTime, extra, fb) {
     if(!pendingStatus) return;
     try {
+      // Determine whether feedback should be routed through the managerial
+      // feedback endpoint (visibility selector) or saved inline via PUT
+      // (existing sales / TL-on-own-lead path).
+      // sales_admin is read-only on feedback by design — comment is dropped
+      // (the textarea is rendered with no selector for them; the backend
+      // would reject both PUT and feedback writes anyway).
+      var role = p.cu && p.cu.role;
+      var leadDoc = selected;
+      var leadAgentId = leadDoc && leadDoc.agentId && leadDoc.agentId._id ? leadDoc.agentId._id : (leadDoc && leadDoc.agentId);
+      var isWriteMgrRole = role === "admin" || role === "manager" || role === "team_leader";
+      var isOwnLead = role === "team_leader" && String(leadAgentId || "") === String(p.cu.id || "");
+      var routeFeedbackViaApi = isWriteMgrRole && !isOwnLead && comment;
+      var dropFeedback = role === "sales_admin";
       var upData = { status: pendingStatus.newStatus };
-      if(comment) upData.lastFeedback = comment;
+      // For sales / TL-on-own-lead: keep inline notes/lastFeedback in PUT.
+      // For admin/manager/TL on a team lead: omit from PUT (backend 400s),
+      //                                      route via /feedback below.
+      // For sales_admin: drop entirely — read-only on feedback.
+      if(comment && !routeFeedbackViaApi && !dropFeedback) upData.lastFeedback = comment;
       if(cbTime) upData.callbackTime = cbTime;
       else upData.callbackTime = "";
       if(extra) {
@@ -2831,11 +2986,11 @@ var LeadsPage = function(p) {
         if(extra.project)    upData.project    = extra.project;
         if(extra.unitType)   upData.unitType   = extra.unitType;
         if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
-        if(extra.deposit) {
+        if(extra.deposit && !routeFeedbackViaApi && !dropFeedback) {
           upData.notes = (upData.notes?upData.notes+" | ":"")+"Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
         }
       }
-      if(comment) upData.notes = comment;
+      if(comment && !routeFeedbackViaApi && !dropFeedback) upData.notes = comment;
       if(pendingStatus.newStatus === "EOI") upData.eoiDate = extra&&extra.eoiDate ? new Date(extra.eoiDate).toISOString() : new Date().toISOString();
       // Set dealDate to today when converting to DoneDeal (don't use eoiDate)
       if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date().toISOString().slice(0,10);
@@ -2847,6 +3002,21 @@ var LeadsPage = function(p) {
       var updated = await apiFetch("/api/leads/"+pendingStatus.leadId,"PUT",upData,p.token);
       // Immediate UI update from PUT response
       if(updated&&updated._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?updated:l;});});if(selected&&gid(selected)===pendingStatus.leadId)setSelected(updated);}
+      // Managerial feedback routing — separate POST to /feedback because
+      // PUT silently stripped notes/lastFeedback for these roles before the
+      // visibility model existed (and now hard-rejects them with 400).
+      if (routeFeedbackViaApi && fb && fb.text) {
+        try {
+          var feedbackBody = { text: fb.text, visibility: fb.visibility || "private" };
+          if (feedbackBody.visibility === "to_sales") feedbackBody.targetAgentId = fb.targetAgentId;
+          var fbResp = await apiFetch("/api/leads/"+pendingStatus.leadId+"/feedback","POST",feedbackBody,p.token);
+          if (fbResp && fbResp.lead && fbResp.lead._id) {
+            updated = fbResp.lead;
+            p.setLeads(function(prev){return prev.map(function(l){return gid(l)===pendingStatus.leadId?fbResp.lead:l;});});
+            if (selected && gid(selected)===pendingStatus.leadId) setSelected(fbResp.lead);
+          }
+        } catch(fbErr) { alert("Feedback save failed: "+(fbErr.message||"Unknown error")); }
+      }
       // Upload any EOI documents picked in the status modal
       if (extra && Array.isArray(extra.eoiDocumentFiles) && extra.eoiDocumentFiles.length>0) {
         for (var i=0; i<extra.eoiDocumentFiles.length; i++) {
@@ -2985,7 +3155,48 @@ var LeadsPage = function(p) {
       </div>
       <Btn outline onClick={function(){setShowStatusPicker(false);}} style={{ width:"100%" }}>{t.cancel}</Btn>
     </Modal>}
-    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} lead={selected} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
+    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} lead={selected} cu={p.cu} users={p.users} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
+
+    {feedbackModal && <Modal show={true} onClose={function(){ if(!fbSaving) setFeedbackModal(null); }} title="📝 Add Feedback">
+      <FeedbackComposer id="standalone" cu={p.cu} lead={feedbackModal.lead} users={p.users}
+        value={fbForm} rows={4}
+        onChange={function(v){ setFbForm(v); setFbErr(""); }}/>
+      {(function(){
+        // Show this manager's own existing private notes for context.
+        var pn = (feedbackModal.lead && Array.isArray(feedbackModal.lead.privateNotes)) ? feedbackModal.lead.privateNotes : [];
+        if (!pn.length) return null;
+        return <div style={{ marginTop:14, padding:"10px 12px", background:"#F8FAFC", borderRadius:10, border:"1px solid #E2E8F0" }}>
+          <div style={{ fontSize:11, fontWeight:700, color:"#475569", marginBottom:6 }}>YOUR PRIVATE NOTES ({pn.length})</div>
+          {pn.slice().reverse().slice(0,5).map(function(n,i){
+            return <div key={i} style={{ fontSize:12, color:C.text, marginBottom:6, paddingLeft:8, borderLeft:"2px solid #CBD5E1" }}>
+              {n.text}
+              <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>{new Date(n.createdAt).toLocaleString("en-GB")}</div>
+            </div>;
+          })}
+        </div>;
+      })()}
+      {fbErr && <div style={{ fontSize:12, color:C.danger, marginTop:8 }}>{fbErr}</div>}
+      <div style={{ display:"flex", gap:10, marginTop:14 }}>
+        <Btn outline onClick={function(){ setFeedbackModal(null); }} disabled={fbSaving} style={{ flex:1 }}>Cancel</Btn>
+        <Btn loading={fbSaving} onClick={async function(){
+          var text = (fbForm.text || "").trim();
+          if (!text) { setFbErr("Please type the feedback text"); return; }
+          if (fbForm.visibility === "to_sales" && !fbForm.targetAgentId) { setFbErr("Pick a sales agent to send the feedback to"); return; }
+          setFbSaving(true);
+          try {
+            var body = { text: text, visibility: fbForm.visibility };
+            if (fbForm.visibility === "to_sales") body.targetAgentId = fbForm.targetAgentId;
+            var res = await apiFetch("/api/leads/"+gid(feedbackModal.lead)+"/feedback","POST",body,p.token);
+            if (res && res.lead && res.lead._id) {
+              p.setLeads(function(prev){ return prev.map(function(l){ return gid(l)===gid(res.lead) ? res.lead : l; }); });
+              if (selected && gid(selected) === gid(res.lead)) setSelected(res.lead);
+            }
+            setFeedbackModal(null);
+          } catch(e) { setFbErr(e.message || "Failed to save feedback"); }
+          finally { setFbSaving(false); }
+        }} style={{ flex:1 }}>{fbSaving ? "Saving…" : "Save feedback"}</Btn>
+      </div>
+    </Modal>}
 
     {/* Bulk Reassign Modal */}
     <Modal show={showBulk} onClose={function(){setShowBulk(false);}} title={t.bulkReassign}>
@@ -3355,7 +3566,7 @@ var LeadsPage = function(p) {
                   try{var upd=await apiFetch("/api/leads/"+gid(selected)+"/assignment/"+aId,"DELETE",null,p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){alert(ex.message||"Failed");}
                 }} style={{ background:"none", border:"none", cursor:"pointer", color:"#EF4444", fontSize:14, padding:"2px 6px", borderRadius:6 }} title="Remove agent">🗑</button>
                 </div>
-                {a.lastFeedback&&<div style={{ fontSize:11, color:C.text, marginTop:3, padding:"3px 7px", background:"#FFFBEB", borderRadius:6, borderLeft:"2px solid "+C.accent }}>💬 {a.lastFeedback}</div>}
+                {a.lastFeedback&&<div style={{ fontSize:11, color:C.text, marginTop:3, padding:"3px 7px", background:"#FFFBEB", borderRadius:6, borderLeft:"2px solid "+C.accent }}>💬 {a.lastFeedback}{a.notesAuthorRole && a.notesAuthorRole !== "sales" && a.notesAuthorName && <span style={{ marginLeft:6, fontSize:10, color:"#6D28D9", fontWeight:600 }}>· from {a.notesAuthorName}</span>}</div>}
                 {a.notes&&<div style={{ fontSize:10, color:C.textLight, marginTop:2, padding:"2px 7px" }}>📝 {a.notes}</div>}
               </div>;
             })}
@@ -3369,7 +3580,10 @@ var LeadsPage = function(p) {
               </div>:null;})}
             </div>
             {selected.notes&&<div style={{ background:"#FFFBEB", borderRadius:12, padding:"12px 14px", border:"1px solid #FDE68A", marginBottom:12 }}>
-              <div style={{ fontSize:10, color:"#92400E", fontWeight:600, marginBottom:4 }}>📝 Notes</div>
+              <div style={{ fontSize:10, color:"#92400E", fontWeight:600, marginBottom:4, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <span>📝 Notes</span>
+                {selected.notesAuthorRole && selected.notesAuthorRole !== "sales" && selected.notesAuthorName && <span style={{ fontSize:10, color:"#6D28D9", fontWeight:700 }}>· from {selected.notesAuthorName}</span>}
+              </div>
               <div style={{ fontSize:13, color:C.text }}>{selected.notes}</div>
             </div>}
           </div>:[{l:"Campaign",v:selected.campaign},{l:t.project,v:selected.project},{l:t.budget,v:selected.budget},{l:t.source,v:isAdmin?selected.source:null},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"Last Contact",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("en-GB")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null},{l:t.notes,v:selected.notes}].map(function(f){
@@ -3395,6 +3609,19 @@ var LeadsPage = function(p) {
               </button>;
             })()}
             <button onClick={function(){openHistory(selected);}} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid #E2E8F0", background:"#F3E8FF", fontSize:13, cursor:"pointer" }} title="History">📋</button>
+            {(function(){
+              // Managerial "Add Feedback" — admin/manager always; TL only
+              // when the lead isn't their own personal book (then they use
+              // status change like a sales agent). sales_admin is excluded:
+              // read-only on feedback by design.
+              if (!p.cu) return null;
+              var role = p.cu.role;
+              if (role !== "admin" && role !== "manager" && role !== "team_leader") return null;
+              var leadAgentId = selected.agentId && selected.agentId._id ? selected.agentId._id : selected.agentId;
+              if (role === "team_leader" && String(leadAgentId || "") === String(p.cu.id || "")) return null;
+              return <button onClick={function(){ setFbForm({ text:"", visibility:"private", targetAgentId:"" }); setFbErr(""); setFeedbackModal({lead:selected}); }}
+                style={{ padding:"7px 10px", borderRadius:9, border:"1px solid #E2E8F0", background:"#FEF3C7", fontSize:13, cursor:"pointer" }} title="Add feedback (private or send to a sales)">📝</button>;
+            })()}
           </div>
 
           {/* Lead Journey — grouped by agent era */}
@@ -7031,7 +7258,7 @@ var DailyRequestsPage = function(p) {
   var getAgentName=function(r){if(!r.agentId)return"-";if(r.agentId.name)return r.agentId.name;var u=p.users.find(function(x){return gid(x)===r.agentId;});return u?u.name:"-";};
 
   return <div style={{ padding:"18px 16px 40px" }}>
-    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} lead={selected} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
+    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} lead={selected} cu={p.cu} users={p.users} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
     {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
 
     {/* Stats */}
