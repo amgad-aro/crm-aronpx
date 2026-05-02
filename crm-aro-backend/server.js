@@ -4739,8 +4739,24 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
         // them up; DoneDeal mirrors need globalStatus so the Deals page and
         // the admin dashboard both find them.
         var mirrorExtra = {};
-        if (req.body.status === "EOI")      { mirrorExtra.eoiStatus = "Pending"; mirrorExtra.eoiApproved = false; }
-        if (req.body.status === "DoneDeal") { mirrorExtra.globalStatus = "donedeal"; mirrorExtra.dealDate = new Date().toISOString().slice(0,10); }
+        if (req.body.status === "EOI") {
+          mirrorExtra.eoiStatus = "Pending"; mirrorExtra.eoiApproved = false;
+          // Only stamp eoiDate on the FIRST transition into EOI — preserve the original
+          // closure date on every subsequent edit, so the deal-notifications panel doesn't
+          // bump old EOIs back to "just now".
+          if (!existingLead || !existingLead.eoiDate) {
+            mirrorExtra.eoiDate = req.body.eoiDate || new Date().toISOString().slice(0,10);
+          }
+        }
+        if (req.body.status === "DoneDeal") {
+          mirrorExtra.globalStatus = "donedeal";
+          // Only stamp dealDate on the FIRST transition into DoneDeal — preserve the
+          // original closure date on every subsequent edit, so old deals don't re-surface
+          // as "just closed" in the notifications panel.
+          if (!existingLead || !existingLead.dealDate) {
+            mirrorExtra.dealDate = new Date().toISOString().slice(0,10);
+          }
+        }
         // GET /api/leads filters sales-role users on assignments.agentId, not
         // the top-level agentId, so a mirror Lead with just agentId is
         // invisible to the very sales user who just created it. Seed an

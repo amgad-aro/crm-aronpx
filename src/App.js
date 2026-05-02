@@ -7230,9 +7230,11 @@ var DailyRequestsPage = function(p) {
         if(form.dealUnitType) upData.unitType=form.dealUnitType;
         if(isEOI){
           if(form.eoiDeposit) upData.eoiDeposit=form.eoiDeposit;
-          upData.eoiDate = form.eoiDateInput ? new Date(form.eoiDateInput).toISOString() : new Date().toISOString();
+          // Only stamp eoiDate on first transition. If the DR already carries one
+          // (re-save on an existing record), preserve it so notifications don't reset.
+          if(!r.eoiDate) upData.eoiDate = form.eoiDateInput ? new Date(form.eoiDateInput).toISOString() : new Date().toISOString();
         }
-        if(isDoneDeal) upData.dealDate = new Date().toISOString().slice(0,10);
+        if(isDoneDeal && !r.dealDate) upData.dealDate = new Date().toISOString().slice(0,10);
         r = await apiFetch("/api/daily-requests/"+gid(r),"PUT",upData,p.token);
         // Upload any attached documents (EOI or DoneDeal) against the Lead mirror the PUT just built.
         if((isEOI||isDoneDeal) && Array.isArray(form.eoiDocFiles) && form.eoiDocFiles.length>0){
