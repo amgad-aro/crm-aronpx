@@ -1551,10 +1551,24 @@ app.get("/api/leads", auth, async function(req, res) {
       // Also include leads where the caller is the split agent on a Done Deal,
       // even if they were never rotated to the lead — splits store the second
       // agent only on splitAgent2Id, with no assignments[] entry.
+      // Plus a legacy-data fallback: leads with top-level agentId === caller
+      // AND in a deal/EOI state but with NO assignments[] entry (pre-
+      // assignments[] data — typically Done Deals migrated from older schemas).
+      // These have to remain visible for commission tracking. Scoped to deal/
+      // EOI states only so legacy non-deal leads don't suddenly resurface.
       var saleUid = new mongoose.Types.ObjectId(uid);
       query.$or = [
         { "assignments.agentId": saleUid },
-        { splitAgent2Id: saleUid }
+        { splitAgent2Id: saleUid },
+        { $and: [
+          { agentId: saleUid },
+          { $or: [
+            { globalStatus: { $in: ["eoi", "donedeal"] } },
+            { status: { $in: ["EOI", "DoneDeal", "Deal Cancelled"] } },
+            { eoiStatus: { $nin: [null, ""] } },
+            { dealStatus: "Deal Cancelled" }
+          ]}
+        ]}
       ];
 
     } else if (role === "team_leader") {
@@ -1646,7 +1660,15 @@ app.get("/api/leads", auth, async function(req, res) {
           var splitId = l.splitAgent2Id && l.splitAgent2Id._id ? l.splitAgent2Id._id : l.splitAgent2Id;
           if (splitId && String(splitId) === String(uid)) return true;
           var myAssign = findAssignmentForAgent(l, uid);
-          if (!myAssign) return false;
+          if (!myAssign) {
+            // Legacy fallback (mirrors the third $or in the DB query): top-
+            // level agentId owner of a deal/EOI with no slice. No slice means
+            // no per-slice freshness/hide signal to evaluate, so always
+            // visible — matches the principle that deals are never hidden.
+            var topAgentId = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
+            if (String(topAgentId || "") === String(uid) && isEoiOrDoneDeal(l)) return true;
+            return false;
+          }
           return !isSliceHidden(l, myAssign, nowMsP, STALE_LEAD_MS);
         }
         var holderId = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
@@ -1684,9 +1706,16 @@ app.get("/api/leads", auth, async function(req, res) {
           var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
           return String(aid) === String(uid);
         });
-        // Unconditionally clear top-level per-agent text fields before overlay.
-        obj.notes = "";
-        obj.lastFeedback = "";
+        // Legacy ownership: lead has top-level agentId === caller, no
+        // assignments[] slice, and is a deal/EOI. Top-level notes/lastFeedback
+        // belong to this agent (pre-assignments[] data) — preserve them. For
+        // every other case, wipe to avoid leaking another agent's text.
+        var topAgentIdL = obj.agentId && obj.agentId._id ? obj.agentId._id : obj.agentId;
+        var isLegacyOwner = !myAssign && String(topAgentIdL || "") === String(uid) && isEoiOrDoneDeal(l);
+        if (!isLegacyOwner) {
+          obj.notes = "";
+          obj.lastFeedback = "";
+        }
         if (myAssign) {
           // Status overlay is suppressed for EOI/DoneDeal — those are lead-level
           // final states, not per-agent status. The slice's status is only
@@ -1869,19 +1898,27 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       });
       var splitId2 = lead.splitAgent2Id && lead.splitAgent2Id._id ? lead.splitAgent2Id._id : lead.splitAgent2Id;
       var isSplitAgent = splitId2 && String(splitId2) === uid;
-      if (!myAssign && !isSplitAgent) return res.status(404).json({ error: "Not found" });
+      // Legacy fallback: top-level agentId owner of a deal/EOI with no slice
+      // (mirrors the list endpoint's third $or branch). Without this, leads
+      // migrated from pre-assignments[] schemas never reach the agent's
+      // Deals/EOI detail view.
+      var topAgentIdD = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
+      var isLegacyOwner = !myAssign && !isSplitAgent && String(topAgentIdD || "") === uid && isEoiOrDoneDeal(lead);
+      if (!myAssign && !isSplitAgent && !isLegacyOwner) return res.status(404).json({ error: "Not found" });
       // Phase P — caller's own slice is stale or manually hidden: hide.
-      // Split-only access bypasses (no slice to evaluate). EOIs / DoneDeals
-      // also bypass via isSliceHidden — they must remain visible regardless.
+      // Split-only access and legacy-owner access bypass (no slice to
+      // evaluate). EOIs / DoneDeals also bypass via isSliceHidden.
       if (myAssign && !isSplitAgent && isSliceHidden(lead, myAssign, Date.now(), STALE_LEAD_MS)) {
         return res.status(404).json({ error: "Not found" });
       }
 
-      // Wipe top-level per-agent text unconditionally before the overlay so
-      // another agent's notes / feedback can never leak through a stale
-      // top-level value.
-      obj.notes = "";
-      obj.lastFeedback = "";
+      // Wipe top-level per-agent text before the overlay so another agent's
+      // notes / feedback can never leak. EXCEPT for legacy ownership — there
+      // the top-level fields ARE this agent's own data, preserve them.
+      if (!isLegacyOwner) {
+        obj.notes = "";
+        obj.lastFeedback = "";
+      }
 
       if (myAssign) {
         // Same EOI/DoneDeal status-overlay suppression as the list endpoint —
@@ -2387,78 +2424,6 @@ app.post("/api/agents/:id/unassign-all-leads", auth, async function(req, res) {
   }
 });
 
-// ===== TEMPORARY DEBUG ENDPOINT (lookup by phone) =====
-// Returns the raw Lead doc + DR doc (if any) for a given phone, plus all
-// assignments[] slices. Admin / Sales Admin only. Remove after the Hide+
-// Done Deal visibility issue is resolved.
-app.get("/api/debug/by-phone/:phone", auth, async function(req, res) {
-  try {
-    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
-      return res.status(403).json({ error: "Admin or Sales Admin only" });
-    }
-    var phone = String(req.params.phone || "").trim();
-    if (!phone) return res.status(400).json({ error: "phone required" });
-    var leads = await Lead.find({ $or: [{ phone: phone }, { phone2: phone }] })
-      .populate("agentId", "name role")
-      .populate("splitAgent2Id", "name role")
-      .populate("assignments.agentId", "name role")
-      .lean();
-    var drs = await DailyRequest.find({ $or: [{ phone: phone }, { phone2: phone }] })
-      .populate("agentId", "name role")
-      .lean();
-    var leadsOut = leads.map(function(lead) {
-      return {
-        _id: lead._id,
-        name: lead.name,
-        phone: lead.phone,
-        phone2: lead.phone2,
-        source: lead.source,
-        status: lead.status,
-        globalStatus: lead.globalStatus,
-        eoiStatus: lead.eoiStatus,
-        eoiApproved: lead.eoiApproved,
-        dealStatus: lead.dealStatus,
-        dealApproved: lead.dealApproved,
-        dealDate: lead.dealDate,
-        preDealStatus: lead.preDealStatus,
-        preEoiStatus: lead.preEoiStatus,
-        archived: lead.archived,
-        agentId: lead.agentId,
-        splitAgent2Id: lead.splitAgent2Id,
-        splitAgent2Name: lead.splitAgent2Name,
-        createdAt: lead.createdAt,
-        updatedAt: lead.updatedAt,
-        sliceCount: (lead.assignments || []).length,
-        assignments: (lead.assignments || []).map(function(a) {
-          return {
-            agentId: a.agentId,
-            status: a.status,
-            hiddenManually: a.hiddenManually === true,
-            lastActionAt: a.lastActionAt,
-            assignedAt: a.assignedAt,
-            notes: a.notes ? String(a.notes).slice(0, 100) : "",
-            callbackTime: a.callbackTime
-          };
-        })
-      };
-    });
-    var drsOut = drs.map(function(dr) {
-      return {
-        _id: dr._id,
-        name: dr.name,
-        phone: dr.phone,
-        status: dr.status,
-        agentId: dr.agentId,
-        archived: dr.archived,
-        createdAt: dr.createdAt,
-        updatedAt: dr.updatedAt
-      };
-    });
-    res.json({ phone: phone, leadCount: leadsOut.length, leads: leadsOut, drCount: drsOut.length, dailyRequests: drsOut });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
 // ===== UPDATE LEAD =====
 // ===== IMAGE UPLOAD (base64) =====
