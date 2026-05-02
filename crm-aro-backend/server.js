@@ -2379,6 +2379,64 @@ app.post("/api/agents/:id/unassign-all-leads", auth, async function(req, res) {
   }
 });
 
+// ===== TEMPORARY DEBUG ENDPOINT (search-by-name) =====
+// Find every Lead where the named agent has an assignments[] slice AND the
+// lead is in a Done Deal state (top-level status OR globalStatus). Returns
+// raw docs with all the fields needed to diagnose visibility issues. Remove
+// after the Hide-all-leads + Done Deal visibility issue is resolved.
+app.get("/api/debug/agent-deals", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin or Sales Admin only" });
+    }
+    var nameQ = String(req.query.name || "").trim();
+    if (!nameQ) return res.status(400).json({ error: "?name= required" });
+    var nameRegex = new RegExp(nameQ.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    var users = await User.find({ name: nameRegex }).select("_id name role").lean();
+    if (!users.length) return res.json({ matchedUsers: [], leads: [] });
+    var userIds = users.map(function(u) { return u._id; });
+    var leads = await Lead.find({
+      "assignments.agentId": { $in: userIds },
+      $or: [
+        { status: "DoneDeal" },
+        { globalStatus: "donedeal" }
+      ]
+    }).populate("agentId", "name").populate("splitAgent2Id", "name").lean();
+    var out = leads.map(function(lead) {
+      return {
+        _id: lead._id,
+        name: lead.name,
+        phone: lead.phone,
+        source: lead.source,
+        status: lead.status,
+        globalStatus: lead.globalStatus,
+        eoiStatus: lead.eoiStatus,
+        dealStatus: lead.dealStatus,
+        archived: lead.archived,
+        agentId: lead.agentId,
+        splitAgent2Id: lead.splitAgent2Id,
+        dealDate: lead.dealDate,
+        createdAt: lead.createdAt,
+        updatedAt: lead.updatedAt,
+        assignments: (lead.assignments || []).map(function(a) {
+          return {
+            agentId: a.agentId,
+            status: a.status,
+            hiddenManually: a.hiddenManually === true,
+            lastActionAt: a.lastActionAt,
+            assignedAt: a.assignedAt,
+            notes: a.notes ? String(a.notes).slice(0, 100) : "",
+            callbackTime: a.callbackTime
+          };
+        })
+      };
+    });
+    res.json({ matchedUsers: users, count: out.length, leads: out });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== TEMPORARY DEBUG ENDPOINT =====
 // Returns the raw Lead doc + all assignments[] for diagnosing why a specific
 // lead isn't visible to its sales agent. Admin / Sales Admin only. Remove
