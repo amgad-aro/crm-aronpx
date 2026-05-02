@@ -2379,6 +2379,60 @@ app.post("/api/agents/:id/unassign-all-leads", auth, async function(req, res) {
   }
 });
 
+// ===== TEMPORARY DEBUG ENDPOINT (all leads for an agent) =====
+// Returns EVERY lead where the given agentId has an assignments[] slice,
+// with NO status filter. Used to identify how a "deal" lead is actually
+// stored when none of (status, globalStatus, eoiStatus) flag it as one.
+// Admin / Sales Admin only.
+app.get("/api/debug/agent-all-leads/:agentId", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin or Sales Admin only" });
+    }
+    if (!mongoose.Types.ObjectId.isValid(req.params.agentId)) {
+      return res.status(400).json({ error: "Invalid agentId" });
+    }
+    var agentObjId = new mongoose.Types.ObjectId(req.params.agentId);
+    var leads = await Lead.find({ "assignments.agentId": agentObjId })
+      .select("_id name phone source status globalStatus eoiStatus dealStatus archived agentId splitAgent2Id dealDate createdAt updatedAt assignments")
+      .lean();
+    var out = leads.map(function(lead) {
+      var mySlice = (lead.assignments || []).find(function(a) {
+        var aid = a && a.agentId && a.agentId._id ? a.agentId._id : (a && a.agentId);
+        return String(aid || "") === String(req.params.agentId);
+      }) || null;
+      return {
+        _id: lead._id,
+        name: lead.name,
+        phone: lead.phone,
+        source: lead.source,
+        status: lead.status,
+        globalStatus: lead.globalStatus,
+        eoiStatus: lead.eoiStatus,
+        dealStatus: lead.dealStatus,
+        archived: lead.archived,
+        primaryAgentId: lead.agentId,
+        splitAgent2Id: lead.splitAgent2Id,
+        dealDate: lead.dealDate,
+        createdAt: lead.createdAt,
+        updatedAt: lead.updatedAt,
+        sliceCount: (lead.assignments || []).length,
+        mySlice: mySlice ? {
+          status: mySlice.status,
+          hiddenManually: mySlice.hiddenManually === true,
+          lastActionAt: mySlice.lastActionAt,
+          assignedAt: mySlice.assignedAt,
+          notes: mySlice.notes ? String(mySlice.notes).slice(0, 50) : "",
+          callbackTime: mySlice.callbackTime
+        } : null
+      };
+    });
+    res.json({ agentId: req.params.agentId, count: out.length, leads: out });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== TEMPORARY DEBUG ENDPOINT (search-by-name) =====
 // Find every Lead where the named agent has an assignments[] slice AND the
 // lead is in a Done Deal state (top-level status OR globalStatus). Returns
