@@ -1493,14 +1493,20 @@ function isAssignmentStale(a, nowMs, staleMs) {
   if (!last) return false;
   return (nowMs - last) > staleMs;
 }
-// EOIs (contract-signing stage) and DoneDeals (completed sales) must remain
-// visible to the assigned sales regardless of activity age — they bypass the
-// Phase P stale-lead filter entirely.
+// EOIs (contract-signing stage), DoneDeals (completed sales), and cancelled
+// deals must remain visible to the assigned sales regardless of activity age —
+// they bypass the Phase P stale-lead filter and the manual hide flag entirely.
+// The set must mirror what the Deals page (App.js DealsPage) treats as a deal,
+// so a lead the agent sees on Deals never disappears from there because of
+// staleness or Hide. That means: status in {EOI, DoneDeal, Deal Cancelled},
+// globalStatus in {eoi, donedeal}, dealStatus === "Deal Cancelled", or any
+// non-empty eoiStatus.
 function isEoiOrDoneDeal(lead) {
   if (!lead) return false;
   if (lead.globalStatus === "eoi" || lead.globalStatus === "donedeal") return true;
-  if (lead.status === "EOI" || lead.status === "DoneDeal") return true;
+  if (lead.status === "EOI" || lead.status === "DoneDeal" || lead.status === "Deal Cancelled") return true;
   if (lead.eoiStatus && String(lead.eoiStatus).length > 0) return true;
+  if (lead.dealStatus === "Deal Cancelled") return true;
   return false;
 }
 // Single source of truth for "should this slice be hidden at read time?".
@@ -2340,17 +2346,19 @@ app.post("/api/agents/:id/unassign-all-leads", auth, async function(req, res) {
     var agentObjId = new mongoose.Types.ObjectId(agentId);
 
     // Match leads where the agent has at least one slice that (a) isn't
-    // already hiddenManually and (b) sits on a non-EOI/DoneDeal lead. The
-    // EOI/DoneDeal exclusion mirrors isEoiOrDoneDeal() exactly: any non-empty
-    // eoiStatus, status === EOI/DoneDeal, or globalStatus === eoi/donedeal
-    // bypasses. Setting the flag on a bypassed slice would be a no-op at
-    // read time (isSliceHidden returns false for them) — so we skip them
-    // both for cleanliness and so the count we return matches the leads
-    // that actually disappear from the agent's view.
+    // already hiddenManually and (b) is NOT a deal/EOI in any state. The
+    // exclusion mirrors isEoiOrDoneDeal() exactly so the write-side flagging
+    // and the read-side bypass agree on the same definition. Specifically a
+    // lead is exempt if any of: status in [EOI, DoneDeal, Deal Cancelled],
+    // globalStatus in [eoi, donedeal], non-empty eoiStatus, or
+    // dealStatus === "Deal Cancelled" — i.e., anything the Deals page (or
+    // the EOI page) would show. This guarantees Hide can never affect a
+    // lead that already appears on the agent's Deals page.
     var matchFilter = {
-      status: { $nin: ["EOI", "DoneDeal"] },
+      status: { $nin: ["EOI", "DoneDeal", "Deal Cancelled"] },
       globalStatus: { $nin: ["eoi", "donedeal"] },
       eoiStatus: { $in: [null, ""] },
+      dealStatus: { $ne: "Deal Cancelled" },
       assignments: {
         $elemMatch: { agentId: agentObjId, hiddenManually: { $ne: true } }
       }
@@ -2374,170 +2382,6 @@ app.post("/api/agents/:id/unassign-all-leads", auth, async function(req, res) {
     }
 
     res.json({ hidden: hidden, agentName: agentName });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ===== TEMPORARY DEBUG ENDPOINT (all leads for an agent) =====
-// Returns EVERY lead where the given agentId has an assignments[] slice,
-// with NO status filter. Used to identify how a "deal" lead is actually
-// stored when none of (status, globalStatus, eoiStatus) flag it as one.
-// Admin / Sales Admin only.
-app.get("/api/debug/agent-all-leads/:agentId", auth, async function(req, res) {
-  try {
-    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
-      return res.status(403).json({ error: "Admin or Sales Admin only" });
-    }
-    if (!mongoose.Types.ObjectId.isValid(req.params.agentId)) {
-      return res.status(400).json({ error: "Invalid agentId" });
-    }
-    var agentObjId = new mongoose.Types.ObjectId(req.params.agentId);
-    var leads = await Lead.find({ "assignments.agentId": agentObjId })
-      .select("_id name phone source status globalStatus eoiStatus dealStatus archived agentId splitAgent2Id dealDate createdAt updatedAt assignments")
-      .lean();
-    var out = leads.map(function(lead) {
-      var mySlice = (lead.assignments || []).find(function(a) {
-        var aid = a && a.agentId && a.agentId._id ? a.agentId._id : (a && a.agentId);
-        return String(aid || "") === String(req.params.agentId);
-      }) || null;
-      return {
-        _id: lead._id,
-        name: lead.name,
-        phone: lead.phone,
-        source: lead.source,
-        status: lead.status,
-        globalStatus: lead.globalStatus,
-        eoiStatus: lead.eoiStatus,
-        dealStatus: lead.dealStatus,
-        archived: lead.archived,
-        primaryAgentId: lead.agentId,
-        splitAgent2Id: lead.splitAgent2Id,
-        dealDate: lead.dealDate,
-        createdAt: lead.createdAt,
-        updatedAt: lead.updatedAt,
-        sliceCount: (lead.assignments || []).length,
-        mySlice: mySlice ? {
-          status: mySlice.status,
-          hiddenManually: mySlice.hiddenManually === true,
-          lastActionAt: mySlice.lastActionAt,
-          assignedAt: mySlice.assignedAt,
-          notes: mySlice.notes ? String(mySlice.notes).slice(0, 50) : "",
-          callbackTime: mySlice.callbackTime
-        } : null
-      };
-    });
-    res.json({ agentId: req.params.agentId, count: out.length, leads: out });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ===== TEMPORARY DEBUG ENDPOINT (search-by-name) =====
-// Find every Lead where the named agent has an assignments[] slice AND the
-// lead is in a Done Deal state (top-level status OR globalStatus). Returns
-// raw docs with all the fields needed to diagnose visibility issues. Remove
-// after the Hide-all-leads + Done Deal visibility issue is resolved.
-app.get("/api/debug/agent-deals", auth, async function(req, res) {
-  try {
-    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
-      return res.status(403).json({ error: "Admin or Sales Admin only" });
-    }
-    var nameQ = String(req.query.name || "").trim();
-    if (!nameQ) return res.status(400).json({ error: "?name= required" });
-    var nameRegex = new RegExp(nameQ.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-    var users = await User.find({ name: nameRegex }).select("_id name role").lean();
-    if (!users.length) return res.json({ matchedUsers: [], leads: [] });
-    var userIds = users.map(function(u) { return u._id; });
-    var leads = await Lead.find({
-      "assignments.agentId": { $in: userIds },
-      $or: [
-        { status: "DoneDeal" },
-        { globalStatus: "donedeal" }
-      ]
-    }).populate("agentId", "name").populate("splitAgent2Id", "name").lean();
-    var out = leads.map(function(lead) {
-      return {
-        _id: lead._id,
-        name: lead.name,
-        phone: lead.phone,
-        source: lead.source,
-        status: lead.status,
-        globalStatus: lead.globalStatus,
-        eoiStatus: lead.eoiStatus,
-        dealStatus: lead.dealStatus,
-        archived: lead.archived,
-        agentId: lead.agentId,
-        splitAgent2Id: lead.splitAgent2Id,
-        dealDate: lead.dealDate,
-        createdAt: lead.createdAt,
-        updatedAt: lead.updatedAt,
-        assignments: (lead.assignments || []).map(function(a) {
-          return {
-            agentId: a.agentId,
-            status: a.status,
-            hiddenManually: a.hiddenManually === true,
-            lastActionAt: a.lastActionAt,
-            assignedAt: a.assignedAt,
-            notes: a.notes ? String(a.notes).slice(0, 100) : "",
-            callbackTime: a.callbackTime
-          };
-        })
-      };
-    });
-    res.json({ matchedUsers: users, count: out.length, leads: out });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ===== TEMPORARY DEBUG ENDPOINT =====
-// Returns the raw Lead doc + all assignments[] for diagnosing why a specific
-// lead isn't visible to its sales agent. Admin / Sales Admin only. Remove
-// after the Hide-all-leads + Done Deal visibility issue is resolved.
-app.get("/api/debug/lead/:id", auth, async function(req, res) {
-  try {
-    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
-      return res.status(403).json({ error: "Admin or Sales Admin only" });
-    }
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ error: "Invalid lead id" });
-    }
-    var lead = await Lead.findById(req.params.id)
-      .populate("agentId", "name role")
-      .populate("splitAgent2Id", "name role")
-      .populate("assignments.agentId", "name role")
-      .lean();
-    if (!lead) return res.status(404).json({ error: "Lead not found" });
-    res.json({
-      _id: lead._id,
-      name: lead.name,
-      phone: lead.phone,
-      source: lead.source,
-      status: lead.status,
-      globalStatus: lead.globalStatus,
-      eoiStatus: lead.eoiStatus,
-      dealStatus: lead.dealStatus,
-      preDealStatus: lead.preDealStatus,
-      preEoiStatus: lead.preEoiStatus,
-      archived: lead.archived,
-      agentId: lead.agentId,
-      splitAgent2Id: lead.splitAgent2Id,
-      dealDate: lead.dealDate,
-      createdAt: lead.createdAt,
-      updatedAt: lead.updatedAt,
-      assignments: (lead.assignments || []).map(function(a) {
-        return {
-          agentId: a.agentId,
-          status: a.status,
-          hiddenManually: a.hiddenManually === true,
-          lastActionAt: a.lastActionAt,
-          assignedAt: a.assignedAt,
-          notes: a.notes,
-          callbackTime: a.callbackTime
-        };
-      })
-    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
