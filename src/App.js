@@ -739,7 +739,7 @@ var Sidebar = function(p) {
     isAdmin&&{id:"team",label:t.team,adminSection:true},
     isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
     isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
-    p.cu.role==="admin"&&{id:"settings",label:t.settings,adminSection:true},
+    (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
   var leadsCount = Array.isArray(p.leads) ? p.leads.filter(function(l){return !l.archived;}).length : 0;
@@ -8403,10 +8403,10 @@ var SettingsPage = function(p) {
     {id:"general",     label:"General"},
     {id:"rotation",    label:"Rotation"},
     {id:"team",        label:"Team & Roles"},
-    {id:"integrations",label:"Integrations"},
+    p.cu&&p.cu.role!=="sales_admin"&&{id:"integrations",label:"Integrations"},
     {id:"rules",       label:"Business Rules"},
     {id:"audit",       label:"Audit Log"}
-  ];
+  ].filter(Boolean);
   // Tab chip: white-on-gray, active = white bg with 0.5px border. Matches mockup .tab.
   var tabBtn=function(tab){
     var act=activeTab===tab.id;
@@ -10668,7 +10668,7 @@ export default function CRMApp() {
       case "team": return <TeamPage {...sp}/>;
       case "users": return <UsersPage {...sp}/>;
       case "archive": return <ArchivePage {...sp}/>;
-      case "settings": return currentUser.role==="admin" ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
+      case "settings": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
       default: return <DashboardPage {...sp}/>;
     }
   };
