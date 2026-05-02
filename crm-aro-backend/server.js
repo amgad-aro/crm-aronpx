@@ -2280,6 +2280,59 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== UNASSIGN ALL LEADS FROM AN AGENT =====
+// Admin / Sales Admin only. Clears agentId on every non-archived lead currently
+// owned by :id, EXCEPT leads with a linked Done Deal (status === "DoneDeal") or
+// an active EOI (eoiStatus in ["Pending","Approved"]). Those stay with the
+// agent so commission tracking remains intact. Surgical: only agentId is touched
+// — status, notes, callbackTime, assignments[], history, splitAgent2Id are all
+// left intact. Does NOT trigger rotation/redistribution. One Activity row is
+// written for audit.
+app.post("/api/agents/:id/unassign-all-leads", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin or Sales Admin only" });
+    }
+    var agentId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(agentId)) {
+      return res.status(400).json({ error: "Invalid agent id" });
+    }
+    var agent = await User.findById(agentId).lean();
+    if (!agent) return res.status(404).json({ error: "Agent not found" });
+    var agentName = agent.name || "Unknown";
+    var byName = (req.user && req.user.name) ? req.user.name : "Admin";
+
+    // Done Deal: status === "DoneDeal" (cancelling a deal restores status to
+    // preDealStatus, so a "DoneDeal" status here always means closed/won).
+    // Active EOI: eoiStatus is "Pending" or "Approved" — "EOI Cancelled" and
+    // converted-to-deal (eoiStatus cleared to "") are not active.
+    var baseFilter = { agentId: agentId, archived: false };
+    var totalAssigned = await Lead.countDocuments(baseFilter);
+    var unassignFilter = Object.assign({}, baseFilter, {
+      status: { $ne: "DoneDeal" },
+      eoiStatus: { $nin: ["Pending", "Approved"] }
+    });
+    var result = await Lead.updateMany(unassignFilter, { $set: { agentId: null } });
+    var unassigned = (result && (typeof result.modifiedCount === "number" ? result.modifiedCount : result.nModified)) || 0;
+    var skipped = Math.max(0, totalAssigned - unassigned);
+
+    try {
+      await Activity.create({
+        userId: req.user.id,
+        type: "reassign",
+        note: "Unassigned " + unassigned + " lead" + (unassigned===1?"":"s") + " from " + agentName +
+              " (" + skipped + " kept due to Done Deal or active EOI) by " + byName
+      });
+    } catch (e) {
+      console.error("[unassign-all-leads activity]", e && e.message ? e.message : e);
+    }
+
+    res.json({ unassigned: unassigned, skipped: skipped, agentName: agentName });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== UPDATE LEAD =====
 // ===== IMAGE UPLOAD (base64) =====
 app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async function(req, res) {
