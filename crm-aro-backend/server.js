@@ -1682,8 +1682,19 @@ app.get("/api/leads", auth, async function(req, res) {
         obj.notes = "";
         obj.lastFeedback = "";
         if (myAssign) {
-          var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
-          obj.status = assignStatus || obj.status;
+          // Status overlay is suppressed for EOI/DoneDeal — those are lead-level
+          // final states, not per-agent status. The slice's status is only
+          // synced for sales/team_leader actions (see PUT /api/leads/:id slice
+          // sync block); when an admin promotes a lead to DoneDeal, the slice
+          // keeps its prior status. Overlaying it here would drop the lead from
+          // the agent's Deals/EOI page filters (which match on l.status) even
+          // though isEoiOrDoneDeal() correctly kept the lead visible. Preserve
+          // the top-level status for these final states so commission tracking
+          // shows up on the agent's Deals page.
+          if (!isEoiOrDoneDeal(l)) {
+            var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
+            obj.status = assignStatus || obj.status;
+          }
           obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
           obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
           obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
@@ -1867,8 +1878,13 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       obj.lastFeedback = "";
 
       if (myAssign) {
-        var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
-        obj.status = assignStatus || obj.status;
+        // Same EOI/DoneDeal status-overlay suppression as the list endpoint —
+        // see the long comment there. Required so a deal whose slice wasn't
+        // synced to "DoneDeal" still loads on the agent's Deals page.
+        if (!isEoiOrDoneDeal(lead)) {
+          var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
+          obj.status = assignStatus || obj.status;
+        }
         obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
         obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
         obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
