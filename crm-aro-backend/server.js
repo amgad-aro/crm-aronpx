@@ -2387,6 +2387,79 @@ app.post("/api/agents/:id/unassign-all-leads", auth, async function(req, res) {
   }
 });
 
+// ===== TEMPORARY DEBUG ENDPOINT (lookup by phone) =====
+// Returns the raw Lead doc + DR doc (if any) for a given phone, plus all
+// assignments[] slices. Admin / Sales Admin only. Remove after the Hide+
+// Done Deal visibility issue is resolved.
+app.get("/api/debug/by-phone/:phone", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin or Sales Admin only" });
+    }
+    var phone = String(req.params.phone || "").trim();
+    if (!phone) return res.status(400).json({ error: "phone required" });
+    var leads = await Lead.find({ $or: [{ phone: phone }, { phone2: phone }] })
+      .populate("agentId", "name role")
+      .populate("splitAgent2Id", "name role")
+      .populate("assignments.agentId", "name role")
+      .lean();
+    var drs = await DailyRequest.find({ $or: [{ phone: phone }, { phone2: phone }] })
+      .populate("agentId", "name role")
+      .lean();
+    var leadsOut = leads.map(function(lead) {
+      return {
+        _id: lead._id,
+        name: lead.name,
+        phone: lead.phone,
+        phone2: lead.phone2,
+        source: lead.source,
+        status: lead.status,
+        globalStatus: lead.globalStatus,
+        eoiStatus: lead.eoiStatus,
+        eoiApproved: lead.eoiApproved,
+        dealStatus: lead.dealStatus,
+        dealApproved: lead.dealApproved,
+        dealDate: lead.dealDate,
+        preDealStatus: lead.preDealStatus,
+        preEoiStatus: lead.preEoiStatus,
+        archived: lead.archived,
+        agentId: lead.agentId,
+        splitAgent2Id: lead.splitAgent2Id,
+        splitAgent2Name: lead.splitAgent2Name,
+        createdAt: lead.createdAt,
+        updatedAt: lead.updatedAt,
+        sliceCount: (lead.assignments || []).length,
+        assignments: (lead.assignments || []).map(function(a) {
+          return {
+            agentId: a.agentId,
+            status: a.status,
+            hiddenManually: a.hiddenManually === true,
+            lastActionAt: a.lastActionAt,
+            assignedAt: a.assignedAt,
+            notes: a.notes ? String(a.notes).slice(0, 100) : "",
+            callbackTime: a.callbackTime
+          };
+        })
+      };
+    });
+    var drsOut = drs.map(function(dr) {
+      return {
+        _id: dr._id,
+        name: dr.name,
+        phone: dr.phone,
+        status: dr.status,
+        agentId: dr.agentId,
+        archived: dr.archived,
+        createdAt: dr.createdAt,
+        updatedAt: dr.updatedAt
+      };
+    });
+    res.json({ phone: phone, leadCount: leadsOut.length, leads: leadsOut, drCount: drsOut.length, dailyRequests: drsOut });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== UPDATE LEAD =====
 // ===== IMAGE UPLOAD (base64) =====
 app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async function(req, res) {
