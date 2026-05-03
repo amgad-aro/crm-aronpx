@@ -8339,7 +8339,7 @@ var KpiCardsRow = function(p) {
   var fmtPct = function(v){ return (Number(v) || 0).toFixed(1) + "%"; };
 
   var cards = [
-    { id:"revenue",  label:"Revenue",        value: skel ? "" : fmtEGP(k.revenue.value),       prev: skel ? null : k.revenue.prev,       prevFmt: fmtEGP, delta: skel ? null : k.revenue.deltaPct,    deltaUnit:"%",  spark: skel ? [] : k.revenue.sparkline,       color: C.success, hint: "weighted", tooltip: "Weighted by project share & split deals — matches TeamPage / KPIs / commission. DealsPage shows raw gross volume." },
+    { id:"revenue",  label:"Revenue",        value: skel ? "" : fmtEGP(k.revenue.value),       prev: skel ? null : k.revenue.prev,       prevFmt: fmtEGP, delta: skel ? null : k.revenue.deltaPct,    deltaUnit:"%",  spark: skel ? [] : k.revenue.sparkline,       color: C.success },
     { id:"pipeline", label:"Pipeline value", value: skel ? "" : fmtEGP(k.pipelineValue.value), prev: null,                                prevFmt: fmtEGP, delta: null,                                 deltaUnit:null, spark: skel ? [] : k.pipelineValue.sparkline, color: C.info, snapshot: true },
     { id:"avg",      label:"Avg deal size",  value: skel ? "" : fmtEGP(k.avgDealSize.value),   prev: skel ? null : k.avgDealSize.prev,    prevFmt: fmtEGP, delta: skel ? null : k.avgDealSize.deltaPct, deltaUnit:"%",  spark: skel ? [] : k.avgDealSize.sparkline,   color: C.accent },
     { id:"conv",     label:"Lead → deal %",  value: skel ? "" : fmtPct(k.convRatePct.value),   prev: skel ? null : k.convRatePct.prev,    prevFmt: fmtPct, delta: skel ? null : k.convRatePct.deltaPp,  deltaUnit:"pp", spark: skel ? [] : k.convRatePct.sparkline,   color: "#8B5CF6" }

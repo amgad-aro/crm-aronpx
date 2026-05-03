@@ -5686,26 +5686,16 @@ function reportsParseRange(from, to) {
 //   - sourceFilter == other           → Lead matches that source; DR skipped.
 //
 // Revenue math:
-//   - Lead-side weighted = budget × projectWeight × (splitAgent2Id ? 0.5 : 1)
-//     — identical to TeamPage / KPIsPage / Dashboard my-stats / commission code,
-//     so Reports KPI numbers reconcile with the rest of the app exactly.
-//   - DR has no deals branch in this endpoint (see above) — its DoneDeals
-//     are counted via their Lead mirrors with full weighting.
+//   - Raw budget sum across all DoneDeal Leads (NO projectWeight, NO
+//     split halving). Matches DealsPage admin gross-volume total — the
+//     executive headline number for total deal volume booked. Reports
+//     is the executive view; agent-share weighting (used by TeamPage /
+//     KPIsPage / my-stats / commission) deliberately does NOT apply here.
+//   - DR has no deals branch — DR DoneDeals are counted via their Lead
+//     mirrors (status='DoneDeal' on Lead).
 //
-// PRE-EXISTING UNDER-WEIGHTING (intentional inheritance, NOT a Reports bug):
-// DR-sourced deal mirrors are created with the schema-default
-// projectWeight=1 and a `project` field set to the DR's `propertyType`
-// (e.g. "Apartment") rather than a real project name, so the
-// DealsPage "Commission Projects" modal — which bulk-updates Lead.projectWeight
-// keyed on `d.project === proj` — never catches them. Every existing
-// revenue surface (TeamPage, KPIs, my-stats, commission) under-weights
-// these the same way; Reports inherits this behaviour to stay consistent.
-// Phase-2 fix tracked in memory/project_phase2_project_weights_appsetting.md
-// (move project weights to AppSetting, backfill mirrors at create-time).
-//
-// Pipeline value uses raw budget on both sides (open pipeline ≠ closed weighting,
-// matching the rest of the app). DR deal-date is irrelevant here since DR
-// has no deals branch.
+// Pipeline value also uses raw budget — open pipeline doesn't apply
+// closed-deal weighting in any current view.
 app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res) {
   try {
     var range = reportsParseRange(req.query.from, req.query.to);
@@ -5734,11 +5724,6 @@ app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res
       input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
       to: "double", onError: 0, onNull: 0
     }};
-    var leadWeightedExpr = { $multiply: [
-      "$budgetNum",
-      { $ifNull: ["$projectWeight", 1] },
-      { $cond: [{ $ifNull: ["$splitAgent2Id", false] }, 0.5, 1] }
-    ]};
 
     var rangeMs = range.to - range.from;
     var bucketUnit = rangeMs <= 31 * 86400000 ? "day" : "week";
@@ -5756,13 +5741,13 @@ app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res
             "$updatedAt"
           ]}
       }},
-      { $addFields: { weighted: leadWeightedExpr }},
       { $facet: {
           // Deals — Lead.DoneDeal includes DR mirrors, so this is the canonical
-          // "all deals" set. Apply the standard weighted formula uniformly.
-          dealsCurrent:    [{ $match: { status: "DoneDeal", dealAt: { $gte: fromDate,     $lt: toDate     }}}, { $group: { _id: null, revenue: { $sum: "$weighted" }, count: { $sum: 1 }}}],
-          dealsPrevious:   [{ $match: { status: "DoneDeal", dealAt: { $gte: prevFromDate, $lt: prevToDate }}}, { $group: { _id: null, revenue: { $sum: "$weighted" }, count: { $sum: 1 }}}],
-          dealsSparkline:  [{ $match: { status: "DoneDeal", dealAt: { $gte: fromDate,     $lt: toDate     }}}, { $group: { _id: truncBy("$dealAt"), revenue: { $sum: "$weighted" }, count: { $sum: 1 }}}, { $sort: { _id: 1 }}],
+          // "all deals" set. Raw budget = DealsPage admin gross-volume total.
+          // dealStatus guard mirrors DealsPage's exclusion of cancelled deals.
+          dealsCurrent:    [{ $match: { status: "DoneDeal", dealStatus: { $ne: "Deal Cancelled" }, dealAt: { $gte: fromDate,     $lt: toDate     }}}, { $group: { _id: null, revenue: { $sum: "$budgetNum" }, count: { $sum: 1 }}}],
+          dealsPrevious:   [{ $match: { status: "DoneDeal", dealStatus: { $ne: "Deal Cancelled" }, dealAt: { $gte: prevFromDate, $lt: prevToDate }}}, { $group: { _id: null, revenue: { $sum: "$budgetNum" }, count: { $sum: 1 }}}],
+          dealsSparkline:  [{ $match: { status: "DoneDeal", dealStatus: { $ne: "Deal Cancelled" }, dealAt: { $gte: fromDate,     $lt: toDate     }}}, { $group: { _id: truncBy("$dealAt"), revenue: { $sum: "$budgetNum" }, count: { $sum: 1 }}}, { $sort: { _id: 1 }}],
           // Intake — exclude mirrors (source="Daily Request") so they don't
           // count as native lead creation. Real DR creations counted via DR query.
           intakeCurrent:   [{ $match: { createdAt: { $gte: fromDate,     $lt: toDate     }, source: { $ne: "Daily Request" }}}, { $group: { _id: null, count: { $sum: 1 }}}],
