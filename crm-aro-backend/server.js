@@ -5666,10 +5666,14 @@ function reportsParseRange(from, to) {
 //     existing weighted-revenue formula reads. So all "deal facts" live
 //     on Lead, and Lead.DoneDeal IS the canonical superset of native +
 //     DR-sourced deals.
-//   - DR is queried only for INTAKE (denominator of conversion %) and
-//     for PIPELINE rows. DRs in pipeline statuses are never mirrored,
-//     so they must be unioned in. DR creations aren't mirrored either,
-//     so DR intake is real new leads, not duplicates.
+//   - DR is queried only for INTAKE (denominator of conversion %).
+//     DR creations aren't mirrored to Lead, so they're real new leads,
+//     not duplicates.
+//   - PIPELINE VALUE is Lead-only. Pipeline-state DRs (HotCase, CallBack,
+//     MeetingDone, Potential) are NOT mirrored — they exist only in DR
+//     and represent casual inquiries that shouldn't inflate the
+//     executive "open pipeline" number. Reports KPI matches the
+//     Lead-only convention used by DealsPage / TeamPage / KPIsPage.
 //
 // Source filter case-split:
 //   - sourceFilter == null            → Lead matches all sources; DR included.
@@ -5740,7 +5744,7 @@ app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res
     var bucketUnit = rangeMs <= 31 * 86400000 ? "day" : "week";
     var truncBy = function(field){ return { $dateTrunc: { date: field, unit: bucketUnit, startOfWeek: "saturday" }}; };
 
-    var drEmptyShape = { intakeCurrent: [], intakePrevious: [], intakeSparkline: [], pipelineSnapshot: [], pipelineSpark: [] };
+    var drEmptyShape = { intakeCurrent: [], intakePrevious: [], intakeSparkline: [] };
 
     var leadAggP = Lead.aggregate([
       { $match: leadMatch },
@@ -5770,15 +5774,14 @@ app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res
       }}
     ]);
 
+    // DR contributes ONLY intake (conversion denominator). Pipeline value
+    // is Lead-only — see endpoint header comment for rationale.
     var drAggP = includeDR ? DailyRequest.aggregate([
       { $match: drMatch },
-      { $addFields: { budgetNum: budgetNumExpr }},
       { $facet: {
           intakeCurrent:   [{ $match: { createdAt: { $gte: fromDate,     $lt: toDate     }}}, { $group: { _id: null, count: { $sum: 1 }}}],
           intakePrevious:  [{ $match: { createdAt: { $gte: prevFromDate, $lt: prevToDate }}}, { $group: { _id: null, count: { $sum: 1 }}}],
-          intakeSparkline: [{ $match: { createdAt: { $gte: fromDate,     $lt: toDate     }}}, { $group: { _id: truncBy("$createdAt"), count: { $sum: 1 }}}, { $sort: { _id: 1 }}],
-          pipelineSnapshot:[{ $match: { status: { $in: pipelineStatuses }}}, { $group: { _id: null, value: { $sum: "$budgetNum" }, count: { $sum: 1 }}}],
-          pipelineSpark:   [{ $match: { status: { $in: pipelineStatuses }, createdAt: { $gte: fromDate, $lt: toDate }}}, { $group: { _id: truncBy("$createdAt"), value: { $sum: "$budgetNum" }}}, { $sort: { _id: 1 }}]
+          intakeSparkline: [{ $match: { createdAt: { $gte: fromDate,     $lt: toDate     }}}, { $group: { _id: truncBy("$createdAt"), count: { $sum: 1 }}}, { $sort: { _id: 1 }}]
       }}
     ]) : Promise.resolve([drEmptyShape]);
 
@@ -5802,7 +5805,6 @@ app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res
 
     var drIntakeCur    = pull(drR.intakeCurrent, cntDef);
     var drIntakePrev   = pull(drR.intakePrevious, cntDef);
-    var drPipeline     = pull(drR.pipelineSnapshot, valDef);
 
     var totalRevenueCur  = leadDealsCur.revenue;
     var totalRevenuePrev = leadDealsPrev.revenue;
@@ -5810,7 +5812,7 @@ app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res
     var totalDealsPrev   = leadDealsPrev.count;
     var totalIntakeCur   = leadIntakeCur.count + drIntakeCur.count;
     var totalIntakePrev  = leadIntakePrev.count + drIntakePrev.count;
-    var totalPipeline    = leadPipeline.value + drPipeline.value;
+    var totalPipeline    = leadPipeline.value;
 
     // Build the canonical bucket sequence on the JS side and look up the
     // grouped rows by their UTC-truncated bucket-start ms — must match the
@@ -5839,7 +5841,6 @@ app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res
     var leadIntakeByB   = lookupBy(leadR.intakeSparkline);
     var leadPipelineByB = lookupBy(leadR.pipelineSpark);
     var drIntakeByB     = lookupBy(drR.intakeSparkline);
-    var drPipelineByB   = lookupBy(drR.pipelineSpark);
 
     var combine = function(t, lookups, key){
       var sum = 0;
@@ -5855,7 +5856,7 @@ app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res
     var intakeSpark    = buckets.map(function(t){ return combine(t, [leadIntakeByB, drIntakeByB], "count"); });
     var avgSpark       = buckets.map(function(_, i){ var c = dealCountSpark[i]; var r = revenueSpark[i]; return c > 0 ? Math.round(r / c) : 0; });
     var convSpark      = buckets.map(function(_, i){ var d = dealCountSpark[i]; var l = intakeSpark[i]; return l > 0 ? Math.round((d / l) * 1000) / 10 : 0; });
-    var pipelineSpark  = buckets.map(function(t){ return Math.round(combine(t, [leadPipelineByB, drPipelineByB], "value")); });
+    var pipelineSpark  = buckets.map(function(t){ var b = leadPipelineByB[t]; return b ? Math.round(b.value) : 0; });
 
     var deltaPct = function(cur, prev){
       if (!prev || prev === 0) return null;

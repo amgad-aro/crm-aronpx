@@ -8297,7 +8297,8 @@ var KpiCard = function(p) {
     <div style={{ fontSize:11, color:C.textLight, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.04em" }}>{c.label}</div>
     {p.skeleton
       ? <div style={{ height:24, marginTop:10, borderRadius:4, background:"#F1F5F9", width:"60%" }}/>
-      : <div style={{ fontSize:20, fontWeight:800, color:c.color, marginTop:6 }}>{c.value}</div>}
+      : <div style={{ fontSize:20, fontWeight:800, color:c.color, marginTop:6 }} title={c.tooltip||""}>{c.value}</div>}
+    {!p.skeleton && c.hint && <div style={{ fontSize:9, color:C.textLight, marginTop:2 }} title={c.tooltip||""}>{c.hint}</div>}
     <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:10 }}>
       {!c.snapshot && !p.skeleton && <span style={{ fontSize:11, fontWeight:700, color:deltaColor }}>
         {d == null ? "—" : arrow + " " + Math.abs(d).toFixed(1) + (c.deltaUnit || "%")}
@@ -8338,7 +8339,7 @@ var KpiCardsRow = function(p) {
   var fmtPct = function(v){ return (Number(v) || 0).toFixed(1) + "%"; };
 
   var cards = [
-    { id:"revenue",  label:"Revenue",        value: skel ? "" : fmtEGP(k.revenue.value),       prev: skel ? null : k.revenue.prev,       prevFmt: fmtEGP, delta: skel ? null : k.revenue.deltaPct,    deltaUnit:"%",  spark: skel ? [] : k.revenue.sparkline,       color: C.success },
+    { id:"revenue",  label:"Revenue",        value: skel ? "" : fmtEGP(k.revenue.value),       prev: skel ? null : k.revenue.prev,       prevFmt: fmtEGP, delta: skel ? null : k.revenue.deltaPct,    deltaUnit:"%",  spark: skel ? [] : k.revenue.sparkline,       color: C.success, hint: "weighted", tooltip: "Weighted by project share & split deals — matches TeamPage / KPIs / commission. DealsPage shows raw gross volume." },
     { id:"pipeline", label:"Pipeline value", value: skel ? "" : fmtEGP(k.pipelineValue.value), prev: null,                                prevFmt: fmtEGP, delta: null,                                 deltaUnit:null, spark: skel ? [] : k.pipelineValue.sparkline, color: C.info, snapshot: true },
     { id:"avg",      label:"Avg deal size",  value: skel ? "" : fmtEGP(k.avgDealSize.value),   prev: skel ? null : k.avgDealSize.prev,    prevFmt: fmtEGP, delta: skel ? null : k.avgDealSize.deltaPct, deltaUnit:"%",  spark: skel ? [] : k.avgDealSize.sparkline,   color: C.accent },
     { id:"conv",     label:"Lead → deal %",  value: skel ? "" : fmtPct(k.convRatePct.value),   prev: skel ? null : k.convRatePct.prev,    prevFmt: fmtPct, delta: skel ? null : k.convRatePct.deltaPp,  deltaUnit:"pp", spark: skel ? [] : k.convRatePct.sparkline,   color: "#8B5CF6" }
