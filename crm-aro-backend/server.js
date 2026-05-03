@@ -4193,14 +4193,17 @@ async function sweepAutoRotation() {
     if (settings.autoRotationEnabled === false) return;
     if (settings.autoRotationPausedUntil && new Date(settings.autoRotationPausedUntil) > new Date()) return;
 
-    // Coarse pre-filter — the helper still re-checks each one. limit:200
+    // Coarse pre-filter — the helper still re-checks each one. limit:1000
     // bounds per-tick work; leftovers pick up on the next tick (5 min later).
+    // Sort by lastRotationAt ascending so least-recently-rotated leads (and
+    // never-rotated leads, which sort as null/missing first) are evaluated
+    // first — guarantees fairness when the candidate set exceeds the limit.
     var candidates = await Lead.find({
       agentId: { $ne: null },
       archived: false,
       locked: { $ne: true },
       rotationStopped: { $ne: true }
-    }).select("_id").limit(200).lean();
+    }).select("_id").sort({ lastRotationAt: 1 }).limit(1000).lean();
 
     if (!candidates.length) return;
 
