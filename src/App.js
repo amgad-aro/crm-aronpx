@@ -8251,6 +8251,104 @@ var TeamPage = function(p) {
   </div>;
 };
 
+// ===== REPORTS HELPERS =====
+var fmtEGP = function(n) {
+  n = Number(n) || 0;
+  var sign = n < 0 ? "-" : "";
+  var abs = Math.abs(n);
+  if (abs >= 1000000) {
+    var m = abs / 1000000;
+    return sign + (m >= 10 ? Math.round(m) : m.toFixed(1).replace(/\.0$/, "")) + "M EGP";
+  }
+  if (abs >= 1000) return sign + Math.round(abs / 1000) + "K EGP";
+  return sign + Math.round(abs) + " EGP";
+};
+
+var Sparkline = function(p) {
+  var values = p.values || [];
+  var w = p.width || 80, h = p.height || 26;
+  if (values.length < 2) {
+    return <svg width={w} height={h} style={{ display:"block" }}>
+      <line x1={0} y1={h/2} x2={w} y2={h/2} stroke="#CBD5E1" strokeWidth={1} strokeDasharray="2 2"/>
+    </svg>;
+  }
+  var minV = Math.min.apply(null, values);
+  var maxV = Math.max.apply(null, values);
+  var range = maxV - minV; if (range === 0) range = 1;
+  var stepX = (values.length - 1) > 0 ? w / (values.length - 1) : 0;
+  var pts = values.map(function(v, i){
+    var x = i * stepX;
+    var y = h - 2 - ((v - minV) / range) * (h - 4);
+    return x.toFixed(1) + "," + y.toFixed(1);
+  }).join(" ");
+  return <svg width={w} height={h} style={{ display:"block" }}>
+    <polyline fill="none" stroke={p.color || "#1F2937"} strokeWidth={1.5} points={pts} strokeLinecap="round" strokeLinejoin="round"/>
+  </svg>;
+};
+
+var KpiCard = function(p) {
+  var c = p.card;
+  var d = c.delta;
+  var positive = d != null && d > 0;
+  var negative = d != null && d < 0;
+  var deltaColor = d == null ? C.textLight : (positive ? "#16A34A" : negative ? "#DC2626" : C.textLight);
+  var arrow = positive ? "▲" : negative ? "▼" : "—";
+  return <Card style={{ padding:"14px 16px", minHeight:118 }}>
+    <div style={{ fontSize:11, color:C.textLight, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.04em" }}>{c.label}</div>
+    {p.skeleton
+      ? <div style={{ height:24, marginTop:10, borderRadius:4, background:"#F1F5F9", width:"60%" }}/>
+      : <div style={{ fontSize:20, fontWeight:800, color:c.color, marginTop:6 }}>{c.value}</div>}
+    <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:10 }}>
+      {!c.snapshot && !p.skeleton && <span style={{ fontSize:11, fontWeight:700, color:deltaColor }}>
+        {d == null ? "—" : arrow + " " + Math.abs(d).toFixed(1) + (c.deltaUnit || "%")}
+      </span>}
+      {c.snapshot && !p.skeleton && <span style={{ fontSize:10, color:C.textLight, fontWeight:600, letterSpacing:"0.04em" }}>SNAPSHOT</span>}
+      {p.compare && c.prev != null && !p.skeleton && <span style={{ fontSize:10, color:C.textLight }}>
+        prev {c.prevFmt(c.prev)}
+      </span>}
+      <div style={{ flex:1 }}/>
+      <Sparkline values={p.skeleton ? [] : (c.spark || [])} color={c.color} width={70} height={24}/>
+    </div>
+  </Card>;
+};
+
+var KpiCardsRow = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var f = p.filters;
+  useEffect(function(){
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/overview/kpis" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.from, f.to, f.team, f.source]);
+
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load KPIs: {state.error}</div>
+    </Card>;
+  }
+
+  var skel = state.loading || !state.data;
+  var k = state.data && state.data.kpis;
+  var fmtPct = function(v){ return (Number(v) || 0).toFixed(1) + "%"; };
+
+  var cards = [
+    { id:"revenue",  label:"Revenue",        value: skel ? "" : fmtEGP(k.revenue.value),       prev: skel ? null : k.revenue.prev,       prevFmt: fmtEGP, delta: skel ? null : k.revenue.deltaPct,    deltaUnit:"%",  spark: skel ? [] : k.revenue.sparkline,       color: C.success },
+    { id:"pipeline", label:"Pipeline value", value: skel ? "" : fmtEGP(k.pipelineValue.value), prev: null,                                prevFmt: fmtEGP, delta: null,                                 deltaUnit:null, spark: skel ? [] : k.pipelineValue.sparkline, color: C.info, snapshot: true },
+    { id:"avg",      label:"Avg deal size",  value: skel ? "" : fmtEGP(k.avgDealSize.value),   prev: skel ? null : k.avgDealSize.prev,    prevFmt: fmtEGP, delta: skel ? null : k.avgDealSize.deltaPct, deltaUnit:"%",  spark: skel ? [] : k.avgDealSize.sparkline,   color: C.accent },
+    { id:"conv",     label:"Lead → deal %",  value: skel ? "" : fmtPct(k.convRatePct.value),   prev: skel ? null : k.convRatePct.prev,    prevFmt: fmtPct, delta: skel ? null : k.convRatePct.deltaPp,  deltaUnit:"pp", spark: skel ? [] : k.convRatePct.sparkline,   color: "#8B5CF6" }
+  ];
+
+  return <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(210px, 1fr))", gap:10, marginBottom:14 }}>
+    {cards.map(function(c){ return <KpiCard key={c.id} card={c} compare={f.compare} skeleton={skel}/>; })}
+  </div>;
+};
+
 // ===== REPORTS =====
 var ReportsPage = function(p) {
   var t = p.t;
@@ -8450,6 +8548,7 @@ var ReportsOverviewBody = function(p) {
   ];
   return <div>
     {sections.map(function(s){
+      if (s.key === "kpis") return <KpiCardsRow key="kpis" filters={p.filters} token={p.token}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>

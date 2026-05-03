@@ -164,6 +164,12 @@ Lead.collection.createIndex({ globalStatus: 1 }).catch(function(){});
 Lead.collection.createIndex({ archived: 1, agentId: 1 }).catch(function(){});
 Lead.collection.createIndex({ "assignments.agentId": 1, createdAt: -1 }).catch(function(){});
 
+// Reports — Phase 1: speed up KPI / Funnel / Source-ROI aggregations.
+// status+createdAt covers period-bounded "deals in range" and "leads in range" queries.
+// source+status covers source-filtered status counts driving Source ROI.
+Lead.collection.createIndex({ status: 1, createdAt: -1 }).catch(function(){});
+Lead.collection.createIndex({ source: 1, status: 1 }).catch(function(){});
+
 // Inbound dedupe — sparse so manually-created leads (no externalId) don't share
 // the index. Compound (externalId, source) matches the inbound dedupe query and
 // allows the same external id across different platforms.
@@ -327,6 +333,8 @@ Activity.collection.createIndex({ userId: 1, createdAt: -1 }).catch(function(){}
 Activity.collection.createIndex({ leadId: 1, createdAt: -1 }).catch(function(){});
 DailyRequest.collection.createIndex({ agentId: 1, createdAt: -1 }).catch(function(){});
 DailyRequest.collection.createIndex({ createdAt: -1 }).catch(function(){});
+// Reports — Phase 1: DR pipeline + intake queries by status.
+DailyRequest.collection.createIndex({ status: 1, createdAt: -1 }).catch(function(){});
 
 var app = express();
 // gzip every response. Mounted first so it wraps all subsequent middleware
@@ -5593,6 +5601,290 @@ app.get("/api/dashboard/sales", auth, async function(req, res) {
   } catch(e){console.error("dashboard/sales error:",e.message);res.status(500).json({error:e.message});}
 });
 
+
+// ===== REPORTS — Phase 1 OVERVIEW =====
+// Access: admin / sales_admin only. Per the Phase-1 access-policy decision,
+// every other role gets 403 here even if a manager/TL somehow reaches the URL.
+function reportsAuth(req, res, next) {
+  if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+    return res.status(403).json({ error: "Reports are restricted to Admin and Sales Admin." });
+  }
+  next();
+}
+
+// Optional team-filter helper. The Reports toolbar lets admin/SA slice the
+// view to a single manager / TL's report tree. Returns null when no filter,
+// or an ObjectId[] of agents to scope agentId / splitAgent2Id matches against.
+async function getReportsTeamScope(teamUserId) {
+  if (!teamUserId) return null;
+  try {
+    var teamUser = await User.findById(teamUserId).lean();
+    if (!teamUser) return null;
+    var ids = [teamUser._id];
+    if (teamUser.role === "team_leader") {
+      var directs = await User.find({ active: true, reportsTo: teamUser._id, role: { $in: ["sales", "team_leader"] }}).select("_id").lean();
+      directs.forEach(function(u){ ids.push(u._id); });
+    } else if (teamUser.role === "manager") {
+      var direct = await User.find({ active: true, reportsTo: teamUser._id }).select("_id role").lean();
+      direct.forEach(function(u){ ids.push(u._id); });
+      var tlIds = direct.filter(function(u){ return u.role === "team_leader"; }).map(function(u){ return u._id; });
+      if (tlIds.length) {
+        var tlReports = await User.find({ active: true, reportsTo: { $in: tlIds }, role: "sales" }).select("_id").lean();
+        tlReports.forEach(function(u){ ids.push(u._id); });
+      }
+    }
+    return ids;
+  } catch (e) {
+    console.error("[reports] getReportsTeamScope:", e && e.message);
+    return null;
+  }
+}
+
+function reportsParseRange(from, to) {
+  var f = from != null ? Number(from) : NaN;
+  var t = to   != null ? Number(to)   : NaN;
+  if (!isFinite(f) || !isFinite(t) || f >= t) {
+    var monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+    return { from: monthStart.getTime(), to: Date.now() };
+  }
+  return { from: f, to: t };
+}
+
+// GET /api/reports/overview/kpis
+// Returns the 4 top-line KPIs (revenue, pipeline, avg deal size, conv %)
+// each with prev-period delta + a sparkline aligned to the bucket grid
+// (daily for ranges <= 31d, weekly Saturday-start otherwise to match the
+// existing dashboard convention).
+//
+// COLLECTION ROLES — deals/EOIs/leads count uniformly across Lead and
+// DailyRequest without double-counting:
+//   - Every DR DoneDeal/EOI auto-creates a Lead mirror via the PUT
+//     /api/daily-requests/:id handler (search "DR-EOI/Deal mirror"), with
+//     source="Daily Request" + the relevant globalStatus / eoiStatus.
+//     The mirror carries the project, projectWeight (denormalised cache,
+//     defaults to 1), splitAgent2Id, and agentId — i.e. every field the
+//     existing weighted-revenue formula reads. So all "deal facts" live
+//     on Lead, and Lead.DoneDeal IS the canonical superset of native +
+//     DR-sourced deals.
+//   - DR is queried only for INTAKE (denominator of conversion %) and
+//     for PIPELINE rows. DRs in pipeline statuses are never mirrored,
+//     so they must be unioned in. DR creations aren't mirrored either,
+//     so DR intake is real new leads, not duplicates.
+//
+// Source filter case-split:
+//   - sourceFilter == null            → Lead matches all sources; DR included.
+//                                        Lead intake branch additionally excludes
+//                                        source="Daily Request" so DR mirror docs
+//                                        don't count as native lead intake (they're
+//                                        DR creations, counted via DR's intake).
+//   - sourceFilter == "Daily Request" → Lead matches mirrors only; DR included.
+//                                        Lead intake conjunction is empty (correct).
+//   - sourceFilter == other           → Lead matches that source; DR skipped.
+//
+// Revenue math:
+//   - Lead-side weighted = budget × projectWeight × (splitAgent2Id ? 0.5 : 1)
+//     — identical to TeamPage / KPIsPage / Dashboard my-stats / commission code,
+//     so Reports KPI numbers reconcile with the rest of the app exactly.
+//   - DR has no deals branch in this endpoint (see above) — its DoneDeals
+//     are counted via their Lead mirrors with full weighting.
+//
+// PRE-EXISTING UNDER-WEIGHTING (intentional inheritance, NOT a Reports bug):
+// DR-sourced deal mirrors are created with the schema-default
+// projectWeight=1 and a `project` field set to the DR's `propertyType`
+// (e.g. "Apartment") rather than a real project name, so the
+// DealsPage "Commission Projects" modal — which bulk-updates Lead.projectWeight
+// keyed on `d.project === proj` — never catches them. Every existing
+// revenue surface (TeamPage, KPIs, my-stats, commission) under-weights
+// these the same way; Reports inherits this behaviour to stay consistent.
+// Phase-2 fix tracked in memory/project_phase2_project_weights_appsetting.md
+// (move project weights to AppSetting, backfill mirrors at create-time).
+//
+// Pipeline value uses raw budget on both sides (open pipeline ≠ closed weighting,
+// matching the rest of the app). DR deal-date is irrelevant here since DR
+// has no deals branch.
+app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+    var prevDur = range.to - range.from;
+    var prevFromDate = new Date(range.from - prevDur);
+    var prevToDate = new Date(range.from);
+
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    // Lead query always runs — it owns all deal facts (native + DR mirrors).
+    // DR query runs unless filtered to a non-DR source.
+    var includeDR = !sourceFilter || sourceFilter === "Daily Request";
+
+    var leadMatch = { archived: false };
+    if (sourceFilter) leadMatch.source = sourceFilter;
+    if (scopeIds) leadMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+    var drMatch = { archived: { $ne: true }};
+    if (scopeIds) drMatch.agentId = { $in: scopeIds };
+
+    var pipelineStatuses = ["Potential", "HotCase", "MeetingDone", "CallBack"];
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+    var leadWeightedExpr = { $multiply: [
+      "$budgetNum",
+      { $ifNull: ["$projectWeight", 1] },
+      { $cond: [{ $ifNull: ["$splitAgent2Id", false] }, 0.5, 1] }
+    ]};
+
+    var rangeMs = range.to - range.from;
+    var bucketUnit = rangeMs <= 31 * 86400000 ? "day" : "week";
+    var truncBy = function(field){ return { $dateTrunc: { date: field, unit: bucketUnit, startOfWeek: "saturday" }}; };
+
+    var drEmptyShape = { intakeCurrent: [], intakePrevious: [], intakeSparkline: [], pipelineSnapshot: [], pipelineSpark: [] };
+
+    var leadAggP = Lead.aggregate([
+      { $match: leadMatch },
+      { $addFields: {
+          budgetNum: budgetNumExpr,
+          dealAt: { $cond: [
+            { $and: [{ $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] }] },
+            { $toDate: "$dealDate" },
+            "$updatedAt"
+          ]}
+      }},
+      { $addFields: { weighted: leadWeightedExpr }},
+      { $facet: {
+          // Deals — Lead.DoneDeal includes DR mirrors, so this is the canonical
+          // "all deals" set. Apply the standard weighted formula uniformly.
+          dealsCurrent:    [{ $match: { status: "DoneDeal", dealAt: { $gte: fromDate,     $lt: toDate     }}}, { $group: { _id: null, revenue: { $sum: "$weighted" }, count: { $sum: 1 }}}],
+          dealsPrevious:   [{ $match: { status: "DoneDeal", dealAt: { $gte: prevFromDate, $lt: prevToDate }}}, { $group: { _id: null, revenue: { $sum: "$weighted" }, count: { $sum: 1 }}}],
+          dealsSparkline:  [{ $match: { status: "DoneDeal", dealAt: { $gte: fromDate,     $lt: toDate     }}}, { $group: { _id: truncBy("$dealAt"), revenue: { $sum: "$weighted" }, count: { $sum: 1 }}}, { $sort: { _id: 1 }}],
+          // Intake — exclude mirrors (source="Daily Request") so they don't
+          // count as native lead creation. Real DR creations counted via DR query.
+          intakeCurrent:   [{ $match: { createdAt: { $gte: fromDate,     $lt: toDate     }, source: { $ne: "Daily Request" }}}, { $group: { _id: null, count: { $sum: 1 }}}],
+          intakePrevious:  [{ $match: { createdAt: { $gte: prevFromDate, $lt: prevToDate }, source: { $ne: "Daily Request" }}}, { $group: { _id: null, count: { $sum: 1 }}}],
+          intakeSparkline: [{ $match: { createdAt: { $gte: fromDate,     $lt: toDate     }, source: { $ne: "Daily Request" }}}, { $group: { _id: truncBy("$createdAt"), count: { $sum: 1 }}}, { $sort: { _id: 1 }}],
+          // Pipeline — mirrors don't have pipeline status, so no extra source guard needed.
+          pipelineSnapshot:[{ $match: { status: { $in: pipelineStatuses }, globalStatus: { $nin: ["donedeal", "eoi"] }}}, { $group: { _id: null, value: { $sum: "$budgetNum" }, count: { $sum: 1 }}}],
+          pipelineSpark:   [{ $match: { status: { $in: pipelineStatuses }, globalStatus: { $nin: ["donedeal", "eoi"] }, createdAt: { $gte: fromDate, $lt: toDate }}}, { $group: { _id: truncBy("$createdAt"), value: { $sum: "$budgetNum" }}}, { $sort: { _id: 1 }}]
+      }}
+    ]);
+
+    var drAggP = includeDR ? DailyRequest.aggregate([
+      { $match: drMatch },
+      { $addFields: { budgetNum: budgetNumExpr }},
+      { $facet: {
+          intakeCurrent:   [{ $match: { createdAt: { $gte: fromDate,     $lt: toDate     }}}, { $group: { _id: null, count: { $sum: 1 }}}],
+          intakePrevious:  [{ $match: { createdAt: { $gte: prevFromDate, $lt: prevToDate }}}, { $group: { _id: null, count: { $sum: 1 }}}],
+          intakeSparkline: [{ $match: { createdAt: { $gte: fromDate,     $lt: toDate     }}}, { $group: { _id: truncBy("$createdAt"), count: { $sum: 1 }}}, { $sort: { _id: 1 }}],
+          pipelineSnapshot:[{ $match: { status: { $in: pipelineStatuses }}}, { $group: { _id: null, value: { $sum: "$budgetNum" }, count: { $sum: 1 }}}],
+          pipelineSpark:   [{ $match: { status: { $in: pipelineStatuses }, createdAt: { $gte: fromDate, $lt: toDate }}}, { $group: { _id: truncBy("$createdAt"), value: { $sum: "$budgetNum" }}}, { $sort: { _id: 1 }}]
+      }}
+    ]) : Promise.resolve([drEmptyShape]);
+
+    var parts = await Promise.all([leadAggP, drAggP]);
+    var leadR = parts[0][0] || {};
+    var drR   = parts[1][0] || {};
+
+    var pull = function(arr, defaults) {
+      var x = (arr || [])[0] || {};
+      return Object.assign({}, defaults, x);
+    };
+    var revDef = { revenue: 0, count: 0 };
+    var cntDef = { count: 0 };
+    var valDef = { value: 0, count: 0 };
+
+    var leadDealsCur   = pull(leadR.dealsCurrent, revDef);
+    var leadDealsPrev  = pull(leadR.dealsPrevious, revDef);
+    var leadIntakeCur  = pull(leadR.intakeCurrent, cntDef);
+    var leadIntakePrev = pull(leadR.intakePrevious, cntDef);
+    var leadPipeline   = pull(leadR.pipelineSnapshot, valDef);
+
+    var drIntakeCur    = pull(drR.intakeCurrent, cntDef);
+    var drIntakePrev   = pull(drR.intakePrevious, cntDef);
+    var drPipeline     = pull(drR.pipelineSnapshot, valDef);
+
+    var totalRevenueCur  = leadDealsCur.revenue;
+    var totalRevenuePrev = leadDealsPrev.revenue;
+    var totalDealsCur    = leadDealsCur.count;
+    var totalDealsPrev   = leadDealsPrev.count;
+    var totalIntakeCur   = leadIntakeCur.count + drIntakeCur.count;
+    var totalIntakePrev  = leadIntakePrev.count + drIntakePrev.count;
+    var totalPipeline    = leadPipeline.value + drPipeline.value;
+
+    // Build the canonical bucket sequence on the JS side and look up the
+    // grouped rows by their UTC-truncated bucket-start ms — must match the
+    // way $dateTrunc rounded each row.
+    var DAY_MS = 86400000;
+    var bucketStart;
+    var fd = new Date(fromDate);
+    var fdUTC = Date.UTC(fd.getUTCFullYear(), fd.getUTCMonth(), fd.getUTCDate());
+    if (bucketUnit === "day") {
+      bucketStart = fdUTC;
+    } else {
+      var dow = new Date(fdUTC).getUTCDay();
+      var daysSinceSat = (dow - 6 + 7) % 7;
+      bucketStart = fdUTC - daysSinceSat * DAY_MS;
+    }
+    var stepMs = bucketUnit === "day" ? DAY_MS : 7 * DAY_MS;
+    var buckets = [];
+    for (var bm = bucketStart; bm < range.to; bm += stepMs) buckets.push(bm);
+
+    var lookupBy = function(arr){
+      var m = {};
+      (arr || []).forEach(function(b){ m[new Date(b._id).getTime()] = b; });
+      return m;
+    };
+    var leadDealsByB    = lookupBy(leadR.dealsSparkline);
+    var leadIntakeByB   = lookupBy(leadR.intakeSparkline);
+    var leadPipelineByB = lookupBy(leadR.pipelineSpark);
+    var drIntakeByB     = lookupBy(drR.intakeSparkline);
+    var drPipelineByB   = lookupBy(drR.pipelineSpark);
+
+    var combine = function(t, lookups, key){
+      var sum = 0;
+      for (var i = 0; i < lookups.length; i++) {
+        var b = lookups[i][t];
+        if (b) sum += (b[key] || 0);
+      }
+      return sum;
+    };
+
+    var revenueSpark   = buckets.map(function(t){ var b = leadDealsByB[t]; return b ? Math.round(b.revenue) : 0; });
+    var dealCountSpark = buckets.map(function(t){ var b = leadDealsByB[t]; return b ? b.count : 0; });
+    var intakeSpark    = buckets.map(function(t){ return combine(t, [leadIntakeByB, drIntakeByB], "count"); });
+    var avgSpark       = buckets.map(function(_, i){ var c = dealCountSpark[i]; var r = revenueSpark[i]; return c > 0 ? Math.round(r / c) : 0; });
+    var convSpark      = buckets.map(function(_, i){ var d = dealCountSpark[i]; var l = intakeSpark[i]; return l > 0 ? Math.round((d / l) * 1000) / 10 : 0; });
+    var pipelineSpark  = buckets.map(function(t){ return Math.round(combine(t, [leadPipelineByB, drPipelineByB], "value")); });
+
+    var deltaPct = function(cur, prev){
+      if (!prev || prev === 0) return null;
+      return Math.round(((cur - prev) / prev) * 1000) / 10;
+    };
+    var deltaPp = function(cur, prev){
+      if (cur == null || prev == null) return null;
+      return Math.round((cur - prev) * 10) / 10;
+    };
+
+    var avgCur  = totalDealsCur  > 0 ? totalRevenueCur  / totalDealsCur  : 0;
+    var avgPrev = totalDealsPrev > 0 ? totalRevenuePrev / totalDealsPrev : 0;
+    var convCur  = totalIntakeCur  > 0 ? (totalDealsCur  / totalIntakeCur)  * 100 : 0;
+    var convPrev = totalIntakePrev > 0 ? (totalDealsPrev / totalIntakePrev) * 100 : 0;
+
+    res.json({
+      range: { from: fromDate.toISOString(), to: toDate.toISOString(), bucketUnit: bucketUnit, buckets: buckets.length },
+      kpis: {
+        revenue:       { value: Math.round(totalRevenueCur),   prev: Math.round(totalRevenuePrev),  deltaPct: deltaPct(totalRevenueCur, totalRevenuePrev), sparkline: revenueSpark },
+        pipelineValue: { value: Math.round(totalPipeline),     prev: null,                          deltaPct: null,                                        sparkline: pipelineSpark },
+        avgDealSize:   { value: Math.round(avgCur),            prev: Math.round(avgPrev),           deltaPct: deltaPct(avgCur, avgPrev),                   sparkline: avgSpark },
+        convRatePct:   { value: Math.round(convCur * 10) / 10, prev: Math.round(convPrev * 10) / 10, deltaPp: deltaPp(convCur, convPrev),                  sparkline: convSpark }
+      }
+    });
+  } catch (e) {
+    console.error("[reports/overview/kpis]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "kpis_failed" });
+  }
+});
 
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
