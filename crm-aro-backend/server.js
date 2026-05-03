@@ -3337,6 +3337,32 @@ async function autoRotateLead(leadId, byName, opts) {
       return { ok: false, status: 400, error: "stopped_age", message: "Rotation blocked — lead older than " + stopDays + " days" };
     }
 
+    // Lead-wide last-action timestamp: max of every slice's lastActionAt and
+    // every action-type agentHistory entry across all assignments. Prevents
+    // an idle current owner from triggering a stale-clock rotation while a
+    // split agent (or recent past holder) is actively working the lead.
+    function leadWideLastActionMs(lead, curSlice) {
+      var max = 0;
+      var bump = function(t) {
+        var ms = t ? new Date(t).getTime() : 0;
+        if (ms > max) max = ms;
+      };
+      (lead.assignments || []).forEach(function(s){
+        if (!s) return;
+        bump(s.lastActionAt);
+        (s.agentHistory || []).forEach(function(h){
+          if (!h) return;
+          var t = h.type || "";
+          if (t === "status_change" || t === "feedback_added" || t === "feedback"
+              || t === "note" || t === "call" || t === "callback_scheduled") {
+            bump(h.createdAt || h.at || h.timestamp);
+          }
+        });
+      });
+      if (!max) bump(curSlice && curSlice.lastActionAt);
+      return max;
+    }
+
     // ── Eligibility + cooldown re-verification (server-side invariant) ──
     // /auto-rotate used to trust its callers. Client browsers with stale
     // top-level `lastActivityTime` (admin view has no per-agent overlay) were
@@ -3376,7 +3402,7 @@ async function autoRotateLead(leadId, byName, opts) {
       var cbDays    = Number(settings.cbDays)   || 1;
       var hotDays   = Number(settings.hotDays)  || 2;
 
-      var lastActMs = curSlice.lastActionAt ? new Date(curSlice.lastActionAt).getTime() : 0;
+      var lastActMs = leadWideLastActionMs(lead, curSlice);
       var hasClock  = lastActMs > 0;
       var ageMs     = hasClock ? (nowTs.getTime() - lastActMs) : 0;
       // Slice status mirror is not always synced (admin/sales_admin status
