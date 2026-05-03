@@ -7696,7 +7696,7 @@ var UsersPage = function(p) {
     </div>
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:580 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.username,t.title,t.role,t.phone,"Quarterly Target","Last Seen",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {[t.name,t.username,t.title,t.role,t.phone,"Quarterly Target","Last Seen","Starting Date",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>{p.users.map(function(u){var uid=gid(u);var displayName=u.username==="amgad"?"Amgad Mohamed":u.name;return <tr key={uid} style={{ borderBottom:"1px solid #F1F5F9" }}>
         <td style={{ padding:"11px 12px" }}><div style={{ display:"flex", alignItems:"center", gap:8 }}><div style={{ width:32, height:32, borderRadius:8, background:C.primary+"15", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:12, color:C.primary, flexShrink:0 }}>{displayName[0]}</div><div><div style={{ fontSize:12, fontWeight:600 }}>{displayName}</div><div style={{ fontSize:10, color:C.textLight }}>{u.email}</div></div></div></td>
@@ -7721,6 +7721,14 @@ var UsersPage = function(p) {
               <span style={{ width:8, height:8, borderRadius:"50%", background:isOn?"#22C55E":"#CBD5E1", flexShrink:0 }}/>
               <span style={{ fontSize:11, color:isOn?C.success:C.textLight, fontWeight:isOn?700:400 }}>{isOn?"Online":ls}</span>
             </div>;
+          })()}
+        </td>
+        <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, whiteSpace:"nowrap" }}>
+          {(function(){
+            if(!u.startingDate) return "—";
+            var d=new Date(u.startingDate);
+            if(isNaN(d.getTime())) return "—";
+            return d.toLocaleDateString("en-GB");
           })()}
         </td>
         <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(u.role!=="admin")toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
