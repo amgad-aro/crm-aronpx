@@ -8256,18 +8256,18 @@ var ReportsPage = function(p) {
   var t = p.t;
   var cu = p.cu;
 
-  if (cu.role !== "admin" && cu.role !== "sales_admin") {
-    return <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight, fontSize:13 }}>
-      Reports are not available for your role.
-    </div>;
-  }
-
   var [tab, setTab] = useState("overview");
   var [filters, setFilters] = useState(function(){
     var now = new Date();
     var monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
     return { from: monthStart.getTime(), to: now.getTime(), preset: "thisMonth", team: "", source: "all", compare: false };
   });
+
+  if (cu.role !== "admin" && cu.role !== "sales_admin") {
+    return <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight, fontSize:13 }}>
+      Reports are not available for your role.
+    </div>;
+  }
 
   var presetRange = function(preset) {
     var now = new Date();
