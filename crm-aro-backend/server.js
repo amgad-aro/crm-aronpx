@@ -5998,35 +5998,48 @@ app.get("/api/reports/overview/trends", auth, reportsAuth, async function(req, r
 // count, conversion %, drop-off %, and (Lead-side only) avg days
 // from the previous stage's transition.
 //
-// Stage definitions (per user spec):
-//   - Total: leads created in period (Lead native + DR; mirrors excluded
-//     when source filter is null/non-DR; skip Lead entirely when source
-//     filter is "Daily Request" so we don't double-count via mirrors).
-//   - Contacted: status != "NewLead" OR any assignments[].lastActionAt
-//     is set. (DR has no assignments[]; uses status check only.)
-//   - Meeting: hadMeeting === true. (Both collections have this flag.)
-//   - EOI: globalStatus="eoi" OR status="EOI" OR eoiDate set.
-//   - Deal: (status="DoneDeal" OR globalStatus="donedeal") AND
-//     dealStatus != "Deal Cancelled".
+// PRINCIPLE — each stage's filter is the EXACT same query the
+// corresponding page uses, scoped to leads created in the period:
+//   - Total Leads: every lead created in period (Lead native + DR;
+//     mirrors excluded when source filter is null/non-DR; skip Lead
+//     entirely when source filter is "Daily Request" to avoid mirror
+//     double-count). Includes leads currently in EOI / DoneDeal /
+//     Deal-Cancelled status (Leads-page UI hides those, but the funnel
+//     denominator must include them or the math inverts).
+//   - Contacted (synthetic): any of {status != "NewLead", any
+//     assignments[].lastActionAt set, history has a "status_change" or
+//     "status_changed" event (only past-tense form is written today —
+//     matching both for safety), notes/lastFeedback/callbackTime set}.
+//     OR forward-superset (already in Meeting/EOI/Deal).
+//   - Meeting: hadMeeting === true OR status === "MeetingDone" OR
+//     forward-superset (already in EOI/Deal).
+//   - EOI (matches EOI page Pending+Approved tabs at App.js:5734):
+//     status != "Deal Cancelled" AND eoiStatus NOT IN
+//     ["EOI Cancelled", "Deal Cancelled"] AND
+//     (eoiStatus IN ["Pending", "Approved"] OR status === "EOI"),
+//     OR forward-superset (already in Deal).
+//   - Deal (matches DealsPage activeDeals at App.js:6246):
+//     (status === "DoneDeal" OR globalStatus === "donedeal") AND
+//     dealStatus != "Deal Cancelled" AND status != "Deal Cancelled".
 //
-// Avg-days source: Lead-side timestamp markers (earliest of
+// Forward-superset is enforced via OR'd boolean flags so each stage
+// is mathematically a superset of the next — Contacted ⊇ Meeting ⊇
+// EOI ⊇ Deal. A defensive JS-side clamp + warning log catches any
+// regression.
+//
+// Avg-days: Lead-side timestamp markers — earliest of
 // assignments[].lastActionAt for "contacted-at", meetingDoneAt for
-// "meeting-at", parsed eoiDate / dealDate for "eoi-at" / "deal-at").
-// Negative deltas filtered out; $avg ignores nulls so each stage's
-// average is computed only over leads that reached BOTH the previous
-// and current stage. DR contributes to counts only — DR has no
-// assignments[]/lastActionAt and its lastActivityTime gets bumped on
-// every edit, so it isn't a reliable "first-contact" proxy. If a more
-// precise per-stage timing is wanted later, walk lead.history[]
-// status_change events instead.
+// "meeting-at", parsed eoiDate / dealDate for "eoi-at" / "deal-at".
+// $avg ignores nulls so each stage's avg is computed only over leads
+// that reached BOTH stages. DR contributes to counts only.
 //
-// Bottleneck: the stage (after Total Leads) with the highest drop-off
-// percentage; ties broken by longest avgDays.
+// Bottleneck: stage (after Total) with biggest drop-off; ties broken
+// by longest avgDays.
 //
-// NB: Funnel "Deal" count uses createdAt-in-period (not dealAt), so it
-// will diverge from the KPIs endpoint's deal count when leads close
-// across period boundaries. The frontend should label this as
-// "of leads created in this period".
+// Date semantics: every count is filtered by createdAt-in-period.
+// EOI / Deal counts will not equal the EOI/Deals page totals (those
+// pages have no date filter); the funnel scopes to in-period intake
+// only. Frontend surfaces this caveat via ⓘ tooltips.
 app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, res) {
   try {
     var range = reportsParseRange(req.query.from, req.query.to);
@@ -6059,6 +6072,7 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
 
     var leadAggP = includeLead ? Lead.aggregate([
       { $match: leadMatch },
+      // Derived timestamp helpers used by both stage flags and avg-days math.
       { $addFields: {
           earliestLastActionAt: { $min: "$assignments.lastActionAt" },
           eoiAt: { $cond: [
@@ -6072,24 +6086,56 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
             null
           ]}
       }},
+      // Raw stage flags — each mirrors the corresponding page's exact filter.
       { $addFields: {
-          isContacted: { $or: [
-            { $ne: ["$status", "NewLead"] },
-            { $anyElementTrue: { $map: { input: { $ifNull: ["$assignments", []] }, as: "a", in: { $ne: ["$$a.lastActionAt", null] } } } }
-          ]},
-          isMeeting: { $eq: ["$hadMeeting", true] },
-          isEoi: { $or: [
-            { $eq: ["$globalStatus", "eoi"] },
-            { $eq: ["$status", "EOI"] },
-            { $and: [{ $ne: ["$eoiDate", ""] }, { $ne: ["$eoiDate", null] }] }
-          ]},
-          isDeal: { $and: [
+          isDealRaw: { $and: [
             { $or: [
               { $eq: ["$status", "DoneDeal"] },
               { $eq: ["$globalStatus", "donedeal"] }
             ]},
-            { $ne: ["$dealStatus", "Deal Cancelled"] }
+            { $ne: ["$dealStatus", "Deal Cancelled"] },
+            { $ne: ["$status", "Deal Cancelled"] }
+          ]},
+          isEoiRaw: { $and: [
+            { $ne: ["$status", "Deal Cancelled"] },
+            { $ne: ["$eoiStatus", "EOI Cancelled"] },
+            { $ne: ["$eoiStatus", "Deal Cancelled"] },
+            { $or: [
+              { $eq: ["$eoiStatus", "Pending"] },
+              { $eq: ["$eoiStatus", "Approved"] },
+              { $eq: ["$status", "EOI"] }
+            ]}
+          ]},
+          isMeetingRaw: { $or: [
+            { $eq: ["$hadMeeting", true] },
+            { $eq: ["$status", "MeetingDone"] }
+          ]},
+          isContactedRaw: { $or: [
+            { $ne: ["$status", "NewLead"] },
+            { $anyElementTrue: { $map: {
+                input: { $ifNull: ["$assignments", []] },
+                as: "a",
+                in: { $ne: ["$$a.lastActionAt", null] }
+            }}},
+            { $anyElementTrue: { $map: {
+                input: { $ifNull: ["$history", []] },
+                as: "h",
+                in: { $or: [
+                  { $eq: ["$$h.event", "status_change"] },
+                  { $eq: ["$$h.event", "status_changed"] }
+                ]}
+            }}},
+            { $and: [{ $ne: ["$notes", ""] }, { $ne: ["$notes", null] }] },
+            { $and: [{ $ne: ["$lastFeedback", ""] }, { $ne: ["$lastFeedback", null] }] },
+            { $and: [{ $ne: ["$callbackTime", ""] }, { $ne: ["$callbackTime", null] }] }
           ]}
+      }},
+      // Forward-superset OR. Contacted ⊇ Meeting ⊇ EOI ⊇ Deal.
+      { $addFields: {
+          isDeal:       "$isDealRaw",
+          isEoi:        { $or: ["$isEoiRaw",       "$isDealRaw"] },
+          isMeeting:    { $or: ["$isMeetingRaw",   "$isEoiRaw",     "$isDealRaw"] },
+          isContacted:  { $or: ["$isContactedRaw", "$isMeetingRaw", "$isEoiRaw", "$isDealRaw"] }
       }},
       { $addFields: {
           dContact: { $cond: [
@@ -6143,19 +6189,42 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
       }}
     ]) : Promise.resolve([]);
 
+    // DR-side: same stage shape, adapted to fields DR has (no assignments[],
+    // no globalStatus, no history, no splitAgent2Id).
     var drAggP = includeDR ? DailyRequest.aggregate([
       { $match: drMatch },
       { $addFields: {
-          isContacted: { $ne: ["$status", "NewLead"] },
-          isMeeting:   { $eq: ["$hadMeeting", true] },
-          isEoi: { $or: [
-            { $eq: ["$status", "EOI"] },
-            { $and: [{ $ne: ["$eoiDate", ""] }, { $ne: ["$eoiDate", null] }] }
-          ]},
-          isDeal: { $and: [
+          isDealRaw: { $and: [
             { $eq: ["$status", "DoneDeal"] },
-            { $ne: ["$dealStatus", "Deal Cancelled"] }
+            { $ne: ["$dealStatus", "Deal Cancelled"] },
+            { $ne: ["$status", "Deal Cancelled"] }
+          ]},
+          isEoiRaw: { $and: [
+            { $ne: ["$status", "Deal Cancelled"] },
+            { $ne: ["$eoiStatus", "EOI Cancelled"] },
+            { $ne: ["$eoiStatus", "Deal Cancelled"] },
+            { $or: [
+              { $eq: ["$eoiStatus", "Pending"] },
+              { $eq: ["$eoiStatus", "Approved"] },
+              { $eq: ["$status", "EOI"] }
+            ]}
+          ]},
+          isMeetingRaw: { $or: [
+            { $eq: ["$hadMeeting", true] },
+            { $eq: ["$status", "MeetingDone"] }
+          ]},
+          isContactedRaw: { $or: [
+            { $ne: ["$status", "NewLead"] },
+            { $and: [{ $ne: ["$notes", ""] }, { $ne: ["$notes", null] }] },
+            { $and: [{ $ne: ["$lastFeedback", ""] }, { $ne: ["$lastFeedback", null] }] },
+            { $and: [{ $ne: ["$callbackTime", ""] }, { $ne: ["$callbackTime", null] }] }
           ]}
+      }},
+      { $addFields: {
+          isDeal:      "$isDealRaw",
+          isEoi:       { $or: ["$isEoiRaw",       "$isDealRaw"] },
+          isMeeting:   { $or: ["$isMeetingRaw",   "$isEoiRaw",     "$isDealRaw"] },
+          isContacted: { $or: ["$isContactedRaw", "$isMeetingRaw", "$isEoiRaw", "$isDealRaw"] }
       }},
       { $group: {
           _id: null,
@@ -6179,6 +6248,13 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
     var eoiCount       = pull(leadR, "eoi")       + pull(drR, "eoi");
     var dealCount      = pull(leadR, "deal")      + pull(drR, "deal");
 
+    // Defensive monotonic clamp. Forward-superset OR makes this mathematically
+    // guaranteed; if a clamp fires, the query has a logic bug — log loudly.
+    if (contactedCount > totalCount)     { console.warn("[funnel] clamp contacted", contactedCount, "->", totalCount);     contactedCount = totalCount; }
+    if (meetingCount   > contactedCount) { console.warn("[funnel] clamp meeting",   meetingCount,   "->", contactedCount); meetingCount   = contactedCount; }
+    if (eoiCount       > meetingCount)   { console.warn("[funnel] clamp eoi",       eoiCount,       "->", meetingCount);   eoiCount       = meetingCount; }
+    if (dealCount      > eoiCount)       { console.warn("[funnel] clamp deal",      dealCount,      "->", eoiCount);       dealCount      = eoiCount; }
+
     var convPct = function(cur, prev){
       if (!prev || prev === 0) return null;
       return Math.round((cur / prev) * 1000) / 10;
@@ -6197,7 +6273,6 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
       { key: "deal",      label: "Deal",        count: dealCount,      conversionPct: convPct(dealCount,      eoiCount),     dropOffPct: dropPct(dealCount,      eoiCount),     avgDays: rd(leadR.avgDeal) }
     ];
 
-    // Bottleneck: stage (after Total) with biggest drop-off; ties broken by longest avgDays.
     var bottleneckKey = null, worstDrop = -1, worstAvg = -1;
     for (var i = 1; i < stages.length; i++) {
       var s = stages[i];

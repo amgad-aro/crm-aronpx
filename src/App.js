@@ -8567,6 +8567,14 @@ var SalesFunnel = function(p) {
     return d.toFixed(1) + "d";
   };
 
+  // EOI/Deal counts are scoped to leads created in the period — they won't
+  // equal the EOI/Deals page totals (those pages have no date filter).
+  // Surface this caveat as a hover hint on the count for those two stages.
+  var stageHint = {
+    eoi: "Counts EOIs from leads created in this period only. EOI page shows all active EOIs regardless of creation date.",
+    deal: "Counts deals from leads created in this period only. Deals page shows all active deals regardless of creation date."
+  };
+
   return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
     {headerRow}
     <div>
@@ -8583,7 +8591,10 @@ var SalesFunnel = function(p) {
                 <rect x={0} y={4} width={Math.max(0.5, prop * 100)} height={16} fill={color} rx={3}/>
               </svg>
             </div>
-            <div style={{ width:80, textAlign:"right", fontSize:13, fontWeight:700, color:C.text }}>{s.count.toLocaleString()}</div>
+            <div style={{ width:80, textAlign:"right", fontSize:13, fontWeight:700, color:C.text }}>
+              {s.count.toLocaleString()}
+              {stageHint[s.key] && <span title={stageHint[s.key]} style={{ marginLeft:3, color:C.textLight, cursor:"help", fontSize:10, fontWeight:400 }}>ⓘ</span>}
+            </div>
           </div>
           {i > 0 && <div style={{ fontSize:11, color:C.textLight, paddingLeft:102, marginTop:3, display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
             <span><b style={{ color:C.text }}>{s.conversionPct == null ? "—" : s.conversionPct.toFixed(1) + "%"}</b> conversion</span>
