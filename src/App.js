@@ -6227,7 +6227,7 @@ var DealsPage = function(p) {
   var [dateFrom,setDateFrom]=useState(""); var [dateTo,setDateTo]=useState(""); var [dealSearch,setDealSearch]=useState(""); var [dealAgent,setDealAgent]=useState("");
   var curYear=new Date().getFullYear(); var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
   var dealYears=[curYear,curYear-1,curYear-2,curYear-3];
-  var [dealQ,setDealQ]=useState("all"); var [dealYear,setDealYear]=useState(curYear);
+  var [dealQ,setDealQ]=useState(curQ); var [dealYear,setDealYear]=useState(curYear);
   var filteredDeals=deals.filter(function(d){
     if(dealQ!=="all"){var dd=getDealDate(d);if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
     if(dealQ!=="all"&&new Date(getDealDate(d)||0).getFullYear()!==dealYear) return false;
