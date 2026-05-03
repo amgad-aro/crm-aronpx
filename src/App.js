@@ -849,7 +849,7 @@ var Sidebar = function(p) {
     {id:"tasks",label:t.tasks},
     isSalesOrTL&&{id:"kpis",label:"KPIs"},
     isSales&&{id:"calendar",label:"Calendar"},
-    isAdmin&&{id:"reports",label:t.reports,adminSection:true},
+    isOnlyAdmin&&{id:"reports",label:t.reports,adminSection:true},
     isAdmin&&{id:"team",label:t.team,adminSection:true},
     isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
     isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
@@ -7900,104 +7900,6 @@ var UsersPage = function(p) {
 };
 
 // ===== TEAM =====
-// ===== REPORTS PAGE =====
-var ReportsPage = function(p) {
-  var t=p.t; var sc=STATUSES(t);
-  var [period,setPeriod]=useState("monthly");
-  var [exporting,setExporting]=useState(false);
-  var curQR=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
-  var pLabel={daily:"Today",weekly:"This Week",monthly:"This Month",q:"This Quarter"};
-  var qStartMs=(function(){var m=new Date().getMonth();var qStart=m<3?0:m<6?3:m<9?6:9;var d=new Date();d.setMonth(qStart,1);d.setHours(0,0,0,0);return d.getTime();})();
-  var ms=period==="q"?null:{daily:86400000,weekly:604800000,monthly:2592000000}[period];
-  var now=Date.now();
-  var allLeads=p.leads.filter(function(l){return !l.archived;});
-  var inPeriod=function(dateStr){
-    if(!dateStr) return false;
-    if(period==="q") return new Date(dateStr).getTime()>=qStartMs;
-    return (now-new Date(dateStr).getTime())<ms;
-  };
-  var periodLeads=allLeads.filter(function(l){return l.createdAt&&inPeriod(l.createdAt);});
-  var periodDeals=allLeads.filter(function(l){return l.status==="DoneDeal"&&l.updatedAt&&inPeriod(l.updatedAt);});
-  var salesUsers=(p.cu.role==="team_leader"||p.cu.role==="manager")
-    ? (p.myTeamUsers||[]).filter(function(u){return u.active&&(u.role==="sales"||u.role==="team_leader");})
-    : p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
-  var parseBudgetR=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
-  var getQTargetsR=function(uid){var u=p.users.find(function(x){return gid(x)===uid;});if(u&&u.qTargets&&Object.keys(u.qTargets).length>0)return u.qTargets;try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");} catch(e){return {};}}
-  var agentStats=salesUsers.map(function(u){
-    var uid=gid(u);
-    var uNew=periodLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.source!=="Daily Request";});
-    var uDailyReq=periodLeads.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return a===uid&&l.source==="Daily Request";});
-    var uDeals=periodDeals.filter(function(l){var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");var sp=String(l.splitAgent2Id&&l.splitAgent2Id._id?l.splitAgent2Id._id:l.splitAgent2Id||"");return a===uid||sp===uid;});
-    // Permanent meeting source of truth: hadMeeting flag + meetingDoneAt
-    // (the original transition timestamp). Never derives from current status,
-    // so a lead that later moved to EOI / DoneDeal / etc. still counts. Falls
-    // back to l.updatedAt for legacy rows that predate the flag.
-    var uMeetingDone=allLeads.filter(function(l){
-      var a=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
-      if(a!==uid) return false;
-      if(l.hadMeeting===true){
-        var when=l.meetingDoneAt||l.updatedAt;
-        return when && inPeriod(when);
-      }
-      return l.status==="MeetingDone" && l.updatedAt && inPeriod(l.updatedAt);
-    });
-    var revenue=uDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudgetR(d.budget)*w*(sp?0.5:1);},0);
-    var qt=getQTargetsR(uid);
-    var qTarget=qt[curQR]||0;
-    var target=qTarget>0?qTarget:(u.monthlyTarget||0)*1000000;
-    var prog=target>0?Math.min(100,Math.round((revenue/target)*100)):0;
-    return{user:u,newL:uNew.length,dailyReq:uDailyReq.length,deals:uDeals.length,meetingDone:uMeetingDone.length,revenue:revenue,target:target,prog:prog};
-  }).sort(function(a,b){return b.revenue-a.revenue;});
-  var exportReport=async function(){
-    setExporting(true);
-    var XLSX=await new Promise(function(res){if(window.XLSX){res(window.XLSX);return;}var s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=function(){res(window.XLSX);};document.head.appendChild(s);});
-    var rows=agentStats.map(function(a){return{"Agent":a.user.name,"New":a.newL,"Daily Request":a.dailyReq,"Meeting Done":a.meetingDone,"Deals":a.deals,"Target":a.target,"Rate":a.prog+"%"};});
-    var ws=XLSX.utils.json_to_sheet(rows);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Report");
-    XLSX.writeFile(wb,"Report_ARO_"+new Date().toISOString().slice(0,10)+".xlsx");setExporting(false);
-  };
-  return <div style={{ padding:"18px 16px 40px" }}>
-    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18, flexWrap:"wrap", gap:10 }}>
-      <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>📊 Reports</h2>
-      <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-        {["daily","weekly","monthly","q"].map(function(p2){return <button key={p2} onClick={function(){setPeriod(p2);}} style={{ padding:"6px 14px", borderRadius:8, border:"1px solid", borderColor:period===p2?C.accent:"#E2E8F0", background:period===p2?C.accent+"12":"#fff", color:period===p2?C.accent:C.textLight, fontSize:12, fontWeight:600, cursor:"pointer" }}>{p2==="q"?curQR+" 🔵":pLabel[p2]}</button>;})}
-        <Btn outline onClick={exportReport} loading={exporting} style={{ padding:"6px 12px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> Excel</Btn>
-      </div>
-    </div>
-    <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
-      <StatCard icon={Users} label={"New — "+pLabel[period]} value={periodLeads.length+""} c={C.info}/>
-      <StatCard icon={DollarSign} label={"Deals — "+pLabel[period]} value={periodDeals.length+""} c={C.success}/>
-      <StatCard icon={Target} label={"Total"} value={allLeads.length+""} c={C.accent}/>
-      <StatCard icon={Activity} label={"Conversion Rate"} value={allLeads.length?Math.round((allLeads.filter(function(l){return l.status==="DoneDeal";}).length/allLeads.length)*100)+"%":"0%"} c={"#8B5CF6"}/>
-    </div>
-    <Card style={{ marginBottom:20 }}>
-      <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 Team Performance — {pLabel[period]}</h3>
-      <div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse" }}>
-        <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-          {["#","Agent","New","Daily Req","Meeting Done","Deals","Revenue","Target","Achievement"].map(function(h){return <th key={h} style={{ padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, textAlign:"right" }}>{h}</th>;})}
-        </tr></thead>
-        <tbody>{agentStats.map(function(a,i){return <tr key={gid(a.user)} style={{ borderBottom:"1px solid #F1F5F9", background:i===0?"#FFFBEB":"transparent" }}>
-          <td style={{ padding:"12px", fontSize:16 }}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":i+1}</td>
-          <td style={{ padding:"12px", fontWeight:700 }}>{a.user.name}</td>
-          <td style={{ padding:"12px", color:C.info, fontWeight:600 }}>{a.newL}</td>
-          <td style={{ padding:"12px", color:"#8B5CF6", fontWeight:600 }}>{a.dailyReq}</td>
-          <td style={{ padding:"12px", color:"#F59E0B", fontWeight:600 }}>{a.meetingDone}</td>
-          <td style={{ padding:"12px", color:C.success, fontWeight:700 }}>{a.deals}</td>
-          <td style={{ padding:"12px", color:C.success, fontWeight:700 }}>{(a.revenue/1000000).toFixed(2)}M</td>
-          <td style={{ padding:"12px", color:C.textLight }}>{a.target>0?(a.target/1000000).toFixed(2)+"M":"—"}</td>
-          <td style={{ padding:"12px", minWidth:120 }}><div style={{ display:"flex", alignItems:"center", gap:8 }}><div style={{ flex:1, height:6, background:"#F1F5F9", borderRadius:3 }}><div style={{ height:"100%", width:a.prog+"%", borderRadius:3, background:a.prog>=100?C.success:a.prog>=50?C.accent:C.warning }}/></div><span style={{ fontSize:11, fontWeight:700, minWidth:32 }}>{a.prog}%</span></div></td>
-        </tr>;})}
-        </tbody>
-      </table></div>
-    </Card>
-    <Card>
-      <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>📈 Leads Distribution</h3>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))", gap:10 }}>
-        {sc.map(function(s){var cnt=allLeads.filter(function(l){return l.status===s.value;}).length;var pct=allLeads.length?Math.round((cnt/allLeads.length)*100):0;return cnt>0?<div key={s.value} style={{ padding:"14px", borderRadius:12, background:s.bg, border:"1px solid "+s.color+"30" }}><div style={{ fontSize:22, fontWeight:800, color:s.color }}>{cnt}</div><div style={{ fontSize:12, color:s.color, fontWeight:600, marginTop:2 }}>{s.label}</div><div style={{ fontSize:11, color:s.color+"99", marginTop:4 }}>{pct}%</div></div>:null;})}
-      </div>
-    </Card>
-  </div>;
-};
-
 var TeamPage = function(p) {
   var t=p.t;
   var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader";
@@ -8351,152 +8253,208 @@ var TeamPage = function(p) {
 
 // ===== REPORTS =====
 var ReportsPage = function(p) {
-  var t=p.t;
-  var [rPeriod,setRPeriod]=useState("monthly");
-  var [rYear,setRYear]=useState(new Date().getFullYear());
-  var rYears=[new Date().getFullYear(),new Date().getFullYear()-1,new Date().getFullYear()-2,new Date().getFullYear()-3];
-  var [dailyRequests,setDailyRequests]=useState([]);
-  useEffect(function(){
-    apiFetch("/api/daily-requests","GET",null,p.token)
-      .then(function(d){setDailyRequests(Array.isArray(d)?d:[]);})
-      .catch(function(){setDailyRequests([]);});
-  },[]);
-  var sales=(p.cu.role==="team_leader"||p.cu.role==="manager")
-    ? (p.myTeamUsers||[]).filter(function(u){return u.role==="sales"||u.role==="team_leader";})
-    : p.users.filter(function(u){return u.role==="sales"||u.role==="manager"||u.role==="team_leader";});
-  var normalLeads=p.leads.filter(function(l){return !l.archived&&l.source!=="Daily Request";});
-  var convRate=normalLeads.length>0?Math.round(normalLeads.filter(function(l){return l.status==="DoneDeal";}).length/normalLeads.length*100):0;
+  var t = p.t;
+  var cu = p.cu;
+
+  if (cu.role !== "admin" && cu.role !== "sales_admin") {
+    return <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight, fontSize:13 }}>
+      Reports are not available for your role.
+    </div>;
+  }
+
+  var [tab, setTab] = useState("overview");
+  var [filters, setFilters] = useState(function(){
+    var now = new Date();
+    var monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    return { from: monthStart.getTime(), to: now.getTime(), preset: "thisMonth", team: "", source: "all", compare: false };
+  });
+
+  var presetRange = function(preset) {
+    var now = new Date();
+    var y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+    var todayStart = new Date(y, m, d, 0, 0, 0, 0).getTime();
+    if (preset === "today") return { from: todayStart, to: now.getTime() };
+    if (preset === "yesterday") {
+      return { from: new Date(y, m, d-1, 0, 0, 0, 0).getTime(), to: todayStart };
+    }
+    if (preset === "thisWeek") {
+      var dow = now.getDay();
+      var daysSinceSat = (dow - 6 + 7) % 7;
+      return { from: new Date(y, m, d - daysSinceSat, 0, 0, 0, 0).getTime(), to: now.getTime() };
+    }
+    if (preset === "thisMonth") return { from: new Date(y, m, 1, 0, 0, 0, 0).getTime(), to: now.getTime() };
+    if (preset === "thisQuarter") {
+      var qStart = m < 3 ? 0 : m < 6 ? 3 : m < 9 ? 6 : 9;
+      return { from: new Date(y, qStart, 1, 0, 0, 0, 0).getTime(), to: now.getTime() };
+    }
+    if (preset === "lastQuarter") {
+      var curQStart = m < 3 ? 0 : m < 6 ? 3 : m < 9 ? 6 : 9;
+      var lastQStart = curQStart - 3;
+      var lastQYear = y;
+      if (lastQStart < 0) { lastQStart = 9; lastQYear = y - 1; }
+      return {
+        from: new Date(lastQYear, lastQStart, 1, 0, 0, 0, 0).getTime(),
+        to: new Date(lastQYear, lastQStart + 3, 1, 0, 0, 0, 0).getTime()
+      };
+    }
+    if (preset === "thisYear") return { from: new Date(y, 0, 1, 0, 0, 0, 0).getTime(), to: now.getTime() };
+    return null;
+  };
+
+  var setPreset = function(preset) {
+    var range = presetRange(preset);
+    if (!range) { setFilters(function(f){ return Object.assign({}, f, { preset: "custom" }); }); return; }
+    setFilters(function(f){ return Object.assign({}, f, { preset: preset, from: range.from, to: range.to }); });
+  };
+  var setCustomFrom = function(ms) { setFilters(function(f){ return Object.assign({}, f, { preset: "custom", from: ms }); }); };
+  var setCustomTo = function(ms) { setFilters(function(f){ return Object.assign({}, f, { preset: "custom", to: ms }); }); };
+
+  var teamOptions = (p.users || []).filter(function(u){
+    return u && u.active && (u.role === "manager" || u.role === "team_leader");
+  });
+
+  var sourceOptions = (function(){
+    var set = {};
+    SOURCES.forEach(function(s){ set[s] = true; });
+    (p.leads || []).forEach(function(l){ if (l && l.source) set[l.source] = true; });
+    return Object.keys(set).sort();
+  })();
+
+  var fmtDate = function(ms){ var d = new Date(ms); return d.toISOString().slice(0,10); };
+  var fmtRange = function(){
+    var fd = new Date(filters.from), td = new Date(filters.to);
+    if (fd.toDateString() === td.toDateString()) return fd.toLocaleDateString();
+    return fd.toLocaleDateString() + " — " + td.toLocaleDateString();
+  };
+
+  var tabs = [
+    { id: "overview",  label: "Overview",  enabled: true },
+    { id: "campaigns", label: "Campaigns", enabled: false },
+    { id: "agents",    label: "Agents",    enabled: false },
+    { id: "pipeline",  label: "Pipeline",  enabled: false }
+  ];
+
+  var presets = [
+    { id: "today",       label: "Today" },
+    { id: "yesterday",   label: "Yesterday" },
+    { id: "thisWeek",    label: "This Week" },
+    { id: "thisMonth",   label: "This Month" },
+    { id: "thisQuarter", label: "This Quarter" },
+    { id: "lastQuarter", label: "Last Quarter" },
+    { id: "thisYear",    label: "This Year" }
+  ];
+
+  var handleExportPdf   = function(){ window.print(); };
+  var handleExportExcel = function(){ window.alert("Excel export will be available once all report sections are built."); };
+
+  var btnOutline = { padding:"6px 12px", fontSize:12, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", fontWeight:600 };
+
   return <div style={{ padding:"18px 16px 40px" }}>
-    <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>{t.reports}</h2>
-    <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
-      <StatCard icon={TrendingUp} label={t.conversionRate} value={convRate+"%"} c={C.success}/>
-      <StatCard icon={Activity} label={t.totalCalls} value={p.activities.filter(function(a){return a.type==="call";}).length+""} c={C.info}/>
-      <StatCard icon={DollarSign} label={t.doneDeals} value={normalLeads.filter(function(l){return l.status==="DoneDeal";}).length+""} c={C.accent}/>
-      <StatCard icon={Users} label={t.totalLeads} value={normalLeads.length+""} c={C.primary}/>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+      <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>📊 {t.reports}</h2>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+        <button onClick={handleExportPdf} style={btnOutline}>Export PDF</button>
+        <button onClick={handleExportExcel} style={Object.assign({}, btnOutline, { color: C.textLight })}>Export Excel</button>
+      </div>
     </div>
-    <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
-      <Card style={{ flex:1, minWidth:280 }}>
-        <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.agentPerf}</h3>
-        {(function(){
-          var curQR2=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
-          var curYearR2=new Date().getFullYear();
-          var qStartMs2=(function(){
-            var qMap={Q1:0,Q2:3,Q3:6,Q4:9};
-            var qStart=qMap[rPeriod]!==undefined?qMap[rPeriod]:null;
-            if(qStart===null) return null;
-            var d=new Date(rYear,qStart,1); d.setHours(0,0,0,0); return d.getTime();
-          })();
-          var qEndMs2=(function(){
-            var qMap={Q1:3,Q2:6,Q3:9,Q4:12};
-            var qEnd=qMap[rPeriod]!==undefined?qMap[rPeriod]:null;
-            if(qEnd===null) return null;
-            var d=new Date(rYear,qEnd,1); d.setHours(0,0,0,0); return d.getTime();
-          })();
-          var now2=Date.now();
-          var ms2=["Q1","Q2","Q3","Q4"].includes(rPeriod)?null:{daily:86400000,weekly:604800000,monthly:2592000000}[rPeriod];
-          var inP2=function(dateStr){
-            if(!dateStr) return false;
-            if(["Q1","Q2","Q3","Q4"].includes(rPeriod)){
-              var t2=new Date(dateStr).getTime();
-              return t2>=qStartMs2&&t2<qEndMs2;
-            }
-            return (now2-new Date(dateStr).getTime())<ms2;
-          };
-          var isQMode=["Q1","Q2","Q3","Q4"].includes(rPeriod);
-          return <>
-            <div style={{ display:"flex", gap:6, marginBottom:8, flexWrap:"wrap", alignItems:"center" }}>
-              {["daily","weekly","monthly"].map(function(pp){var lbl={daily:"Today",weekly:"This Week",monthly:"This Month"}[pp];return <button key={pp} onClick={function(){setRPeriod(pp);}} style={{ padding:"4px 10px", borderRadius:7, border:"1px solid", borderColor:rPeriod===pp?C.accent:"#E2E8F0", background:rPeriod===pp?C.accent+"12":"#fff", color:rPeriod===pp?C.accent:C.textLight, fontSize:11, cursor:"pointer" }}>{lbl}</button>;})}
-              <div style={{ width:"1px", height:18, background:"#E2E8F0", margin:"0 2px" }}/>
-              {["Q1","Q2","Q3","Q4"].map(function(pp){var isCur=pp===curQR2&&rYear===curYearR2;return <button key={pp} onClick={function(){setRPeriod(pp);}} style={{ padding:"4px 10px", borderRadius:7, border:"1px solid", borderColor:rPeriod===pp?C.accent:"#E2E8F0", background:rPeriod===pp?C.accent+"12":"#fff", color:rPeriod===pp?C.accent:C.textLight, fontSize:11, fontWeight:600, cursor:"pointer" }}>{pp}{isCur?" 🔵":""}</button>;})}
-              {isQMode&&<select value={rYear} onChange={function(e){setRYear(Number(e.target.value));}} style={{ padding:"3px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:11, background:"#fff", color:C.text }}>
-                {rYears.map(function(y){return <option key={y} value={y}>{y}</option>;})}
-              </select>}
-            </div>
-            {sales.map(function(a){var uid=gid(a);
-              var al=normalLeads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.createdAt&&inP2(l.createdAt);});
-              var dailyReqCount=dailyRequests.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.createdAt&&inP2(l.createdAt);}).length;
-              // Permanent meeting marker — see uMeetingDone above. Counts
-              // every lead / DR that was EVER marked MeetingDone in this
-              // period via hadMeeting + meetingDoneAt; never drops a row
-              // when status later moves on. Legacy rows without the flag
-              // fall back to the current-status + updatedAt check.
-              var hadMeet=function(l){
-                var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
-                if(aid!==uid) return false;
-                if(l.hadMeeting===true){
-                  var w=l.meetingDoneAt||l.updatedAt;
-                  return w && inP2(w);
-                }
-                return l.status==="MeetingDone" && l.updatedAt && inP2(l.updatedAt);
-              };
-              var meetDone=p.leads.filter(hadMeet).length + dailyRequests.filter(hadMeet).length;
-              var d=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="DoneDeal"&&!l.archived&&l.updatedAt&&inP2(l.updatedAt);}).length;
-              var cl=p.activities.filter(function(ac){var auid=String(ac.userId&&ac.userId._id?ac.userId._id:ac.userId||"");return auid===uid&&ac.type==="call"&&ac.createdAt&&inP2(ac.createdAt);}).length;
-              var rate=al.length>0?Math.round(d/al.length*100):0;
-              var qTarget2=getEffectiveQTarget(a,p.users,curQR2);
-              var revenue2=p.leads.filter(function(l){var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");return aid===uid&&l.status==="DoneDeal"&&!l.archived&&l.updatedAt&&inP2(l.updatedAt);}).reduce(function(s,l){return s+parseFloat((l.budget||"0").toString().replace(/,/g,""))||0;},0);
-              var prog=qTarget2>0?Math.min(100,Math.round(revenue2/qTarget2*100)):0;
-              return <div key={uid} style={{ padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
-                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-                  <Avatar name={a.name} size={32} flat/>
-                  <div style={{ flex:1 }}><div style={{ fontSize:12, fontWeight:600 }}>{a.name}</div><div style={{ fontSize:10, color:C.textLight }}>{a.title}</div></div>
-                  {[{v:al.length,l:t.leads,c:C.text},{v:dailyReqCount,l:"Requests",c:"#8B5CF6"},{v:meetDone,l:"Meeting",c:"#F59E0B"},{v:d,l:t.deals,c:C.success},{v:cl,l:t.calls,c:C.info},{v:rate+"%",l:"Conv.",c:C.accent}].map(function(s){return <div key={s.l} style={{ textAlign:"center", minWidth:32 }}><div style={{ fontSize:12, fontWeight:700, color:s.c }}>{s.v}</div><div style={{ fontSize:9, color:C.textLight }}>{s.l}</div></div>;})}
-                </div>
-                <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}><div style={{ height:"100%", width:prog+"%", background:prog>=100?C.success:C.accent, borderRadius:2 }}/></div>
-                <div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>Q Target: {(revenue2/1000000).toFixed(1)}M / {qTarget2>0?(qTarget2/1000000).toFixed(1)+"M":"—"}</div>
-              </div>;
-            })}
-          </>;
-        })()}
-      </Card>
-      <Card style={{ flex:1, minWidth:260 }}>
-        <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>{t.sourcePerf}</h3>
-        {SOURCES.map(function(src){
-          var cnt=normalLeads.filter(function(l){return l.source===src;}).length;
-          var won=normalLeads.filter(function(l){return l.source===src&&l.status==="DoneDeal";}).length;
-          if(cnt===0)return null;
-          var convR=cnt>0?Math.round(won/cnt*100):0;
-          return <div key={src} style={{ padding:"9px 0", borderBottom:"1px solid #F1F5F9" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-              <span style={{ flex:1, fontSize:12, fontWeight:500 }}>{src}</span>
-              <div style={{ textAlign:"center", minWidth:36 }}><div style={{ fontSize:12, fontWeight:700 }}>{cnt}</div><div style={{ fontSize:9, color:C.textLight }}>{t.leads}</div></div>
-              <div style={{ textAlign:"center", minWidth:36 }}><div style={{ fontSize:12, fontWeight:700, color:C.success }}>{won}</div><div style={{ fontSize:9, color:C.textLight }}>{t.deals}</div></div>
-              <div style={{ textAlign:"center", minWidth:40 }}><div style={{ fontSize:12, fontWeight:700, color:C.accent }}>{convR}%</div><div style={{ fontSize:9, color:C.textLight }}>Conv.</div></div>
-            </div>
-            {won>0&&<div style={{ height:3, background:"#F1F5F9", borderRadius:2, marginTop:5 }}><div style={{ height:"100%", width:convR+"%", background:convR>=20?C.success:C.accent, borderRadius:2 }}/></div>}
-          </div>;
-        })}
-      </Card>
-      <Card style={{ flex:1, minWidth:260 }}>
-        <h3 style={{ margin:"0 0 14px", fontSize:14, fontWeight:700 }}>🏆 Deal Sources</h3>
-        {(function(){
-          var dealsBySource={};
-          normalLeads.filter(function(l){return l.status==="DoneDeal";}).forEach(function(l){
-            var src=l.source||"Unknown";
-            if(!dealsBySource[src])dealsBySource[src]={cnt:0,rev:0};
-            dealsBySource[src].cnt++;
-            dealsBySource[src].rev+=parseFloat((l.budget||"0").toString().replace(/,/g,""))||0;
-          });
-          var sorted=Object.keys(dealsBySource).sort(function(a,b){return dealsBySource[b].cnt-dealsBySource[a].cnt;});
-          if(sorted.length===0)return <div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No deals yet</div>;
-          return sorted.map(function(src,i){
-            var d=dealsBySource[src];
-            var maxCnt=dealsBySource[sorted[0]].cnt;
-            return <div key={src} style={{ padding:"9px 0", borderBottom:"1px solid #F1F5F9" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                <span style={{ fontSize:14 }}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":"📌"}</span>
-                <span style={{ flex:1, fontSize:12, fontWeight:600 }}>{src}</span>
-                <div style={{ textAlign:"left" }}>
-                  <div style={{ fontSize:12, fontWeight:700, color:C.success }}>{d.cnt} deal</div>
-                  {d.rev>0&&<div style={{ fontSize:9, color:C.textLight }}>{(d.rev/1000000).toFixed(1)}M EGP</div>}
-                </div>
-              </div>
-              <div style={{ height:3, background:"#F1F5F9", borderRadius:2, marginTop:5 }}><div style={{ height:"100%", width:Math.round(d.cnt/maxCnt*100)+"%", background:i===0?C.success:i===1?"#8B5CF6":C.accent, borderRadius:2 }}/></div>
-            </div>;
-          });
-        })()}
-      </Card>
+
+    <div style={{ display:"flex", gap:4, marginBottom:14, borderBottom:"1px solid #E2E8F0" }}>
+      {tabs.map(function(tb){
+        var active = tab === tb.id;
+        var disabled = !tb.enabled;
+        return <button key={tb.id}
+          onClick={function(){ if(!disabled) setTab(tb.id); }}
+          title={disabled ? "Coming soon" : ""}
+          style={{
+            padding:"9px 16px", border:"none",
+            borderBottom: active ? "2px solid "+C.accent : "2px solid transparent",
+            background:"transparent",
+            color: disabled ? "#CBD5E1" : (active ? C.accent : C.textLight),
+            fontSize:13, fontWeight:600,
+            cursor: disabled ? "not-allowed" : "pointer"
+          }}>
+          {tb.label}
+          {disabled && <span style={{ marginInlineStart:6, fontSize:9, color:"#94A3B8", fontWeight:500 }}>Soon</span>}
+        </button>;
+      })}
     </div>
+
+    {tab === "overview" && <Card style={{ marginBottom:16, padding:"12px 14px" }}>
+      <div style={{ display:"flex", flexWrap:"wrap", gap:10, alignItems:"center" }}>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+          {presets.map(function(pr){
+            var active = filters.preset === pr.id;
+            return <button key={pr.id} onClick={function(){ setPreset(pr.id); }} style={{
+              padding:"5px 10px", borderRadius:7,
+              border:"1px solid", borderColor: active ? C.accent : "#E2E8F0",
+              background: active ? C.accent + "12" : "#fff",
+              color: active ? C.accent : C.textLight,
+              fontSize:11, fontWeight:600, cursor:"pointer"
+            }}>{pr.label}</button>;
+          })}
+        </div>
+
+        <div style={{ width:1, height:22, background:"#E2E8F0" }}/>
+
+        <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+          <input type="date" value={fmtDate(filters.from)}
+            onChange={function(e){ if(e.target.value) setCustomFrom(new Date(e.target.value).getTime()); }}
+            style={{ padding:"4px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:11, background:"#fff" }}/>
+          <span style={{ fontSize:11, color:C.textLight }}>→</span>
+          <input type="date" value={fmtDate(filters.to)}
+            onChange={function(e){ if(e.target.value) setCustomTo(new Date(e.target.value).getTime()); }}
+            style={{ padding:"4px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:11, background:"#fff" }}/>
+        </div>
+
+        <div style={{ width:1, height:22, background:"#E2E8F0" }}/>
+
+        <select value={filters.team}
+          onChange={function(e){ setFilters(function(f){ return Object.assign({},f,{team:e.target.value}); }); }}
+          style={{ padding:"5px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:11, background:"#fff" }}>
+          <option value="">All teams</option>
+          {teamOptions.map(function(u){ return <option key={gid(u)} value={gid(u)}>{u.name} ({u.role==="manager"?"Manager":"Team Leader"})</option>; })}
+        </select>
+
+        <select value={filters.source}
+          onChange={function(e){ setFilters(function(f){ return Object.assign({},f,{source:e.target.value}); }); }}
+          style={{ padding:"5px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:11, background:"#fff" }}>
+          <option value="all">All sources</option>
+          {sourceOptions.map(function(s){ return <option key={s} value={s}>{s}</option>; })}
+        </select>
+
+        <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:11, color:C.textLight, cursor:"pointer" }}>
+          <input type="checkbox" checked={filters.compare}
+            onChange={function(e){ setFilters(function(f){ return Object.assign({},f,{compare:e.target.checked}); }); }}/>
+          Compare to previous period
+        </label>
+
+        <div style={{ flex:1, minWidth:8 }}/>
+        <span style={{ fontSize:11, color:C.textLight }}>{fmtRange()}</span>
+      </div>
+    </Card>}
+
+    {tab === "overview" && <ReportsOverviewBody filters={filters} cu={cu} t={t} token={p.token}/>}
+  </div>;
+};
+
+var ReportsOverviewBody = function(p) {
+  var sections = [
+    { key:"alerts",   title:"Alerts",            height:60 },
+    { key:"kpis",     title:"KPI Cards",         height:120 },
+    { key:"trends",   title:"Trends",            height:240 },
+    { key:"funnel",   title:"Sales Funnel",      height:300 },
+    { key:"sources",  title:"Source ROI",        height:220 },
+    { key:"agents",   title:"Agent Leaderboard", height:340 },
+    { key:"aging",    title:"Lead Aging",        height:120 },
+    { key:"forecast", title:"Forecast",          height:160 }
+  ];
+  return <div>
+    {sections.map(function(s){
+      return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
+        <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
+        <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>
+      </Card>;
+    })}
   </div>;
 };
 
@@ -11034,7 +10992,7 @@ export default function CRMApp() {
       case "eoi": return <EOIPage {...sp}/>;
       case "projects": return <ProjectsPage {...sp}/>;
       case "tasks": return <TasksPage {...sp}/>;
-      case "reports": return <ReportsPage {...sp}/>;
+      case "reports": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <ReportsPage {...sp}/> : <DashboardPage {...sp}/>;
       case "team": return <TeamPage {...sp}/>;
       case "users": return <UsersPage {...sp}/>;
       case "archive": return <ArchivePage {...sp}/>;
