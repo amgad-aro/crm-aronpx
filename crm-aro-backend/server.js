@@ -58,7 +58,8 @@ var User = mongoose.model("User", new mongoose.Schema({
   password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
   role:{type:String,enum:["admin","sales_admin","director","manager","team_leader","sales","viewer"],default:"sales"},
   title:{type:String,default:""}, active:{type:Boolean,default:true},
-  monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, lastActive:{type:Date,default:null}, qTargets:{type:Object,default:{}}, reportsTo:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null}
+  monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, lastActive:{type:Date,default:null}, qTargets:{type:Object,default:{}}, reportsTo:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+  startingDate:{type:Date,default:null}
 },{timestamps:true}));
 
 var Lead = mongoose.model("Lead", new mongoose.Schema({
@@ -509,7 +510,32 @@ async function seedAdmin() {
 }
 
 // ===== AUTH MIDDLEWARE =====
-function auth(req, res, next) {
+// Lightweight in-memory cache of users' active flag. The auth middleware
+// re-checks active on every protected request so admin-driven inactivation
+// takes effect for already-logged-in users without waiting for the 7-day
+// JWT to expire. 30-second TTL bounds DB load; PUT /api/users/:id busts the
+// entry on demand, so admin toggles propagate within milliseconds.
+var userActiveCache = {};
+var USER_ACTIVE_CACHE_TTL_MS = 30 * 1000;
+
+async function checkUserActive(userId) {
+  var cached = userActiveCache[userId];
+  if (cached && (Date.now() - cached.t) < USER_ACTIVE_CACHE_TTL_MS) {
+    return cached.active;
+  }
+  try {
+    var u = await User.findById(userId).select("active").lean();
+    var isActive = u ? u.active !== false : false;
+    userActiveCache[userId] = { active: isActive, t: Date.now() };
+    return isActive;
+  } catch (e) {
+    // Fail open on transient DB errors — locking everyone out on a brief
+    // Atlas hiccup is worse than briefly serving a deactivated user.
+    return true;
+  }
+}
+
+async function auth(req, res, next) {
   var apiKey = req.headers["x-api-key"] || req.query.api_key;
   if (apiKey && apiKey === process.env.INTEGRATION_API_KEY) {
     req.user = { id: "integration", role: "admin", name: "Integration" };
@@ -518,13 +544,18 @@ function auth(req, res, next) {
   var token = req.headers.authorization;
   if (!token) return res.status(401).json({ error: "No token" });
   token = token.replace("Bearer ", "");
+  var decoded;
   try {
-    var decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
   } catch (e) {
     return res.status(401).json({ error: "Invalid token" });
   }
+  var stillActive = await checkUserActive(decoded.id);
+  if (!stillActive) {
+    return res.status(401).json({ error: "Account deactivated", code: "deactivated" });
+  }
+  req.user = decoded;
+  next();
 }
 
 function adminOnly(req, res, next) {
@@ -1453,6 +1484,7 @@ app.post("/api/users", auth, adminOnly, async function(req, res) {
       teamName: teamName,
       monthlyTarget: monthlyTarget,
       reportsTo: reportsTo,
+      startingDate: req.body.startingDate || null,
     });
     var obj = user.toObject();
     delete obj.password;
@@ -1478,7 +1510,13 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     if (req.body.reportsTo !== undefined) update.reportsTo = req.body.reportsTo || null;
     if (req.body.teamId !== undefined) update.teamId = req.body.teamId;
     if (req.body.teamName !== undefined) update.teamName = req.body.teamName;
+    if (req.body.startingDate !== undefined) update.startingDate = req.body.startingDate || null;
     var user = await User.findByIdAndUpdate(req.params.id, { $set: update }, { new: true, strict: false }).select("-password");
+    // Bust the active-flag cache so a just-toggled user is rejected on their
+    // very next request, not after the 30s TTL.
+    if (req.body.active !== undefined) {
+      delete userActiveCache[req.params.id];
+    }
     emitUser(user);
     res.json(user);
   } catch (e) {

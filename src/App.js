@@ -25,6 +25,9 @@ async function apiFetch(path, method, body, token, csrfToken) {
   try { data = await res.json(); } catch(e) { data = {}; }
   if (res.status === 401) {
     try { localStorage.removeItem('crm_aro_session'); } catch(e) {}
+    if (data && data.code === "deactivated") {
+      try { alert("Your account has been deactivated. Please contact admin."); } catch(e){}
+    }
     window.location.reload();
     return;
   }
@@ -7640,7 +7643,7 @@ var ROLE_FOR_TITLE = JOB_TITLES.reduce(function(a,j){ a[j.label]=j.role; return 
 
 var UsersPage = function(p) {
   var t=p.t; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"; var [showAdd,setShowAdd]=useState(false); var [saving,setSaving]=useState(false);
-  var [nU,setNU]=useState({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15,teamId:"",teamName:""});
+  var [nU,setNU]=useState({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15,teamId:"",teamName:"",startingDate:""});
   var [pwModal,setPwModal]=useState(null); // {userId, userName}
   var [pwForm,setPwForm]=useState({newPass:"",confirmPass:""});
   var [pwMsg,setPwMsg]=useState(""); var [pwSaving,setPwSaving]=useState(false);
@@ -7651,8 +7654,9 @@ var UsersPage = function(p) {
   var saveUserEdit=async function(){
     if(!editModal)return; setEditSaving(true);
     try{
-      var upd=await apiFetch("/api/users/"+editModal.userId,"PUT",{title:editModal.title,role:editModal.role},p.token);
-      p.setUsers(function(prev){return prev.map(function(x){return gid(x)===editModal.userId?Object.assign({},x,{title:editModal.title,role:editModal.role}):x;});});
+      var sd=editModal.startingDate||null;
+      var upd=await apiFetch("/api/users/"+editModal.userId,"PUT",{title:editModal.title,role:editModal.role,startingDate:sd},p.token);
+      p.setUsers(function(prev){return prev.map(function(x){return gid(x)===editModal.userId?Object.assign({},x,{title:editModal.title,role:editModal.role,startingDate:sd}):x;});});
       setEditModal(null);
     }catch(e){alert(e.message);} setEditSaving(false);
   };
@@ -7721,7 +7725,7 @@ var UsersPage = function(p) {
         </td>
         <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(u.role!=="admin")toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
         <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:displayName});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} disabled={p.cu.role==="sales_admin"&&u.role==="admin"} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:p.cu.role==="sales_admin"&&u.role==="admin"?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", opacity:p.cu.role==="sales_admin"&&u.role==="admin"?0.3:1 }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button>
-              {isOnlyAdmin&&<button onClick={function(){setEditModal({userId:uid,userName:displayName,title:u.title||"",role:u.role||"sales"});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.edit||"Edit"}><Edit size={12} color={C.accent}/></button>}
+              {isOnlyAdmin&&<button onClick={function(){setEditModal({userId:uid,userName:displayName,title:u.title||"",role:u.role||"sales",startingDate:u.startingDate?String(u.startingDate).slice(0,10):""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.edit||"Edit"}><Edit size={12} color={C.accent}/></button>}
               <button onClick={function(){setTeamModal({userId:uid,userName:u.name,userRole:u.role,teamId:u.teamId||"",teamName:u.teamName||"",reportsTo:u.reportsTo||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Edit Team"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(u.username!=="amgad")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.username!=="amgad"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.username==="amgad"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
       </tr>;})}
       </tbody>
@@ -7757,6 +7761,11 @@ var UsersPage = function(p) {
         onChange={function(e){setEditModal(function(prev){return Object.assign({},prev,{role:e.target.value});});}}
         options={[{value:"admin",label:t.admin},{value:"sales_admin",label:"Sales Admin"},{value:"director",label:"Sales Director"},{value:"manager",label:t.salesManager},{value:"team_leader",label:"Team Leader"},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/>
       <div style={{fontSize:11,color:C.textLight,marginTop:-6,marginBottom:12}}>Selecting a Job Title auto-sets the Role. You can override the Role for edge cases.</div>
+      <div style={{ marginBottom:12 }}>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:5 }}>Starting Date</label>
+        <input type="date" value={editModal.startingDate||""} onChange={function(e){setEditModal(function(prev){return Object.assign({},prev,{startingDate:e.target.value});});}}
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
+      </div>
       <div style={{display:"flex",gap:10}}><Btn outline onClick={function(){setEditModal(null);}} style={{flex:1}}>{t.cancel}</Btn><Btn onClick={saveUserEdit} loading={editSaving} style={{flex:1}}>{t.save}</Btn></div>
     </Modal>}
     {teamModal&&<Modal show={true} onClose={function(){setTeamModal(null);}} title={"👥 Edit Team — "+teamModal.userName}>
@@ -7810,6 +7819,11 @@ var UsersPage = function(p) {
         <Inp label={t.email} value={nU.email} onChange={function(e){setNU(Object.assign({},nU,{email:e.target.value}));}}/>
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.phone} value={nU.phone} onChange={function(e){setNU(Object.assign({},nU,{phone:e.target.value}));}}/></div>
         <Inp label={t.monthlyTarget} type="number" value={nU.monthlyTarget} onChange={function(e){setNU(Object.assign({},nU,{monthlyTarget:Number(e.target.value)}));}}/>
+        <div style={{ marginBottom:12 }}>
+          <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:5 }}>Starting Date</label>
+          <input type="date" value={nU.startingDate||""} onChange={function(e){setNU(Object.assign({},nU,{startingDate:e.target.value}));}}
+            style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
+        </div>
       {(nU.role==="sales"||nU.role==="manager"||nU.role==="team_leader")&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
         <Inp label={"Team Name"} value={nU.teamName||""} onChange={function(e){setNU(Object.assign({},nU,{teamName:e.target.value}));}} placeholder="e.g. Team A"/>
         <Inp label={"Team Code"} value={nU.teamId||""} onChange={function(e){setNU(Object.assign({},nU,{teamId:e.target.value}));}} placeholder="team-a"/>
