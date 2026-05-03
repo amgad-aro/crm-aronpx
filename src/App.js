@@ -2725,13 +2725,48 @@ var LeadsPage = function(p) {
     }
     return null;
   };
+  // Find the slice with the most recent action across all sales who have
+  // held the lead. Used by the table to surface the LAST action's status
+  // and feedback, not whatever the current holder happens to carry.
+  var lastActionSlice = function(lead) {
+    if (!lead || !lead.assignments || !lead.assignments.length) return null;
+    var bestSlice = null;
+    var bestTs = 0;
+    lead.assignments.forEach(function(a){
+      if (!a) return;
+      var maxTs = 0;
+      if (a.lastActionAt) {
+        var t = new Date(a.lastActionAt).getTime();
+        if (t > maxTs) maxTs = t;
+      }
+      var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
+      hist.forEach(function(h){
+        if (!h || !h.type) return;
+        var ht = h.type;
+        if (ht === "status_change" || ht === "feedback_added" || ht === "feedback"
+            || ht === "note" || ht === "call" || ht === "callback_scheduled") {
+          var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
+          if (ts > maxTs) maxTs = ts;
+        }
+      });
+      if (maxTs > bestTs) {
+        bestTs = maxTs;
+        bestSlice = a;
+      }
+    });
+    return bestSlice;
+  };
   var currentStatus = function(lead) {
-    var s = currentHolderSlice(lead);
-    return (s && s.status) ? s.status : ((lead && lead.status) || "NewLead");
+    var s = lastActionSlice(lead);
+    if (s && s.status) return s.status;
+    var holder = currentHolderSlice(lead);
+    if (holder && holder.status) return holder.status;
+    return (lead && lead.status) || "NewLead";
   };
   var currentFeedback = function(lead) {
-    var s = currentHolderSlice(lead);
-    return (s && s.lastFeedback) ? s.lastFeedback : "";
+    var s = lastActionSlice(lead);
+    if (s && s.lastFeedback) return s.lastFeedback;
+    return "";
   };
   // "New Lead" tab is for first-time leads only — current status NewLead AND
   // never rotated AND no action yet taken on the slice. A lead with 2+
