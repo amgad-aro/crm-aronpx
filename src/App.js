@@ -2738,30 +2738,28 @@ var LeadsPage = function(p) {
   var isGenuineNewLead = function(lead) {
     if (!lead) return false;
     if (currentStatus(lead) !== "NewLead") return false;
-    var assignCount = ((lead && lead.assignments) || []).length;
-    if (assignCount > 1) return false;
-    if (lead && lead.rotationCount && lead.rotationCount > 0) return false;
 
-    // No action yet — slice must be pristine.
-    var slice = currentHolderSlice(lead);
-    if (!slice) return true; // no slice yet, definitely fresh
-
-    if (slice.lastFeedback && String(slice.lastFeedback).trim()) return false;
-    if (slice.notes && String(slice.notes).trim()) return false;
-    if (slice.callbackTime) return false;
-
-    var hist = Array.isArray(slice.agentHistory) ? slice.agentHistory : [];
-    var hasAction = hist.some(function(h){
-      if (!h || !h.type) return false;
-      var t = h.type;
-      return t === "status_change"
-          || t === "feedback_added" || t === "feedback"
-          || t === "note"
-          || t === "call"
-          || t === "callback_scheduled";
-    });
-    if (hasAction) return false;
-
+    // Walk every slice (current and historical). If any slice shows any
+    // action, the lead has been worked on and is no longer "new".
+    var slices = (lead && lead.assignments) || [];
+    for (var i = 0; i < slices.length; i++) {
+      var s = slices[i];
+      if (!s) continue;
+      if (s.lastFeedback && String(s.lastFeedback).trim()) return false;
+      if (s.notes && String(s.notes).trim()) return false;
+      if (s.callbackTime) return false;
+      var hist = Array.isArray(s.agentHistory) ? s.agentHistory : [];
+      var hasAction = hist.some(function(h){
+        if (!h || !h.type) return false;
+        var t = h.type;
+        return t === "status_change"
+            || t === "feedback_added" || t === "feedback"
+            || t === "note"
+            || t === "call"
+            || t === "callback_scheduled";
+      });
+      if (hasAction) return false;
+    }
     return true;
   };
   // Most recent activity timestamp the date-filter chips should respect.
