@@ -8504,6 +8504,108 @@ var TrendsChart = function(p) {
   </Card>;
 };
 
+var SalesFunnel = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var f = p.filters;
+
+  useEffect(function() {
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/overview/funnel" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.from, f.to, f.team, f.source]);
+
+  var headerRow = <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10, flexWrap:"wrap", gap:8 }}>
+    <div style={{ fontSize:13, fontWeight:700 }}>🌪 Sales Funnel</div>
+    <div style={{ fontSize:10, color:C.textLight, fontStyle:"italic" }}>Of leads created in this period</div>
+  </div>;
+
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      {headerRow}
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load: {state.error}</div>
+    </Card>;
+  }
+  if (state.loading || !state.data) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px", minHeight:300 }}>
+      {headerRow}
+      {[0,1,2,3,4].map(function(i){
+        return <div key={i} style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14 }}>
+          <div style={{ width:90, height:14, background:"#F1F5F9", borderRadius:4 }}/>
+          <div style={{ flex:1, height:24, background:"#F1F5F9", borderRadius:4, width:(100 - i*18) + "%" }}/>
+          <div style={{ width:60, height:14, background:"#F1F5F9", borderRadius:4 }}/>
+        </div>;
+      })}
+    </Card>;
+  }
+
+  var stages = (state.data && state.data.stages) || [];
+  var bottleneckKey = state.data && state.data.bottleneckKey;
+  var total = stages[0] ? stages[0].count : 0;
+
+  if (total === 0) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      {headerRow}
+      <div style={{ height:160, display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, fontSize:13 }}>No leads in this period</div>
+    </Card>;
+  }
+
+  // Purple → green gradient across the 5 stages.
+  var stageColors = ["#8B5CF6", "#6366F1", "#3B82F6", "#10B981", "#16A34A"];
+
+  var fmtDays = function(d){
+    if (d == null) return null;
+    if (d < 0.1) return "<0.1d";
+    return d.toFixed(1) + "d";
+  };
+
+  return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+    {headerRow}
+    <div>
+      {stages.map(function(s, i){
+        var prop = total > 0 ? s.count / total : 0;
+        var isBottle = s.key === bottleneckKey;
+        var color = stageColors[i] || C.accent;
+        var dayLabel = fmtDays(s.avgDays);
+        return <div key={s.key} style={{ marginBottom:10 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:90, fontSize:12, fontWeight:600, color:C.text }}>{s.label}</div>
+            <div style={{ flex:1, position:"relative", height:24 }}>
+              <svg viewBox="0 0 100 24" preserveAspectRatio="none" style={{ width:"100%", height:"100%", display:"block" }}>
+                <rect x={0} y={4} width={Math.max(0.5, prop * 100)} height={16} fill={color} rx={3}/>
+              </svg>
+            </div>
+            <div style={{ width:80, textAlign:"right", fontSize:13, fontWeight:700, color:C.text }}>{s.count.toLocaleString()}</div>
+          </div>
+          {i > 0 && <div style={{ fontSize:11, color:C.textLight, paddingLeft:102, marginTop:3, display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
+            <span><b style={{ color:C.text }}>{s.conversionPct == null ? "—" : s.conversionPct.toFixed(1) + "%"}</b> conversion</span>
+            <span style={{ color: isBottle ? "#DC2626" : C.textLight, fontWeight: isBottle ? 700 : 500 }}>
+              {s.dropOffPct == null ? "—" : "−" + s.dropOffPct.toFixed(1) + "% drop-off"}{isBottle ? " ⚠" : ""}
+            </span>
+            {dayLabel && <span style={{ color:C.textLight }}>~{dayLabel} avg</span>}
+          </div>}
+        </div>;
+      })}
+    </div>
+    {bottleneckKey && (function(){
+      var bIdx = -1;
+      for (var i = 0; i < stages.length; i++) { if (stages[i].key === bottleneckKey) { bIdx = i; break; } }
+      if (bIdx < 1) return null;
+      var b = stages[bIdx], prev = stages[bIdx - 1];
+      return <div style={{ marginTop:14, padding:"10px 12px", background:"#FEF2F2", border:"1px solid #FECACA", borderRadius:8, fontSize:12, color:"#991B1B" }}>
+        <b>⚠ Bottleneck: {prev.label} → {b.label}</b>
+        {b.dropOffPct != null && <span> · {b.dropOffPct.toFixed(1)}% drop off here</span>}
+        {b.avgDays != null && <span> · avg {b.avgDays.toFixed(1)} days in stage</span>}
+      </div>;
+    })()}
+  </Card>;
+};
+
 // ===== REPORTS =====
 var ReportsPage = function(p) {
   var t = p.t;
@@ -8705,6 +8807,7 @@ var ReportsOverviewBody = function(p) {
     {sections.map(function(s){
       if (s.key === "kpis") return <KpiCardsRow key="kpis" filters={p.filters} token={p.token}/>;
       if (s.key === "trends") return <TrendsChart key="trends" filters={p.filters} token={p.token}/>;
+      if (s.key === "funnel") return <SalesFunnel key="funnel" filters={p.filters} token={p.token}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>

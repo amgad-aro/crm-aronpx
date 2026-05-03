@@ -5992,6 +5992,236 @@ app.get("/api/reports/overview/trends", auth, reportsAuth, async function(req, r
   }
 });
 
+// GET /api/reports/overview/funnel
+// Returns the conversion funnel for leads CREATED in the period:
+// Total Leads → Contacted → Meeting → EOI → Deal. Each stage has
+// count, conversion %, drop-off %, and (Lead-side only) avg days
+// from the previous stage's transition.
+//
+// Stage definitions (per user spec):
+//   - Total: leads created in period (Lead native + DR; mirrors excluded
+//     when source filter is null/non-DR; skip Lead entirely when source
+//     filter is "Daily Request" so we don't double-count via mirrors).
+//   - Contacted: status != "NewLead" OR any assignments[].lastActionAt
+//     is set. (DR has no assignments[]; uses status check only.)
+//   - Meeting: hadMeeting === true. (Both collections have this flag.)
+//   - EOI: globalStatus="eoi" OR status="EOI" OR eoiDate set.
+//   - Deal: (status="DoneDeal" OR globalStatus="donedeal") AND
+//     dealStatus != "Deal Cancelled".
+//
+// Avg-days source: Lead-side timestamp markers (earliest of
+// assignments[].lastActionAt for "contacted-at", meetingDoneAt for
+// "meeting-at", parsed eoiDate / dealDate for "eoi-at" / "deal-at").
+// Negative deltas filtered out; $avg ignores nulls so each stage's
+// average is computed only over leads that reached BOTH the previous
+// and current stage. DR contributes to counts only — DR has no
+// assignments[]/lastActionAt and its lastActivityTime gets bumped on
+// every edit, so it isn't a reliable "first-contact" proxy. If a more
+// precise per-stage timing is wanted later, walk lead.history[]
+// status_change events instead.
+//
+// Bottleneck: the stage (after Total Leads) with the highest drop-off
+// percentage; ties broken by longest avgDays.
+//
+// NB: Funnel "Deal" count uses createdAt-in-period (not dealAt), so it
+// will diverge from the KPIs endpoint's deal count when leads close
+// across period boundaries. The frontend should label this as
+// "of leads created in this period".
+app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var includeLead = sourceFilter !== "Daily Request";
+    var includeDR   = !sourceFilter || sourceFilter === "Daily Request";
+
+    var leadMatch = {
+      archived: false,
+      createdAt: { $gte: fromDate, $lt: toDate }
+    };
+    if (sourceFilter && sourceFilter !== "Daily Request") {
+      leadMatch.source = sourceFilter;
+    } else {
+      leadMatch.source = { $ne: "Daily Request" };
+    }
+    if (scopeIds) leadMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+    var drMatch = {
+      archived: { $ne: true },
+      createdAt: { $gte: fromDate, $lt: toDate }
+    };
+    if (scopeIds) drMatch.agentId = { $in: scopeIds };
+
+    var DAY_MS = 86400000;
+
+    var leadAggP = includeLead ? Lead.aggregate([
+      { $match: leadMatch },
+      { $addFields: {
+          earliestLastActionAt: { $min: "$assignments.lastActionAt" },
+          eoiAt: { $cond: [
+            { $and: [{ $ne: ["$eoiDate", ""] }, { $ne: ["$eoiDate", null] }] },
+            { $toDate: "$eoiDate" },
+            null
+          ]},
+          dealAtFunnel: { $cond: [
+            { $and: [{ $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] }] },
+            { $toDate: "$dealDate" },
+            null
+          ]}
+      }},
+      { $addFields: {
+          isContacted: { $or: [
+            { $ne: ["$status", "NewLead"] },
+            { $anyElementTrue: { $map: { input: { $ifNull: ["$assignments", []] }, as: "a", in: { $ne: ["$$a.lastActionAt", null] } } } }
+          ]},
+          isMeeting: { $eq: ["$hadMeeting", true] },
+          isEoi: { $or: [
+            { $eq: ["$globalStatus", "eoi"] },
+            { $eq: ["$status", "EOI"] },
+            { $and: [{ $ne: ["$eoiDate", ""] }, { $ne: ["$eoiDate", null] }] }
+          ]},
+          isDeal: { $and: [
+            { $or: [
+              { $eq: ["$status", "DoneDeal"] },
+              { $eq: ["$globalStatus", "donedeal"] }
+            ]},
+            { $ne: ["$dealStatus", "Deal Cancelled"] }
+          ]}
+      }},
+      { $addFields: {
+          dContact: { $cond: [
+            { $and: [
+              { $ne: ["$earliestLastActionAt", null] },
+              { $gte: [{ $subtract: ["$earliestLastActionAt", "$createdAt"] }, 0] }
+            ]},
+            { $divide: [{ $subtract: ["$earliestLastActionAt", "$createdAt"] }, DAY_MS] },
+            null
+          ]},
+          dMeeting: { $cond: [
+            { $and: [
+              { $eq: ["$hadMeeting", true] },
+              { $ne: ["$meetingDoneAt", null] },
+              { $ne: ["$earliestLastActionAt", null] },
+              { $gte: [{ $subtract: ["$meetingDoneAt", "$earliestLastActionAt"] }, 0] }
+            ]},
+            { $divide: [{ $subtract: ["$meetingDoneAt", "$earliestLastActionAt"] }, DAY_MS] },
+            null
+          ]},
+          dEoi: { $cond: [
+            { $and: [
+              { $ne: ["$eoiAt", null] },
+              { $ne: ["$meetingDoneAt", null] },
+              { $gte: [{ $subtract: ["$eoiAt", "$meetingDoneAt"] }, 0] }
+            ]},
+            { $divide: [{ $subtract: ["$eoiAt", "$meetingDoneAt"] }, DAY_MS] },
+            null
+          ]},
+          dDeal: { $cond: [
+            { $and: [
+              { $ne: ["$dealAtFunnel", null] },
+              { $ne: ["$eoiAt", null] },
+              { $gte: [{ $subtract: ["$dealAtFunnel", "$eoiAt"] }, 0] }
+            ]},
+            { $divide: [{ $subtract: ["$dealAtFunnel", "$eoiAt"] }, DAY_MS] },
+            null
+          ]}
+      }},
+      { $group: {
+          _id: null,
+          total: { $sum: 1 },
+          contacted: { $sum: { $cond: ["$isContacted", 1, 0] } },
+          meeting:   { $sum: { $cond: ["$isMeeting",   1, 0] } },
+          eoi:       { $sum: { $cond: ["$isEoi",       1, 0] } },
+          deal:      { $sum: { $cond: ["$isDeal",      1, 0] } },
+          avgContact: { $avg: "$dContact" },
+          avgMeeting: { $avg: "$dMeeting" },
+          avgEoi:     { $avg: "$dEoi" },
+          avgDeal:    { $avg: "$dDeal" }
+      }}
+    ]) : Promise.resolve([]);
+
+    var drAggP = includeDR ? DailyRequest.aggregate([
+      { $match: drMatch },
+      { $addFields: {
+          isContacted: { $ne: ["$status", "NewLead"] },
+          isMeeting:   { $eq: ["$hadMeeting", true] },
+          isEoi: { $or: [
+            { $eq: ["$status", "EOI"] },
+            { $and: [{ $ne: ["$eoiDate", ""] }, { $ne: ["$eoiDate", null] }] }
+          ]},
+          isDeal: { $and: [
+            { $eq: ["$status", "DoneDeal"] },
+            { $ne: ["$dealStatus", "Deal Cancelled"] }
+          ]}
+      }},
+      { $group: {
+          _id: null,
+          total: { $sum: 1 },
+          contacted: { $sum: { $cond: ["$isContacted", 1, 0] } },
+          meeting:   { $sum: { $cond: ["$isMeeting",   1, 0] } },
+          eoi:       { $sum: { $cond: ["$isEoi",       1, 0] } },
+          deal:      { $sum: { $cond: ["$isDeal",      1, 0] } }
+      }}
+    ]) : Promise.resolve([]);
+
+    var parts = await Promise.all([leadAggP, drAggP]);
+    var leadR = (parts[0] || [])[0] || {};
+    var drR   = (parts[1] || [])[0] || {};
+
+    var pull = function(o, k){ return Number(o && o[k]) || 0; };
+
+    var totalCount     = pull(leadR, "total")     + pull(drR, "total");
+    var contactedCount = pull(leadR, "contacted") + pull(drR, "contacted");
+    var meetingCount   = pull(leadR, "meeting")   + pull(drR, "meeting");
+    var eoiCount       = pull(leadR, "eoi")       + pull(drR, "eoi");
+    var dealCount      = pull(leadR, "deal")      + pull(drR, "deal");
+
+    var convPct = function(cur, prev){
+      if (!prev || prev === 0) return null;
+      return Math.round((cur / prev) * 1000) / 10;
+    };
+    var dropPct = function(cur, prev){
+      var c = convPct(cur, prev);
+      return c == null ? null : Math.round((100 - c) * 10) / 10;
+    };
+    var rd = function(v){ return v == null ? null : Math.round(v * 10) / 10; };
+
+    var stages = [
+      { key: "leads",     label: "Total Leads", count: totalCount,     conversionPct: null,                                  dropOffPct: null,                                  avgDays: null },
+      { key: "contacted", label: "Contacted",   count: contactedCount, conversionPct: convPct(contactedCount, totalCount),   dropOffPct: dropPct(contactedCount, totalCount),   avgDays: rd(leadR.avgContact) },
+      { key: "meeting",   label: "Meeting",     count: meetingCount,   conversionPct: convPct(meetingCount,   contactedCount),dropOffPct: dropPct(meetingCount,   contactedCount),avgDays: rd(leadR.avgMeeting) },
+      { key: "eoi",       label: "EOI",         count: eoiCount,       conversionPct: convPct(eoiCount,       meetingCount), dropOffPct: dropPct(eoiCount,       meetingCount), avgDays: rd(leadR.avgEoi) },
+      { key: "deal",      label: "Deal",        count: dealCount,      conversionPct: convPct(dealCount,      eoiCount),     dropOffPct: dropPct(dealCount,      eoiCount),     avgDays: rd(leadR.avgDeal) }
+    ];
+
+    // Bottleneck: stage (after Total) with biggest drop-off; ties broken by longest avgDays.
+    var bottleneckKey = null, worstDrop = -1, worstAvg = -1;
+    for (var i = 1; i < stages.length; i++) {
+      var s = stages[i];
+      if (s.dropOffPct == null) continue;
+      var avg = s.avgDays || 0;
+      if (s.dropOffPct > worstDrop || (s.dropOffPct === worstDrop && avg > worstAvg)) {
+        worstDrop = s.dropOffPct;
+        worstAvg = avg;
+        bottleneckKey = s.key;
+      }
+    }
+
+    res.json({
+      range: { from: fromDate.toISOString(), to: toDate.toISOString() },
+      stages: stages,
+      bottleneckKey: bottleneckKey,
+      avgDaysSource: "lead-timestamps"
+    });
+  } catch (e) {
+    console.error("[reports/overview/funnel]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "funnel_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);
