@@ -8522,7 +8522,7 @@ var SalesFunnel = function(p) {
 
   var headerRow = <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10, flexWrap:"wrap", gap:8 }}>
     <div style={{ fontSize:13, fontWeight:700 }}>🌪 Sales Funnel</div>
-    <div style={{ fontSize:10, color:C.textLight, fontStyle:"italic" }}>Of leads created in this period</div>
+    <div style={{ fontSize:10, color:C.textLight, fontStyle:"italic", textAlign:"right" }}>Conversion of leads created in this period (deals from older leads appear in Revenue KPI)</div>
   </div>;
 
   if (state.error) {
@@ -8551,7 +8551,10 @@ var SalesFunnel = function(p) {
   if (total === 0) {
     return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
       {headerRow}
-      <div style={{ height:160, display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, fontSize:13 }}>No leads in this period</div>
+      <div style={{ height:160, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", color:C.textLight, fontSize:13, padding:"0 24px", textAlign:"center", gap:6 }}>
+        <div style={{ fontWeight:600, color:C.text }}>No new leads created in this period.</div>
+        <div style={{ fontSize:12 }}>Pick a different range, or check Revenue KPI for deals from older leads.</div>
+      </div>
     </Card>;
   }
 
