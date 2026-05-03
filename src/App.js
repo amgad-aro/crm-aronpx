@@ -8350,6 +8350,160 @@ var KpiCardsRow = function(p) {
   </div>;
 };
 
+var TrendsChart = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var [hoverIdx, setHoverIdx] = useState(null);
+  var f = p.filters;
+
+  useEffect(function() {
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/overview/trends" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.from, f.to, f.team, f.source]);
+
+  // SVG geometry — viewBox-based so the chart scales fluidly with container width.
+  var W = 800, H = 220;
+  var padL = 44, padR = 16, padT = 12, padB = 28;
+  var plotW = W - padL - padR;
+  var plotH = H - padT - padB;
+
+  // Calls aren't source-filtered server-side (Activity has no source attribution).
+  // Surface this in the legend whenever a specific source filter is active so users
+  // don't expect the calls line to drop alongside leads/deals.
+  var sourceFiltered = f.source && f.source !== "all";
+  var headerRow = <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8, flexWrap:"wrap", gap:8 }}>
+    <div style={{ fontSize:13, fontWeight:700 }}>📈 Trends</div>
+    <div style={{ display:"flex", gap:14, fontSize:11, color:C.textLight }}>
+      <span style={{ display:"flex", alignItems:"center", gap:5 }}><span style={{ width:14, height:2, background:"#3B82F6", borderRadius:1 }}/>Leads</span>
+      <span style={{ display:"flex", alignItems:"center", gap:5 }}><span style={{ width:14, height:2, background:"#16A34A", borderRadius:1 }}/>Deals</span>
+      <span title={sourceFiltered ? "Calls aren't filtered by source — Activity logs don't carry source attribution" : ""} style={{ display:"flex", alignItems:"center", gap:5, cursor: sourceFiltered ? "help" : "default" }}><span style={{ width:14, height:2, background:"#F59E0B", borderRadius:1 }}/>Calls{sourceFiltered ? " (all sources)" : ""}</span>
+    </div>
+  </div>;
+
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      {headerRow}
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load: {state.error}</div>
+    </Card>;
+  }
+  if (state.loading || !state.data) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px", minHeight:240 }}>
+      {headerRow}
+      <div style={{ height:200, background:"#F1F5F9", borderRadius:6 }}/>
+    </Card>;
+  }
+
+  var series = (state.data && state.data.series) || [];
+  var n = series.length;
+
+  if (n === 0) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      {headerRow}
+      <div style={{ position:"relative" }}>
+        <svg viewBox={"0 0 " + W + " " + H} style={{ width:"100%", height:H, display:"block" }}>
+          {[0, 0.5, 1].map(function(t){
+            var y = padT + plotH - t * plotH;
+            return <line key={t} x1={padL} y1={y} x2={W - padR} y2={y} stroke="#E2E8F0" strokeWidth={0.5}/>;
+          })}
+        </svg>
+        <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, fontSize:13, pointerEvents:"none" }}>No activity in this period</div>
+      </div>
+    </Card>;
+  }
+
+  var maxLeads = Math.max.apply(null, series.map(function(s){ return s.leads; }));
+  var maxDeals = Math.max.apply(null, series.map(function(s){ return s.deals; }));
+  var maxCalls = Math.max.apply(null, series.map(function(s){ return s.calls; }));
+  var maxAll = Math.max(1, maxLeads, maxDeals, maxCalls);
+
+  var stepX = n > 1 ? plotW / (n - 1) : plotW;
+
+  var pts = function(key) {
+    return series.map(function(s, i){
+      var x = padL + i * stepX;
+      var y = padT + plotH - (s[key] / maxAll) * plotH;
+      return x.toFixed(1) + "," + y.toFixed(1);
+    }).join(" ");
+  };
+
+  var nLabels = Math.min(7, n);
+  var labelStride = n > 1 ? Math.max(1, Math.floor((n - 1) / Math.max(1, nLabels - 1))) : 1;
+  var fmtAxisDate = function(iso) { return new Date(iso).toLocaleDateString("en-GB", { month: "short", day: "numeric" }); };
+
+  var setIdxFromX = function(clientX, rect) {
+    var svgX = ((clientX - rect.left) / rect.width) * W;
+    if (svgX < padL || svgX > padL + plotW) { setHoverIdx(null); return; }
+    var idx = Math.round((svgX - padL) / stepX);
+    idx = Math.max(0, Math.min(n - 1, idx));
+    setHoverIdx(idx);
+  };
+  var onMouseMove = function(e) { setIdxFromX(e.clientX, e.currentTarget.getBoundingClientRect()); };
+  var onTouchMove = function(e) {
+    if (!e.touches || !e.touches[0]) return;
+    setIdxFromX(e.touches[0].clientX, e.currentTarget.getBoundingClientRect());
+  };
+
+  return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+    {headerRow}
+    <div style={{ position:"relative" }}>
+      <svg viewBox={"0 0 " + W + " " + H} style={{ width:"100%", height:H, display:"block" }}
+        onMouseMove={onMouseMove} onMouseLeave={function(){ setHoverIdx(null); }}
+        onTouchStart={onTouchMove} onTouchMove={onTouchMove}>
+        {[0, 0.5, 1].map(function(t){
+          var y = padT + plotH - t * plotH;
+          return <g key={t}>
+            <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="#E2E8F0" strokeWidth={0.5}/>
+            <text x={padL - 6} y={y + 3} textAnchor="end" fontSize={10} fill="#94A3B8">{Math.round(maxAll * t)}</text>
+          </g>;
+        })}
+        {(function(){
+          var labels = [];
+          var seen = {};
+          for (var i = 0; i < n; i += labelStride) {
+            seen[i] = true;
+            var x = padL + i * stepX;
+            labels.push(<text key={i} x={x} y={H - 8} textAnchor="middle" fontSize={10} fill="#94A3B8">{fmtAxisDate(series[i].date)}</text>);
+          }
+          if (!seen[n - 1] && n > 0) {
+            var lx = padL + (n - 1) * stepX;
+            labels.push(<text key={"last-"+(n-1)} x={lx} y={H - 8} textAnchor="middle" fontSize={10} fill="#94A3B8">{fmtAxisDate(series[n - 1].date)}</text>);
+          }
+          return labels;
+        })()}
+        {hoverIdx != null && <line x1={padL + hoverIdx * stepX} y1={padT} x2={padL + hoverIdx * stepX} y2={padT + plotH} stroke="#94A3B8" strokeWidth={0.5} strokeDasharray="3 3"/>}
+        <polyline fill="none" stroke="#3B82F6" strokeWidth={1.8} points={pts("leads")} strokeLinecap="round" strokeLinejoin="round"/>
+        <polyline fill="none" stroke="#16A34A" strokeWidth={1.8} points={pts("deals")} strokeLinecap="round" strokeLinejoin="round"/>
+        <polyline fill="none" stroke="#F59E0B" strokeWidth={1.8} points={pts("calls")} strokeLinecap="round" strokeLinejoin="round"/>
+        {hoverIdx != null && (function(){
+          var s = series[hoverIdx];
+          var x = padL + hoverIdx * stepX;
+          var y = function(key){ return padT + plotH - (s[key] / maxAll) * plotH; };
+          return <g>
+            <circle cx={x} cy={y("leads")} r={3.5} fill="#fff" stroke="#3B82F6" strokeWidth={2}/>
+            <circle cx={x} cy={y("deals")} r={3.5} fill="#fff" stroke="#16A34A" strokeWidth={2}/>
+            <circle cx={x} cy={y("calls")} r={3.5} fill="#fff" stroke="#F59E0B" strokeWidth={2}/>
+          </g>;
+        })()}
+      </svg>
+      {hoverIdx != null && (function(){
+        var s = series[hoverIdx];
+        return <div style={{ position:"absolute", top:8, right:8, background:"#fff", border:"1px solid #E2E8F0", borderRadius:8, padding:"8px 10px", fontSize:11, boxShadow:"0 4px 12px rgba(0,0,0,0.08)", minWidth:140, pointerEvents:"none" }}>
+          <div style={{ fontWeight:700, color:C.text, marginBottom:6 }}>{new Date(s.date).toLocaleDateString("en-GB", { weekday:"short", month:"short", day:"numeric" })}</div>
+          <div style={{ display:"flex", justifyContent:"space-between", color:C.textLight, gap:12 }}><span><span style={{ display:"inline-block", width:8, height:8, borderRadius:"50%", background:"#3B82F6", marginRight:6 }}/>Leads</span><b style={{ color:"#3B82F6" }}>{s.leads}</b></div>
+          <div style={{ display:"flex", justifyContent:"space-between", color:C.textLight, gap:12 }}><span><span style={{ display:"inline-block", width:8, height:8, borderRadius:"50%", background:"#16A34A", marginRight:6 }}/>Deals</span><b style={{ color:"#16A34A" }}>{s.deals}</b></div>
+          <div style={{ display:"flex", justifyContent:"space-between", color:C.textLight, gap:12 }}><span><span style={{ display:"inline-block", width:8, height:8, borderRadius:"50%", background:"#F59E0B", marginRight:6 }}/>Calls</span><b style={{ color:"#F59E0B" }}>{s.calls}</b></div>
+        </div>;
+      })()}
+    </div>
+  </Card>;
+};
+
 // ===== REPORTS =====
 var ReportsPage = function(p) {
   var t = p.t;
@@ -8550,6 +8704,7 @@ var ReportsOverviewBody = function(p) {
   return <div>
     {sections.map(function(s){
       if (s.key === "kpis") return <KpiCardsRow key="kpis" filters={p.filters} token={p.token}/>;
+      if (s.key === "trends") return <TrendsChart key="trends" filters={p.filters} token={p.token}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>

@@ -5872,6 +5872,126 @@ app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res
   }
 });
 
+// GET /api/reports/overview/trends
+// Daily (or weekly for ranges > 31d) buckets of three time series:
+//   - leads created (Lead native intake + DR intake — same union as the
+//     KPI conversion denominator).
+//   - deals closed (Lead.DoneDeal with dealStatus != "Deal Cancelled",
+//     dealAt = dealDate(parsed) || updatedAt). Lead-only — DR DoneDeals
+//     are counted via their Lead mirrors.
+//   - calls made (Activity where type === "call").
+// Source filter applies to leads/deals (same case-split as KPIs); calls
+// are not source-filtered — Activity has no source attribution and a
+// per-request $lookup would be expensive. Callers should treat calls as
+// a global activity series, not a per-source one.
+app.get("/api/reports/overview/trends", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var includeDR = !sourceFilter || sourceFilter === "Daily Request";
+
+    var leadMatch = { archived: false };
+    if (sourceFilter) leadMatch.source = sourceFilter;
+    if (scopeIds) leadMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+    var drMatch = { archived: { $ne: true }, createdAt: { $gte: fromDate, $lt: toDate }};
+    if (scopeIds) drMatch.agentId = { $in: scopeIds };
+
+    var activityMatch = { type: "call", createdAt: { $gte: fromDate, $lt: toDate }};
+    if (scopeIds) activityMatch.userId = { $in: scopeIds };
+
+    var rangeMs = range.to - range.from;
+    var bucketUnit = rangeMs <= 31 * 86400000 ? "day" : "week";
+    var truncBy = function(field){ return { $dateTrunc: { date: field, unit: bucketUnit, startOfWeek: "saturday" }}; };
+
+    var leadAggP = Lead.aggregate([
+      { $match: leadMatch },
+      { $addFields: {
+          dealAt: { $cond: [
+            { $and: [{ $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] }] },
+            { $toDate: "$dealDate" },
+            "$updatedAt"
+          ]}
+      }},
+      { $facet: {
+          dealsPerBucket: [
+            { $match: { status: "DoneDeal", dealStatus: { $ne: "Deal Cancelled" }, dealAt: { $gte: fromDate, $lt: toDate }}},
+            { $group: { _id: truncBy("$dealAt"), count: { $sum: 1 }}},
+            { $sort: { _id: 1 }}
+          ],
+          intakePerBucket: [
+            { $match: { createdAt: { $gte: fromDate, $lt: toDate }, source: { $ne: "Daily Request" }}},
+            { $group: { _id: truncBy("$createdAt"), count: { $sum: 1 }}},
+            { $sort: { _id: 1 }}
+          ]
+      }}
+    ]);
+
+    var drAggP = includeDR ? DailyRequest.aggregate([
+      { $match: drMatch },
+      { $group: { _id: truncBy("$createdAt"), count: { $sum: 1 }}},
+      { $sort: { _id: 1 }}
+    ]) : Promise.resolve([]);
+
+    var actAggP = Activity.aggregate([
+      { $match: activityMatch },
+      { $group: { _id: truncBy("$createdAt"), count: { $sum: 1 }}},
+      { $sort: { _id: 1 }}
+    ]);
+
+    var parts = await Promise.all([leadAggP, drAggP, actAggP]);
+    var leadR = parts[0][0] || {};
+    var drArr = parts[1] || [];
+    var actArr = parts[2] || [];
+
+    var lookupBy = function(arr){
+      var m = {};
+      (arr || []).forEach(function(b){ m[new Date(b._id).getTime()] = b; });
+      return m;
+    };
+    var leadDealsByB  = lookupBy(leadR.dealsPerBucket);
+    var leadIntakeByB = lookupBy(leadR.intakePerBucket);
+    var drIntakeByB   = lookupBy(drArr);
+    var callsByB      = lookupBy(actArr);
+
+    // Build the bucket sequence in UTC so the JS-side keys match $dateTrunc's
+    // rounded values. Same logic the KPIs endpoint uses for its sparklines.
+    var DAY_MS = 86400000;
+    var bucketStart;
+    var fd = new Date(fromDate);
+    var fdUTC = Date.UTC(fd.getUTCFullYear(), fd.getUTCMonth(), fd.getUTCDate());
+    if (bucketUnit === "day") {
+      bucketStart = fdUTC;
+    } else {
+      var dow = new Date(fdUTC).getUTCDay();
+      var daysSinceSat = (dow - 6 + 7) % 7;
+      bucketStart = fdUTC - daysSinceSat * DAY_MS;
+    }
+    var stepMs = bucketUnit === "day" ? DAY_MS : 7 * DAY_MS;
+    var buckets = [];
+    for (var bm = bucketStart; bm < range.to; bm += stepMs) buckets.push(bm);
+
+    var series = buckets.map(function(t){
+      var leadsCount = ((leadIntakeByB[t] || {}).count || 0) + ((drIntakeByB[t] || {}).count || 0);
+      var dealsCount = (leadDealsByB[t] || {}).count || 0;
+      var callsCount = (callsByB[t] || {}).count || 0;
+      return { date: new Date(t).toISOString().slice(0,10), leads: leadsCount, deals: dealsCount, calls: callsCount };
+    });
+
+    res.json({
+      range: { from: fromDate.toISOString(), to: toDate.toISOString(), bucketUnit: bucketUnit, buckets: buckets.length },
+      series: series
+    });
+  } catch (e) {
+    console.error("[reports/overview/trends]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "trends_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);
