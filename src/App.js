@@ -2725,48 +2725,69 @@ var LeadsPage = function(p) {
     }
     return null;
   };
-  // Find the slice with the most recent action across all sales who have
-  // held the lead. Used by the table to surface the LAST action's status
-  // and feedback, not whatever the current holder happens to carry.
-  var lastActionSlice = function(lead) {
-    if (!lead || !lead.assignments || !lead.assignments.length) return null;
-    var bestSlice = null;
-    var bestTs = 0;
-    lead.assignments.forEach(function(a){
+  // Phase OO-3: latest-wins. Walk every assignment slice's agentHistory and
+  // pick the most recent status_change / feedback event across all sales who
+  // ever held the lead. No slice prioritization, no fallback chains beyond
+  // top-level lead.status when nothing has ever been recorded.
+  var currentStatus = function(lead) {
+    if (!lead) return "NewLead";
+    var latestStatus = null;
+    var latestStatusTs = 0;
+    (lead.assignments || []).forEach(function(a){
       if (!a) return;
-      var maxTs = 0;
-      if (a.lastActionAt) {
-        var t = new Date(a.lastActionAt).getTime();
-        if (t > maxTs) maxTs = t;
-      }
       var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
       hist.forEach(function(h){
-        if (!h || !h.type) return;
-        var ht = h.type;
-        if (ht === "status_change" || ht === "feedback_added" || ht === "feedback"
-            || ht === "note" || ht === "call" || ht === "callback_scheduled") {
-          var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
-          if (ts > maxTs) maxTs = ts;
+        if (!h || h.type !== "status_change") return;
+        var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
+        if (ts <= latestStatusTs) return;
+        var s = h.status || h.toStatus;
+        if (!s && h.note) {
+          var m = String(h.note).match(/Status:\s*(\w+)/i);
+          if (m) s = m[1];
+        }
+        if (s) {
+          latestStatus = s;
+          latestStatusTs = ts;
         }
       });
-      if (maxTs > bestTs) {
-        bestTs = maxTs;
-        bestSlice = a;
+      if (a.status && a.lastActionAt) {
+        var t = new Date(a.lastActionAt).getTime();
+        if (t > latestStatusTs) {
+          latestStatus = a.status;
+          latestStatusTs = t;
+        }
       }
     });
-    return bestSlice;
-  };
-  var currentStatus = function(lead) {
-    var s = lastActionSlice(lead);
-    if (s && s.status) return s.status;
-    var holder = currentHolderSlice(lead);
-    if (holder && holder.status) return holder.status;
-    return (lead && lead.status) || "NewLead";
+    if (latestStatus) return latestStatus;
+    return lead.status || "NewLead";
   };
   var currentFeedback = function(lead) {
-    var s = lastActionSlice(lead);
-    if (s && s.lastFeedback) return s.lastFeedback;
-    return "";
+    if (!lead) return "";
+    var latestFeedback = "";
+    var latestFeedbackTs = 0;
+    (lead.assignments || []).forEach(function(a){
+      if (!a) return;
+      var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
+      hist.forEach(function(h){
+        if (!h) return;
+        if (h.type !== "feedback" && h.type !== "feedback_added") return;
+        var content = String(h.note || h.feedback || "").trim();
+        if (!content) return;
+        var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
+        if (ts > latestFeedbackTs) {
+          latestFeedbackTs = ts;
+          latestFeedback = content;
+        }
+      });
+      if (a.lastFeedback && String(a.lastFeedback).trim() && a.lastActionAt) {
+        var t = new Date(a.lastActionAt).getTime();
+        if (t > latestFeedbackTs) {
+          latestFeedbackTs = t;
+          latestFeedback = String(a.lastFeedback).trim();
+        }
+      }
+    });
+    return latestFeedback;
   };
   // "New Lead" tab is for first-time leads only — current status NewLead AND
   // never rotated AND no action yet taken on the slice. A lead with 2+
