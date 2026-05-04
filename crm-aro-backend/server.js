@@ -7984,6 +7984,120 @@ app.get("/api/reports/pipeline/at-risk", auth, reportsAuth, async function(req, 
   }
 });
 
+// GET /api/reports/pipeline/by-project
+// Hybrid table: per-project open snapshot (count + value) merged with
+// per-project closed totals over the selected date range. Lead-only,
+// mirrors excluded.
+//
+// Open columns (snapshot, ignores range):
+//   status IN [NewLead, Potential, HotCase, CallBack, MeetingDone]
+// Closed columns (range-scoped on parsed dealDate):
+//   status = DoneDeal AND dealStatus != "Deal Cancelled"
+//   AND dealAt IN [from, to)   (dealDate parsed; falls back to
+//                               updatedAt — matches Phase 1 convention)
+//
+// Source filter case-split mirrors /pipeline/kpis. The empty-string
+// project bucket is preserved as its own row (frontend renders it as
+// "(no project)").
+//
+// Response cap: top 50 by openValue desc; total reflects the
+// unfiltered project count so the UI labels "View all N" honestly.
+app.get("/api/reports/pipeline/by-project", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var pipelineStatuses = ["NewLead", "Potential", "HotCase", "CallBack", "MeetingDone"];
+
+    var leadMatch = { archived: false };
+    if (sourceFilter) leadMatch.source = sourceFilter;
+    else              leadMatch.source = { $ne: "Daily Request" };
+    if (scopeIds) leadMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+
+    var rows = await Lead.aggregate([
+      { $match: leadMatch },
+      { $addFields: {
+          budgetNum: budgetNumExpr,
+          dealAt: { $cond: [
+            { $and: [{ $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] }] },
+            { $toDate: "$dealDate" },
+            "$updatedAt"
+          ]},
+          // Coerce missing/null project to "" so empty-project leads
+          // group into a single bucket the frontend can label.
+          projectKey: { $ifNull: ["$project", ""] }
+      }},
+      { $facet: {
+          open: [
+            { $match: { status: { $in: pipelineStatuses }}},
+            { $group: { _id: "$projectKey", count: { $sum: 1 }, value: { $sum: "$budgetNum" }}}
+          ],
+          closed: [
+            { $match: {
+                status: "DoneDeal",
+                dealStatus: { $ne: "Deal Cancelled" },
+                dealAt: { $gte: fromDate, $lt: toDate }
+            }},
+            { $group: { _id: "$projectKey", count: { $sum: 1 }, revenue: { $sum: "$budgetNum" }}}
+          ]
+      }}
+    ]);
+
+    var first = rows[0] || {};
+    var openMap = {};
+    (first.open || []).forEach(function(r){
+      openMap[r._id || ""] = { count: Number(r.count) || 0, value: Number(r.value) || 0 };
+    });
+    var closedMap = {};
+    (first.closed || []).forEach(function(r){
+      closedMap[r._id || ""] = { count: Number(r.count) || 0, revenue: Number(r.revenue) || 0 };
+    });
+
+    var allKeys = {};
+    Object.keys(openMap).forEach(function(k){ allKeys[k] = true; });
+    Object.keys(closedMap).forEach(function(k){ allKeys[k] = true; });
+
+    var projects = Object.keys(allKeys).map(function(k){
+      var o = openMap[k]   || { count: 0, value: 0 };
+      var c = closedMap[k] || { count: 0, revenue: 0 };
+      return {
+        project:      k,
+        openCount:    o.count,
+        openValue:    Math.round(o.value),
+        dealsCount:   c.count,
+        dealsRevenue: Math.round(c.revenue)
+      };
+    });
+
+    // Sort by open value desc; ties broken by closed revenue desc, then
+    // alphabetical project name for determinism.
+    projects.sort(function(a, b){
+      if (b.openValue !== a.openValue)       return b.openValue - a.openValue;
+      if (b.dealsRevenue !== a.dealsRevenue) return b.dealsRevenue - a.dealsRevenue;
+      return (a.project || "").localeCompare(b.project || "");
+    });
+
+    var total = projects.length;
+    var capped = projects.slice(0, 50);
+
+    res.json({
+      range: { from: range.from, to: range.to },
+      projects: capped,
+      total: total
+    });
+  } catch (e) {
+    console.error("[reports/pipeline/by-project]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "pipeline_by_project_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);

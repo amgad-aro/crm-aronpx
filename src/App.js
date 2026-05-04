@@ -2943,6 +2943,7 @@ var LeadsPage = function(p) {
         if (spT==="noRotation") return (l.assignments||[]).some(function(a){ return a.noRotation===true; });
         if (spT==="rotatedThisMonth") return (l.agentHistory||[]).some(function(h){ return h && h.date && new Date(h.date).getTime() >= monthStartMs; });
         if (spT==="interested") return l.status==="HotCase" || l.status==="Potential";
+        if (spT==="project") return (l.project || "") === (p.specialFilter.value || "");
         if (spT==="aging") {
           // Reports → Lead Aging drill-down. UNION of two real-contact
           // sources, mirrors the backend pipeline exactly:
@@ -3283,6 +3284,9 @@ var LeadsPage = function(p) {
       if (typeof aMin === "number") return "Aging: " + aMin + "+ days no contact";
       if (typeof aMax === "number") return "Aging: under " + aMax + " days no contact";
       return "Aging filter";
+    }
+    if (p.specialFilter.type === "project") {
+      return "Project: " + (p.specialFilter.value || "(no project)");
     }
     var m = {untouched:"Untouched leads (no activity since assignment)",missingFeedback:"Missing feedback (empty notes)",stale48h:"Stale leads \u2014 no activity 48h+",noRotation:"Locked leads (noRotation flag)",rotatedThisMonth:"Rotated this month",interested:"Interested leads (HotCase + Potential)"};
     return m[p.specialFilter.type]||p.specialFilter.type;
@@ -9688,6 +9692,98 @@ var DealsAtRiskTable = function(p) {
   </Card>;
 };
 
+var PipelineByProjectTable = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var [expanded, setExpanded] = useState(false);
+  var f = p.filters;
+
+  useEffect(function() {
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/pipeline/by-project" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.from, f.to, f.team, f.source]);
+
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load pipeline by project: {state.error}</div>
+    </Card>;
+  }
+
+  var skel = state.loading || !state.data;
+  var projects = (state.data && state.data.projects) || [];
+  var total = (state.data && state.data.total) || 0;
+  var visible = expanded ? projects.slice(0, 50) : projects.slice(0, 12);
+
+  var openProject = function(projectName) {
+    if (p.setSpecialFilter) p.setSpecialFilter({ type: "project", value: projectName || "" });
+    if (p.setFilter) p.setFilter("all");
+    if (p.nav) p.nav("leads");
+  };
+
+  var thStyle = { textAlign:"left", padding:"6px 8px", fontWeight:600, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em", fontSize:10 };
+  var thRight = Object.assign({}, thStyle, { textAlign:"right" });
+
+  return <Card style={{ marginBottom:14, padding:"12px 14px" }}>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:4, flexWrap:"wrap", gap:8 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:C.text }}>Pipeline by project</div>
+      {!skel && <div style={{ fontSize:11, color:C.textLight }}>{total} {total === 1 ? "project" : "projects"}</div>}
+    </div>
+    <div style={{ fontSize:10, color:"#94A3B8", marginBottom:8 }}>
+      Open columns reflect current snapshot · Closed columns reflect selected date range
+    </div>
+
+    {skel && [0,1,2,3,4].map(function(i){ return <div key={i} style={{ height:32, marginBottom:6, background:"#F1F5F9", borderRadius:6 }}/>; })}
+
+    {!skel && projects.length === 0 && <div style={{ fontSize:12, color:C.textLight, padding:"24px 8px", textAlign:"center" }}>
+      No projects with pipeline activity.
+    </div>}
+
+    {!skel && projects.length > 0 && <div>
+      <div style={{ overflowX:"auto" }}>
+        <table style={{ width:"100%", fontSize:11, borderCollapse:"collapse" }}>
+          <thead>
+            <tr style={{ borderBottom:"1px solid #E2E8F0" }}>
+              <th style={thStyle}>Project</th>
+              <th style={thRight}>Open</th>
+              <th style={thRight}>Open value</th>
+              <th style={thRight}>Closed</th>
+              <th style={thRight}>Revenue</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map(function(pr, i){
+              var displayName = pr.project || "(no project)";
+              var isEmpty = !pr.project;
+              return <tr key={(pr.project || "_") + "-" + i}
+                onClick={function(){ openProject(pr.project); }}
+                onMouseEnter={function(e){ e.currentTarget.style.background = "#F8FAFC"; }}
+                onMouseLeave={function(e){ e.currentTarget.style.background = "transparent"; }}
+                style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer" }}>
+                <td style={{ padding:"8px", color: isEmpty ? C.textLight : C.text, fontWeight:600, fontStyle: isEmpty ? "italic" : "normal" }}>{displayName}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.text }}>{pr.openCount}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.text }}>{pr.openValue > 0 ? fmtEGP(pr.openValue) : "—"}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.textLight }}>{pr.dealsCount}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.textLight }}>{pr.dealsRevenue > 0 ? fmtEGP(pr.dealsRevenue) : "—"}</td>
+              </tr>;
+            })}
+          </tbody>
+        </table>
+      </div>
+      {!expanded && total > 12 && <div style={{ marginTop:8, textAlign:"center" }}>
+        <button onClick={function(){ setExpanded(true); }} style={{
+          background:"none", border:"none", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", padding:"6px 12px"
+        }}>View all {total > 50 ? "(top 50 of " + total + ")" : total} projects →</button>
+      </div>}
+    </div>}
+  </Card>;
+};
+
 var ReportsPipelineBody = function(p) {
   var sections = [
     { key:"kpis",      title:"Pipeline KPIs",       height:120 },
@@ -9701,6 +9797,7 @@ var ReportsPipelineBody = function(p) {
       if (s.key === "kpis") return <PipelineKpiRow key="kpis" filters={p.filters} token={p.token}/>;
       if (s.key === "byStage") return <PipelineByStageRow key="byStage" filters={p.filters} token={p.token} nav={p.nav} setFilter={p.setFilter}/>;
       if (s.key === "atRisk") return <DealsAtRiskTable key="atRisk" filters={p.filters} token={p.token} nav={p.nav}/>;
+      if (s.key === "byProject") return <PipelineByProjectTable key="byProject" filters={p.filters} token={p.token} nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>
