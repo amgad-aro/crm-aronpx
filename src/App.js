@@ -6347,6 +6347,22 @@ var DealsPage = function(p) {
   var [projWeights,setProjWeights]=useState(function(){
     var w={};deals.forEach(function(d){if(d.project)w[d.project]=getProjectWeight(d.project);});return w;
   });
+  // Phase 2 Slice 2 — one-shot localStorage → AppSetting migration state.
+  // serverProjWeights: null = unloaded / fetch failed, {} = loaded empty
+  // (button can show), populated = already migrated (button hides).
+  var [serverProjWeights,setServerProjWeights]=useState(null);
+  var [migrating,setMigrating]=useState(false);
+  // Re-fetch the AppSetting state every time the modal opens so a recent
+  // migration on another browser (or the rotation broadcast) updates the
+  // local view before the button-visibility check runs.
+  useEffect(function(){
+    if (!projWeightModal) return;
+    setServerProjWeights(null);
+    apiFetch("/api/settings/project-weights","GET",null,p.token)
+      .then(function(d){ setServerProjWeights((d && typeof d === "object") ? d : {}); })
+      .catch(function(){ /* leave null — button stays hidden when we can't reach the server */ });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[projWeightModal]);
   var [dateFrom,setDateFrom]=useState(""); var [dateTo,setDateTo]=useState(""); var [dealSearch,setDealSearch]=useState(""); var [dealAgent,setDealAgent]=useState("");
   var curYear=new Date().getFullYear(); var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
   var dealYears=[curYear,curYear-1,curYear-2,curYear-3];
@@ -6579,6 +6595,53 @@ var DealsPage = function(p) {
       <div style={{ fontSize:12, color:C.textLight, marginBottom:12, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>
         100% = fully counted in Target & Commission<br/>50% = counted as half in Target & Commission
       </div>
+      {/* Phase 2 Slice 2 — one-shot migration banner. Shows only when the
+          server-side AppSetting is empty AND this browser's localStorage
+          carries non-default weights. After successful migration we set
+          serverProjWeights so the banner self-hides on next render. */}
+      {(function(){
+        if (!serverProjWeights || Object.keys(serverProjWeights).length > 0) return null;
+        // Build the localStorage map by encoding each known project name —
+        // safer than reverse-decoding underscored keys (project names with
+        // genuine underscores would be lossy under the old encoding).
+        var lsWeights = {};
+        var seen = {};
+        deals.forEach(function(d){
+          if (!d.project || seen[d.project]) return;
+          seen[d.project] = true;
+          try {
+            var raw = localStorage.getItem("crm_proj_weight_" + d.project.replace(/\s/g,"_"));
+            if (raw === null) return;
+            var w = parseFloat(raw);
+            if (isFinite(w) && w >= 0 && w <= 1 && w !== 1) lsWeights[d.project] = w;
+          } catch(e){}
+        });
+        var lsKeys = Object.keys(lsWeights);
+        if (lsKeys.length === 0) return null;
+        var doMigrate = async function(){
+          var preview = lsKeys.map(function(k){ return "  • " + k + " — " + Math.round(lsWeights[k] * 100) + "%"; }).join("\n");
+          if (!window.confirm("Migrate " + lsKeys.length + " local project weight" + (lsKeys.length===1?"":"s") + " to the server?\n\n" + preview + "\n\nThis becomes the source of truth across all admins.")) return;
+          setMigrating(true);
+          try {
+            var res = await apiFetch("/api/settings/project-weights","PUT",lsWeights,p.token);
+            // Set to a populated map so the banner hides on next render.
+            setServerProjWeights((res && typeof res === "object" && Object.keys(res).length > 0) ? res : lsWeights);
+            window.alert("Migrated " + lsKeys.length + " weight" + (lsKeys.length===1?"":"s") + " to the server. All admins now see these values.");
+          } catch(e) {
+            window.alert("Migration failed: " + (e && e.message ? e.message : "unknown error"));
+          }
+          setMigrating(false);
+        };
+        return <div style={{ background:"#FEF3C7", border:"1px solid #FDE68A", borderRadius:8, padding:"10px 12px", marginBottom:12 }}>
+          <div style={{ fontSize:12, color:"#92400E", fontWeight:700, marginBottom:4 }}>⚠️ Local-only weights detected</div>
+          <div style={{ fontSize:11, color:"#78350F", marginBottom:8, lineHeight:1.45 }}>
+            You have {lsKeys.length} project weight{lsKeys.length===1?"":"s"} stored only in this browser. Migrate to the server so all admins see the same values.
+          </div>
+          <button onClick={doMigrate} disabled={migrating} style={{ background: migrating ? "#A8A29E" : "#B45309", color:"#fff", border:"none", borderRadius:7, fontSize:12, fontWeight:600, padding:"6px 12px", cursor: migrating ? "wait" : "pointer" }}>
+            {migrating ? "Migrating…" : "Migrate weights to server"}
+          </button>
+        </div>;
+      })()}
       {(function(){var projects=[];deals.forEach(function(d){if(d.project&&!projects.includes(d.project))projects.push(d.project);});return projects.map(function(proj){
         var w=getProjectWeight(proj);
         var saveWeight=async function(newW){
