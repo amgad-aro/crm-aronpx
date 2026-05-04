@@ -7779,16 +7779,12 @@ app.get("/api/reports/pipeline/by-stage", auth, reportsAuth, async function(req,
                 { $eq: ["$type", "status_change"] }
             ]}}},
             { $addFields: {
-                notePrefix: { $substrBytes: [
-                  { $ifNull: ["$note", ""] },
-                  0,
-                  { $add: [{ $strLenBytes: "$$curStatus" }, 2] }
-                ]}
+                stageMatch: { $regexFind: { input: { $ifNull: ["$note", ""] }, regex: /^\[([^\]]+)\]/ }}
             }},
-            { $match: { $expr: { $eq: [
-                "$notePrefix",
-                { $concat: ["[", "$$curStatus", "]"] }
-            ]}}},
+            { $addFields: {
+                matchedStage: { $arrayElemAt: ["$stageMatch.captures", 0] }
+            }},
+            { $match: { $expr: { $eq: ["$matchedStage", "$$curStatus"] }}},
             { $sort: { createdAt: -1 }},
             { $limit: 1 },
             { $project: { _id: 0, createdAt: 1 }}
