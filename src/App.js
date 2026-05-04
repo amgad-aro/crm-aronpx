@@ -8620,6 +8620,86 @@ var SalesFunnel = function(p) {
   </Card>;
 };
 
+var SourceRoiList = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var f = p.filters;
+
+  useEffect(function() {
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/overview/source-roi" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.from, f.to, f.team, f.source]);
+
+  var headerRow = <div style={{ fontSize:13, fontWeight:700, marginBottom:10 }}>📊 Source ROI</div>;
+
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      {headerRow}
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load: {state.error}</div>
+    </Card>;
+  }
+  if (state.loading || !state.data) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px", minHeight:220 }}>
+      {headerRow}
+      {[0,1,2,3,4].map(function(i){
+        return <div key={i} style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14 }}>
+          <div style={{ width:120, height:14, background:"#F1F5F9", borderRadius:4 }}/>
+          <div style={{ flex:1, height:14, background:"#F1F5F9", borderRadius:4 }}/>
+          <div style={{ width:60, height:14, background:"#F1F5F9", borderRadius:4 }}/>
+          <div style={{ width:90, height:14, background:"#F1F5F9", borderRadius:4 }}/>
+        </div>;
+      })}
+    </Card>;
+  }
+
+  var sources = (state.data && state.data.sources) || [];
+
+  if (sources.length === 0) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      {headerRow}
+      <div style={{ height:160, display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, fontSize:13 }}>No leads from any source in this period</div>
+    </Card>;
+  }
+
+  // Heat-map color thresholds per spec: ≥10% green, 3-10% amber, <3% red.
+  var convColor = function(pct){
+    if (pct >= 10) return "#16A34A";
+    if (pct >= 3)  return "#F59E0B";
+    return "#DC2626";
+  };
+
+  return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+    {headerRow}
+    {sources.map(function(s, i){
+      var color = convColor(s.conversionPct);
+      // Bar width = absolute conversion % capped at 100. A 10% conv reads as
+      // a 10%-wide bar — same scale across all sources for direct comparison.
+      var barWidth = Math.max(0.5, Math.min(100, s.conversionPct));
+      return <div key={s.source} style={{ marginBottom: i < sources.length - 1 ? 12 : 0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+          <div style={{ width:120, fontSize:12, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={s.source}>{s.source}</div>
+          <div style={{ flex:1, position:"relative", height:18 }}>
+            <svg viewBox="0 0 100 18" preserveAspectRatio="none" style={{ width:"100%", height:"100%", display:"block" }}>
+              <rect x={0} y={4} width={barWidth} height={10} fill={color} rx={2}/>
+            </svg>
+          </div>
+          <div style={{ width:54, textAlign:"right", fontSize:12, fontWeight:700, color:color }}>{s.conversionPct.toFixed(1)}%</div>
+          <div style={{ width:90, textAlign:"right", fontSize:12, fontWeight:700, color:C.success }}>{fmtEGP(s.revenue)}</div>
+        </div>
+        <div style={{ fontSize:11, color:C.textLight, paddingLeft:132, marginTop:3 }}>
+          {s.leadCount.toLocaleString()} lead{s.leadCount === 1 ? "" : "s"} · {s.dealCount.toLocaleString()} deal{s.dealCount === 1 ? "" : "s"}
+        </div>
+      </div>;
+    })}
+  </Card>;
+};
+
 // ===== REPORTS =====
 var ReportsPage = function(p) {
   var t = p.t;
@@ -8822,6 +8902,7 @@ var ReportsOverviewBody = function(p) {
       if (s.key === "kpis") return <KpiCardsRow key="kpis" filters={p.filters} token={p.token}/>;
       if (s.key === "trends") return <TrendsChart key="trends" filters={p.filters} token={p.token}/>;
       if (s.key === "funnel") return <SalesFunnel key="funnel" filters={p.filters} token={p.token}/>;
+      if (s.key === "sources") return <SourceRoiList key="sources" filters={p.filters} token={p.token}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>

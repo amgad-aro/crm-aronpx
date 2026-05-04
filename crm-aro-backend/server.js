@@ -6297,6 +6297,132 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
   }
 });
 
+// GET /api/reports/overview/source-roi
+// Per-source intake/conversion/revenue, scoped to leads CREATED in the period.
+//
+// Cohort math (matches Funnel convention): each row's deals/revenue come
+// from the SAME leads counted in leadCount. Conversion % = deals/leads*100;
+// can never exceed 100. Revenue uses raw budget (no projectWeight, no split
+// halving) — matches the Step 2 "raw matches DealsPage admin gross" decision.
+//
+// Two parallel aggregations:
+//   - Lead.aggregate, $group by source (excluding "Daily Request" mirrors).
+//   - DailyRequest.aggregate, single "Daily Request" group.
+// Same source-filter case-split as kpis/trends/funnel. Source list is
+// dynamic — only sources present in the period appear.
+//
+// Deal predicate mirrors DealsPage activeDeals exactly:
+// (status="DoneDeal" OR globalStatus="donedeal") AND dealStatus != "Deal
+// Cancelled" AND status != "Deal Cancelled". On the DR side, drop the
+// globalStatus clause (DR has no globalStatus).
+//
+// Sorted by revenue desc, then leadCount desc as tiebreaker.
+app.get("/api/reports/overview/source-roi", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var includeLead = sourceFilter !== "Daily Request";
+    var includeDR   = !sourceFilter || sourceFilter === "Daily Request";
+
+    var leadMatch = {
+      archived: false,
+      createdAt: { $gte: fromDate, $lt: toDate }
+    };
+    if (sourceFilter && sourceFilter !== "Daily Request") {
+      leadMatch.source = sourceFilter;
+    } else {
+      leadMatch.source = { $ne: "Daily Request" };
+    }
+    if (scopeIds) leadMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+    var drMatch = {
+      archived: { $ne: true },
+      createdAt: { $gte: fromDate, $lt: toDate }
+    };
+    if (scopeIds) drMatch.agentId = { $in: scopeIds };
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+
+    var leadAggP = includeLead ? Lead.aggregate([
+      { $match: leadMatch },
+      { $addFields: {
+          budgetNum: budgetNumExpr,
+          isDeal: { $and: [
+            { $or: [
+              { $eq: ["$status", "DoneDeal"] },
+              { $eq: ["$globalStatus", "donedeal"] }
+            ]},
+            { $ne: ["$dealStatus", "Deal Cancelled"] },
+            { $ne: ["$status", "Deal Cancelled"] }
+          ]}
+      }},
+      { $group: {
+          _id: { $ifNull: ["$source", "Unknown"] },
+          leadCount: { $sum: 1 },
+          dealCount: { $sum: { $cond: ["$isDeal", 1, 0] }},
+          revenue:   { $sum: { $cond: ["$isDeal", "$budgetNum", 0] }}
+      }}
+    ]) : Promise.resolve([]);
+
+    var drAggP = includeDR ? DailyRequest.aggregate([
+      { $match: drMatch },
+      { $addFields: {
+          budgetNum: budgetNumExpr,
+          isDeal: { $and: [
+            { $eq: ["$status", "DoneDeal"] },
+            { $ne: ["$dealStatus", "Deal Cancelled"] },
+            { $ne: ["$status", "Deal Cancelled"] }
+          ]}
+      }},
+      { $group: {
+          _id: "Daily Request",
+          leadCount: { $sum: 1 },
+          dealCount: { $sum: { $cond: ["$isDeal", 1, 0] }},
+          revenue:   { $sum: { $cond: ["$isDeal", "$budgetNum", 0] }}
+      }}
+    ]) : Promise.resolve([]);
+
+    var parts = await Promise.all([leadAggP, drAggP]);
+    var leadGroups = parts[0] || [];
+    var drGroups = parts[1] || [];
+
+    var rows = leadGroups.concat(drGroups).map(function(g){
+      var leads = Number(g.leadCount) || 0;
+      var deals = Number(g.dealCount) || 0;
+      var rev = Number(g.revenue) || 0;
+      var src = g._id;
+      if (src == null || src === "") src = "Unknown";
+      return {
+        source: src,
+        leadCount: leads,
+        dealCount: deals,
+        conversionPct: leads > 0 ? Math.round((deals / leads) * 1000) / 10 : 0,
+        revenue: Math.round(rev)
+      };
+    });
+
+    rows.sort(function(a, b){
+      if (b.revenue !== a.revenue) return b.revenue - a.revenue;
+      return b.leadCount - a.leadCount;
+    });
+
+    res.json({
+      range: { from: fromDate.toISOString(), to: toDate.toISOString() },
+      sources: rows
+    });
+  } catch (e) {
+    console.error("[reports/overview/source-roi]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "source_roi_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);
