@@ -2944,12 +2944,27 @@ var LeadsPage = function(p) {
         if (spT==="rotatedThisMonth") return (l.agentHistory||[]).some(function(h){ return h && h.date && new Date(h.date).getTime() >= monthStartMs; });
         if (spT==="interested") return l.status==="HotCase" || l.status==="Potential";
         if (spT==="aging") {
-          // Reports → Lead Aging drill-down. ageMin / ageMax are in days,
-          // measured against lead.lastActivityTime (or createdAt as a
-          // defensive fallback). Same field the backend /reports/overview/aging
-          // endpoint buckets on, so counts reconcile.
-          var lastT = l.lastActivityTime ? new Date(l.lastActivityTime).getTime()
-                    : (l.createdAt ? new Date(l.createdAt).getTime() : 0);
+          // Reports → Lead Aging drill-down. Mirrors the backend pipeline
+          // exactly: pick the current holder's assignments slice (matched
+          // by slice.agentId === lead.agentId, latest match wins for
+          // rotated-back leads) and use its lastActionAt. Top-level
+          // lastActivityTime is polluted by cross-agent writes / rotations
+          // and only kicks in as a fallback for legacy leads; createdAt is
+          // the final fallback. Same precedence as the rotation sweeper.
+          var aid = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
+          var aidStr = aid ? String(aid) : "";
+          var curSlice = null;
+          if (aidStr) {
+            var asg = l.assignments || [];
+            for (var i2 = asg.length - 1; i2 >= 0; i2--) {
+              var sa = asg[i2] && asg[i2].agentId;
+              var sid = sa && sa._id ? sa._id : sa;
+              if (sid && String(sid) === aidStr) { curSlice = asg[i2]; break; }
+            }
+          }
+          var lastT = (curSlice && curSlice.lastActionAt) ? new Date(curSlice.lastActionAt).getTime()
+                    : (l.lastActivityTime ? new Date(l.lastActivityTime).getTime()
+                    : (l.createdAt ? new Date(l.createdAt).getTime() : 0));
           var ageDays = (nowMs - lastT) / 86400000;
           var aMin = (typeof p.specialFilter.ageMin === "number") ? p.specialFilter.ageMin : -Infinity;
           var aMax = (typeof p.specialFilter.ageMax === "number") ? p.specialFilter.ageMax : Infinity;
@@ -8898,7 +8913,7 @@ var LeadAgingBuckets = function(p) {
 
   var headerRow = <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:4 }}>
     <div style={{ fontSize:13, fontWeight:700 }}>⏱️ Lead Aging</div>
-    <div title="Excludes done deals, active EOIs, not interested, and cancelled deals. Counts active leads only."
+    <div title="Excludes done deals, active EOIs, not interested, and cancelled deals. Uses the agent's last logged action (call, meeting, feedback) — not system events like rotations or admin edits."
          style={{ fontSize:11, color:C.textLight, cursor:"help" }}>ⓘ</div>
   </div>;
 

@@ -6712,10 +6712,15 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
 // Team scope applied via agentId / splitAgent2Id $or, same shape as
 // the other reports endpoints.
 //
-// "Last contact" timestamp = lastActivityTime — populated by the schema
-// default and bumped on every PUT / rotation / status-change / EOI cancel
-// / deal cancel / deal convert handler in this file. Defensive fallback
-// to createdAt for any legacy doc that may have lost it.
+// "Last contact" — current holder's assignments[] slice's lastActionAt,
+// matched by slice.agentId === lead.agentId. The top-level lastActivityTime
+// is bumped by cross-agent writes (bulk reassign, mirror sync, every admin
+// edit) and is the same field the rotation eligibility code already
+// abandoned for the same reason (see the "polluted by cross-agent writes"
+// comment in the frontend rotation sweeper). Fallback chain — slice
+// lastActionAt → top-level lastActivityTime → createdAt — so legacy leads
+// pre-assignments[] still anchor somewhere. The $arrayElemAt -1 picks the
+// MOST RECENT slice when a lead has been rotated back to the same agent.
 //
 // Response also includes filters[bucketKey] objects the frontend hands
 // straight to setSpecialFilter so the Leads page can re-apply the same
@@ -6748,7 +6753,28 @@ app.get("/api/reports/overview/aging", auth, reportsAuth, async function(req, re
 
     var groups = await Lead.aggregate([
       { $match: match },
-      { $addFields: { lastContact: { $ifNull: ["$lastActivityTime", "$createdAt"] }}},
+      { $addFields: {
+          // Per-current-holder slice lookup. $filter retains every slice that
+          // belongs to the current agentId (rotated-back-to-same-agent leaves
+          // multiple); $arrayElemAt -1 picks the latest. $ifNull then falls
+          // back through lastActivityTime and createdAt for legacy docs.
+          lastContact: { $let: {
+            vars: {
+              curSlice: { $arrayElemAt: [
+                { $filter: {
+                    input: { $ifNull: ["$assignments", []] },
+                    as: "a",
+                    cond: { $eq: ["$$a.agentId", "$agentId"] }
+                }},
+                -1
+              ]}
+            },
+            in: { $ifNull: [
+              "$$curSlice.lastActionAt",
+              { $ifNull: ["$lastActivityTime", "$createdAt"] }
+            ]}
+          }}
+      }},
       { $addFields: { ageDays: { $divide: [{ $subtract: [nowDate, "$lastContact"] }, DAY_MS] }}},
       { $addFields: {
           bucketKey: { $switch: {
