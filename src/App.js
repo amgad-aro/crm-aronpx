@@ -9784,6 +9784,82 @@ var PipelineByProjectTable = function(p) {
   </Card>;
 };
 
+var OutcomeBreakdown = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var f = p.filters;
+
+  useEffect(function() {
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/pipeline/outcomes" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.from, f.to, f.team, f.source]);
+
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load outcome breakdown: {state.error}</div>
+    </Card>;
+  }
+
+  var skel = state.loading || !state.data;
+  var d = state.data || {};
+  var won = d.won || { count:0, value:0, avgDaysToResolve:0 };
+  var ni  = d.lostNotInterested || { count:0, value:0, avgDaysToResolve:0 };
+  var na  = d.lostNoAnswer || { count:0, value:0, avgDaysToResolve:0 };
+  var total = d.totalResolved || 0;
+  var winRate = total > 0 ? (won.count / total) * 100 : 0;
+
+  var buckets = [
+    { key:"won", label:"Won (Done Deal)",       color:"#10B981", tint:"rgba(16, 185, 129, 0.10)", data:won },
+    { key:"ni",  label:"Lost — Not Interested", color:"#DC2626", tint:"rgba(220, 38, 38, 0.10)",  data:ni  },
+    { key:"na",  label:"Lost — No Answer",      color:"#64748B", tint:"rgba(100, 116, 139, 0.10)",data:na  }
+  ];
+
+  var fmtDays = function(v){ var n = Number(v) || 0; return n < 1 ? n.toFixed(1) + " d" : Math.round(n) + " d"; };
+  var methodologyTooltip = "Buckets count leads whose current status is the resolved state and whose resolution date falls in the selected range. Resolution: dealDate (parsed) for Won; updatedAt for Lost (proxy — no explicit lostAt field, so leads edited after being lost can register on the edit date). Lead-only, mirrors excluded.";
+
+  return <Card style={{ marginBottom:14, padding:"12px 14px" }}>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10, flexWrap:"wrap", gap:8 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:C.text, display:"flex", alignItems:"center", gap:6 }}>
+        <span>Outcome breakdown</span>
+        <span title={methodologyTooltip} style={{ cursor:"help", color:"#94A3B8", fontSize:10, fontWeight:700 }}>ⓘ</span>
+      </div>
+      {!skel && <div style={{ fontSize:11, color:C.textLight }}>{total} {total === 1 ? "lead" : "leads"} resolved in range</div>}
+    </div>
+
+    {!skel && total === 0 && <div style={{ fontSize:12, color:C.textLight, padding:"24px 8px", textAlign:"center" }}>
+      No leads resolved in this period.
+    </div>}
+
+    {(skel || total > 0) && <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:10 }}>
+      {buckets.map(function(b){
+        return <div key={b.key} style={{
+          background:b.tint, border:"1px solid " + b.color + "33", borderRadius:10,
+          padding:"12px 14px", minHeight:130, display:"flex", flexDirection:"column", gap:6
+        }}>
+          <div style={{ fontSize:11, fontWeight:700, color:b.color, textTransform:"uppercase", letterSpacing:"0.04em" }}>{b.label}</div>
+          {skel
+            ? <div style={{ height:24, marginTop:4, borderRadius:4, background:"#E2E8F0", width:"50%" }}/>
+            : <div style={{ fontSize:24, fontWeight:800, color:C.text }}>{b.data.count}</div>}
+          {!skel && <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{b.data.value > 0 ? fmtEGP(b.data.value) : "—"}</div>}
+          {!skel && <div style={{ fontSize:10, color:"#94A3B8", marginTop:"auto" }}>
+            {b.data.count > 0 ? ("avg " + fmtDays(b.data.avgDaysToResolve) + " to resolve") : "no leads in this bucket"}
+          </div>}
+        </div>;
+      })}
+    </div>}
+
+    {!skel && total > 0 && <div style={{ fontSize:11, color:C.textLight, marginTop:10, textAlign:"right" }}>
+      Win rate: <span style={{ fontWeight:700, color:"#10B981" }}>{winRate.toFixed(1)}%</span> <span style={{ color:"#94A3B8" }}>({won.count} / {total})</span>
+    </div>}
+  </Card>;
+};
+
 var ReportsPipelineBody = function(p) {
   var sections = [
     { key:"kpis",      title:"Pipeline KPIs",       height:120 },
@@ -9798,6 +9874,7 @@ var ReportsPipelineBody = function(p) {
       if (s.key === "byStage") return <PipelineByStageRow key="byStage" filters={p.filters} token={p.token} nav={p.nav} setFilter={p.setFilter}/>;
       if (s.key === "atRisk") return <DealsAtRiskTable key="atRisk" filters={p.filters} token={p.token} nav={p.nav}/>;
       if (s.key === "byProject") return <PipelineByProjectTable key="byProject" filters={p.filters} token={p.token} nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>;
+      if (s.key === "outcomes") return <OutcomeBreakdown key="outcomes" filters={p.filters} token={p.token}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>

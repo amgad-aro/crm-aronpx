@@ -8098,6 +8098,108 @@ app.get("/api/reports/pipeline/by-project", auth, reportsAuth, async function(re
   }
 });
 
+// GET /api/reports/pipeline/outcomes
+// Three resolution buckets over the selected date range — Won (DoneDeal),
+// Lost — Not Interested, Lost — No Answer. Lead-only, mirrors excluded.
+// Each bucket emits count, total raw budget, and avg days to resolve.
+//
+// Resolution-date semantics:
+//   - Won:  parsed dealDate (fallback to updatedAt) in [from, to)
+//           — same dealAt expression as /pipeline/kpis and /by-project,
+//           so Won counts here reconcile with Slice 1's winRatePct.won
+//           and Slice 4's per-project dealsCount sum.
+//   - Lost: updatedAt in [from, to). Approximate — there's no explicit
+//           lostAt field, so a lead edited after being lost will show
+//           the edit date instead of the loss date. Best available
+//           signal until a lossDate field is added.
+//
+// avgDaysToResolve = avg over bucket of (resolutionDate - createdAt) days.
+// Negative values (createdAt > resolutionDate, possible from clock skew
+// or import oddities) are filtered out before averaging — same guard
+// the velocity calc uses in /pipeline/kpis.
+//
+// Source filter case-split mirrors Slice 4 exactly. With sourceFilter
+// "Daily Request": Won returns DR-converted deals; Lost buckets return
+// 0 because mirrors only exist in EOI/DoneDeal stages.
+app.get("/api/reports/pipeline/outcomes", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var DAY_MS = 86400000;
+
+    var leadMatch = { archived: false };
+    if (sourceFilter) leadMatch.source = sourceFilter;
+    else              leadMatch.source = { $ne: "Daily Request" };
+    if (scopeIds) leadMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+
+    var rows = await Lead.aggregate([
+      { $match: leadMatch },
+      { $addFields: {
+          budgetNum: budgetNumExpr,
+          dealAt: { $cond: [
+            { $and: [{ $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] }] },
+            { $toDate: "$dealDate" },
+            "$updatedAt"
+          ]}
+      }},
+      { $facet: {
+          won: [
+            { $match: { status: "DoneDeal", dealStatus: { $ne: "Deal Cancelled" }, dealAt: { $gte: fromDate, $lt: toDate }}},
+            { $project: { budgetNum: 1, daysToResolve: { $divide: [{ $subtract: ["$dealAt", "$createdAt"] }, DAY_MS] }}},
+            { $match: { daysToResolve: { $gte: 0 }}},
+            { $group: { _id: null, count: { $sum: 1 }, value: { $sum: "$budgetNum" }, avgDays: { $avg: "$daysToResolve" }}}
+          ],
+          lostNotInterested: [
+            { $match: { status: "NotInterested", updatedAt: { $gte: fromDate, $lt: toDate }}},
+            { $project: { budgetNum: 1, daysToResolve: { $divide: [{ $subtract: ["$updatedAt", "$createdAt"] }, DAY_MS] }}},
+            { $match: { daysToResolve: { $gte: 0 }}},
+            { $group: { _id: null, count: { $sum: 1 }, value: { $sum: "$budgetNum" }, avgDays: { $avg: "$daysToResolve" }}}
+          ],
+          lostNoAnswer: [
+            { $match: { status: "NoAnswer", updatedAt: { $gte: fromDate, $lt: toDate }}},
+            { $project: { budgetNum: 1, daysToResolve: { $divide: [{ $subtract: ["$updatedAt", "$createdAt"] }, DAY_MS] }}},
+            { $match: { daysToResolve: { $gte: 0 }}},
+            { $group: { _id: null, count: { $sum: 1 }, value: { $sum: "$budgetNum" }, avgDays: { $avg: "$daysToResolve" }}}
+          ]
+      }}
+    ]);
+
+    var first = rows[0] || {};
+    var pull = function(arr) {
+      var r = (arr || [])[0] || {};
+      return {
+        count: Number(r.count) || 0,
+        value: Math.round(Number(r.value) || 0),
+        avgDaysToResolve: Math.round((Number(r.avgDays) || 0) * 10) / 10
+      };
+    };
+
+    var won    = pull(first.won);
+    var lostNI = pull(first.lostNotInterested);
+    var lostNA = pull(first.lostNoAnswer);
+    var totalResolved = won.count + lostNI.count + lostNA.count;
+
+    res.json({
+      range: { from: range.from, to: range.to },
+      won: won,
+      lostNotInterested: lostNI,
+      lostNoAnswer: lostNA,
+      totalResolved: totalResolved
+    });
+  } catch (e) {
+    console.error("[reports/pipeline/outcomes]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "pipeline_outcomes_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);
