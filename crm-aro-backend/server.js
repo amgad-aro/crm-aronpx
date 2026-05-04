@@ -6249,23 +6249,44 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
       // event check inside isContactedRaw to form the contacted UNION
       // pattern Lead Aging uses.
       //
-      // SYNC INVARIANT: the isContactedRaw definition below MUST match
-      // the shape used in all three "is the lead contacted?" surfaces:
+      // NOTE: "note" type intentionally EXCLUDED from the whitelist
+      // here (and in the matching lookup in /agents/:id/stage-
+      // progression). The Facebook Lead Ads webhook (server.js:5299)
+      // auto-creates a type:"note" Activity on every FB-sourced lead
+      // at creation time. With ~99% of leads being FB-sourced, those
+      // auto-notes flooded clause 2 below and pushed Contacted % to
+      // ~100% even after the initial isContactedRaw fix landed.
+      // Lead Aging keeps "note" in its whitelist because it consumes
+      // TIMESTAMPS, not booleans — the auto-note's createdAt ≈
+      // lead.createdAt, which is the correct baseline anyway. The
+      // boolean existence check here can't tolerate that noise.
+      // Different consumption patterns → different treatment of the
+      // same data.
+      //
+      // SYNC INVARIANT: the isContactedRaw definition below — and the
+      // Activity-type whitelist in this $lookup — MUST stay aligned
+      // with the matching $lookup + isContactedRaw pair in:
       //   - /api/reports/overview/funnel               (this endpoint)
       //   - /api/reports/agents/:id/stage-progression
-      //   - /api/reports/overview/aging                (the original fix)
-      // Editing one without the others reintroduces the inflation bug
-      // where rotation slices (assignments[].lastActionAt = now),
-      // legacy non-diff-gated "status_change" events, and state-only
-      // checks (notes/lastFeedback/callbackTime non-empty) all fired,
-      // pushing Contacted % to ~100% across every agent.
+      // /api/reports/overview/aging shares the diff-gated history
+      // events but DELIBERATELY uses the broader 5-type whitelist —
+      // see the NOTE above. Don't "harmonise" by adding "note" back
+      // here, and don't drop "note" from aging.
+      //
+      // Editing one of the funnel/stage-progression pair without the
+      // other reintroduces the original inflation bug where rotation
+      // slices (assignments[].lastActionAt = now), legacy non-diff-
+      // gated "status_change" events, and state-only checks (notes/
+      // lastFeedback/callbackTime non-empty) all fired, pushing
+      // Contacted % to ~100% across every agent.
       { $lookup: {
           from: "activities",
           let: { lid: "$_id" },
           pipeline: [
             { $match: { $expr: { $and: [
                 { $eq: ["$leadId", "$$lid"] },
-                { $in: ["$type", ["call", "meeting", "followup", "email", "note"]] }
+                // 4-type whitelist (no "note") — see NOTE above.
+                { $in: ["$type", ["call", "meeting", "followup", "email"]] }
             ]}}},
             { $limit: 1 },
             { $project: { _id: 1 } }
@@ -9042,16 +9063,20 @@ app.get("/api/reports/agents/:id/stage-progression", auth, reportsAuth, async fu
     var rows = await Lead.aggregate([
       { $match: leadBaseMatch },
       // Real-contact existence check — feeds isContactedRaw below.
-      // See the SYNC INVARIANT comment block at the matching $lookup
-      // in /api/reports/overview/funnel for the full rationale.
-      // Both endpoints + /reports/overview/aging must stay in sync.
+      // See the SYNC INVARIANT + "note"-exclusion NOTE at the matching
+      // $lookup in /api/reports/overview/funnel for the full
+      // rationale. Aging keeps "note" by design; this endpoint and
+      // funnel deliberately drop it.
       { $lookup: {
           from: "activities",
           let: { lid: "$_id" },
           pipeline: [
             { $match: { $expr: { $and: [
                 { $eq: ["$leadId", "$$lid"] },
-                { $in: ["$type", ["call", "meeting", "followup", "email", "note"]] }
+                // 4-type whitelist (no "note") — FB webhook auto-
+                // creates type:"note" Activity at lead creation, which
+                // would inflate this boolean check. See funnel comment.
+                { $in: ["$type", ["call", "meeting", "followup", "email"]] }
             ]}}},
             { $limit: 1 },
             { $project: { _id: 1 } }
