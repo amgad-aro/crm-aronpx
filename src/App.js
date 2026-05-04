@@ -9590,6 +9590,104 @@ var PipelineByStageRow = function(p) {
   </Card>;
 };
 
+var DealsAtRiskTable = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var [expanded, setExpanded] = useState(false);
+  var f = p.filters;
+
+  useEffect(function() {
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "";
+    if (f.team) qs += (qs ? "&" : "?") + "team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += (qs ? "&" : "?") + "source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/pipeline/at-risk" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.team, f.source]);
+
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load deals at risk: {state.error}</div>
+    </Card>;
+  }
+
+  var skel = state.loading || !state.data;
+  var deals = (state.data && state.data.deals) || [];
+  var total = (state.data && state.data.total) || 0;
+  var visible = expanded ? deals.slice(0, 50) : deals.slice(0, 20);
+
+  var stageBadge = function(stage) {
+    var color = stage === "HotCase" ? "#F59E0B" : "#10B981";
+    var label = stage === "HotCase" ? "Hot Case" : "Meeting Done";
+    var bg    = stage === "HotCase" ? "rgba(245, 158, 11, 0.12)" : "rgba(16, 185, 129, 0.12)";
+    return <span style={{ display:"inline-block", padding:"2px 8px", borderRadius:6, background:bg, color:color, fontSize:10, fontWeight:700 }}>{label}</span>;
+  };
+
+  var ageCell = function(days) {
+    var color = days >= 14 ? "#DC2626" : "#F59E0B";
+    var fmt = days >= 1 ? Math.round(days) : days.toFixed(1);
+    return <span style={{ color:color, fontWeight:700 }}>{fmt} d</span>;
+  };
+
+  var openLead = function(deal) {
+    if (p.nav) p.nav("leads", { _id: deal.leadId, name: deal.name, status: deal.stage });
+  };
+
+  var thStyle = { textAlign:"left", padding:"6px 8px", fontWeight:600, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em", fontSize:10 };
+  var thRight = Object.assign({}, thStyle, { textAlign:"right" });
+
+  return <Card style={{ marginBottom:14, padding:"12px 14px" }}>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8, flexWrap:"wrap", gap:8 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:C.text }}>Deals at risk</div>
+      {!skel && <div style={{ fontSize:11, color:C.textLight }}>{total} {total === 1 ? "lead" : "leads"} stalled 7+ days</div>}
+    </div>
+
+    {skel && [0,1,2,3].map(function(i){ return <div key={i} style={{ height:32, marginBottom:6, background:"#F1F5F9", borderRadius:6 }}/>; })}
+
+    {!skel && deals.length === 0 && <div style={{ fontSize:12, color:C.textLight, padding:"24px 8px", textAlign:"center" }}>
+      ✓ No at-risk deals — all advanced-stage leads contacted within 7 days.
+    </div>}
+
+    {!skel && deals.length > 0 && <div>
+      <div style={{ overflowX:"auto" }}>
+        <table style={{ width:"100%", fontSize:11, borderCollapse:"collapse" }}>
+          <thead>
+            <tr style={{ borderBottom:"1px solid #E2E8F0" }}>
+              <th style={thStyle}>Lead</th>
+              <th style={thStyle}>Stage</th>
+              <th style={thRight}>Value</th>
+              <th style={thStyle}>Agent</th>
+              <th style={thRight}>Stale</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map(function(d, i){
+              return <tr key={d.leadId + "-" + i}
+                onClick={function(){ openLead(d); }}
+                onMouseEnter={function(e){ e.currentTarget.style.background = "#F8FAFC"; }}
+                onMouseLeave={function(e){ e.currentTarget.style.background = "transparent"; }}
+                style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer" }}>
+                <td style={{ padding:"8px", color:C.text, fontWeight:600 }}>{d.name || "—"}</td>
+                <td style={{ padding:"8px" }}>{stageBadge(d.stage)}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.text }}>{d.value > 0 ? fmtEGP(d.value) : "—"}</td>
+                <td style={{ padding:"8px", color:C.textLight }}>{d.agentName}</td>
+                <td style={{ padding:"8px", textAlign:"right" }}>{ageCell(d.daysSinceLastContact)}</td>
+              </tr>;
+            })}
+          </tbody>
+        </table>
+      </div>
+      {!expanded && total > 20 && <div style={{ marginTop:8, textAlign:"center" }}>
+        <button onClick={function(){ setExpanded(true); }} style={{
+          background:"none", border:"none", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", padding:"6px 12px"
+        }}>View all {total > 50 ? "(top 50 of " + total + ")" : total} at-risk →</button>
+      </div>}
+    </div>}
+  </Card>;
+};
+
 var ReportsPipelineBody = function(p) {
   var sections = [
     { key:"kpis",      title:"Pipeline KPIs",       height:120 },
@@ -9602,6 +9700,7 @@ var ReportsPipelineBody = function(p) {
     {sections.map(function(s){
       if (s.key === "kpis") return <PipelineKpiRow key="kpis" filters={p.filters} token={p.token}/>;
       if (s.key === "byStage") return <PipelineByStageRow key="byStage" filters={p.filters} token={p.token} nav={p.nav} setFilter={p.setFilter}/>;
+      if (s.key === "atRisk") return <DealsAtRiskTable key="atRisk" filters={p.filters} token={p.token} nav={p.nav}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>

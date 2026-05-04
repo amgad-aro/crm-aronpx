@@ -7837,6 +7837,153 @@ app.get("/api/reports/pipeline/by-stage", auth, reportsAuth, async function(req,
   }
 });
 
+// GET /api/reports/pipeline/at-risk
+// Lead-level table of advanced-stage leads stalled 7+ days. Snapshot,
+// no date range. The "lastContact" math is lifted verbatim from
+// /reports/overview/aging — same UNION (history events + Activity
+// types), same fallback chain (curSliceAssignedAt → createdAt). That
+// guarantees reconciliation: every Lead in this response is also in
+// the Lead Aging "over14" or "days7to14" bucket on the Overview tab.
+//
+// Filter:
+//   - status IN [HotCase, MeetingDone]   (CallBack excluded — those
+//     have a scheduled callback time and "stale" doesn't apply.
+//     NewLead/Potential excluded — too early to call "at risk".)
+//   - archived = false
+//   - secondary state-machine guards: globalStatus != donedeal,
+//     eoiStatus NOT IN [Pending, Approved], dealStatus != Deal Cancelled
+//   - source != "Daily Request" (mirror exclusion, defensive)
+//   - daysSinceLastContact >= 7
+//
+// Source filter case-split mirrors aging exactly.
+//
+// Response cap: top 50 by staleness desc (frontend renders top 20 by
+// default; "View all N" button expands in-page up to the 50 cap). The
+// `total` field is the unfiltered at-risk count so the UI can label
+// honestly even when total > 50.
+app.get("/api/reports/pipeline/at-risk", auth, reportsAuth, async function(req, res) {
+  try {
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var DAY_MS = 86400000;
+    var nowDate = new Date();
+    var STALE_DAYS = 7;
+    var atRiskStatuses = ["HotCase", "MeetingDone"];
+
+    var match = {
+      archived: false,
+      status: { $in: atRiskStatuses },
+      $nor: [
+        { globalStatus: "donedeal" },
+        { eoiStatus: "Pending" },
+        { eoiStatus: "Approved" },
+        { dealStatus: "Deal Cancelled" }
+      ]
+    };
+    if (sourceFilter) match.source = sourceFilter;
+    else              match.source = { $ne: "Daily Request" };
+    if (scopeIds) match.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+
+    var rows = await Lead.aggregate([
+      { $match: match },
+      { $addFields: { budgetNum: budgetNumExpr }},
+      // ── Last-contact computation — verbatim from /reports/overview/aging.
+      { $lookup: {
+          from: "activities",
+          let: { lid: "$_id", aid: "$agentId" },
+          pipeline: [
+            { $match: { $expr: { $and: [
+                { $eq: ["$leadId", "$$lid"] },
+                { $eq: ["$userId", "$$aid"] },
+                { $in: ["$type", ["call","meeting","followup","email","note"]] }
+            ]}}},
+            { $sort: { createdAt: -1 }},
+            { $limit: 1 },
+            { $project: { _id: 0, t: "$createdAt" }}
+          ],
+          as: "lastContactAct"
+      }},
+      { $addFields: {
+          historyContactMax: { $max: { $map: {
+            input: { $filter: {
+              input: { $ifNull: ["$history", []] },
+              as: "h",
+              cond: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
+            }},
+            as: "h",
+            in: "$$h.timestamp"
+          }}},
+          activityContactMax: { $arrayElemAt: ["$lastContactAct.t", 0] }
+      }},
+      { $addFields: {
+          lastContact: { $let: {
+            vars: {
+              mergedContact: { $max: ["$historyContactMax", "$activityContactMax"] },
+              curSliceAssignedAt: { $let: {
+                vars: { cs: { $arrayElemAt: [
+                  { $filter: {
+                      input: { $ifNull: ["$assignments", []] },
+                      as: "a",
+                      cond: { $eq: ["$$a.agentId", "$agentId"] }
+                  }},
+                  -1
+                ]}},
+                in: "$$cs.assignedAt"
+              }}
+            },
+            in: { $ifNull: [
+              "$$mergedContact",
+              { $ifNull: ["$$curSliceAssignedAt", "$createdAt"] }
+            ]}
+          }}
+      }},
+      { $addFields: { ageDays: { $divide: [{ $subtract: [nowDate, "$lastContact"] }, DAY_MS] }}},
+      // ── Stale gate.
+      { $match: { ageDays: { $gte: STALE_DAYS }}},
+      // ── Branch: trim+enrich the deals list and count the unfiltered total.
+      { $facet: {
+          deals: [
+            { $sort: { ageDays: -1, budgetNum: -1 }},
+            { $limit: 50 },
+            { $lookup: {
+                from: "users",
+                localField: "agentId",
+                foreignField: "_id",
+                pipeline: [{ $project: { _id: 1, name: 1 }}],
+                as: "agent"
+            }},
+            { $project: {
+                _id: 0,
+                leadId: { $toString: "$_id" },
+                name: 1,
+                stage: "$status",
+                value: { $round: ["$budgetNum", 0] },
+                agentName: { $ifNull: [{ $arrayElemAt: ["$agent.name", 0] }, "Unassigned"] },
+                agentId:   { $toString: { $arrayElemAt: ["$agent._id", 0] }},
+                daysSinceLastContact: { $round: ["$ageDays", 1] }
+            }}
+          ],
+          totalArr: [{ $count: "n" }]
+      }}
+    ]);
+
+    var first = rows[0] || {};
+    res.json({
+      deals: first.deals || [],
+      total: ((first.totalArr || [])[0] || {}).n || 0
+    });
+  } catch (e) {
+    console.error("[reports/pipeline/at-risk]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "pipeline_at_risk_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);
