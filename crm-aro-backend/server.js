@@ -9527,6 +9527,253 @@ app.get("/api/reports/agents/:id/stuck-leads", auth, reportsAuth, async function
   }
 });
 
+// =============================================================================
+// TEMPORARY DIAGNOSTIC — DR-side isContactedRaw audit (Phase 3 cleanup
+// Priority 2). Read-only, admin-only. Sizes the impact of the legacy 4-clause
+// loose isContactedRaw on the DR side of /api/reports/overview/funnel — DR
+// volume share, per-clause hit rates, and counterfactual headline numbers
+// if DR were dropped or its isContactedRaw tightened.
+// REMOVE IN CLEANUP COMMIT — search for "funnel-dr-diagnose" to find every
+// reference. The whole endpoint is a single self-contained block.
+// =============================================================================
+app.get("/api/admin/funnel-dr-diagnose", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+
+    // Match the live funnel exactly. No team filter — diagnostic is org-wide.
+    var leadMatch = {
+      archived: false,
+      createdAt: { $gte: fromDate, $lt: toDate },
+      source: { $ne: "Daily Request" }
+    };
+    var drMatch = {
+      archived: { $ne: true },
+      createdAt: { $gte: fromDate, $lt: toDate }
+    };
+
+    // Lead-side: mirror the live funnel's leadAgg verbatim — diff-gated
+    // history events + Activity-existence lookup, then forward-superset OR.
+    // We need leadAggTotal and leadAggContacted to compute the headline-
+    // impact counterfactuals.
+    var leadAggP = Lead.aggregate([
+      { $match: leadMatch },
+      { $lookup: {
+          from: "activities",
+          let: { lid: "$_id" },
+          pipeline: [
+            { $match: { $expr: { $and: [
+                { $eq: ["$leadId", "$$lid"] },
+                { $in: ["$type", ["call", "meeting", "followup", "email"]] }
+            ]}}},
+            { $limit: 1 },
+            { $project: { _id: 1 } }
+          ],
+          as: "contactActs"
+      }},
+      { $addFields: {
+          isDealRaw: { $and: [
+            { $or: [{ $eq: ["$status", "DoneDeal"] }, { $eq: ["$globalStatus", "donedeal"] }] },
+            { $ne: ["$dealStatus", "Deal Cancelled"] },
+            { $ne: ["$status", "Deal Cancelled"] }
+          ]},
+          isEoiRaw: { $and: [
+            { $ne: ["$status", "Deal Cancelled"] },
+            { $ne: ["$eoiStatus", "EOI Cancelled"] },
+            { $ne: ["$eoiStatus", "Deal Cancelled"] },
+            { $or: [
+              { $eq: ["$eoiStatus", "Pending"] },
+              { $eq: ["$eoiStatus", "Approved"] },
+              { $eq: ["$status", "EOI"] }
+            ]}
+          ]},
+          isMeetingRaw: { $or: [
+            { $eq: ["$hadMeeting", true] },
+            { $eq: ["$status", "MeetingDone"] }
+          ]},
+          isContactedRaw: { $or: [
+            { $anyElementTrue: { $map: {
+                input: { $ifNull: ["$history", []] },
+                as: "h",
+                in: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
+            }}},
+            { $gt: [{ $size: "$contactActs" }, 0] }
+          ]}
+      }},
+      { $addFields: {
+          isContacted: { $or: ["$isContactedRaw", "$isMeetingRaw", "$isEoiRaw", "$isDealRaw"] }
+      }},
+      { $group: {
+          _id: null,
+          total:     { $sum: 1 },
+          contacted: { $sum: { $cond: ["$isContacted", 1, 0] }}
+      }}
+    ]);
+
+    // DR-side: mirror live funnel's drAgg + add per-clause counts and a
+    // status histogram. Each clause's exclusivity flag (cNOnly) means
+    // "clause N is true AND none of the other three are" — useful for
+    // identifying which clause is doing the heavy lifting.
+    var drAggP = DailyRequest.aggregate([
+      { $match: drMatch },
+      { $addFields: {
+          c1: { $ne: ["$status", "NewLead"] },
+          c2: { $and: [{ $ne: ["$notes", ""]},        { $ne: ["$notes", null] }]},
+          c3: { $and: [{ $ne: ["$lastFeedback", ""]}, { $ne: ["$lastFeedback", null] }]},
+          c4: { $and: [{ $ne: ["$callbackTime", ""]},{ $ne: ["$callbackTime", null] }]}
+      }},
+      { $addFields: {
+          isContactedRawLoose: { $or: ["$c1", "$c2", "$c3", "$c4"] },
+          // Tightened candidates — used to compute counterfactuals. The
+          // forward-superset OR (isContacted) is added below; these are the
+          // raw alternatives we'd plug in.
+          contactedC2only:    "$c2",
+          contactedC2orC3:    { $or: ["$c2", "$c3"] },
+          // "Exclusive" hits — clause N true AND others false.
+          c1Only: { $and: ["$c1", { $not: "$c2" }, { $not: "$c3" }, { $not: "$c4" }] },
+          c2Only: { $and: ["$c2", { $not: "$c1" }, { $not: "$c3" }, { $not: "$c4" }] },
+          c3Only: { $and: ["$c3", { $not: "$c1" }, { $not: "$c2" }, { $not: "$c4" }] },
+          c4Only: { $and: ["$c4", { $not: "$c1" }, { $not: "$c2" }, { $not: "$c3" }] }
+      }},
+      { $addFields: {
+          isDealRaw: { $and: [
+            { $eq: ["$status", "DoneDeal"] },
+            { $ne: ["$dealStatus", "Deal Cancelled"] },
+            { $ne: ["$status", "Deal Cancelled"] }
+          ]},
+          isEoiRaw: { $and: [
+            { $ne: ["$status", "Deal Cancelled"] },
+            { $ne: ["$eoiStatus", "EOI Cancelled"] },
+            { $ne: ["$eoiStatus", "Deal Cancelled"] },
+            { $or: [
+              { $eq: ["$eoiStatus", "Pending"] },
+              { $eq: ["$eoiStatus", "Approved"] },
+              { $eq: ["$status", "EOI"] }
+            ]}
+          ]},
+          isMeetingRaw: { $or: [
+            { $eq: ["$hadMeeting", true] },
+            { $eq: ["$status", "MeetingDone"] }
+          ]}
+      }},
+      { $addFields: {
+          // Live funnel applies forward-superset OR to isContactedRaw — to
+          // honor that, all counterfactuals must also OR with the downstream
+          // raw flags (Meeting/EOI/Deal). A DR at status=MeetingDone is
+          // contacted no matter how strict the contact definition is.
+          isContactedLooseFinal: { $or: ["$isContactedRawLoose", "$isMeetingRaw", "$isEoiRaw", "$isDealRaw"] },
+          isContactedC2onlyFinal: { $or: ["$contactedC2only",   "$isMeetingRaw", "$isEoiRaw", "$isDealRaw"] },
+          isContactedC2orC3Final: { $or: ["$contactedC2orC3",   "$isMeetingRaw", "$isEoiRaw", "$isDealRaw"] }
+      }},
+      { $facet: {
+          totals: [
+            { $group: {
+                _id: null,
+                total:                { $sum: 1 },
+                contactedLoose:       { $sum: { $cond: ["$isContactedLooseFinal",  1, 0] }},
+                contactedC2only:      { $sum: { $cond: ["$isContactedC2onlyFinal", 1, 0] }},
+                contactedC2orC3:      { $sum: { $cond: ["$isContactedC2orC3Final", 1, 0] }},
+                c1: { $sum: { $cond: ["$c1", 1, 0] }},
+                c2: { $sum: { $cond: ["$c2", 1, 0] }},
+                c3: { $sum: { $cond: ["$c3", 1, 0] }},
+                c4: { $sum: { $cond: ["$c4", 1, 0] }},
+                c1Only: { $sum: { $cond: ["$c1Only", 1, 0] }},
+                c2Only: { $sum: { $cond: ["$c2Only", 1, 0] }},
+                c3Only: { $sum: { $cond: ["$c3Only", 1, 0] }},
+                c4Only: { $sum: { $cond: ["$c4Only", 1, 0] }}
+            }}
+          ],
+          statusHistogram: [
+            { $group: { _id: { $ifNull: ["$status", "(null)"] }, count: { $sum: 1 }}},
+            { $sort: { count: -1 }}
+          ]
+      }}
+    ]);
+
+    var parts = await Promise.all([leadAggP, drAggP]);
+    var leadR = (parts[0] || [])[0] || {};
+    var drFacet = (parts[1] || [])[0] || {};
+    var drR = ((drFacet.totals || [])[0]) || {};
+    var drStatusHist = (drFacet.statusHistogram || []).map(function(g){
+      return { status: g._id, count: g.count };
+    });
+
+    function n(o, k){ return Number(o && o[k]) || 0; }
+    function pct(num, denom){ return denom > 0 ? Math.round(1000 * num / denom) / 10 : 0; }
+
+    var leadAggTotal     = n(leadR, "total");
+    var leadAggContacted = n(leadR, "contacted");
+    var drAggTotal       = n(drR,   "total");
+    var drContactedLoose = n(drR,   "contactedLoose");
+    var drContactedC2    = n(drR,   "contactedC2only");
+    var drContactedC2or3 = n(drR,   "contactedC2orC3");
+
+    var combinedTotal = leadAggTotal + drAggTotal;
+
+    res.json({
+      scope: {
+        from: range.from,
+        to: range.to,
+        team: null,
+        sourceFilter: "null (combined Lead + DR)"
+      },
+      volume: {
+        leadAggTotal: leadAggTotal,
+        drAggTotal: drAggTotal,
+        combinedTotal: combinedTotal,
+        drSharePct: pct(drAggTotal, combinedTotal)
+      },
+      drContactedLoose: {
+        total: drContactedLoose,
+        pctOfDr: pct(drContactedLoose, drAggTotal),
+        byClause: {
+          nonNewLead:           n(drR, "c1"),
+          notesNonEmpty:        n(drR, "c2"),
+          lastFeedbackNonEmpty: n(drR, "c3"),
+          callbackTimeNonEmpty: n(drR, "c4")
+        },
+        byClauseExclusive: {
+          nonNewLead:           n(drR, "c1Only"),
+          notesNonEmpty:        n(drR, "c2Only"),
+          lastFeedbackNonEmpty: n(drR, "c3Only"),
+          callbackTimeNonEmpty: n(drR, "c4Only")
+        },
+        drStatusHistogram: drStatusHist
+      },
+      headlineImpact: {
+        currentFunnel: {
+          total: combinedTotal,
+          contacted: leadAggContacted + drContactedLoose,
+          contactedPct: pct(leadAggContacted + drContactedLoose, combinedTotal)
+        },
+        ifDrDropped: {
+          total: leadAggTotal,
+          contacted: leadAggContacted,
+          contactedPct: pct(leadAggContacted, leadAggTotal)
+        },
+        ifDrTightenedToClause2: {
+          total: combinedTotal,
+          contacted: leadAggContacted + drContactedC2,
+          contactedPct: pct(leadAggContacted + drContactedC2, combinedTotal)
+        },
+        ifDrTightenedToClause2or3: {
+          total: combinedTotal,
+          contacted: leadAggContacted + drContactedC2or3,
+          contactedPct: pct(leadAggContacted + drContactedC2or3, combinedTotal)
+        }
+      },
+      asOf: new Date().toISOString()
+    });
+  } catch (e) {
+    console.error("[admin/funnel-dr-diagnose]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "diagnose_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);
