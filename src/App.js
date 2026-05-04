@@ -9032,6 +9032,71 @@ var LeadAgingBuckets = function(p) {
   </Card>;
 };
 
+var AlertsBanner = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var [hoverIdx, setHoverIdx] = useState(-1);
+  var f = p.filters;
+
+  useEffect(function() {
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    // Alerts ignore date range / source — each alert defines its own window.
+    // Only the team filter is honored so admins can scope to a manager / TL.
+    var qs = f.team ? "?team=" + encodeURIComponent(f.team) : "";
+    apiFetch("/api/reports/overview/alerts" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.team]);
+
+  // Hide silently while loading and on error — don't break the page
+  // and don't flash an empty banner before data arrives.
+  if (state.loading || state.error || !state.data) return null;
+  var alerts = (state.data && state.data.alerts) || [];
+  if (alerts.length === 0) return null;
+
+  var dotColor = function(prio){ return prio === "high" ? "#DC2626" : "#F59E0B"; };
+
+  var handleClick = function(a){
+    var act = a && a.action;
+    if (!act) return;
+    if (act.type === "drill_aging") {
+      if (p.setSpecialFilter) p.setSpecialFilter({ type: "aging", ageMin: act.ageMin });
+      if (p.setFilter) p.setFilter("all");
+      if (p.nav) p.nav("leads");
+    } else if (act.type === "drill_meeting_aging") {
+      if (p.setSpecialFilter) p.setSpecialFilter({ type: "aging", ageMin: act.ageMin });
+      if (p.setFilter) p.setFilter(act.status || "MeetingDone");
+      if (p.nav) p.nav("leads");
+    } else if (act.type === "scroll_to" && act.target === "agent_leaderboard") {
+      var el = (typeof document !== "undefined") ? document.getElementById("reports-agent-leaderboard") : null;
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else if (act.type === "set_source") {
+      if (p.setReportsSource) p.setReportsSource(act.source);
+    }
+  };
+
+  return <Card style={{ marginBottom:14, padding:"12px 14px", background:"#FFFBEB", border:"1px solid #FDE68A" }}>
+    <div style={{ fontSize:12, fontWeight:700, color:"#B45309", marginBottom:6 }}>⚠️ Alerts</div>
+    {alerts.map(function(a, i){
+      var hovered = hoverIdx === i;
+      return <div key={a.key + "_" + i}
+        onClick={function(){ handleClick(a); }}
+        onMouseEnter={function(){ setHoverIdx(i); }}
+        onMouseLeave={function(){ setHoverIdx(-1); }}
+        style={{
+          display:"flex", alignItems:"center", gap:10, padding:"7px 0",
+          borderTop: i > 0 ? "1px dashed #FCD34D" : "none",
+          cursor:"pointer", userSelect:"none"
+        }}>
+        <div style={{ width:8, height:8, borderRadius:"50%", flexShrink:0, background: dotColor(a.priority) }}/>
+        <div style={{ flex:1, minWidth:0, fontSize:12, color:"#92400E", fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{a.message}</div>
+        <div style={{ fontSize:11, color:"#B45309", fontWeight:700, flexShrink:0, textDecoration: hovered ? "underline" : "none" }}>→ view</div>
+      </div>;
+    })}
+  </Card>;
+};
+
 // ===== REPORTS =====
 var ReportsPage = function(p) {
   var t = p.t;
@@ -9215,7 +9280,8 @@ var ReportsPage = function(p) {
     </Card>}
 
     {tab === "overview" && <ReportsOverviewBody filters={filters} cu={cu} t={t} token={p.token}
-      nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>}
+      nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}
+      setReportsSource={function(src){ setFilters(function(prev){ return Object.assign({}, prev, { source: src }); }); }}/>}
   </div>;
 };
 
@@ -9236,9 +9302,14 @@ var ReportsOverviewBody = function(p) {
       if (s.key === "trends") return <TrendsChart key="trends" filters={p.filters} token={p.token}/>;
       if (s.key === "funnel") return <SalesFunnel key="funnel" filters={p.filters} token={p.token}/>;
       if (s.key === "sources") return <SourceRoiList key="sources" filters={p.filters} token={p.token}/>;
-      if (s.key === "agents") return <AgentLeaderboard key="agents" filters={p.filters} token={p.token}/>;
+      if (s.key === "agents") return <div key="agents" id="reports-agent-leaderboard">
+        <AgentLeaderboard filters={p.filters} token={p.token}/>
+      </div>;
       if (s.key === "aging") return <LeadAgingBuckets key="aging" filters={p.filters} token={p.token}
         nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>;
+      if (s.key === "alerts") return <AlertsBanner key="alerts" filters={p.filters} token={p.token}
+        nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}
+        setReportsSource={p.setReportsSource}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>

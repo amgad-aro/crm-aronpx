@@ -6873,6 +6873,331 @@ app.get("/api/reports/overview/aging", auth, reportsAuth, async function(req, re
   }
 });
 
+// GET /api/reports/overview/alerts
+// Computes the top-3 most urgent issues for the executive view. Each
+// alert has its own time window — none follow the user's date-range
+// filter — so the banner stays meaningful regardless of what range is
+// selected on the page. Only the team filter is honored.
+//
+// Alert types:
+//   1. stale_leads (HIGH)         — count of aging "over14" bucket
+//                                    (active leads, no real contact 14d+).
+//                                    Same UNION-based lastContact logic
+//                                    as the aging endpoint.
+//   2. agents_under_target (MED)  — count of eligible agents whose
+//                                    current-quarter revenue / qTarget
+//                                    is < 30%. Always uses the current
+//                                    quarter, not the page's date range
+//                                    (qTargets are quarterly so any
+//                                    other window is misleading).
+//   3. source_conv_drop (MED)     — emitted PER source whose conversion
+//                                    dropped >25% relative week-over-week
+//                                    (last 7d vs prev 7d). Sample-size
+//                                    guard: prev window must have >=10
+//                                    leads to avoid noise.
+//   4. stuck_meetings (HIGH)      — count of leads with status=MeetingDone
+//                                    and no real contact 14d+. Same union
+//                                    logic as stale_leads but scoped to
+//                                    MeetingDone.
+//
+// Sorted: priority high before medium, then by count desc.
+// Returns top 3 only. Empty array when nothing fires (frontend hides).
+app.get("/api/reports/overview/alerts", auth, reportsAuth, async function(req, res) {
+  try {
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+    var nowDate = new Date();
+    var DAY_MS = 86400000;
+    var WEEK_MS = 7 * DAY_MS;
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+    var parseDateExpr = function(field) {
+      return { $cond: [
+        { $and: [{ $ne: ["$"+field, ""] }, { $ne: ["$"+field, null] }] },
+        { $convert: { input: "$"+field, to: "date", onError: null, onNull: null }},
+        null
+      ]};
+    };
+
+    // Reusable contact-age stages — same union logic as the aging endpoint.
+    // Wrapped in a function so stale_leads + stuck_meetings can share it
+    // with different $match prefixes.
+    var ageingStages = [
+      { $lookup: {
+          from: "activities",
+          let: { lid: "$_id", aid: "$agentId" },
+          pipeline: [
+            { $match: { $expr: { $and: [
+                { $eq: ["$leadId", "$$lid"] },
+                { $eq: ["$userId", "$$aid"] },
+                { $in: ["$type", ["call","meeting","followup","email","note"]] }
+            ]}}},
+            { $sort: { createdAt: -1 } },
+            { $limit: 1 },
+            { $project: { _id: 0, t: "$createdAt" } }
+          ],
+          as: "lastContactAct"
+      }},
+      { $addFields: {
+          historyContactMax: { $max: { $map: {
+            input: { $filter: {
+              input: { $ifNull: ["$history", []] },
+              as: "h",
+              cond: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
+            }},
+            as: "h",
+            in: "$$h.timestamp"
+          }}},
+          activityContactMax: { $arrayElemAt: ["$lastContactAct.t", 0] }
+      }},
+      { $addFields: {
+          lastContact: { $let: {
+            vars: {
+              mergedContact: { $max: ["$historyContactMax", "$activityContactMax"] },
+              curSliceAssignedAt: { $let: {
+                vars: { cs: { $arrayElemAt: [
+                  { $filter: { input: { $ifNull: ["$assignments", []] }, as:"a", cond:{$eq:["$$a.agentId","$agentId"]} }},
+                  -1
+                ]}},
+                in: "$$cs.assignedAt"
+              }}
+            },
+            in: { $ifNull: [
+              "$$mergedContact",
+              { $ifNull: ["$$curSliceAssignedAt", "$createdAt"] }
+            ]}
+          }}
+      }},
+      { $addFields: { ageDays: { $divide: [{ $subtract: [nowDate, "$lastContact"] }, DAY_MS] }}}
+    ];
+
+    // === STALE LEADS — same exclusions as aging endpoint ===
+    var staleMatch = {
+      archived: false,
+      $nor: [
+        { status: "DoneDeal" },
+        { globalStatus: "donedeal" },
+        { status: "EOI" },
+        { eoiStatus: "Pending" },
+        { eoiStatus: "Approved" },
+        { status: "NotInterested" },
+        { status: "Deal Cancelled" },
+        { dealStatus: "Deal Cancelled" }
+      ]
+    };
+    if (scopeIds) staleMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+    var staleP = Lead.aggregate([{ $match: staleMatch }].concat(ageingStages).concat([
+      { $match: { ageDays: { $gte: 14 }}},
+      { $count: "n" }
+    ]));
+
+    // === STUCK MEETINGS — status=MeetingDone scope ===
+    var stuckMatch = { archived: false, status: "MeetingDone" };
+    if (scopeIds) stuckMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+    var stuckP = Lead.aggregate([{ $match: stuckMatch }].concat(ageingStages).concat([
+      { $match: { ageDays: { $gte: 14 }}},
+      { $count: "n" }
+    ]));
+
+    // === AGENTS UNDER TARGET — current quarter only ===
+    var qNum = Math.floor(nowDate.getMonth()/3) + 1;
+    var qKey = "Q" + qNum;
+    var qYear = nowDate.getFullYear();
+    var qStart = new Date(qYear, (qNum-1)*3, 1, 0, 0, 0, 0);
+    var qEnd   = new Date(qYear,  qNum*3,    1, 0, 0, 0, 0);
+
+    var leadDealsBaseMatch = { archived: false, source: { $ne: "Daily Request" }};
+    if (scopeIds) leadDealsBaseMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+    var leadDealsP = Lead.aggregate([
+      { $match: leadDealsBaseMatch },
+      { $addFields: {
+          isDeal: { $and: [
+            { $or: [{ $eq: ["$status", "DoneDeal"] }, { $eq: ["$globalStatus", "donedeal"] }]},
+            { $ne: ["$status", "Deal Cancelled"] },
+            { $ne: ["$dealStatus", "Deal Cancelled"] }
+          ]},
+          dealAt: parseDateExpr("dealDate"),
+          budgetNum: budgetNumExpr,
+          isSplit: { $cond: [{ $ne: [{ $ifNull: ["$splitAgent2Id", null] }, null] }, true, false] }
+      }},
+      { $match: { isDeal: true, $expr: { $and: [
+          { $ne: ["$dealAt", null] },
+          { $gte: ["$dealAt", qStart] },
+          { $lt:  ["$dealAt", qEnd] }
+      ]}}},
+      { $project: {
+          agentList: { $filter: { input: ["$agentId", "$splitAgent2Id"], as: "a", cond: { $ne: ["$$a", null] }}},
+          revPerAgent: { $cond: ["$isSplit", { $multiply: ["$budgetNum", 0.5] }, "$budgetNum"] }
+      }},
+      { $unwind: "$agentList" },
+      { $group: { _id: "$agentList", revenue: { $sum: "$revPerAgent" }}}
+    ]);
+
+    var drDealsBaseMatch = { archived: { $ne: true }};
+    if (scopeIds) drDealsBaseMatch.agentId = { $in: scopeIds };
+    var drDealsP = DailyRequest.aggregate([
+      { $match: drDealsBaseMatch },
+      { $addFields: {
+          isDeal: { $and: [
+            { $eq: ["$status", "DoneDeal"] },
+            { $ne: ["$dealStatus", "Deal Cancelled"] }
+          ]},
+          dealAt: "$updatedAt",
+          budgetNum: budgetNumExpr
+      }},
+      { $match: { isDeal: true, $expr: { $and: [
+          { $gte: ["$dealAt", qStart] },
+          { $lt:  ["$dealAt", qEnd] }
+      ]}}},
+      { $group: { _id: "$agentId", revenue: { $sum: "$budgetNum" }}}
+    ]);
+
+    var userQuery = { role: { $in: ["sales", "team_leader", "manager"] }, active: true };
+    if (scopeIds) userQuery._id = { $in: scopeIds };
+    var allEligibleUsersP = User.find(userQuery).select("name role qTargets").lean();
+
+    // === SOURCE CONV DROP — last 7d vs prev 7d, per source ===
+    var thisWeekStart = new Date(nowDate.getTime() - WEEK_MS);
+    var prevWeekStart = new Date(nowDate.getTime() - 2 * WEEK_MS);
+
+    var buildSourceConvAggs = function(fromD, toD) {
+      var leadM = { archived: false, source: { $ne: "Daily Request" }, createdAt: { $gte: fromD, $lt: toD }};
+      if (scopeIds) leadM.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+      var drM = { archived: { $ne: true }, createdAt: { $gte: fromD, $lt: toD }};
+      if (scopeIds) drM.agentId = { $in: scopeIds };
+
+      var leadAgg = Lead.aggregate([
+        { $match: leadM },
+        { $addFields: { isDeal: { $and: [
+            { $or: [{ $eq: ["$status", "DoneDeal"] }, { $eq: ["$globalStatus", "donedeal"] }]},
+            { $ne: ["$status", "Deal Cancelled"] },
+            { $ne: ["$dealStatus", "Deal Cancelled"] }
+        ]}}},
+        { $group: {
+            _id: { $ifNull: ["$source", "Unknown"] },
+            leadCount: { $sum: 1 },
+            dealCount: { $sum: { $cond: ["$isDeal", 1, 0] }}
+        }}
+      ]);
+      var drAgg = DailyRequest.aggregate([
+        { $match: drM },
+        { $addFields: { isDeal: { $and: [
+            { $eq: ["$status", "DoneDeal"] },
+            { $ne: ["$dealStatus", "Deal Cancelled"] }
+        ]}}},
+        { $group: {
+            _id: "Daily Request",
+            leadCount: { $sum: 1 },
+            dealCount: { $sum: { $cond: ["$isDeal", 1, 0] }}
+        }}
+      ]);
+      return Promise.all([leadAgg, drAgg]).then(function(parts){
+        var map = {};
+        (parts[0] || []).concat(parts[1] || []).forEach(function(g){
+          var src = (g && g._id) || "Unknown";
+          if (!map[src]) map[src] = { leadCount: 0, dealCount: 0 };
+          map[src].leadCount += Number(g.leadCount) || 0;
+          map[src].dealCount += Number(g.dealCount) || 0;
+        });
+        return map;
+      });
+    };
+    var srcCurP  = buildSourceConvAggs(thisWeekStart, nowDate);
+    var srcPrevP = buildSourceConvAggs(prevWeekStart, thisWeekStart);
+
+    // === Run all in parallel ===
+    var parts = await Promise.all([staleP, stuckP, leadDealsP, drDealsP, allEligibleUsersP, srcCurP, srcPrevP]);
+    var staleArr     = parts[0] || [];
+    var stuckArr     = parts[1] || [];
+    var leadDealsArr = parts[2] || [];
+    var drDealsArr   = parts[3] || [];
+    var users        = parts[4] || [];
+    var srcCur       = parts[5] || {};
+    var srcPrev      = parts[6] || {};
+
+    var alerts = [];
+
+    // ALERT 1: stale_leads
+    var staleCount = (staleArr[0] && Number(staleArr[0].n)) || 0;
+    if (staleCount > 0) {
+      alerts.push({
+        key: "stale_leads", priority: "high", count: staleCount,
+        message: staleCount.toLocaleString() + " lead" + (staleCount === 1 ? "" : "s") + " with no contact in 14+ days",
+        action: { type: "drill_aging", ageMin: 14 }
+      });
+    }
+
+    // ALERT 4: stuck_meetings
+    var stuckCount = (stuckArr[0] && Number(stuckArr[0].n)) || 0;
+    if (stuckCount > 0) {
+      alerts.push({
+        key: "stuck_meetings", priority: "high", count: stuckCount,
+        message: stuckCount.toLocaleString() + " deal" + (stuckCount === 1 ? "" : "s") + " stuck in Meeting stage 14+ days",
+        action: { type: "drill_meeting_aging", status: "MeetingDone", ageMin: 14 }
+      });
+    }
+
+    // ALERT 2: agents_under_target
+    var revByAgent = {};
+    leadDealsArr.forEach(function(g){ if (g && g._id) revByAgent[String(g._id)] = (revByAgent[String(g._id)] || 0) + (Number(g.revenue) || 0); });
+    drDealsArr.forEach(function(g){   if (g && g._id) revByAgent[String(g._id)] = (revByAgent[String(g._id)] || 0) + (Number(g.revenue) || 0); });
+    var underTargetCount = 0;
+    users.forEach(function(u){
+      var qTarget = (u.qTargets && Number(u.qTargets[qKey])) || 0;
+      if (qTarget <= 0) return; // skip agents without a target set
+      var rev = revByAgent[String(u._id)] || 0;
+      var progress = (rev / qTarget) * 100;
+      if (progress < 30) underTargetCount++;
+    });
+    if (underTargetCount > 0) {
+      alerts.push({
+        key: "agents_under_target", priority: "medium", count: underTargetCount,
+        message: underTargetCount.toLocaleString() + " agent" + (underTargetCount === 1 ? "" : "s") + " under 30% of " + qKey + " target",
+        action: { type: "scroll_to", target: "agent_leaderboard" }
+      });
+    }
+
+    // ALERT 3: source_conv_drop (per source)
+    var MIN_LEADS_PREV = 10;
+    Object.keys(srcPrev).forEach(function(src){
+      var prev = srcPrev[src];
+      if (prev.leadCount < MIN_LEADS_PREV) return;       // sample-size guard
+      if (prev.dealCount === 0) return;                   // no baseline conv
+      var prevConv = prev.dealCount / prev.leadCount;
+      var cur = srcCur[src] || { leadCount: 0, dealCount: 0 };
+      var curConv = cur.leadCount > 0 ? (cur.dealCount / cur.leadCount) : 0;
+      var dropPct = ((prevConv - curConv) / prevConv) * 100;
+      if (dropPct > 25) {
+        var rounded = Math.round(dropPct);
+        alerts.push({
+          key: "source_conv_drop", priority: "medium", count: rounded,
+          message: src + " conversion dropped " + rounded + "% week-over-week",
+          action: { type: "set_source", source: src }
+        });
+      }
+    });
+
+    // Sort: priority high > medium, then count desc within priority.
+    var prioRank = { high: 2, medium: 1, low: 0 };
+    alerts.sort(function(a, b){
+      var pa = prioRank[a.priority] || 0;
+      var pb = prioRank[b.priority] || 0;
+      if (pa !== pb) return pb - pa;
+      return (Number(b.count) || 0) - (Number(a.count) || 0);
+    });
+
+    res.json({
+      alerts: alerts.slice(0, 3),
+      asOf: nowDate.toISOString()
+    });
+  } catch (e) {
+    console.error("[reports/overview/alerts]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "alerts_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);
