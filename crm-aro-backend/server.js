@@ -7198,6 +7198,178 @@ app.get("/api/reports/overview/alerts", auth, reportsAuth, async function(req, r
   }
 });
 
+// GET /api/reports/overview/forecast
+// Two related projections, ignored by date range filter:
+//   * Forecast for the next 30 days — pipeline_value × historical
+//     win_rate. Range = mid ± 20% on revenue, ±30% on deal count.
+//   * Quarter target progress — sum of eligible agents' qTargets[Qn]
+//     vs raw deal revenue this quarter. Days-remaining computed from
+//     today to quarter end.
+//
+// Win rate (last 90 days):
+//   deals_closed_90d / leads_created_90d * 100
+//   - deals_closed_90d: Lead status=DoneDeal, dealStatus != "Deal
+//     Cancelled", parsed dealDate (fallback updatedAt) in [d90, now]
+//   - leads_created_90d: Lead createdAt in [d90, now] EXCLUDING mirrors
+//     (source != "Daily Request") + DR createdAt in [d90, now], same
+//     case-split as the kpis intake denominator.
+//
+// Pipeline (Lead-only, snapshot — same shape as kpis pipelineSnapshot):
+//   status IN [Potential, HotCase, MeetingDone, CallBack] AND
+//   globalStatus NOT IN [donedeal, eoi].
+//
+// Q-target / Q-achieved:
+//   target = sum of qTargets[currentQ] across eligible roles
+//            (sales, team_leader, manager, active=true), team-scoped.
+//   achieved = raw deal revenue (Lead status=DoneDeal,
+//              dealStatus != "Deal Cancelled") with parsed dealDate
+//              (fallback updatedAt) in [qStart, qEnd]. Same as DealsPage
+//              admin gross-volume convention used since Step 2.
+//
+// Returns the full structure even when zeroed; the frontend decides
+// what to show / hide based on whether pipelineCount and qTarget are
+// non-zero.
+app.get("/api/reports/overview/forecast", auth, reportsAuth, async function(req, res) {
+  try {
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+    var nowDate = new Date();
+    var DAY_MS = 86400000;
+    var d90 = new Date(nowDate.getTime() - 90 * DAY_MS);
+
+    var qNum = Math.floor(nowDate.getMonth()/3) + 1;
+    var qKey = "Q" + qNum;
+    var qYear = nowDate.getFullYear();
+    var qStart = new Date(qYear, (qNum-1)*3, 1, 0, 0, 0, 0);
+    var qEnd   = new Date(qYear,  qNum*3,    1, 0, 0, 0, 0);
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+
+    var leadBaseMatch = { archived: false };
+    if (scopeIds) leadBaseMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+    var drBaseMatch = { archived: { $ne: true }};
+    if (scopeIds) drBaseMatch.agentId = { $in: scopeIds };
+
+    var pipelineStatuses = ["Potential", "HotCase", "MeetingDone", "CallBack"];
+
+    // Lead-side $facet — runs all 4 lead-facing slices on a single
+    // pre-matched stream so we hit the collection just once.
+    var leadAggP = Lead.aggregate([
+      { $match: leadBaseMatch },
+      { $addFields: {
+          budgetNum: budgetNumExpr,
+          dealAt: { $cond: [
+            { $and: [{ $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] }] },
+            { $toDate: "$dealDate" },
+            "$updatedAt"
+          ]}
+      }},
+      { $facet: {
+          // Pipeline snapshot — Lead-only, status whitelist matches kpis.
+          pipelineSnapshot: [
+            { $match: { status: { $in: pipelineStatuses }, globalStatus: { $nin: ["donedeal", "eoi"] }}},
+            { $group: { _id: null, value: { $sum: "$budgetNum" }, count: { $sum: 1 }}}
+          ],
+          // Win-rate numerator: deals closed in the last 90 days.
+          dealsLast90: [
+            { $match: { status: "DoneDeal", dealStatus: { $ne: "Deal Cancelled" }, dealAt: { $gte: d90, $lt: nowDate }}},
+            { $group: { _id: null, count: { $sum: 1 }}}
+          ],
+          // Win-rate denominator (Lead side): native leads created in
+          // the last 90 days. Mirrors excluded — DR creations are
+          // counted via the DR aggregation below.
+          leadsCreatedLast90: [
+            { $match: { createdAt: { $gte: d90, $lt: nowDate }, source: { $ne: "Daily Request" }}},
+            { $group: { _id: null, count: { $sum: 1 }}}
+          ],
+          // Q-achieved: raw deal revenue this quarter.
+          qDeals: [
+            { $match: { status: "DoneDeal", dealStatus: { $ne: "Deal Cancelled" }, dealAt: { $gte: qStart, $lt: qEnd }}},
+            { $group: { _id: null, revenue: { $sum: "$budgetNum" }, count: { $sum: 1 }}}
+          ]
+      }}
+    ]);
+
+    var drAggP = DailyRequest.aggregate([
+      { $match: drBaseMatch },
+      { $facet: {
+          leadsCreatedLast90: [
+            { $match: { createdAt: { $gte: d90, $lt: nowDate }}},
+            { $group: { _id: null, count: { $sum: 1 }}}
+          ]
+      }}
+    ]);
+
+    var userQuery = { role: { $in: ["sales", "team_leader", "manager"] }, active: true };
+    if (scopeIds) userQuery._id = { $in: scopeIds };
+    var usersP = User.find(userQuery).select("qTargets").lean();
+
+    var parts = await Promise.all([leadAggP, drAggP, usersP]);
+    var leadR = (parts[0] || [])[0] || {};
+    var drR   = (parts[1] || [])[0] || {};
+    var users = parts[2] || [];
+
+    var pull = function(arr){ return (arr || [])[0] || {}; };
+    var pipelineSnap = pull(leadR.pipelineSnapshot);
+    var dealsLast90  = pull(leadR.dealsLast90);
+    var leadCreated90 = pull(leadR.leadsCreatedLast90);
+    var qDeals       = pull(leadR.qDeals);
+    var drCreated90  = pull(drR.leadsCreatedLast90);
+
+    var pipelineValue = Math.round(Number(pipelineSnap.value) || 0);
+    var pipelineCount = Number(pipelineSnap.count) || 0;
+
+    var dealsClosed90 = Number(dealsLast90.count) || 0;
+    var totalLeads90  = (Number(leadCreated90.count) || 0) + (Number(drCreated90.count) || 0);
+    var winRate = totalLeads90 > 0 ? (dealsClosed90 / totalLeads90) : 0;
+
+    var midRev   = pipelineValue * winRate;
+    var midDeals = pipelineCount * winRate;
+
+    var qTarget = users.reduce(function(s, u){ return s + ((u.qTargets && Number(u.qTargets[qKey])) || 0); }, 0);
+    var qAchieved = Math.round(Number(qDeals.revenue) || 0);
+    var qProgressPct = qTarget > 0 ? Math.min(100, Math.round((qAchieved / qTarget) * 1000) / 10) : 0;
+    var daysRemaining = Math.max(0, Math.ceil((qEnd.getTime() - nowDate.getTime()) / DAY_MS));
+
+    res.json({
+      forecast: {
+        windowDays: 30,
+        winRatePct: Math.round(winRate * 1000) / 10, // 1 decimal
+        pipelineCount: pipelineCount,
+        pipelineValue: pipelineValue,
+        sample: {
+          dealsLast90: dealsClosed90,
+          leadsLast90: totalLeads90
+        },
+        projectedRevenue: {
+          low:  Math.round(midRev * 0.8),
+          mid:  Math.round(midRev),
+          high: Math.round(midRev * 1.2)
+        },
+        projectedDeals: {
+          low:  Math.floor(midDeals * 0.7),
+          mid:  Math.round(midDeals),
+          high: Math.ceil(midDeals * 1.3)
+        }
+      },
+      quarter: {
+        key: qKey,
+        target: Math.round(qTarget),
+        achieved: qAchieved,
+        progressPct: qProgressPct,
+        daysRemaining: daysRemaining
+      },
+      asOf: nowDate.toISOString()
+    });
+  } catch (e) {
+    console.error("[reports/overview/forecast]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "forecast_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);

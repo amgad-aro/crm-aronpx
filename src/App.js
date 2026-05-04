@@ -9097,6 +9097,91 @@ var AlertsBanner = function(p) {
   </Card>;
 };
 
+var ForecastCard = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var f = p.filters;
+
+  useEffect(function() {
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    // Forecast uses its own windows (90d for win rate, current quarter for
+    // target). Date range / source ignored. Team filter honored.
+    var qs = f.team ? "?team=" + encodeURIComponent(f.team) : "";
+    apiFetch("/api/reports/overview/forecast" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.team]);
+
+  if (state.error) return null; // hide silently on error
+  if (state.loading || !state.data) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px", minHeight:160 }}>
+      <div style={{ height:14, width:140, background:"#F1F5F9", borderRadius:4, marginBottom:10 }}/>
+      <div style={{ height:32, width:120, background:"#F1F5F9", borderRadius:6, marginBottom:8 }}/>
+      <div style={{ height:10, width:200, background:"#F1F5F9", borderRadius:4, marginBottom:18 }}/>
+      <div style={{ height:6, background:"#F1F5F9", borderRadius:3, marginBottom:6 }}/>
+      <div style={{ height:10, width:240, background:"#F1F5F9", borderRadius:4 }}/>
+    </Card>;
+  }
+
+  var fc = state.data.forecast || {};
+  var q  = state.data.quarter  || {};
+  var hasForecast = (fc.pipelineCount || 0) > 0;
+  var hasQTarget  = (q.target || 0) > 0;
+  // Hide entirely when there's nothing useful to show.
+  if (!hasForecast && !hasQTarget) return null;
+
+  var winRate = Number(fc.winRatePct) || 0;
+  var pr = fc.projectedRevenue || { low:0, mid:0, high:0 };
+  var pd = fc.projectedDeals   || { low:0, mid:0, high:0 };
+  var sample = fc.sample || { dealsLast90:0, leadsLast90:0 };
+
+  var qProgress = Number(q.progressPct) || 0;
+  var barWidth  = Math.max(0, Math.min(100, qProgress));
+  // Purple progress bar — distinct from the leaderboard's red/amber/green
+  // semantic palette so it reads as "neutral progress" rather than a grade.
+  var qBarColor = "#8B5CF6";
+
+  var forecastTooltip = "Pipeline value × historical win rate (last 90 days). Range reflects ±20% uncertainty on revenue, ±30% on deal count.";
+  var winRateNote = sample.leadsLast90 > 0
+    ? winRate.toFixed(1) + "% win rate · " + sample.dealsLast90 + " deals from " + sample.leadsLast90 + " leads (90d)"
+    : "";
+
+  return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+    {hasForecast && <div style={{ marginBottom: hasQTarget ? 16 : 0 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:6 }}>
+        <div style={{ fontSize:13, fontWeight:700 }}>🔮 Forecast — next 30 days</div>
+        <div title={forecastTooltip} style={{ fontSize:11, color:C.textLight, cursor:"help" }}>ⓘ</div>
+      </div>
+      {winRate > 0 ? <div>
+        <div style={{ fontSize:30, fontWeight:800, color:C.success, lineHeight:1.1 }}>{fmtEGP(pr.mid)}</div>
+        <div style={{ fontSize:12, color:C.textLight, marginTop:4 }}>
+          range {fmtEGP(pr.low)} – {fmtEGP(pr.high)} · {pd.low.toLocaleString()}–{pd.high.toLocaleString()} deal{pd.high === 1 ? "" : "s"}
+        </div>
+        {winRateNote && <div style={{ fontSize:10, color:"#94A3B8", marginTop:3 }}>{winRateNote}</div>}
+      </div> : <div>
+        <div style={{ fontSize:13, fontWeight:600, color:C.textLight, padding:"6px 0" }}>Building forecast baseline…</div>
+        <div style={{ fontSize:11, color:"#94A3B8" }}>{sample.dealsLast90} deals from {sample.leadsLast90.toLocaleString()} leads in the last 90 days — need at least one deal to project.</div>
+      </div>}
+    </div>}
+
+    {hasForecast && hasQTarget && <div style={{ height:1, background:"#E2E8F0", margin:"0 0 14px" }}/>}
+
+    {hasQTarget && <div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6 }}>
+        <div style={{ fontSize:13, fontWeight:700 }}>🎯 {q.key} target progress</div>
+        <div style={{ fontSize:13, fontWeight:700, color:qBarColor }}>{qProgress.toFixed(qProgress < 10 ? 1 : 0)}%</div>
+      </div>
+      <div style={{ height:8, background:"#F1F5F9", borderRadius:4, overflow:"hidden", marginBottom:6 }}>
+        <div style={{ width: barWidth + "%", height:"100%", background: qBarColor, borderRadius:4, transition:"width 0.3s ease" }}/>
+      </div>
+      <div style={{ fontSize:11, color:C.textLight }}>
+        {fmtEGP(q.achieved || 0)} of {fmtEGP(q.target || 0)} · {(q.daysRemaining || 0).toLocaleString()} day{q.daysRemaining === 1 ? "" : "s"} remaining in quarter
+      </div>
+    </div>}
+  </Card>;
+};
+
 // ===== REPORTS =====
 var ReportsPage = function(p) {
   var t = p.t;
@@ -9310,6 +9395,7 @@ var ReportsOverviewBody = function(p) {
       if (s.key === "alerts") return <AlertsBanner key="alerts" filters={p.filters} token={p.token}
         nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}
         setReportsSource={p.setReportsSource}/>;
+      if (s.key === "forecast") return <ForecastCard key="forecast" filters={p.filters} token={p.token}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>
