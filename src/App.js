@@ -8627,10 +8627,15 @@ var SalesFunnel = function(p) {
     return function(){ aborted = true; };
   }, [f.from, f.to, f.team, f.source]);
 
-  var headerRow = <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10, flexWrap:"wrap", gap:8 }}>
-    <div style={{ fontSize:13, fontWeight:700 }}>🌪 Sales Funnel</div>
-    <div style={{ fontSize:10, color:C.textLight, fontStyle:"italic", textAlign:"right" }}>Conversion of leads created in this period (deals from older leads appear in Revenue KPI)</div>
-  </div>;
+  var headerRow = <>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8 }}>
+      <div style={{ fontSize:13, fontWeight:700 }}>🌪 Sales Funnel</div>
+      <div style={{ fontSize:10, color:C.textLight, fontStyle:"italic", textAlign:"right" }}>Conversion of leads created in this period (deals from older leads appear in Revenue KPI)</div>
+    </div>
+    <div style={{ fontSize:10, color:C.textLight, marginTop:4, marginBottom:10, lineHeight:1.4 }}>
+      Contacted = any agent action recorded on the lead (status change, feedback, callback, or logged activity). The meaningful conversion funnel begins at Meeting.
+    </div>
+  </>;
 
   if (state.error) {
     return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
@@ -10468,11 +10473,14 @@ var AgentStageProgression = function(p) {
   var skeletonRows = [0,1,2,3,4];
 
   return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
-    <div style={{ fontSize:12, fontWeight:700, color:C.text, marginBottom:8 }}>
+    <div style={{ fontSize:12, fontWeight:700, color:C.text, marginBottom:4 }}>
       Stage progression{data.agentName ? " — " + data.agentName : ""}
       <span style={{ fontSize:10, fontWeight:500, color:C.textLight, marginLeft:8 }}>
         forward-superset funnel · agent vs same-role peer median
       </span>
+    </div>
+    <div style={{ fontSize:10, color:C.textLight, marginBottom:10, lineHeight:1.4 }}>
+      Contacted = any agent action recorded on the lead (status change, feedback, callback, or logged activity). The meaningful conversion funnel begins at Meeting.
     </div>
     {skel ? <div>
       {skeletonRows.map(function(i){
