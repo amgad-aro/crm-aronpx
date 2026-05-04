@@ -9256,6 +9256,241 @@ app.get("/api/reports/agents/:id/stage-progression", auth, reportsAuth, async fu
   }
 });
 
+
+// GET /api/reports/agents/:id/recent-deals
+// The selected agent's closed deals in the date range — Lead-only,
+// per-agent attribution (agent appears in agentId or splitAgent2Id),
+// sorted dealDate DESC. Top 50 cap with full count returned for the
+// "View all N" hint.
+//
+// Value is the agent's per-agent share (raw budget halved on splits)
+// — matches the leaderboard / Slice-1 KPI revenue convention so the
+// Recent Deals row sums reconcile with the agent.revenue KPI for the
+// same filter combination.
+//
+// Source filter case-split mirrors the other agent endpoints. Team
+// filter accepted for URL-shape consistency; the per-agent scope
+// always counts the target's deals regardless.
+app.get("/api/reports/agents/:id/recent-deals", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+
+    var DAY_MS = 86400000;
+
+    var target = await User.findById(req.params.id).select("name role active").lean();
+    if (!target) return res.status(404).json({ error: "agent_not_found" });
+
+    var leadBaseMatch = { archived: false };
+    if (sourceFilter) leadBaseMatch.source = sourceFilter;
+    else              leadBaseMatch.source = { $ne: "Daily Request" };
+    leadBaseMatch.$or = [{ agentId: target._id }, { splitAgent2Id: target._id }];
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+    var parseDateExpr = function(field) {
+      return { $cond: [
+        { $and: [{ $ne: ["$"+field, ""] }, { $ne: ["$"+field, null] }] },
+        { $convert: { input: "$"+field, to: "date", onError: null, onNull: null }},
+        null
+      ]};
+    };
+
+    var rows = await Lead.aggregate([
+      { $match: leadBaseMatch },
+      { $addFields: {
+          isDeal: { $and: [
+            { $or: [{ $eq: ["$status", "DoneDeal"] }, { $eq: ["$globalStatus", "donedeal"] }]},
+            { $ne: ["$status", "Deal Cancelled"] },
+            { $ne: ["$dealStatus", "Deal Cancelled"] }
+          ]},
+          dealAt: parseDateExpr("dealDate"),
+          budgetNum: budgetNumExpr,
+          isSplit: { $cond: [{ $ne: [{ $ifNull: ["$splitAgent2Id", null] }, null] }, true, false] }
+      }},
+      { $match: { isDeal: true, $expr: { $and: [
+          { $ne: ["$dealAt", null] },
+          { $gte: ["$dealAt", fromDate] },
+          { $lt:  ["$dealAt", toDate] }
+      ]}}},
+      { $facet: {
+          deals: [
+            { $sort: { dealAt: -1 }},
+            { $limit: 50 },
+            { $project: {
+                _id: 0,
+                leadId: { $toString: "$_id" },
+                name: 1,
+                project: { $ifNull: ["$project", ""] },
+                value: { $round: [{ $cond: ["$isSplit", { $multiply: ["$budgetNum", 0.5] }, "$budgetNum"] }, 0] },
+                isSplit: 1,
+                // Negative daysToClose (clock skew or import oddities) → 0
+                daysToClose: { $max: [0, { $round: [{ $divide: [{ $subtract: ["$dealAt", "$createdAt"] }, DAY_MS] }, 1] }]},
+                closeDate: "$dealAt"
+            }}
+          ],
+          totalArr: [{ $count: "n" }]
+      }}
+    ]);
+
+    var first = rows[0] || {};
+    res.json({
+      range: { from: range.from, to: range.to },
+      agentId: String(target._id),
+      agentName: target.name || "(unknown)",
+      deals: first.deals || [],
+      total: ((first.totalArr || [])[0] || {}).n || 0
+    });
+  } catch (e) {
+    console.error("[reports/agents/:id/recent-deals]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "agent_recent_deals_failed" });
+  }
+});
+
+
+// GET /api/reports/agents/:id/stuck-leads
+// Per-agent slice of /api/reports/pipeline/at-risk — HotCase /
+// MeetingDone leads attributed to the target that have gone
+// 7+ days without contact. Snapshot view (no date range — stuck-
+// ness is "right now").
+//
+// Last-contact computation matches /reports/overview/aging exactly
+// (5-type Activity whitelist INCLUDING "note", since this is a
+// timestamp consumer — the FB-webhook auto-note's createdAt ≈
+// lead.createdAt is an acceptable baseline here, unlike the boolean
+// isContactedRaw in /overview/funnel which dropped "note"). The only
+// difference from /pipeline/at-risk is the userId scope on the
+// activity lookup: scoped to the TARGET agent here, not the lead's
+// current holder, so a co-holder's contact doesn't reset the target's
+// staleness clock.
+//
+// Closed-state guards mirror at-risk: archived=false, status ∈
+// {HotCase, MeetingDone}, NOT done/EOI-pending/EOI-approved/
+// dealCancelled. Source filter case-split standard. Top 50 cap,
+// total count returned for the "View all N" hint.
+app.get("/api/reports/agents/:id/stuck-leads", auth, reportsAuth, async function(req, res) {
+  try {
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+
+    var DAY_MS = 86400000;
+    var nowDate = new Date();
+    var STALE_DAYS = 7;
+    var stuckStatuses = ["HotCase", "MeetingDone"];
+
+    var target = await User.findById(req.params.id).select("name role active").lean();
+    if (!target) return res.status(404).json({ error: "agent_not_found" });
+
+    var match = {
+      archived: false,
+      status: { $in: stuckStatuses },
+      $nor: [
+        { globalStatus: "donedeal" },
+        { eoiStatus: "Pending" },
+        { eoiStatus: "Approved" },
+        { dealStatus: "Deal Cancelled" }
+      ],
+      $or: [{ agentId: target._id }, { splitAgent2Id: target._id }]
+    };
+    if (sourceFilter) match.source = sourceFilter;
+    else              match.source = { $ne: "Daily Request" };
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+
+    var rows = await Lead.aggregate([
+      { $match: match },
+      { $addFields: { budgetNum: budgetNumExpr }},
+      // Last-contact union — TIMESTAMP consumer, keeps "note" in the
+      // 5-type Activity whitelist (see /overview/aging comment).
+      { $lookup: {
+          from: "activities",
+          let: { lid: "$_id", aid: target._id },
+          pipeline: [
+            { $match: { $expr: { $and: [
+                { $eq: ["$leadId", "$$lid"] },
+                { $eq: ["$userId", "$$aid"] },
+                { $in: ["$type", ["call","meeting","followup","email","note"]] }
+            ]}}},
+            { $sort: { createdAt: -1 }},
+            { $limit: 1 },
+            { $project: { _id: 0, t: "$createdAt" }}
+          ],
+          as: "lastContactAct"
+      }},
+      { $addFields: {
+          historyContactMax: { $max: { $map: {
+            input: { $filter: {
+              input: { $ifNull: ["$history", []] },
+              as: "h",
+              cond: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
+            }},
+            as: "h",
+            in: "$$h.timestamp"
+          }}},
+          activityContactMax: { $arrayElemAt: ["$lastContactAct.t", 0] }
+      }},
+      { $addFields: {
+          lastContact: { $let: {
+            vars: {
+              mergedContact: { $max: ["$historyContactMax", "$activityContactMax"] },
+              // Fallback to target's slice.assignedAt when no real-contact
+              // signals exist — answers "how long has this agent held it?"
+              targetSliceAssignedAt: { $let: {
+                vars: { cs: { $arrayElemAt: [
+                  { $filter: {
+                      input: { $ifNull: ["$assignments", []] },
+                      as: "a",
+                      cond: { $eq: ["$$a.agentId", target._id] }
+                  }},
+                  -1
+                ]}},
+                in: "$$cs.assignedAt"
+              }}
+            },
+            in: { $ifNull: [
+              "$$mergedContact",
+              { $ifNull: ["$$targetSliceAssignedAt", "$createdAt"] }
+            ]}
+          }}
+      }},
+      { $addFields: { ageDays: { $divide: [{ $subtract: [nowDate, "$lastContact"] }, DAY_MS] }}},
+      { $match: { ageDays: { $gte: STALE_DAYS }}},
+      { $facet: {
+          deals: [
+            { $sort: { ageDays: -1, budgetNum: -1 }},
+            { $limit: 50 },
+            { $project: {
+                _id: 0,
+                leadId: { $toString: "$_id" },
+                name: 1,
+                stage: "$status",
+                value: { $round: [{ $cond: [{ $ne: [{ $ifNull: ["$splitAgent2Id", null] }, null] }, { $multiply: ["$budgetNum", 0.5] }, "$budgetNum"] }, 0] },
+                daysSinceLastContact: { $round: ["$ageDays", 1] }
+            }}
+          ],
+          totalArr: [{ $count: "n" }]
+      }}
+    ]);
+
+    var first = rows[0] || {};
+    res.json({
+      agentId: String(target._id),
+      agentName: target.name || "(unknown)",
+      staleDays: STALE_DAYS,
+      deals: first.deals || [],
+      total: ((first.totalArr || [])[0] || {}).n || 0
+    });
+  } catch (e) {
+    console.error("[reports/agents/:id/stuck-leads]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "agent_stuck_leads_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);

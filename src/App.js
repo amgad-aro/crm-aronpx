@@ -9926,12 +9926,10 @@ var ReportsAgentsBody = function(p) {
   var agents = (agentList.data && agentList.data.agents) || [];
   var selectedAgent = agents.find(function(a){ return String(a.id) === String(selectedAgentId); });
 
-  // Remaining placeholders — Slices 1-4 filled kpis/radar/heatmap/
-  // stageProgression; the other 2 land in upcoming slices.
-  var sections = [
-    { key:"recentDeals",      title:"Recent deals",                 height:200 },
-    { key:"stuckLeads",       title:"Stuck leads",                  height:200 }
-  ];
+  // All 6 sections shipped — placeholder list now empty. Kept as an
+  // empty array (rather than removed) so the .map() below still runs
+  // harmlessly if a future placeholder needs to be added.
+  var sections = [];
 
   return <div>
     <Card style={{ marginBottom:14, padding:"12px 14px" }}>
@@ -9964,6 +9962,10 @@ var ReportsAgentsBody = function(p) {
     <AgentActivityHeatmap filters={f} token={p.token} agentId={selectedAgentId}/>
 
     <AgentStageProgression filters={f} token={p.token} agentId={selectedAgentId}/>
+
+    <RecentDealsTable filters={f} token={p.token} agentId={selectedAgentId} nav={p.nav}/>
+
+    <StuckLeadsTable filters={f} token={p.token} agentId={selectedAgentId} nav={p.nav}/>
 
     {sections.map(function(s){
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
@@ -10548,6 +10550,215 @@ var capitalizeStage = function(key) {
   if (!key) return "";
   if (key === "eoi") return "EOI";
   return key.charAt(0).toUpperCase() + key.slice(1);
+};
+
+// Compact-table styles shared by RecentDealsTable + StuckLeadsTable.
+// Mirrors the DealsAtRiskTable styling on the Pipeline tab.
+var agentTableTh      = { textAlign:"left",  padding:"6px 8px", fontWeight:600, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em", fontSize:10 };
+var agentTableThRight = Object.assign({}, agentTableTh, { textAlign:"right" });
+
+var fmtCloseDate = function(d) {
+  if (!d) return "—";
+  var dt = new Date(d);
+  if (isNaN(dt.getTime())) return "—";
+  return dt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+};
+
+var RecentDealsTable = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var [expanded, setExpanded] = useState(false);
+  var f = p.filters;
+  var agentId = p.agentId;
+
+  useEffect(function() {
+    if (!agentId) { setState({ loading: false, data: null, error: null }); return; }
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    setExpanded(false);
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/agents/" + agentId + "/recent-deals" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [agentId, f.from, f.to, f.team, f.source]);
+
+  if (!agentId) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px", minHeight:200, background:"#FAFBFC", border:"1px dashed #E2E8F0", display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div style={{ fontSize:12, color:C.textLight }}>Select an agent to see recent deals</div>
+    </Card>;
+  }
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load recent deals: {state.error}</div>
+    </Card>;
+  }
+
+  var skel = state.loading || !state.data;
+  var deals = (state.data && state.data.deals) || [];
+  var total = (state.data && state.data.total) || 0;
+  var visible = expanded ? deals.slice(0, 50) : deals.slice(0, 10);
+
+  var fmtDays = function(d) {
+    var n = Number(d) || 0;
+    return n < 1 ? n.toFixed(1) + " d" : Math.round(n) + " d";
+  };
+  var openLead = function(deal) {
+    if (p.nav) p.nav("leads", { _id: deal.leadId, name: deal.name, status: "DoneDeal" });
+  };
+
+  return <Card style={{ marginBottom:14, padding:"12px 14px" }}>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8, flexWrap:"wrap", gap:8 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:C.text }}>Recent deals</div>
+      {!skel && <div style={{ fontSize:11, color:C.textLight }}>{total} {total === 1 ? "deal" : "deals"} closed in range</div>}
+    </div>
+
+    {skel && [0,1,2,3].map(function(i){ return <div key={i} style={{ height:32, marginBottom:6, background:"#F1F5F9", borderRadius:6 }}/>; })}
+
+    {!skel && deals.length === 0 && <div style={{ fontSize:12, color:C.textLight, padding:"24px 8px", textAlign:"center" }}>
+      No deals closed in this period
+    </div>}
+
+    {!skel && deals.length > 0 && <div>
+      <div style={{ overflowX:"auto" }}>
+        <table style={{ width:"100%", fontSize:11, borderCollapse:"collapse" }}>
+          <thead>
+            <tr style={{ borderBottom:"1px solid #E2E8F0" }}>
+              <th style={agentTableTh}>Lead</th>
+              <th style={agentTableTh}>Project</th>
+              <th style={agentTableThRight}>Value</th>
+              <th style={agentTableThRight}>Days to close</th>
+              <th style={agentTableThRight}>Close date</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map(function(d, i){
+              return <tr key={d.leadId + "-" + i}
+                onClick={function(){ openLead(d); }}
+                onMouseEnter={function(e){ e.currentTarget.style.background = "#F8FAFC"; }}
+                onMouseLeave={function(e){ e.currentTarget.style.background = "transparent"; }}
+                style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer" }}>
+                <td style={{ padding:"8px", color:C.text, fontWeight:600 }}>
+                  {d.name || "—"}
+                  {d.isSplit && <span style={{ marginLeft:6, fontSize:9, color:C.textLight, fontWeight:500 }}>(split)</span>}
+                </td>
+                <td style={{ padding:"8px", color:C.textLight }}>{d.project || "—"}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.text }}>{d.value > 0 ? fmtEGP(d.value) : "—"}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.textLight }}>{fmtDays(d.daysToClose)}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.textLight }}>{fmtCloseDate(d.closeDate)}</td>
+              </tr>;
+            })}
+          </tbody>
+        </table>
+      </div>
+      {!expanded && total > 10 && <div style={{ marginTop:8, textAlign:"center" }}>
+        <button onClick={function(){ setExpanded(true); }} style={{
+          background:"none", border:"none", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", padding:"6px 12px"
+        }}>View all {total > 50 ? "(top 50 of " + total + ")" : total} deals →</button>
+      </div>}
+    </div>}
+  </Card>;
+};
+
+var StuckLeadsTable = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var [expanded, setExpanded] = useState(false);
+  var f = p.filters;
+  var agentId = p.agentId;
+
+  useEffect(function() {
+    if (!agentId) { setState({ loading: false, data: null, error: null }); return; }
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    setExpanded(false);
+    // Stuck-leads is a snapshot — no from/to. Team + source still wired.
+    var qs = "";
+    if (f.team) qs += (qs ? "&" : "?") + "team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += (qs ? "&" : "?") + "source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/agents/" + agentId + "/stuck-leads" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [agentId, f.team, f.source]);
+
+  if (!agentId) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px", minHeight:200, background:"#FAFBFC", border:"1px dashed #E2E8F0", display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div style={{ fontSize:12, color:C.textLight }}>Select an agent to see stuck leads</div>
+    </Card>;
+  }
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load stuck leads: {state.error}</div>
+    </Card>;
+  }
+
+  var skel = state.loading || !state.data;
+  var deals = (state.data && state.data.deals) || [];
+  var total = (state.data && state.data.total) || 0;
+  var visible = expanded ? deals.slice(0, 50) : deals.slice(0, 10);
+
+  var stageBadge = function(stage) {
+    var color = stage === "HotCase" ? "#F59E0B" : "#10B981";
+    var label = stage === "HotCase" ? "Hot Case" : "Meeting Done";
+    var bg    = stage === "HotCase" ? "rgba(245, 158, 11, 0.12)" : "rgba(16, 185, 129, 0.12)";
+    return <span style={{ display:"inline-block", padding:"2px 8px", borderRadius:6, background:bg, color:color, fontSize:10, fontWeight:700 }}>{label}</span>;
+  };
+  var ageCell = function(days) {
+    var color = days >= 14 ? "#DC2626" : "#F59E0B";
+    var fmt = days >= 1 ? Math.round(days) : days.toFixed(1);
+    return <span style={{ color:color, fontWeight:700 }}>{fmt} d</span>;
+  };
+  var openLead = function(deal) {
+    if (p.nav) p.nav("leads", { _id: deal.leadId, name: deal.name, status: deal.stage });
+  };
+
+  return <Card style={{ marginBottom:14, padding:"12px 14px" }}>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8, flexWrap:"wrap", gap:8 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:C.text }}>Stuck leads</div>
+      {!skel && <div style={{ fontSize:11, color:C.textLight }}>{total} {total === 1 ? "lead" : "leads"} stalled 7+ days</div>}
+    </div>
+
+    {skel && [0,1,2,3].map(function(i){ return <div key={i} style={{ height:32, marginBottom:6, background:"#F1F5F9", borderRadius:6 }}/>; })}
+
+    {!skel && deals.length === 0 && <div style={{ fontSize:12, color:C.textLight, padding:"24px 8px", textAlign:"center" }}>
+      ✓ No stuck leads — all advanced-stage leads contacted within 7 days
+    </div>}
+
+    {!skel && deals.length > 0 && <div>
+      <div style={{ overflowX:"auto" }}>
+        <table style={{ width:"100%", fontSize:11, borderCollapse:"collapse" }}>
+          <thead>
+            <tr style={{ borderBottom:"1px solid #E2E8F0" }}>
+              <th style={agentTableTh}>Lead</th>
+              <th style={agentTableTh}>Stage</th>
+              <th style={agentTableThRight}>Value</th>
+              <th style={agentTableThRight}>Days since contact</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map(function(d, i){
+              return <tr key={d.leadId + "-" + i}
+                onClick={function(){ openLead(d); }}
+                onMouseEnter={function(e){ e.currentTarget.style.background = "#F8FAFC"; }}
+                onMouseLeave={function(e){ e.currentTarget.style.background = "transparent"; }}
+                style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer" }}>
+                <td style={{ padding:"8px", color:C.text, fontWeight:600 }}>{d.name || "—"}</td>
+                <td style={{ padding:"8px" }}>{stageBadge(d.stage)}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.text }}>{d.value > 0 ? fmtEGP(d.value) : "—"}</td>
+                <td style={{ padding:"8px", textAlign:"right" }}>{ageCell(d.daysSinceLastContact)}</td>
+              </tr>;
+            })}
+          </tbody>
+        </table>
+      </div>
+      {!expanded && total > 10 && <div style={{ marginTop:8, textAlign:"center" }}>
+        <button onClick={function(){ setExpanded(true); }} style={{
+          background:"none", border:"none", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", padding:"6px 12px"
+        }}>View all {total > 50 ? "(top 50 of " + total + ")" : total} stuck →</button>
+      </div>}
+    </div>}
+  </Card>;
 };
 
 // ===== PROJECTS =====
