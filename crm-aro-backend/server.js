@@ -8951,6 +8951,250 @@ app.get("/api/reports/agents/:id/heatmap", auth, reportsAuth, async function(req
   }
 });
 
+
+// GET /api/reports/agents/:id/stage-progression
+// Per-agent forward-superset funnel — for leads received by the target
+// in the date range, what fraction reached each downstream stage,
+// compared against the same-role peer median per stage.
+//
+// Five stages, monotonically nesting (Received ⊇ Contacted ⊇ Meeting
+// ⊇ EOI ⊇ Deal). Stage flags reuse the proven Phase 1 funnel logic
+// (see /api/reports/overview/funnel) — same isDealRaw / isEoiRaw /
+// isMeetingRaw / isContactedRaw expressions, then forward-superset OR
+// to guarantee downstream-implies-upstream.
+//
+// Per-agent attribution uses the agentList unwind pattern shared with
+// the rest of /reports/agents/* (primary agent + split partner each
+// credited; deal counts halved for revenue but FULL count for funnel
+// stage-presence — same as the leaderboard).
+//
+// Median policy: per stage, take the median across peer percentages,
+// dropping peers with received=0 (whose pct is null — including them
+// would bias the median low). peerCount in the response is the total
+// same-role peer roster, not the per-stage population.
+//
+// Defensive monotonic clamp matches the Phase 1 funnel — should never
+// fire under correct logic; logs loudly if it does.
+//
+// Biggest leak: stage transition where the agent under-indexes peer
+// median by the largest pct-points. Returns null when no transition
+// has a gap < -5pp (the spec's "no significant gaps" threshold).
+//
+// Source filter case-split mirrors the other agent endpoints
+// exactly. Team filter accepted for URL-shape consistency; restricts
+// peer roster (target's leads always counted regardless).
+app.get("/api/reports/agents/:id/stage-progression", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var target = await User.findById(req.params.id).select("name role active").lean();
+    if (!target) return res.status(404).json({ error: "agent_not_found" });
+
+    var peerQuery = { _id: { $ne: target._id }, active: true, role: target.role };
+    if (scopeIds) peerQuery._id = { $ne: target._id, $in: scopeIds };
+    var peers = await User.find(peerQuery).select("_id").lean();
+    var peerIds = peers.map(function(u){ return u._id; });
+    var allIds = [target._id].concat(peerIds);
+
+    var leadBaseMatch = {
+      archived: false,
+      createdAt: { $gte: fromDate, $lt: toDate }
+    };
+    if (sourceFilter) leadBaseMatch.source = sourceFilter;
+    else              leadBaseMatch.source = { $ne: "Daily Request" };
+    leadBaseMatch.$or = [
+      { agentId: { $in: allIds }},
+      { splitAgent2Id: { $in: allIds }}
+    ];
+
+    var agentListProj = { $filter: {
+      input: ["$agentId", "$splitAgent2Id"],
+      as: "a", cond: { $ne: ["$$a", null] }
+    }};
+
+    var rows = await Lead.aggregate([
+      { $match: leadBaseMatch },
+      // Phase 1 funnel raw stage flags — kept structurally identical to
+      // /reports/overview/funnel so the two stay in sync.
+      { $addFields: {
+          isDealRaw: { $and: [
+            { $or: [
+              { $eq: ["$status", "DoneDeal"] },
+              { $eq: ["$globalStatus", "donedeal"] }
+            ]},
+            { $ne: ["$dealStatus", "Deal Cancelled"] },
+            { $ne: ["$status", "Deal Cancelled"] }
+          ]},
+          isEoiRaw: { $and: [
+            { $ne: ["$status", "Deal Cancelled"] },
+            { $ne: ["$eoiStatus", "EOI Cancelled"] },
+            { $ne: ["$eoiStatus", "Deal Cancelled"] },
+            { $or: [
+              { $eq: ["$eoiStatus", "Pending"] },
+              { $eq: ["$eoiStatus", "Approved"] },
+              { $eq: ["$status", "EOI"] }
+            ]}
+          ]},
+          isMeetingRaw: { $or: [
+            { $eq: ["$hadMeeting", true] },
+            { $eq: ["$status", "MeetingDone"] }
+          ]},
+          isContactedRaw: { $or: [
+            { $ne: ["$status", "NewLead"] },
+            { $anyElementTrue: { $map: {
+                input: { $ifNull: ["$assignments", []] },
+                as: "a",
+                in: { $ne: ["$$a.lastActionAt", null] }
+            }}},
+            { $anyElementTrue: { $map: {
+                input: { $ifNull: ["$history", []] },
+                as: "h",
+                in: { $or: [
+                  { $eq: ["$$h.event", "status_change"] },
+                  { $eq: ["$$h.event", "status_changed"] }
+                ]}
+            }}},
+            { $and: [{ $ne: ["$notes", ""] }, { $ne: ["$notes", null] }] },
+            { $and: [{ $ne: ["$lastFeedback", ""] }, { $ne: ["$lastFeedback", null] }] },
+            { $and: [{ $ne: ["$callbackTime", ""] }, { $ne: ["$callbackTime", null] }] }
+          ]}
+      }},
+      // Forward-superset OR — Contacted ⊇ Meeting ⊇ EOI ⊇ Deal.
+      { $addFields: {
+          isDeal:      "$isDealRaw",
+          isEoi:       { $or: ["$isEoiRaw",       "$isDealRaw"] },
+          isMeeting:   { $or: ["$isMeetingRaw",   "$isEoiRaw",     "$isDealRaw"] },
+          isContacted: { $or: ["$isContactedRaw", "$isMeetingRaw", "$isEoiRaw", "$isDealRaw"] }
+      }},
+      { $project: {
+          agentList: agentListProj,
+          isContacted: 1, isMeeting: 1, isEoi: 1, isDeal: 1
+      }},
+      { $unwind: "$agentList" },
+      { $match: { agentList: { $in: allIds }}},
+      { $group: {
+          _id: "$agentList",
+          received:  { $sum: 1 },
+          contacted: { $sum: { $cond: ["$isContacted", 1, 0] }},
+          meeting:   { $sum: { $cond: ["$isMeeting",   1, 0] }},
+          eoi:       { $sum: { $cond: ["$isEoi",       1, 0] }},
+          deal:      { $sum: { $cond: ["$isDeal",      1, 0] }}
+      }}
+    ]);
+
+    var byAgent = {};
+    rows.forEach(function(r){
+      byAgent[String(r._id)] = {
+        received:  Number(r.received)  || 0,
+        contacted: Number(r.contacted) || 0,
+        meeting:   Number(r.meeting)   || 0,
+        eoi:       Number(r.eoi)       || 0,
+        deal:      Number(r.deal)      || 0
+      };
+    });
+
+    // Per-agent rollup: clamp + pct-of-received per stage. received pct
+    // is 100 when received > 0 (baseline), null otherwise.
+    var rollup = function(id) {
+      var a = byAgent[String(id)] || { received: 0, contacted: 0, meeting: 0, eoi: 0, deal: 0 };
+      // Defensive monotonic clamp — should not fire under the
+      // forward-superset OR but logs loudly if it does.
+      if (a.contacted > a.received) { console.warn("[stage-progression] clamp contacted", id, a.contacted, "->", a.received); a.contacted = a.received; }
+      if (a.meeting   > a.contacted){ console.warn("[stage-progression] clamp meeting",   id, a.meeting,   "->", a.contacted); a.meeting   = a.contacted; }
+      if (a.eoi       > a.meeting)  { console.warn("[stage-progression] clamp eoi",       id, a.eoi,       "->", a.meeting);   a.eoi       = a.meeting; }
+      if (a.deal      > a.eoi)      { console.warn("[stage-progression] clamp deal",      id, a.deal,      "->", a.eoi);       a.deal      = a.eoi; }
+      var pctOf = function(n){ return a.received > 0 ? Math.round((n / a.received) * 1000) / 10 : null; };
+      return {
+        received:  { count: a.received,  pct: a.received > 0 ? 100 : null },
+        contacted: { count: a.contacted, pct: pctOf(a.contacted) },
+        meeting:   { count: a.meeting,   pct: pctOf(a.meeting) },
+        eoi:       { count: a.eoi,       pct: pctOf(a.eoi) },
+        deal:      { count: a.deal,      pct: pctOf(a.deal) }
+      };
+    };
+    var agentRollup = rollup(target._id);
+    var peerRollups = peerIds.map(function(id){ return rollup(id); });
+
+    var medianOfArr = function(arr){
+      if (!arr || !arr.length) return null;
+      var s = arr.slice().sort(function(a, b){ return a - b; });
+      if (s.length === 1) return s[0];
+      var mid = Math.floor(s.length / 2);
+      return s.length % 2 === 0 ? (s[mid-1] + s[mid]) / 2 : s[mid];
+    };
+    var peerMedianFor = function(stageKey) {
+      var pcts = peerRollups.map(function(p){ return p[stageKey].pct; }).filter(function(v){ return v != null; });
+      var m = medianOfArr(pcts);
+      return m != null ? Math.round(m * 10) / 10 : null;
+    };
+
+    var stageDefs = [
+      { key: "received",  label: "Received"  },
+      { key: "contacted", label: "Contacted" },
+      { key: "meeting",   label: "Meeting"   },
+      { key: "eoi",       label: "EOI"       },
+      { key: "deal",      label: "Deal"      }
+    ];
+
+    var agentStages = stageDefs.map(function(s){
+      return {
+        key: s.key,
+        label: s.label,
+        count: agentRollup[s.key].count,
+        pctOfReceived: agentRollup[s.key].pct
+      };
+    });
+    var teamMedianStages = stageDefs.map(function(s){
+      return {
+        key: s.key,
+        label: s.label,
+        pctOfReceived: peerMedianFor(s.key)
+      };
+    });
+
+    // Biggest leak — stage with most-negative gap below -5pp. Skips the
+    // received row (always 100 vs 100) by definition.
+    var biggestLeak = null;
+    var leakStages = ["contacted", "meeting", "eoi", "deal"];
+    for (var i = 0; i < leakStages.length; i++) {
+      var k = leakStages[i];
+      var ar = agentRollup[k].pct;
+      var mr = peerMedianFor(k);
+      if (ar == null || mr == null) continue;
+      var gap = Math.round((ar - mr) * 10) / 10;
+      if (gap < -5 && (biggestLeak == null || gap < biggestLeak.gap)) {
+        // fromStage is the stage immediately upstream — what the leak
+        // is "leaving from" in funnel-parlance.
+        var prevKey = stageDefs[stageDefs.findIndex(function(s){ return s.key === k; }) - 1].key;
+        biggestLeak = {
+          fromStage: prevKey,
+          toStage: k,
+          agentPct: ar,
+          medianPct: mr,
+          gap: gap
+        };
+      }
+    }
+
+    res.json({
+      range: { from: range.from, to: range.to },
+      agentId: String(target._id),
+      agentName: target.name || "(unknown)",
+      agentRole: target.role || "",
+      agent: { stages: agentStages },
+      teamMedian: { stages: teamMedianStages },
+      biggestLeak: biggestLeak,
+      peerCount: peerIds.length
+    });
+  } catch (e) {
+    console.error("[reports/agents/:id/stage-progression]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "agent_stage_progression_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);

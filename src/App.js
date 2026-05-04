@@ -9921,10 +9921,9 @@ var ReportsAgentsBody = function(p) {
   var agents = (agentList.data && agentList.data.agents) || [];
   var selectedAgent = agents.find(function(a){ return String(a.id) === String(selectedAgentId); });
 
-  // Remaining placeholders — Slices 1-3 filled kpis/radar/heatmap;
-  // the other 3 land in upcoming slices.
+  // Remaining placeholders — Slices 1-4 filled kpis/radar/heatmap/
+  // stageProgression; the other 2 land in upcoming slices.
   var sections = [
-    { key:"stageProgression", title:"Stage progression funnel",     height:240 },
     { key:"recentDeals",      title:"Recent deals",                 height:200 },
     { key:"stuckLeads",       title:"Stuck leads",                  height:200 }
   ];
@@ -9958,6 +9957,8 @@ var ReportsAgentsBody = function(p) {
     <AgentRadarChart filters={f} token={p.token} agentId={selectedAgentId}/>
 
     <AgentActivityHeatmap filters={f} token={p.token} agentId={selectedAgentId}/>
+
+    <AgentStageProgression filters={f} token={p.token} agentId={selectedAgentId}/>
 
     {sections.map(function(s){
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
@@ -10407,6 +10408,138 @@ var AgentActivityHeatmap = function(p) {
       This view shows only active contact actions (calls, meetings, followups). Notes and emails are tracked separately and don't appear on this map.
     </div>}
   </Card>;
+};
+
+// Stage-progression delta colour. Spec: green when agent ≥ median + 5pp,
+// red when agent ≤ median − 5pp, purple (neutral) otherwise. Null → purple.
+var stageDeltaColor = function(agentPct, medianPct) {
+  if (agentPct == null || medianPct == null) return "#8B5CF6";
+  var gap = agentPct - medianPct;
+  if (gap >= 5)  return "#10B981";
+  if (gap <= -5) return "#DC2626";
+  return "#8B5CF6";
+};
+
+var AgentStageProgression = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var f = p.filters;
+  var agentId = p.agentId;
+
+  useEffect(function(){
+    if (!agentId) { setState({ loading: false, data: null, error: null }); return; }
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/agents/" + agentId + "/stage-progression" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [agentId, f.from, f.to, f.team, f.source]);
+
+  if (!agentId) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px", minHeight:240, background:"#FAFBFC", border:"1px dashed #E2E8F0", display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div style={{ fontSize:12, color:C.textLight }}>Select an agent to see the stage progression funnel</div>
+    </Card>;
+  }
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load stage progression: {state.error}</div>
+    </Card>;
+  }
+
+  var skel = state.loading || !state.data;
+  var data = state.data || {};
+  var agentStages = (data.agent && data.agent.stages) || [];
+  var medianStages = (data.teamMedian && data.teamMedian.stages) || [];
+  var medianByKey = {};
+  medianStages.forEach(function(s){ medianByKey[s.key] = s.pctOfReceived; });
+  var leak = data.biggestLeak;
+  var peerCount = data.peerCount || 0;
+
+  // Empty state — agent received zero leads in range. Distinguished
+  // from "no peers" (still render the agent bars at 0%) by checking the
+  // received row's count.
+  var receivedCount = !skel && agentStages.length ? (agentStages[0].count || 0) : null;
+  var isEmpty = !skel && receivedCount === 0;
+
+  // Skeleton: 5 grey bar pairs.
+  var skeletonRows = [0,1,2,3,4];
+
+  return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+    <div style={{ fontSize:12, fontWeight:700, color:C.text, marginBottom:8 }}>
+      Stage progression{data.agentName ? " — " + data.agentName : ""}
+      <span style={{ fontSize:10, fontWeight:500, color:C.textLight, marginLeft:8 }}>
+        forward-superset funnel · agent vs same-role peer median
+      </span>
+    </div>
+    {skel ? <div>
+      {skeletonRows.map(function(i){
+        return <div key={i} style={{ display:"grid", gridTemplateColumns:"110px 1fr 110px", gap:10, alignItems:"center", marginBottom:14 }}>
+          <div style={{ height:10, background:"#F1F5F9", borderRadius:3, width:"60%" }}/>
+          <div>
+            <div style={{ height:10, background:"#F1F5F9", borderRadius:5, width: (90 - i * 15) + "%" }}/>
+            <div style={{ height:6 }}/>
+            <div style={{ height:10, background:"#F1F5F9", borderRadius:5, width: (80 - i * 12) + "%" }}/>
+          </div>
+          <div style={{ height:10, background:"#F1F5F9", borderRadius:3 }}/>
+        </div>;
+      })}
+    </div> : isEmpty ? <div style={{ minHeight:140, display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, fontSize:12 }}>
+      No leads received in this period
+    </div> : <div>
+      {agentStages.map(function(s){
+        var medianPct = medianByKey[s.key];
+        var agentPct = s.pctOfReceived;
+        var color = stageDeltaColor(agentPct, medianPct);
+        var agentBarW = agentPct != null ? Math.max(0, Math.min(100, agentPct)) : 0;
+        var medianBarW = medianPct != null ? Math.max(0, Math.min(100, medianPct)) : 0;
+        return <div key={s.key} style={{ display:"grid", gridTemplateColumns:"110px 1fr 110px", gap:10, alignItems:"center", marginBottom:14 }}>
+          <div style={{ fontSize:11, fontWeight:600, color:C.text }}>{s.label}</div>
+          <div>
+            {/* Agent bar (top) — colour reflects gap vs median. */}
+            <div style={{ height:10, background:"#F1F5F9", borderRadius:5, overflow:"hidden" }}>
+              <div style={{ width: agentBarW + "%", height:"100%", background: color, transition:"width 0.3s, background 0.3s" }}/>
+            </div>
+            <div style={{ height:6 }}/>
+            {/* Peer median bar (bottom) — always grey. */}
+            <div style={{ height:10, background:"#F1F5F9", borderRadius:5, overflow:"hidden" }}>
+              <div style={{ width: medianBarW + "%", height:"100%", background: "#94A3B8", transition:"width 0.3s" }}/>
+            </div>
+          </div>
+          <div style={{ textAlign:"right" }}>
+            <div style={{ fontSize:11, fontWeight:700, color:C.text }}>
+              {(s.count || 0).toLocaleString()} {s.count === 1 ? "lead" : "leads"}
+              {agentPct != null && <span style={{ fontWeight:500, color:C.textLight }}> · {agentPct}%</span>}
+            </div>
+            <div style={{ fontSize:10, color:C.textLight, marginTop:8 }}>
+              median: {medianPct != null ? medianPct + "%" : "—"}
+            </div>
+          </div>
+        </div>;
+      })}
+    </div>}
+    {/* Leak callout + peer benchmark count */}
+    {!skel && !isEmpty && <div style={{ fontSize:11, color:C.textLight, marginTop:6, lineHeight:1.5 }}>
+      {leak ? <div>
+        <span style={{ fontWeight:600, color:"#DC2626" }}>Biggest leak:</span> {capitalizeStage(leak.fromStage)} → {capitalizeStage(leak.toStage)} ({leak.agentPct}% vs {leak.medianPct}% median, {leak.gap}pp gap)
+      </div> : peerCount > 0 ? <div>
+        No significant gaps vs peer median (within ±5pp on every stage)
+      </div> : <div>
+        No same-role peers to benchmark against
+      </div>}
+      {peerCount > 0 && <div style={{ marginTop:2 }}>Median computed across {peerCount} same-role {peerCount === 1 ? "peer" : "peers"}.</div>}
+    </div>}
+  </Card>;
+};
+
+// Title-case stage keys for the leak callout. Single-word stages
+// stay verbatim; "EOI" gets all-caps.
+var capitalizeStage = function(key) {
+  if (!key) return "";
+  if (key === "eoi") return "EOI";
+  return key.charAt(0).toUpperCase() + key.slice(1);
 };
 
 // ===== PROJECTS =====
