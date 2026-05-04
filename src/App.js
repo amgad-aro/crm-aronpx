@@ -10399,6 +10399,13 @@ var AgentActivityHeatmap = function(p) {
         </div>}
       </div>
     </div>}
+    {/* Permanent caveat — explains the cell-count vs KPI-activities gap users
+        will hit (KPI counts 5 types, heatmap counts 3). Always shown except
+        during initial skeleton load, including in the empty state where
+        someone might wonder why an agent with KPI activity has no cells. */}
+    {!skel && <div style={{ fontSize:10, color:C.textLight, marginTop:10, lineHeight:1.4 }}>
+      This view shows only active contact actions (calls, meetings, followups). Notes and emails are tracked separately and don't appear on this map.
+    </div>}
   </Card>;
 };
 
