@@ -2944,18 +2944,31 @@ var LeadsPage = function(p) {
         if (spT==="rotatedThisMonth") return (l.agentHistory||[]).some(function(h){ return h && h.date && new Date(h.date).getTime() >= monthStartMs; });
         if (spT==="interested") return l.status==="HotCase" || l.status==="Potential";
         if (spT==="aging") {
-          // Reports → Lead Aging drill-down. Mirrors the backend $lookup
-          // exactly: max(Activity.createdAt) for the current holder against
-          // this lead, scoped to explicit contact types. Status changes
-          // and reassigns are excluded — they're system-emitted and
-          // would mask coverage gaps. Fallback A = current holder's
-          // slice.assignedAt (so a 14d-held-no-contact lead still buckets
-          // correctly), fallback B = lead.createdAt for legacy leads.
+          // Reports → Lead Aging drill-down. UNION of two real-contact
+          // sources, mirrors the backend pipeline exactly:
+          //   (1) lead.history[] entries for status_changed /
+          //       feedback_added / callback_scheduled — diff-gated by the
+          //       server PUT handler so admin-saves-without-changes don't
+          //       falsely refresh the clock.
+          //   (2) p.activities entries for call/meeting/followup/email/note
+          //       by the current holder against this lead.
+          // Take the max across both. Fallback A = current holder's
+          // slice.assignedAt, fallback B = lead.createdAt.
+          var historyContactEvents = { status_changed:1, feedback_added:1, callback_scheduled:1 };
           var contactTypes = { call:1, meeting:1, followup:1, email:1, note:1 };
           var aid = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
           var aidStr = aid ? String(aid) : "";
           var lidStr = String(gid(l) || "");
-          var maxAct = 0;
+          var maxContact = 0;
+          // Source 1: lead.history events
+          var hist = l.history || [];
+          for (var hi = 0; hi < hist.length; hi++) {
+            var h = hist[hi];
+            if (!h || !historyContactEvents[h.event]) continue;
+            var th = h.timestamp ? new Date(h.timestamp).getTime() : 0;
+            if (th > maxContact) maxContact = th;
+          }
+          // Source 2: Activity entries (already loaded in props)
           if (aidStr && lidStr) {
             var acts = p.activities || [];
             for (var i2 = 0; i2 < acts.length; i2++) {
@@ -2966,11 +2979,11 @@ var LeadsPage = function(p) {
               if (!alid || !auid) continue;
               if (String(alid) !== lidStr) continue;
               if (String(auid) !== aidStr) continue;
-              var t = act.createdAt ? new Date(act.createdAt).getTime() : 0;
-              if (t > maxAct) maxAct = t;
+              var ta = act.createdAt ? new Date(act.createdAt).getTime() : 0;
+              if (ta > maxContact) maxContact = ta;
             }
           }
-          var lastT = maxAct;
+          var lastT = maxContact;
           if (!lastT && aidStr) {
             // Fallback A: current holder's slice.assignedAt
             var asg = l.assignments || [];
@@ -8932,7 +8945,7 @@ var LeadAgingBuckets = function(p) {
 
   var headerRow = <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:4 }}>
     <div style={{ fontSize:13, fontWeight:700 }}>⏱️ Lead Aging</div>
-    <div title="Last contact = the agent's most recent logged activity (call, meeting, followup, email, or note). If the agent hasn't logged anything since taking the lead, we show how long they've held it without contact. Status changes alone don't count — agents must log activities."
+    <div title="Last contact = the agent's most recent meaningful action — a status change, feedback note, callback scheduled, or logged activity (call/meeting/etc). If none of those have happened since the agent took the lead, we show how long they've held it untouched."
          style={{ fontSize:11, color:C.textLight, cursor:"help" }}>ⓘ</div>
   </div>;
 
