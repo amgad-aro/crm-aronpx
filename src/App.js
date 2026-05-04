@@ -8700,6 +8700,140 @@ var SourceRoiList = function(p) {
   </Card>;
 };
 
+var AgentLeaderboard = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var f = p.filters;
+
+  useEffect(function() {
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + f.from + "&to=" + f.to + "&limit=10";
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/overview/agents" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.from, f.to, f.team, f.source]);
+
+  var headerRow = <div style={{ fontSize:13, fontWeight:700, marginBottom:4 }}>🏆 Agent Leaderboard</div>;
+
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      {headerRow}
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load: {state.error}</div>
+    </Card>;
+  }
+  if (state.loading || !state.data) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px", minHeight:340 }}>
+      {headerRow}
+      <div style={{ fontSize:11, color:C.textLight, marginBottom:10 }}>Loading…</div>
+      {[0,1,2,3,4,5,6,7,8,9].map(function(i){
+        return <div key={i} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
+          <div style={{ width:24, height:14, background:"#F1F5F9", borderRadius:4 }}/>
+          <div style={{ flex:1, height:14, background:"#F1F5F9", borderRadius:4 }}/>
+        </div>;
+      })}
+    </Card>;
+  }
+
+  var agents = (state.data && state.data.agents) || [];
+  var totalAgents = (state.data && state.data.totalAgents) || 0;
+  var quarter = (state.data && state.data.quarter) || "";
+
+  var subtitle = (function(){
+    var bits = [];
+    bits.push(totalAgents.toLocaleString() + " agent" + (totalAgents === 1 ? "" : "s") + " active");
+    if (quarter) bits.push("Target vs " + quarter);
+    if (f.source && f.source !== "all") bits.push("Calls shown for all sources");
+    bits.push("Split deals halved per agent for revenue");
+    return <div style={{ fontSize:11, color:C.textLight, marginBottom:10 }}>{bits.join(" · ")}</div>;
+  })();
+
+  if (agents.length === 0) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      {headerRow}
+      {subtitle}
+      <div style={{ height:200, display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, fontSize:13 }}>No agent activity in this period</div>
+    </Card>;
+  }
+
+  var medal = function(rank){
+    if (rank === 1) return "🥇";
+    if (rank === 2) return "🥈";
+    if (rank === 3) return "🥉";
+    return null;
+  };
+  var targetColor = function(pct){
+    if (pct >= 70) return "#16A34A";
+    if (pct >= 30) return "#F59E0B";
+    return "#DC2626";
+  };
+
+  var H = function(label, w, align){
+    return <div style={{ width:w, fontSize:10, fontWeight:700, textTransform:"uppercase", letterSpacing:0.4, color:C.textLight, textAlign: align || "left" }}>{label}</div>;
+  };
+  var V = function(content, w, align, color, weight){
+    return <div style={{ width:w, fontSize:12, color: color || C.text, textAlign: align || "left", fontWeight: weight || 600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{content}</div>;
+  };
+
+  var showAll = totalAgents > agents.length;
+
+  return <Card style={{ marginBottom:14, padding:"14px 16px", overflowX:"auto" }}>
+    {headerRow}
+    {subtitle}
+    <div style={{ minWidth: 760 }}>
+      <div style={{ display:"flex", gap:8, alignItems:"center", padding:"6px 0", borderBottom:"1px solid #E2E8F0" }}>
+        {H("#", 28)}
+        {H("Agent", 140)}
+        {H("Leads", 56, "right")}
+        {H("Calls", 56, "right")}
+        {H("Mtgs", 52, "right")}
+        {H("EOIs", 50, "right")}
+        {H("Deals", 56, "right")}
+        {H("Revenue", 100, "right")}
+        {H("Conv %", 60, "right")}
+        {H("Target", 140, "left")}
+      </div>
+      {agents.map(function(a, i){
+        var rank = i + 1;
+        var mEmoji = medal(rank);
+        var tColor = targetColor(a.targetProgressPct || 0);
+        var barW = Math.max(0, Math.min(100, a.targetProgressPct || 0));
+        var convStr = (a.conversionPct == null) ? "—" : (a.conversionPct.toFixed(1) + "%");
+        return <div key={a.agentId} style={{ display:"flex", gap:8, alignItems:"center", padding:"8px 0", borderBottom: i < agents.length - 1 ? "1px dashed #F1F5F9" : "none" }}>
+          <div style={{ width:28, fontSize: mEmoji ? 16 : 13, fontWeight:700, color: mEmoji ? C.text : C.textLight, textAlign: "left" }}>{mEmoji || rank}</div>
+          {V(a.name || "(unknown)", 140)}
+          {V((a.leads || 0).toLocaleString(), 56, "right")}
+          {V((a.calls || 0).toLocaleString(), 56, "right")}
+          {V((a.meetings || 0).toLocaleString(), 52, "right")}
+          {V((a.eois || 0).toLocaleString(), 50, "right")}
+          {V((a.deals || 0).toLocaleString(), 56, "right")}
+          {V(fmtEGP(a.revenue || 0), 100, "right", C.success, 700)}
+          {V(convStr, 60, "right")}
+          <div style={{ width:140 }}>
+            {a.qTarget > 0 ? (
+              <div>
+                <div style={{ height:6, background:"#F1F5F9", borderRadius:3, overflow:"hidden" }}>
+                  <div style={{ width: barW + "%", height:"100%", background: tColor, borderRadius:3 }}/>
+                </div>
+                <div style={{ fontSize:10, color:tColor, fontWeight:700, marginTop:2 }}>
+                  {(a.targetProgressPct || 0).toFixed(0)}% of {fmtEGP(a.qTarget)}
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize:10, color:C.textLight }}>No {quarter || "Q"} target</div>
+            )}
+          </div>
+        </div>;
+      })}
+    </div>
+    {showAll && <div style={{ marginTop:10, textAlign:"right", fontSize:11, color:C.textLight }}>
+      View all {totalAgents} agents →
+    </div>}
+  </Card>;
+};
+
 // ===== REPORTS =====
 var ReportsPage = function(p) {
   var t = p.t;
@@ -8903,6 +9037,7 @@ var ReportsOverviewBody = function(p) {
       if (s.key === "trends") return <TrendsChart key="trends" filters={p.filters} token={p.token}/>;
       if (s.key === "funnel") return <SalesFunnel key="funnel" filters={p.filters} token={p.token}/>;
       if (s.key === "sources") return <SourceRoiList key="sources" filters={p.filters} token={p.token}/>;
+      if (s.key === "agents") return <AgentLeaderboard key="agents" filters={p.filters} token={p.token}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>
