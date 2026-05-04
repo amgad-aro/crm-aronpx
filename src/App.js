@@ -6195,13 +6195,42 @@ var getEffectiveQTarget = function(user, allUsers, forQ) {
   return qt[curQ]||0;
 };
 
+// Phase 2 Slice 3 — projectWeights are now sourced from the AppSetting doc
+// (server-side, single source of truth). Module cache is hydrated on App
+// mount via fetchProjectWeights() and refreshed after saveProjectWeight().
+// localStorage stays as a fallback for the brief window between mount and
+// first fetch resolve — same values post-migration, so no behavioral drift.
+var _projWeightsMap = null;
 var getProjectWeight = function(project, lead){
-  // If lead has projectWeight field use it
-  if(lead&&lead.projectWeight&&lead.projectWeight!==1) return lead.projectWeight;
+  // 1) Lead-level cache (set by server cascade in Slice 1's PUT handler)
+  if (lead && lead.projectWeight && lead.projectWeight !== 1) return lead.projectWeight;
+  // 2) App-level module cache (hydrated from the AppSetting doc)
+  if (_projWeightsMap && project && (project in _projWeightsMap)) return _projWeightsMap[project];
+  // 3) Legacy localStorage fallback — only relevant pre-fetch-resolve
   try{ var w=localStorage.getItem("crm_proj_weight_"+(project||"").replace(/\s/g,"_")); return w?parseFloat(w):1; }catch(e){return 1;}
 };
-var saveProjectWeight = function(project,weight){
-  try{localStorage.setItem("crm_proj_weight_"+(project||"").replace(/\s/g,"_"),String(weight));}catch(e){}
+// Server PUT is full-replace, so merge the change into the current cache
+// before sending. Server cascades projectWeight onto every matching Lead
+// doc — the caller is responsible for mirroring that into local p.leads
+// and for bumping the App-level rev counter so renders pick it up.
+var saveProjectWeight = async function(project, weight, token){
+  if (!project) return _projWeightsMap || {};
+  var newMap = Object.assign({}, _projWeightsMap || {});
+  if (weight === 1) delete newMap[project]; // 1 is the default — server drops it from storage
+  else newMap[project] = weight;
+  var res = await apiFetch("/api/settings/project-weights", "PUT", newMap, token);
+  _projWeightsMap = (res && typeof res === "object") ? res : newMap;
+  return _projWeightsMap;
+};
+// Hydrate the module cache from the AppSetting doc. Called on App mount
+// (and again on token change). On error leaves the cache as-is so the
+// localStorage fallback in getProjectWeight keeps working.
+var fetchProjectWeights = async function(token){
+  try {
+    var d = await apiFetch("/api/settings/project-weights", "GET", null, token);
+    _projWeightsMap = (d && typeof d === "object") ? d : {};
+  } catch (e) { /* leave cache as-is */ }
+  return _projWeightsMap;
 };
 // Deal split stored in localStorage: crm_deal_split_{leadId} = {agent2Id, agent2Name}
 var getDealSplit = function(lid, leads){
@@ -6644,16 +6673,24 @@ var DealsPage = function(p) {
       })()}
       {(function(){var projects=[];deals.forEach(function(d){if(d.project&&!projects.includes(d.project))projects.push(d.project);});return projects.map(function(proj){
         var w=getProjectWeight(proj);
+        // Phase 2 Slice 3 — server is now authoritative. saveProjectWeight
+        // PUTs to /api/settings/project-weights (which cascades projectWeight
+        // onto every matching Lead doc server-side); we mirror that locally
+        // so the deals array reflects new weights without a refetch, then
+        // bump pwRev so reads from the module cache pick up the change.
         var saveWeight=async function(newW){
-          saveProjectWeight(proj,newW);
-          setProjWeights(function(prev){return Object.assign({},prev,{[proj]:newW});});
-          // Update all deals of this project in DB
-          var projDeals=deals.filter(function(d){return d.project===proj;});
-          await Promise.all(projDeals.map(function(d){
-            return apiFetch("/api/leads/"+gid(d),"PUT",{projectWeight:newW},p.token).then(function(updated){
-              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(d)?updated:l;});});
-            }).catch(function(){});
-          }));
+          try {
+            await saveProjectWeight(proj, newW, p.token);
+            if (p.setLeads) p.setLeads(function(prev){
+              return prev.map(function(l){
+                return (l.project === proj) ? Object.assign({}, l, { projectWeight: newW }) : l;
+              });
+            });
+            setProjWeights(function(prev){return Object.assign({},prev,{[proj]:newW});});
+            if (p.bumpProjectWeightsRev) p.bumpProjectWeightsRev();
+          } catch(e) {
+            window.alert("Failed to save: " + (e && e.message ? e.message : "unknown error"));
+          }
         };
         return <div key={proj} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 0", borderBottom:"1px solid #F1F5F9" }}>
           <span style={{ fontSize:13, fontWeight:600 }}>{proj}</span>
@@ -11253,6 +11290,13 @@ var CallCalendarPage = function(p) {
 export default function CRMApp() {
   var [lang,setLang]=useState((function(){try{return "en";}catch(e){return "ar";}})());
   var [currentUser,setCurrentUser]=useState(null); var [token,setToken]=useState(null); var [csrfToken,setCsrfToken]=useState(null);
+  // Phase 2 Slice 3 — projectWeights cache rev. Bumped after fetch and after
+  // any save so all consumers re-render and read the updated module cache.
+  // The actual map lives at module scope (_projWeightsMap) because
+  // getProjectWeight is a top-level helper called from many render functions
+  // — we just need a state value to trigger re-renders when the cache moves.
+  var [projectWeightsRev,setProjectWeightsRev]=useState(0);
+  var bumpProjectWeightsRev=useCallback(function(){ setProjectWeightsRev(function(v){return v+1;}); },[]);
   var [page,setPage]=useState((function(){try{return localStorage.getItem("crm_page")||null;}catch(e){return null;}})());
   var [leads,setLeads]=useState([]); var [users,setUsers]=useState([]);
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
@@ -11415,6 +11459,14 @@ export default function CRMApp() {
       }
     }catch(e){}
   },[leadsPage, activitiesPage]);
+
+  // Phase 2 Slice 3 — hydrate the projectWeights module cache once auth is
+  // available, then bump rev so children re-render and read the new values.
+  // Re-runs on token change (login of a different user, session restore).
+  useEffect(function(){
+    if (!token) return;
+    fetchProjectWeights(token).then(function(){ bumpProjectWeightsRev(); });
+  },[token, bumpProjectWeightsRev]);
 
   // Data-refresh polling intervals were removed — WebSocket listener below handles real-time updates.
   // ===== REAL-TIME WEBSOCKET SYNC (single source of truth — replaces all data-refresh polling) =====
@@ -11987,7 +12039,7 @@ export default function CRMApp() {
   var scopedDailyReqs = tlScope ? (dailyReqs||[]).filter(function(r){var aid=String(r&&r.agentId&&r.agentId._id?r.agentId._id:(r&&r.agentId)||"");return tlScope.has(aid);}) : dailyReqs;
   var myTeamUsers = scopedUsers;
 
-  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs};
+  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev};
 
   var renderPage=function(){
     switch(currentPage){
