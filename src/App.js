@@ -9651,15 +9651,18 @@ var DealsAtRiskTable = function(p) {
   var thRight = Object.assign({}, thStyle, { textAlign:"right" });
 
   return <Card style={{ marginBottom:14, padding:"12px 14px" }}>
-    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8, flexWrap:"wrap", gap:8 }}>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:4, flexWrap:"wrap", gap:8 }}>
       <div style={{ fontSize:12, fontWeight:700, color:C.text }}>Deals at risk</div>
-      {!skel && <div style={{ fontSize:11, color:C.textLight }}>{total} {total === 1 ? "lead" : "leads"} stalled 7+ days</div>}
+      {!skel && <div style={{ fontSize:11, color:C.textLight }}>{total} {total === 1 ? "lead" : "leads"} stuck 7+ days at stage</div>}
+    </div>
+    <div style={{ fontSize:10, color:C.textLight, marginBottom:8, lineHeight:1.4 }}>
+      Stuck = no stage progression. Days counted from when the lead first entered its current stage. Reschedules and status flips don't reset the clock.
     </div>
 
     {skel && [0,1,2,3].map(function(i){ return <div key={i} style={{ height:32, marginBottom:6, background:"#F1F5F9", borderRadius:6 }}/>; })}
 
     {!skel && deals.length === 0 && <div style={{ fontSize:12, color:C.textLight, padding:"24px 8px", textAlign:"center" }}>
-      ✓ No at-risk deals — all advanced-stage leads contacted within 7 days.
+      ✓ No at-risk deals — every advanced-stage lead has progressed within 7 days.
     </div>}
 
     {!skel && deals.length > 0 && <div>
@@ -9671,7 +9674,7 @@ var DealsAtRiskTable = function(p) {
               <th style={thStyle}>Stage</th>
               <th style={thRight}>Value</th>
               <th style={thStyle}>Agent</th>
-              <th style={thRight}>Stale</th>
+              <th style={thRight}>Days in stage</th>
             </tr>
           </thead>
           <tbody>
@@ -9685,7 +9688,7 @@ var DealsAtRiskTable = function(p) {
                 <td style={{ padding:"8px" }}>{stageBadge(d.stage)}</td>
                 <td style={{ padding:"8px", textAlign:"right", color:C.text }}>{d.value > 0 ? fmtEGP(d.value) : "—"}</td>
                 <td style={{ padding:"8px", color:C.textLight }}>{d.agentName}</td>
-                <td style={{ padding:"8px", textAlign:"right" }}>{ageCell(d.daysSinceLastContact)}</td>
+                <td style={{ padding:"8px", textAlign:"right" }}>{ageCell(d.daysInStage)}</td>
               </tr>;
             })}
           </tbody>
@@ -10714,15 +10717,18 @@ var StuckLeadsTable = function(p) {
   };
 
   return <Card style={{ marginBottom:14, padding:"12px 14px" }}>
-    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8, flexWrap:"wrap", gap:8 }}>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:4, flexWrap:"wrap", gap:8 }}>
       <div style={{ fontSize:12, fontWeight:700, color:C.text }}>Stuck leads</div>
-      {!skel && <div style={{ fontSize:11, color:C.textLight }}>{total} {total === 1 ? "lead" : "leads"} stalled 7+ days</div>}
+      {!skel && <div style={{ fontSize:11, color:C.textLight }}>{total} {total === 1 ? "lead" : "leads"} stuck 7+ days at stage</div>}
+    </div>
+    <div style={{ fontSize:10, color:C.textLight, marginBottom:8, lineHeight:1.4 }}>
+      Stuck = no stage progression. Days counted from when the lead first entered its current stage. Reschedules and status flips don't reset the clock.
     </div>
 
     {skel && [0,1,2,3].map(function(i){ return <div key={i} style={{ height:32, marginBottom:6, background:"#F1F5F9", borderRadius:6 }}/>; })}
 
     {!skel && deals.length === 0 && <div style={{ fontSize:12, color:C.textLight, padding:"24px 8px", textAlign:"center" }}>
-      ✓ No stuck leads — all advanced-stage leads contacted within 7 days
+      ✓ No stuck leads — every advanced-stage lead has progressed within 7 days
     </div>}
 
     {!skel && deals.length > 0 && <div>
@@ -10733,7 +10739,7 @@ var StuckLeadsTable = function(p) {
               <th style={agentTableTh}>Lead</th>
               <th style={agentTableTh}>Stage</th>
               <th style={agentTableThRight}>Value</th>
-              <th style={agentTableThRight}>Days since contact</th>
+              <th style={agentTableThRight}>Days in stage</th>
             </tr>
           </thead>
           <tbody>
@@ -10746,7 +10752,7 @@ var StuckLeadsTable = function(p) {
                 <td style={{ padding:"8px", color:C.text, fontWeight:600 }}>{d.name || "—"}</td>
                 <td style={{ padding:"8px" }}>{stageBadge(d.stage)}</td>
                 <td style={{ padding:"8px", textAlign:"right", color:C.text }}>{d.value > 0 ? fmtEGP(d.value) : "—"}</td>
-                <td style={{ padding:"8px", textAlign:"right" }}>{ageCell(d.daysSinceLastContact)}</td>
+                <td style={{ padding:"8px", textAlign:"right" }}>{ageCell(d.daysInStage)}</td>
               </tr>;
             })}
           </tbody>

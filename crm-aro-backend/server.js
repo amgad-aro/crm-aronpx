@@ -7883,22 +7883,45 @@ app.get("/api/reports/pipeline/by-stage", auth, reportsAuth, async function(req,
 });
 
 // GET /api/reports/pipeline/at-risk
-// Lead-level table of advanced-stage leads stalled 7+ days. Snapshot,
-// no date range. The "lastContact" math is lifted verbatim from
-// /reports/overview/aging — same UNION (history events + Activity
-// types), same fallback chain (curSliceAssignedAt → createdAt). That
-// guarantees reconciliation: every Lead in this response is also in
-// the Lead Aging "over14" or "days7to14" bucket on the Overview tab.
+// Lead-level table of advanced-stage leads stuck 7+ days at their
+// current stage. Snapshot view, no date range.
+//
+// STUCK = NO STAGE PROGRESSION. Was previously a last-contact-based
+// metric (history-events ∪ Activity union, fallback to slice
+// .assignedAt). That returned 0 rows org-wide because the rotation
+// sweeper rotates after 2 days of no action and every active lead
+// gets some form of touch (status flip, callback reschedule,
+// feedback re-paste) every couple days — those low-effort actions
+// fired the diff-gated PUT handler, resetting the staleness clock
+// even when the customer hadn't progressed.
+//
+// Stage tenure is rotation-immune and reschedule-immune: it measures
+// how long the LEAD has been at its current stage. A
+// HotCase ↔ CallBack ↔ HotCase loop doesn't reset the clock because
+// we use the EARLIEST entry into the current stage, not the most
+// recent. Stuck = the deal isn't progressing, regardless of how
+// many touches it gets.
+//
+// Algorithm (must stay in sync with /agents/:id/stuck-leads):
+//   stageEnteredAt = $min over history.timestamp where event is
+//                    "status_changed" AND description matches
+//                    "→ {currentStatus} by" (the diff-gated PUT
+//                    handler emits this exact format at server.js:3250)
+//   Fallback chain when no matching history event exists:
+//     1. lead.meetingDoneAt (only for status MeetingDone)
+//     2. lead.createdAt (direct-creates + leads with incomplete
+//        history from before history events were added)
+//   ageDays = (now - stageEnteredAt) / 86400000
 //
 // Filter:
 //   - status IN [HotCase, MeetingDone]   (CallBack excluded — those
-//     have a scheduled callback time and "stale" doesn't apply.
+//     have a scheduled callback time and "stuck" doesn't apply.
 //     NewLead/Potential excluded — too early to call "at risk".)
 //   - archived = false
 //   - secondary state-machine guards: globalStatus != donedeal,
 //     eoiStatus NOT IN [Pending, Approved], dealStatus != Deal Cancelled
 //   - source != "Daily Request" (mirror exclusion, defensive)
-//   - daysSinceLastContact >= 7
+//   - ageDays >= 7
 //
 // Source filter case-split mirrors aging exactly.
 //
@@ -7906,6 +7929,11 @@ app.get("/api/reports/pipeline/by-stage", auth, reportsAuth, async function(req,
 // default; "View all N" button expands in-page up to the 50 cap). The
 // `total` field is the unfiltered at-risk count so the UI can label
 // honestly even when total > 50.
+//
+// SYNC INVARIANT: this stage-tenure logic is mirrored in
+// /api/reports/agents/:id/stuck-leads. Keep the two aggregations
+// aligned — they answer the same "is this deal stuck" question, just
+// at different scopes (org-wide vs per-agent).
 app.get("/api/reports/pipeline/at-risk", auth, reportsAuth, async function(req, res) {
   try {
     var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
@@ -7938,60 +7966,41 @@ app.get("/api/reports/pipeline/at-risk", auth, reportsAuth, async function(req, 
     var rows = await Lead.aggregate([
       { $match: match },
       { $addFields: { budgetNum: budgetNumExpr }},
-      // ── Last-contact computation — verbatim from /reports/overview/aging.
-      { $lookup: {
-          from: "activities",
-          let: { lid: "$_id", aid: "$agentId" },
-          pipeline: [
-            { $match: { $expr: { $and: [
-                { $eq: ["$leadId", "$$lid"] },
-                { $eq: ["$userId", "$$aid"] },
-                { $in: ["$type", ["call","meeting","followup","email","note"]] }
-            ]}}},
-            { $sort: { createdAt: -1 }},
-            { $limit: 1 },
-            { $project: { _id: 0, t: "$createdAt" }}
-          ],
-          as: "lastContactAct"
-      }},
+      // Stage tenure: $min over history.timestamp for status_changed
+      // events that transitioned INTO the current stage. The regex
+      // is dynamically built per document via $concat — the lead's
+      // own `$status` is interpolated into the pattern.
       { $addFields: {
-          historyContactMax: { $max: { $map: {
+          stageEnteredAt: { $min: { $map: {
             input: { $filter: {
               input: { $ifNull: ["$history", []] },
               as: "h",
-              cond: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
+              cond: { $and: [
+                { $eq: ["$$h.event", "status_changed"] },
+                { $regexMatch: {
+                    input: { $ifNull: ["$$h.description", ""] },
+                    regex: { $concat: ["→ ", "$status", " by"] }
+                }}
+              ]}
             }},
             as: "h",
             in: "$$h.timestamp"
-          }}},
-          activityContactMax: { $arrayElemAt: ["$lastContactAct.t", 0] }
+          }}}
       }},
       { $addFields: {
-          lastContact: { $let: {
-            vars: {
-              mergedContact: { $max: ["$historyContactMax", "$activityContactMax"] },
-              curSliceAssignedAt: { $let: {
-                vars: { cs: { $arrayElemAt: [
-                  { $filter: {
-                      input: { $ifNull: ["$assignments", []] },
-                      as: "a",
-                      cond: { $eq: ["$$a.agentId", "$agentId"] }
-                  }},
-                  -1
-                ]}},
-                in: "$$cs.assignedAt"
-              }}
-            },
-            in: { $ifNull: [
-              "$$mergedContact",
-              { $ifNull: ["$$curSliceAssignedAt", "$createdAt"] }
+          // Fallback: stageEnteredAt → meetingDoneAt (MeetingDone only) → createdAt
+          effectiveStageEntry: { $ifNull: [
+            "$stageEnteredAt",
+            { $cond: [
+              { $eq: ["$status", "MeetingDone"] },
+              { $ifNull: ["$meetingDoneAt", "$createdAt"] },
+              "$createdAt"
             ]}
-          }}
+          ]}
       }},
-      { $addFields: { ageDays: { $divide: [{ $subtract: [nowDate, "$lastContact"] }, DAY_MS] }}},
-      // ── Stale gate.
+      { $addFields: { ageDays: { $divide: [{ $subtract: [nowDate, "$effectiveStageEntry"] }, DAY_MS] }}},
       { $match: { ageDays: { $gte: STALE_DAYS }}},
-      // ── Branch: trim+enrich the deals list and count the unfiltered total.
+      // Trim + enrich the deals list and count the unfiltered total.
       { $facet: {
           deals: [
             { $sort: { ageDays: -1, budgetNum: -1 }},
@@ -8011,7 +8020,7 @@ app.get("/api/reports/pipeline/at-risk", auth, reportsAuth, async function(req, 
                 value: { $round: ["$budgetNum", 0] },
                 agentName: { $ifNull: [{ $arrayElemAt: ["$agent.name", 0] }, "Unassigned"] },
                 agentId:   { $toString: { $arrayElemAt: ["$agent._id", 0] }},
-                daysSinceLastContact: { $round: ["$ageDays", 1] }
+                daysInStage: { $round: ["$ageDays", 1] }
             }}
           ],
           totalArr: [{ $count: "n" }]
@@ -9353,24 +9362,46 @@ app.get("/api/reports/agents/:id/recent-deals", auth, reportsAuth, async functio
 
 // GET /api/reports/agents/:id/stuck-leads
 // Per-agent slice of /api/reports/pipeline/at-risk — HotCase /
-// MeetingDone leads attributed to the target that have gone
-// 7+ days without contact. Snapshot view (no date range — stuck-
-// ness is "right now").
+// MeetingDone leads attributed to the target that have been at
+// their current stage for 7+ days. Snapshot view (no date range —
+// stuck-ness is "right now").
 //
-// Last-contact computation matches /reports/overview/aging exactly
-// (5-type Activity whitelist INCLUDING "note", since this is a
-// timestamp consumer — the FB-webhook auto-note's createdAt ≈
-// lead.createdAt is an acceptable baseline here, unlike the boolean
-// isContactedRaw in /overview/funnel which dropped "note"). The only
-// difference from /pipeline/at-risk is the userId scope on the
-// activity lookup: scoped to the TARGET agent here, not the lead's
-// current holder, so a co-holder's contact doesn't reset the target's
-// staleness clock.
+// STUCK = NO STAGE PROGRESSION (not "no touch"). The previous
+// last-contact-based logic (history events + Activity union) was
+// fundamentally incompatible with this CRM's operating rhythm: the
+// rotation sweeper rotates leads after 2 days of no action, and
+// every active lead gets some form of touch (status flip, callback
+// reschedule, feedback re-paste) every couple days. The
+// last-contact metric returned 0 stuck across all agents because
+// the diff-gated PUT handler fires on these low-effort actions.
 //
-// Closed-state guards mirror at-risk: archived=false, status ∈
-// {HotCase, MeetingDone}, NOT done/EOI-pending/EOI-approved/
-// dealCancelled. Source filter case-split standard. Top 50 cap,
-// total count returned for the "View all N" hint.
+// Stage tenure bypasses that entirely — measures how long the LEAD
+// itself has been at its current stage, regardless of holder
+// rotation or rescheduling. A HotCase ↔ CallBack ↔ HotCase loop
+// doesn't reset the clock because we use the EARLIEST entry into
+// the current stage, not the most recent.
+//
+// Algorithm:
+//   stageEnteredAt = earliest history.timestamp where event ==
+//                    "status_changed" AND description matches
+//                    "→ {currentStatus} by" (the diff-gated PUT
+//                    handler emits this exact format at server.js:3250)
+//   Fallback chain when no matching history event exists:
+//     1. lead.meetingDoneAt (only for status MeetingDone)
+//     2. lead.createdAt (direct-creates + leads with incomplete
+//        history from before history events were added)
+//   ageDays = (now - stageEnteredAt) / 86400000
+//   isStuck = ageDays >= 7
+//
+// Closed-state guards mirror /pipeline/at-risk: archived=false,
+// status ∈ {HotCase, MeetingDone}, NOT done/EOI-pending/EOI-
+// approved/dealCancelled. Source filter case-split standard. Top 50
+// cap, total count returned for the "View all N" hint.
+//
+// SYNC INVARIANT: this stage-tenure logic is mirrored in
+// /api/reports/pipeline/at-risk. Keep the two aggregations aligned —
+// they answer the same "is this deal stuck" question, just at
+// different scopes (per-agent vs org-wide).
 app.get("/api/reports/agents/:id/stuck-leads", auth, reportsAuth, async function(req, res) {
   try {
     var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
@@ -9405,60 +9436,39 @@ app.get("/api/reports/agents/:id/stuck-leads", auth, reportsAuth, async function
     var rows = await Lead.aggregate([
       { $match: match },
       { $addFields: { budgetNum: budgetNumExpr }},
-      // Last-contact union — TIMESTAMP consumer, keeps "note" in the
-      // 5-type Activity whitelist (see /overview/aging comment).
-      { $lookup: {
-          from: "activities",
-          let: { lid: "$_id", aid: target._id },
-          pipeline: [
-            { $match: { $expr: { $and: [
-                { $eq: ["$leadId", "$$lid"] },
-                { $eq: ["$userId", "$$aid"] },
-                { $in: ["$type", ["call","meeting","followup","email","note"]] }
-            ]}}},
-            { $sort: { createdAt: -1 }},
-            { $limit: 1 },
-            { $project: { _id: 0, t: "$createdAt" }}
-          ],
-          as: "lastContactAct"
-      }},
+      // Stage tenure: earliest history.timestamp for status_changed
+      // event matching "→ {currentStatus} by". Uses $regexMatch with
+      // a dynamically-concatenated pattern (the lead's `$status`
+      // is interpolated per document). Falls back via $ifNull below.
       { $addFields: {
-          historyContactMax: { $max: { $map: {
+          stageEnteredAt: { $min: { $map: {
             input: { $filter: {
               input: { $ifNull: ["$history", []] },
               as: "h",
-              cond: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
+              cond: { $and: [
+                { $eq: ["$$h.event", "status_changed"] },
+                { $regexMatch: {
+                    input: { $ifNull: ["$$h.description", ""] },
+                    regex: { $concat: ["→ ", "$status", " by"] }
+                }}
+              ]}
             }},
             as: "h",
             in: "$$h.timestamp"
-          }}},
-          activityContactMax: { $arrayElemAt: ["$lastContactAct.t", 0] }
+          }}}
       }},
       { $addFields: {
-          lastContact: { $let: {
-            vars: {
-              mergedContact: { $max: ["$historyContactMax", "$activityContactMax"] },
-              // Fallback to target's slice.assignedAt when no real-contact
-              // signals exist — answers "how long has this agent held it?"
-              targetSliceAssignedAt: { $let: {
-                vars: { cs: { $arrayElemAt: [
-                  { $filter: {
-                      input: { $ifNull: ["$assignments", []] },
-                      as: "a",
-                      cond: { $eq: ["$$a.agentId", target._id] }
-                  }},
-                  -1
-                ]}},
-                in: "$$cs.assignedAt"
-              }}
-            },
-            in: { $ifNull: [
-              "$$mergedContact",
-              { $ifNull: ["$$targetSliceAssignedAt", "$createdAt"] }
+          // Fallback: stageEnteredAt → meetingDoneAt (MeetingDone only) → createdAt
+          effectiveStageEntry: { $ifNull: [
+            "$stageEnteredAt",
+            { $cond: [
+              { $eq: ["$status", "MeetingDone"] },
+              { $ifNull: ["$meetingDoneAt", "$createdAt"] },
+              "$createdAt"
             ]}
-          }}
+          ]}
       }},
-      { $addFields: { ageDays: { $divide: [{ $subtract: [nowDate, "$lastContact"] }, DAY_MS] }}},
+      { $addFields: { ageDays: { $divide: [{ $subtract: [nowDate, "$effectiveStageEntry"] }, DAY_MS] }}},
       { $match: { ageDays: { $gte: STALE_DAYS }}},
       { $facet: {
           deals: [
@@ -9470,7 +9480,7 @@ app.get("/api/reports/agents/:id/stuck-leads", auth, reportsAuth, async function
                 name: 1,
                 stage: "$status",
                 value: { $round: [{ $cond: [{ $ne: [{ $ifNull: ["$splitAgent2Id", null] }, null] }, { $multiply: ["$budgetNum", 0.5] }, "$budgetNum"] }, 0] },
-                daysSinceLastContact: { $round: ["$ageDays", 1] }
+                daysInStage: { $round: ["$ageDays", 1] }
             }}
           ],
           totalArr: [{ $count: "n" }]
