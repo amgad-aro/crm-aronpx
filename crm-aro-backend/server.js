@@ -1108,6 +1108,26 @@ async function getProjectWeights() {
   return Object.assign({}, _projWeightsCache.map);
 }
 
+// Phase 2 Slice 4 — resolve a project name against the AppSetting weights
+// map, returning a number (the weight) or null (no match → caller should
+// leave projectWeight at the schema default of 1). Only DR-mirror creation
+// uses this today; native lead creation paths intentionally don't (out of
+// scope for Slice 4 — Slice 1's cascade catches them post-hoc whenever a
+// weight is saved). Trim is applied because the conversion form often
+// passes hand-typed project names with stray whitespace; case-insensitive
+// matching is intentionally NOT done because two distinct project names
+// differing only in case would silently collide. If drift becomes a real
+// problem we'll add a normalised lookup map later.
+async function resolveDrProjectWeight(projectName) {
+  var trimmed = String(projectName || "").trim();
+  if (!trimmed) return null;
+  try {
+    var weights = await getProjectWeights();
+    if (weights && (trimmed in weights)) return weights[trimmed];
+  } catch (e) { /* fall through to null */ }
+  return null;
+}
+
 // GET /api/settings/project-weights — any authed role.
 // Returns { "Palm Hills": 0.5, ... }. Empty object when the AppSetting
 // doc doesn't exist yet (Slice 2 hasn't migrated localStorage to server).
@@ -4978,8 +4998,16 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
         // assignments[] entry for the DR's current agent so the mirror is
         // visible in sales' leads list (and therefore on the EOI/Deals page).
         var agentForMirror = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
+        // Phase 2 Slice 4 — resolve the AppSetting weight for the project
+        // name we're about to stamp onto the mirror. Both branches (existing
+        // lead update + new lead create) use the same resolved value; only
+        // the project-name fallback chain differs slightly between branches,
+        // so we compute lookup keys per-branch but share the helper.
+        var existingProjectFallback = existingLead ? existingLead.project : "";
+        var resolvedProjectName = req.body.project || r.propertyType || existingProjectFallback || "";
+        var resolvedDrWeight = await resolveDrProjectWeight(resolvedProjectName);
         if (existingLead) {
-          await Lead.findByIdAndUpdate(existingLead._id, Object.assign({
+          var existingMirrorPayload = Object.assign({
             status: req.body.status,
             budget: req.body.budget || r.budget || existingLead.budget,
             project: req.body.project || r.propertyType || existingLead.project,
@@ -4988,7 +5016,9 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             lastActivityTime: new Date(),
             notes: req.body.notes || r.notes || existingLead.notes,
             eoiDeposit: req.body.eoiDeposit || existingLead.eoiDeposit || "",
-          }, mirrorExtra));
+          }, mirrorExtra);
+          if (resolvedDrWeight !== null) existingMirrorPayload.projectWeight = resolvedDrWeight;
+          await Lead.findByIdAndUpdate(existingLead._id, existingMirrorPayload);
           // If the existing mirror has no assignment for the current agent,
           // add one so the sales-role leads filter accepts it. Use $addToSet
           // semantics by checking first — $addToSet on sub-docs doesn't dedupe
@@ -5025,7 +5055,7 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             nextCallAt: null,
             agentHistory: []
           }] : [];
-          await Lead.create(Object.assign({
+          var newMirrorPayload = Object.assign({
             name: r.name, phone: r.phone, phone2: r.phone2 || "",
             email: r.email || "", budget: req.body.budget || r.budget || "",
             project: req.body.project || r.propertyType || "",
@@ -5038,7 +5068,9 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             lastActivityTime: new Date(),
             eoiDeposit: req.body.eoiDeposit || "",
             assignments: seedAssignments,
-          }, mirrorExtra));
+          }, mirrorExtra);
+          if (resolvedDrWeight !== null) newMirrorPayload.projectWeight = resolvedDrWeight;
+          await Lead.create(newMirrorPayload);
         }
         // Real-time broadcast for the Lead mirror. The auto-broadcast
         // middleware only emits dr_updated here (the response path is
