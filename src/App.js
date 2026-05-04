@@ -9888,32 +9888,42 @@ var ReportsPipelineBody = function(p) {
 
 var ReportsAgentsBody = function(p) {
   var [selectedAgentId, setSelectedAgentId] = useState(null);
+  var [agentList, setAgentList] = useState({ loading: true, data: null, error: null });
+  var f = p.filters;
 
-  // Eligible agents — same role whitelist Phase 1 forecast uses for
-  // qTarget eligibility (sales + team_leader + manager, active only).
-  var eligibleAgents = (p.users || []).filter(function(u){
-    return u && u.active && (u.role === "sales" || u.role === "team_leader" || u.role === "manager");
-  }).sort(function(a, b){ return (a.name || "").localeCompare(b.name || ""); });
-
-  // Default selection on mount / when the eligible list materialises.
-  // Slice 1 will replace this with a top-revenue-in-range default once
-  // the /api/reports/agents/list endpoint ships; for now first-
-  // alphabetical so the placeholders below have an agent name to label
-  // themselves with on first paint.
+  // Fetch the eligible-roster + revenue list for the picker.
+  // Reloads whenever range / team / source changes.
   useEffect(function(){
-    if (!selectedAgentId && eligibleAgents.length > 0) {
-      setSelectedAgentId(gid(eligibleAgents[0]));
-    }
-  }, [eligibleAgents.length]);
+    var aborted = false;
+    setAgentList(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/agents/list" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setAgentList({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setAgentList({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.from, f.to, f.team, f.source]);
+
+  // Default selection: top-revenue agent. Re-defaults if the current
+  // selection drops out of the list (e.g. team filter narrows the roster).
+  useEffect(function(){
+    var agents = (agentList.data && agentList.data.agents) || [];
+    if (agents.length === 0) return;
+    var stillExists = selectedAgentId && agents.some(function(a){ return String(a.id) === String(selectedAgentId); });
+    if (!stillExists) setSelectedAgentId(agents[0].id);
+  }, [agentList.data]);
 
   var roleLabel = function(role){
     return role === "manager" ? "Manager" : role === "team_leader" ? "Team Leader" : "Sales";
   };
 
-  var selectedAgent = eligibleAgents.find(function(u){ return gid(u) === selectedAgentId; });
+  var agents = (agentList.data && agentList.data.agents) || [];
+  var selectedAgent = agents.find(function(a){ return String(a.id) === String(selectedAgentId); });
 
+  // Remaining placeholders — Slice 1 fills the first ("kpis") slot with
+  // AgentKpiRow; the other 5 land in upcoming slices.
   var sections = [
-    { key:"kpis",             title:"Headline KPIs vs peer median", height:120 },
     { key:"radar",            title:"Performance radar",            height:300 },
     { key:"heatmap",          title:"Activity heatmap",             height:240 },
     { key:"stageProgression", title:"Stage progression funnel",     height:240 },
@@ -9926,19 +9936,26 @@ var ReportsAgentsBody = function(p) {
       <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
         <span style={{ fontSize:11, fontWeight:600, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em" }}>Agent</span>
         <select value={selectedAgentId || ""} onChange={function(e){ setSelectedAgentId(e.target.value); }}
-          disabled={eligibleAgents.length === 0}
-          style={{ padding:"6px 10px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", minWidth:220 }}>
-          {eligibleAgents.length === 0
-            ? <option value="">No eligible agents</option>
-            : eligibleAgents.map(function(u){
-                return <option key={gid(u)} value={gid(u)}>{u.name} ({roleLabel(u.role)})</option>;
-              })}
+          disabled={agentList.loading || agents.length === 0}
+          style={{ padding:"6px 10px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", minWidth:260 }}>
+          {agentList.loading
+            ? <option value="">Loading…</option>
+            : agents.length === 0
+              ? <option value="">No eligible agents</option>
+              : agents.map(function(a){
+                  return <option key={a.id} value={a.id}>
+                    {a.name} ({roleLabel(a.role)}) — {fmtEGP(a.revenue)}
+                  </option>;
+                })}
         </select>
         {selectedAgent && (selectedAgent.title || selectedAgent.teamName) && <span style={{ fontSize:11, color:C.textLight }}>
           {[selectedAgent.title, selectedAgent.teamName].filter(Boolean).join(" · ")}
         </span>}
+        {agentList.error && <span style={{ fontSize:11, color:"#DC2626" }}>· couldn't load roster: {agentList.error}</span>}
       </div>
     </Card>
+
+    <AgentKpiRow filters={f} token={p.token} agentId={selectedAgentId}/>
 
     {sections.map(function(s){
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
@@ -9946,6 +9963,110 @@ var ReportsAgentsBody = function(p) {
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>
       </Card>;
     })}
+  </div>;
+};
+
+var AgentKpiCard = function(p) {
+  var c = p.card;
+  var skel = p.skeleton;
+  var hasPeers = p.peerCount > 0;
+  var agentVal = c.agent;
+  var peerVal  = c.peer;
+
+  // Delta math — null peer or empty peer set → no delta row.
+  var deltaPct = null;
+  var deltaDir = null; // "up" | "down" | "flat"
+  if (!skel && hasPeers && peerVal != null && agentVal != null) {
+    if (peerVal === 0 && agentVal === 0) {
+      deltaDir = "flat";
+    } else if (peerVal === 0) {
+      deltaDir = agentVal > 0 ? "up" : "down";
+    } else {
+      deltaPct = ((agentVal - peerVal) / Math.abs(peerVal)) * 100;
+      if (Math.abs(deltaPct) < 1) deltaDir = "flat";
+      else deltaDir = deltaPct > 0 ? "up" : "down";
+    }
+  }
+
+  // Color: ▲ green / ▼ red for higherIsBetter; inverted for responseHours.
+  var goodColor = "#10B981", badColor = "#DC2626", neutralColor = "#94A3B8";
+  var deltaColor = neutralColor;
+  if (deltaDir === "up")   deltaColor = c.lowerIsBetter ? badColor  : goodColor;
+  if (deltaDir === "down") deltaColor = c.lowerIsBetter ? goodColor : badColor;
+  var arrow = deltaDir === "up" ? "▲" : deltaDir === "down" ? "▼" : deltaDir === "flat" ? "—" : "";
+
+  return <Card style={{ padding:"12px 14px", minHeight:108 }}>
+    <div style={{ fontSize:11, color:C.textLight, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.04em" }}>
+      {c.label}
+    </div>
+    {skel ? <div>
+      <div style={{ height:24, marginTop:8, borderRadius:4, background:"#F1F5F9", width:"60%" }}/>
+      <div style={{ height:11, marginTop:8, borderRadius:4, background:"#F1F5F9", width:"40%" }}/>
+    </div> : <div>
+      <div style={{ fontSize:22, fontWeight:800, color:C.text, marginTop:6 }}>
+        {agentVal == null ? "—" : c.fmt(agentVal)}
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:4, flexWrap:"wrap" }}>
+        <span style={{ fontSize:10, color:C.textLight }}>
+          median: {peerVal == null ? "—" : c.fmt(peerVal)}
+        </span>
+        {deltaDir && <span style={{ fontSize:11, fontWeight:700, color:deltaColor }}>
+          {arrow}{deltaPct != null ? " " + Math.abs(Math.round(deltaPct)) + "%" : ""}
+        </span>}
+      </div>
+    </div>}
+  </Card>;
+};
+
+var AgentKpiRow = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var f = p.filters;
+  var agentId = p.agentId;
+
+  useEffect(function(){
+    if (!agentId) { setState({ loading: false, data: null, error: null }); return; }
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/agents/" + agentId + "/kpis" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [agentId, f.from, f.to, f.team, f.source]);
+
+  if (!agentId) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px", minHeight:108, background:"#FAFBFC", border:"1px dashed #E2E8F0", display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div style={{ fontSize:12, color:C.textLight }}>Select an agent to see KPIs</div>
+    </Card>;
+  }
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load agent KPIs: {state.error}</div>
+    </Card>;
+  }
+
+  var skel = state.loading || !state.data;
+  var data = state.data || {};
+  var ag = data.agent || {};
+  var pm = data.peerMedian || {};
+  var pc = data.peerCount || 0;
+
+  var fmtPct   = function(v){ return v == null ? "—" : (Number(v) || 0).toFixed(1) + "%"; };
+  var fmtHours = function(v){ if (v == null) return "—"; var n = Number(v) || 0; return n < 1 ? n.toFixed(1) + " h" : (Math.round(n * 10) / 10) + " h"; };
+  var fmtNum   = function(v){ return v == null ? "—" : (Number(v) || 0).toLocaleString(); };
+
+  var cards = [
+    { id:"revenue",    label:"Revenue",       agent: ag.revenue,       peer: pm.revenue,       fmt: fmtEGP,   lowerIsBetter:false },
+    { id:"deals",      label:"Deals",         agent: ag.deals,         peer: pm.deals,         fmt: fmtNum,   lowerIsBetter:false },
+    { id:"conv",       label:"Conversion",    agent: ag.conversionPct, peer: pm.conversionPct, fmt: fmtPct,   lowerIsBetter:false },
+    { id:"activities", label:"Activities",    agent: ag.activities,    peer: pm.activities,    fmt: fmtNum,   lowerIsBetter:false },
+    { id:"response",   label:"Response time", agent: ag.responseHours, peer: pm.responseHours, fmt: fmtHours, lowerIsBetter:true  }
+  ];
+
+  return <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:10, marginBottom:14 }}>
+    {cards.map(function(c){ return <AgentKpiCard key={c.id} card={c} skeleton={skel} peerCount={pc}/>; })}
   </div>;
 };
 

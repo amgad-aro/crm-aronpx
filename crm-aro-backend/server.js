@@ -8200,6 +8200,358 @@ app.get("/api/reports/pipeline/outcomes", auth, reportsAuth, async function(req,
   }
 });
 
+
+// ===== REPORTS — Phase 2 AGENTS tab =====
+
+// GET /api/reports/agents/list
+// Picker support endpoint — returns the eligible agent roster (sales +
+// team_leader + manager, active) with revenue in the selected range.
+// Frontend uses the response to (1) populate the Agents-tab picker
+// dropdown sorted by revenue desc and (2) default-select the top earner.
+//
+// Revenue convention: Lead-only, raw budget, split deals halved per agent.
+// Same per-agent half-revenue used by /overview/agents leaderboard,
+// TeamPage and KPIsPage. NO weighting (executive view, like the rest of
+// /reports). DR DoneDeals are not aggregated separately — Pipeline-tab
+// convention is Lead-only here, so when source filter is "Daily Request"
+// we count DR mirrors (which already live in Lead) and that's the
+// authoritative DR-deal source.
+//
+// Source filter case-split mirrors the Pipeline tab exactly:
+//   - sourceFilter null            -> source != "Daily Request" (mirror exclusion)
+//   - sourceFilter "Daily Request" -> mirrors only
+//   - sourceFilter other           -> that source
+//
+// Team scope restricts BOTH the eligible roster and the lead-attribution
+// scope (an agent in scope still gets revenue=0 if no in-scope deals).
+app.get("/api/reports/agents/list", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var userQuery = { active: true, role: { $in: ["sales", "team_leader", "manager"] }};
+    if (scopeIds) userQuery._id = { $in: scopeIds };
+    var users = await User.find(userQuery).select("name role title teamName").lean();
+    var userIds = users.map(function(u){ return u._id; });
+
+    var leadBaseMatch = { archived: false };
+    if (sourceFilter) leadBaseMatch.source = sourceFilter;
+    else              leadBaseMatch.source = { $ne: "Daily Request" };
+    leadBaseMatch.$or = [{ agentId: { $in: userIds }}, { splitAgent2Id: { $in: userIds }}];
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+    var parseDateExpr = function(field) {
+      return { $cond: [
+        { $and: [{ $ne: ["$"+field, ""] }, { $ne: ["$"+field, null] }] },
+        { $convert: { input: "$"+field, to: "date", onError: null, onNull: null }},
+        null
+      ]};
+    };
+
+    var revenueAgg = userIds.length ? await Lead.aggregate([
+      { $match: leadBaseMatch },
+      { $addFields: {
+          isDeal: { $and: [
+            { $or: [{ $eq: ["$status", "DoneDeal"] }, { $eq: ["$globalStatus", "donedeal"] }]},
+            { $ne: ["$status", "Deal Cancelled"] },
+            { $ne: ["$dealStatus", "Deal Cancelled"] }
+          ]},
+          dealAt: parseDateExpr("dealDate"),
+          budgetNum: budgetNumExpr,
+          isSplit: { $cond: [{ $ne: [{ $ifNull: ["$splitAgent2Id", null] }, null] }, true, false] }
+      }},
+      { $match: { isDeal: true, $expr: { $and: [
+          { $ne: ["$dealAt", null] },
+          { $gte: ["$dealAt", fromDate] },
+          { $lt:  ["$dealAt", toDate] }
+      ]}}},
+      { $project: {
+          agentList: { $filter: { input: ["$agentId", "$splitAgent2Id"], as: "a", cond: { $ne: ["$$a", null] }}},
+          revPerAgent: { $cond: ["$isSplit", { $multiply: ["$budgetNum", 0.5] }, "$budgetNum"] }
+      }},
+      { $unwind: "$agentList" },
+      { $match: { agentList: { $in: userIds }}},
+      { $group: { _id: "$agentList", revenue: { $sum: "$revPerAgent" }}}
+    ]) : [];
+
+    var byId = {};
+    users.forEach(function(u){
+      byId[String(u._id)] = {
+        id: String(u._id),
+        name: u.name || "(unknown)",
+        role: u.role || "sales",
+        title: u.title || "",
+        teamName: u.teamName || "",
+        revenue: 0
+      };
+    });
+    revenueAgg.forEach(function(r){
+      var k = String(r._id);
+      if (byId[k]) byId[k].revenue = Math.round(Number(r.revenue) || 0);
+    });
+
+    var agents = Object.keys(byId).map(function(k){ return byId[k]; }).sort(function(a, b){
+      if (b.revenue !== a.revenue) return b.revenue - a.revenue;
+      return (a.name || "").localeCompare(b.name || "");
+    });
+
+    res.json({
+      range: { from: range.from, to: range.to },
+      agents: agents,
+      totalAgents: agents.length
+    });
+  } catch (e) {
+    console.error("[reports/agents/list]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "agents_list_failed" });
+  }
+});
+
+
+// GET /api/reports/agents/:id/kpis
+// Five Agents-tab KPIs for the selected agent + same-role peer median:
+//   1. revenue        — Σ raw budget on agent's DoneDeals in range,
+//                       split halved per agent (matches leaderboard).
+//   2. deals          — count of agent's DoneDeals in range; full count to
+//                       both sides on splits (matches leaderboard).
+//   3. conversionPct  — deals / leads-received-in-range × 100. Both sides
+//                       of a split lead get +1 lead-received and +1 deal,
+//                       so conversion is consistent. Null when leads = 0.
+//   4. activities     — count of agent's Activity rows in range, types in
+//                       {call, meeting, followup, email, note}. The two
+//                       system-event types (status_change, reassign) are
+//                       excluded — they're emitted by handlers, not user
+//                       contact actions.
+//   5. responseHours  — median hours from each assignments[] slice's
+//                       assignedAt (sliced in range) to that agent's first
+//                       contact activity against that lead at-or-after
+//                       assignedAt. Slices with no follow-up contact
+//                       contribute nothing; null when no slices in range.
+//
+// Peer set: active users with the SAME role as the target, EXCLUDING the
+// target. Team filter intersects the peer roster. Peer-median per metric:
+//   - revenue / deals / activities: 0 is valid data, all peers included.
+//   - conversionPct / responseHours: null = no data, peer excluded from
+//                                    the median (otherwise we'd bias low).
+//
+// Per-agent attribution runs once across {target ∪ peers} via $group on
+// agentId, so the request is O(2 large aggregations + 1 lookup join)
+// regardless of peer-set size.
+app.get("/api/reports/agents/:id/kpis", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var contactTypes = ["call", "meeting", "followup", "email", "note"];
+    var HOUR_MS = 3600000;
+
+    var target = await User.findById(req.params.id).select("name role title teamName active").lean();
+    if (!target) return res.status(404).json({ error: "agent_not_found" });
+
+    var peerQuery = { _id: { $ne: target._id }, active: true, role: target.role };
+    if (scopeIds) peerQuery._id = { $ne: target._id, $in: scopeIds };
+    var peers = await User.find(peerQuery).select("_id").lean();
+    var peerIds = peers.map(function(u){ return u._id; });
+    var allIds = [target._id].concat(peerIds);
+
+    var leadBaseMatch = { archived: false };
+    if (sourceFilter) leadBaseMatch.source = sourceFilter;
+    else              leadBaseMatch.source = { $ne: "Daily Request" };
+    leadBaseMatch.$or = [{ agentId: { $in: allIds }}, { splitAgent2Id: { $in: allIds }}];
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+    var parseDateExpr = function(field) {
+      return { $cond: [
+        { $and: [{ $ne: ["$"+field, ""] }, { $ne: ["$"+field, null] }] },
+        { $convert: { input: "$"+field, to: "date", onError: null, onNull: null }},
+        null
+      ]};
+    };
+    var agentListProj = { $filter: {
+      input: ["$agentId", "$splitAgent2Id"],
+      as: "a", cond: { $ne: ["$$a", null] }
+    }};
+
+    // Deals + revenue per agent — same expression as /overview/agents.
+    var dealsAggP = Lead.aggregate([
+      { $match: leadBaseMatch },
+      { $addFields: {
+          isDeal: { $and: [
+            { $or: [{ $eq: ["$status", "DoneDeal"] }, { $eq: ["$globalStatus", "donedeal"] }]},
+            { $ne: ["$status", "Deal Cancelled"] },
+            { $ne: ["$dealStatus", "Deal Cancelled"] }
+          ]},
+          dealAt: parseDateExpr("dealDate"),
+          budgetNum: budgetNumExpr,
+          isSplit: { $cond: [{ $ne: [{ $ifNull: ["$splitAgent2Id", null] }, null] }, true, false] }
+      }},
+      { $match: { isDeal: true, $expr: { $and: [
+          { $ne: ["$dealAt", null] },
+          { $gte: ["$dealAt", fromDate] },
+          { $lt:  ["$dealAt", toDate] }
+      ]}}},
+      { $project: {
+          agentList: agentListProj,
+          revPerAgent: { $cond: ["$isSplit", { $multiply: ["$budgetNum", 0.5] }, "$budgetNum"] }
+      }},
+      { $unwind: "$agentList" },
+      { $match: { agentList: { $in: allIds }}},
+      { $group: { _id: "$agentList", deals: { $sum: 1 }, revenue: { $sum: "$revPerAgent" }}}
+    ]);
+
+    // Leads received per agent (denominator of conversion %).
+    // createdAt-in-period attribution; both agents on a split get +1.
+    var leadsAggP = Lead.aggregate([
+      { $match: Object.assign({}, leadBaseMatch, { createdAt: { $gte: fromDate, $lt: toDate }})},
+      { $project: { agentList: agentListProj }},
+      { $unwind: "$agentList" },
+      { $match: { agentList: { $in: allIds }}},
+      { $group: { _id: "$agentList", c: { $sum: 1 }}}
+    ]);
+
+    // Activities per agent (5 contact types, range-scoped).
+    var activitiesAggP = Activity.aggregate([
+      { $match: {
+          type: { $in: contactTypes },
+          createdAt: { $gte: fromDate, $lt: toDate },
+          userId: { $in: allIds }
+      }},
+      { $group: { _id: "$userId", c: { $sum: 1 }}}
+    ]);
+
+    // Response hours per agent. For each assignments[] slice with
+    // assignedAt in [from, to), join the first contact activity by that
+    // agent against that lead at-or-after assignedAt; emit (agentId, hours).
+    // No upper bound on the activity timestamp on purpose — answers "how
+    // fast did the agent respond after assignment?", regardless of whether
+    // the contact landed inside the report window.
+    var responseAggP = Lead.aggregate([
+      { $match: Object.assign(
+          {},
+          { archived: false },
+          sourceFilter ? { source: sourceFilter } : { source: { $ne: "Daily Request" }},
+          { "assignments.agentId": { $in: allIds }}
+      )},
+      { $project: { assignments: 1 }},
+      { $unwind: "$assignments" },
+      { $match: {
+          "assignments.agentId": { $in: allIds },
+          "assignments.assignedAt": { $gte: fromDate, $lt: toDate }
+      }},
+      { $project: {
+          agentId: "$assignments.agentId",
+          assignedAt: "$assignments.assignedAt",
+          leadId: "$_id"
+      }},
+      { $lookup: {
+          from: "activities",
+          let: { agent: "$agentId", lead: "$leadId", assigned: "$assignedAt" },
+          pipeline: [
+            { $match: { $expr: { $and: [
+                { $eq: ["$userId", "$$agent"] },
+                { $eq: ["$leadId", "$$lead"] },
+                { $gte: ["$createdAt", "$$assigned"] },
+                { $in: ["$type", contactTypes] }
+            ]}}},
+            { $sort: { createdAt: 1 }},
+            { $limit: 1 },
+            { $project: { createdAt: 1 }}
+          ],
+          as: "firstContact"
+      }},
+      { $unwind: "$firstContact" },
+      { $project: {
+          agentId: 1,
+          hours: { $divide: [{ $subtract: ["$firstContact.createdAt", "$assignedAt"] }, HOUR_MS] }
+      }},
+      { $match: { hours: { $gte: 0 }}},
+      { $group: { _id: "$agentId", hoursArr: { $push: "$hours" }}}
+    ]);
+
+    var parts = await Promise.all([dealsAggP, leadsAggP, activitiesAggP, responseAggP]);
+    var dealsRows = parts[0] || [];
+    var leadsRows = parts[1] || [];
+    var actsRows  = parts[2] || [];
+    var respRows  = parts[3] || [];
+
+    var byAgent = {};
+    var get = function(id){
+      var k = String(id);
+      if (!byAgent[k]) byAgent[k] = { revenue: 0, deals: 0, leads: 0, activities: 0, responseHours: null };
+      return byAgent[k];
+    };
+    var medianOfArr = function(arr){
+      if (!arr || !arr.length) return null;
+      var s = arr.slice().sort(function(a, b){ return a - b; });
+      if (s.length === 1) return s[0];
+      var mid = Math.floor(s.length / 2);
+      return s.length % 2 === 0 ? (s[mid-1] + s[mid]) / 2 : s[mid];
+    };
+    dealsRows.forEach(function(r){ if (r && r._id){ var a = get(r._id); a.deals = Number(r.deals)||0; a.revenue = Math.round(Number(r.revenue)||0); }});
+    leadsRows.forEach(function(r){ if (r && r._id){ get(r._id).leads = Number(r.c)||0; }});
+    actsRows.forEach( function(r){ if (r && r._id){ get(r._id).activities = Number(r.c)||0; }});
+    respRows.forEach( function(r){
+      if (!r || !r._id) return;
+      var med = medianOfArr(r.hoursArr || []);
+      get(r._id).responseHours = med != null ? Math.round(med * 10) / 10 : null;
+    });
+
+    var rollup = function(id){
+      var a = byAgent[String(id)] || { revenue: 0, deals: 0, leads: 0, activities: 0, responseHours: null };
+      var conv = a.leads > 0 ? Math.round((a.deals / a.leads) * 1000) / 10 : null;
+      return {
+        revenue: a.revenue,
+        deals: a.deals,
+        conversionPct: conv,
+        activities: a.activities,
+        responseHours: a.responseHours
+      };
+    };
+    var agentRow = rollup(target._id);
+    var peerRows = peerIds.map(function(id){ return rollup(id); });
+
+    // Peer median: filter null in medianOfArr (already does); for revenue/
+    // deals/activities, 0 is included (every peer has a value). For
+    // conversionPct and responseHours, peers with leads=0 / no slices
+    // contribute null and are dropped before the median.
+    var medRev  = medianOfArr(peerRows.map(function(r){ return r.revenue; }));
+    var medDeal = medianOfArr(peerRows.map(function(r){ return r.deals; }));
+    var medConv = medianOfArr(peerRows.map(function(r){ return r.conversionPct; }).filter(function(v){ return v != null; }));
+    var medAct  = medianOfArr(peerRows.map(function(r){ return r.activities; }));
+    var medResp = medianOfArr(peerRows.map(function(r){ return r.responseHours; }).filter(function(v){ return v != null; }));
+
+    var peerMedian = {
+      revenue:       medRev  != null ? Math.round(medRev) : null,
+      deals:         medDeal != null ? Math.round(medDeal) : null,
+      conversionPct: medConv != null ? Math.round(medConv * 10) / 10 : null,
+      activities:    medAct  != null ? Math.round(medAct) : null,
+      responseHours: medResp != null ? Math.round(medResp * 10) / 10 : null
+    };
+
+    res.json({
+      range: { from: range.from, to: range.to },
+      agentId: String(target._id),
+      agentName: target.name || "(unknown)",
+      agentRole: target.role || "",
+      agent: agentRow,
+      peerMedian: peerMedian,
+      peerCount: peerIds.length
+    });
+  } catch (e) {
+    console.error("[reports/agents/:id/kpis]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "agent_kpis_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);
