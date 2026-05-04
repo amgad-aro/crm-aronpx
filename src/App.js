@@ -9299,7 +9299,7 @@ var ReportsPage = function(p) {
     { id: "overview",  label: "Overview",  enabled: true },
     { id: "campaigns", label: "Campaigns", enabled: false },
     { id: "agents",    label: "Agents",    enabled: false },
-    { id: "pipeline",  label: "Pipeline",  enabled: false }
+    { id: "pipeline",  label: "Pipeline",  enabled: true }
   ];
 
   var presets = [
@@ -9347,7 +9347,7 @@ var ReportsPage = function(p) {
       })}
     </div>
 
-    {tab === "overview" && <Card style={{ marginBottom:16, padding:"12px 14px" }}>
+    {(tab === "overview" || tab === "pipeline") && <Card style={{ marginBottom:16, padding:"12px 14px" }}>
       <div style={{ display:"flex", flexWrap:"wrap", gap:10, alignItems:"center" }}>
         <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
           {presets.map(function(pr){
@@ -9404,6 +9404,9 @@ var ReportsPage = function(p) {
     {tab === "overview" && <ReportsOverviewBody filters={filters} cu={cu} t={t} token={p.token}
       nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}
       setReportsSource={function(src){ setFilters(function(prev){ return Object.assign({}, prev, { source: src }); }); }}/>}
+
+    {tab === "pipeline" && <ReportsPipelineBody filters={filters} cu={cu} t={t} token={p.token}
+      nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>}
   </div>;
 };
 
@@ -9433,6 +9436,24 @@ var ReportsOverviewBody = function(p) {
         nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}
         setReportsSource={p.setReportsSource}/>;
       if (s.key === "forecast") return <ForecastCard key="forecast" filters={p.filters} token={p.token}/>;
+      return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
+        <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
+        <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>
+      </Card>;
+    })}
+  </div>;
+};
+
+var ReportsPipelineBody = function(p) {
+  var sections = [
+    { key:"kpis",      title:"Pipeline KPIs",       height:120 },
+    { key:"byStage",   title:"Pipeline by Stage",   height:200 },
+    { key:"atRisk",    title:"Deals at Risk",       height:280 },
+    { key:"byProject", title:"Pipeline by Project", height:280 },
+    { key:"outcomes",  title:"Outcome Breakdown",   height:180 }
+  ];
+  return <div>
+    {sections.map(function(s){
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>
