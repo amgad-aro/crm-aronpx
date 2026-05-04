@@ -8816,6 +8816,141 @@ app.get("/api/reports/agents/:id/radar", auth, reportsAuth, async function(req, 
   }
 });
 
+
+// GET /api/reports/agents/:id/heatmap
+// 7×24 day-of-week × hour-of-day grid of the selected agent's contact
+// activity. Surfaces working patterns and dead zones. Range-scoped.
+//
+// Activity types counted: call, meeting, followup. Email and note are
+// passive enough that including them would inflate the grid and
+// obscure the contact-rhythm signal we're after — they stay out per
+// spec.
+//
+// Timezone: Africa/Cairo. MongoDB's `$dayOfWeek` returns 1=Sun..7=Sat;
+// we mod by 7 so the response uses 0=Sat..6=Fri (Egyptian business
+// week starts Saturday).
+//
+// Source filter: applied via $lookup → leads when explicitly set. When
+// null we DON'T apply the defensive `source != "Daily Request"` filter
+// the deal-counting endpoints use — heatmap counts the agent's
+// physical contact actions regardless of lead origin, so DR-mirror
+// activities are real work and stay counted. Team filter has no effect
+// on a single-agent heatmap; accepted for URL-shape consistency only.
+//
+// Archived leads are NOT excluded — the activity happened, the agent
+// did the work, the cell counts it.
+//
+// Server returns the full 168-cell grid zero-filled, plus pre-computed
+// peak (max-count cell) and a quiet-zone heuristic. Quiet zone =
+// lowest-percentage candidate among 3 buckets (early mornings, late
+// evenings, Fridays). Frontend renders the strings verbatim.
+app.get("/api/reports/agents/:id/heatmap", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+
+    var contactTypes = ["call", "meeting", "followup"];
+    var TZ = "Africa/Cairo";
+
+    var target = await User.findById(req.params.id).select("name role active").lean();
+    if (!target) return res.status(404).json({ error: "agent_not_found" });
+
+    var pipeline = [
+      { $match: {
+          userId: target._id,
+          type: { $in: contactTypes },
+          createdAt: { $gte: fromDate, $lt: toDate }
+      }}
+    ];
+
+    // Source filter — narrow to activities on leads with the matching
+    // source. Skipped entirely when null (all activity counted).
+    if (sourceFilter) {
+      pipeline.push(
+        { $lookup: { from: "leads", localField: "leadId", foreignField: "_id", as: "lead" }},
+        { $unwind: "$lead" },
+        { $match: { "lead.source": sourceFilter }}
+      );
+    }
+
+    pipeline.push(
+      { $project: {
+          // 1=Sun..7=Sat → 0=Sat..6=Fri via mod 7.
+          dow:  { $mod: [{ $dayOfWeek: { date: "$createdAt", timezone: TZ }}, 7] },
+          hour: { $hour: { date: "$createdAt", timezone: TZ }}
+      }},
+      { $group: { _id: { dow: "$dow", hour: "$hour" }, count: { $sum: 1 }}}
+    );
+
+    var rows = await Activity.aggregate(pipeline);
+
+    // Zero-fill full 7×24 grid so the frontend never has to handle holes.
+    var grid = [];
+    for (var d = 0; d < 7; d++) {
+      for (var h = 0; h < 24; h++) {
+        grid.push({ dow: d, hour: h, count: 0 });
+      }
+    }
+    var idxOf = function(d, h){ return d * 24 + h; };
+    rows.forEach(function(r){
+      var d = r._id.dow, h = r._id.hour;
+      if (d >= 0 && d < 7 && h >= 0 && h < 24) {
+        grid[idxOf(d, h)].count = Number(r.count) || 0;
+      }
+    });
+
+    var totalActivities = grid.reduce(function(s, c){ return s + c.count; }, 0);
+    var maxCount = grid.reduce(function(m, c){ return c.count > m ? c.count : m; }, 0);
+
+    var dayNamesFull = ["Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+
+    var peak = null;
+    if (maxCount > 0) {
+      var peakCell = grid.find(function(c){ return c.count === maxCount; });
+      peak = {
+        dow: peakCell.dow,
+        hour: peakCell.hour,
+        count: peakCell.count,
+        dayName: dayNamesFull[peakCell.dow],
+        timeLabel: peakCell.hour + ":00"
+      };
+    }
+
+    var quiet = null;
+    if (totalActivities > 0) {
+      var sumWhere = function(pred){
+        return grid.filter(pred).reduce(function(s, c){ return s + c.count; }, 0);
+      };
+      var candidates = [
+        { description: "early mornings (before 8am)", predicate: function(c){ return c.hour < 8; }},
+        { description: "evenings (after 8pm)",        predicate: function(c){ return c.hour >= 20; }},
+        { description: "Fridays",                     predicate: function(c){ return c.dow === 6; }}
+      ];
+      candidates.forEach(function(c){
+        c.percentage = Math.round((sumWhere(c.predicate) / totalActivities) * 1000) / 10;
+      });
+      candidates.sort(function(a, b){ return a.percentage - b.percentage; });
+      quiet = { description: candidates[0].description, percentage: candidates[0].percentage };
+    }
+
+    res.json({
+      range: { from: range.from, to: range.to },
+      agentId: String(target._id),
+      agentName: target.name || "(unknown)",
+      timezone: TZ,
+      grid: grid,
+      maxCount: maxCount,
+      totalActivities: totalActivities,
+      peak: peak,
+      quiet: quiet
+    });
+  } catch (e) {
+    console.error("[reports/agents/:id/heatmap]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "agent_heatmap_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);

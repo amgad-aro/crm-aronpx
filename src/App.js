@@ -9921,10 +9921,9 @@ var ReportsAgentsBody = function(p) {
   var agents = (agentList.data && agentList.data.agents) || [];
   var selectedAgent = agents.find(function(a){ return String(a.id) === String(selectedAgentId); });
 
-  // Remaining placeholders — Slice 1 filled the kpis slot, Slice 2 the
-  // radar slot; the other 4 land in upcoming slices.
+  // Remaining placeholders — Slices 1-3 filled kpis/radar/heatmap;
+  // the other 3 land in upcoming slices.
   var sections = [
-    { key:"heatmap",          title:"Activity heatmap",             height:240 },
     { key:"stageProgression", title:"Stage progression funnel",     height:240 },
     { key:"recentDeals",      title:"Recent deals",                 height:200 },
     { key:"stuckLeads",       title:"Stuck leads",                  height:200 }
@@ -9957,6 +9956,8 @@ var ReportsAgentsBody = function(p) {
     <AgentKpiRow filters={f} token={p.token} agentId={selectedAgentId}/>
 
     <AgentRadarChart filters={f} token={p.token} agentId={selectedAgentId}/>
+
+    <AgentActivityHeatmap filters={f} token={p.token} agentId={selectedAgentId}/>
 
     {sections.map(function(s){
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
@@ -10227,6 +10228,176 @@ var AgentRadarChart = function(p) {
         Peer median (50th percentile)
       </span>
       {anyLowSample && <span>* low sample — under 3 peers with data, or no spread</span>}
+    </div>}
+  </Card>;
+};
+
+// Heatmap geometry. 7 rows (Sat..Fri, Egypt business week) × 24 cols.
+// Cell 20×20 with a 2px gap → 18×18 visible rect. Left gutter holds
+// day labels; top header holds hour ticks at 0/4/8/12/16/20.
+var HEAT_CELL = 20;
+var HEAT_GUTTER_L = 50;
+var HEAT_HEADER_H = 18;
+var HEAT_COLS = 24;
+var HEAT_ROWS = 7;
+var HEAT_GRID_W = HEAT_COLS * HEAT_CELL;
+var HEAT_GRID_H = HEAT_ROWS * HEAT_CELL;
+var HEAT_TOTAL_W = HEAT_GUTTER_L + HEAT_GRID_W;
+var HEAT_TOTAL_H = HEAT_HEADER_H + HEAT_GRID_H;
+var HEAT_DAY_NAMES = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"];
+var HEAT_DAY_NAMES_FULL = ["Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+var HEAT_HOUR_TICKS = [0, 4, 8, 12, 16, 20];
+
+// Cream → orange → deep red 3-stop linear interpolation. Plain
+// 2-stop (cream → red) skips the orange band the spec calls for; this
+// returns the proper warm-yellow midpoint. t in [0, 1]; t<=0 returns
+// the empty-cell grey (count=0 cells handled separately by caller).
+var heatColor = function(t) {
+  if (!(t > 0)) return "#F1F5F9"; // empty-cell grey
+  var stops = [
+    { t: 0,    r: 255, g: 247, b: 237 }, // cream  #FFF7ED
+    { t: 0.5,  r: 249, g: 115, b: 22  }, // orange #F97316
+    { t: 1.0,  r: 185, g: 28,  b: 28  }  // deep red #B91C1C
+  ];
+  var s0 = stops[0], s1 = stops[1];
+  if (t > stops[1].t) { s0 = stops[1]; s1 = stops[2]; }
+  var lt = (t - s0.t) / (s1.t - s0.t);
+  var r = Math.round(s0.r + (s1.r - s0.r) * lt);
+  var g = Math.round(s0.g + (s1.g - s0.g) * lt);
+  var b = Math.round(s0.b + (s1.b - s0.b) * lt);
+  return "rgb(" + r + "," + g + "," + b + ")";
+};
+
+var AgentActivityHeatmap = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var [hoverIdx, setHoverIdx] = useState(null);
+  var f = p.filters;
+  var agentId = p.agentId;
+
+  useEffect(function(){
+    if (!agentId) { setState({ loading: false, data: null, error: null }); return; }
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    setHoverIdx(null);
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/agents/" + agentId + "/heatmap" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [agentId, f.from, f.to, f.team, f.source]);
+
+  if (!agentId) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px", minHeight:240, background:"#FAFBFC", border:"1px dashed #E2E8F0", display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div style={{ fontSize:12, color:C.textLight }}>Select an agent to see the activity heatmap</div>
+    </Card>;
+  }
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load activity heatmap: {state.error}</div>
+    </Card>;
+  }
+
+  var skel = state.loading || !state.data;
+  var data = state.data || {};
+  var grid = data.grid || [];
+  var maxCount = data.maxCount || 0;
+  var total = data.totalActivities || 0;
+  var peak = data.peak;
+  var quiet = data.quiet;
+
+  var hoverCell = hoverIdx != null ? grid[hoverIdx] : null;
+  var hoverPos = hoverIdx != null ? {
+    x: HEAT_GUTTER_L + (hoverIdx % HEAT_COLS) * HEAT_CELL + HEAT_CELL / 2,
+    y: HEAT_HEADER_H + Math.floor(hoverIdx / HEAT_COLS) * HEAT_CELL + HEAT_CELL / 2
+  } : null;
+
+  return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+    <div style={{ fontSize:12, fontWeight:700, color:C.text, marginBottom:8 }}>
+      Activity heatmap{data.agentName ? " — " + data.agentName : ""}
+      <span style={{ fontSize:10, fontWeight:500, color:C.textLight, marginLeft:8 }}>
+        calls + meetings + followups · Africa/Cairo time
+      </span>
+    </div>
+    {skel ? <div style={{ height: HEAT_TOTAL_H, opacity:0.5 }}>
+      <svg width={HEAT_TOTAL_W} height={HEAT_TOTAL_H} viewBox={"0 0 " + HEAT_TOTAL_W + " " + HEAT_TOTAL_H}>
+        {[0,1,2,3,4,5,6].map(function(d){
+          return [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23].map(function(h){
+            return <rect key={d + "-" + h} x={HEAT_GUTTER_L + h * HEAT_CELL + 1} y={HEAT_HEADER_H + d * HEAT_CELL + 1}
+              width={HEAT_CELL - 2} height={HEAT_CELL - 2} fill="#F1F5F9" rx={2}/>;
+          });
+        })}
+      </svg>
+    </div> : total === 0 ? <div style={{ height: HEAT_TOTAL_H, display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, fontSize:12 }}>
+      No activities in this period
+    </div> : <div style={{ position:"relative" }}>
+      <svg width={HEAT_TOTAL_W} height={HEAT_TOTAL_H} viewBox={"0 0 " + HEAT_TOTAL_W + " " + HEAT_TOTAL_H} style={{ display:"block", maxWidth:"100%" }}>
+        {/* Hour ticks across the top — every 4 hours to keep readable. */}
+        {HEAT_HOUR_TICKS.map(function(h){
+          return <text key={h} x={HEAT_GUTTER_L + h * HEAT_CELL + HEAT_CELL / 2} y={12}
+            textAnchor="middle" fontSize={10} fill={C.textLight}>{h}</text>;
+        })}
+        {/* 7 day rows — label gutter + 24 cells per row. */}
+        {HEAT_DAY_NAMES.map(function(name, d){
+          return <g key={d}>
+            <text x={HEAT_GUTTER_L - 8} y={HEAT_HEADER_H + d * HEAT_CELL + HEAT_CELL / 2 + 3}
+              textAnchor="end" fontSize={10} fill={C.textLight}>{name}</text>
+            {Array.from({ length: HEAT_COLS }).map(function(_, h){
+              var i = d * HEAT_COLS + h;
+              var cell = grid[i] || { count: 0 };
+              var t = maxCount > 0 ? cell.count / maxCount : 0;
+              var fill = cell.count === 0 ? "#F1F5F9" : heatColor(t);
+              var isHover = hoverIdx === i;
+              return <rect key={h} x={HEAT_GUTTER_L + h * HEAT_CELL + 1} y={HEAT_HEADER_H + d * HEAT_CELL + 1}
+                width={HEAT_CELL - 2} height={HEAT_CELL - 2} rx={2}
+                fill={fill}
+                stroke={isHover ? "#1F2937" : "none"} strokeWidth={isHover ? 1.5 : 0}
+                style={{ cursor:"pointer" }}
+                onMouseEnter={function(){ setHoverIdx(i); }}
+                onMouseLeave={function(){ setHoverIdx(null); }}
+                onClick={function(){ setHoverIdx(hoverIdx === i ? null : i); }}/>;
+            })}
+          </g>;
+        })}
+      </svg>
+      {hoverCell && hoverPos && <div style={{
+        position:"absolute",
+        left: Math.min(HEAT_TOTAL_W - 160, Math.max(0, hoverPos.x + 10)),
+        top:  Math.max(0, hoverPos.y - 44),
+        background:"#1F2937", color:"#fff", padding:"6px 10px", borderRadius:6,
+        fontSize:11, lineHeight:1.4, pointerEvents:"none", zIndex:5,
+        boxShadow:"0 2px 8px rgba(0,0,0,0.18)", whiteSpace:"nowrap"
+      }}>
+        <div style={{ fontWeight:700 }}>{HEAT_DAY_NAMES_FULL[hoverCell.dow]} at {hoverCell.hour}:00</div>
+        <div>{hoverCell.count} {hoverCell.count === 1 ? "activity" : "activities"}</div>
+      </div>}
+    </div>}
+    {/* Gradient legend + peak/quiet insights */}
+    {!skel && total > 0 && <div style={{ marginTop:10 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, fontSize:10, color:C.textLight }}>
+        <span>0</span>
+        <svg width={140} height={10} style={{ display:"block" }}>
+          <defs>
+            <linearGradient id="heatmapGradient" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%"   stopColor="#FFF7ED"/>
+              <stop offset="50%"  stopColor="#F97316"/>
+              <stop offset="100%" stopColor="#B91C1C"/>
+            </linearGradient>
+          </defs>
+          <rect x={0} y={0} width={140} height={10} rx={2} fill="url(#heatmapGradient)"/>
+        </svg>
+        <span>{maxCount}</span>
+        <span style={{ marginLeft:6 }}>· {total.toLocaleString()} total</span>
+      </div>
+      <div style={{ fontSize:11, color:C.textLight, marginTop:6, lineHeight:1.5 }}>
+        {peak && <div>
+          <span style={{ fontWeight:600, color:C.text }}>Most active:</span> {peak.dayName} at {peak.timeLabel} ({peak.count} {peak.count === 1 ? "activity" : "activities"})
+        </div>}
+        {quiet && <div>
+          <span style={{ fontWeight:600, color:C.text }}>Quiet zone:</span> {quiet.description} ({quiet.percentage}% of activities)
+        </div>}
+      </div>
     </div>}
   </Card>;
 };
