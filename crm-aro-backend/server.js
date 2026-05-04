@@ -6244,6 +6244,34 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
 
     var leadAggP = includeLead ? Lead.aggregate([
       { $match: leadMatch },
+      // Real-contact existence check (lead-level, no userId scope) —
+      // feeds isContactedRaw below. Pairs with the diff-gated history-
+      // event check inside isContactedRaw to form the contacted UNION
+      // pattern Lead Aging uses.
+      //
+      // SYNC INVARIANT: the isContactedRaw definition below MUST match
+      // the shape used in all three "is the lead contacted?" surfaces:
+      //   - /api/reports/overview/funnel               (this endpoint)
+      //   - /api/reports/agents/:id/stage-progression
+      //   - /api/reports/overview/aging                (the original fix)
+      // Editing one without the others reintroduces the inflation bug
+      // where rotation slices (assignments[].lastActionAt = now),
+      // legacy non-diff-gated "status_change" events, and state-only
+      // checks (notes/lastFeedback/callbackTime non-empty) all fired,
+      // pushing Contacted % to ~100% across every agent.
+      { $lookup: {
+          from: "activities",
+          let: { lid: "$_id" },
+          pipeline: [
+            { $match: { $expr: { $and: [
+                { $eq: ["$leadId", "$$lid"] },
+                { $in: ["$type", ["call", "meeting", "followup", "email", "note"]] }
+            ]}}},
+            { $limit: 1 },
+            { $project: { _id: 1 } }
+          ],
+          as: "contactActs"
+      }},
       // Derived timestamp helpers used by both stage flags and avg-days math.
       { $addFields: {
           earliestLastActionAt: { $min: "$assignments.lastActionAt" },
@@ -6282,24 +6310,20 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
             { $eq: ["$hadMeeting", true] },
             { $eq: ["$status", "MeetingDone"] }
           ]},
+          // Lead-level real-contact UNION. See sync-invariant comment
+          // above the $lookup for context; mirrors Lead Aging's pattern.
           isContactedRaw: { $or: [
-            { $ne: ["$status", "NewLead"] },
-            { $anyElementTrue: { $map: {
-                input: { $ifNull: ["$assignments", []] },
-                as: "a",
-                in: { $ne: ["$$a.lastActionAt", null] }
-            }}},
+            // 1. Diff-gated history events — fire only when the underlying
+            //    field actually changed. NOT "status_change" (no 'd'), the
+            //    legacy non-diff-gated form rotation handlers used to emit.
             { $anyElementTrue: { $map: {
                 input: { $ifNull: ["$history", []] },
                 as: "h",
-                in: { $or: [
-                  { $eq: ["$$h.event", "status_change"] },
-                  { $eq: ["$$h.event", "status_changed"] }
-                ]}
+                in: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
             }}},
-            { $and: [{ $ne: ["$notes", ""] }, { $ne: ["$notes", null] }] },
-            { $and: [{ $ne: ["$lastFeedback", ""] }, { $ne: ["$lastFeedback", null] }] },
-            { $and: [{ $ne: ["$callbackTime", ""] }, { $ne: ["$callbackTime", null] }] }
+            // 2. Any contact-type Activity on this lead — boolean
+            //    existence via the $lookup above (limit:1 in sub-pipeline).
+            { $gt: [{ $size: "$contactActs" }, 0] }
           ]}
       }},
       // Forward-superset OR. Contacted ⊇ Meeting ⊇ EOI ⊇ Deal.
@@ -9017,8 +9041,27 @@ app.get("/api/reports/agents/:id/stage-progression", auth, reportsAuth, async fu
 
     var rows = await Lead.aggregate([
       { $match: leadBaseMatch },
+      // Real-contact existence check — feeds isContactedRaw below.
+      // See the SYNC INVARIANT comment block at the matching $lookup
+      // in /api/reports/overview/funnel for the full rationale.
+      // Both endpoints + /reports/overview/aging must stay in sync.
+      { $lookup: {
+          from: "activities",
+          let: { lid: "$_id" },
+          pipeline: [
+            { $match: { $expr: { $and: [
+                { $eq: ["$leadId", "$$lid"] },
+                { $in: ["$type", ["call", "meeting", "followup", "email", "note"]] }
+            ]}}},
+            { $limit: 1 },
+            { $project: { _id: 1 } }
+          ],
+          as: "contactActs"
+      }},
       // Phase 1 funnel raw stage flags — kept structurally identical to
-      // /reports/overview/funnel so the two stay in sync.
+      // /reports/overview/funnel so the two stay in sync. isContactedRaw
+      // uses the lead-level real-contact UNION (see $lookup above and
+      // the sync-invariant comment in /overview/funnel).
       { $addFields: {
           isDealRaw: { $and: [
             { $or: [
@@ -9043,23 +9086,16 @@ app.get("/api/reports/agents/:id/stage-progression", auth, reportsAuth, async fu
             { $eq: ["$status", "MeetingDone"] }
           ]},
           isContactedRaw: { $or: [
-            { $ne: ["$status", "NewLead"] },
-            { $anyElementTrue: { $map: {
-                input: { $ifNull: ["$assignments", []] },
-                as: "a",
-                in: { $ne: ["$$a.lastActionAt", null] }
-            }}},
+            // 1. Diff-gated history events — fire only when the underlying
+            //    field actually changed. NOT "status_change" (no 'd'), the
+            //    legacy non-diff-gated form rotation handlers used to emit.
             { $anyElementTrue: { $map: {
                 input: { $ifNull: ["$history", []] },
                 as: "h",
-                in: { $or: [
-                  { $eq: ["$$h.event", "status_change"] },
-                  { $eq: ["$$h.event", "status_changed"] }
-                ]}
+                in: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
             }}},
-            { $and: [{ $ne: ["$notes", ""] }, { $ne: ["$notes", null] }] },
-            { $and: [{ $ne: ["$lastFeedback", ""] }, { $ne: ["$lastFeedback", null] }] },
-            { $and: [{ $ne: ["$callbackTime", ""] }, { $ne: ["$callbackTime", null] }] }
+            // 2. Any contact-type Activity on this lead.
+            { $gt: [{ $size: "$contactActs" }, 0] }
           ]}
       }},
       // Forward-superset OR — Contacted ⊇ Meeting ⊇ EOI ⊇ Deal.
