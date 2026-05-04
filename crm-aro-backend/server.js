@@ -7724,6 +7724,123 @@ app.get("/api/reports/pipeline/kpis", auth, reportsAuth, async function(req, res
   }
 });
 
+// GET /api/reports/pipeline/by-stage
+// Snapshot of open pipeline grouped by status — one row per stage,
+// even when count=0. Lead-only, mirrors excluded.
+//
+// Stage order in response (left-to-right kanban):
+//   NewLead → Potential → HotCase → CallBack → MeetingDone
+//
+// avgDaysInStage = mean over leads in the stage of:
+//   (now - stage_entered_at) days
+// where stage_entered_at is the createdAt of the most recent
+// status_change Activity for the lead whose note prefix equals
+// "[<currentStatus>]". When no such activity exists (NewLead leads
+// are typical — they enter NewLead at creation, not via a recorded
+// status change), fall back to the lead's own createdAt for NewLead
+// or updatedAt for any other stage.
+//
+// Source filter case-split mirrors /pipeline/kpis exactly:
+//   - sourceFilter null     → defensive source != "Daily Request"
+//   - sourceFilter "Daily Request" → mirror-only outer match; pipeline-
+//                                    stage filter rejects them all → 0.
+//   - sourceFilter other    → that source; defensive $ne is redundant.
+app.get("/api/reports/pipeline/by-stage", auth, reportsAuth, async function(req, res) {
+  try {
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var DAY_MS = 86400000;
+    var pipelineStatuses = ["NewLead", "Potential", "HotCase", "CallBack", "MeetingDone"];
+
+    var leadMatch = { archived: false, status: { $in: pipelineStatuses }};
+    if (sourceFilter) leadMatch.source = sourceFilter;
+    else              leadMatch.source = { $ne: "Daily Request" };
+    if (scopeIds) leadMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+
+    var rows = await Lead.aggregate([
+      { $match: leadMatch },
+      { $addFields: { budgetNum: budgetNumExpr }},
+      // Find the most recent status_change activity that put each lead
+      // into its CURRENT status. Match by note-prefix string equality
+      // ("[<status>]") — avoids dynamic regex and works on every lead's
+      // own status without a separate per-stage query.
+      { $lookup: {
+          from: "activities",
+          let: { lid: "$_id", curStatus: "$status" },
+          pipeline: [
+            { $match: { $expr: { $and: [
+                { $eq: ["$leadId", "$$lid"] },
+                { $eq: ["$type", "status_change"] }
+            ]}}},
+            { $addFields: {
+                notePrefix: { $substrBytes: [
+                  { $ifNull: ["$note", ""] },
+                  0,
+                  { $add: [{ $strLenBytes: "$$curStatus" }, 2] }
+                ]}
+            }},
+            { $match: { $expr: { $eq: [
+                "$notePrefix",
+                { $concat: ["[", "$$curStatus", "]"] }
+            ]}}},
+            { $sort: { createdAt: -1 }},
+            { $limit: 1 },
+            { $project: { _id: 0, createdAt: 1 }}
+          ],
+          as: "lastStageEntry"
+      }},
+      { $addFields: {
+          stageEnteredAt: { $cond: [
+            { $gt: [{ $size: "$lastStageEntry" }, 0] },
+            { $arrayElemAt: ["$lastStageEntry.createdAt", 0] },
+            { $cond: [{ $eq: ["$status", "NewLead"] }, "$createdAt", "$updatedAt"] }
+          ]}
+      }},
+      { $addFields: {
+          daysInStage: { $divide: [{ $subtract: ["$$NOW", "$stageEnteredAt"] }, DAY_MS] }
+      }},
+      { $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          value: { $sum: "$budgetNum" },
+          totalDays: { $sum: "$daysInStage" }
+      }}
+    ]);
+
+    var stagesMap = {};
+    rows.forEach(function(row) {
+      var count = Number(row.count) || 0;
+      stagesMap[row._id] = {
+        count: count,
+        value: Math.round(Number(row.value) || 0),
+        avgDaysInStage: count > 0 ? (Number(row.totalDays) || 0) / count : 0
+      };
+    });
+
+    // Always emit all 5 stages in display order, zero-filled.
+    var stages = pipelineStatuses.map(function(s) {
+      var entry = stagesMap[s] || { count: 0, value: 0, avgDaysInStage: 0 };
+      return {
+        key: s,
+        count: entry.count,
+        value: entry.value,
+        avgDaysInStage: Math.round(entry.avgDaysInStage * 10) / 10
+      };
+    });
+
+    res.json({ stages: stages });
+  } catch (e) {
+    console.error("[reports/pipeline/by-stage]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "pipeline_by_stage_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);

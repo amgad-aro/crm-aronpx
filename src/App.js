@@ -9520,6 +9520,76 @@ var PipelineKpiRow = function(p) {
   </div>;
 };
 
+var PipelineByStageRow = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var f = p.filters;
+
+  useEffect(function() {
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "";
+    if (f.team) qs += (qs ? "&" : "?") + "team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += (qs ? "&" : "?") + "source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/pipeline/by-stage" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.team, f.source]);
+
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load pipeline by stage: {state.error}</div>
+    </Card>;
+  }
+
+  var stageDef = {
+    NewLead:     { label: "New Lead",     color: "#8B5CF6", tint: "rgba(139, 92, 246, 0.08)" },
+    Potential:   { label: "Potential",    color: "#3B82F6", tint: "rgba(59, 130, 246, 0.08)" },
+    HotCase:     { label: "Hot Case",     color: "#F59E0B", tint: "rgba(245, 158, 11, 0.08)" },
+    CallBack:    { label: "Callback",     color: "#06B6D4", tint: "rgba(6, 182, 212, 0.08)" },
+    MeetingDone: { label: "Meeting Done", color: "#10B981", tint: "rgba(16, 185, 129, 0.08)" }
+  };
+  var stageOrder = ["NewLead", "Potential", "HotCase", "CallBack", "MeetingDone"];
+
+  var skel = state.loading || !state.data;
+  var stages = (state.data && state.data.stages) || [];
+  var byKey = {};
+  stages.forEach(function(s){ byKey[s.key] = s; });
+
+  var goToStage = function(stageKey) {
+    if (p.setFilter) p.setFilter(stageKey);
+    if (p.nav) p.nav("leads");
+  };
+
+  return <Card style={{ marginBottom:14, padding:"12px 14px" }}>
+    <div style={{ fontSize:12, fontWeight:700, color:C.text, marginBottom:8 }}>Pipeline by stage</div>
+    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))", gap:8 }}>
+      {stageOrder.map(function(key){
+        var def = stageDef[key];
+        var s = byKey[key] || { count: 0, value: 0, avgDaysInStage: 0 };
+        var hasLeads = !skel && (s.count || 0) > 0;
+        return <div key={key}
+          onClick={hasLeads ? function(){ goToStage(key); } : null}
+          title={hasLeads ? "View leads in " + def.label : ""}
+          style={{
+            background: def.tint, border: "1px solid " + def.color + "33", borderRadius: 10,
+            padding: "10px 12px", cursor: hasLeads ? "pointer" : "default", minHeight: 110,
+            display:"flex", flexDirection:"column", gap:4
+          }}>
+          <div style={{ fontSize:11, fontWeight:700, color:def.color, textTransform:"uppercase", letterSpacing:"0.04em" }}>{def.label}</div>
+          {skel
+            ? <div style={{ height:24, marginTop:4, borderRadius:4, background:"#E2E8F0", width:"50%" }}/>
+            : <div style={{ fontSize:22, fontWeight:800, color:C.text }}>{s.count}</div>}
+          {!skel && <div style={{ fontSize:12, fontWeight:600, color:C.textLight }}>{s.value > 0 ? fmtEGP(s.value) : "—"}</div>}
+          {!skel && <div style={{ fontSize:10, color:"#94A3B8", marginTop:"auto" }}>
+            {s.count > 0 ? ("avg " + s.avgDaysInStage + " d in stage") : "no leads in stage"}
+          </div>}
+        </div>;
+      })}
+    </div>
+  </Card>;
+};
+
 var ReportsPipelineBody = function(p) {
   var sections = [
     { key:"kpis",      title:"Pipeline KPIs",       height:120 },
@@ -9531,6 +9601,7 @@ var ReportsPipelineBody = function(p) {
   return <div>
     {sections.map(function(s){
       if (s.key === "kpis") return <PipelineKpiRow key="kpis" filters={p.filters} token={p.token}/>;
+      if (s.key === "byStage") return <PipelineByStageRow key="byStage" filters={p.filters} token={p.token} nav={p.nav} setFilter={p.setFilter}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>
