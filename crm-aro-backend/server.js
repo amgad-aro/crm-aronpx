@@ -7370,6 +7370,96 @@ app.get("/api/reports/overview/forecast", auth, reportsAuth, async function(req,
   }
 });
 
+// =============================================================================
+// TEMPORARY DIAGNOSTIC — projectWeight migration audit (Phase 2 Slice 0).
+// Read-only, admin-only. Returns counts + histograms used to size the
+// projectWeight bug impact before we commit to the migration plan.
+// REMOVE IN SLICE 6 CLEANUP — search for "projectweight-diagnose" to find
+// every reference. The whole endpoint is a single self-contained block.
+// =============================================================================
+app.get("/api/admin/projectweight-diagnose", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+
+    var DR = "Daily Request";
+    var defaultWeightOr = [{ projectWeight: 1 }, { projectWeight: { $exists: false }}];
+
+    var totalDRMirrorsP = Lead.countDocuments({ source: DR, archived: false });
+    var defWeightCountP = Lead.countDocuments({ source: DR, archived: false, $or: defaultWeightOr });
+    var defWeightDoneDealCountP = Lead.countDocuments({
+      source: DR, archived: false,
+      status: "DoneDeal", dealStatus: { $ne: "Deal Cancelled" },
+      $or: defaultWeightOr
+    });
+
+    // Histograms — DR mirrors (all) vs native deals (DoneDeal only, so the
+    // native histogram shows the project-name vocabulary used on real closed
+    // business — the catalogue we'd cross-reference DR-mirror values against).
+    var drHistP = Lead.aggregate([
+      { $match: { source: DR, archived: false }},
+      { $group: { _id: { $ifNull: ["$project", ""] }, count: { $sum: 1 }}},
+      { $sort: { count: -1 }}
+    ]);
+    var nativeHistP = Lead.aggregate([
+      { $match: {
+          source: { $ne: DR }, archived: false,
+          status: "DoneDeal", dealStatus: { $ne: "Deal Cancelled" }
+      }},
+      { $group: { _id: { $ifNull: ["$project", ""] }, count: { $sum: 1 }}},
+      { $sort: { count: -1 }}
+    ]);
+
+    // Native leads with non-default projectWeight — the "weighted projects"
+    // catalogue. $addToSet on weight surfaces any inconsistency (same project
+    // with multiple weight values) which would imply a stale-localStorage
+    // partial save.
+    var weightedP = Lead.aggregate([
+      { $match: {
+          source: { $ne: DR }, archived: false,
+          projectWeight: { $exists: true, $ne: 1 }
+      }},
+      { $group: {
+          _id: { $ifNull: ["$project", ""] },
+          weights: { $addToSet: "$projectWeight" },
+          count: { $sum: 1 }
+      }},
+      { $sort: { count: -1 }}
+    ]);
+
+    var parts = await Promise.all([
+      totalDRMirrorsP, defWeightCountP, defWeightDoneDealCountP,
+      drHistP, nativeHistP, weightedP
+    ]);
+
+    var toMap = function(arr){
+      var m = {};
+      (arr || []).forEach(function(g){ m[g._id || "(empty)"] = g.count; });
+      return m;
+    };
+
+    res.json({
+      totalDRMirrors: parts[0],
+      mirrorsWithDefaultWeight: parts[1],
+      mirrorsWithDefaultWeightAndDoneDeal: parts[2],
+      projectFieldHistogramOnDRMirrors: toMap(parts[3]),
+      projectFieldHistogramOnNativeDeals: toMap(parts[4]),
+      projectsWithCustomWeightOnNativeDeals: (parts[5] || []).map(function(g){
+        return {
+          project: g._id || "(empty)",
+          weights: g.weights || [],
+          count: g.count
+        };
+      }),
+      asOf: new Date().toISOString()
+    });
+  } catch (e) {
+    console.error("[admin/projectweight-diagnose]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "diagnose_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);
