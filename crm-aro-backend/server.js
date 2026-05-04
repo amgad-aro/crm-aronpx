@@ -6461,7 +6461,9 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
   try {
     var range = reportsParseRange(req.query.from, req.query.to);
     var fromDate = new Date(range.from), toDate = new Date(range.to);
-    var limitN = Math.max(1, Math.min(50, parseInt(req.query.limit, 10) || 10));
+    // Default returns the full eligible roster (capped at 200 for safety) so
+    // the frontend can toggle "Show all N" client-side without re-fetching.
+    var limitN = Math.max(1, Math.min(200, parseInt(req.query.limit, 10) || 100));
 
     var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
     var scopeIds = await getReportsTeamScope(req.query.team || null);

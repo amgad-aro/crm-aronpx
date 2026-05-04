@@ -8702,12 +8702,17 @@ var SourceRoiList = function(p) {
 
 var AgentLeaderboard = function(p) {
   var [state, setState] = useState({ loading: true, data: null, error: null });
+  // expand/collapse state for the "View all N agents" toggle. Fetched list
+  // contains all eligible agents (backend default = 100 cap); we slice
+  // client-side so the toggle is instant with no extra round-trip.
+  var [expanded, setExpanded] = useState(false);
+  var [hover, setHover] = useState(false);
   var f = p.filters;
 
   useEffect(function() {
     var aborted = false;
     setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
-    var qs = "?from=" + f.from + "&to=" + f.to + "&limit=10";
+    var qs = "?from=" + f.from + "&to=" + f.to;
     if (f.team) qs += "&team=" + encodeURIComponent(f.team);
     if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
     apiFetch("/api/reports/overview/agents" + qs, "GET", null, p.token)
@@ -8770,54 +8775,65 @@ var AgentLeaderboard = function(p) {
     return "#DC2626";
   };
 
-  var H = function(label, w, align){
-    return <div style={{ width:w, fontSize:10, fontWeight:700, textTransform:"uppercase", letterSpacing:0.4, color:C.textLight, textAlign: align || "left" }}>{label}</div>;
+  // Column flex spec — proportional widths so the table fills the card on
+  // desktop. minWidth:0 on every flex cell so long agent names ellipsize
+  // instead of pushing the row wider than the parent.
+  var rankFlex = "0 0 32px";
+  var H = function(label, flex, align){
+    return <div style={{ flex: flex, fontSize:10, fontWeight:700, textTransform:"uppercase", letterSpacing:0.4, color:C.textLight, textAlign: align || "left", minWidth: 0 }}>{label}</div>;
   };
-  var V = function(content, w, align, color, weight){
-    return <div style={{ width:w, fontSize:12, color: color || C.text, textAlign: align || "left", fontWeight: weight || 600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{content}</div>;
+  var V = function(content, flex, align, color, weight){
+    return <div style={{ flex: flex, fontSize:12, color: color || C.text, textAlign: align || "left", fontWeight: weight || 600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth: 0 }}>{content}</div>;
   };
 
-  var showAll = totalAgents > agents.length;
+  // Slice client-side for instant toggle. canToggle gates the link visibility
+  // so it never appears when the response already fits on one screen.
+  var displayAgents = expanded ? agents : agents.slice(0, 10);
+  var canToggle = agents.length > 10;
 
+  // Outer Card has overflowX:auto for narrow viewports. Inner wrapper has
+  // minWidth:720 so on screens narrower than that, the table keeps its
+  // legible size and the Card scrolls horizontally; on wider screens the
+  // wrapper grows to 100% and flex distributes the extra space.
   return <Card style={{ marginBottom:14, padding:"14px 16px", overflowX:"auto" }}>
     {headerRow}
     {subtitle}
-    <div style={{ minWidth: 760 }}>
+    <div style={{ minWidth: 720 }}>
       <div style={{ display:"flex", gap:8, alignItems:"center", padding:"6px 0", borderBottom:"1px solid #E2E8F0" }}>
-        {H("#", 28)}
-        {H("Agent", 140)}
-        {H("Leads", 56, "right")}
-        {H("Calls", 56, "right")}
-        {H("Mtgs", 52, "right")}
-        {H("EOIs", 50, "right")}
-        {H("Deals", 56, "right")}
-        {H("Revenue", 100, "right")}
-        {H("Conv %", 60, "right")}
-        {H("Target", 140, "left")}
+        {H("#", rankFlex)}
+        {H("Agent", 1.5)}
+        {H("Leads", 0.7, "right")}
+        {H("Calls", 0.7, "right")}
+        {H("Mtgs", 0.7, "right")}
+        {H("EOIs", 0.7, "right")}
+        {H("Deals", 0.7, "right")}
+        {H("Revenue", 1, "right")}
+        {H("Conv %", 0.7, "right")}
+        {H("Target", 1.4, "left")}
       </div>
-      {agents.map(function(a, i){
+      {displayAgents.map(function(a, i){
         var rank = i + 1;
         var mEmoji = medal(rank);
         var tColor = targetColor(a.targetProgressPct || 0);
         var barW = Math.max(0, Math.min(100, a.targetProgressPct || 0));
         var convStr = (a.conversionPct == null) ? "—" : (a.conversionPct.toFixed(1) + "%");
-        return <div key={a.agentId} style={{ display:"flex", gap:8, alignItems:"center", padding:"8px 0", borderBottom: i < agents.length - 1 ? "1px dashed #F1F5F9" : "none" }}>
-          <div style={{ width:28, fontSize: mEmoji ? 16 : 13, fontWeight:700, color: mEmoji ? C.text : C.textLight, textAlign: "left" }}>{mEmoji || rank}</div>
-          {V(a.name || "(unknown)", 140)}
-          {V((a.leads || 0).toLocaleString(), 56, "right")}
-          {V((a.calls || 0).toLocaleString(), 56, "right")}
-          {V((a.meetings || 0).toLocaleString(), 52, "right")}
-          {V((a.eois || 0).toLocaleString(), 50, "right")}
-          {V((a.deals || 0).toLocaleString(), 56, "right")}
-          {V(fmtEGP(a.revenue || 0), 100, "right", C.success, 700)}
-          {V(convStr, 60, "right")}
-          <div style={{ width:140 }}>
+        return <div key={a.agentId} style={{ display:"flex", gap:8, alignItems:"center", padding:"8px 0", borderBottom: i < displayAgents.length - 1 ? "1px dashed #F1F5F9" : "none" }}>
+          <div style={{ flex: rankFlex, fontSize: mEmoji ? 16 : 13, fontWeight:700, color: mEmoji ? C.text : C.textLight, textAlign: "left" }}>{mEmoji || rank}</div>
+          {V(a.name || "(unknown)", 1.5)}
+          {V((a.leads || 0).toLocaleString(), 0.7, "right")}
+          {V((a.calls || 0).toLocaleString(), 0.7, "right")}
+          {V((a.meetings || 0).toLocaleString(), 0.7, "right")}
+          {V((a.eois || 0).toLocaleString(), 0.7, "right")}
+          {V((a.deals || 0).toLocaleString(), 0.7, "right")}
+          {V(fmtEGP(a.revenue || 0), 1, "right", C.success, 700)}
+          {V(convStr, 0.7, "right")}
+          <div style={{ flex: 1.4, minWidth: 0 }}>
             {a.qTarget > 0 ? (
               <div>
                 <div style={{ height:6, background:"#F1F5F9", borderRadius:3, overflow:"hidden" }}>
                   <div style={{ width: barW + "%", height:"100%", background: tColor, borderRadius:3 }}/>
                 </div>
-                <div style={{ fontSize:10, color:tColor, fontWeight:700, marginTop:2 }}>
+                <div style={{ fontSize:10, color:tColor, fontWeight:700, marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                   {(a.targetProgressPct || 0).toFixed(0)}% of {fmtEGP(a.qTarget)}
                 </div>
               </div>
@@ -8828,8 +8844,16 @@ var AgentLeaderboard = function(p) {
         </div>;
       })}
     </div>
-    {showAll && <div style={{ marginTop:10, textAlign:"right", fontSize:11, color:C.textLight }}>
-      View all {totalAgents} agents →
+    {canToggle && <div
+      onClick={function(){ setExpanded(!expanded); }}
+      onMouseEnter={function(){ setHover(true); }}
+      onMouseLeave={function(){ setHover(false); }}
+      style={{
+        marginTop:10, textAlign:"right", fontSize:11, fontWeight:600,
+        color: C.accent, cursor:"pointer", userSelect:"none",
+        textDecoration: hover ? "underline" : "none"
+      }}>
+      {expanded ? "Show top 10 ←" : "View all " + agents.length + " agents →"}
     </div>}
   </Card>;
 };
