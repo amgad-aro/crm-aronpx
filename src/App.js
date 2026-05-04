@@ -9302,7 +9302,7 @@ var ReportsPage = function(p) {
   var tabs = [
     { id: "overview",  label: "Overview",  enabled: true },
     { id: "campaigns", label: "Campaigns", enabled: false },
-    { id: "agents",    label: "Agents",    enabled: false },
+    { id: "agents",    label: "Agents",    enabled: true },
     { id: "pipeline",  label: "Pipeline",  enabled: true }
   ];
 
@@ -9351,7 +9351,7 @@ var ReportsPage = function(p) {
       })}
     </div>
 
-    {(tab === "overview" || tab === "pipeline") && <Card style={{ marginBottom:16, padding:"12px 14px" }}>
+    {(tab === "overview" || tab === "pipeline" || tab === "agents") && <Card style={{ marginBottom:16, padding:"12px 14px" }}>
       <div style={{ display:"flex", flexWrap:"wrap", gap:10, alignItems:"center" }}>
         <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
           {presets.map(function(pr){
@@ -9410,6 +9410,9 @@ var ReportsPage = function(p) {
       setReportsSource={function(src){ setFilters(function(prev){ return Object.assign({}, prev, { source: src }); }); }}/>}
 
     {tab === "pipeline" && <ReportsPipelineBody filters={filters} cu={cu} t={t} token={p.token}
+      nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>}
+
+    {tab === "agents" && <ReportsAgentsBody filters={filters} cu={cu} t={t} token={p.token} users={p.users}
       nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>}
   </div>;
 };
@@ -9875,6 +9878,69 @@ var ReportsPipelineBody = function(p) {
       if (s.key === "atRisk") return <DealsAtRiskTable key="atRisk" filters={p.filters} token={p.token} nav={p.nav}/>;
       if (s.key === "byProject") return <PipelineByProjectTable key="byProject" filters={p.filters} token={p.token} nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>;
       if (s.key === "outcomes") return <OutcomeBreakdown key="outcomes" filters={p.filters} token={p.token}/>;
+      return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
+        <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
+        <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>
+      </Card>;
+    })}
+  </div>;
+};
+
+var ReportsAgentsBody = function(p) {
+  var [selectedAgentId, setSelectedAgentId] = useState(null);
+
+  // Eligible agents — same role whitelist Phase 1 forecast uses for
+  // qTarget eligibility (sales + team_leader + manager, active only).
+  var eligibleAgents = (p.users || []).filter(function(u){
+    return u && u.active && (u.role === "sales" || u.role === "team_leader" || u.role === "manager");
+  }).sort(function(a, b){ return (a.name || "").localeCompare(b.name || ""); });
+
+  // Default selection on mount / when the eligible list materialises.
+  // Slice 1 will replace this with a top-revenue-in-range default once
+  // the /api/reports/agents/list endpoint ships; for now first-
+  // alphabetical so the placeholders below have an agent name to label
+  // themselves with on first paint.
+  useEffect(function(){
+    if (!selectedAgentId && eligibleAgents.length > 0) {
+      setSelectedAgentId(gid(eligibleAgents[0]));
+    }
+  }, [eligibleAgents.length]);
+
+  var roleLabel = function(role){
+    return role === "manager" ? "Manager" : role === "team_leader" ? "Team Leader" : "Sales";
+  };
+
+  var selectedAgent = eligibleAgents.find(function(u){ return gid(u) === selectedAgentId; });
+
+  var sections = [
+    { key:"kpis",             title:"Headline KPIs vs peer median", height:120 },
+    { key:"radar",            title:"Performance radar",            height:300 },
+    { key:"heatmap",          title:"Activity heatmap",             height:240 },
+    { key:"stageProgression", title:"Stage progression funnel",     height:240 },
+    { key:"recentDeals",      title:"Recent deals",                 height:200 },
+    { key:"stuckLeads",       title:"Stuck leads",                  height:200 }
+  ];
+
+  return <div>
+    <Card style={{ marginBottom:14, padding:"12px 14px" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+        <span style={{ fontSize:11, fontWeight:600, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em" }}>Agent</span>
+        <select value={selectedAgentId || ""} onChange={function(e){ setSelectedAgentId(e.target.value); }}
+          disabled={eligibleAgents.length === 0}
+          style={{ padding:"6px 10px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", minWidth:220 }}>
+          {eligibleAgents.length === 0
+            ? <option value="">No eligible agents</option>
+            : eligibleAgents.map(function(u){
+                return <option key={gid(u)} value={gid(u)}>{u.name} ({roleLabel(u.role)})</option>;
+              })}
+        </select>
+        {selectedAgent && (selectedAgent.title || selectedAgent.teamName) && <span style={{ fontSize:11, color:C.textLight }}>
+          {[selectedAgent.title, selectedAgent.teamName].filter(Boolean).join(" · ")}
+        </span>}
+      </div>
+    </Card>
+
+    {sections.map(function(s){
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>
