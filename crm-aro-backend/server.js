@@ -7542,6 +7542,188 @@ app.get("/api/reports/overview/forecast", auth, reportsAuth, async function(req,
   }
 });
 
+// GET /api/reports/pipeline/kpis
+// Four Pipeline-tab KPIs:
+//   1. Open pipeline value (snapshot, ignores range)
+//      Σ raw budget of Lead with status IN [NewLead, Potential, HotCase,
+//      MeetingDone, CallBack], archived=false, source != "Daily Request"
+//      (mirror exclusion — defense-in-depth; pipeline-state DRs aren't
+//      mirrored anyway). Lead-only convention shared with forecast.
+//   2. Weighted forecast (snapshot)
+//      Σ (per-stage open value × stage win probability). Probability
+//      method: HISTORICAL when DoneDeal-count in last 90d ≥ 20, else
+//      FIXED coefficients. Historical = wins / (wins + losses) among
+//      leads that visited the stage in last 90d (status_change activity
+//      with [Status] prefix, current Lead status DoneDeal vs Lost).
+//      Fixed: NewLead 0.05, Potential 0.15, HotCase 0.35, MeetingDone
+//      0.60, CallBack 0.25.
+//   3. Win rate % (range-scoped)
+//      DoneDeal / (DoneDeal + NotInterested + NoAnswer), counted by
+//      resolution date in range: dealDate (parsed) for DoneDeal,
+//      updatedAt proxy for the lost statuses.
+//   4. Sales velocity (range-scoped, MEDIAN)
+//      Median days from createdAt to dealDate for DoneDeals in range.
+//      Aggregation pushes the days array; JS picks the median.
+//
+// All four are Lead-only. Mirrors excluded everywhere.
+// Source filter case-split:
+//   - sourceFilter null     → outer match unrestricted; defensive
+//                             source != "Daily Request" applied per branch.
+//   - sourceFilter "Daily Request" → outer match selects mirrors only.
+//                             Pipeline-stage branches return 0 because
+//                             mirrors are EOI/DoneDeal-stage only. Correct.
+//   - sourceFilter other    → outer match selects that source; defensive
+//                             $ne is redundant but harmless.
+app.get("/api/reports/pipeline/kpis", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var nowDate = new Date();
+    var DAY_MS = 86400000;
+    var d90 = new Date(nowDate.getTime() - 90 * DAY_MS);
+
+    var pipelineStatuses = ["NewLead", "Potential", "HotCase", "MeetingDone", "CallBack"];
+    var lostStatuses = ["NotInterested", "NoAnswer"];
+
+    var leadMatch = { archived: false };
+    if (sourceFilter) leadMatch.source = sourceFilter;
+    if (scopeIds) leadMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+
+    var leadAggP = Lead.aggregate([
+      { $match: leadMatch },
+      { $addFields: {
+          budgetNum: budgetNumExpr,
+          dealAt: { $cond: [
+            { $and: [{ $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] }] },
+            { $toDate: "$dealDate" },
+            "$updatedAt"
+          ]}
+      }},
+      { $facet: {
+          // Snapshot: per-stage open count + value (mirrors excluded).
+          pipelineByStage: [
+            { $match: { status: { $in: pipelineStatuses }, source: { $ne: "Daily Request" }}},
+            { $group: { _id: "$status", count: { $sum: 1 }, value: { $sum: "$budgetNum" }}}
+          ],
+          // Sample-size check for historical methodology.
+          dealsLast90: [
+            { $match: { status: "DoneDeal", dealStatus: { $ne: "Deal Cancelled" }, source: { $ne: "Daily Request" }, dealAt: { $gte: d90, $lt: nowDate }}},
+            { $count: "n" }
+          ],
+          // Wins in range — winRate numerator + velocity sample.
+          dealsInRange: [
+            { $match: { status: "DoneDeal", dealStatus: { $ne: "Deal Cancelled" }, source: { $ne: "Daily Request" }, dealAt: { $gte: fromDate, $lt: toDate }}},
+            { $project: { days: { $divide: [{ $subtract: ["$dealAt", "$createdAt"] }, DAY_MS] }}},
+            { $match: { days: { $gte: 0 }}},
+            { $group: { _id: null, count: { $sum: 1 }, daysArr: { $push: "$days" }}}
+          ],
+          // Losses in range — winRate denominator (lost half).
+          lostInRange: [
+            { $match: { status: { $in: lostStatuses }, source: { $ne: "Daily Request" }, updatedAt: { $gte: fromDate, $lt: toDate }}},
+            { $group: { _id: null, count: { $sum: 1 }}}
+          ]
+      }}
+    ]);
+
+    // Per-stage historical win probability — only meaningful when
+    // dealsLast90 >= 20; computed unconditionally and chosen JS-side.
+    var actLeadFilter = { "lead.archived": false };
+    if (sourceFilter) actLeadFilter["lead.source"] = sourceFilter;
+    else              actLeadFilter["lead.source"] = { $ne: "Daily Request" };
+    if (scopeIds) actLeadFilter.$or = [{ "lead.agentId": { $in: scopeIds }}, { "lead.splitAgent2Id": { $in: scopeIds }}];
+
+    var activityAggP = Activity.aggregate([
+      { $match: { type: "status_change", createdAt: { $gte: d90, $lt: nowDate }, leadId: { $ne: null }}},
+      { $project: { leadId: 1, stageMatch: { $regexFind: { input: { $ifNull: ["$note", ""] }, regex: /^\[(.+?)\]/ }}}},
+      { $project: { leadId: 1, stage: { $arrayElemAt: ["$stageMatch.captures", 0] }}},
+      { $match: { stage: { $in: pipelineStatuses }}},
+      { $group: { _id: { leadId: "$leadId", stage: "$stage" }}},
+      { $lookup: { from: "leads", localField: "_id.leadId", foreignField: "_id", as: "lead" }},
+      { $unwind: "$lead" },
+      { $match: actLeadFilter },
+      { $group: { _id: "$_id.stage",
+        won:  { $sum: { $cond: [{ $eq: ["$lead.status", "DoneDeal"] }, 1, 0] }},
+        lost: { $sum: { $cond: [{ $in: ["$lead.status", lostStatuses] }, 1, 0] }}
+      }}
+    ]);
+
+    var parts = await Promise.all([leadAggP, activityAggP]);
+    var leadR = (parts[0] || [])[0] || {};
+    var actR  = parts[1] || [];
+
+    // 1. Pipeline value + per-stage map
+    var pipelineByStage = leadR.pipelineByStage || [];
+    var byStageMap = {};
+    var pipelineValueTotal = 0;
+    pipelineByStage.forEach(function(row){
+      var v = Number(row.value) || 0;
+      byStageMap[row._id] = { count: Number(row.count) || 0, value: v };
+      pipelineValueTotal += v;
+    });
+
+    // 2. Weighted forecast
+    var dealsLast90Count = (((leadR.dealsLast90 || [])[0] || {}).n) || 0;
+    var useHistorical = dealsLast90Count >= 20;
+    var fixedCoef = { NewLead: 0.05, Potential: 0.15, HotCase: 0.35, MeetingDone: 0.60, CallBack: 0.25 };
+
+    var historicalProb = {};
+    actR.forEach(function(row){
+      var won  = Number(row.won)  || 0;
+      var lost = Number(row.lost) || 0;
+      var tot  = won + lost;
+      historicalProb[row._id] = tot > 0 ? won / tot : null;
+    });
+
+    var weightedTotal = 0;
+    pipelineStatuses.forEach(function(s){
+      var entry = byStageMap[s];
+      if (!entry || !entry.value) return;
+      var prob = (useHistorical && historicalProb[s] != null) ? historicalProb[s] : (fixedCoef[s] || 0);
+      weightedTotal += entry.value * prob;
+    });
+
+    // 3. Win rate
+    var dealsInRangeR = (leadR.dealsInRange || [])[0] || {};
+    var lostInRangeR  = (leadR.lostInRange  || [])[0] || {};
+    var wonCount  = Number(dealsInRangeR.count) || 0;
+    var lostCount = Number(lostInRangeR.count)  || 0;
+    var resolved  = wonCount + lostCount;
+    var winRatePct = resolved > 0 ? (wonCount / resolved) * 100 : 0;
+
+    // 4. Velocity (median)
+    var daysArr = (dealsInRangeR.daysArr || []).slice().sort(function(a, b){ return a - b; });
+    var medianDays = 0;
+    if (daysArr.length === 1) medianDays = daysArr[0];
+    else if (daysArr.length > 1) {
+      var mid = Math.floor(daysArr.length / 2);
+      medianDays = daysArr.length % 2 === 0 ? (daysArr[mid - 1] + daysArr[mid]) / 2 : daysArr[mid];
+    }
+
+    res.json({
+      range: { from: range.from, to: range.to },
+      pipelineValue:    { value: Math.round(pipelineValueTotal) },
+      weightedForecast: {
+        value: Math.round(weightedTotal),
+        methodology: useHistorical ? "historical" : "fixed",
+        sample: { dealsLast90: dealsLast90Count, threshold: 20 }
+      },
+      winRatePct:       { value: Math.round(winRatePct * 10) / 10, sample: { won: wonCount, lost: lostCount }},
+      avgVelocityDays:  { value: Math.round(medianDays * 10) / 10, sampleSize: daysArr.length }
+    });
+  } catch (e) {
+    console.error("[reports/pipeline/kpis]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "pipeline_kpis_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);

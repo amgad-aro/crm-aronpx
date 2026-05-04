@@ -9444,6 +9444,82 @@ var ReportsOverviewBody = function(p) {
   </div>;
 };
 
+var PipelineKpiCard = function(p) {
+  var c = p.card;
+  return <Card style={{ padding:"14px 16px", minHeight:96 }}>
+    <div style={{ fontSize:11, color:C.textLight, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.04em", display:"flex", alignItems:"center", gap:6 }}>
+      <span>{c.label}</span>
+      {c.tooltip && <span title={c.tooltip} style={{ cursor:"help", color:"#94A3B8", fontSize:10, fontWeight:700 }}>ⓘ</span>}
+    </div>
+    {p.skeleton
+      ? <div style={{ height:24, marginTop:10, borderRadius:4, background:"#F1F5F9", width:"60%" }}/>
+      : <div style={{ fontSize:22, fontWeight:800, color:c.color, marginTop:6 }}>{c.value}</div>}
+    {!p.skeleton && c.hint && <div style={{ fontSize:10, color:C.textLight, marginTop:4 }}>{c.hint}</div>}
+  </Card>;
+};
+
+var PipelineKpiRow = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var f = p.filters;
+
+  useEffect(function(){
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/pipeline/kpis" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.from, f.to, f.team, f.source]);
+
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load Pipeline KPIs: {state.error}</div>
+    </Card>;
+  }
+
+  var skel = state.loading || !state.data;
+  var k = state.data || {};
+  var pv = k.pipelineValue || {};
+  var wf = k.weightedForecast || {};
+  var wr = k.winRatePct || {};
+  var vel = k.avgVelocityDays || {};
+  var wrSample = wr.sample || {};
+
+  var fmtPct = function(v){ return (Number(v) || 0).toFixed(1) + "%"; };
+  var fmtDays = function(v){ var n = Number(v) || 0; return n < 1 ? n.toFixed(1) + " d" : Math.round(n) + " d"; };
+
+  var methodology = wf.methodology || "fixed";
+  var wfTooltip = methodology === "historical"
+    ? "Σ (stage value × historical win rate). Per-stage probability comes from leads that touched the stage in the last 90 days. Sample threshold (≥ 20 closed deals) met."
+    : "Σ (stage value × fixed coefficient). Sample below the 20-deal threshold needed for historical rates. Coefficients: NewLead 5%, Potential 15%, HotCase 35%, MeetingDone 60%, CallBack 25%.";
+
+  var cards = [
+    { id:"pipeline", label:"Open pipeline value", color: C.info,
+      value: skel ? "" : fmtEGP(pv.value),
+      hint:  skel ? "" : "snapshot · all open stages",
+      tooltip: "Σ raw budget of leads in NewLead/Potential/HotCase/MeetingDone/CallBack. Lead-only, mirrors excluded. Ignores date range." },
+    { id:"forecast", label:"Weighted forecast", color: C.accent,
+      value: skel ? "" : fmtEGP(wf.value),
+      hint:  skel ? "" : (methodology === "historical" ? "historical · last 90 days" : "fixed coefficients · low sample"),
+      tooltip: wfTooltip },
+    { id:"winrate", label:"Win rate", color: C.success,
+      value: skel ? "" : fmtPct(wr.value),
+      hint:  skel ? "" : ((wrSample.won || 0) + " won · " + (wrSample.lost || 0) + " lost"),
+      tooltip: "DoneDeal / (DoneDeal + NotInterested + NoAnswer) for leads resolved in the selected range. Lead-only, mirrors excluded." },
+    { id:"velocity", label:"Sales velocity (median)", color:"#8B5CF6",
+      value: skel ? "" : (vel.sampleSize ? fmtDays(vel.value) : "—"),
+      hint:  skel ? "" : (vel.sampleSize ? ("median of " + vel.sampleSize + " deals") : "no deals closed in range"),
+      tooltip: "Median days from lead created to deal closed, for DoneDeals in range. Lead-only, mirrors excluded." }
+  ];
+
+  return <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(210px, 1fr))", gap:10, marginBottom:14 }}>
+    {cards.map(function(c){ return <PipelineKpiCard key={c.id} card={c} skeleton={skel}/>; })}
+  </div>;
+};
+
 var ReportsPipelineBody = function(p) {
   var sections = [
     { key:"kpis",      title:"Pipeline KPIs",       height:120 },
@@ -9454,6 +9530,7 @@ var ReportsPipelineBody = function(p) {
   ];
   return <div>
     {sections.map(function(s){
+      if (s.key === "kpis") return <PipelineKpiRow key="kpis" filters={p.filters} token={p.token}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>
