@@ -2944,27 +2944,46 @@ var LeadsPage = function(p) {
         if (spT==="rotatedThisMonth") return (l.agentHistory||[]).some(function(h){ return h && h.date && new Date(h.date).getTime() >= monthStartMs; });
         if (spT==="interested") return l.status==="HotCase" || l.status==="Potential";
         if (spT==="aging") {
-          // Reports → Lead Aging drill-down. Mirrors the backend pipeline
-          // exactly: pick the current holder's assignments slice (matched
-          // by slice.agentId === lead.agentId, latest match wins for
-          // rotated-back leads) and use its lastActionAt. Top-level
-          // lastActivityTime is polluted by cross-agent writes / rotations
-          // and only kicks in as a fallback for legacy leads; createdAt is
-          // the final fallback. Same precedence as the rotation sweeper.
+          // Reports → Lead Aging drill-down. Mirrors the backend $lookup
+          // exactly: max(Activity.createdAt) for the current holder against
+          // this lead, scoped to explicit contact types. Status changes
+          // and reassigns are excluded — they're system-emitted and
+          // would mask coverage gaps. Fallback A = current holder's
+          // slice.assignedAt (so a 14d-held-no-contact lead still buckets
+          // correctly), fallback B = lead.createdAt for legacy leads.
+          var contactTypes = { call:1, meeting:1, followup:1, email:1, note:1 };
           var aid = l.agentId && l.agentId._id ? l.agentId._id : l.agentId;
           var aidStr = aid ? String(aid) : "";
-          var curSlice = null;
-          if (aidStr) {
-            var asg = l.assignments || [];
-            for (var i2 = asg.length - 1; i2 >= 0; i2--) {
-              var sa = asg[i2] && asg[i2].agentId;
-              var sid = sa && sa._id ? sa._id : sa;
-              if (sid && String(sid) === aidStr) { curSlice = asg[i2]; break; }
+          var lidStr = String(gid(l) || "");
+          var maxAct = 0;
+          if (aidStr && lidStr) {
+            var acts = p.activities || [];
+            for (var i2 = 0; i2 < acts.length; i2++) {
+              var act = acts[i2];
+              if (!act || !contactTypes[act.type]) continue;
+              var alid = act.leadId && act.leadId._id ? act.leadId._id : act.leadId;
+              var auid = act.userId && act.userId._id ? act.userId._id : act.userId;
+              if (!alid || !auid) continue;
+              if (String(alid) !== lidStr) continue;
+              if (String(auid) !== aidStr) continue;
+              var t = act.createdAt ? new Date(act.createdAt).getTime() : 0;
+              if (t > maxAct) maxAct = t;
             }
           }
-          var lastT = (curSlice && curSlice.lastActionAt) ? new Date(curSlice.lastActionAt).getTime()
-                    : (l.lastActivityTime ? new Date(l.lastActivityTime).getTime()
-                    : (l.createdAt ? new Date(l.createdAt).getTime() : 0));
+          var lastT = maxAct;
+          if (!lastT && aidStr) {
+            // Fallback A: current holder's slice.assignedAt
+            var asg = l.assignments || [];
+            for (var j2 = asg.length - 1; j2 >= 0; j2--) {
+              var sa = asg[j2] && asg[j2].agentId;
+              var sid = sa && sa._id ? sa._id : sa;
+              if (sid && String(sid) === aidStr && asg[j2].assignedAt) {
+                lastT = new Date(asg[j2].assignedAt).getTime();
+                break;
+              }
+            }
+          }
+          if (!lastT) lastT = l.createdAt ? new Date(l.createdAt).getTime() : 0;
           var ageDays = (nowMs - lastT) / 86400000;
           var aMin = (typeof p.specialFilter.ageMin === "number") ? p.specialFilter.ageMin : -Infinity;
           var aMax = (typeof p.specialFilter.ageMax === "number") ? p.specialFilter.ageMax : Infinity;
@@ -8913,7 +8932,7 @@ var LeadAgingBuckets = function(p) {
 
   var headerRow = <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:4 }}>
     <div style={{ fontSize:13, fontWeight:700 }}>⏱️ Lead Aging</div>
-    <div title="Excludes done deals, active EOIs, not interested, and cancelled deals. Uses the agent's last logged action (call, meeting, feedback) — not system events like rotations or admin edits."
+    <div title="Last contact = the agent's most recent logged activity (call, meeting, followup, email, or note). If the agent hasn't logged anything since taking the lead, we show how long they've held it without contact. Status changes alone don't count — agents must log activities."
          style={{ fontSize:11, color:C.textLight, cursor:"help" }}>ⓘ</div>
   </div>;
 
