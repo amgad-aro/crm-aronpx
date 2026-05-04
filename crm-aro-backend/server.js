@@ -1036,6 +1036,14 @@ app.post("/api/settings/audit/:id/rollback", auth, async function(req, res) {
     var entry = await SettingsAudit.findById(req.params.id);
     if (!entry) return res.status(404).json({ error: "Audit entry not found" });
     if (entry.rolledBack) return res.status(400).json({ error: "Already rolled back" });
+    // The rollback path below is hardcoded to the rotation AppSetting doc.
+    // projectWeights audit rows (field prefix "projectWeights.") cannot be
+    // rolled back this way without writing to the wrong doc — guard
+    // explicitly. Re-saving via the Commission Projects flow reverts the
+    // change cleanly.
+    if (entry.field && String(entry.field).indexOf("projectWeights.") === 0) {
+      return res.status(400).json({ error: "Rollback not yet supported for project-weight changes — re-save via Commission Projects" });
+    }
 
     var path = "value." + entry.field;
     var setOp = {}; setOp[path] = entry.oldValue;
@@ -1060,6 +1068,138 @@ app.post("/api/settings/audit/:id/rollback", auth, async function(req, res) {
     var updated = await getRotationSettings();
     try { broadcast("settings_updated", { key: "rotation", value: updated }); } catch(e) {}
     res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== PROJECT WEIGHTS (Phase 2 Slice 1) =====
+// Authoritative server-side store for the per-project commission/target
+// weights that DealsPage / TeamPage / KPIsPage / Dashboard my-stats apply
+// to deal revenue. Replaces per-browser localStorage storage that lets
+// admins drift apart and was the architectural root cause of the
+// projectWeight bug. The denormalised Lead.projectWeight field stays as
+// a write-through cache: this PUT cascades the weight onto every matching
+// Lead doc so existing read paths (frontend helpers + my-stats endpoint)
+// don't need to change.
+//
+// 30-second in-memory cache mirrors the _vacCache pattern (busted on PUT).
+// Diff-aware audit + Lead.updateMany cascade mirrors the rotation-settings
+// precedent at server.js:990.
+//
+// Slice 1 is server-only and additive — no frontend behavior changes
+// until Slice 3 swaps the localStorage helpers. Coexists with the existing
+// localStorage flow during the transition.
+var _projWeightsCache = { at: 0, map: null };
+function bustProjectWeightsCache() { _projWeightsCache.at = 0; _projWeightsCache.map = null; }
+async function getProjectWeights() {
+  var now = Date.now();
+  if (!_projWeightsCache.map || (now - _projWeightsCache.at) > 30000) {
+    var doc = await AppSetting.findOne({ key: "projectWeights" }).lean();
+    var v = (doc && doc.value && typeof doc.value === "object") ? doc.value : {};
+    var clean = {};
+    Object.keys(v).forEach(function(k){
+      var n = Number(v[k]);
+      if (k && isFinite(n) && n >= 0 && n <= 1) clean[k] = n;
+    });
+    _projWeightsCache.map = clean;
+    _projWeightsCache.at = now;
+  }
+  return Object.assign({}, _projWeightsCache.map);
+}
+
+// GET /api/settings/project-weights — any authed role.
+// Returns { "Palm Hills": 0.5, ... }. Empty object when the AppSetting
+// doc doesn't exist yet (Slice 2 hasn't migrated localStorage to server).
+app.get("/api/settings/project-weights", auth, async function(req, res) {
+  try {
+    res.json(await getProjectWeights());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /api/settings/project-weights — admin / sales_admin only.
+// Body: { "Palm Hills": 0.5, "Mountain View": 0.7 }
+// Treated as a FULL-REPLACE state. Any project not in the body is reverted
+// to the default weight 1 (entries equal to 1 are also dropped from storage —
+// no point persisting the default). Per-key diff against previous state
+// writes one SettingsAudit row each with field prefixed "projectWeights.".
+// After save, a per-project Lead.updateMany cascades the weight onto
+// every matching Lead doc, keeping the denormalised cache in sync.
+app.put("/api/settings/project-weights", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    var body = (req.body && typeof req.body === "object") ? req.body : {};
+
+    // Sanitize: keep entries with weight in [0, 1] and drop default-1 entries.
+    var sanitized = {};
+    Object.keys(body).forEach(function(k){
+      var key = String(k || "").trim();
+      var n = Number(body[k]);
+      if (!key) return;
+      if (!isFinite(n)) return;
+      if (n < 0 || n > 1) return;
+      if (n === 1) return; // default — don't store
+      sanitized[key] = n;
+    });
+
+    var existing = await AppSetting.findOne({ key: "projectWeights" }).lean();
+    var prev = (existing && existing.value && typeof existing.value === "object") ? existing.value : {};
+
+    // Diff: any key in either set whose value changed. Treat absence as 1.
+    var allKeys = {};
+    Object.keys(prev).forEach(function(k){ allKeys[k] = true; });
+    Object.keys(sanitized).forEach(function(k){ allKeys[k] = true; });
+    var changes = [];
+    Object.keys(allKeys).forEach(function(k){
+      var oldV = (k in prev) ? Number(prev[k]) : 1;
+      var newV = (k in sanitized) ? Number(sanitized[k]) : 1;
+      if (oldV !== newV) changes.push({ project: k, oldValue: oldV, newValue: newV });
+    });
+
+    await AppSetting.findOneAndUpdate(
+      { key: "projectWeights" },
+      { $set: { value: sanitized }},
+      { upsert: true, new: true }
+    );
+    bustProjectWeightsCache();
+
+    // Cascade per changed project. Hits both native and DR-mirror leads
+    // (no source filter) — same scope as the existing frontend bulk-PUT.
+    for (var i = 0; i < changes.length; i++) {
+      var c = changes[i];
+      try {
+        await Lead.updateMany({ project: c.project }, { $set: { projectWeight: c.newValue }});
+      } catch (cascErr) {
+        console.error("[project-weights cascade]", c.project, cascErr && cascErr.message);
+      }
+    }
+
+    if (changes.length) {
+      try {
+        var actorName = (req.user && req.user.name) ? req.user.name : "Admin";
+        var actorId   = (req.user && req.user.id)   ? req.user.id   : null;
+        var rows = changes.map(function(c){
+          return {
+            actorId: actorId,
+            actorName: actorName,
+            field: "projectWeights." + c.project,
+            oldValue: c.oldValue,
+            newValue: c.newValue,
+            timestamp: new Date()
+          };
+        });
+        await SettingsAudit.insertMany(rows, { ordered: false });
+      } catch (auditErr) {
+        console.error("[project-weights audit]", auditErr && auditErr.message);
+      }
+    }
+
+    try { broadcast("settings_updated", { key: "projectWeights", value: sanitized }); } catch(e) {}
+    res.json(sanitized);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
