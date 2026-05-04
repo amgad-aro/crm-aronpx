@@ -2943,6 +2943,18 @@ var LeadsPage = function(p) {
         if (spT==="noRotation") return (l.assignments||[]).some(function(a){ return a.noRotation===true; });
         if (spT==="rotatedThisMonth") return (l.agentHistory||[]).some(function(h){ return h && h.date && new Date(h.date).getTime() >= monthStartMs; });
         if (spT==="interested") return l.status==="HotCase" || l.status==="Potential";
+        if (spT==="aging") {
+          // Reports → Lead Aging drill-down. ageMin / ageMax are in days,
+          // measured against lead.lastActivityTime (or createdAt as a
+          // defensive fallback). Same field the backend /reports/overview/aging
+          // endpoint buckets on, so counts reconcile.
+          var lastT = l.lastActivityTime ? new Date(l.lastActivityTime).getTime()
+                    : (l.createdAt ? new Date(l.createdAt).getTime() : 0);
+          var ageDays = (nowMs - lastT) / 86400000;
+          var aMin = (typeof p.specialFilter.ageMin === "number") ? p.specialFilter.ageMin : -Infinity;
+          var aMax = (typeof p.specialFilter.ageMax === "number") ? p.specialFilter.ageMax : Infinity;
+          return ageDays >= aMin && ageDays < aMax;
+        }
         return true;
       });
     }
@@ -3218,6 +3230,13 @@ var LeadsPage = function(p) {
 
   var specialFilterLabel = (function(){
     if (!p.specialFilter||!p.specialFilter.type) return "";
+    if (p.specialFilter.type === "aging") {
+      var aMin = p.specialFilter.ageMin, aMax = p.specialFilter.ageMax;
+      if (typeof aMin === "number" && typeof aMax === "number") return "Aging: " + aMin + "\u2013" + aMax + " days no contact";
+      if (typeof aMin === "number") return "Aging: " + aMin + "+ days no contact";
+      if (typeof aMax === "number") return "Aging: under " + aMax + " days no contact";
+      return "Aging filter";
+    }
     var m = {untouched:"Untouched leads (no activity since assignment)",missingFeedback:"Missing feedback (empty notes)",stale48h:"Stale leads \u2014 no activity 48h+",noRotation:"Locked leads (noRotation flag)",rotatedThisMonth:"Rotated this month",interested:"Interested leads (HotCase + Potential)"};
     return m[p.specialFilter.type]||p.specialFilter.type;
   })();
@@ -8858,6 +8877,114 @@ var AgentLeaderboard = function(p) {
   </Card>;
 };
 
+var LeadAgingBuckets = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var [hoverKey, setHoverKey] = useState(null);
+  var f = p.filters;
+
+  useEffect(function() {
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var bits = [];
+    // Aging is a snapshot — no from/to. Team + source still apply.
+    if (f.team) bits.push("team=" + encodeURIComponent(f.team));
+    if (f.source && f.source !== "all") bits.push("source=" + encodeURIComponent(f.source));
+    var qs = bits.length ? "?" + bits.join("&") : "";
+    apiFetch("/api/reports/overview/aging" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.team, f.source]);
+
+  var headerRow = <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:4 }}>
+    <div style={{ fontSize:13, fontWeight:700 }}>⏱️ Lead Aging</div>
+    <div title="Excludes done deals, active EOIs, not interested, and cancelled deals. Counts active leads only."
+         style={{ fontSize:11, color:C.textLight, cursor:"help" }}>ⓘ</div>
+  </div>;
+
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      {headerRow}
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load: {state.error}</div>
+    </Card>;
+  }
+  if (state.loading || !state.data) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px", minHeight:140 }}>
+      {headerRow}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:10, marginTop:10 }}>
+        {[0,1,2,3].map(function(i){
+          return <div key={i} style={{ height:88, background:"#F1F5F9", borderRadius:10 }}/>;
+        })}
+      </div>
+    </Card>;
+  }
+
+  var b = (state.data && state.data.buckets) || {};
+  var filtersSpec = (state.data && state.data.filters) || {};
+  var total = (state.data && state.data.total) || 0;
+
+  if (total === 0) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      {headerRow}
+      <div style={{ fontSize:11, color:C.textLight, marginBottom:10 }}>Active leads grouped by days since last contact</div>
+      <div style={{ height:80, display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, fontSize:13 }}>No active leads</div>
+    </Card>;
+  }
+
+  // Tile spec: high-priority on the left so the eye lands on red first.
+  var tiles = [
+    { key:"over14",    label:"14+ days",     sub:"High priority",   count: b.over14    || 0, bg:"#FEF2F2", border:"#FECACA", color:"#B91C1C" },
+    { key:"days7to14", label:"7–14 days", sub:"Needs attention", count: b.days7to14 || 0, bg:"#FFFBEB", border:"#FDE68A", color:"#B45309" },
+    { key:"days3to7",  label:"3–7 days",  sub:"Monitor",         count: b.days3to7  || 0, bg:"#F8FAFC", border:"#E2E8F0", color:"#475569" },
+    { key:"under3",    label:"Under 3 days", sub:"Active",          count: b.under3    || 0, bg:"#ECFDF5", border:"#A7F3D0", color:"#047857" }
+  ];
+
+  var goToFilter = function(key){
+    var spec = filtersSpec[key];
+    if (!spec || !p.nav) return;
+    if (p.setSpecialFilter) p.setSpecialFilter(spec);
+    if (p.setFilter) p.setFilter("all");
+    p.nav("leads");
+  };
+
+  return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+    {headerRow}
+    <div style={{ fontSize:11, color:C.textLight, marginBottom:10 }}>
+      Active leads grouped by days since last contact · {total.toLocaleString()} total
+    </div>
+    <div style={{ display:"grid", gridTemplateColumns:"repeat(4, minmax(0, 1fr))", gap:10 }}>
+      {tiles.map(function(tile){
+        var hovered = hoverKey === tile.key;
+        return <div key={tile.key}
+          onClick={function(){ goToFilter(tile.key); }}
+          onMouseEnter={function(){ setHoverKey(tile.key); }}
+          onMouseLeave={function(){ setHoverKey(null); }}
+          style={{
+            background: tile.bg,
+            border: "1px solid " + tile.border,
+            borderRadius: 10,
+            padding: "12px 14px",
+            cursor: "pointer",
+            display: "flex", flexDirection: "column", justifyContent: "space-between",
+            minHeight: 88,
+            transform: hovered ? "translateY(-1px)" : "translateY(0)",
+            boxShadow: hovered ? "0 2px 6px rgba(0,0,0,0.06)" : "none",
+            transition: "transform 0.12s ease, box-shadow 0.12s ease"
+          }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
+            <div style={{ minWidth:0 }}>
+              <div style={{ fontSize:13, fontWeight:700, color: tile.color, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{tile.label}</div>
+              <div style={{ fontSize:10, color: tile.color, opacity:0.75, marginTop:2 }}>{tile.sub}</div>
+            </div>
+            <div style={{ fontSize:22, fontWeight:800, color: tile.color, lineHeight:1 }}>{tile.count.toLocaleString()}</div>
+          </div>
+          <div style={{ fontSize:11, color: tile.color, fontWeight:700, textAlign:"right", opacity: hovered ? 1 : 0.7 }}>→</div>
+        </div>;
+      })}
+    </div>
+  </Card>;
+};
+
 // ===== REPORTS =====
 var ReportsPage = function(p) {
   var t = p.t;
@@ -9040,7 +9167,8 @@ var ReportsPage = function(p) {
       </div>
     </Card>}
 
-    {tab === "overview" && <ReportsOverviewBody filters={filters} cu={cu} t={t} token={p.token}/>}
+    {tab === "overview" && <ReportsOverviewBody filters={filters} cu={cu} t={t} token={p.token}
+      nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>}
   </div>;
 };
 
@@ -9062,6 +9190,8 @@ var ReportsOverviewBody = function(p) {
       if (s.key === "funnel") return <SalesFunnel key="funnel" filters={p.filters} token={p.token}/>;
       if (s.key === "sources") return <SourceRoiList key="sources" filters={p.filters} token={p.token}/>;
       if (s.key === "agents") return <AgentLeaderboard key="agents" filters={p.filters} token={p.token}/>;
+      if (s.key === "aging") return <LeadAgingBuckets key="aging" filters={p.filters} token={p.token}
+        nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>;
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.textLight }}>{s.title}</div>
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>

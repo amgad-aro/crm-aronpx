@@ -6688,6 +6688,107 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
   }
 });
 
+// GET /api/reports/overview/aging
+// 4 buckets by days since lastActivityTime — CURRENT STATE, no period filter
+// (aging is a snapshot, not a flow metric):
+//   over14    age >= 14    (RED — high priority)
+//   days7to14 7 <= age <14 (AMBER — needs attention)
+//   days3to7  3 <= age < 7 (GREY — monitor)
+//   under3    age < 3      (GREEN — active)
+//
+// Exclusions — leads that are already closed / out of the funnel don't
+// count toward aging buckets (mirrors LeadsPage default visibility):
+//   - archived
+//   - status = DoneDeal OR globalStatus = donedeal     (closed)
+//   - status = EOI OR eoiStatus IN [Pending, Approved] (active EOI flow)
+//   - status = NotInterested                           (dead lead)
+//   - status = Deal Cancelled OR dealStatus = Deal Cancelled
+//
+// Source filter case-split (same as kpis/funnel/source-roi/agents):
+//   - null            -> Lead native (source != "Daily Request" mirror exclusion)
+//   - "Daily Request" -> mirrors only
+//   - other           -> that source
+//
+// Team scope applied via agentId / splitAgent2Id $or, same shape as
+// the other reports endpoints.
+//
+// "Last contact" timestamp = lastActivityTime — populated by the schema
+// default and bumped on every PUT / rotation / status-change / EOI cancel
+// / deal cancel / deal convert handler in this file. Defensive fallback
+// to createdAt for any legacy doc that may have lost it.
+//
+// Response also includes filters[bucketKey] objects the frontend hands
+// straight to setSpecialFilter so the Leads page can re-apply the same
+// age window client-side (drill-down).
+app.get("/api/reports/overview/aging", auth, reportsAuth, async function(req, res) {
+  try {
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var match = {
+      archived: false,
+      $nor: [
+        { status: "DoneDeal" },
+        { globalStatus: "donedeal" },
+        { status: "EOI" },
+        { eoiStatus: "Pending" },
+        { eoiStatus: "Approved" },
+        { status: "NotInterested" },
+        { status: "Deal Cancelled" },
+        { dealStatus: "Deal Cancelled" }
+      ]
+    };
+    if (sourceFilter && sourceFilter !== "Daily Request") match.source = sourceFilter;
+    else if (sourceFilter === "Daily Request")             match.source = "Daily Request";
+    else                                                    match.source = { $ne: "Daily Request" };
+    if (scopeIds) match.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+    var DAY_MS = 86400000;
+    var nowDate = new Date();
+
+    var groups = await Lead.aggregate([
+      { $match: match },
+      { $addFields: { lastContact: { $ifNull: ["$lastActivityTime", "$createdAt"] }}},
+      { $addFields: { ageDays: { $divide: [{ $subtract: [nowDate, "$lastContact"] }, DAY_MS] }}},
+      { $addFields: {
+          bucketKey: { $switch: {
+            branches: [
+              { case: { $gte: ["$ageDays", 14] }, then: "over14" },
+              { case: { $gte: ["$ageDays", 7]  }, then: "days7to14" },
+              { case: { $gte: ["$ageDays", 3]  }, then: "days3to7" }
+            ],
+            default: "under3"
+          }}
+      }},
+      { $group: { _id: "$bucketKey", count: { $sum: 1 }}}
+    ]);
+
+    var buckets = { over14: 0, days7to14: 0, days3to7: 0, under3: 0 };
+    var total = 0;
+    groups.forEach(function(g){
+      if (g && g._id in buckets) {
+        buckets[g._id] = Number(g.count) || 0;
+        total += buckets[g._id];
+      }
+    });
+
+    res.json({
+      buckets: buckets,
+      filters: {
+        over14:    { type: "aging", ageMin: 14 },
+        days7to14: { type: "aging", ageMin: 7,  ageMax: 14 },
+        days3to7:  { type: "aging", ageMin: 3,  ageMax: 7 },
+        under3:    { type: "aging",             ageMax: 3 }
+      },
+      total: total,
+      asOf: nowDate.toISOString()
+    });
+  } catch (e) {
+    console.error("[reports/overview/aging]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "aging_failed" });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);
