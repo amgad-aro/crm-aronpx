@@ -6268,10 +6268,20 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
       // with the matching $lookup + isContactedRaw pair in:
       //   - /api/reports/overview/funnel               (this endpoint)
       //   - /api/reports/agents/:id/stage-progression
-      // /api/reports/overview/aging shares the diff-gated history
-      // events but DELIBERATELY uses the broader 5-type whitelist —
-      // see the NOTE above. Don't "harmonise" by adding "note" back
-      // here, and don't drop "note" from aging.
+      // /api/reports/overview/aging DELIBERATELY DIVERGES on TWO axes:
+      //   (a) Activity-type whitelist: aging uses 5 types (adds "note"),
+      //       boolean consumers here use 4 types. Auto-note from FB
+      //       webhook would inflate the boolean to 100%; timestamp
+      //       consumer is fine.
+      //   (b) History-event whitelist: aging uses 2 events
+      //       [status_changed, feedback_added], boolean consumers here
+      //       use 3 events (also include callback_scheduled). Aging's
+      //       question is "when was this lead actually touched?" and
+      //       rescheduling alone is not customer progress; the boolean
+      //       answers "did contact happen?" and rescheduling counts as
+      //       a customer-care signal.
+      // Don't "harmonise" either axis — boolean and timestamp consumers
+      // are answering different questions about the same data.
       //
       // Editing one of the funnel/stage-progression pair without the
       // other reintroduces the original inflation bug where rotation
@@ -6931,11 +6941,21 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
 //
 // "Last contact" — UNION of two real-contact signals:
 //   (1) max lead.history[].timestamp where event IN
-//       [status_changed, feedback_added, callback_scheduled]. The PUT
-//       /api/leads/:id handler emits these three events DIFF-GATED:
-//       only fires when the underlying field actually changed (status,
-//       lastFeedback, callbackTime). So agents who edit through the lead
-//       form — without ever clicking "Log Activity" — register here.
+//       [status_changed, feedback_added]. The PUT /api/leads/:id handler
+//       emits these events DIFF-GATED: only fires when the underlying
+//       field actually changed (status, lastFeedback). So agents who edit
+//       through the lead form — without ever clicking "Log Activity" —
+//       register here.
+//
+//       callback_scheduled is DELIBERATELY EXCLUDED. The handler emits
+//       it on every reschedule (`oldLead.callbackTime !== req.body.callbackTime`),
+//       so agents rescheduling a callback over and over — without ever
+//       reaching the customer — were keeping leads pinned in `under3`
+//       indefinitely. Diagnostic on 2026-05-05 found 425 active leads
+//       with 10+ callback_scheduled events and one with 46. Aging now
+//       counts callback rescheduling as a non-event. The boolean
+//       isContactedRaw consumers (funnel + stage-progression) KEEP
+//       callback_scheduled — see SYNC INVARIANT note below.
 //   (2) max Activity.createdAt for the current holder against this lead,
 //       scoped to explicit contact types (call, meeting, followup, email,
 //       note). Covers the "Log Activity" button path which doesn't write
@@ -7017,7 +7037,11 @@ app.get("/api/reports/overview/aging", auth, reportsAuth, async function(req, re
             input: { $filter: {
               input: { $ifNull: ["$history", []] },
               as: "h",
-              cond: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
+              // 2-event whitelist (no "callback_scheduled") — see NOTE in
+              // header comment above. Aging answers "when was this lead
+              // last touched?" and rescheduling alone (without reaching
+              // the customer) shouldn't reset the clock.
+              cond: { $in: ["$$h.event", ["status_changed", "feedback_added"]] }
             }},
             as: "h",
             in: "$$h.timestamp"
@@ -9074,8 +9098,10 @@ app.get("/api/reports/agents/:id/stage-progression", auth, reportsAuth, async fu
       // Real-contact existence check — feeds isContactedRaw below.
       // See the SYNC INVARIANT + "note"-exclusion NOTE at the matching
       // $lookup in /api/reports/overview/funnel for the full
-      // rationale. Aging keeps "note" by design; this endpoint and
-      // funnel deliberately drop it.
+      // rationale. Aging deliberately diverges from this endpoint on
+      // two axes: it ADDS "note" to the Activity whitelist and DROPS
+      // "callback_scheduled" from the history whitelist. Don't
+      // harmonise either axis.
       { $lookup: {
           from: "activities",
           let: { lid: "$_id" },

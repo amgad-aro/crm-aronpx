@@ -8991,7 +8991,7 @@ var LeadAgingBuckets = function(p) {
 
   var headerRow = <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:4 }}>
     <div style={{ fontSize:13, fontWeight:700 }}>⏱️ Lead Aging</div>
-    <div title="Last contact = the agent's most recent meaningful action — a status change, feedback note, callback scheduled, or logged activity (call/meeting/etc). If none of those have happened since the agent took the lead, we show how long they've held it untouched."
+    <div title="Last contact = the agent's most recent meaningful action — a status change, a feedback note, or a logged activity (call / meeting / followup / email / note). Rescheduling a callback by itself is NOT counted, since rescheduling without reaching the customer isn't real progress. If none of these have happened since the agent took the lead, we show how long they've held it untouched."
          style={{ fontSize:11, color:C.textLight, cursor:"help" }}>ⓘ</div>
   </div>;
 
