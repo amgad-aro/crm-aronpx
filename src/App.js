@@ -9921,10 +9921,9 @@ var ReportsAgentsBody = function(p) {
   var agents = (agentList.data && agentList.data.agents) || [];
   var selectedAgent = agents.find(function(a){ return String(a.id) === String(selectedAgentId); });
 
-  // Remaining placeholders — Slice 1 fills the first ("kpis") slot with
-  // AgentKpiRow; the other 5 land in upcoming slices.
+  // Remaining placeholders — Slice 1 filled the kpis slot, Slice 2 the
+  // radar slot; the other 4 land in upcoming slices.
   var sections = [
-    { key:"radar",            title:"Performance radar",            height:300 },
     { key:"heatmap",          title:"Activity heatmap",             height:240 },
     { key:"stageProgression", title:"Stage progression funnel",     height:240 },
     { key:"recentDeals",      title:"Recent deals",                 height:200 },
@@ -9956,6 +9955,8 @@ var ReportsAgentsBody = function(p) {
     </Card>
 
     <AgentKpiRow filters={f} token={p.token} agentId={selectedAgentId}/>
+
+    <AgentRadarChart filters={f} token={p.token} agentId={selectedAgentId}/>
 
     {sections.map(function(s){
       return <Card key={s.key} style={{ marginBottom:14, padding:"14px 16px", minHeight:s.height, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
@@ -10068,6 +10069,166 @@ var AgentKpiRow = function(p) {
   return <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:10, marginBottom:14 }}>
     {cards.map(function(c){ return <AgentKpiCard key={c.id} card={c} skeleton={skel} peerCount={pc}/>; })}
   </div>;
+};
+
+// Geometry helpers shared across the radar component. 5-vertex regular
+// pentagon, vertex 0 at the top (12 o'clock), going clockwise. SVG y-axis
+// is inverted (positive = down), so sin(-π/2) = -1 puts vertex 0 above
+// the centre as desired.
+var RADAR_SIZE = 280;
+var RADAR_CX = 140;
+var RADAR_CY = 140;
+var RADAR_R = 90;       // 100% guide-ring radius
+var RADAR_LABEL_R = 112; // label centre — outside the 100% ring
+var radarVertexAngle = function(i) { return -Math.PI / 2 + (i * 2 * Math.PI / 5); };
+var radarVertexAt = function(i, scale) {
+  var ang = radarVertexAngle(i);
+  return { x: RADAR_CX + RADAR_R * scale * Math.cos(ang), y: RADAR_CY + RADAR_R * scale * Math.sin(ang) };
+};
+var radarPentagonPoints = function(scale) {
+  return [0,1,2,3,4].map(function(i){ var v = radarVertexAt(i, scale); return v.x.toFixed(1) + "," + v.y.toFixed(1); }).join(" ");
+};
+var radarLabelPos = function(i) {
+  var ang = radarVertexAngle(i);
+  return { x: RADAR_CX + RADAR_LABEL_R * Math.cos(ang), y: RADAR_CY + RADAR_LABEL_R * Math.sin(ang) };
+};
+var radarLabelAnchor = function(i) {
+  var cx = Math.cos(radarVertexAngle(i));
+  return Math.abs(cx) < 0.3 ? "middle" : (cx > 0 ? "start" : "end");
+};
+var radarLabelBaseline = function(i) {
+  var sy = Math.sin(radarVertexAngle(i));
+  return Math.abs(sy) < 0.3 ? "central" : (sy > 0 ? "hanging" : "auto");
+};
+
+var AgentRadarChart = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var [hoverIdx, setHoverIdx] = useState(null);
+  var f = p.filters;
+  var agentId = p.agentId;
+
+  useEffect(function(){
+    if (!agentId) { setState({ loading: false, data: null, error: null }); return; }
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    setHoverIdx(null);
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.team) qs += "&team=" + encodeURIComponent(f.team);
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    apiFetch("/api/reports/agents/" + agentId + "/radar" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [agentId, f.from, f.to, f.team, f.source]);
+
+  if (!agentId) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px", minHeight:300, background:"#FAFBFC", border:"1px dashed #E2E8F0", display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div style={{ fontSize:12, color:C.textLight }}>Select an agent to see the performance radar</div>
+    </Card>;
+  }
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load radar: {state.error}</div>
+    </Card>;
+  }
+
+  var skel = state.loading || !state.data;
+  var data = state.data || {};
+  var axes = (data.axes || []);
+  var peerCount = data.peerCount || 0;
+  var hasPeers = peerCount > 0 && axes.length === 5;
+
+  // Tooltip formatters per axis key — match Slice 1's KPI-row formatting
+  // so the user sees the same units.
+  var fmtPct   = function(v){ return v == null ? "—" : (Number(v) || 0).toFixed(1) + "%"; };
+  var fmtHours = function(v){ if (v == null) return "—"; var n = Number(v) || 0; return n < 1 ? n.toFixed(1) + " h" : (Math.round(n * 10) / 10) + " h"; };
+  var fmtNum   = function(v){ return v == null ? "—" : (Number(v) || 0).toLocaleString(); };
+  var axisFormatters = { revenue: fmtEGP, deals: fmtNum, conversionPct: fmtPct, activities: fmtNum, responseHours: fmtHours };
+
+  // Polygon points — agent vertex i scaled by its percentile (null → 0,
+  // collapses to centre, tooltip explains). Peer median polygon is a
+  // pentagon at uniform 50% scale by definition.
+  var agentPoints = hasPeers ? axes.map(function(a, i){
+    var pct = a.agentPercentile != null ? a.agentPercentile : 0;
+    var v = radarVertexAt(i, pct / 100);
+    return v.x.toFixed(1) + "," + v.y.toFixed(1);
+  }).join(" ") : "";
+  var medianPoints = radarPentagonPoints(0.5);
+
+  var anyLowSample = axes.some(function(a){ return a.lowSample; });
+  var hover = hoverIdx != null ? axes[hoverIdx] : null;
+  var hoverPos = hoverIdx != null ? radarVertexAt(hoverIdx, ((hover && hover.agentPercentile) != null ? hover.agentPercentile : 0) / 100) : null;
+
+  return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+    <div style={{ fontSize:12, fontWeight:700, color:C.text, marginBottom:6 }}>
+      Performance radar{data.agentName ? " — " + data.agentName : ""}
+    </div>
+    {skel ? <div style={{ height: RADAR_SIZE, display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <svg width={RADAR_SIZE} height={RADAR_SIZE} viewBox={"0 0 " + RADAR_SIZE + " " + RADAR_SIZE} style={{ opacity:0.5 }}>
+        {[0.25, 0.5, 0.75, 1].map(function(s){
+          return <polygon key={s} points={radarPentagonPoints(s)} fill="none" stroke="#E2E8F0" strokeWidth={s === 1 ? 1.5 : 0.8} strokeDasharray={s === 1 ? "" : "2 2"}/>;
+        })}
+      </svg>
+    </div> : !hasPeers ? <div style={{ height: RADAR_SIZE, display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, fontSize:12 }}>
+      No peer data for radar — need at least one same-role peer
+    </div> : <div style={{ position:"relative", display:"flex", justifyContent:"center" }}>
+      <svg width={RADAR_SIZE} height={RADAR_SIZE} viewBox={"0 0 " + RADAR_SIZE + " " + RADAR_SIZE}>
+        {/* Concentric guide rings — pentagonal, matching the polygon shape. */}
+        {[0.25, 0.5, 0.75, 1].map(function(s){
+          return <polygon key={s} points={radarPentagonPoints(s)} fill="none" stroke="#E2E8F0" strokeWidth={s === 1 ? 1.5 : 0.8} strokeDasharray={s === 1 ? "" : "2 2"}/>;
+        })}
+        {/* Axis spokes from centre to each vertex. */}
+        {[0,1,2,3,4].map(function(i){
+          var v = radarVertexAt(i, 1);
+          return <line key={i} x1={RADAR_CX} y1={RADAR_CY} x2={v.x} y2={v.y} stroke="#E2E8F0" strokeWidth={0.8}/>;
+        })}
+        {/* Peer median polygon — drawn first so the agent polygon sits on top. */}
+        <polygon points={medianPoints} fill="rgba(148, 163, 184, 0.18)" stroke="#94A3B8" strokeWidth={1}/>
+        {/* Agent polygon. */}
+        <polygon points={agentPoints} fill="rgba(139, 92, 246, 0.32)" stroke="#8B5CF6" strokeWidth={1.5}/>
+        {/* Vertex dots — the hover/tap target. r=5 for an easy hit area. */}
+        {axes.map(function(a, i){
+          var pct = a.agentPercentile != null ? a.agentPercentile : 0;
+          var v = radarVertexAt(i, pct / 100);
+          return <circle key={a.key} cx={v.x} cy={v.y} r={5} fill="#8B5CF6" stroke="#fff" strokeWidth={1.5} style={{ cursor:"pointer" }}
+            onMouseEnter={function(){ setHoverIdx(i); }} onMouseLeave={function(){ setHoverIdx(null); }}
+            onClick={function(){ setHoverIdx(hoverIdx === i ? null : i); }}/>;
+        })}
+        {/* Axis labels — outside the 100% ring; asterisk on low-sample axes. */}
+        {axes.map(function(a, i){
+          var lp = radarLabelPos(i);
+          return <text key={a.key} x={lp.x} y={lp.y} textAnchor={radarLabelAnchor(i)} dominantBaseline={radarLabelBaseline(i)}
+            fontSize={11} fontWeight={600} fill={C.text}>
+            {a.label}{a.lowSample ? " *" : ""}
+          </text>;
+        })}
+      </svg>
+      {hover && hoverPos && <div style={{
+        position:"absolute",
+        left: Math.min(RADAR_SIZE - 140, Math.max(0, hoverPos.x + 12)),
+        top:  Math.max(0, hoverPos.y - 38),
+        background:"#1F2937", color:"#fff", padding:"6px 10px", borderRadius:6,
+        fontSize:11, lineHeight:1.4, pointerEvents:"none", zIndex:5,
+        boxShadow:"0 2px 8px rgba(0,0,0,0.18)", whiteSpace:"nowrap"
+      }}>
+        <div style={{ fontWeight:700 }}>{hover.label}</div>
+        <div>Value: {(axisFormatters[hover.key] || fmtNum)(hover.agentValue)}</div>
+        <div>Percentile: {hover.agentPercentile != null ? Math.round(hover.agentPercentile) + "%" : "—"}{hover.lowSample ? " (low sample)" : ""}</div>
+      </div>}
+    </div>}
+    {/* Legend + low-sample footnote */}
+    {!skel && hasPeers && <div style={{ display:"flex", gap:14, fontSize:10, color:C.textLight, marginTop:6, justifyContent:"center", flexWrap:"wrap" }}>
+      <span style={{ display:"inline-flex", alignItems:"center", gap:5 }}>
+        <span style={{ width:10, height:10, borderRadius:2, background:"rgba(139, 92, 246, 0.45)", border:"1px solid #8B5CF6" }}/>
+        Selected agent
+      </span>
+      <span style={{ display:"inline-flex", alignItems:"center", gap:5 }}>
+        <span style={{ width:10, height:10, borderRadius:2, background:"rgba(148, 163, 184, 0.3)", border:"1px solid #94A3B8" }}/>
+        Peer median (50th percentile)
+      </span>
+      {anyLowSample && <span>* low sample — under 3 peers with data, or no spread</span>}
+    </div>}
+  </Card>;
 };
 
 // ===== PROJECTS =====
