@@ -9558,8 +9558,10 @@ app.get("/api/admin/funnel-dr-diagnose", auth, async function(req, res) {
 
     // Lead-side: mirror the live funnel's leadAgg verbatim — diff-gated
     // history events + Activity-existence lookup, then forward-superset OR.
-    // We need leadAggTotal and leadAggContacted to compute the headline-
-    // impact counterfactuals.
+    // Returns PER-DOC rows (not grouped). leadAggTotal/leadAggContacted
+    // are derived from the array length + isContacted filter in JS, and
+    // the same array feeds the leadSideDetail block (per-doc reason
+    // classification, anomaly sort, top-100 dump).
     var leadAggP = Lead.aggregate([
       { $match: leadMatch },
       { $lookup: {
@@ -9574,6 +9576,23 @@ app.get("/api/admin/funnel-dr-diagnose", auth, async function(req, res) {
             { $project: { _id: 1 } }
           ],
           as: "contactActs"
+      }},
+      { $addFields: {
+          // Distinct SET of gated events that appeared in this lead's
+          // history. $setIntersection deduplicates — if callback_scheduled
+          // fired 12 times it appears once. This lets the per-doc
+          // classification distinguish "callback_scheduled-only" leads
+          // (boolean-side residual of the same callback-gaming bug) from
+          // "real-event" leads (status_changed / feedback_added present).
+          gatedEvents: { $setIntersection: [
+            { $map: {
+                input: { $ifNull: ["$history", []] },
+                as: "h",
+                in: "$$h.event"
+            }},
+            ["status_changed", "feedback_added", "callback_scheduled"]
+          ]},
+          hasContactActivity: { $gt: [{ $size: "$contactActs" }, 0] }
       }},
       { $addFields: {
           isDealRaw: { $and: [
@@ -9596,21 +9615,18 @@ app.get("/api/admin/funnel-dr-diagnose", auth, async function(req, res) {
             { $eq: ["$status", "MeetingDone"] }
           ]},
           isContactedRaw: { $or: [
-            { $anyElementTrue: { $map: {
-                input: { $ifNull: ["$history", []] },
-                as: "h",
-                in: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
-            }}},
-            { $gt: [{ $size: "$contactActs" }, 0] }
+            { $gt: [{ $size: "$gatedEvents" }, 0] },
+            "$hasContactActivity"
           ]}
       }},
       { $addFields: {
           isContacted: { $or: ["$isContactedRaw", "$isMeetingRaw", "$isEoiRaw", "$isDealRaw"] }
       }},
-      { $group: {
-          _id: null,
-          total:     { $sum: 1 },
-          contacted: { $sum: { $cond: ["$isContacted", 1, 0] }}
+      { $project: {
+          _id: 1, name: 1, status: 1, createdAt: 1,
+          isDealRaw: 1, isEoiRaw: 1, isMeetingRaw: 1,
+          gatedEvents: 1, hasContactActivity: 1,
+          isContactedRaw: 1, isContacted: 1
       }}
     ]);
 
@@ -9695,7 +9711,7 @@ app.get("/api/admin/funnel-dr-diagnose", auth, async function(req, res) {
     ]);
 
     var parts = await Promise.all([leadAggP, drAggP]);
-    var leadR = (parts[0] || [])[0] || {};
+    var leadDocs = parts[0] || [];
     var drFacet = (parts[1] || [])[0] || {};
     var drR = ((drFacet.totals || [])[0]) || {};
     var drStatusHist = (drFacet.statusHistogram || []).map(function(g){
@@ -9705,8 +9721,111 @@ app.get("/api/admin/funnel-dr-diagnose", auth, async function(req, res) {
     function n(o, k){ return Number(o && o[k]) || 0; }
     function pct(num, denom){ return denom > 0 ? Math.round(1000 * num / denom) / 10 : 0; }
 
-    var leadAggTotal     = n(leadR, "total");
-    var leadAggContacted = n(leadR, "contacted");
+    // Classify each Lead-side doc by WHICH path made isContacted true.
+    // Mutually exclusive — first matching branch wins. Order is important:
+    // forward-superset is checked AFTER history/activity so that a lead
+    // with both gated history AND a downstream stage classifies as
+    // "history+activity"-style (real signal), not "forward-superset-only".
+    function classifyLead(l) {
+      if (!l.isContacted) return "not-contacted";
+      var hasGated = (l.gatedEvents || []).length > 0;
+      var hasAct   = !!l.hasContactActivity;
+      if (hasGated && hasAct) return "history+activity";
+      if (hasGated) {
+        var ev = l.gatedEvents || [];
+        var onlyCb = ev.length === 1 && ev[0] === "callback_scheduled";
+        return onlyCb ? "history-only-cb-only" : "history-only-status-or-feedback";
+      }
+      if (hasAct) return "activity-only";
+      // No gated history, no contact activity. If a downstream raw flag
+      // fired, the forward-superset OR is what flipped isContacted.
+      if (l.isMeetingRaw || l.isEoiRaw || l.isDealRaw) return "forward-superset-only";
+      // Smoking gun: isContacted true but none of the above. Should be 0.
+      return "none-but-flagged-anyway";
+    }
+
+    // Anomaly priority for the per-doc dump sort. Lower = surfaces first.
+    function anomalyRankOf(l, reason) {
+      if (l.status === "NewLead" && reason !== "history+activity"
+          && reason !== "history-only-status-or-feedback"
+          && reason !== "activity-only") return 1;       // NewLead with no real signal
+      if (reason === "none-but-flagged-anyway")          return 2;
+      if (reason === "forward-superset-only")            return 3;
+      if (reason === "history-only-cb-only")             return 4;
+      return 5;
+    }
+
+    var leadAggTotal     = leadDocs.length;
+    var leadAggContacted = 0;
+    var byStatus = {};
+    var byContactedReason = {
+      "history+activity":                   0,
+      "history-only-status-or-feedback":    0,
+      "history-only-cb-only":               0,
+      "activity-only":                      0,
+      "forward-superset-only":              0,
+      "none-but-flagged-anyway":            0,
+      "not-contacted":                      0
+    };
+    var newLeadButFlagged = [];
+
+    var classified = leadDocs.map(function(l){
+      var reason = classifyLead(l);
+      byStatus[l.status || "(null)"] = (byStatus[l.status || "(null)"] || 0) + 1;
+      byContactedReason[reason] = (byContactedReason[reason] || 0) + 1;
+      if (l.isContacted) leadAggContacted++;
+      // newLeadButFlagged — status=NewLead AND isContacted true AND no
+      // signals at all (smoking gun for a true bug, separate from the
+      // expected "leads got progressed past NewLead" path).
+      if (l.status === "NewLead" && l.isContacted) {
+        var hasGated = (l.gatedEvents || []).length > 0;
+        var hasAct   = !!l.hasContactActivity;
+        if (!hasGated && !hasAct && !l.isMeetingRaw && !l.isEoiRaw && !l.isDealRaw) {
+          newLeadButFlagged.push({
+            leadId: String(l._id),
+            name: l.name || "(no name)",
+            createdAt: l.createdAt
+          });
+        }
+      }
+      return {
+        l: l,
+        reason: reason,
+        rank: anomalyRankOf(l, reason)
+      };
+    });
+
+    // Sort: anomaly rank ASC (most-suspicious first), then createdAt DESC.
+    classified.sort(function(a, b){
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      var ad = a.l.createdAt ? +new Date(a.l.createdAt) : 0;
+      var bd = b.l.createdAt ? +new Date(b.l.createdAt) : 0;
+      return bd - ad;
+    });
+
+    var leadSideDetailRows = classified.slice(0, 100).map(function(c){
+      var l = c.l;
+      return {
+        leadId: String(l._id),
+        name: l.name || "(no name)",
+        status: l.status || "(null)",
+        createdAt: l.createdAt,
+        rawFlags: {
+          isDealRaw:      !!l.isDealRaw,
+          isEoiRaw:       !!l.isEoiRaw,
+          isMeetingRaw:   !!l.isMeetingRaw,
+          isContactedRaw: !!l.isContactedRaw
+        },
+        isContactedRawBreakdown: {
+          hasGatedHistory:    (l.gatedEvents || []).length > 0,
+          gatedEvents:        l.gatedEvents || [],
+          hasContactActivity: !!l.hasContactActivity
+        },
+        isContacted: !!l.isContacted,
+        contactedReason: c.reason
+      };
+    });
+
     var drAggTotal       = n(drR,   "total");
     var drContactedLoose = n(drR,   "contactedLoose");
     var drContactedC2    = n(drR,   "contactedC2only");
@@ -9743,6 +9862,16 @@ app.get("/api/admin/funnel-dr-diagnose", auth, async function(req, res) {
           callbackTimeNonEmpty: n(drR, "c4Only")
         },
         drStatusHistogram: drStatusHist
+      },
+      leadSideDetail: {
+        summary: {
+          byStatus: byStatus,
+          byContactedReason: byContactedReason,
+          newLeadButFlagged: newLeadButFlagged
+        },
+        leads: leadSideDetailRows,
+        leadsTruncated: classified.length > leadSideDetailRows.length,
+        leadsTotal: classified.length
       },
       headlineImpact: {
         currentFunnel: {
