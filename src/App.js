@@ -2755,6 +2755,19 @@ var LeadsPage = function(p) {
   var [sourceFilter, setSourceFilter] = useState("");
   var [campaignMode, setCampaignMode] = useState("all"); // "all" | "has" | "none" | "contains"
   var [campaignText, setCampaignText] = useState("");
+  // Defensive memo (2026-05-06): scan p.leads for legacy source values just
+  // once per leads-array reference change instead of every render. Was an
+  // inline IIFE in the source filter dropdown — ran on every keystroke,
+  // every modal open, every selection toggle. Suspected contributor to the
+  // dropdown-flicker symptom; cheap to memoize regardless.
+  var sourceFilterLegacyList = useMemo(function(){
+    var seenS = {};
+    SOURCES.forEach(function(s){ seenS[s] = true; });
+    HIDDEN_LEGACY_SOURCES.forEach(function(s){ seenS[s] = true; });
+    var legacyMap = {};
+    (p.leads || []).forEach(function(l){ if (l.source && !seenS[l.source]) legacyMap[l.source] = true; });
+    return Object.keys(legacyMap).sort();
+  }, [p.leads]);
   var [panelHistory, setPanelHistory] = useState([]);
   var [dateRange, setDateRange] = useState("all"); // today | yesterday | week | month | quarter | all
   var fileRef = useRef(null);
@@ -3478,7 +3491,11 @@ var LeadsPage = function(p) {
         retag, picks a canonical source from the dropdown, confirms. */}
     <Modal show={showBulkSource} onClose={function(){setShowBulkSource(false);setBulkSource("");}} title={"Change source for " + selected2.length + " lead" + (selected2.length===1?"":"s")}>
       <div style={{ marginBottom:14, padding:"10px 14px", background:"#F5F3FF", borderRadius:10, fontSize:13, color:"#5B21B6" }}>{selected2.length} lead{selected2.length===1?"":"s"} selected</div>
-      {(function(){
+      {/* Defensive guard (2026-05-06): IIFE only runs when modal is open.
+          React evaluates JSX children expressions to compute the children
+          prop even when Modal returns null, so without this guard the
+          O(N×M) scan over p.leads × selected2 ran on every parent render. */}
+      {showBulkSource && (function(){
         var counts = {};
         var selectedLeads = (p.leads || []).filter(function(l){return selected2.indexOf(gid(l)) >= 0;});
         selectedLeads.forEach(function(l){
@@ -3579,26 +3596,17 @@ var LeadsPage = function(p) {
           }
           setLockedOnly(!lockedOnly);
         }} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:lockedOnly?"#EC4899":"#E8ECF1", background:lockedOnly?"#FCE7F3":"#fff", color:lockedOnly?"#BE185D":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>🔒 Locked Only{lockedOnly?" ("+filtered.length+")":""}</button>}
-        {isOnlyAdmin&&(function(){
-          // Source filter dropdown — "All sources" + canonical SOURCES +
-          // any legacy values currently present in the visible lead set
-          // (e.g. "Instagram", "Snap Chat", lowercase "facebook" from
-          // /api/leads/inbound). Mirrors buildSourceOptions's "(legacy)"
-          // suffix convention so admin can isolate the cleanup cohorts.
-          // HIDDEN_LEGACY_SOURCES values (e.g. "Daily Request") are
-          // suppressed — see the const definition for rationale.
-          var seenS = {};
-          SOURCES.forEach(function(s){ seenS[s] = true; });
-          HIDDEN_LEGACY_SOURCES.forEach(function(s){ seenS[s] = true; });
-          var legacyMap = {};
-          (p.leads || []).forEach(function(l){ if (l.source && !seenS[l.source]) legacyMap[l.source] = true; });
-          var legacyList = Object.keys(legacyMap).sort();
-          return <select value={sourceFilter} onChange={function(e){setLockedOnly(false);setSourceFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
-            <option value="">📡 All sources</option>
-            {SOURCES.map(function(s){return <option key={s} value={s}>{s}</option>;})}
-            {legacyList.map(function(s){return <option key={s} value={s}>{s} (legacy)</option>;})}
-          </select>;
-        })()}
+        {isOnlyAdmin&&<select value={sourceFilter} onChange={function(e){setLockedOnly(false);setSourceFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+          {/* Source filter dropdown — "All sources" + canonical SOURCES +
+              any legacy values currently present in the visible lead set
+              (Instagram, "Snap Chat", lowercase "facebook" from
+              /api/leads/inbound). HIDDEN_LEGACY_SOURCES values (e.g.
+              "Daily Request") are suppressed — see the const for rationale.
+              Legacy list is memoized via sourceFilterLegacyList — see hook. */}
+          <option value="">📡 All sources</option>
+          {SOURCES.map(function(s){return <option key={s} value={s}>{s}</option>;})}
+          {sourceFilterLegacyList.map(function(s){return <option key={s} value={s}>{s} (legacy)</option>;})}
+        </select>}
         {isOnlyAdmin&&<select value={campaignMode} onChange={function(e){setLockedOnly(false);setCampaignMode(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
           <option value="all">📣 All campaigns</option>
           <option value="has">Has campaign</option>
