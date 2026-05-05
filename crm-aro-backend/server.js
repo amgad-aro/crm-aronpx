@@ -4491,6 +4491,168 @@ app.post("/api/admin/cleanup-duplicates", auth, adminOnly, async function(req, r
   }
 });
 
+// ====================================================================
+// TEMPORARY DIAGNOSTIC — REMOVE IN CLEANUP COMMIT
+// ====================================================================
+// GET /api/admin/source-data-diagnose
+// Read-only audit of lead source distribution across Lead + DailyRequest,
+// investigating the reported data-quality issue: leads from TikTok / Snapchat
+// / WhatsApp showing up with source="Facebook". Two prime suspects:
+//   (a) Make.com scenarios routing social-platform leads through
+//       /api/fb-webhook (server.js:5267) which hardcodes source:"Facebook",
+//       instead of /api/leads/inbound (server.js:2434) which respects
+//       body.source.
+//   (b) Agents manually selecting "Facebook" in the Add Lead modal
+//       regardless of true source — schema default is "Facebook" too
+//       (server.js:68), so any silent fallback also lands here.
+//
+// No writes. No $convert guards needed: every field touched is schema-typed
+// String — no Mongoose-Mixed sub-arrays in scope.
+//
+// Auth: admin / sales_admin only.
+// Browser-console call:
+//   fetch("https://crm-aro-backend-production.up.railway.app/api/admin/source-data-diagnose", {
+//     headers: { Authorization: "Bearer " + JSON.parse(localStorage.getItem("crm_aro_session")).token }
+//   }).then(r => r.json()).then(d => console.log(JSON.stringify(d, null, 2)));
+//
+// REMOVE WHEN INVESTIGATION CLOSES.
+// ====================================================================
+app.get("/api/admin/source-data-diagnose", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+
+    var totalLeads = await Lead.countDocuments({});
+
+    // sourceDistribution — every distinct value of Lead.source.
+    var sourceAgg = await Lead.aggregate([
+      { $group: { _id: { $ifNull: ["$source", ""] }, count: { $sum: 1 }}},
+      { $sort: { count: -1 }}
+    ]);
+    var sourceDistribution = sourceAgg.map(function(r){
+      return {
+        source: r._id || "(empty)",
+        count: r.count,
+        pctOfTotal: totalLeads > 0 ? Math.round(r.count / totalLeads * 1000) / 10 : 0
+      };
+    });
+
+    // drSourceDistribution — same shape for DailyRequest. DR's schema default
+    // is "Daily Request" so the bucket should be near-uniform; flagging any
+    // unexpected values here would suggest manual data drift on that surface.
+    var drAgg = await DailyRequest.aggregate([
+      { $group: { _id: { $ifNull: ["$source", ""] }, count: { $sum: 1 }}},
+      { $sort: { count: -1 }}
+    ]);
+    var drSourceDistribution = drAgg.map(function(r){
+      return { source: r._id || "(empty)", count: r.count };
+    });
+
+    // facebookLeads — drill into the suspect bucket. Case-insensitive match
+    // because /api/fb-webhook writes "Facebook" (capitalized) while
+    // /api/leads/inbound lowercases body.source — both feed the same logical
+    // pool from a reporting standpoint.
+    var fbMatch = { source: { $regex: "^facebook$", $options: "i" }};
+    var fbTotal = await Lead.countDocuments(fbMatch);
+
+    var fbMonthAgg = await Lead.aggregate([
+      { $match: fbMatch },
+      { $group: {
+          _id: { $dateToString: { format: "%Y-%m", date: "$createdAt" }},
+          count: { $sum: 1 }
+        }},
+      { $sort: { _id: 1 }}
+    ]);
+    var byMonth = fbMonthAgg.map(function(r){ return { month: r._id, count: r.count }; });
+
+    var fbWithCampaign = await Lead.countDocuments(
+      Object.assign({}, fbMatch, { campaign: { $ne: "" }})
+    );
+
+    var fbCampaignAgg = await Lead.aggregate([
+      { $match: Object.assign({}, fbMatch, { campaign: { $ne: "" }}) },
+      { $group: { _id: "$campaign", count: { $sum: 1 }}},
+      { $sort: { count: -1 }},
+      { $limit: 20 }
+    ]);
+    var uniqueCampaignNames = fbCampaignAgg.map(function(r){
+      return { campaign: r._id, count: r.count };
+    });
+
+    // potentialMisclassification — heuristic counts of Facebook-tagged leads
+    // whose free-text fields (campaign / notes / adName / adsetName) name a
+    // different platform. Counts may overlap (same lead in multiple buckets);
+    // manual review required before any auto-correct.
+    var anyTextField = function(re){
+      return { $or: [
+        { campaign:  re },
+        { notes:     re },
+        { adName:    re },
+        { adsetName: re }
+      ]};
+    };
+    var iRegex = function(pat){ return { $regex: pat, $options: "i" }; };
+
+    var leadsWithTikTokIndicators = await Lead.countDocuments(
+      { $and: [fbMatch, anyTextField(iRegex("tiktok"))] }
+    );
+    var leadsWithSnapchatIndicators = await Lead.countDocuments(
+      { $and: [fbMatch, anyTextField(iRegex("snapchat"))] }
+    );
+    var leadsWithWhatsAppPattern = await Lead.countDocuments(
+      { $and: [fbMatch, anyTextField(iRegex("whatsapp"))] }
+    );
+
+    // fieldsAvailable — manifest of which fields a real source-attribution
+    // flow could rely on, with live coverage counts for the Facebook bucket
+    // so the report itself shows whether the inbound webhook fields are
+    // actually being populated.
+    var fbWithExternalId = await Lead.countDocuments(
+      Object.assign({}, fbMatch, { externalId: { $ne: "" }})
+    );
+    var fbWithAdName = await Lead.countDocuments(
+      Object.assign({}, fbMatch, { adName: { $ne: "" }})
+    );
+    var fbWithAdsetName = await Lead.countDocuments(
+      Object.assign({}, fbMatch, { adsetName: { $ne: "" }})
+    );
+    var fbWithFormId = await Lead.countDocuments(
+      Object.assign({}, fbMatch, { formId: { $ne: "" }})
+    );
+    var fieldsAvailable = {
+      source:     "always set (schema default 'Facebook' — silent fallback when create-time omits the field)",
+      campaign:   "free-text — non-empty on " + fbWithCampaign + " of " + fbTotal + " Facebook leads",
+      externalId: "platform leadgen id, set by /api/leads/inbound — non-empty on " + fbWithExternalId + " of " + fbTotal,
+      formId:     "FB form id, set by /api/leads/inbound — non-empty on " + fbWithFormId + " of " + fbTotal,
+      adName:     "ad creative name, set by /api/leads/inbound — non-empty on " + fbWithAdName + " of " + fbTotal,
+      adsetName:  "adset name, set by /api/leads/inbound — non-empty on " + fbWithAdsetName + " of " + fbTotal,
+      notes:      "free text — FB webhook hardcodes 'Facebook Lead Ads' here (server.js:5318)"
+    };
+
+    res.json({
+      scope: { totalLeads: totalLeads },
+      sourceDistribution: sourceDistribution,
+      drSourceDistribution: drSourceDistribution,
+      facebookLeads: {
+        total: fbTotal,
+        byMonth: byMonth,
+        withCampaignName: fbWithCampaign,
+        uniqueCampaignNames: uniqueCampaignNames
+      },
+      potentialMisclassification: {
+        leadsWithWhatsAppPattern: leadsWithWhatsAppPattern,
+        leadsWithTikTokIndicators: leadsWithTikTokIndicators,
+        leadsWithSnapchatIndicators: leadsWithSnapchatIndicators,
+        notes: "Heuristics only — manual review needed. Counts Facebook-tagged leads whose campaign / notes / adName / adsetName matches the platform keyword (case-insensitive). Same lead may appear in multiple buckets."
+      },
+      fieldsAvailable: fieldsAvailable
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Bulk delete archived leads
 app.post("/api/leads/bulk-delete", auth, adminOnly, async function(req, res) {
   try {
