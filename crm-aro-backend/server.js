@@ -6298,14 +6298,62 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
                 // 4-type whitelist (no "note") — see NOTE above.
                 { $in: ["$type", ["call", "meeting", "followup", "email"]] }
             ]}}},
+            // Sort + limit:1 + project createdAt — ship at most one row,
+            // shaped { t: createdAt }. Dual-use: (a) downstream
+            // isContactedRaw uses $size > 0 for boolean existence,
+            // (b) earliestRealContactAt below uses $arrayElemAt to pull
+            // the timestamp for the dContact/dMeeting baseline.
+            { $sort: { createdAt: 1 }},
             { $limit: 1 },
-            { $project: { _id: 1 } }
+            { $project: { _id: 0, t: "$createdAt" }}
           ],
           as: "contactActs"
       }},
       // Derived timestamp helpers used by both stage flags and avg-days math.
       { $addFields: {
-          earliestLastActionAt: { $min: "$assignments.lastActionAt" },
+          // First-real-contact baseline for dContact/dMeeting. UNION-min of:
+          //   (1) earliest gated history event timestamp (status_changed,
+          //       feedback_added, callback_scheduled — diff-gated by the
+          //       PUT handler so they only fire on real field changes)
+          //   (2) earliest contact-type Activity timestamp (from $lookup
+          //       above — call/meeting/followup/email)
+          // Replaces the legacy earliestLastActionAt = $min(assignments
+          // .lastActionAt) which was rotation-engine pollution: each slice's
+          // lastActionAt is set at initial-assign and bumped on every
+          // rotation, so it measured "when did the rotation system touch
+          // this lead" rather than "when did the agent reach the customer".
+          // Diagnostic /api/admin/dcontact-diagnose (since removed) showed
+          // this shift dropped dContact median from 0.71d to 0.08d in
+          // production — the rotation auto-bump was inflating the metric
+          // ~9× faster than reality.
+          //
+          // TYPE GUARD: every timestamp source is wrapped in $convert with
+          // onError:null/onNull:null. Lead.history[] has no Mongoose schema
+          // (Mixed-typed sub-array) and a small subset of legacy entries
+          // carry timestamp as a string instead of Date. Without the guard,
+          // $min over [Date, string] returns the string (BSON type ordering
+          // puts strings below dates), and the downstream $subtract throws
+          // "can't $subtract date from string" — exactly what crashed the
+          // funnel post-08c994f and triggered the e6b1bd8 revert. $convert
+          // { to: "date" } accepts ISO strings, leaves Dates intact, and
+          // degrades malformed values to null (which $min correctly skips).
+          // Activity.createdAt also wrapped — defensive against any legacy
+          // migration script that bypassed Mongoose timestamps.
+          earliestRealContactAt: { $min: [
+            { $min: { $map: {
+              input: { $filter: {
+                input: { $ifNull: ["$history", []] },
+                as: "h",
+                cond: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
+              }},
+              as: "h",
+              in: { $convert: { input: "$$h.timestamp", to: "date", onError: null, onNull: null }}
+            }}},
+            { $convert: {
+                input: { $arrayElemAt: ["$contactActs.t", 0] },
+                to: "date", onError: null, onNull: null
+            }}
+          ]},
           eoiAt: { $cond: [
             { $and: [{ $ne: ["$eoiDate", ""] }, { $ne: ["$eoiDate", null] }] },
             { $toDate: "$eoiDate" },
@@ -6353,7 +6401,8 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
                 in: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
             }}},
             // 2. Any contact-type Activity on this lead — boolean
-            //    existence via the $lookup above (limit:1 in sub-pipeline).
+            //    existence via the $lookup above ($size > 0; the lookup
+            //    also ships the earliest createdAt for dContact/dMeeting).
             { $gt: [{ $size: "$contactActs" }, 0] }
           ]}
       }},
@@ -6365,22 +6414,26 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
           isContacted:  { $or: ["$isContactedRaw", "$isMeetingRaw", "$isEoiRaw", "$isDealRaw"] }
       }},
       { $addFields: {
+          // dContact/dMeeting now share the same baseline as isContactedRaw
+          // — both anchor to earliestRealContactAt (UNION-min of gated
+          // history events + earliest contact Activity timestamp). Same
+          // signal that flips the boolean is also what defines the timing.
           dContact: { $cond: [
             { $and: [
-              { $ne: ["$earliestLastActionAt", null] },
-              { $gte: [{ $subtract: ["$earliestLastActionAt", "$createdAt"] }, 0] }
+              { $ne: ["$earliestRealContactAt", null] },
+              { $gte: [{ $subtract: ["$earliestRealContactAt", "$createdAt"] }, 0] }
             ]},
-            { $divide: [{ $subtract: ["$earliestLastActionAt", "$createdAt"] }, DAY_MS] },
+            { $divide: [{ $subtract: ["$earliestRealContactAt", "$createdAt"] }, DAY_MS] },
             null
           ]},
           dMeeting: { $cond: [
             { $and: [
               { $eq: ["$hadMeeting", true] },
               { $ne: ["$meetingDoneAt", null] },
-              { $ne: ["$earliestLastActionAt", null] },
-              { $gte: [{ $subtract: ["$meetingDoneAt", "$earliestLastActionAt"] }, 0] }
+              { $ne: ["$earliestRealContactAt", null] },
+              { $gte: [{ $subtract: ["$meetingDoneAt", "$earliestRealContactAt"] }, 0] }
             ]},
-            { $divide: [{ $subtract: ["$meetingDoneAt", "$earliestLastActionAt"] }, DAY_MS] },
+            { $divide: [{ $subtract: ["$meetingDoneAt", "$earliestRealContactAt"] }, DAY_MS] },
             null
           ]},
           dEoi: { $cond: [
@@ -9534,270 +9587,6 @@ app.get("/api/reports/agents/:id/stuck-leads", auth, reportsAuth, async function
   } catch (e) {
     console.error("[reports/agents/:id/stuck-leads]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "agent_stuck_leads_failed" });
-  }
-});
-
-// =============================================================================
-// TEMPORARY DIAGNOSTIC — dContact / dMeeting avg-days audit (Phase 3 cleanup
-// Priority 3). Read-only, admin-only. Compares the live funnel's
-// earliestLastActionAt-based dContact and dMeeting to a proposed first-real-
-// contact baseline (UNION of gated history events + contact-type Activity
-// timestamps), so we can size the impact before swapping out the metric.
-// REMOVE IN CLEANUP COMMIT — search for "dcontact-diagnose" to find every
-// reference. The whole endpoint is a single self-contained block.
-// =============================================================================
-app.get("/api/admin/dcontact-diagnose", auth, async function(req, res) {
-  try {
-    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
-      return res.status(403).json({ error: "Admin only" });
-    }
-
-    var range = reportsParseRange(req.query.from, req.query.to);
-    var fromDate = new Date(range.from), toDate = new Date(range.to);
-    var DAY_MS = 86400000;
-
-    // Match the live funnel's leadMatch — Lead-only (avg-days math is
-    // Lead-side only on the live endpoint), exclude DR mirrors, in-range
-    // intake. No team filter — diagnostic is org-wide.
-    var leadMatch = {
-      archived: false,
-      createdAt: { $gte: fromDate, $lt: toDate },
-      source: { $ne: "Daily Request" }
-    };
-
-    var rows = await Lead.aggregate([
-      { $match: leadMatch },
-      // Earliest contact-type Activity timestamp (NOT just existence). Sort
-      // ASC + limit 1 so we ship one row per lead. 4-type whitelist matches
-      // the live funnel's boolean isContactedRaw consumer.
-      { $lookup: {
-          from: "activities",
-          let: { lid: "$_id" },
-          pipeline: [
-            { $match: { $expr: { $and: [
-                { $eq: ["$leadId", "$$lid"] },
-                { $in: ["$type", ["call", "meeting", "followup", "email"]] }
-            ]}}},
-            { $sort: { createdAt: 1 }},
-            { $limit: 1 },
-            { $project: { _id: 0, t: "$createdAt" }}
-          ],
-          as: "earliestContactActArr"
-      }},
-      { $addFields: {
-          // CURRENT baseline — same as live funnel.
-          earliestLastActionAt: { $min: "$assignments.lastActionAt" },
-          // PROPOSED component A: earliest gated history event timestamp.
-          earliestGatedHistoryAt: { $min: { $map: {
-            input: { $filter: {
-              input: { $ifNull: ["$history", []] },
-              as: "h",
-              cond: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
-            }},
-            as: "h",
-            in: "$$h.timestamp"
-          }}},
-          // PROPOSED component B: earliest contact-type Activity timestamp.
-          earliestContactActAt: { $arrayElemAt: ["$earliestContactActArr.t", 0] },
-          // Distinct gated events present (for the topMovers audit trail).
-          gatedEventsPresent: { $setIntersection: [
-            { $map: { input: { $ifNull: ["$history", []] }, as: "h", in: "$$h.event" }},
-            ["status_changed", "feedback_added", "callback_scheduled"]
-          ]}
-      }},
-      { $addFields: {
-          // PROPOSED first-real-contact = $min of components A and B.
-          // $min ignores nulls — if neither fired, returns null and
-          // proposedDContact will be null below.
-          earliestRealContactAt: { $min: ["$earliestGatedHistoryAt", "$earliestContactActAt"] }
-      }},
-      { $addFields: {
-          // dContact — current vs proposed. Same null/negative guards as
-          // the live funnel: returns null if baseline missing or before
-          // createdAt (clock-skew or back-dated docs).
-          currentDContact: { $cond: [
-            { $and: [
-              { $ne: ["$earliestLastActionAt", null] },
-              { $gte: [{ $subtract: ["$earliestLastActionAt", "$createdAt"] }, 0] }
-            ]},
-            { $divide: [{ $subtract: ["$earliestLastActionAt", "$createdAt"] }, DAY_MS] },
-            null
-          ]},
-          proposedDContact: { $cond: [
-            { $and: [
-              { $ne: ["$earliestRealContactAt", null] },
-              { $gte: [{ $subtract: ["$earliestRealContactAt", "$createdAt"] }, 0] }
-            ]},
-            { $divide: [{ $subtract: ["$earliestRealContactAt", "$createdAt"] }, DAY_MS] },
-            null
-          ]},
-          // dMeeting — current vs proposed. Live funnel additionally guards
-          // on hadMeeting=true; we mirror that.
-          currentDMeeting: { $cond: [
-            { $and: [
-              { $eq: ["$hadMeeting", true] },
-              { $ne: ["$meetingDoneAt", null] },
-              { $ne: ["$earliestLastActionAt", null] },
-              { $gte: [{ $subtract: ["$meetingDoneAt", "$earliestLastActionAt"] }, 0] }
-            ]},
-            { $divide: [{ $subtract: ["$meetingDoneAt", "$earliestLastActionAt"] }, DAY_MS] },
-            null
-          ]},
-          proposedDMeeting: { $cond: [
-            { $and: [
-              { $eq: ["$hadMeeting", true] },
-              { $ne: ["$meetingDoneAt", null] },
-              { $ne: ["$earliestRealContactAt", null] },
-              { $gte: [{ $subtract: ["$meetingDoneAt", "$earliestRealContactAt"] }, 0] }
-            ]},
-            { $divide: [{ $subtract: ["$meetingDoneAt", "$earliestRealContactAt"] }, DAY_MS] },
-            null
-          ]}
-      }},
-      { $project: {
-          _id: 1, name: 1, status: 1, createdAt: 1,
-          earliestLastActionAt: 1,
-          earliestRealContactAt: 1,
-          earliestGatedHistoryAt: 1,
-          earliestContactActAt: 1,
-          gatedEventsPresent: 1,
-          currentDContact: 1, proposedDContact: 1,
-          currentDMeeting: 1, proposedDMeeting: 1
-      }}
-    ]);
-
-    function bucket(d) {
-      if (d == null) return null;
-      if (d < 0.5) return "0-0.5d";
-      if (d < 1)   return "0.5-1d";
-      if (d < 3)   return "1-3d";
-      if (d < 7)   return "3-7d";
-      if (d < 14)  return "7-14d";
-      return "14d+";
-    }
-
-    function statsFor(values) {
-      var nonNull = values.filter(function(v){ return v != null; });
-      var sorted = nonNull.slice().sort(function(a, b){ return a - b; });
-      function p(pct) {
-        if (!sorted.length) return null;
-        var idx = Math.floor((pct / 100) * (sorted.length - 1));
-        return Math.round(sorted[idx] * 100) / 100;
-      }
-      var sum = 0;
-      for (var i = 0; i < nonNull.length; i++) sum += nonNull[i];
-      var avg = nonNull.length ? sum / nonNull.length : null;
-      var hist = { "0-0.5d": 0, "0.5-1d": 0, "1-3d": 0, "3-7d": 0, "7-14d": 0, "14d+": 0 };
-      for (var j = 0; j < nonNull.length; j++) {
-        var b = bucket(nonNull[j]);
-        if (b in hist) hist[b]++;
-      }
-      var histogram = Object.keys(hist).map(function(k){ return { bucket: k, count: hist[k] }; });
-      return {
-        avg:       avg == null ? null : Math.round(avg * 100) / 100,
-        median:    p(50),
-        p25:       p(25),
-        p75:       p(75),
-        p95:       p(95),
-        nullCount: values.length - nonNull.length,
-        sampleSize: nonNull.length,
-        histogram: histogram
-      };
-    }
-
-    function divergenceFor(extract) {
-      var counts = {
-        exactlyEqual: 0,
-        differBy0to0_5d: 0,
-        differBy0_5to1d: 0,
-        differBy1to5d: 0,
-        differBy5dPlus: 0,
-        currentNullProposedSet: 0,
-        currentSetProposedNull: 0,
-        bothNull: 0
-      };
-      rows.forEach(function(r){
-        var pair = extract(r);
-        var c = pair[0], p = pair[1];
-        if (c == null && p == null)        counts.bothNull++;
-        else if (c == null && p != null)   counts.currentNullProposedSet++;
-        else if (c != null && p == null)   counts.currentSetProposedNull++;
-        else {
-          var d = Math.abs(c - p);
-          if (d < 0.001)                   counts.exactlyEqual++;
-          else if (d < 0.5)                counts.differBy0to0_5d++;
-          else if (d < 1)                  counts.differBy0_5to1d++;
-          else if (d < 5)                  counts.differBy1to5d++;
-          else                             counts.differBy5dPlus++;
-        }
-      });
-      return counts;
-    }
-
-    var dContactStats = {
-      current:  statsFor(rows.map(function(r){ return r.currentDContact;  })),
-      proposed: statsFor(rows.map(function(r){ return r.proposedDContact; }))
-    };
-    var dMeetingStats = {
-      current:  statsFor(rows.map(function(r){ return r.currentDMeeting;  })),
-      proposed: statsFor(rows.map(function(r){ return r.proposedDMeeting; }))
-    };
-
-    var divergence = {
-      dContact: divergenceFor(function(r){ return [r.currentDContact, r.proposedDContact]; }),
-      dMeeting: divergenceFor(function(r){ return [r.currentDMeeting, r.proposedDMeeting]; })
-    };
-
-    // topMovers — biggest absolute delta on dContact (the headline metric).
-    function deltaAbs(c, p) {
-      if (c == null || p == null) return -1; // null pairs don't compete with real numbers
-      return Math.abs(c - p);
-    }
-    var sortable = rows.slice().sort(function(a, b){
-      return deltaAbs(b.currentDContact, b.proposedDContact)
-           - deltaAbs(a.currentDContact, a.proposedDContact);
-    });
-    var topMovers = sortable.slice(0, 10).map(function(r){
-      var src;
-      if (r.earliestGatedHistoryAt && r.earliestContactActAt) {
-        src = (+new Date(r.earliestGatedHistoryAt) <= +new Date(r.earliestContactActAt)) ? "history" : "activity";
-        if (+new Date(r.earliestGatedHistoryAt) === +new Date(r.earliestContactActAt)) src = "tied";
-      } else if (r.earliestGatedHistoryAt) src = "history";
-      else if (r.earliestContactActAt)     src = "activity";
-      else                                 src = "neither";
-      return {
-        leadId: String(r._id),
-        name: r.name || "(no name)",
-        status: r.status || "(null)",
-        createdAt: r.createdAt,
-        currentDContact:  r.currentDContact  == null ? null : Math.round(r.currentDContact  * 100) / 100,
-        proposedDContact: r.proposedDContact == null ? null : Math.round(r.proposedDContact * 100) / 100,
-        deltaDContact:    (r.currentDContact != null && r.proposedDContact != null)
-          ? Math.round((r.proposedDContact - r.currentDContact) * 100) / 100
-          : null,
-        currentBaselineAt:  r.earliestLastActionAt,
-        proposedBaselineAt: r.earliestRealContactAt,
-        proposedSource:     src,
-        gatedEventsPresent: r.gatedEventsPresent || []
-      };
-    });
-
-    res.json({
-      scope: {
-        from: range.from,
-        to: range.to,
-        leadCount: rows.length,
-        sourceFilter: "null (Lead-only, mirrors live funnel avg-days)"
-      },
-      dContact: dContactStats,
-      dMeeting: dMeetingStats,
-      divergence: divergence,
-      topMovers: topMovers,
-      asOf: new Date().toISOString()
-    });
-  } catch (e) {
-    console.error("[admin/dcontact-diagnose]", e && e.message);
-    res.status(500).json({ error: e && e.message ? e.message : "diagnose_failed" });
   }
 });
 
