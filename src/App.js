@@ -385,7 +385,7 @@ var WaChooser = function(p) {
   var waBizUrl = isAndroid
     ? "intent://send?phone=+"+phone+"#Intent;scheme=whatsapp;package=com.whatsapp.w4b;end"
     : "https://wa.me/"+phone;
-  return <div onClick={p.onClose} style={{ position:"fixed", inset:0, zIndex:999, background:"rgba(0,0,0,0.4)", display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+  return <div data-overlay-above="true" onClick={p.onClose} style={{ position:"fixed", inset:0, zIndex:999, background:"rgba(0,0,0,0.4)", display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
     <div onClick={function(e){e.stopPropagation();}} style={{ background:"#fff", borderRadius:"18px 18px 0 0", padding:"20px 16px 32px", width:"100%", maxWidth:480 }}>
       <div style={{ fontSize:14, fontWeight:700, color:C.text, marginBottom:16, textAlign:"center" }}>Open with WhatsApp</div>
       <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
@@ -478,18 +478,18 @@ function useOutsideClose(open, onClose){
   cbRef.current = onClose;
   useEffect(function(){
     if (!open) return;
+    // Overlay-above check (2026-05-06): any ancestor of the click
+    // target tagged data-overlay-above="true" (Modal, status dropdowns,
+    // search overlays, etc.) means the click happened in something
+    // stacked above the panel — don't close. closest() is O(depth)
+    // with no layout recalc; the previous getComputedStyle ancestor
+    // walk caused ~3.5s of layout thrashing per click on busy pages
+    // (root cause of the reported "black dropdown" symptom). Every
+    // overlay-style element with z-index >= 400 carries the
+    // data-overlay-above attribute — see grep across this file.
     function isInOverlayAbove(target, panel){
-      var n = target;
-      while (n && n !== document.body && n !== document.documentElement) {
-        if (n === panel) return false;
-        try {
-          var cs = window.getComputedStyle(n);
-          var z = parseInt(cs.zIndex, 10);
-          if ((cs.position === "fixed" || cs.position === "absolute") && !isNaN(z) && z >= 400) return true;
-        } catch(e) {}
-        n = n.parentNode;
-      }
-      return false;
+      if (panel.contains(target)) return false;
+      return !!(target.closest && target.closest('[data-overlay-above="true"]'));
     }
     function onMouseDown(e){
       var panel = ref.current;
@@ -521,7 +521,7 @@ var Modal = function(p) {
   if (!p.show) return null;
   // className hooks so the global mobile stylesheet can make the overlay
   // full-screen on phones without disturbing desktop centering.
-  return <div className="crm-modal" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.52)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:600, padding:16 }} onClick={p.onClose}>
+  return <div className="crm-modal" data-overlay-above="true" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.52)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:600, padding:16 }} onClick={p.onClose}>
     <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:18, padding:26, width:"100%", maxWidth:p.w||500, maxHeight:"90vh", overflowY:"auto" }} onClick={function(e){e.stopPropagation();}}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
         <h2 style={{ margin:0, fontSize:17, fontWeight:700, color:C.text }}>{p.title}</h2>
@@ -1199,7 +1199,7 @@ var HeaderSearch = function(p) {
       <input placeholder={t.search} value={p.search||""} onFocus={function(){setOpen(true);}} onChange={function(e){p.setSearch(e.target.value);setOpen(true);}} style={{ border:"none", background:"transparent", outline:"none", fontSize:13, color:C.text, width:"100%" }}/>
       {q.length>0&&<button onClick={function(){p.setSearch("");setOpen(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, padding:0, display:"flex" }} title="Clear"><X size={14}/></button>}
     </div>
-    {showDropdown && <div style={{ position:"absolute", top:"calc(100% + 6px)", left:0, right:0, background:"#fff", border:"1px solid #E2E8F0", borderRadius:12, boxShadow:"0 8px 32px rgba(0,0,0,0.12)", zIndex:500, maxHeight:420, overflowY:"auto" }}>
+    {showDropdown && <div data-overlay-above="true" style={{ position:"absolute", top:"calc(100% + 6px)", left:0, right:0, background:"#fff", border:"1px solid #E2E8F0", borderRadius:12, boxShadow:"0 8px 32px rgba(0,0,0,0.12)", zIndex:500, maxHeight:420, overflowY:"auto" }}>
       {totalResults===0 && <div style={{ padding:"14px 16px", fontSize:12, color:"#94A3B8", textAlign:"center" }}>No matching results</div>}
       {leadResults.length>0 && <>
         {sectionLabel("Leads", leadResults.length)}
@@ -1700,7 +1700,7 @@ var QuickPhoneSearch = function(p) {
     </div>;
   };
   if(!show)return <button onClick={function(){setShow(true);}} style={{ position:"fixed", bottom:24, right:24, zIndex:300, width:46, height:46, borderRadius:"50%", background:"rgba(255,255,255,0.15)", backdropFilter:"blur(8px)", WebkitBackdropFilter:"blur(8px)", border:"1.5px solid rgba(255,255,255,0.35)", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 2px 16px rgba(0,0,0,0.18)" }} title="Quick Phone Search"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke={C.accent} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="22" y2="22"/></svg></button>;
-  return <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center" }} onClick={function(){setShow(false);setQ("");}}>
+  return <div data-overlay-above="true" style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center" }} onClick={function(){setShow(false);setQ("");}}>
     <div style={{ background:"#fff", borderRadius:18, padding:20, width:340, maxWidth:"90vw", maxHeight:"80vh", overflow:"auto" }} onClick={function(e){e.stopPropagation();}}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
         <div style={{ fontSize:15, fontWeight:700 }}>📞 Quick Phone Search</div>
@@ -3620,7 +3620,7 @@ var LeadsPage = function(p) {
 
     <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&selected?330:0, transition:"padding-right 0.25s" }}>
       {/* Status dropdown overlay */}
-      {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
+      {statusDrop&&<div data-overlay-above="true" style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
     {/* Table */}
       {p.leadFilter==="important"?<Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
@@ -3773,7 +3773,7 @@ var LeadsPage = function(p) {
                         onClick={function(e){e.stopPropagation();setStatusDrop(statusDrop===lid?null:lid);}}>
                         {so.label} ▼
                       </span>
-                      {statusDrop===lid&&<div style={{ position:"fixed", top:"50%", left:"50%", transform:"translate(-50%,-50%)", zIndex:500, background:"#fff", borderRadius:14, padding:8, minWidth:180, boxShadow:"0 16px 48px rgba(0,0,0,0.22)", border:"1px solid #E8ECF1" }} onClick={function(e){e.stopPropagation();}}>
+                      {statusDrop===lid&&<div data-overlay-above="true" style={{ position:"fixed", top:"50%", left:"50%", transform:"translate(-50%,-50%)", zIndex:500, background:"#fff", borderRadius:14, padding:8, minWidth:180, boxShadow:"0 16px 48px rgba(0,0,0,0.22)", border:"1px solid #E8ECF1" }} onClick={function(e){e.stopPropagation();}}>
                         <div style={{ fontSize:12, fontWeight:600, color:C.textLight, padding:"6px 10px 10px", borderBottom:"1px solid #F1F5F9", marginBottom:4 }}>{t.changeStatus}</div>
                         {sc.map(function(s){return <div key={s.value} onClick={function(e){e.stopPropagation();setSelected(lead);reqStatus(lid,s.value);setStatusDrop(null);}} style={{ padding:"9px 12px", borderRadius:9, cursor:"pointer", display:"flex", alignItems:"center", gap:10, background:curSt===s.value?s.bg:"transparent", fontSize:13, fontWeight:curSt===s.value?600:400 }}
                           onMouseEnter={function(e){if(curSt!==s.value)e.currentTarget.style.background="#F8FAFC";}}
@@ -5914,7 +5914,7 @@ var DashboardPage = function(p) {
         })()}
       </>)}
     </div>
-    {seeAllOpen && <div onClick={function(){setSeeAllOpen(false);}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(15,23,42,0.55)",zIndex:1000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 16px",overflowY:"auto"}}>
+    {seeAllOpen && <div data-overlay-above="true" onClick={function(){setSeeAllOpen(false);}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(15,23,42,0.55)",zIndex:1000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 16px",overflowY:"auto"}}>
       <div onClick={function(e){e.stopPropagation();}} style={{background:"#fff",borderRadius:16,maxWidth:640,width:"100%",padding:"20px 22px",boxShadow:"0 10px 40px rgba(0,0,0,0.2)"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
           <div style={{fontSize:17,fontWeight:700,color:"#0F172A"}}>{activitiesTitleForFilter(filter)} ({todayActsAll.length})</div>
@@ -7638,7 +7638,7 @@ var DailyRequestsPage = function(p) {
 
   return <div style={{ padding:"18px 16px 40px" }}>
     <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} lead={selected} cu={p.cu} users={p.users} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
-    {statusDrop&&<div style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
+    {statusDrop&&<div data-overlay-above="true" style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
 
     {/* Stats */}
     <div style={{ display:"flex", gap:10, marginBottom:12, flexWrap:"wrap" }}>
@@ -7817,7 +7817,7 @@ var DailyRequestsPage = function(p) {
                       onClick={function(e){e.stopPropagation();setStatusDrop(statusDrop===rid?null:rid);}}>
                       {so.label} ▼
                     </span>
-                    {statusDrop===rid&&<div style={{ position:"fixed", top:"50%", left:"50%", transform:"translate(-50%,-50%)", zIndex:500, background:"#fff", borderRadius:14, padding:8, minWidth:180, boxShadow:"0 16px 48px rgba(0,0,0,0.22)", border:"1px solid #E8ECF1" }} onClick={function(e){e.stopPropagation();}}>
+                    {statusDrop===rid&&<div data-overlay-above="true" style={{ position:"fixed", top:"50%", left:"50%", transform:"translate(-50%,-50%)", zIndex:500, background:"#fff", borderRadius:14, padding:8, minWidth:180, boxShadow:"0 16px 48px rgba(0,0,0,0.22)", border:"1px solid #E8ECF1" }} onClick={function(e){e.stopPropagation();}}>
                       <div style={{ fontSize:12, fontWeight:600, color:C.textLight, padding:"6px 10px 10px", borderBottom:"1px solid #F1F5F9", marginBottom:4 }}>{t.changeStatus}</div>
                       {sc.map(function(s){return <div key={s.value} onClick={function(e){e.stopPropagation();setSelected(r);reqStatus(rid,s.value);setStatusDrop(null);}} style={{ padding:"9px 12px", borderRadius:9, cursor:"pointer", display:"flex", alignItems:"center", gap:10, background:r.status===s.value?s.bg:"transparent", fontSize:13 }}
                         onMouseEnter={function(e){if(r.status!==s.value)e.currentTarget.style.background="#F8FAFC";}}
@@ -11527,7 +11527,7 @@ var SettingsPage = function(p) {
                 <span style={{fontWeight:500,color:Number(v)>0?"#1a1a1a":"#999"}}>{v}</span>
               </div>;
             };
-            return <div onClick={function(){setRedistResult(null);}}
+            return <div data-overlay-above="true" onClick={function(){setRedistResult(null);}}
               style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9999}}>
               <div onClick={function(e){e.stopPropagation();}}
                 style={{background:"#fff",borderRadius:12,padding:20,width:"min(560px, 94vw)",maxHeight:"90vh",overflow:"auto",boxShadow:"0 20px 48px rgba(0,0,0,0.25)",fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
@@ -11869,7 +11869,7 @@ var SettingsPage = function(p) {
           </div>
 
           {/* ══ Vacation modal — opened from any agent row ══ */}
-          {vacModalAgent && <div onClick={closeVacModal}
+          {vacModalAgent && <div data-overlay-above="true" onClick={closeVacModal}
             style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
             <div onClick={function(e){e.stopPropagation();}}
               style={{background:"#fff",borderRadius:12,padding:20,width:400,maxWidth:"92vw",boxShadow:"0 10px 40px rgba(0,0,0,0.2)"}}>
@@ -13548,7 +13548,7 @@ export default function CRMApp() {
 +   ".crm-dash h1, .crm-dash h2, .crm-dash h3 { max-width: 100%; overflow-wrap: anywhere; }"
 + "}"
 }</style>
-    {showPwaBanner&&<div style={{ position:"fixed", bottom:0, left:0, right:0, zIndex:9999, background:C.primary, color:"#fff", padding:"14px 16px", display:"flex", alignItems:"center", gap:10, boxShadow:"0 -4px 20px rgba(0,0,0,0.2)" }}>
+    {showPwaBanner&&<div data-overlay-above="true" style={{ position:"fixed", bottom:0, left:0, right:0, zIndex:9999, background:C.primary, color:"#fff", padding:"14px 16px", display:"flex", alignItems:"center", gap:10, boxShadow:"0 -4px 20px rgba(0,0,0,0.2)" }}>
       <div style={{ flex:1 }}>
         <div style={{ fontSize:13, fontWeight:700, marginBottom:3 }}>📲 Enable Notifications</div>
         <div style={{ fontSize:11, color:"rgba(255,255,255,0.75)", lineHeight:1.4 }}>Tap <b>Share</b> → <b>Add to Home Screen</b> to install the app and receive notifications.</div>
