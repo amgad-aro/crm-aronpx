@@ -1,3 +1,11 @@
+/* Force light theme for native UI (form controls, native <select>
+   popups, scrollbars, autofill). Without this, browsers fall back to
+   the OS color preference and dark-mode users get black native popups
+   on this otherwise-light page. */
+:root {
+  color-scheme: light;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
