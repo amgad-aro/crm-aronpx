@@ -208,12 +208,13 @@ var PROJECTS = [
   "بالم هيلز", "ماونتن فيو", "سوديك ايست", "الرحاب", "مدينتي"
 ];
 // Phase A1 (2026-05-05): canonical Lead source list. Replaces the prior
-// 8-item list which included Instagram / Google Ads / "Snap Chat" (with
-// space) — those drop off; existing leads tagged with the old labels
-// surface as a "(legacy)" option at the top of buildSourceOptions() until
-// admin retags them via the bulk editor (Slice A4). Slice A3 will move
-// this list to an admin-editable AppSetting.
-var SOURCES = ["Facebook", "TikTok", "Snapchat", "WhatsApp", "Referral", "Website", "Direct Call", "Other"];
+// 8-item list which included Instagram and "Snap Chat" (with space) —
+// those drop off; existing leads tagged with the old labels surface as
+// a "(legacy)" option at the top of buildSourceOptions() until admin
+// retags them via the bulk editor (Slice A4). Google Ads is retained
+// per testing-round feedback — historically used + still active.
+// Slice A3 will move this list to an admin-editable AppSetting.
+var SOURCES = ["Facebook", "TikTok", "Snapchat", "WhatsApp", "Google Ads", "Referral", "Website", "Direct Call", "Other"];
 
 // Build the dropdown options for a Lead source <select>. Always prepends a
 // disabled-feeling "Select source..." placeholder so the empty value is a
@@ -6507,7 +6508,7 @@ var DealsPage = function(p) {
     </div>
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} initialStatus="DoneDeal"
-        initial={{name:"",phone:"",phone2:"",email:"",budget:"",project:"",source:"Referral",agentId:"",callbackTime:"",notes:"",status:"DoneDeal"}}
+        initial={{name:"",phone:"",phone2:"",email:"",budget:"",project:"",source:"",agentId:"",callbackTime:"",notes:"",status:"DoneDeal"}}
         onClose={function(){setShowAdd(false);}}
         onSave={function(lead){p.setLeads(function(prev){var nid=String(lead&&lead._id||"");if(!nid)return[lead].concat(prev);if(prev.some(function(l){return gid(l)===nid;}))return prev.map(function(l){return gid(l)===nid?lead:l;});return [lead].concat(prev);});setShowAdd(false);}}/>
     </Modal>
