@@ -65,7 +65,12 @@ var User = mongoose.model("User", new mongoose.Schema({
 var Lead = mongoose.model("Lead", new mongoose.Schema({
   name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
   email:{type:String,default:""}, status:{type:String,default:"NewLead"},
-  source:{type:String,default:"Facebook"}, project:{type:String,default:""}, unitType:{type:String,default:""}, campaign:{type:String,default:""},
+  // Phase A2 (2026-05-05): default removed. Was "Facebook" — silent fallback
+  // that masked the source-data quality issue (98.3% of leads tagged Facebook
+  // because the Google Apps Script intake didn't send a source field). Apps
+  // Script + Sheet now send source explicitly, and POST /api/leads validates
+  // non-empty source server-side — see server.js:2337 area.
+  source:{type:String,default:""}, project:{type:String,default:""}, unitType:{type:String,default:""}, campaign:{type:String,default:""},
   // Inbound webhook fields — populated by POST /api/leads/inbound when leads
   // arrive from facebook/instagram/tiktok/snapchat/whatsapp. externalId is the
   // platform's lead id (used together with source for dedupe).
@@ -2335,6 +2340,12 @@ app.post("/api/leads", auth, async function(req, res) {
     // All three hit this endpoint, so one check here satisfies every creation path.
     var phoneIn = String(req.body.phone || "").trim();
     if (!phoneIn) return res.status(400).json({ error: "Phone is required", code: "phone_required" });
+    // Phase A2 (2026-05-05): source is now required server-side. The schema
+    // default was removed; every upstream caller — manual UI, Google Sheets
+    // Apps Script, FB webhook, inbound webhook, DR-mirror — sends source
+    // explicitly. This guard surfaces any regression as an actionable 400
+    // rather than letting it default-fallback into the Facebook bucket.
+    if (!req.body.source) return res.status(400).json({ error: "source is required", code: "source_required" });
     var dup = await findLeadByPhone(phoneIn);
     if (dup) {
       var dupAgentName = (dup.agentId && dup.agentId.name) ? dup.agentId.name : "Unassigned";
@@ -2366,7 +2377,7 @@ app.post("/api/leads", auth, async function(req, res) {
       status:           initialStatus,
       hadMeeting:       stampsMeeting,
       meetingDoneAt:    stampsMeeting ? new Date() : null,
-      source:           req.body.source || "Facebook",
+      source:           req.body.source,
       project:          req.body.project || "",
       unitType:         req.body.unitType || "",
       campaign:         req.body.campaign || "",
