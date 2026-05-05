@@ -3098,10 +3098,18 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       update.preEoiStatus = oldLead.status;
       update.eoiStatus = "Pending";
     }
-    // Capture previous status when transitioning INTO DoneDeal, so deal cancel can restore it.
+    // Capture previous status when transitioning INTO DoneDeal, so deal cancel
+    // can restore it. Also clear eoiStatus and set globalStatus to "donedeal"
+    // — mirrors the sanctioned /eoi-to-deal handler (server.js:2954-2962).
+    // Without these, side-door DoneDeal transitions via the generic PUT leave
+    // the lead orphaned on the EOI page (App.js:5805 keys on eoiStatus.length>0)
+    // and bypass the rotation hard-stops at server.js:3534 and 4037 which key
+    // on globalStatus === "donedeal".
     if (req.body.status === "DoneDeal" && oldLead && oldLead.status && oldLead.status !== "DoneDeal") {
       update.preDealStatus = oldLead.status;
       update.dealStatus = "";
+      update.eoiStatus = "";
+      update.globalStatus = "donedeal";
     }
     // Permanent meeting marker. Stamp hadMeeting + meetingDoneAt the first
     // time a lead reaches MeetingDone. Never re-stamp on subsequent visits —
