@@ -10845,16 +10845,10 @@ var SettingsPage = function(p) {
       .finally(function(){ if(!cancelled) setAuditLoaded(true); });
     return function(){ cancelled=true; };
   },[p.token]);
-  // Business Rules tab — only maxRotationsPerLead remains as a real toggle.
-  // Other previously-rendered toggles described behavior that was already
-  // hardcoded in the backend (or, in cancelForcedRot's case, didn't exist
-  // and is intentionally not built — the agent who reached EOI/Deal earned
-  // the second chance). maxRotationsPerLead persistence moves to the
-  // rotation AppSetting in Slice 2B; for now the in-memory default of 0
-  // (no cap) preserves the existing UI behavior.
-  var [bizRules,setBizRules]=useState({
-    maxRotationsPerLead:0     // limits (0 = no cap)
-  });
+  // Hard cap on total rotation events per lead. 0 = no cap. Persisted on
+  // the rotation AppSetting alongside rotationStopAfterDays / srHaltNI etc;
+  // hydrated below and saved via the shared doSave PUT.
+  var [maxRotationsPerLead,setMaxRotationsPerLead]=useState(0);
   var [saved,setSaved]=useState(false);
   var [saveError,setSaveError]=useState("");
   var [loading,setLoading]=useState(true);
@@ -10877,6 +10871,7 @@ var SettingsPage = function(p) {
       setRotCbDays(Number(s.cbDays)||1);
       setRotHotDays(Number(s.hotDays)||2);
       setRotStopDays(Number(s.rotationStopAfterDays)||45);
+      if(s.maxRotationsPerLead!=null) setMaxRotationsPerLead(Number(s.maxRotationsPerLead)||0);
       if(s.manualAssignmentWindowMinutes!=null) setManualWindowMin(Number(s.manualAssignmentWindowMinutes)||0);
       if(s.staleLeadDays!=null) setStaleLeadDays(Number(s.staleLeadDays)||7);
       setAutoRotEnabled(s.autoRotationEnabled!==false);
@@ -11016,6 +11011,7 @@ var SettingsPage = function(p) {
         cbDays:  Number(rotCbDays),
         hotDays: Number(rotHotDays),
         rotationStopAfterDays: Number(rotStopDays),
+        maxRotationsPerLead: Number(maxRotationsPerLead)||0,
         manualAssignmentWindowMinutes: Number(manualWindowMin)||0,
         staleLeadDays: Number(staleLeadDays)||7,
         autoRotationEnabled: autoRotEnabled,
@@ -11933,8 +11929,6 @@ var SettingsPage = function(p) {
         </div>;
       })()}
       {activeTab==="rules"&&(function(){
-        var setBR = function(k,v){setBizRules(function(prev){var next=Object.assign({},prev);next[k]=v;return next;});};
-
         // Switch pill — green ON, neutral gray OFF. Grayed + locked cursor when disabled.
         var switchPill = function(on, onClick, disabled){
           return <div
@@ -12015,11 +12009,11 @@ var SettingsPage = function(p) {
               on:srHaltNI>0, onClick:function(){setSrHaltNI(srHaltNI>0?0:3);},
               inline: srHaltNI>0 ? inlineNum(srHaltNI,setSrHaltNI,1,20,"× Not Interested") : null})}
             {ruleRow({label:"Max rotations per lead",
-              desc:"Caps the total number of rotation events a single lead can trigger. 0 = no cap.",
-              on:bizRules.maxRotationsPerLead>0,
-              onClick:function(){setBR("maxRotationsPerLead", bizRules.maxRotationsPerLead>0 ? 0 : 10);},
-              inline: bizRules.maxRotationsPerLead>0
-                ? inlineNum(bizRules.maxRotationsPerLead, function(v){setBR("maxRotationsPerLead",v);}, 1, 100, "rotations")
+              desc:"Caps the total number of auto-rotation events a single lead can trigger. 0 = no cap. Manual admin reassigns are not gated.",
+              on:maxRotationsPerLead>0,
+              onClick:function(){setMaxRotationsPerLead(maxRotationsPerLead>0 ? 0 : 10);},
+              inline: maxRotationsPerLead>0
+                ? inlineNum(maxRotationsPerLead, setMaxRotationsPerLead, 1, 100, "rotations")
                 : null})}
             {ruleRow({label:"Skip agents offline longer than N hours",
               desc:"Agents whose last heartbeat is older than this are skipped in rotation. Synced with the Rotation tab.",

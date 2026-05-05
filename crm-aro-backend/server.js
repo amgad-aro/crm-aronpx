@@ -833,6 +833,10 @@ var ROTATION_DEFAULTS = {
     haltWhenAllHandled:     true
   },
   rotationStopAfterDays: 45,
+  // Hard cap on total rotation events per lead. 0 = no cap (legacy behavior).
+  // Enforced in autoRotateLead + the bulk-redistribute eligibility loop;
+  // manual /rotate is intentionally NOT gated (admin-explicit overrides).
+  maxRotationsPerLead: 0,
   // Minutes the admin has to manually assign a newly-created lead before the
   // background sweeper auto-rotates it to Tier 1. 0 = disabled (legacy behavior
   // — new leads without an agent are unassigned/immediate-rotate as before).
@@ -884,6 +888,7 @@ async function getRotationSettings() {
     workingHours:            Object.assign({}, D.workingHours, v.workingHours || {}),
     smartSkipRules:          Object.assign({}, D.smartSkipRules, v.smartSkipRules || {}),
     rotationStopAfterDays:   Number(v.rotationStopAfterDays != null ? v.rotationStopAfterDays : D.rotationStopAfterDays),
+    maxRotationsPerLead:     Number(v.maxRotationsPerLead   != null ? v.maxRotationsPerLead   : D.maxRotationsPerLead),
     manualAssignmentWindowMinutes: Number(v.manualAssignmentWindowMinutes != null ? v.manualAssignmentWindowMinutes : D.manualAssignmentWindowMinutes),
     staleLeadDays: Number(v.staleLeadDays != null ? v.staleLeadDays : D.staleLeadDays)
   };
@@ -973,6 +978,7 @@ app.put("/api/settings/rotation", auth, async function(req, res) {
       workingHours:            wh,
       smartSkipRules:          sr,
       rotationStopAfterDays:   clamp(b.rotationStopAfterDays, D.rotationStopAfterDays, 1, 3650),
+      maxRotationsPerLead:     clamp(b.maxRotationsPerLead,   D.maxRotationsPerLead,   0, 1000),
       manualAssignmentWindowMinutes: clamp(b.manualAssignmentWindowMinutes, D.manualAssignmentWindowMinutes, 0, 120),
       // Phase Q — fall back to previously stored value when input is missing
       // or invalid (clamp returns its `def` arg on NaN / out-of-range).
@@ -3537,6 +3543,14 @@ async function autoRotateLead(leadId, byName, opts) {
       return { ok: false, status: 409, error: "rotation_paused", message: "Auto-rotation is paused until " + settings.autoRotationPausedUntil };
     }
 
+    // Admin-configurable cap on total rotation events per lead. Modelled after
+    // rotationStopAfterDays — sticky exclusion enforced inline (no separate
+    // flag), so raising the cap immediately re-enables rotation without manual
+    // intervention. Manual /rotate is intentionally not gated by this cap.
+    if (settings.maxRotationsPerLead > 0 && (lead.rotationCount || 0) >= settings.maxRotationsPerLead) {
+      return { ok: false, status: 409, error: "max_rotations", message: "Rotation cap reached (" + settings.maxRotationsPerLead + " rotations)" };
+    }
+
     // Configurable age cutoff (was hardcoded 30 days, spec Rule 5 says 45).
     var stopDays = Number(settings.rotationStopAfterDays) || 45;
     if (lead.createdAt && (new Date() - new Date(lead.createdAt)) > stopDays*24*60*60*1000) {
@@ -3998,7 +4012,7 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
     // filter on archived / agentId / source / globalStatus / rotationStopped /
     // createdAt / lastRotationAt — those are stage counters below.
     var allLeads = await Lead.find({})
-      .select("_id name agentId archived source globalStatus rotationStopped locked createdAt lastRotationAt assignments status lastActivityTime callbackTime previousAgentIds")
+      .select("_id name agentId archived source globalStatus rotationStopped locked createdAt lastRotationAt assignments status lastActivityTime callbackTime previousAgentIds rotationCount")
       .lean();
 
     var excluded = {
@@ -4007,6 +4021,7 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
       dailyRequestSource: 0,
       eoiOrDoneDeal: 0,
       rotationStopped: 0,
+      rotationCountCapped: 0,
       locked: 0,
       tooYoung_lessThan45days: 0,
       lastRotationWithin1h: 0,
@@ -4021,6 +4036,7 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
       if (l.source === "Daily Request")                              { excluded.dailyRequestSource++; continue; }
       if (l.globalStatus === "eoi" || l.globalStatus === "donedeal") { excluded.eoiOrDoneDeal++; continue; }
       if (l.rotationStopped === true)                                { excluded.rotationStopped++; continue; }
+      if (settings.maxRotationsPerLead > 0 && (l.rotationCount || 0) >= settings.maxRotationsPerLead) { excluded.rotationCountCapped++; continue; }
       // Top-level lock. The bulk op is a batch action, not a single-lead admin
       // override — locked leads are pinned and skipped unconditionally.
       if (l.locked === true)                                         { excluded.locked++; continue; }
