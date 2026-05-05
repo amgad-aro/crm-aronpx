@@ -311,6 +311,32 @@ function diffSettings(prev, next) {
   return changes;
 }
 
+// Phase A4-prep+ (2026-05-05): canonical Lead source list. Must mirror
+// the frontend SOURCES at src/App.js:216 — kept in two places until A3
+// (admin-editable list via AppSetting) ships. normalizeSource() coerces
+// incoming source values onto canonical casing/spacing so /api/leads/
+// inbound's historical .toLowerCase() and manual entries like "Snap Chat"
+// stop fragmenting the bucket. Compares on a stripped key (lowercase,
+// alphanumeric only) so "tik tok", "TikTok", "tiktok", "TIK-TOK" all
+// resolve to canonical "TikTok". Unrecognized values pass through
+// verbatim — preserves legacy data for cleanup via the bulk editor.
+var SOURCES = ["Facebook", "TikTok", "Snapchat", "WhatsApp", "Google Ads", "Referral", "Website", "Direct Call", "Other"];
+var SOURCE_NORM_MAP = (function(){
+  var m = {};
+  SOURCES.forEach(function(s){
+    var key = String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
+    m[key] = s;
+  });
+  return m;
+})();
+function normalizeSource(input) {
+  var trimmed = String(input == null ? "" : input).trim();
+  if (!trimmed) return "";
+  var key = trimmed.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (key && SOURCE_NORM_MAP[key]) return SOURCE_NORM_MAP[key];
+  return trimmed;
+}
+
 var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   name:{type:String,required:true}, phone:{type:String,required:true}, phone2:{type:String,default:""},
   email:{type:String,default:""}, budget:{type:String,default:""}, propertyType:{type:String,default:""}, unitType:{type:String,default:""},
@@ -2345,7 +2371,11 @@ app.post("/api/leads", auth, async function(req, res) {
     // Apps Script, FB webhook, inbound webhook, DR-mirror — sends source
     // explicitly. This guard surfaces any regression as an actionable 400
     // rather than letting it default-fallback into the Facebook bucket.
-    if (!req.body.source) return res.status(400).json({ error: "source is required", code: "source_required" });
+    // Phase A4-prep+ (2026-05-05): normalize onto canonical SOURCES so
+    // whitespace-only / case-mismatched inputs are caught here too, and
+    // the persisted value matches the dropdown bucket.
+    var normalizedSource = normalizeSource(req.body.source);
+    if (!normalizedSource) return res.status(400).json({ error: "source is required", code: "source_required" });
     var dup = await findLeadByPhone(phoneIn);
     if (dup) {
       var dupAgentName = (dup.agentId && dup.agentId.name) ? dup.agentId.name : "Unassigned";
@@ -2377,7 +2407,7 @@ app.post("/api/leads", auth, async function(req, res) {
       status:           initialStatus,
       hadMeeting:       stampsMeeting,
       meetingDoneAt:    stampsMeeting ? new Date() : null,
-      source:           req.body.source,
+      source:           normalizedSource,
       project:          req.body.project || "",
       unitType:         req.body.unitType || "",
       campaign:         req.body.campaign || "",
@@ -2446,7 +2476,11 @@ app.post("/api/leads/inbound", async function(req, res) {
   var body = req.body || {};
   var sourceRaw = String(body.source == null ? "" : body.source).trim();
   var phoneRaw  = String(body.phone  == null ? "" : body.phone ).trim();
-  var source = sourceRaw.toLowerCase();
+  // Phase A4-prep+ (2026-05-05): normalize onto canonical SOURCES instead
+  // of lowercasing. The previous .toLowerCase() created split buckets
+  // (e.g. "facebook" alongside "Facebook" from /api/fb-webhook) that
+  // showed up as legacy options in the Leads filter dropdown.
+  var source = normalizeSource(sourceRaw);
   try {
     if (!source || !phoneRaw) {
       console.log("[INBOUND] " + (source||"-") + " | " + (phoneRaw||"-") + " | error");
@@ -5484,7 +5518,10 @@ app.post("/api/fb-webhook", async function(req, res) {
                       name: leadData.name || "Facebook Lead",
                       phone: fbPhone,
                       email: leadData.email || "",
-                      source: "Facebook",
+                      // Pass the literal through normalizeSource for pattern
+                      // consistency with the inbound + manual paths. Returns
+                      // "Facebook" unchanged since it's already canonical.
+                      source: normalizeSource("Facebook"),
                       status: "Potential",
                       agentId: agentId,
                       lastActivityTime: new Date(),
