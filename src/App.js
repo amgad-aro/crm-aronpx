@@ -74,7 +74,7 @@ var TR = {
     logActivity: "تسجيل نشاط",
     statusComment: "Reason for status change (required)", statusCommentPH: "Write a note about this change...",
     commentRequired: "⚠️ A note is required قبل Change Status",
-    importExcel: "استيراد Excel", importDone: "تم الاستيراد", importErr: "خطأ — تأكد من الأعمدة: name, phone",
+    importExcel: "استيراد Excel", importDone: "تم الاستيراد", importErr: "خطأ — تأكد من الأعمدة: name, phone, source",
     activityLog: "سجل الأنشطة", clientHistory: "تاريخ الleads",
     duplicateFound: "⚠️ الرقم ده موجود بالفعل!", duplicateClient: "leads موجود بنفس الرقم",
     monthlyTarget: "Monthly Target", myDay: "يومي",
@@ -144,7 +144,7 @@ var TR = {
     logActivity: "Log Activity",
     statusComment: "Reason for status change (required)", statusCommentPH: "Write a note about this change...",
     commentRequired: "⚠️ You must write a note before changing status",
-    importExcel: "Import Excel", importDone: "Import Done", importErr: "Error — Check columns: name, phone",
+    importExcel: "Import Excel", importDone: "Import Done", importErr: "Error — Check columns: name, phone, source",
     activityLog: "Activity Log", clientHistory: "Client History",
     duplicateFound: "⚠️ This number already exists!", duplicateClient: "Existing client with same number",
     monthlyTarget: "Monthly Target", myDay: "My Day",
@@ -443,7 +443,7 @@ var loadXLSX = function() {
 };
 var rowToLead = function(row) {
   var g = function() { for (var i = 0; i < arguments.length; i++) { var v = row[arguments[i]]; if (v) return String(v).trim(); } return ""; };
-  return { name: g("name","Name","اسم الleads"), phone: g("phone","phone number","Phone","موبايل","رقم"), phone2: g("phone2","phone2 ","phone 2","هاتف إضافي","هاتف2","رقم2","موبايل2"), email: g("email","Email"), budget: g("budget","Budget"), project: g("project","campaign","المشروع","الكامبين") || "", source: g("source","المصدر") || "Facebook", notes: g("notes","Notes") };
+  return { name: g("name","Name","اسم الleads"), phone: g("phone","phone number","Phone","موبايل","رقم"), phone2: g("phone2","phone2 ","phone 2","هاتف إضافي","هاتف2","رقم2","موبايل2"), email: g("email","Email"), budget: g("budget","Budget"), project: g("project","campaign","المشروع","الكامبين") || "", source: g("source","المصدر"), notes: g("notes","Notes") };
 };
 
 // ===== UI COMPONENTS =====
@@ -3259,6 +3259,21 @@ var LeadsPage = function(p) {
       var rows=[];
       if(file.name.endsWith(".csv")){var txt=await file.text();var lines=txt.split(/\r?\n/).filter(Boolean);if(lines.length<2){setImportMsg(t.importErr);setImporting(false);return;}var hdrs=lines[0].split(",").map(function(h){return h.trim().replace(/['"]/g,"").toLowerCase();});rows=lines.slice(1).map(function(line){var vals=line.split(",").map(function(v){return v.trim().replace(/['"]/g,"");});var obj={};hdrs.forEach(function(h,i){obj[h]=vals[i]||"";});return obj;});}
       else{var XLSX=await loadXLSX();var wb=XLSX.read(await file.arrayBuffer(),{type:"array"});var ws=wb.Sheets[wb.SheetNames[0]];var raw=XLSX.utils.sheet_to_json(ws,{defval:""});rows=raw.map(function(r){var o={};Object.keys(r).forEach(function(k){o[k.toLowerCase().trim()]=String(r[k]);});return o;});}
+      // Phase A2.5 (2026-05-05): pre-flight check that the file actually
+      // carries a source column. The server now requires non-empty source
+      // on every POST /api/leads, and per-row errors in the import loop
+      // below are silently swallowed — without this check, a CSV missing
+      // the source column would just produce "Import Done: 0" with no
+      // explanation. DR imports skip the check (source is forced to
+      // "Daily Request" at the POST site).
+      if (!isReq && rows.length > 0) {
+        var firstKeys = Object.keys(rows[0]);
+        if (firstKeys.indexOf("source") === -1 && firstKeys.indexOf("المصدر") === -1) {
+          setImportMsg("Your file is missing a 'source' column. Add a column named 'source' with one of: " + SOURCES.join(", "));
+          setImporting(false);
+          return;
+        }
+      }
       var toImport=rows.map(rowToLead).filter(function(l){return l.name&&l.phone;});
       if(!toImport.length){setImportMsg(t.importErr);setImporting(false);return;}
       var agId="";
