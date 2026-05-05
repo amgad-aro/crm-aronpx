@@ -216,15 +216,29 @@ var PROJECTS = [
 // Slice A3 will move this list to an admin-editable AppSetting.
 var SOURCES = ["Facebook", "TikTok", "Snapchat", "WhatsApp", "Google Ads", "Referral", "Website", "Direct Call", "Other"];
 
+// A4 cleanup (2026-05-05): some non-canonical source values are correct
+// data (not typos / case-mismatch) but shouldn't surface as selectable
+// dropdown options anywhere in the UI. "Daily Request" is hardcoded by
+// server.js:5251 on DR-mirror Lead docs — the linkage between Lead and
+// DailyRequest depends on that exact value, so leaving the data as-is
+// is correct; hiding from the dropdown just removes the confusing
+// "Daily Request (legacy)" entry from filters and edit modals.
+var HIDDEN_LEGACY_SOURCES = ["Daily Request"];
+
 // Build the dropdown options for a Lead source <select>. Always prepends a
 // disabled-feeling "Select source..." placeholder so the empty value is a
 // forced choice (caller validates before submit). If the current value is
 // non-empty but not in SOURCES — e.g., legacy "Instagram" / lowercase
 // "facebook" from /api/leads/inbound / "Snap Chat" — surface it as a
 // "(legacy)" option at the top so editing doesn't silently rewrite it.
+// HIDDEN_LEGACY_SOURCES values are intentionally excluded — DR mirrors
+// keep their stored source value (no overwrite on save) but no UI option
+// appears for them.
 var buildSourceOptions = function(currentValue) {
   var opts = [{ value: "", label: "Select source..." }];
-  if (currentValue && SOURCES.indexOf(currentValue) === -1) {
+  if (currentValue
+      && SOURCES.indexOf(currentValue) === -1
+      && HIDDEN_LEGACY_SOURCES.indexOf(currentValue) === -1) {
     opts.push({ value: currentValue, label: currentValue + " (legacy)" });
   }
   return opts.concat(SOURCES.map(function(x){ return { value: x, label: x }; }));
@@ -3499,8 +3513,11 @@ var LeadsPage = function(p) {
           // (e.g. "Instagram", "Snap Chat", lowercase "facebook" from
           // /api/leads/inbound). Mirrors buildSourceOptions's "(legacy)"
           // suffix convention so admin can isolate the cleanup cohorts.
+          // HIDDEN_LEGACY_SOURCES values (e.g. "Daily Request") are
+          // suppressed — see the const definition for rationale.
           var seenS = {};
           SOURCES.forEach(function(s){ seenS[s] = true; });
+          HIDDEN_LEGACY_SOURCES.forEach(function(s){ seenS[s] = true; });
           var legacyMap = {};
           (p.leads || []).forEach(function(l){ if (l.source && !seenS[l.source]) legacyMap[l.source] = true; });
           var legacyList = Object.keys(legacyMap).sort();
