@@ -207,7 +207,27 @@ var PROJECTS = [
   "العاصمة الإدارية", "المستقبل سيتي", "التجمع الخامس", "الشروق", "6 أكتوبر",
   "بالم هيلز", "ماونتن فيو", "سوديك ايست", "الرحاب", "مدينتي"
 ];
-var SOURCES = ["Facebook", "Instagram", "TikTok", "WhatsApp", "Google Ads", "Referral", "Snap Chat", "Website"];
+// Phase A1 (2026-05-05): canonical Lead source list. Replaces the prior
+// 8-item list which included Instagram / Google Ads / "Snap Chat" (with
+// space) — those drop off; existing leads tagged with the old labels
+// surface as a "(legacy)" option at the top of buildSourceOptions() until
+// admin retags them via the bulk editor (Slice A4). Slice A3 will move
+// this list to an admin-editable AppSetting.
+var SOURCES = ["Facebook", "TikTok", "Snapchat", "WhatsApp", "Referral", "Website", "Direct Call", "Other"];
+
+// Build the dropdown options for a Lead source <select>. Always prepends a
+// disabled-feeling "Select source..." placeholder so the empty value is a
+// forced choice (caller validates before submit). If the current value is
+// non-empty but not in SOURCES — e.g., legacy "Instagram" / lowercase
+// "facebook" from /api/leads/inbound / "Snap Chat" — surface it as a
+// "(legacy)" option at the top so editing doesn't silently rewrite it.
+var buildSourceOptions = function(currentValue) {
+  var opts = [{ value: "", label: "Select source..." }];
+  if (currentValue && SOURCES.indexOf(currentValue) === -1) {
+    opts.push({ value: currentValue, label: currentValue + " (legacy)" });
+  }
+  return opts.concat(SOURCES.map(function(x){ return { value: x, label: x }; }));
+};
 var PROP_TYPES = ["Apartment","Duplex","Townhouse","Twinhouse","Standalone","Commercial","Admin","Clinic","Service Apartment","Chalet"];
 
 
@@ -1380,7 +1400,7 @@ var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [form, setForm] = useState((function(){
-    var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"Facebook", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", eoiDate:"", eoiDeposit:"", downPaymentPct:"", installmentYears:"" };
+    var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", eoiDate:"", eoiDeposit:"", downPaymentPct:"", installmentYears:"" };
     // Load saved extra fields from localStorage if editing a deal
     if(p.editId){
       var extra=getDealExtra(String(p.editId));
@@ -1423,6 +1443,7 @@ var LeadForm = function(p) {
     // runs synchronously so it wins races that the React state can't.
     if (inflight.current) return;
     if (!form.name||!form.phone) return;
+    if (!isReq && !form.source) { alert("Please select a source"); return; }
     if (isEOIForm && !form.budget) { alert("Please enter the Amount (EGP)"); return; }
     if (isEOIForm && !form.project) { alert("Please enter the Project"); return; }
     if (isEOIForm && !form.eoiDeposit) { alert("Please enter the Deposit (EGP)"); return; }
@@ -1505,7 +1526,7 @@ var LeadForm = function(p) {
       {value:"DoneDeal",label:"Done Deal"}
     ]}/>}
     <Inp label={t.project} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder=""/>
-    {!isReq&&<Inp label={t.source} type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>}
+    {!isReq&&<Inp label={t.source} req type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={buildSourceOptions(form.source)}/>}
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     {isEOIForm&&<Inp label="📅 EOI Date" type="date" value={form.eoiDate||""} onChange={function(e){upd("eoiDate",e.target.value);}}/>}
     {isEOIForm&&<Inp label="💵 Deposit (EGP)" req value={form.eoiDeposit||""} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("eoiDeposit",r?Number(r).toLocaleString():"");}} placeholder=""/>}
@@ -2698,7 +2719,7 @@ var LeadsPage = function(p) {
     setCompareLead(null);
     setCompareEras([]);
   };
-  var [quickForm, setQuickForm] = useState({name:"",phone:"",project:PROJECTS[0],source:"Facebook"});
+  var [quickForm, setQuickForm] = useState({name:"",phone:"",project:PROJECTS[0],source:""});
   var [quickSaving, setQuickSaving] = useState(false);
   var [notifGranted, setNotifGranted] = useState(typeof Notification!=="undefined"&&Notification.permission==="granted");
   var [vipFilter, setVipFilter] = useState(false);
@@ -3896,18 +3917,19 @@ var LeadsPage = function(p) {
       <Inp label={t.name} req value={quickForm.name} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{name:e.target.value});});}}/>
       <Inp label={t.phone} req value={quickForm.phone} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{phone:e.target.value});});}} placeholder=""/>
       <Inp label={t.project} value={quickForm.project||""} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{project:e.target.value});});}} placeholder=""/>
-      <Inp label={t.source} type="select" value={quickForm.source} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{source:e.target.value});});}} options={SOURCES.map(function(x){return{value:x,label:x};})}/>
+      <Inp label={t.source} req type="select" value={quickForm.source} onChange={function(e){setQuickForm(function(f){return Object.assign({},f,{source:e.target.value});});}} options={buildSourceOptions(quickForm.source)}/>
       <div style={{ display:"flex", gap:10 }}>
         <Btn outline onClick={function(){setShowQuickAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn>
         <Btn loading={quickSaving} onClick={async function(){
           if(!quickForm.name||!quickForm.phone)return;
+          if(!quickForm.source){ alert("Please select a source"); return; }
           setQuickSaving(true);
           try{
             var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
             var lead=await apiFetch("/api/leads","POST",Object.assign({},quickForm,{agentId:quickForm.agentId||""}),p.token);
             p.setLeads(function(prev){return [lead].concat(prev);});
             setShowQuickAdd(false);
-            setQuickForm({name:"",phone:"",project:PROJECTS[0],source:"Facebook"});
+            setQuickForm({name:"",phone:"",project:PROJECTS[0],source:""});
             showBrowserNotif("✅ Lead Added",lead.name+" — "+lead.phone);
           }catch(e){alert(e.message);}
           setQuickSaving(false);
@@ -5985,7 +6007,7 @@ var EOIPage = function(p) {
     {showAdd&&<Modal show={true} onClose={function(){setShowAdd(false);}} title={"➕ Add EOI"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
         initialStatus="EOI"
-        initial={{status:"EOI", source:"Facebook", name:"", phone:"", phone2:"", budget:"", project:"", notes:"", eoiDeposit:""}}
+        initial={{status:"EOI", source:"", name:"", phone:"", phone2:"", budget:"", project:"", notes:"", eoiDeposit:""}}
         onClose={function(){setShowAdd(false);}}
         onSave={function(added){p.setLeads(function(prev){var nid=String(added&&added._id||"");if(!nid)return[added].concat(prev);if(prev.some(function(l){return gid(l)===nid;}))return prev.map(function(l){return gid(l)===nid?added:l;});return [added].concat(prev);});setShowAdd(false);}}/>
     </Modal>}
