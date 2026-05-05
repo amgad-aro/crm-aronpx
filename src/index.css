@@ -11,3 +11,52 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
 }
+
+/*
+ * Native <select> rendering stabilization (2026-05-06)
+ *
+ * Symptom: Chrome / Edge / WebKit browsers were showing a brief black
+ * rectangle (~1s) over the page when any <select> dropdown opened on
+ * the Leads page. DevTools confirmed the flickering element IS the
+ * native <select> itself — not a React modal, backdrop, or z-index
+ * issue. Browser-level rendering glitch with complex inline-styled
+ * selects in DOM-heavy pages.
+ *
+ * Fixes:
+ *  1. appearance: menulist — force the native dropdown chrome instead
+ *     of any "none" override the React inline styles might inherit.
+ *     Browsers render menulist with a stable initial paint; "none"
+ *     can leave the element in an indeterminate state during the
+ *     pre-paint frame.
+ *  2. background-color / color !important — make the closed-state
+ *     paint deterministic so the browser doesn't flash a default
+ *     theme color while resolving inline styles.
+ *  3. isolation: isolate — fresh stacking context per <select>, so
+ *     z-index from page-level stacking contexts (sticky toolbar at
+ *     z-index:90, modal overlays at 600, etc.) can't bleed into the
+ *     dropdown's compositing layer.
+ *  4. Explicit option colors — Chrome's native dropdown body
+ *     occasionally inherits a dark system-default background;
+ *     forcing white + slate-900 keeps the menu legible.
+ *
+ * If this doesn't fully resolve the symptom, the next escalation is
+ * replacing native <select> with a custom React dropdown — much
+ * larger refactor, last resort.
+ */
+select {
+  -webkit-appearance: menulist !important;
+  appearance: menulist !important;
+  background-color: #ffffff !important;
+  color: #1e293b !important;
+  isolation: isolate;
+}
+
+select:focus {
+  outline: 2px solid #8B5CF6;
+  outline-offset: 1px;
+}
+
+select option {
+  background-color: #ffffff !important;
+  color: #1e293b !important;
+}
