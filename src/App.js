@@ -12084,7 +12084,7 @@ var SettingsPage = function(p) {
         };
         var filtered = auditEntries.filter(function(e){
           if(!withinDate(e.timestamp||e.createdAt)) return false;
-          if(auditAdmin!=="all" && String(e.changedBy&&e.changedBy._id||e.changedBy) !== auditAdmin) return false;
+          if(auditAdmin!=="all" && String(e.actorId||"") !== auditAdmin) return false;
           if(auditField!=="all" && e.field !== auditField) return false;
           return true;
         });
@@ -12092,8 +12092,8 @@ var SettingsPage = function(p) {
         // Distinct admin + field lists for the filter dropdowns
         var admins = {};
         auditEntries.forEach(function(e){
-          var id   = String(e.changedBy&&e.changedBy._id||e.changedBy||"");
-          var name = (e.changedBy&&e.changedBy.name) || e.changedByName || id;
+          var id   = String(e.actorId||"");
+          var name = e.actorName || id;
           if(id) admins[id] = name;
         });
         var fields = Array.from(new Set(auditEntries.map(function(e){return e.field;}).filter(Boolean))).sort();
@@ -12119,6 +12119,18 @@ var SettingsPage = function(p) {
           var yesterday = new Date(today); yesterday.setDate(today.getDate()-1);
           if(dDay.getTime()===yesterday.getTime()) return "Yesterday "+time;
           return d.toLocaleDateString("en-GB",{day:"2-digit",month:"short"})+" "+time;
+        };
+
+        var doRollback = async function(entry){
+          if(!entry || entry.rolledBack) return;
+          if(!window.confirm("Are you sure? This will revert \""+entry.field+"\" to its previous value and create a counter-entry in the log.")) return;
+          try {
+            await apiFetch("/api/settings/audit/"+entry._id+"/rollback","POST",null,p.token,p.csrfToken);
+            var fresh = await apiFetch("/api/settings/audit","GET",null,p.token);
+            if(Array.isArray(fresh)) setAuditEntries(fresh);
+          } catch(err) {
+            alert("Rollback failed: " + ((err && err.message) || "Unknown error"));
+          }
         };
 
         return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
@@ -12163,7 +12175,7 @@ var SettingsPage = function(p) {
                 </div>
               : <div>
                   {filtered.map(function(e,i){
-                    var actor = (e.changedBy&&e.changedBy.name) || e.changedByName || "Admin";
+                    var actor = e.actorName || "Admin";
                     var field = e.field || "(unknown field)";
                     var rolled = !!e.rolledBack;
                     return <div key={e._id||i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"0.5px solid rgba(0,0,0,0.1)",fontSize:12}}>
@@ -12175,7 +12187,9 @@ var SettingsPage = function(p) {
                       </div>
                       <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
                         <span style={{color:"#666",fontSize:11}}>{formatTs(e.timestamp||e.createdAt)}</span>
-                        <button type="button" disabled={rolled} title={rolled ? "Already rolled back" : "Rollback not yet wired (endpoint pending)"}
+                        <button type="button" disabled={rolled}
+                          onClick={rolled ? undefined : function(){doRollback(e);}}
+                          title={rolled ? "Already rolled back" : "Revert this change"}
                           style={{fontSize:12,padding:"4px 10px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:6,cursor: rolled ? "not-allowed" : "pointer",color:"#1a1a1a",fontFamily:"inherit",opacity: rolled ? 0.4 : 0.8}}>
                           Rollback
                         </button>
