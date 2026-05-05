@@ -10845,14 +10845,15 @@ var SettingsPage = function(p) {
       .finally(function(){ if(!cancelled) setAuditLoaded(true); });
     return function(){ cancelled=true; };
   },[p.token]);
-  // Business Rules tab — UI-only toggles (backend enforces the locked ones regardless)
+  // Business Rules tab — only maxRotationsPerLead remains as a real toggle.
+  // Other previously-rendered toggles described behavior that was already
+  // hardcoded in the backend (or, in cancelForcedRot's case, didn't exist
+  // and is intentionally not built — the agent who reached EOI/Deal earned
+  // the second chance). maxRotationsPerLead persistence moves to the
+  // rotation AppSetting in Slice 2B; for now the in-memory default of 0
+  // (no cap) preserves the existing UI behavior.
   var [bizRules,setBizRules]=useState({
-    excludeArchived:   true,  // rotation exclusions
-    cancelReturnsHot:  true,  // cancel behavior
-    cancelForcedRot:   true,
-    maxRotationsPerLead:0,    // limits (0 = no cap)
-    salesEoiToPending: true,  // workflow
-    doneRemovesEoi:    true
+    maxRotationsPerLead:0     // limits (0 = no cap)
   });
   var [saved,setSaved]=useState(false);
   var [saveError,setSaveError]=useState("");
@@ -11996,7 +11997,6 @@ var SettingsPage = function(p) {
             {sectionHdr("Rotation exclusions")}
             {ruleRow({label:"Exclude Done Deals", desc:"Leads marked DoneDeal never enter rotation — they stay locked with the closing agent.", on:true, locked:true})}
             {ruleRow({label:"Exclude EOIs",       desc:"Leads with an active EOI stay with the current agent until approved or cancelled.",      on:true, locked:true})}
-            {ruleRow({label:"Exclude Archived leads", desc:"Archived leads are read-only and skip rotation entirely.", on:bizRules.excludeArchived, onClick:function(){setBR("excludeArchived",!bizRules.excludeArchived);}})}
             {ruleRow({label:"Stop rotation after N days in CRM", desc:"After this age a lead stops rotating and stays with its current agent. Synced with the Rotation tab.", on:rotStopDays>0, onClick:function(){setRotStopDays(rotStopDays>0?0:45);},
               inline: rotStopDays>0 ? inlineNum(rotStopDays,setRotStopDays,1,3650,"days") : null})}
           </div>
@@ -12005,11 +12005,6 @@ var SettingsPage = function(p) {
           <div style={{marginBottom:20}}>
             {sectionHdr("Cancel behavior")}
             {ruleRow({label:"Admin + Sales Admin only", desc:"Only these roles can cancel a Deal or an EOI. Others see view-only within their scope.", on:true, locked:true})}
-            {ruleRow({label:"Cancel returns lead to Hot Case", desc:"Cancelled Deal/EOI resets the lead's status so it rejoins the pipeline.", on:bizRules.cancelReturnsHot, onClick:function(){setBR("cancelReturnsHot",!bizRules.cancelReturnsHot);}})}
-            {ruleRow({label:"Forced rotation overrides one-shot rule", desc:"Cancel triggers a rotation that may assign to an agent who already handled the lead.", on:bizRules.cancelForcedRot, onClick:function(){setBR("cancelForcedRot",!bizRules.cancelForcedRot);}})}
-            <div style={{background:"#FAEEDA",borderLeft:"3px solid #854F0B",padding:"10px 14px",borderRadius:8,fontSize:12,color:"#854F0B",marginTop:10,lineHeight:1.5}}>
-              Cancel is admin-only for data integrity. The forced-rotation override is what makes cancelled leads reach a fresh agent.
-            </div>
           </div>
 
           {/* ── Rotation limits ── */}
@@ -12038,15 +12033,9 @@ var SettingsPage = function(p) {
           {/* ── Workflow rules ── */}
           <div style={{marginBottom:20}}>
             {sectionHdr("Workflow rules")}
-            {ruleRow({label:"Sales → Pending for EOI conversion",
-              desc:"Sales-initiated EOIs land in Pending state awaiting Admin / Sales Admin approval before lock-in.",
-              on:bizRules.salesEoiToPending, onClick:function(){setBR("salesEoiToPending",!bizRules.salesEoiToPending);}})}
             {ruleRow({label:"Admin approves EOI and Deal",
               desc:"Every EOI and every Deal requires Admin or Sales Admin approval before it activates.",
               on:true, locked:true})}
-            {ruleRow({label:"Done Deal removes item from EOI page",
-              desc:"Once a deal closes, the originating EOI disappears from the EOI listing.",
-              on:bizRules.doneRemovesEoi, onClick:function(){setBR("doneRemovesEoi",!bizRules.doneRemovesEoi);}})}
           </div>
 
           {/* ── User deletion cascade — locked, red-toned card ── */}
