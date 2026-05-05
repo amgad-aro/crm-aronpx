@@ -2712,6 +2712,12 @@ var LeadsPage = function(p) {
   var [importing, setImporting] = useState(false); var [importMsg, setImportMsg] = useState("");
   var [selected2, setSelected2] = useState([]);
   var [showBulk, setShowBulk] = useState(false); var [bulkAgent, setBulkAgent] = useState("");
+  // Phase A4-main (2026-05-05): bulk source-change modal state. Admin
+  // selects leads via the existing multi-select, opens via the new
+  // "Change Source" toolbar button, picks a canonical source, confirms.
+  var [showBulkSource, setShowBulkSource] = useState(false);
+  var [bulkSource, setBulkSource] = useState("");
+  var [bulkSourceSaving, setBulkSourceSaving] = useState(false);
   var [showWaTemplates, setShowWaTemplates] = useState(false);
   var [waLead, setWaLead] = useState(null);
   var [showBulkWa, setShowBulkWa] = useState(false);
@@ -3322,6 +3328,44 @@ var LeadsPage = function(p) {
     setImporting(false); e.target.value="";
   };
 
+  // Phase A4-main (2026-05-05): bulk source change handler. Validates
+  // selection + chosen source, POSTs to /api/admin/bulk-update-source,
+  // then mirrors the modifiedCount into local state via setLeads (matches
+  // the existing doBulkReassign in-place-update pattern). Server returns
+  // { updated, skippedNoOp, notFound, invalidIds } so the toast can give
+  // an accurate breakdown when partial.
+  var doBulkSourceChange = async function() {
+    if (!bulkSource) { alert("Please select a source"); return; }
+    if (!selected2.length) return;
+    setBulkSourceSaving(true);
+    try {
+      var res = await apiFetch("/api/admin/bulk-update-source","POST",
+        { ids: selected2, newSource: bulkSource }, p.token, p.csrfToken);
+      // Mirror in local state — only IDs we sent get updated. Server-side
+      // skipped/not-found rows leave their local state untouched (which is
+      // already correct).
+      var newSrc = bulkSource;
+      p.setLeads(function(prev){
+        return prev.map(function(l){
+          return selected2.indexOf(gid(l)) >= 0
+            ? Object.assign({}, l, { source: newSrc })
+            : l;
+        });
+      });
+      var msg = "✓ Updated " + (res.updated || 0) + " lead" + ((res.updated||0)===1?"":"s") + " to " + newSrc;
+      if (res.skippedNoOp)  msg += " · " + res.skippedNoOp + " already on this source";
+      if (res.notFound)     msg += " · " + res.notFound + " not found";
+      if (res.invalidIds)   msg += " · " + res.invalidIds + " invalid IDs";
+      alert(msg);
+      setSelected2([]);
+      setShowBulkSource(false);
+      setBulkSource("");
+    } catch (e) {
+      alert("Failed: " + (e && e.message ? e.message : "Unknown error"));
+    }
+    setBulkSourceSaving(false);
+  };
+
   var doBulkReassign = async function(force) {
     if(!bulkAgent||selected2.length===0) return;
     try {
@@ -3428,6 +3472,33 @@ var LeadsPage = function(p) {
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowBulk(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={doBulkReassign} style={{ flex:1 }}>{t.bulkReassign}</Btn></div>
     </Modal>
 
+    {/* Phase A4-main bulk source change modal — opens from the toolbar's
+        "📡 Change Source" button. Lists current-source breakdown of the
+        selected leads so admin can sanity-check what they're about to
+        retag, picks a canonical source from the dropdown, confirms. */}
+    <Modal show={showBulkSource} onClose={function(){setShowBulkSource(false);setBulkSource("");}} title={"Change source for " + selected2.length + " lead" + (selected2.length===1?"":"s")}>
+      <div style={{ marginBottom:14, padding:"10px 14px", background:"#F5F3FF", borderRadius:10, fontSize:13, color:"#5B21B6" }}>{selected2.length} lead{selected2.length===1?"":"s"} selected</div>
+      {(function(){
+        var counts = {};
+        var selectedLeads = (p.leads || []).filter(function(l){return selected2.indexOf(gid(l)) >= 0;});
+        selectedLeads.forEach(function(l){
+          var s = l.source || "(empty)";
+          counts[s] = (counts[s] || 0) + 1;
+        });
+        var rows = Object.keys(counts).map(function(s){return {source: s, count: counts[s]};}).sort(function(a,b){return b.count-a.count;});
+        if (rows.length === 0) return null;
+        return <div style={{ marginBottom:14, padding:"10px 14px", background:"#FAFAFA", borderRadius:10, fontSize:12, color:C.textLight, border:"1px solid #E8ECF1" }}>
+          <div style={{ fontWeight:600, marginBottom:6, color:C.text, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px" }}>Current breakdown</div>
+          {rows.map(function(r){return <div key={r.source} style={{ marginBottom:2 }}>{r.count}× {r.source}</div>;})}
+        </div>;
+      })()}
+      <Inp label="New source" req type="select" value={bulkSource} onChange={function(e){setBulkSource(e.target.value);}} options={buildSourceOptions(bulkSource)}/>
+      <div style={{ display:"flex", gap:10 }}>
+        <Btn outline onClick={function(){setShowBulkSource(false);setBulkSource("");}} style={{ flex:1 }}>{t.cancel}</Btn>
+        <Btn loading={bulkSourceSaving} onClick={doBulkSourceChange} style={{ flex:1 }}>Change Source</Btn>
+      </div>
+    </Modal>
+
     {/* Sticky Toolbar */}
     <div style={{ position:"sticky", top:64, zIndex:90, background:"#F8FAFC", margin:"0 -16px 14px", padding:"8px 16px 8px", borderBottom:"1px solid #E8ECF1", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
       <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:8 }}>
@@ -3470,6 +3541,7 @@ var LeadsPage = function(p) {
           setSelected2([]);
           if(selected&&ids.includes(gid(selected)))setSelected(null);
         }} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Archive size={13}/> Archive ({selected2.length})</Btn>}
+        {selected2.length>0&&isOnlyAdmin&&<Btn outline onClick={function(){setShowBulkSource(true);}} style={{ padding:"7px 11px", fontSize:12, color:"#8B5CF6", borderColor:"#8B5CF6" }}>📡 Change Source ({selected2.length})</Btn>}
         {selected2.length>0&&<Btn outline onClick={function(){setShowBulkWa(true);}} style={{ padding:"7px 11px", fontSize:12, color:"#25D366", borderColor:"#25D366" }}>💬 {t.bulkWhatsApp} ({selected2.length})</Btn>}
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
         {isOnlyAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}

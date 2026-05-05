@@ -4698,6 +4698,93 @@ app.get("/api/admin/source-data-diagnose", auth, async function(req, res) {
   }
 });
 
+// Phase A4-main (2026-05-05): bulk source retag for cohort cleanup.
+// Admin-triggered from the Leads page bulk-action toolbar after admin
+// selects leads via the standard multi-select checkboxes, then picks
+// "Change Source". Validates newSource against the canonical SOURCES
+// list — no arbitrary string retagging through this path.
+//
+// Per-lead history[] entry captures the old → new transition so the
+// audit timeline reflects who retagged what and when. Single
+// Lead.bulkWrite operation for atomicity. No-op rows (oldSource ===
+// newSource) are skipped to avoid noise in the history.
+app.post("/api/admin/bulk-update-source", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    var body = req.body || {};
+    var ids = Array.isArray(body.ids) ? body.ids : [];
+    var newSource = String(body.newSource == null ? "" : body.newSource);
+
+    if (!ids.length) return res.status(400).json({ error: "ids array required" });
+    if (!newSource) return res.status(400).json({ error: "newSource required" });
+
+    // Canonical-source gate — same as source-cleanup-apply enforced.
+    var sourceSet = {};
+    SOURCES.forEach(function(s){ sourceSet[s] = true; });
+    if (!sourceSet[newSource]) {
+      return res.status(400).json({ error: "newSource must be in canonical SOURCES" });
+    }
+
+    // Drop garbage IDs silently — return invalidIds count for the UI.
+    var validIds = [];
+    var invalidIds = 0;
+    for (var i = 0; i < ids.length; i++) {
+      if (mongoose.Types.ObjectId.isValid(ids[i])) {
+        validIds.push(new mongoose.Types.ObjectId(ids[i]));
+      } else {
+        invalidIds++;
+      }
+    }
+    if (!validIds.length) {
+      return res.status(400).json({ error: "no valid ObjectIds in ids" });
+    }
+
+    // Two-phase write: read each lead's current source so the history
+    // entry can record the actual old → new transition (Lead.updateMany
+    // would lose the per-row old value). Filter at app level — leads
+    // not found, or already on newSource, are excluded from the bulkWrite.
+    var leads = await Lead.find({ _id: { $in: validIds }}).select("_id source").lean();
+    var foundIds = {};
+    leads.forEach(function(l){ foundIds[String(l._id)] = true; });
+    var notFound = validIds.length - leads.length;
+
+    var actorName = (req.user && req.user.name) ? req.user.name : "Admin";
+    var ops = [];
+    var skippedNoOp = 0;
+
+    leads.forEach(function(l) {
+      var oldSource = l.source || "";
+      if (oldSource === newSource) { skippedNoOp++; return; }
+      var entry = historyEntry("source_changed",
+        "Source: \"" + oldSource + "\" → \"" + newSource + "\" by " + actorName,
+        actorName, "");
+      ops.push({
+        updateOne: {
+          filter: { _id: l._id },
+          update: { $set: { source: newSource }, $push: { history: entry }}
+        }
+      });
+    });
+
+    var updated = 0;
+    if (ops.length) {
+      var result = await Lead.bulkWrite(ops);
+      updated = result.modifiedCount || 0;
+    }
+
+    res.json({
+      updated: updated,
+      skippedNoOp: skippedNoOp,
+      notFound: notFound,
+      invalidIds: invalidIds
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Bulk delete archived leads
 app.post("/api/leads/bulk-delete", auth, adminOnly, async function(req, res) {
   try {
