@@ -2728,6 +2728,13 @@ var LeadsPage = function(p) {
   var [agentFilter, setAgentFilter] = useState("");
   var [sortBy, setSortBy] = useState("lastActivity");
   var [lockedOnly, setLockedOnly] = useState(false);
+  // Phase A4-prep (2026-05-05): Source + Campaign filters for cohort
+  // identification before the bulk source editor (next slice). Admin /
+  // sales_admin only — gated in the UI. Apply additively on top of the
+  // existing filter pipeline at the bottom of the main branch.
+  var [sourceFilter, setSourceFilter] = useState("");
+  var [campaignMode, setCampaignMode] = useState("all"); // "all" | "has" | "none" | "contains"
+  var [campaignText, setCampaignText] = useState("");
   var [panelHistory, setPanelHistory] = useState([]);
   var [dateRange, setDateRange] = useState("all"); // today | yesterday | week | month | quarter | all
   var fileRef = useRef(null);
@@ -3032,6 +3039,23 @@ var LeadsPage = function(p) {
     if (vipFilter) filtered = filtered.filter(function(l){return l.isVIP;});
     if (noAgentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return !aid; });
     if (agentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return aid===agentFilter; });
+    // Phase A4-prep filters. Source matches exactly against the lead's
+    // stored source value (legacy values like "Snap Chat" / lowercase
+    // "facebook" remain selectable from the dropdown). Campaign supports
+    // four modes: all (no filter), has (non-empty after trim), none
+    // (empty after trim), contains (case-insensitive substring; blank
+    // text degrades to no filter).
+    if (sourceFilter) filtered = filtered.filter(function(l){ return (l.source||"") === sourceFilter; });
+    if (campaignMode === "has") {
+      filtered = filtered.filter(function(l){ return String(l.campaign||"").trim() !== ""; });
+    } else if (campaignMode === "none") {
+      filtered = filtered.filter(function(l){ return String(l.campaign||"").trim() === ""; });
+    } else if (campaignMode === "contains") {
+      var campaignNeedle = campaignText.trim().toLowerCase();
+      if (campaignNeedle) {
+        filtered = filtered.filter(function(l){ return String(l.campaign||"").toLowerCase().indexOf(campaignNeedle) >= 0; });
+      }
+    }
   }
   // Date-range chips. For the Important tab the chip filters by the
   // qualifying-mark date; for every other tab it filters by the lead's most
@@ -3462,10 +3486,37 @@ var LeadsPage = function(p) {
             setNoAgentFilter(false);
             setVipFilter(false);
             setSortBy("lastActivity");
+            setSourceFilter("");
+            setCampaignMode("all");
+            setCampaignText("");
             if (p.setSearch) p.setSearch("");
           }
           setLockedOnly(!lockedOnly);
         }} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:lockedOnly?"#EC4899":"#E8ECF1", background:lockedOnly?"#FCE7F3":"#fff", color:lockedOnly?"#BE185D":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>🔒 Locked Only{lockedOnly?" ("+filtered.length+")":""}</button>}
+        {isOnlyAdmin&&(function(){
+          // Source filter dropdown — "All sources" + canonical SOURCES +
+          // any legacy values currently present in the visible lead set
+          // (e.g. "Instagram", "Snap Chat", lowercase "facebook" from
+          // /api/leads/inbound). Mirrors buildSourceOptions's "(legacy)"
+          // suffix convention so admin can isolate the cleanup cohorts.
+          var seenS = {};
+          SOURCES.forEach(function(s){ seenS[s] = true; });
+          var legacyMap = {};
+          (p.leads || []).forEach(function(l){ if (l.source && !seenS[l.source]) legacyMap[l.source] = true; });
+          var legacyList = Object.keys(legacyMap).sort();
+          return <select value={sourceFilter} onChange={function(e){setLockedOnly(false);setSourceFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+            <option value="">📡 All sources</option>
+            {SOURCES.map(function(s){return <option key={s} value={s}>{s}</option>;})}
+            {legacyList.map(function(s){return <option key={s} value={s}>{s} (legacy)</option>;})}
+          </select>;
+        })()}
+        {isOnlyAdmin&&<select value={campaignMode} onChange={function(e){setLockedOnly(false);setCampaignMode(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+          <option value="all">📣 All campaigns</option>
+          <option value="has">Has campaign</option>
+          <option value="none">No campaign</option>
+          <option value="contains">Contains text…</option>
+        </select>}
+        {isOnlyAdmin&&campaignMode==="contains"&&<input type="text" value={campaignText} onChange={function(e){setLockedOnly(false);setCampaignText(e.target.value);}} placeholder="Campaign contains..." style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text, width:160 }}/>}
       </div>
     </div>
     {importMsg&&<div style={{ marginBottom:10, padding:"9px 14px", background:importMsg.startsWith("✅")?"#DCFCE7":"#FEE2E2", color:importMsg.startsWith("✅")?"#15803D":"#B91C1C", borderRadius:9, fontSize:13 }}>{importMsg}</div>}
