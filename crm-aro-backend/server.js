@@ -9593,10 +9593,23 @@ app.get("/api/reports/agents/:id/stuck-leads", auth, reportsAuth, async function
 // =============================================================================
 // TEMPORARY DIAGNOSTIC — callback-gaming detection sizing (post-Phase-3 track).
 // Read-only, admin-only. Sizes how many CallBack-status leads match the
-// gaming criteria (≥10 callback_scheduled events lifetime, no non-cb gated
-// history events in last 14d, no contact-type Activity in last 14d) so we
-// can validate the threshold + per-agent concentration before building the
-// live /api/reports/overview/callback-gaming endpoint and Overview-tab UI.
+// gaming criteria so we can validate the threshold + per-agent concentration
+// before building the live /api/reports/overview/callback-gaming endpoint
+// and Overview-tab UI.
+//
+// LOOSER DEFINITION (revised 2026-05-05 after first diagnostic showed 0 hits
+// at all thresholds — the strict "no status_changed in 14d" criterion was
+// impossible to satisfy in this CRM because the rotation sweeper / form-
+// edit handler emit status_changed routinely without representing real
+// customer engagement). Gaming criteria now:
+//   1. ≥N callback_scheduled events lifetime (N is the threshold knob)
+//   2. No feedback_added event in last 14 days (customer said nothing new)
+//   3. No contact-type Activity in last 14 days (agent didn't engage —
+//      call/meeting/followup/email)
+// status_changed deliberately DROPPED from the recency check — it's
+// rotation/form-edit noise, not customer-progress signal. Same drop
+// applied to lastProgressAt (uses feedback_added + contactActivity only).
+//
 // REMOVE IN CLEANUP COMMIT — search for "callback-gaming-diagnose" to find
 // every reference. The whole endpoint is a single self-contained block.
 // =============================================================================
@@ -9645,30 +9658,30 @@ app.get("/api/admin/callback-gaming-diagnose", auth, async function(req, res) {
             as: "h",
             cond: { $eq: ["$$h.event", "callback_scheduled"] }
           }}},
-          // Recent non-callback gated events (status_changed/feedback_added)
-          // within last 14 days. $convert guards against legacy string
-          // timestamps in Lead.history[] (the same Mongoose-Mixed sub-array
-          // contamination that crashed 08c994f). Bad timestamps → null,
-          // null is not $gte any real date, so they correctly don't count
-          // as "recent progress".
-          recentNonCbHistoryCount: { $size: { $filter: {
+          // Recent feedback_added events within last 14 days. $convert
+          // guards against legacy string timestamps in Lead.history[] (the
+          // same Mongoose-Mixed sub-array contamination that crashed
+          // 08c994f). Bad timestamps → null, null is not $gte any real
+          // date, so they correctly don't count as "recent progress".
+          // status_changed deliberately excluded — see header NOTE.
+          recentFeedbackCount: { $size: { $filter: {
             input: { $ifNull: ["$history", []] },
             as: "h",
             cond: { $and: [
-              { $in: ["$$h.event", ["status_changed", "feedback_added"]] },
+              { $eq: ["$$h.event", "feedback_added"] },
               { $gte: [
                 { $convert: { input: "$$h.timestamp", to: "date", onError: null, onNull: null }},
                 FOURTEEN_DAYS_AGO
               ]}
             ]}
           }}},
-          // Most recent ALL-TIME non-cb gated history timestamp (for
+          // Most recent ALL-TIME feedback_added timestamp (for
           // daysSinceLastProgress). Same $convert guard.
-          lastProgressHistoryAt: { $max: { $map: {
+          lastFeedbackAt: { $max: { $map: {
             input: { $filter: {
               input: { $ifNull: ["$history", []] },
               as: "h",
-              cond: { $in: ["$$h.event", ["status_changed", "feedback_added"]] }
+              cond: { $eq: ["$$h.event", "feedback_added"] }
             }},
             as: "h",
             in: { $convert: { input: "$$h.timestamp", to: "date", onError: null, onNull: null }}
@@ -9688,22 +9701,25 @@ app.get("/api/admin/callback-gaming-diagnose", auth, async function(req, res) {
             { $gte: [{ $arrayElemAt: ["$lastContactAct.t", 0] }, FOURTEEN_DAYS_AGO] }
           ]},
           // Most-recent-real-progress timestamp (used for daysSinceLastProgress).
-          lastProgressAt: { $max: ["$lastProgressHistoryAt", "$lastContactActAt"] }
+          // Real progress = feedback_added OR contact-type Activity. status_changed
+          // not included (rotation/form-edit noise, see header NOTE).
+          lastProgressAt: { $max: ["$lastFeedbackAt", "$lastContactActAt"] }
       }},
       { $addFields: {
           // isGamed — at the proposed ≥10 threshold (live-spec default).
+          // Looser definition: drop status_changed from the recency check.
           isGamed: { $and: [
             { $gte: ["$callbackCount", 10] },
-            { $eq: ["$recentNonCbHistoryCount", 0] },
+            { $eq: ["$recentFeedbackCount", 0] },
             { $eq: ["$hasRecentContactActivity", false] }
           ]},
           // Threshold sensitivity flags — same gaming criteria but at
           // different reschedule-count bars. Lets us A/B the threshold
           // before locking it in for the live endpoint.
-          isGamedAtMin5:  { $and: [{ $gte: ["$callbackCount", 5]  }, { $eq: ["$recentNonCbHistoryCount", 0] }, { $eq: ["$hasRecentContactActivity", false] }] },
-          isGamedAtMin10: { $and: [{ $gte: ["$callbackCount", 10] }, { $eq: ["$recentNonCbHistoryCount", 0] }, { $eq: ["$hasRecentContactActivity", false] }] },
-          isGamedAtMin15: { $and: [{ $gte: ["$callbackCount", 15] }, { $eq: ["$recentNonCbHistoryCount", 0] }, { $eq: ["$hasRecentContactActivity", false] }] },
-          isGamedAtMin20: { $and: [{ $gte: ["$callbackCount", 20] }, { $eq: ["$recentNonCbHistoryCount", 0] }, { $eq: ["$hasRecentContactActivity", false] }] }
+          isGamedAtMin5:  { $and: [{ $gte: ["$callbackCount", 5]  }, { $eq: ["$recentFeedbackCount", 0] }, { $eq: ["$hasRecentContactActivity", false] }] },
+          isGamedAtMin10: { $and: [{ $gte: ["$callbackCount", 10] }, { $eq: ["$recentFeedbackCount", 0] }, { $eq: ["$hasRecentContactActivity", false] }] },
+          isGamedAtMin15: { $and: [{ $gte: ["$callbackCount", 15] }, { $eq: ["$recentFeedbackCount", 0] }, { $eq: ["$hasRecentContactActivity", false] }] },
+          isGamedAtMin20: { $and: [{ $gte: ["$callbackCount", 20] }, { $eq: ["$recentFeedbackCount", 0] }, { $eq: ["$hasRecentContactActivity", false] }] }
       }},
       { $project: {
           _id: 1, name: 1, agentId: 1, createdAt: 1,
