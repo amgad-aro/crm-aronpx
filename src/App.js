@@ -11040,6 +11040,32 @@ var SettingsPage = function(p) {
   var [loading,setLoading]=useState(true);
   var [activeTab,setActiveTab]=useState("general");
 
+  // Campaigns tab (Phase B) — state + lazy hydration when admin opens
+  // the tab. knownCampaignNames is distinct lead.campaign values from
+  // the server, surfaced in the Add Campaign autocomplete so admin can
+  // pick from real campaign labels already in the data.
+  var [campaigns,setCampaigns]=useState([]);
+  var [knownCampaignNames,setKnownCampaignNames]=useState([]);
+  var [campaignsLoaded,setCampaignsLoaded]=useState(false);
+  var [showCampModal,setShowCampModal]=useState(false);
+  var [editCampId,setEditCampId]=useState(null);
+  var [campForm,setCampForm]=useState({name:"",sourcePlatform:"",spend:"",startDate:"",endDate:"",notes:""});
+  var [campSaving,setCampSaving]=useState(false);
+  var [campError,setCampError]=useState("");
+  useEffect(function(){
+    if (activeTab !== "campaigns") return;
+    var cancelled=false;
+    apiFetch("/api/settings/campaigns","GET",null,p.token)
+      .then(function(data){
+        if (cancelled) return;
+        setCampaigns(Array.isArray(data && data.campaigns) ? data.campaigns : []);
+        setKnownCampaignNames(Array.isArray(data && data.knownCampaignNames) ? data.knownCampaignNames : []);
+        setCampaignsLoaded(true);
+      })
+      .catch(function(){ if (!cancelled) setCampaignsLoaded(true); });
+    return function(){ cancelled=true; };
+  },[activeTab,p.token]);
+
   useEffect(function(){
     var cancelled=false;
     apiFetch("/api/settings/rotation","GET",null,p.token).then(function(s){
@@ -11146,6 +11172,80 @@ var SettingsPage = function(p) {
     } catch(e) { alert((e&&e.message)||"Failed"); }
   };
 
+  // Campaigns tab (Phase B) — modal handlers. openCampCreate clears the
+  // form for a new record; openCampEdit pre-fills from an existing one.
+  // submitCampaign POSTs (create) or PUTs (edit) and merges the result
+  // into local state. deleteCampaign confirms via window.confirm and
+  // splices on success.
+  var openCampCreate = function(){
+    setCampError("");
+    setEditCampId(null);
+    setCampForm({name:"",sourcePlatform:"",spend:"",startDate:"",endDate:"",notes:""});
+    setShowCampModal(true);
+  };
+  var openCampEdit = function(c){
+    setCampError("");
+    setEditCampId(c.id);
+    setCampForm({
+      name: c.name || "",
+      sourcePlatform: c.sourcePlatform || "",
+      spend: c.spend != null ? String(c.spend) : "",
+      startDate: c.startDate ? String(c.startDate).slice(0,10) : "",
+      endDate:   c.endDate   ? String(c.endDate).slice(0,10)   : "",
+      notes: c.notes || ""
+    });
+    setShowCampModal(true);
+  };
+  var closeCampModal = function(){
+    setShowCampModal(false);
+    setEditCampId(null);
+    setCampError("");
+  };
+  var updCamp = function(k,v){ setCampForm(function(prev){ var n=Object.assign({},prev); n[k]=v; return n; }); };
+  var submitCampaign = async function(){
+    setCampError("");
+    if (!campForm.name.trim()) { setCampError("Name required"); return; }
+    if (!campForm.sourcePlatform) { setCampError("Source platform required"); return; }
+    var spendNum = Number(campForm.spend);
+    if (!isFinite(spendNum) || spendNum < 0) { setCampError("Spend must be a non-negative number"); return; }
+    if (!campForm.startDate) { setCampError("Start date required"); return; }
+    if (!campForm.endDate) { setCampError("End date required"); return; }
+    if (new Date(campForm.startDate) > new Date(campForm.endDate)) { setCampError("Start date must be before end date"); return; }
+    setCampSaving(true);
+    try {
+      var payload = {
+        name: campForm.name.trim(),
+        sourcePlatform: campForm.sourcePlatform,
+        spend: spendNum,
+        startDate: campForm.startDate,
+        endDate: campForm.endDate,
+        notes: campForm.notes.trim()
+      };
+      var result;
+      if (editCampId) {
+        result = await apiFetch("/api/settings/campaigns/"+editCampId,"PUT",payload,p.token,p.csrfToken);
+        setCampaigns(function(prev){ return prev.map(function(c){ return c.id === editCampId ? result : c; }); });
+      } else {
+        result = await apiFetch("/api/settings/campaigns","POST",payload,p.token,p.csrfToken);
+        setCampaigns(function(prev){ return [result].concat(prev); });
+      }
+      closeCampModal();
+    } catch(e) {
+      setCampError((e && e.message) || "Save failed");
+    }
+    setCampSaving(false);
+  };
+  var deleteCampaign = async function(c){
+    if (!c || !c.id) return;
+    if (!window.confirm("Delete campaign \""+(c.name||"")+"\"? This removes the spend record from future ROI reports. Cannot be undone.")) return;
+    try {
+      await apiFetch("/api/settings/campaigns/"+c.id,"DELETE",null,p.token,p.csrfToken);
+      setCampaigns(function(prev){ return prev.filter(function(x){ return x.id !== c.id; }); });
+    } catch(e) {
+      alert("Delete failed: " + ((e && e.message) || "Unknown error"));
+    }
+  };
+
   // Tier-aware drag state: source and destination each tracked with {tier,idx}.
   var [dragFrom,setDragFrom]=useState(null);
   var [dropOn,setDropOn]=useState(null);
@@ -11225,6 +11325,7 @@ var SettingsPage = function(p) {
     {id:"team",        label:"Team & Roles"},
     p.cu&&p.cu.role!=="sales_admin"&&{id:"integrations",label:"Integrations"},
     {id:"rules",       label:"Business Rules"},
+    {id:"campaigns",   label:"Campaigns"},
     {id:"audit",       label:"Audit Log"}
   ].filter(Boolean);
   // Tab chip: white-on-gray, active = white bg with 0.5px border. Matches mockup .tab.
@@ -12238,6 +12339,107 @@ var SettingsPage = function(p) {
           <div style={{background:"#FCEBEB",borderLeft:"3px solid #A32D2D",padding:"10px 14px",borderRadius:8,fontSize:12,color:"#A32D2D",lineHeight:1.5}}>
             Locked rules protect critical data integrity. They cannot be disabled from the UI.
           </div>
+        </div>;
+      })()}
+      {activeTab==="campaigns"&&(function(){
+        var fmtMoney = function(n){ try { return Number(n||0).toLocaleString("en-US"); } catch(_){ return String(n); }};
+        var fmtDate  = function(iso){ if (!iso) return "—"; try { return new Date(iso).toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"numeric"}); } catch(_){ return String(iso); }};
+        var sortedCamps = campaigns.slice().sort(function(a,b){
+          var ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          var tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return tb - ta;
+        });
+        var thStyle = { textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:"#666", borderBottom:"1px solid #E8ECF1" };
+        var tdStyle = { padding:"10px 12px", fontSize:13, color:"#1a1a1a", verticalAlign:"top" };
+        var btnLink = { background:"none", border:"none", color:"#185FA5", cursor:"pointer", fontSize:12, padding:0 };
+        var unconfigured = (knownCampaignNames || []).filter(function(n){
+          return !sortedCamps.some(function(c){ return c.name === n; });
+        });
+        return <div>
+          <div style={{display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:12, marginBottom:14}}>
+            <div>
+              <div style={{fontSize:14, fontWeight:500, marginBottom:4}}>Campaign cost tracking</div>
+              <div style={{fontSize:12, color:"#666"}}>Record ad spend per campaign for ROI analysis. Names must match leads.campaign exactly so reports can join the data.</div>
+            </div>
+            <button type="button" onClick={openCampCreate} style={{padding:"7px 14px", borderRadius:8, border:"0.5px solid rgba(24,95,165,0.3)", background:"#E6F1FB", color:"#185FA5", fontSize:12, fontWeight:500, cursor:"pointer", whiteSpace:"nowrap", fontFamily:"inherit"}}>+ Add Campaign</button>
+          </div>
+
+          {unconfigured.length > 0 && <div style={{marginBottom:14, padding:"10px 14px", background:"#FFF7ED", borderLeft:"3px solid #F59E0B", borderRadius:8, fontSize:12, color:"#92400E", lineHeight:1.5}}>
+            <b>{unconfigured.length}</b> campaign name{unconfigured.length===1?"":"s"} appear in leads but {unconfigured.length===1?"isn't":"aren't"} tracked yet:&nbsp;
+            <span style={{fontFamily:"ui-monospace, Menlo, monospace", color:"#1a1a1a"}}>
+              {unconfigured.slice(0,5).join(", ")}{unconfigured.length>5?", …":""}
+            </span>
+            {" "}— ROI reports won't show spend until you add them here.
+          </div>}
+
+          {!campaignsLoaded ? <div style={{padding:30, textAlign:"center", color:"#999", fontSize:12}}>Loading…</div>
+            : sortedCamps.length===0 ? <div style={{padding:"40px 20px", textAlign:"center", color:"#666", border:"1px dashed #E2E8F0", borderRadius:10}}>
+                <div style={{fontSize:36, marginBottom:8}}>📣</div>
+                <div style={{fontSize:14, fontWeight:500, color:"#1a1a1a", marginBottom:4}}>No campaigns yet</div>
+                <div style={{fontSize:12}}>Click "+ Add Campaign" above to record your first ad spend.</div>
+              </div>
+            : <div style={{overflowX:"auto", border:"0.5px solid rgba(0,0,0,0.1)", borderRadius:10}}>
+                <table style={{width:"100%", borderCollapse:"collapse"}}>
+                  <thead>
+                    <tr style={{background:"#F7F7F5"}}>
+                      <th style={thStyle}>Name</th>
+                      <th style={thStyle}>Source</th>
+                      <th style={Object.assign({},thStyle,{textAlign:"right"})}>Spend (EGP)</th>
+                      <th style={thStyle}>Start</th>
+                      <th style={thStyle}>End</th>
+                      <th style={thStyle}>Notes</th>
+                      <th style={Object.assign({},thStyle,{textAlign:"right"})}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedCamps.map(function(c){
+                      return <tr key={c.id} style={{borderTop:"0.5px solid rgba(0,0,0,0.06)"}}>
+                        <td style={Object.assign({},tdStyle,{fontWeight:500})}>{c.name}</td>
+                        <td style={tdStyle}>{c.sourcePlatform}</td>
+                        <td style={Object.assign({},tdStyle,{textAlign:"right", fontFamily:"ui-monospace, Menlo, monospace"})}>{fmtMoney(c.spend)}</td>
+                        <td style={Object.assign({},tdStyle,{whiteSpace:"nowrap"})}>{fmtDate(c.startDate)}</td>
+                        <td style={Object.assign({},tdStyle,{whiteSpace:"nowrap"})}>{fmtDate(c.endDate)}</td>
+                        <td style={Object.assign({},tdStyle,{maxWidth:240, fontSize:12, color:"#666"})} title={c.notes||""}>{c.notes||"—"}</td>
+                        <td style={Object.assign({},tdStyle,{textAlign:"right", whiteSpace:"nowrap"})}>
+                          <button type="button" onClick={function(){openCampEdit(c);}} style={btnLink}>Edit</button>
+                          <span style={{margin:"0 8px", color:"#CBD5E1"}}>·</span>
+                          <button type="button" onClick={function(){deleteCampaign(c);}} style={Object.assign({},btnLink,{color:"#A32D2D"})}>Delete</button>
+                        </td>
+                      </tr>;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+          }
+
+          <Modal show={showCampModal} onClose={closeCampModal} title={editCampId ? "Edit Campaign" : "Add Campaign"}>
+            {campError && <div style={{marginBottom:14, padding:"10px 14px", background:"#FCEBEB", color:"#A32D2D", borderRadius:10, fontSize:13}}>{campError}</div>}
+            <div style={{marginBottom:13}}>
+              <label style={{display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5}}>Campaign name<span style={{color:C.danger, marginRight:3}}> *</span></label>
+              <input list="known-campaigns" type="text" value={campForm.name} onChange={function(e){updCamp("name",e.target.value);}}
+                placeholder="e.g. Sheraton Commercial 2"
+                style={{width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, outline:"none", boxSizing:"border-box"}}/>
+              <datalist id="known-campaigns">
+                {knownCampaignNames.map(function(n){ return <option key={n} value={n}/>; })}
+              </datalist>
+              {knownCampaignNames.length>0 && <div style={{fontSize:11, color:C.textLight, marginTop:4}}>Pick from {knownCampaignNames.length} campaign{knownCampaignNames.length===1?"":"s"} referenced in leads, or type a new one.</div>}
+            </div>
+            <Inp label="Source platform" req type="select" value={campForm.sourcePlatform}
+              onChange={function(e){updCamp("sourcePlatform",e.target.value);}}
+              options={[{value:"",label:"Select source..."}].concat(SOURCES.map(function(s){return{value:s,label:s};}))}/>
+            <Inp label="Spend (EGP)" req value={campForm.spend}
+              onChange={function(e){updCamp("spend",e.target.value.replace(/[^0-9.]/g,""));}}
+              placeholder="e.g. 5000"/>
+            <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px"}}>
+              <Inp label="Start date" req type="date" value={campForm.startDate} onChange={function(e){updCamp("startDate",e.target.value);}}/>
+              <Inp label="End date"   req type="date" value={campForm.endDate}   onChange={function(e){updCamp("endDate",e.target.value);}}/>
+            </div>
+            <Inp label="Notes" type="textarea" value={campForm.notes} onChange={function(e){updCamp("notes",e.target.value);}}/>
+            <div style={{display:"flex", gap:10}}>
+              <Btn outline onClick={closeCampModal} style={{flex:1}}>{t.cancel}</Btn>
+              <Btn loading={campSaving} onClick={submitCampaign} style={{flex:1}}>{editCampId ? "Save Changes" : "Add Campaign"}</Btn>
+            </div>
+          </Modal>
         </div>;
       })()}
       {activeTab==="audit"&&(function(){

@@ -1081,6 +1081,9 @@ app.post("/api/settings/audit/:id/rollback", auth, async function(req, res) {
     if (entry.field && String(entry.field).indexOf("projectWeights.") === 0) {
       return res.status(400).json({ error: "Rollback not yet supported for project-weight changes — re-save via Commission Projects" });
     }
+    if (entry.field && String(entry.field).indexOf("campaigns.") === 0) {
+      return res.status(400).json({ error: "Rollback not yet supported for campaign changes — re-edit via Settings → Campaigns" });
+    }
 
     var path = "value." + entry.field;
     var setOp = {}; setOp[path] = entry.oldValue;
@@ -1257,6 +1260,241 @@ app.put("/api/settings/project-weights", auth, async function(req, res) {
 
     try { broadcast("settings_updated", { key: "projectWeights", value: sanitized }); } catch(e) {}
     res.json(sanitized);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== CAMPAIGNS (Phase B, 2026-05-06) =====
+// AppSetting key "campaigns" — array of {id, name, sourcePlatform, spend,
+// startDate, endDate, notes, createdAt, updatedAt}. Per-record CRUD.
+// Audit emits one SettingsAudit row per changed field on edit; single
+// "campaigns.<id>.created" / "campaigns.<id>.deleted" rows on create or
+// delete. Auto-rollback for campaigns.* fields is rejected at the
+// audit-rollback handler (see ~50 lines up) — admin re-edits manually.
+// Mirrors the project-weights AppSetting pattern (server.js:1130 area).
+var _campaignsCache = { at: 0, list: null };
+function bustCampaignsCache() { _campaignsCache.at = 0; _campaignsCache.list = null; }
+
+async function getCampaigns() {
+  var now = Date.now();
+  if (!_campaignsCache.list || (now - _campaignsCache.at) > 30000) {
+    var doc = await AppSetting.findOne({ key: "campaigns" }).lean();
+    var v = (doc && doc.value && Array.isArray(doc.value.campaigns)) ? doc.value.campaigns : [];
+    _campaignsCache.list = v;
+    _campaignsCache.at = now;
+  }
+  return _campaignsCache.list.slice();
+}
+
+// Validates a campaign payload against the canonical SOURCES list and
+// returns either { errors: [...], normalized: null } or
+// { errors: [], normalized: cleanObject }.
+function validateCampaignPayload(c) {
+  var errors = [];
+  var name = String(c && c.name || "").trim();
+  if (!name) errors.push("name required");
+  var sourcePlatform = String(c && c.sourcePlatform || "").trim();
+  var sourceSet = {};
+  SOURCES.forEach(function(s){ sourceSet[s] = true; });
+  if (!sourcePlatform || !sourceSet[sourcePlatform]) errors.push("sourcePlatform must be in canonical SOURCES");
+  var spend = Number(c && c.spend);
+  if (!isFinite(spend) || spend < 0) errors.push("spend must be a non-negative number");
+  var startISO = c && c.startDate ? String(c.startDate) : "";
+  var endISO   = c && c.endDate   ? String(c.endDate)   : "";
+  var startD = startISO ? new Date(startISO) : null;
+  var endD   = endISO   ? new Date(endISO)   : null;
+  if (!startD || isNaN(startD.getTime())) errors.push("startDate required (ISO date string)");
+  if (!endD   || isNaN(endD.getTime()))   errors.push("endDate required (ISO date string)");
+  if (startD && endD && !isNaN(startD.getTime()) && !isNaN(endD.getTime()) && startD > endD) {
+    errors.push("startDate must be <= endDate");
+  }
+  if (errors.length) return { errors: errors, normalized: null };
+  return {
+    errors: [],
+    normalized: {
+      name: name,
+      sourcePlatform: sourcePlatform,
+      spend: spend,
+      startDate: startD.toISOString(),
+      endDate: endD.toISOString(),
+      notes: String(c && c.notes || "").trim()
+    }
+  };
+}
+
+// GET /api/settings/campaigns — any authed role.
+// Returns { campaigns: [...], knownCampaignNames: [...] } where the
+// second list is distinct lead.campaign values currently in the data,
+// powering the Add Campaign autocomplete + surfacing campaigns that
+// appear in leads but aren't yet tracked with a spend record.
+app.get("/api/settings/campaigns", auth, async function(req, res) {
+  try {
+    var campaigns = await getCampaigns();
+    var distinctNames = await Lead.distinct("campaign");
+    var knownCampaignNames = (distinctNames || [])
+      .filter(function(n){ return n && String(n).trim() !== ""; })
+      .map(String)
+      .sort();
+    res.json({ campaigns: campaigns, knownCampaignNames: knownCampaignNames });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/settings/campaigns — admin / sales_admin only.
+// Body: { name, sourcePlatform, spend, startDate, endDate, notes? }.
+// Generates a stable id, appends to the AppSetting array, audits with
+// field "campaigns.<id>.created" + newValue = full record.
+app.post("/api/settings/campaigns", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    var v = validateCampaignPayload(req.body);
+    if (v.errors.length) return res.status(400).json({ error: v.errors.join("; "), errors: v.errors });
+
+    var existing = await AppSetting.findOne({ key: "campaigns" }).lean();
+    var prevList = (existing && existing.value && Array.isArray(existing.value.campaigns)) ? existing.value.campaigns : [];
+
+    var id = "c_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+    var nowISO = new Date().toISOString();
+    var record = Object.assign({ id: id, createdAt: nowISO, updatedAt: nowISO }, v.normalized);
+    var nextList = prevList.concat([record]);
+
+    await AppSetting.findOneAndUpdate(
+      { key: "campaigns" },
+      { $set: { value: { campaigns: nextList } }},
+      { upsert: true, new: true }
+    );
+    bustCampaignsCache();
+
+    try {
+      var actorName = (req.user && req.user.name) ? req.user.name : "Admin";
+      var actorId   = (req.user && req.user.id)   ? req.user.id   : null;
+      await SettingsAudit.create({
+        actorId: actorId, actorName: actorName,
+        field: "campaigns." + id + ".created",
+        oldValue: null, newValue: record, timestamp: new Date()
+      });
+    } catch (auditErr) {
+      console.error("[campaigns audit/create]", auditErr && auditErr.message);
+    }
+
+    try { broadcast("settings_updated", { key: "campaigns", value: { campaigns: nextList } }); } catch(e) {}
+    res.json(record);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /api/settings/campaigns/:id — admin / sales_admin only. Same
+// payload validation as POST. Diffs prev vs next and writes one
+// SettingsAudit row per changed field (mirrors project-weights
+// per-key granularity at server.js:1240 area).
+app.put("/api/settings/campaigns/:id", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    var v = validateCampaignPayload(req.body);
+    if (v.errors.length) return res.status(400).json({ error: v.errors.join("; "), errors: v.errors });
+
+    var id = String(req.params.id);
+    var existing = await AppSetting.findOne({ key: "campaigns" }).lean();
+    var prevList = (existing && existing.value && Array.isArray(existing.value.campaigns)) ? existing.value.campaigns : [];
+    var idx = -1;
+    for (var i = 0; i < prevList.length; i++) { if (prevList[i] && prevList[i].id === id) { idx = i; break; } }
+    if (idx < 0) return res.status(404).json({ error: "Campaign not found" });
+
+    var prev = prevList[idx];
+    var nowISO = new Date().toISOString();
+    var record = Object.assign({}, prev, v.normalized, { updatedAt: nowISO });
+
+    // Per-field diff for audit granularity.
+    var trackedFields = ["name", "sourcePlatform", "spend", "startDate", "endDate", "notes"];
+    var auditRows = [];
+    var actorName = (req.user && req.user.name) ? req.user.name : "Admin";
+    var actorId   = (req.user && req.user.id)   ? req.user.id   : null;
+    for (var ti = 0; ti < trackedFields.length; ti++) {
+      var f = trackedFields[ti];
+      var ov = prev[f] === undefined ? null : prev[f];
+      var nv = record[f] === undefined ? null : record[f];
+      if (JSON.stringify(ov) === JSON.stringify(nv)) continue;
+      auditRows.push({
+        actorId: actorId, actorName: actorName,
+        field: "campaigns." + id + "." + f,
+        oldValue: ov, newValue: nv, timestamp: new Date()
+      });
+    }
+
+    var nextList = prevList.slice();
+    nextList[idx] = record;
+    await AppSetting.findOneAndUpdate(
+      { key: "campaigns" },
+      { $set: { value: { campaigns: nextList } }},
+      { upsert: true, new: true }
+    );
+    bustCampaignsCache();
+
+    if (auditRows.length) {
+      try {
+        await SettingsAudit.insertMany(auditRows, { ordered: false });
+      } catch (auditErr) {
+        console.error("[campaigns audit/update]", auditErr && auditErr.message);
+      }
+    }
+
+    try { broadcast("settings_updated", { key: "campaigns", value: { campaigns: nextList } }); } catch(e) {}
+    res.json(record);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/settings/campaigns/:id — admin only (stricter than the
+// other campaign endpoints, mirroring the codebase pattern that DELETE
+// is admin-exclusive). Hard delete. Audit row stores the full deleted
+// record so a campaign can be reconstructed manually if needed
+// (auto-rollback for campaigns.* is rejected — see audit-rollback
+// handler).
+app.delete("/api/settings/campaigns/:id", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    var id = String(req.params.id);
+    var existing = await AppSetting.findOne({ key: "campaigns" }).lean();
+    var prevList = (existing && existing.value && Array.isArray(existing.value.campaigns)) ? existing.value.campaigns : [];
+    var idx = -1;
+    for (var i = 0; i < prevList.length; i++) { if (prevList[i] && prevList[i].id === id) { idx = i; break; } }
+    if (idx < 0) return res.status(404).json({ error: "Campaign not found" });
+
+    var deleted = prevList[idx];
+    var nextList = prevList.slice();
+    nextList.splice(idx, 1);
+
+    await AppSetting.findOneAndUpdate(
+      { key: "campaigns" },
+      { $set: { value: { campaigns: nextList } }},
+      { upsert: true, new: true }
+    );
+    bustCampaignsCache();
+
+    try {
+      var actorName = (req.user && req.user.name) ? req.user.name : "Admin";
+      var actorId   = (req.user && req.user.id)   ? req.user.id   : null;
+      await SettingsAudit.create({
+        actorId: actorId, actorName: actorName,
+        field: "campaigns." + id + ".deleted",
+        oldValue: deleted, newValue: null, timestamp: new Date()
+      });
+    } catch (auditErr) {
+      console.error("[campaigns audit/delete]", auditErr && auditErr.message);
+    }
+
+    try { broadcast("settings_updated", { key: "campaigns", value: { campaigns: nextList } }); } catch(e) {}
+    res.json({ ok: true, id: id });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
