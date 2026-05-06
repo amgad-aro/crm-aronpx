@@ -3006,6 +3006,19 @@ var LeadsPage = function(p) {
         if (spT==="rotatedThisMonth") return (l.agentHistory||[]).some(function(h){ return h && h.date && new Date(h.date).getTime() >= monthStartMs; });
         if (spT==="interested") return l.status==="HotCase" || l.status==="Potential";
         if (spT==="project") return (l.project || "") === (p.specialFilter.value || "");
+        if (spT==="campaign") {
+          // Reports → Campaigns row click drill-down. Mirrors the
+          // Leads-page "campaign contains" mode (case-insensitive
+          // substring) plus an exact source narrow when supplied.
+          // Matches Slice C decision D6 — substring rather than exact
+          // accepts a small over-match risk ("Q1" matching "Q1 2026")
+          // for simplicity vs. adding a new exact-mode.
+          var srcNeedle = p.specialFilter.source ? String(p.specialFilter.source) : "";
+          if (srcNeedle && (l.source || "") !== srcNeedle) return false;
+          var nameNeedle = String(p.specialFilter.name || "").toLowerCase();
+          if (nameNeedle === "") return true;
+          return String(l.campaign || "").toLowerCase().indexOf(nameNeedle) >= 0;
+        }
         if (spT==="aging") {
           // Reports → Lead Aging drill-down. UNION of two real-contact
           // sources, mirrors the backend pipeline exactly:
@@ -3419,6 +3432,11 @@ var LeadsPage = function(p) {
     }
     if (p.specialFilter.type === "project") {
       return "Project: " + (p.specialFilter.value || "(no project)");
+    }
+    if (p.specialFilter.type === "campaign") {
+      var cName = p.specialFilter.name || "(unnamed)";
+      var cSrc = p.specialFilter.source;
+      return cSrc ? ("Campaign: " + cName + " (" + cSrc + ")") : ("Campaign: " + cName);
     }
     var m = {untouched:"Untouched leads (no activity since assignment)",missingFeedback:"Missing feedback (empty notes)",stale48h:"Stale leads \u2014 no activity 48h+",noRotation:"Locked leads (noRotation flag)",rotatedThisMonth:"Rotated this month",interested:"Interested leads (HotCase + Potential)"};
     return m[p.specialFilter.type]||p.specialFilter.type;
@@ -9492,7 +9510,7 @@ var ReportsPage = function(p) {
 
   var tabs = [
     { id: "overview",  label: "Overview",  enabled: true },
-    { id: "campaigns", label: "Campaigns", enabled: false },
+    { id: "campaigns", label: "Campaigns", enabled: true },
     { id: "agents",    label: "Agents",    enabled: true },
     { id: "pipeline",  label: "Pipeline",  enabled: true }
   ];
@@ -9542,7 +9560,7 @@ var ReportsPage = function(p) {
       })}
     </div>
 
-    {(tab === "overview" || tab === "pipeline" || tab === "agents") && <Card style={{ marginBottom:16, padding:"12px 14px" }}>
+    {(tab === "overview" || tab === "pipeline" || tab === "agents" || tab === "campaigns") && <Card style={{ marginBottom:16, padding:"12px 14px" }}>
       <div style={{ display:"flex", flexWrap:"wrap", gap:10, alignItems:"center" }}>
         <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
           {presets.map(function(pr){
@@ -9569,14 +9587,14 @@ var ReportsPage = function(p) {
             style={{ padding:"4px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:11, background:"#fff" }}/>
         </div>
 
-        <div style={{ width:1, height:22, background:"#E2E8F0" }}/>
+        {tab !== "campaigns" && <div style={{ width:1, height:22, background:"#E2E8F0" }}/>}
 
-        <select value={filters.team}
+        {tab !== "campaigns" && <select value={filters.team}
           onChange={function(e){ setFilters(function(f){ return Object.assign({},f,{team:e.target.value}); }); }}
           style={{ padding:"5px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:11, background:"#fff" }}>
           <option value="">All teams</option>
           {teamOptions.map(function(u){ return <option key={gid(u)} value={gid(u)}>{u.name} ({u.role==="manager"?"Manager":"Team Leader"})</option>; })}
-        </select>
+        </select>}
 
         <select value={filters.source}
           onChange={function(e){ setFilters(function(f){ return Object.assign({},f,{source:e.target.value}); }); }}
@@ -9604,6 +9622,9 @@ var ReportsPage = function(p) {
       nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>}
 
     {tab === "agents" && <ReportsAgentsBody filters={filters} cu={cu} t={t} token={p.token} users={p.users}
+      nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>}
+
+    {tab === "campaigns" && <ReportsCampaignsBody filters={filters} cu={cu} t={t} token={p.token}
       nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>}
   </div>;
 };
@@ -10162,6 +10183,200 @@ var ReportsAgentsBody = function(p) {
         <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Section in development</div>
       </Card>;
     })}
+  </div>;
+};
+
+// Slice C.2 (2026-05-06) — Campaigns Reports tab. Backend at
+// /api/reports/campaigns. Team filter intentionally NOT sent (spend is
+// org-level; team-scoped leads with org-level spend produce misleading
+// ROI); the parent ReportsBody hides the team filter on this tab too.
+// Date filter narrows WHICH CAMPAIGNS APPEAR (campaign window must
+// overlap the request window) — each campaign's lead-side matching
+// always uses its OWN range, so ROI numbers stay stable across viewing
+// windows. Surfaced via ⓘ tooltip on the Date Range column header.
+var ReportsCampaignsBody = function(p) {
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+  var f = p.filters;
+
+  useEffect(function(){
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + f.from + "&to=" + f.to;
+    if (f.source && f.source !== "all") qs += "&source=" + encodeURIComponent(f.source);
+    // Team filter omitted by design — see comment above. Backend
+    // honors it defensively if a future caller passes one, so the
+    // omission here is the only enforcement point.
+    apiFetch("/api/reports/campaigns" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [f.from, f.to, f.source]);
+
+  var skel = state.loading || !state.data;
+  var data = state.data || {};
+  var campaigns = data.campaigns || [];
+  var summary = data.summary || {};
+  var untrackedCount = summary.untrackedCampaignsCount || 0;
+
+  var fmtPct = function(v){
+    if (v == null) return "—";
+    var n = Number(v);
+    return (n > 0 ? "+" : "") + n.toFixed(1) + "%";
+  };
+  var fmtRange = function(s, e){
+    var d = function(iso){ try { return new Date(iso).toISOString().slice(0,10); } catch(_){ return ""; } };
+    return d(s) + " → " + d(e);
+  };
+  // ROI color coding per spec: green > 100%, amber 0-100%, red < 0%,
+  // grey for null (zero spend or no deals → ROI undefined).
+  var roiColor = function(v){
+    if (v == null) return "#94A3B8";
+    if (v < 0)     return C.danger;
+    if (v <= 100)  return C.warning;
+    return C.success;
+  };
+  var roiBg = function(v){
+    if (v == null) return "#F1F5F9";
+    if (v < 0)     return "#FEE2E2";
+    if (v <= 100)  return "#FEF3C7";
+    return "#DCFCE7";
+  };
+
+  // Click-through: pre-fills the Leads page via specialFilter type
+  // "campaign" — matches the contains-mode logic by case-insensitive
+  // substring (see App.js:3009 area). p.setFilter("all") clears the
+  // active status filter so the campaign view isn't accidentally
+  // narrowed to e.g. only HotCase leads.
+  var openCampaign = function(c){
+    if (p.setSpecialFilter) p.setSpecialFilter({ type: "campaign", source: c.sourcePlatform, name: c.name });
+    if (p.setFilter) p.setFilter("all");
+    if (p.nav) p.nav("leads");
+  };
+
+  if (state.error) {
+    return <Card style={{ marginBottom:14, padding:"14px 16px" }}>
+      <div style={{ fontSize:12, color:"#DC2626", fontWeight:600 }}>Couldn't load Campaigns: {state.error}</div>
+    </Card>;
+  }
+
+  // Empty-state detection — no tracked campaigns AT ALL (regardless of
+  // filter window). Distinguished from "no campaigns in this window" so
+  // the message can point users to Settings → Campaigns rather than
+  // suggest a date-range tweak. Detectable only post-load: zero campaigns
+  // returned AND zero untracked names in the request window means either
+  // (a) AppSetting is empty and no leads have campaign values either, or
+  // (b) AppSetting is empty and leads.campaign is also empty in window —
+  // both point to the "configure something" message.
+  var noCampaignsConfigured = !skel && campaigns.length === 0 && untrackedCount === 0;
+
+  var cards = [
+    { id:"spend",   label:"Total spend",     color:C.danger,
+      value: skel ? "" : fmtEGP(summary.totalSpend),
+      hint:  skel ? "" : (campaigns.length + " " + (campaigns.length === 1 ? "campaign" : "campaigns") + " in window") },
+    { id:"revenue", label:"Total revenue",   color:C.success,
+      value: skel ? "" : fmtEGP(summary.totalRevenue),
+      hint:  skel ? "" : "raw budget on closed deals" },
+    { id:"roi",     label:"Overall ROI",     color: roiColor(summary.overallRoi),
+      value: skel ? "" : (summary.overallRoi == null ? "—" : fmtPct(summary.overallRoi)),
+      hint:  skel ? "" : "((rev − spend) / spend) × 100" },
+    { id:"top",     label:"Most profitable", color:C.success,
+      value: skel ? "" : (summary.mostProfitable ? summary.mostProfitable.name : "—"),
+      hint:  skel ? "" : (summary.mostProfitable ? (fmtPct(summary.mostProfitable.roi) + " ROI") : "no campaigns with positive ROI") }
+  ];
+
+  var thStyle = { textAlign:"left", padding:"6px 8px", fontWeight:600, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em", fontSize:10 };
+  var thRight = Object.assign({}, thStyle, { textAlign:"right" });
+
+  return <div>
+    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(210px, 1fr))", gap:10, marginBottom:14 }}>
+      {cards.map(function(c){
+        return <Card key={c.id} style={{ padding:"14px 16px", minHeight:96 }}>
+          <div style={{ fontSize:11, color:C.textLight, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.04em" }}>{c.label}</div>
+          {skel
+            ? <div style={{ height:24, marginTop:10, borderRadius:4, background:"#F1F5F9", width:"60%" }}/>
+            : <div title={c.value} style={{ fontSize: c.id === "top" ? 16 : 22, fontWeight:800, color:c.color, marginTop:6, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.value}</div>}
+          {!skel && c.hint && <div style={{ fontSize:10, color:C.textLight, marginTop:4 }}>{c.hint}</div>}
+        </Card>;
+      })}
+    </div>
+
+    {!skel && untrackedCount > 0 && <Card style={{ marginBottom:14, padding:"10px 14px", background:"#FFFBEB", border:"1px solid #FCD34D" }}>
+      <div style={{ fontSize:12, color:"#92400E", fontWeight:600 }}>
+        ⚠ {untrackedCount} campaign {untrackedCount === 1 ? "name" : "names"} found in leads but not tracked here. Add {untrackedCount === 1 ? "it" : "them"} in <b>Settings → Campaigns</b> to see ROI.
+      </div>
+    </Card>}
+
+    {noCampaignsConfigured && <Card style={{ marginBottom:14, padding:"32px 16px", background:"#FAFBFC", border:"1px dashed #E2E8F0" }}>
+      <div style={{ fontSize:13, fontWeight:600, color:C.textLight, textAlign:"center" }}>No campaigns configured</div>
+      <div style={{ fontSize:11, color:"#94A3B8", textAlign:"center", marginTop:6 }}>Add campaigns in <b>Settings → Campaigns</b> to see ROI here.</div>
+    </Card>}
+
+    {!noCampaignsConfigured && <Card style={{ marginBottom:14, padding:"12px 14px" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:4, flexWrap:"wrap", gap:8 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:C.text }}>Campaign performance</div>
+        {!skel && <div style={{ fontSize:11, color:C.textLight }}>{campaigns.length} {campaigns.length === 1 ? "campaign" : "campaigns"} in window</div>}
+      </div>
+      <div style={{ fontSize:10, color:"#94A3B8", marginBottom:8 }}>
+        Sorted by ROI · click a row to drill into matching leads
+      </div>
+
+      {skel && [0,1,2,3].map(function(i){ return <div key={i} style={{ height:32, marginBottom:6, background:"#F1F5F9", borderRadius:6 }}/>; })}
+
+      {!skel && campaigns.length === 0 && <div style={{ fontSize:12, color:C.textLight, padding:"24px 8px", textAlign:"center" }}>
+        No tracked campaigns overlap the selected date range.
+      </div>}
+
+      {!skel && campaigns.length > 0 && <div style={{ overflowX:"auto" }}>
+        <table style={{ width:"100%", fontSize:11, borderCollapse:"collapse" }}>
+          <thead>
+            <tr style={{ borderBottom:"1px solid #E2E8F0" }}>
+              <th style={thStyle}>Campaign</th>
+              <th style={thStyle}>Source</th>
+              <th style={thStyle}>
+                <span title="Each campaign uses its own date range; the page filter narrows which campaigns appear, not which leads count" style={{ display:"inline-flex", alignItems:"center", gap:4, cursor:"help" }}>
+                  Date range <span style={{ color:"#94A3B8" }}>ⓘ</span>
+                </span>
+              </th>
+              <th style={thRight}>Spend</th>
+              <th style={thRight}>Leads</th>
+              <th style={thRight} title="Contacted / Meeting / EOI / Deal">Funnel</th>
+              <th style={thRight}>Revenue</th>
+              <th style={thRight}>Cost / lead</th>
+              <th style={thRight}>Cost / deal</th>
+              <th style={thRight}>ROI</th>
+            </tr>
+          </thead>
+          <tbody>
+            {campaigns.map(function(c, i){
+              var rc = roiColor(c.roi);
+              var rb = roiBg(c.roi);
+              var fnl = c.contacted + " / " + c.meeting + " / " + c.eoi + " / " + c.deal;
+              return <tr key={c.id || i}
+                onClick={function(){ openCampaign(c); }}
+                onMouseEnter={function(e){ e.currentTarget.style.background = "#F8FAFC"; }}
+                onMouseLeave={function(e){ e.currentTarget.style.background = "transparent"; }}
+                style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer" }}
+                title={"View leads matching " + c.name}>
+                <td style={{ padding:"8px", color:C.text, fontWeight:600 }}>{c.name}</td>
+                <td style={{ padding:"8px", color:C.textLight }}>{c.sourcePlatform}</td>
+                <td style={{ padding:"8px", color:C.textLight, fontVariantNumeric:"tabular-nums" }}>{fmtRange(c.startDate, c.endDate)}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.text }}>{fmtEGP(c.spend)}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.text }}>{c.leads}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.textLight, fontVariantNumeric:"tabular-nums" }}>{fnl}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.text }}>{c.revenue > 0 ? fmtEGP(c.revenue) : "—"}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.textLight }}>{c.costPerLead == null ? "—" : fmtEGP(c.costPerLead)}</td>
+                <td style={{ padding:"8px", textAlign:"right", color:C.textLight }}>{c.costPerDeal == null ? "—" : fmtEGP(c.costPerDeal)}</td>
+                <td style={{ padding:"8px", textAlign:"right" }}>
+                  <span style={{ display:"inline-block", padding:"2px 8px", borderRadius:6, background:rb, color:rc, fontWeight:700, fontVariantNumeric:"tabular-nums" }}>
+                    {c.roi == null ? "—" : fmtPct(c.roi)}
+                  </span>
+                </td>
+              </tr>;
+            })}
+          </tbody>
+        </table>
+      </div>}
+    </Card>}
   </div>;
 };
 
