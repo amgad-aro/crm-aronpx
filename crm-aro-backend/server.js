@@ -6824,9 +6824,10 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
       //
       // SYNC INVARIANT: the isContactedRaw definition below — and the
       // Activity-type whitelist in this $lookup — MUST stay aligned
-      // with the matching $lookup + isContactedRaw pair in:
+      // with the matching $lookup + isContactedRaw trio in:
       //   - /api/reports/overview/funnel               (this endpoint)
       //   - /api/reports/agents/:id/stage-progression
+      //   - /api/reports/campaigns                     (Slice C, 2026-05-06)
       // /api/reports/overview/aging DELIBERATELY DIVERGES on TWO axes:
       //   (a) Activity-type whitelist: aging uses 5 types (adds "note"),
       //       boolean consumers here use 4 types. Auto-note from FB
@@ -6842,8 +6843,8 @@ app.get("/api/reports/overview/funnel", auth, reportsAuth, async function(req, r
       // Don't "harmonise" either axis — boolean and timestamp consumers
       // are answering different questions about the same data.
       //
-      // Editing one of the funnel/stage-progression pair without the
-      // other reintroduces the original inflation bug where rotation
+      // Editing one of the funnel/stage-progression/campaigns trio
+      // without the others reintroduces the original inflation bug where rotation
       // slices (assignments[].lastActionAt = now), legacy non-diff-
       // gated "status_change" events, and state-only checks (notes/
       // lastFeedback/callbackTime non-empty) all fired, pushing
@@ -10050,6 +10051,304 @@ app.get("/api/reports/agents/:id/recent-deals", auth, reportsAuth, async functio
 // /api/reports/pipeline/at-risk. Keep the two aggregations aligned —
 // they answer the same "is this deal stuck" question, just at
 // different scopes (per-agent vs org-wide).
+// GET /api/reports/campaigns
+// Per-campaign ROI + funnel for tracked campaigns (Phase B AppSetting key
+// "campaigns"). Lead-only — DRs have no campaign field, and DR.source is
+// hardcoded "Daily Request" which is not a canonical SOURCES value, so
+// no campaign in AppSetting can target DRs.
+//
+// MATCHING (per campaign):
+//   - lead.source === campaign.sourcePlatform           (exact)
+//   - lead.campaign matches /^name$/i                   (case-insensitive
+//     exact; admin-typed name escaped against regex injection)
+//   - lead.createdAt ∈ [campaign.startDate, campaign.endDate + 1 day)
+//     (campaign window is end-INCLUSIVE — Slice B stores ISO date-strings
+//     at midnight UTC, so a campaign ending 2026-04-30 must include leads
+//     created on Apr 30. Half-open exclusive end + 1 day shift achieves
+//     this without changing the Slice B storage format.)
+//
+// REQUEST FILTERS — applied DIFFERENTLY per filter:
+//   - source filter: narrows WHICH CAMPAIGNS APPEAR (campaign.sourcePlatform
+//     must equal the filter). Does not affect lead-side matching for
+//     surviving campaigns (those still match by their own sourcePlatform).
+//   - team filter: narrows leads matched on the lead-side $or. Funnel
+//     counts + revenue scope to that team's leads only. Spend stays
+//     ORG-LEVEL (campaigns have no team — pro-rating spend by team is
+//     not meaningful). The frontend hides the team filter on this tab
+//     to avoid the asymmetry confusing users; backend honors it
+//     defensively in case a future caller passes one.
+//   - date filter: narrows WHICH CAMPAIGNS APPEAR (campaign window must
+//     overlap the request window). Does NOT slice each campaign's
+//     lead-side matching — each campaign always uses its OWN range.
+//     This makes ROI numbers stable across viewing windows (the campaign
+//     ROI doesn't change just because you're looking at a different
+//     period — that would silently hide deals closed outside the request
+//     window). Frontend surfaces this via ⓘ tooltip.
+//
+// SYNC INVARIANT (Slice C, 2026-05-06): the isContactedRaw + 4-type
+// Activity-whitelist + 3-event history-whitelist combination here MUST
+// stay aligned with /api/reports/overview/funnel and
+// /api/reports/agents/:id/stage-progression. See server.js:6825-6850
+// for the full divergence rationale (aging deliberately diverges on
+// both axes; this trio does not). Editing the boolean contacted
+// definition in any of these three endpoints requires updating the
+// other two.
+//
+// REVENUE: raw lead.budget summed across deal leads only. NO project-
+// weighting, NO split-halving (matches /reports/overview/kpis revenue
+// convention at server.js:6419-6424 — campaign ROI is org-level gross,
+// not agent-share weighted). budget is a String field; $convert with
+// comma-stripping handles "1,250,000" formats and degrades to 0 on
+// malformed values.
+//
+// UNTRACKED CAMPAIGNS: distinct lead.campaign values created in the
+// REQUEST window whose name doesn't match any tracked campaign (case-
+// insensitive). Surfaces "spelling drift" — campaigns named in leads
+// but never added to AppSetting Settings → Campaigns. Scoped to request
+// window only; team + source filters NOT applied (org-wide drift signal
+// is more useful than a filter-narrowed count).
+app.get("/api/reports/campaigns", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+    var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var DAY_MS = 86400000;
+
+    // Pull all tracked campaigns; we'll filter by request-level overlap
+    // + source-platform alignment below. Cache TTL is 30s; stale is fine
+    // here — a freshly-added campaign showing up after one cache cycle
+    // is not load-bearing.
+    var allCampaigns = await getCampaigns();
+
+    // Compute end-inclusive exclusive bound + overlap test once per
+    // campaign. Skip campaigns whose date metadata is unparseable
+    // (defensive — Slice B validation rejects this on write, but legacy
+    // hand-edited records could exist).
+    var campaignsForReport = [];
+    for (var ci = 0; ci < allCampaigns.length; ci++) {
+      var c = allCampaigns[ci];
+      if (!c || !c.startDate || !c.endDate) continue;
+      var cs = new Date(c.startDate), ce = new Date(c.endDate);
+      if (isNaN(cs.getTime()) || isNaN(ce.getTime())) continue;
+      var ceExcl = new Date(ce.getTime() + DAY_MS);
+
+      // Source filter — drop campaigns whose platform doesn't match.
+      if (sourceFilter && c.sourcePlatform !== sourceFilter) continue;
+
+      // Date overlap: [cs, ceExcl) ∩ [fromDate, toDate) non-empty
+      // iff cs < toDate AND ceExcl > fromDate.
+      if (cs >= toDate) continue;
+      if (ceExcl <= fromDate) continue;
+
+      campaignsForReport.push({ rec: c, cs: cs, ceExcl: ceExcl });
+    }
+
+    // Escape user-typed campaign names for safe regex use. Lead.campaign
+    // is free-text and admin-typed names may contain regex metacharacters
+    // (e.g. "Q1 (2026)" or "50% off"); without escaping these silently
+    // match the wrong leads or throw on malformed patterns.
+    var escapeRegex = function(s){ return String(s||"").replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); };
+
+    // budget is a String schema field — same convert-and-strip-commas
+    // pattern as /reports/agents/:id/stuck-leads (server.js:10079).
+    var budgetNumExpr = { $convert: {
+      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
+      to: "double", onError: 0, onNull: 0
+    }};
+
+    // Per-campaign aggregation — Promise.all in parallel. Campaign count
+    // expected ~10-50 (Phase B is admin-curated), and each per-campaign
+    // pipeline only touches leads matching that campaign's source +
+    // narrow date window, so total work scales with leads-with-campaign
+    // not with number-of-campaigns × all-leads.
+    var perCampaign = await Promise.all(campaignsForReport.map(function(cc){
+      var c = cc.rec;
+      var matchObj = {
+        archived: false,
+        source: c.sourcePlatform,
+        campaign: { $regex: "^" + escapeRegex(c.name) + "$", $options: "i" },
+        createdAt: { $gte: cc.cs, $lt: cc.ceExcl }
+      };
+      if (scopeIds) matchObj.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+      return Lead.aggregate([
+        { $match: matchObj },
+        // Real-contact existence — boolean check only ($size > 0). We
+        // don't need the timestamp here so the lookup projects just _id
+        // (lighter than the funnel's { t: createdAt } shape).
+        { $lookup: {
+            from: "activities",
+            let: { lid: "$_id" },
+            pipeline: [
+              { $match: { $expr: { $and: [
+                  { $eq: ["$leadId", "$$lid"] },
+                  // 4-type whitelist (no "note") — see SYNC INVARIANT
+                  // comment at /reports/overview/funnel for why the
+                  // FB-webhook auto-note is excluded from boolean
+                  // consumers.
+                  { $in: ["$type", ["call", "meeting", "followup", "email"]] }
+              ]}}},
+              { $limit: 1 },
+              { $project: { _id: 1 } }
+            ],
+            as: "contactActs"
+        }},
+        { $addFields: { budgetNum: budgetNumExpr }},
+        { $addFields: {
+            isDealRaw: { $and: [
+              { $or: [
+                { $eq: ["$status", "DoneDeal"] },
+                { $eq: ["$globalStatus", "donedeal"] }
+              ]},
+              { $ne: ["$dealStatus", "Deal Cancelled"] },
+              { $ne: ["$status", "Deal Cancelled"] }
+            ]},
+            isEoiRaw: { $and: [
+              { $ne: ["$status", "Deal Cancelled"] },
+              { $ne: ["$eoiStatus", "EOI Cancelled"] },
+              { $ne: ["$eoiStatus", "Deal Cancelled"] },
+              { $or: [
+                { $eq: ["$eoiStatus", "Pending"] },
+                { $eq: ["$eoiStatus", "Approved"] },
+                { $eq: ["$status", "EOI"] }
+              ]}
+            ]},
+            isMeetingRaw: { $or: [
+              { $eq: ["$hadMeeting", true] },
+              { $eq: ["$status", "MeetingDone"] }
+            ]},
+            isContactedRaw: { $or: [
+              { $anyElementTrue: { $map: {
+                  input: { $ifNull: ["$history", []] },
+                  as: "h",
+                  in: { $in: ["$$h.event", ["status_changed", "feedback_added", "callback_scheduled"]] }
+              }}},
+              { $gt: [{ $size: "$contactActs" }, 0] }
+            ]}
+        }},
+        // Forward-superset OR. Contacted ⊇ Meeting ⊇ EOI ⊇ Deal.
+        { $addFields: {
+            isDeal:      "$isDealRaw",
+            isEoi:       { $or: ["$isEoiRaw",       "$isDealRaw"] },
+            isMeeting:   { $or: ["$isMeetingRaw",   "$isEoiRaw",     "$isDealRaw"] },
+            isContacted: { $or: ["$isContactedRaw", "$isMeetingRaw", "$isEoiRaw", "$isDealRaw"] }
+        }},
+        { $group: {
+            _id: null,
+            leads: { $sum: 1 },
+            contacted: { $sum: { $cond: ["$isContacted", 1, 0] }},
+            meeting:   { $sum: { $cond: ["$isMeeting",   1, 0] }},
+            eoi:       { $sum: { $cond: ["$isEoi",       1, 0] }},
+            deal:      { $sum: { $cond: ["$isDeal",      1, 0] }},
+            // Revenue: raw budget on deal leads. Split-halving NOT
+            // applied — campaign ROI is org-level gross.
+            revenue:   { $sum: { $cond: ["$isDeal", "$budgetNum", 0] }}
+        }}
+      ]);
+    }));
+
+    var rd1 = function(v){ return v == null ? null : Math.round(v * 10) / 10; };
+    var rd0 = function(v){ return v == null ? null : Math.round(v); };
+
+    var rows = campaignsForReport.map(function(cc, i){
+      var c = cc.rec;
+      var r = (perCampaign[i] || [])[0] || {};
+      var leads = Number(r.leads) || 0;
+      var contacted = Number(r.contacted) || 0;
+      var meeting = Number(r.meeting) || 0;
+      var eoi = Number(r.eoi) || 0;
+      var deal = Number(r.deal) || 0;
+      var revenue = Number(r.revenue) || 0;
+      var spend = Number(c.spend) || 0;
+
+      // Defensive monotonic clamp. Forward-superset OR makes this
+      // mathematically guaranteed; a clamp firing means a logic bug.
+      if (contacted > leads)     { console.warn("[reports/campaigns] clamp contacted", c.id, contacted, "->", leads); contacted = leads; }
+      if (meeting   > contacted) { console.warn("[reports/campaigns] clamp meeting",   c.id, meeting,   "->", contacted); meeting = contacted; }
+      if (eoi       > meeting)   { console.warn("[reports/campaigns] clamp eoi",       c.id, eoi,       "->", meeting); eoi = meeting; }
+      if (deal      > eoi)       { console.warn("[reports/campaigns] clamp deal",      c.id, deal,      "->", eoi); deal = eoi; }
+
+      var costPerLead = leads > 0 ? rd0(spend / leads) : null;
+      var costPerDeal = deal  > 0 ? rd0(spend / deal)  : null;
+      var roi = spend > 0 ? rd1(((revenue - spend) / spend) * 100) : null;
+
+      return {
+        id: c.id,
+        name: c.name,
+        sourcePlatform: c.sourcePlatform,
+        spend: spend,
+        startDate: c.startDate,
+        endDate: c.endDate,
+        leads: leads,
+        contacted: contacted,
+        meeting: meeting,
+        eoi: eoi,
+        deal: deal,
+        revenue: rd0(revenue),
+        costPerLead: costPerLead,
+        costPerDeal: costPerDeal,
+        roi: roi
+      };
+    });
+
+    // Sort by ROI desc, nulls last (zero-spend campaigns sink to the
+    // bottom of the table — they're not actionable for ROI ranking).
+    rows.sort(function(a, b){
+      if (a.roi == null && b.roi == null) return 0;
+      if (a.roi == null) return 1;
+      if (b.roi == null) return -1;
+      return b.roi - a.roi;
+    });
+
+    // Summary aggregates over the visible (filtered) campaign set.
+    var totalSpend = 0, totalRevenue = 0;
+    var mostProfitable = null;
+    rows.forEach(function(r){
+      totalSpend   += r.spend   || 0;
+      totalRevenue += r.revenue || 0;
+      if (r.roi != null && (mostProfitable == null || r.roi > mostProfitable.roi)) {
+        mostProfitable = { id: r.id, name: r.name, roi: r.roi };
+      }
+    });
+    var overallRoi = totalSpend > 0 ? rd1(((totalRevenue - totalSpend) / totalSpend) * 100) : null;
+
+    // Untracked campaigns count — distinct lead.campaign values in the
+    // REQUEST window not matching any tracked campaign (case-insensitive).
+    // Intentionally org-wide (no source/team scoping) — drift visibility
+    // is more useful as a constant signal than a filter-narrowed count.
+    var distinctNames = await Lead.distinct("campaign", {
+      archived: false,
+      campaign: { $ne: "" },
+      createdAt: { $gte: fromDate, $lt: toDate }
+    });
+    var trackedLower = {};
+    allCampaigns.forEach(function(tc){
+      if (tc && tc.name) trackedLower[String(tc.name).toLowerCase()] = true;
+    });
+    var untrackedCampaignsCount = (distinctNames || []).filter(function(n){
+      var s = String(n || "").trim();
+      return s !== "" && !trackedLower[s.toLowerCase()];
+    }).length;
+
+    res.json({
+      range: { from: fromDate.toISOString(), to: toDate.toISOString() },
+      campaigns: rows,
+      summary: {
+        totalSpend: rd0(totalSpend),
+        totalRevenue: rd0(totalRevenue),
+        overallRoi: overallRoi,
+        mostProfitable: mostProfitable,
+        untrackedCampaignsCount: untrackedCampaignsCount
+      }
+    });
+  } catch (e) {
+    console.error("[reports/campaigns]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "campaigns_failed" });
+  }
+});
+
 app.get("/api/reports/agents/:id/stuck-leads", auth, reportsAuth, async function(req, res) {
   try {
     var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
