@@ -3735,6 +3735,21 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     if (req.body.teamId !== undefined) update.teamId = req.body.teamId;
     if (req.body.teamName !== undefined) update.teamName = req.body.teamName;
     if (req.body.startingDate !== undefined) update.startingDate = req.body.startingDate || null;
+    // Attendance hotfix — Saturday schedule (doc §3). Validate enum + clear
+    // the pattern start date when not in alternating mode.
+    if (req.body.saturdaySchedule !== undefined) {
+      var allowed = ["always_work", "always_off", "alternating"];
+      if (allowed.indexOf(req.body.saturdaySchedule) < 0) {
+        return res.status(400).json({ error: "Invalid saturdaySchedule" });
+      }
+      update.saturdaySchedule = req.body.saturdaySchedule;
+      if (req.body.saturdaySchedule !== "alternating") {
+        update.saturdayPatternStartDate = null;
+      }
+    }
+    if (req.body.saturdayPatternStartDate !== undefined) {
+      update.saturdayPatternStartDate = req.body.saturdayPatternStartDate || null;
+    }
     var user = await User.findByIdAndUpdate(req.params.id, { $set: update }, { new: true, strict: false }).select("-password");
     // Bust the active-flag cache so a just-toggled user is rejected on their
     // very next request, not after the 30s TTL.
