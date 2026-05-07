@@ -1698,6 +1698,141 @@ app.delete("/api/settings/campaigns/:id", auth, async function(req, res) {
   }
 });
 
+// =====================================================================
+// ATTENDANCE SETTINGS — Phase 2
+// Owner-only endpoints for office location (geofence) + permission toggles.
+// All writes log to AuditLog and broadcast attendance_settings_updated so
+// connected clients can re-evaluate their access in real-time.
+// =====================================================================
+
+// Persist new attendance settings + log + broadcast. Always writes the full
+// merged value to AppSetting so partial updates can't corrupt the document.
+async function saveAttendanceSettings(nextValue, performedBy, before, type, ipAddress) {
+  await AppSetting.findOneAndUpdate(
+    { key: "attendance_settings" },
+    { $set: { value: nextValue } },
+    { upsert: true, new: true }
+  );
+  try {
+    await AuditLog.create({
+      type: type,
+      performedBy: performedBy,
+      before: before || {},
+      after: nextValue,
+      ipAddress: ipAddress || ""
+    });
+  } catch (e) {
+    console.error("[attendance_settings audit]", e && e.message);
+  }
+  try {
+    broadcast("attendance_settings_updated", {
+      permissions: nextValue.permissions,
+      companyLocations: nextValue.companyLocations
+    });
+  } catch (e) {}
+}
+
+// Validate one office-location entry. Returns null on success or an error
+// string. Coordinates are sanity-checked (not just typeof) so a string "30.5"
+// or NaN doesn't sneak through.
+function validateOfficeLocation(loc) {
+  if (!loc || typeof loc !== "object") return "location must be an object";
+  if (typeof loc.name !== "string" || !loc.name.trim()) return "name is required";
+  if (loc.name.length > 100) return "name must be <= 100 chars";
+  var lat = Number(loc.latitude);
+  var lng = Number(loc.longitude);
+  var rad = Number(loc.radiusMeters);
+  if (!isFinite(lat) || lat < -90  || lat > 90)  return "latitude must be a number in [-90, 90]";
+  if (!isFinite(lng) || lng < -180 || lng > 180) return "longitude must be a number in [-180, 180]";
+  if (!isFinite(rad) || rad < 1    || rad > 10000) return "radiusMeters must be a number in [1, 10000]";
+  return null;
+}
+
+// Validate the permissions object — every action key must exist with both
+// salesAdmin/hr booleans set. We accept truthy values but coerce to strict
+// booleans before storage so the doc shape is canonical.
+function normalizePermissions(input) {
+  var ACTIONS = ["manageSalaries", "manageAttendance", "approveOffSiteRequests", "manageCompanyOffDays"];
+  if (!input || typeof input !== "object") return null;
+  var out = {};
+  for (var i = 0; i < ACTIONS.length; i++) {
+    var k = ACTIONS[i];
+    var entry = input[k];
+    if (!entry || typeof entry !== "object") return null;
+    out[k] = {
+      salesAdmin: entry.salesAdmin === true,
+      hr:         entry.hr === true
+    };
+  }
+  return out;
+}
+
+// Read attendance settings. Owner / sales_admin / hr can all read (they each
+// need to know their own permission state to render the right UI). PATCH
+// endpoints below remain Owner-only.
+app.get("/api/settings/attendance", auth, async function(req, res) {
+  try {
+    var role = req.user.role;
+    if (role !== "admin" && role !== "sales_admin" && role !== "hr") {
+      return res.status(403).json({ error: "Permission denied" });
+    }
+    res.json(await getAttendanceSettings());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch("/api/settings/office-location", auth, ownerOnly, async function(req, res) {
+  try {
+    var locations = Array.isArray(req.body && req.body.companyLocations) ? req.body.companyLocations : null;
+    if (!locations) return res.status(400).json({ error: "companyLocations array required" });
+    if (locations.length === 0) return res.status(400).json({ error: "At least one office location required" });
+
+    // Normalize + validate each entry. Schema future-proofs for multiple offices
+    // (doc §4) but practically we expect exactly one for now.
+    var normalized = [];
+    for (var i = 0; i < locations.length; i++) {
+      var err = validateOfficeLocation(locations[i]);
+      if (err) return res.status(400).json({ error: "Location " + (i + 1) + ": " + err });
+      normalized.push({
+        name:         String(locations[i].name).trim(),
+        latitude:     Number(locations[i].latitude),
+        longitude:    Number(locations[i].longitude),
+        radiusMeters: Number(locations[i].radiusMeters),
+        isActive:     locations[i].isActive !== false
+      });
+    }
+
+    var prev = await getAttendanceSettings();
+    var next = { companyLocations: normalized, permissions: prev.permissions };
+    await saveAttendanceSettings(next, req.user.id, { companyLocations: prev.companyLocations },
+      "OFFICE_LOCATION_CHANGED", req.ip);
+    res.json(next);
+  } catch (e) {
+    console.error("[PATCH /settings/office-location]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch("/api/settings/permissions", auth, ownerOnly, async function(req, res) {
+  try {
+    var permissions = normalizePermissions(req.body && req.body.permissions);
+    if (!permissions) {
+      return res.status(400).json({
+        error: "permissions must contain manageSalaries, manageAttendance, approveOffSiteRequests, manageCompanyOffDays — each with salesAdmin and hr booleans"
+      });
+    }
+    var prev = await getAttendanceSettings();
+    var next = { companyLocations: prev.companyLocations, permissions: permissions };
+    await saveAttendanceSettings(next, req.user.id, { permissions: prev.permissions },
+      "PERMISSION_CHANGED", req.ip);
+    res.json(next);
+  } catch (e) {
+    console.error("[PATCH /settings/permissions]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== AGENT VACATIONS =====
 // Admin + Sales Admin manage date ranges where an agent is excluded from
 // auto-rotation. Rotation integration lives in the /auto-rotate endpoint and

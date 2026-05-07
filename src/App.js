@@ -11255,6 +11255,48 @@ var SettingsPage = function(p) {
   var [loading,setLoading]=useState(true);
   var [activeTab,setActiveTab]=useState("general");
 
+  // Attendance & Salary — Phase 2 (Office Location + Permissions tabs).
+  // Owner-only. Loaded lazily when either tab is opened. attLoc holds the
+  // single active office (schema supports an array but UI is single-office for
+  // now, doc §4). attPerms is the 4-action × {salesAdmin,hr} permission matrix.
+  var [attLoc,setAttLoc] = useState({ name:"ARO Investment HQ", latitude:"", longitude:"", radiusMeters:100, isActive:true });
+  var [attPerms,setAttPerms] = useState({
+    manageSalaries:         { salesAdmin:true, hr:true },
+    manageAttendance:       { salesAdmin:true, hr:true },
+    approveOffSiteRequests: { salesAdmin:true, hr:true },
+    manageCompanyOffDays:   { salesAdmin:true, hr:true }
+  });
+  var [attLoaded,setAttLoaded] = useState(false);
+  var [attSaving,setAttSaving] = useState(false);
+  var [attMsg,setAttMsg] = useState("");
+  var [attError,setAttError] = useState("");
+  useEffect(function(){
+    if (activeTab !== "officeLocation" && activeTab !== "permissions") return;
+    if (attLoaded) return;
+    var cancelled = false;
+    apiFetch("/api/settings/attendance","GET",null,p.token).then(function(s){
+      if (cancelled || !s) return;
+      var locs = Array.isArray(s.companyLocations) ? s.companyLocations : [];
+      var first = locs[0] || null;
+      if (first) {
+        setAttLoc({
+          name: first.name || "ARO Investment HQ",
+          latitude:  first.latitude  != null ? String(first.latitude)  : "",
+          longitude: first.longitude != null ? String(first.longitude) : "",
+          radiusMeters: first.radiusMeters || 100,
+          isActive: first.isActive !== false
+        });
+      }
+      if (s.permissions) setAttPerms(s.permissions);
+      setAttLoaded(true);
+    }).catch(function(err){
+      // Endpoint is Owner-only; non-Owner users won't see the tabs anyway.
+      setAttError((err && err.message) || "Failed to load attendance settings");
+      setAttLoaded(true);
+    });
+    return function(){ cancelled = true; };
+  },[activeTab, attLoaded, p.token]);
+
   // Campaigns tab (Phase B) — state + lazy hydration when admin opens
   // the tab. knownCampaignNames is distinct lead.campaign values from
   // the server, surfaced in the Add Campaign autocomplete so admin can
@@ -11534,6 +11576,7 @@ var SettingsPage = function(p) {
   };
   var rotInpStyle={width:60,padding:"4px 8px",borderRadius:7,border:"1px solid #E2E8F0",fontSize:13,textAlign:"center"};
 
+  var isOwner = p.cu && p.cu.role === "admin";
   var tabs=[
     {id:"general",     label:"General"},
     {id:"rotation",    label:"Rotation"},
@@ -11541,7 +11584,9 @@ var SettingsPage = function(p) {
     p.cu&&p.cu.role!=="sales_admin"&&{id:"integrations",label:"Integrations"},
     {id:"rules",       label:"Business Rules"},
     {id:"campaigns",   label:"Campaigns"},
-    {id:"audit",       label:"Audit Log"}
+    {id:"audit",       label:"Audit Log"},
+    isOwner && {id:"officeLocation", label:"Office Location"},
+    isOwner && {id:"permissions",    label:"Permissions"}
   ].filter(Boolean);
   // Tab chip: white-on-gray, active = white bg with 0.5px border. Matches mockup .tab.
   var tabBtn=function(tab){
@@ -12791,6 +12836,161 @@ var SettingsPage = function(p) {
         </div>;
       })()}
 
+      {activeTab==="officeLocation" && isOwner && (function(){
+        var fieldLabel = {fontSize:12,color:"#666",display:"block",marginBottom:6};
+        var inputStyle = {padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",fontFamily:"inherit",width:"100%",boxSizing:"border-box"};
+        var btnPrimary = {fontSize:12,padding:"8px 16px",border:"0.5px solid rgba(24,95,165,0.3)",background:"#185FA5",color:"#fff",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+        var btnGhost   = {fontSize:12,padding:"8px 14px",border:"0.5px solid rgba(0,0,0,0.15)",background:"transparent",borderRadius:8,cursor:"pointer",fontFamily:"inherit",color:"#1a1a1a"};
+
+        var useMyLocation = function(){
+          if (!navigator.geolocation) { setAttError("Browser does not support geolocation"); return; }
+          setAttError(""); setAttMsg("Getting your location…");
+          navigator.geolocation.getCurrentPosition(function(pos){
+            setAttLoc(function(prev){return Object.assign({},prev,{
+              latitude:  String(pos.coords.latitude.toFixed(6)),
+              longitude: String(pos.coords.longitude.toFixed(6))
+            });});
+            setAttMsg("Location captured ("+pos.coords.accuracy.toFixed(0)+"m accuracy)");
+          }, function(err){
+            setAttMsg("");
+            setAttError("Could not get location: "+(err.message||err.code));
+          }, {enableHighAccuracy:true, timeout:10000, maximumAge:0});
+        };
+
+        var doSaveLoc = async function(){
+          setAttError(""); setAttMsg(""); setAttSaving(true);
+          try {
+            var payload = { companyLocations: [{
+              name: attLoc.name,
+              latitude:  Number(attLoc.latitude),
+              longitude: Number(attLoc.longitude),
+              radiusMeters: Number(attLoc.radiusMeters),
+              isActive: !!attLoc.isActive
+            }]};
+            var res = await apiFetch("/api/settings/office-location","PATCH",payload,p.token,p.csrfToken);
+            if (res && Array.isArray(res.companyLocations) && res.companyLocations[0]) {
+              var first = res.companyLocations[0];
+              setAttLoc({
+                name: first.name || "ARO Investment HQ",
+                latitude: String(first.latitude),
+                longitude: String(first.longitude),
+                radiusMeters: first.radiusMeters,
+                isActive: first.isActive !== false
+              });
+            }
+            setAttMsg("Saved");
+          } catch (err) {
+            setAttError((err && err.message) || "Save failed");
+          } finally {
+            setAttSaving(false);
+          }
+        };
+
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Office Location</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:18}}>Geofence used for attendance check-in/check-out. Distance is computed server-side using the Haversine formula.</div>
+
+          {!attLoaded ? <div style={{fontSize:12,color:"#666"}}>Loading…</div> : <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,maxWidth:700}}>
+            <div style={{gridColumn:"1 / -1"}}>
+              <label style={fieldLabel}>Name</label>
+              <input type="text" value={attLoc.name} onChange={function(e){setAttLoc(Object.assign({},attLoc,{name:e.target.value}));}} style={inputStyle} placeholder="ARO Investment HQ"/>
+            </div>
+            <div>
+              <label style={fieldLabel}>Latitude</label>
+              <input type="text" inputMode="decimal" value={attLoc.latitude} onChange={function(e){setAttLoc(Object.assign({},attLoc,{latitude:e.target.value}));}} style={inputStyle} placeholder="30.1376"/>
+            </div>
+            <div>
+              <label style={fieldLabel}>Longitude</label>
+              <input type="text" inputMode="decimal" value={attLoc.longitude} onChange={function(e){setAttLoc(Object.assign({},attLoc,{longitude:e.target.value}));}} style={inputStyle} placeholder="31.6817"/>
+            </div>
+            <div>
+              <label style={fieldLabel}>Radius (meters)</label>
+              <input type="number" min="1" max="10000" value={attLoc.radiusMeters} onChange={function(e){setAttLoc(Object.assign({},attLoc,{radiusMeters:e.target.value}));}} style={inputStyle}/>
+            </div>
+            <div style={{display:"flex",alignItems:"end"}}>
+              <label style={{fontSize:13,color:"#1a1a1a",display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
+                <input type="checkbox" checked={attLoc.isActive} onChange={function(e){setAttLoc(Object.assign({},attLoc,{isActive:e.target.checked}));}}/>
+                Active
+              </label>
+            </div>
+          </div>}
+
+          <div style={{display:"flex",gap:8,marginTop:18,flexWrap:"wrap",alignItems:"center"}}>
+            <button type="button" onClick={useMyLocation} style={btnGhost}>Use my current location</button>
+            <button type="button" onClick={doSaveLoc} disabled={attSaving||!attLoaded} style={Object.assign({},btnPrimary,{opacity:attSaving?0.6:1,cursor:attSaving?"not-allowed":"pointer"})}>
+              {attSaving?"Saving…":"Save office location"}
+            </button>
+            {attMsg   && <span style={{fontSize:12,color:"#0F6E56",background:"#EAF6F0",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attMsg}</span>}
+            {attError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attError}</span>}
+          </div>
+        </div>;
+      })()}
+
+      {activeTab==="permissions" && isOwner && (function(){
+        var btnPrimary = {fontSize:12,padding:"8px 16px",border:"0.5px solid rgba(24,95,165,0.3)",background:"#185FA5",color:"#fff",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+        var rows = [
+          { key:"manageSalaries",         label:"Manage Salaries",                  desc:"View and edit base salaries (sales-side roles only)." },
+          { key:"manageAttendance",       label:"Manage Attendance (incl. Override)", desc:"View team attendance, override individual days." },
+          { key:"approveOffSiteRequests", label:"Approve Off-site Requests",        desc:"Approve or reject employees' off-site check-in/out requests." },
+          { key:"manageCompanyOffDays",   label:"Manage Company Off-Days",          desc:"Add or remove holidays / non-working days for the whole company." }
+        ];
+        var setBox = function(action, who, value){
+          setAttPerms(function(prev){
+            var next = Object.assign({}, prev);
+            next[action] = Object.assign({}, prev[action]); next[action][who] = value;
+            return next;
+          });
+        };
+        var doSavePerms = async function(){
+          setAttError(""); setAttMsg(""); setAttSaving(true);
+          try {
+            var res = await apiFetch("/api/settings/permissions","PATCH",{ permissions: attPerms }, p.token, p.csrfToken);
+            if (res && res.permissions) setAttPerms(res.permissions);
+            setAttMsg("Saved");
+          } catch (err) {
+            setAttError((err && err.message) || "Save failed");
+          } finally {
+            setAttSaving(false);
+          }
+        };
+
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Permissions</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:18}}>Owner always has full access. Toggle which actions Sales Admin and HR can perform. Changes apply in real-time to connected users.</div>
+
+          {!attLoaded ? <div style={{fontSize:12,color:"#666"}}>Loading…</div> : <div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 110px 110px",gap:10,padding:"10px 0",borderBottom:"0.5px solid rgba(0,0,0,0.1)",fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px"}}>
+              <div>Action</div>
+              <div style={{textAlign:"center"}}>Sales Admin</div>
+              <div style={{textAlign:"center"}}>HR</div>
+            </div>
+            {rows.map(function(r){
+              var v = attPerms[r.key] || {};
+              return <div key={r.key} style={{display:"grid",gridTemplateColumns:"1fr 110px 110px",gap:10,padding:"14px 0",borderBottom:"0.5px solid rgba(0,0,0,0.06)",alignItems:"center"}}>
+                <div>
+                  <div style={{fontSize:13,fontWeight:500,color:"#1a1a1a"}}>{r.label}</div>
+                  <div style={{fontSize:11,color:"#666",marginTop:2,lineHeight:1.4}}>{r.desc}</div>
+                </div>
+                <div style={{textAlign:"center"}}>
+                  <input type="checkbox" checked={v.salesAdmin===true} onChange={function(e){setBox(r.key,"salesAdmin",e.target.checked);}} style={{width:18,height:18,cursor:"pointer"}}/>
+                </div>
+                <div style={{textAlign:"center"}}>
+                  <input type="checkbox" checked={v.hr===true} onChange={function(e){setBox(r.key,"hr",e.target.checked);}} style={{width:18,height:18,cursor:"pointer"}}/>
+                </div>
+              </div>;
+            })}
+          </div>}
+
+          <div style={{display:"flex",gap:8,marginTop:18,flexWrap:"wrap",alignItems:"center"}}>
+            <button type="button" onClick={doSavePerms} disabled={attSaving||!attLoaded} style={Object.assign({},btnPrimary,{opacity:attSaving?0.6:1,cursor:attSaving?"not-allowed":"pointer"})}>
+              {attSaving?"Saving…":"Save permissions"}
+            </button>
+            {attMsg   && <span style={{fontSize:12,color:"#0F6E56",background:"#EAF6F0",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attMsg}</span>}
+            {attError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attError}</span>}
+          </div>
+        </div>;
+      })()}
+
         </div>
       </div>
     </div>
@@ -13187,6 +13387,11 @@ export default function CRMApp() {
   // Notification collection, so the "seen" flag lives here rather than the DB.
   var [lastSeenDealAt,setLastSeenDealAt]=useState(0);
   var [rotHiddenBefore,setRotHiddenBefore]=useState(0);
+  // Attendance & Salary — Phase 2. Cached settings + permissions for the
+  // current session. Refetched on WS attendance_settings_updated. null until
+  // first load. Only Owner / sales_admin / hr ever fetch this; sales-side
+  // roles never use attendance settings so we skip the request for them.
+  var [attendanceSettings,setAttendanceSettings]=useState(null);
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
   var [sidebarOpen,setSidebarOpen]=useState(false);
@@ -13331,6 +13536,25 @@ export default function CRMApp() {
     fetchProjectWeights(token).then(function(){ bumpProjectWeightsRev(); });
   },[token, bumpProjectWeightsRev]);
 
+  // Attendance settings — fetched once after login for users who can use them
+  // (Owner / sales_admin / hr). Sales-side roles never have access. The
+  // settings include permissions toggles + companyLocations and are refreshed
+  // on the WS attendance_settings_updated event below.
+  useEffect(function(){
+    if (!token || !currentUser) return;
+    var role = currentUser.role;
+    if (role !== "admin" && role !== "sales_admin" && role !== "hr") return;
+    var cancelled = false;
+    apiFetch("/api/settings/attendance","GET",null,token).then(function(s){
+      if (!cancelled && s) setAttendanceSettings(s);
+    }).catch(function(){
+      // sales_admin/hr will get 403 here once they're allowed to fetch their
+      // own scoped view (future endpoint). For now this is Owner-only — fail
+      // silently so the cache stays null and consumers fall back to defaults.
+    });
+    return function(){ cancelled = true; };
+  },[token, currentUser]);
+
   // Data-refresh polling intervals were removed — WebSocket listener below handles real-time updates.
   // ===== REAL-TIME WEBSOCKET SYNC (single source of truth — replaces all data-refresh polling) =====
   useEffect(function(){
@@ -13439,6 +13663,20 @@ export default function CRMApp() {
               break;
             case "task_updated":
               apiFetch("/api/tasks","GET",null,token).then(function(t){ if(Array.isArray(t)) setTasks(t); }).catch(function(){});
+              break;
+            case "attendance_settings_updated":
+              // Phase 2 — Owner toggled permissions or office location. Update
+              // local cache so any open settings tabs and (in later phases)
+              // any permission-gated pages re-render with the new policy.
+              if (data && (data.permissions || data.companyLocations)) {
+                setAttendanceSettings(function(prev){
+                  return Object.assign({}, prev || {}, data);
+                });
+              } else if (currentUser && (currentUser.role==="admin" || currentUser.role==="sales_admin" || currentUser.role==="hr")) {
+                apiFetch("/api/settings/attendance","GET",null,token)
+                  .then(function(s){ if (s) setAttendanceSettings(s); })
+                  .catch(function(){});
+              }
               break;
             case "hello": break; // server greeting
             default: break;
