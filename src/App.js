@@ -889,6 +889,8 @@ var Sidebar = function(p) {
     isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
     isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
     p.cu.role!=="admin"&&{id:"attendance",label:"Attendance",adminSection:true},
+    hasAttendancePerm(p.cu && p.cu.role, "approveOffSiteRequests", p.attendanceSettings) && {id:"offsiteRequests", label:"Off-site Requests", adminSection:true},
+    hasAttendancePerm(p.cu && p.cu.role, "manageCompanyOffDays",   p.attendanceSettings) && {id:"companyOffDays",   label:"Company Off-Days",   adminSection:true},
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
@@ -4320,6 +4322,12 @@ var CheckInWidget = function(p) {
   var [busy, setBusy] = useState(false);
   var [error, setError] = useState("");
   var [tick, setTick] = useState(0);
+  // Phase 4 — off-site request modal state.
+  var [modalOpen, setModalOpen] = useState(false);
+  var [modalType, setModalType] = useState("check_in");
+  var [modalReason, setModalReason] = useState("");
+  var [modalErr, setModalErr] = useState("");
+  var [modalBusy, setModalBusy] = useState(false);
 
   var refetch = useCallback(function(){
     if (!p.token || !p.cu || p.cu.role === "admin") return;
@@ -4461,15 +4469,62 @@ var CheckInWidget = function(p) {
         refetch();
       }
     } catch (err) {
-      setError((err && err.message) || "Check-out failed");
+      var msg = (err && err.message) || "";
+      // Phase 4: backend returns 403 "Outside office geofence" when checking
+      // out from outside the office. Auto-open the off-site modal so the
+      // user doesn't need a second click. apiFetch loses the structured code
+      // field — match on the message text. Stable as long as the backend
+      // string doesn't change.
+      if (/outside/i.test(msg)) {
+        openOffSiteModal("check_out");
+      } else {
+        setError(msg || "Check-out failed");
+      }
     } finally {
       setBusy(false);
     }
   };
 
-  var requestOffSite = function(){
-    // Phase 4 will replace this with the actual modal flow.
-    setError("Off-site requests will be available in Phase 4");
+  var openOffSiteModal = function(type){
+    setModalType(type);
+    setModalReason("");
+    setModalErr("");
+    setModalOpen(true);
+  };
+
+  var submitOffSite = async function(){
+    var trimmed = (modalReason || "").trim();
+    if (trimmed.length < 10) { setModalErr("Reason must be at least 10 characters"); return; }
+    setModalErr(""); setModalBusy(true);
+    try {
+      var pos = await requestPosition();
+      await apiFetch("/api/offsite/request", "POST", {
+        type: modalType,
+        latitude: pos.latitude,
+        longitude: pos.longitude,
+        accuracy: pos.accuracy,
+        reason: trimmed
+      }, p.token, p.csrfToken);
+      setModalOpen(false);
+      refetch();
+    } catch (err) {
+      setModalErr((err && err.message) || "Submit failed");
+    } finally {
+      setModalBusy(false);
+    }
+  };
+
+  var doCancelOffSite = async function(){
+    if (!data || !data.pendingOffSite) return;
+    setError(""); setBusy(true);
+    try {
+      await apiFetch("/api/offsite/" + data.pendingOffSite._id, "DELETE", null, p.token, p.csrfToken);
+      refetch();
+    } catch (err) {
+      setError((err && err.message) || "Cancel failed");
+    } finally {
+      setBusy(false);
+    }
   };
 
   // Owner is hidden entirely.
@@ -4512,7 +4567,7 @@ var CheckInWidget = function(p) {
   } else if (widgetState === "pending_offsite") {
     headline = "Off-site " + (data.pendingOffSite.type === "check_in" ? "check-in" : "check-out") + " pending review";
     sub = "Submitted " + fmtCairoTime(data.pendingOffSite.requestedAt);
-    btn = <button type="button" disabled style={btnGhost}>Cancel request</button>;
+    btn = <button type="button" onClick={doCancelOffSite} disabled={busy} style={btnGhost}>{busy?"…":"Cancel request"}</button>;
   } else if (widgetState === "done") {
     var ci = data.attendance.checkIn, co = data.attendance.checkOut;
     var hours = (new Date(co.timestamp) - new Date(ci.timestamp)) / 3600000;
@@ -4523,8 +4578,16 @@ var CheckInWidget = function(p) {
     var ts = new Date(data.attendance.checkIn.timestamp);
     var elapsedMs = Date.now() - ts.getTime();
     headline = "Checked in at " + fmtCairoTime(ts);
-    sub = "You've been working for " + fmtDuration(elapsedMs);
-    btn = <button type="button" onClick={doCheckOut} disabled={busy} style={btnPrimary("#EA580C")}>{busy?"…":"Check out"}</button>;
+    // If user is currently outside the geofence, surface the off-site path
+    // up front instead of waiting for the 403 from /check-out. Inside (or
+    // when we don't yet know) → normal Check out button.
+    if (coords && data.geofence && !insideGeofence) {
+      sub = (distanceMeters != null ? distanceMeters + "m away" : "Outside office") + " · request off-site check-out";
+      btn = <button type="button" onClick={function(){openOffSiteModal("check_out");}} disabled={busy} style={btnGhost}>Request off-site check-out</button>;
+    } else {
+      sub = "You've been working for " + fmtDuration(elapsedMs);
+      btn = <button type="button" onClick={doCheckOut} disabled={busy} style={btnPrimary("#EA580C")}>{busy?"…":"Check out"}</button>;
+    }
   } else if (widgetState === "ready_inside") {
     headline = "Ready to check in";
     sub = "Inside " + (data.geofence.name || "office") + " · " + (distanceMeters != null ? distanceMeters + "m" : "—");
@@ -4532,7 +4595,7 @@ var CheckInWidget = function(p) {
   } else if (widgetState === "ready_outside") {
     headline = "Outside " + (data.geofence ? data.geofence.name : "office");
     sub = (distanceMeters != null ? distanceMeters + "m away" : "Out of range") + " · In a meeting? Request off-site approval";
-    btn = <button type="button" onClick={requestOffSite} disabled={busy} style={btnGhost}>Request off-site</button>;
+    btn = <button type="button" onClick={function(){openOffSiteModal("check_in");}} disabled={busy} style={btnGhost}>Request off-site</button>;
   } else if (widgetState === "no_coords") {
     headline = "Location unavailable";
     sub = coordsErr || "Enable location in browser settings to check in";
@@ -4550,19 +4613,43 @@ var CheckInWidget = function(p) {
     btn = null;
   }
 
-  return <div style={{
-    background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)",
-    borderLeft:"3px solid "+accent, padding:pad, display:"flex", alignItems:"center",
-    gap:14, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-    marginBottom:16, opacity: widgetState==="off_day" ? 0.85 : 1
-  }}>
-    <div style={{flex:1, minWidth:0}}>
-      <div style={{fontSize:14, fontWeight:600, color:C.text, marginBottom:2}}>{headline}</div>
-      <div style={{fontSize:12, color:C.textLight, lineHeight:1.4}}>{sub}</div>
-      {error && <div style={{fontSize:11, color:C.danger, marginTop:4}}>{error}</div>}
+  return <>
+    <div style={{
+      background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)",
+      borderLeft:"3px solid "+accent, padding:pad, display:"flex", alignItems:"center",
+      gap:14, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      marginBottom:16, opacity: widgetState==="off_day" ? 0.85 : 1
+    }}>
+      <div style={{flex:1, minWidth:0}}>
+        <div style={{fontSize:14, fontWeight:600, color:C.text, marginBottom:2}}>{headline}</div>
+        <div style={{fontSize:12, color:C.textLight, lineHeight:1.4}}>{sub}</div>
+        {error && <div style={{fontSize:11, color:C.danger, marginTop:4}}>{error}</div>}
+      </div>
+      {btn}
     </div>
-    {btn}
-  </div>;
+
+    {modalOpen && <div className="crm-modal" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:20 }}>
+      <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:12, maxWidth:480, width:"100%", padding:24, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+        <div style={{ fontSize:16, fontWeight:600, marginBottom:6, color:C.text }}>Request off-site {modalType === "check_in" ? "check-in" : "check-out"}</div>
+        <div style={{ fontSize:12, color:C.textLight, marginBottom:16, lineHeight:1.5 }}>
+          Your timestamp and GPS coordinates are captured automatically. The {modalType === "check_in" ? "check-in" : "check-out"} is recorded immediately and reviewed by an admin.
+        </div>
+        <label style={{ fontSize:12, color:C.textLight, display:"block", marginBottom:6 }}>Reason (min 10 characters)</label>
+        <textarea value={modalReason} onChange={function(e){setModalReason(e.target.value);}}
+          rows={4} placeholder="e.g. Site visit at New Cairo with Mr. Ahmed…"
+          style={{ width:"100%", padding:10, border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:8, fontSize:13, fontFamily:"inherit", resize:"vertical", boxSizing:"border-box" }}/>
+        {modalErr && <div style={{ fontSize:12, color:C.danger, marginTop:8 }}>{modalErr}</div>}
+        <div style={{ display:"flex", gap:8, marginTop:16, justifyContent:"flex-end" }}>
+          <button type="button" onClick={function(){setModalOpen(false);}} disabled={modalBusy}
+            style={{ fontSize:13, padding:"9px 16px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text }}>Cancel</button>
+          <button type="button" onClick={submitOffSite} disabled={modalBusy}
+            style={{ fontSize:13, padding:"9px 16px", border:"none", background:"#185FA5", color:"#fff", borderRadius:8, cursor:"pointer", fontWeight:600, fontFamily:"inherit" }}>
+            {modalBusy ? "Submitting…" : "Submit request"}
+          </button>
+        </div>
+      </div>
+    </div>}
+  </>;
 };
 
 var AttendancePage = function(p) {
@@ -4761,6 +4848,252 @@ var AttendancePage = function(p) {
       {activeTab === "team" && !canManage && <div style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13, background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)"}}>
         You no longer have permission to view the team attendance.
       </div>}
+    </div>
+  </div>;
+};
+
+// =====================================================================
+// OFF-SITE REQUESTS INBOX — Phase 4
+// Admin / sales_admin / hr (gated by approveOffSiteRequests permission).
+// Shows raw lat/lng + an Open in Maps link (no third-party API key needed).
+// =====================================================================
+var OffSiteRequestsPage = function(p) {
+  var canApprove = hasAttendancePerm(p.cu && p.cu.role, "approveOffSiteRequests", p.attendanceSettings);
+  var [rows,setRows] = useState([]);
+  var [loading,setLoading] = useState(false);
+  var [error,setError] = useState("");
+  var [rejectingId,setRejectingId] = useState(null);
+  var [rejectNotes,setRejectNotes] = useState("");
+
+  var refetch = useCallback(function(){
+    if (!p.token) return;
+    setLoading(true);
+    apiFetch("/api/offsite/pending","GET",null,p.token).then(function(r){
+      setRows(Array.isArray(r) ? r : []);
+      setError("");
+    }).catch(function(err){
+      setError((err && err.message) || "Failed to load");
+      setRows([]);
+    }).finally(function(){ setLoading(false); });
+  },[p.token]);
+
+  useEffect(function(){
+    if (!canApprove) return;
+    refetch();
+    var handler = function(){ refetch(); };
+    window.addEventListener("crm:offsite_request_updated", handler);
+    return function(){ window.removeEventListener("crm:offsite_request_updated", handler); };
+  },[canApprove, refetch]);
+
+  var doApprove = async function(id){
+    try {
+      await apiFetch("/api/offsite/"+id+"/approve","POST",null,p.token,p.csrfToken);
+      refetch();
+    } catch (err) { alert((err && err.message) || "Approve failed"); }
+  };
+  var doReject = async function(id){
+    try {
+      await apiFetch("/api/offsite/"+id+"/reject","POST",{ notes: rejectNotes }, p.token, p.csrfToken);
+      setRejectingId(null); setRejectNotes("");
+      refetch();
+    } catch (err) { alert((err && err.message) || "Reject failed"); }
+  };
+
+  if (!canApprove) {
+    return <div style={{padding:"24px 16px"}}>
+      <div style={{maxWidth:1200, margin:"0 auto", background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", padding:24, textAlign:"center", color:C.textLight, fontSize:13, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+        You do not have permission to approve off-site requests.
+      </div>
+    </div>;
+  }
+
+  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+    <div style={{maxWidth:1200, margin:"0 auto"}}>
+      <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+        <div style={{padding:"16px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>
+          <div style={{fontSize:15, fontWeight:600, color:C.text}}>Off-site requests</div>
+          <div style={{fontSize:12, color:C.textLight, marginTop:2}}>{rows.length} pending</div>
+        </div>
+
+        {loading ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
+          : error ? <div style={{padding:32, textAlign:"center", color:C.danger, fontSize:13}}>{error}</div>
+          : rows.length === 0 ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>No pending requests</div>
+          : <div>
+            {rows.map(function(r){
+              var emp = r.userId || {};
+              var mapsUrl = "https://www.google.com/maps?q=" + r.latitude + "," + r.longitude;
+              var coordStr = (r.latitude != null ? Number(r.latitude).toFixed(4) : "—") + ", " + (r.longitude != null ? Number(r.longitude).toFixed(4) : "—");
+              return <div key={String(r._id)} style={{padding:"16px 20px", borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
+                <div style={{display:"flex", gap:12, alignItems:"flex-start", flexWrap:"wrap"}}>
+                  <div style={{flex:"1 1 280px", minWidth:0}}>
+                    <div style={{fontSize:14, fontWeight:600, color:C.text}}>{emp.name || "—"}</div>
+                    <div style={{fontSize:12, color:C.textLight, marginTop:2}}>
+                      {emp.role || ""} {emp.teamName ? "· " + emp.teamName : ""}
+                    </div>
+                    <div style={{fontSize:12, color:C.text, marginTop:8, fontWeight:500}}>
+                      {r.type === "check_in" ? "Off-site check-in" : "Off-site check-out"}
+                      <span style={{color:C.textLight, fontWeight:400, marginLeft:8}}>· submitted {fmtCairoTime(r.requestedAt)} · {fmtCairoDate(r.requestedAt)}</span>
+                    </div>
+                    <div style={{fontSize:12, color:C.text, marginTop:6, lineHeight:1.5, background:"#F7F7F5", padding:"8px 10px", borderRadius:6}}>
+                      {r.reason}
+                    </div>
+                    <div style={{fontSize:11, color:C.textLight, marginTop:8, display:"flex", alignItems:"center", gap:10, flexWrap:"wrap"}}>
+                      <span style={{fontFamily:"ui-monospace, Menlo, monospace"}}>{coordStr}</span>
+                      <a href={mapsUrl} target="_blank" rel="noopener noreferrer" style={{color:"#185FA5", textDecoration:"none", fontSize:11, fontWeight:500}}>📍 Open in Maps ↗</a>
+                    </div>
+                  </div>
+                  <div style={{display:"flex", gap:8, alignItems:"flex-start"}}>
+                    <button type="button" onClick={function(){doApprove(r._id);}}
+                      style={{fontSize:12, padding:"8px 16px", border:"none", background:"#0F766E", color:"#fff", borderRadius:8, cursor:"pointer", fontWeight:600, fontFamily:"inherit"}}>Approve</button>
+                    {rejectingId === String(r._id)
+                      ? null
+                      : <button type="button" onClick={function(){setRejectingId(String(r._id)); setRejectNotes("");}}
+                          style={{fontSize:12, padding:"8px 16px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text}}>Reject</button>}
+                  </div>
+                </div>
+                {rejectingId === String(r._id) && <div style={{marginTop:12, padding:12, background:"#FEF9F0", border:"0.5px solid #FDE68A", borderRadius:8}}>
+                  <label style={{fontSize:11, color:C.textLight, display:"block", marginBottom:6}}>Rejection notes (optional)</label>
+                  <textarea value={rejectNotes} onChange={function(e){setRejectNotes(e.target.value);}}
+                    rows={2} style={{width:"100%", padding:8, border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:6, fontSize:12, fontFamily:"inherit", resize:"vertical", boxSizing:"border-box"}}/>
+                  <div style={{display:"flex", gap:8, marginTop:8, justifyContent:"flex-end"}}>
+                    <button type="button" onClick={function(){setRejectingId(null); setRejectNotes("");}}
+                      style={{fontSize:12, padding:"6px 12px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:6, cursor:"pointer", fontFamily:"inherit"}}>Cancel</button>
+                    <button type="button" onClick={function(){doReject(r._id);}}
+                      style={{fontSize:12, padding:"6px 12px", border:"none", background:"#B91C1C", color:"#fff", borderRadius:6, cursor:"pointer", fontWeight:600, fontFamily:"inherit"}}>Confirm reject</button>
+                  </div>
+                </div>}
+              </div>;
+            })}
+          </div>}
+      </div>
+    </div>
+  </div>;
+};
+
+// =====================================================================
+// COMPANY OFF-DAYS — Phase 4 (doc §11)
+// Admin / sales_admin / hr (gated by manageCompanyOffDays).
+// =====================================================================
+var CompanyOffDaysPage = function(p) {
+  var canManage = hasAttendancePerm(p.cu && p.cu.role, "manageCompanyOffDays", p.attendanceSettings);
+  var now = new Date();
+  var [year,setYear] = useState(now.getFullYear());
+  var [rows,setRows] = useState([]);
+  var [loading,setLoading] = useState(false);
+  var [newDate,setNewDate] = useState("");
+  var [newName,setNewName] = useState("");
+  var [adding,setAdding] = useState(false);
+  var [error,setError] = useState("");
+
+  var refetch = useCallback(function(){
+    if (!p.token) return;
+    setLoading(true);
+    apiFetch("/api/company-off-days?year="+year,"GET",null,p.token).then(function(r){
+      setRows(Array.isArray(r) ? r : []);
+    }).catch(function(){ setRows([]); })
+      .finally(function(){ setLoading(false); });
+  },[year, p.token]);
+
+  useEffect(function(){
+    refetch();
+    var handler = function(){ refetch(); };
+    window.addEventListener("crm:company_offdays_updated", handler);
+    return function(){ window.removeEventListener("crm:company_offdays_updated", handler); };
+  },[refetch]);
+
+  var doAdd = async function(){
+    if (!newDate || !newName) { setError("Date and name required"); return; }
+    setError(""); setAdding(true);
+    try {
+      await apiFetch("/api/company-off-days","POST",{ date: newDate, name: newName }, p.token, p.csrfToken);
+      setNewDate(""); setNewName("");
+      refetch();
+    } catch (err) {
+      setError((err && err.message) || "Add failed");
+    } finally { setAdding(false); }
+  };
+
+  var doDelete = async function(id){
+    if (!window.confirm("Delete this off-day?")) return;
+    try {
+      await apiFetch("/api/company-off-days/"+id,"DELETE",null,p.token,p.csrfToken);
+      refetch();
+    } catch (err) { alert((err && err.message) || "Delete failed"); }
+  };
+
+  if (!canManage) {
+    return <div style={{padding:"24px 16px"}}>
+      <div style={{maxWidth:1200, margin:"0 auto", background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", padding:24, textAlign:"center", color:C.textLight, fontSize:13, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+        You do not have permission to manage company off-days.
+      </div>
+    </div>;
+  }
+
+  var monthFloor = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
+  var todayKey = function(d){ var x = new Date(d); return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate())); };
+
+  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+    <div style={{maxWidth:900, margin:"0 auto"}}>
+      <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+        <div style={{padding:"16px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap"}}>
+          <div>
+            <div style={{fontSize:15, fontWeight:600, color:C.text}}>Company Off-Days</div>
+            <div style={{fontSize:12, color:C.textLight, marginTop:2}}>Holidays and non-working days for everyone — removed from the working-days count in salaries.</div>
+          </div>
+          <div style={{display:"flex", gap:8, alignItems:"center"}}>
+            <button type="button" onClick={function(){setYear(year - 1);}} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>‹</button>
+            <div style={{fontSize:13, fontWeight:500, color:C.text, minWidth:60, textAlign:"center"}}>{year}</div>
+            <button type="button" onClick={function(){setYear(year + 1);}} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>›</button>
+          </div>
+        </div>
+
+        <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", background:"#FAFAF7", display:"flex", gap:8, alignItems:"flex-end", flexWrap:"wrap"}}>
+          <div style={{flex:"1 1 160px", minWidth:140}}>
+            <label style={{fontSize:11, color:C.textLight, display:"block", marginBottom:4}}>Date</label>
+            <input type="date" value={newDate} onChange={function(e){setNewDate(e.target.value);}}
+              style={{padding:"7px 10px", border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:6, fontSize:13, fontFamily:"inherit", width:"100%", boxSizing:"border-box"}}/>
+          </div>
+          <div style={{flex:"2 1 240px", minWidth:200}}>
+            <label style={{fontSize:11, color:C.textLight, display:"block", marginBottom:4}}>Name</label>
+            <input type="text" value={newName} onChange={function(e){setNewName(e.target.value);}} placeholder="e.g. Labor Day"
+              style={{padding:"7px 10px", border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:6, fontSize:13, fontFamily:"inherit", width:"100%", boxSizing:"border-box"}}/>
+          </div>
+          <button type="button" onClick={doAdd} disabled={adding}
+            style={{fontSize:12, padding:"8px 16px", border:"none", background:"#185FA5", color:"#fff", borderRadius:6, cursor:"pointer", fontWeight:600, fontFamily:"inherit", height:32, opacity:adding?0.6:1}}>
+            {adding ? "Adding…" : "+ Add off-day"}
+          </button>
+          {error && <div style={{flex:"1 1 100%", fontSize:12, color:C.danger}}>{error}</div>}
+        </div>
+
+        {loading ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
+          : rows.length === 0 ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>No off-days for {year}</div>
+          : <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
+            <thead>
+              <tr style={{background:"#F7F7F5"}}>
+                <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Date</th>
+                <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Name</th>
+                <th style={{textAlign:"right", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px", width:100}}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(function(off){
+                var d = new Date(off.date);
+                var dStr = d.toLocaleDateString("en-GB", { weekday:"short", day:"2-digit", month:"short", year:"numeric", timeZone:"UTC" });
+                var inPast = todayKey(off.date) < monthFloor;
+                return <tr key={String(off._id)} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
+                  <td style={{padding:"10px 16px"}}>{dStr}</td>
+                  <td style={{padding:"10px 16px"}}>{off.name}</td>
+                  <td style={{padding:"10px 16px", textAlign:"right"}}>
+                    {inPast
+                      ? <span style={{fontSize:11, color:C.textLight}}>locked</span>
+                      : <button type="button" onClick={function(){doDelete(off._id);}}
+                          style={{fontSize:11, padding:"4px 10px", border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:6, cursor:"pointer", color:C.danger, fontFamily:"inherit"}}>Delete</button>}
+                  </td>
+                </tr>;
+              })}
+            </tbody>
+          </table>}
+      </div>
     </div>
   </div>;
 };
@@ -14196,6 +14529,16 @@ export default function CRMApp() {
                 try { window.dispatchEvent(new CustomEvent("crm:attendance_updated", { detail: data })); } catch(e){}
               }
               break;
+            case "offsite_request_updated":
+              // Phase 4 — fired on create/cancel/approve/reject. Off-site
+              // inbox page listens via crm:offsite_request_updated and
+              // refetches the pending list.
+              try { window.dispatchEvent(new CustomEvent("crm:offsite_request_updated")); } catch(e){}
+              break;
+            case "company_offdays_updated":
+              // Phase 4 — fired on add/remove. Company Off-Days page refetches.
+              try { window.dispatchEvent(new CustomEvent("crm:company_offdays_updated")); } catch(e){}
+              break;
             case "hello": break; // server greeting
             default: break;
           }
@@ -14633,7 +14976,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",settings:t.settings};
+  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",companyOffDays:"Company Off-Days",settings:t.settings};
   // Server already filters users by role — p.users IS the team
   var myId = String(currentUser.id||currentUser._id||"");
 
@@ -14679,6 +15022,8 @@ export default function CRMApp() {
       case "users": return <UsersPage {...sp}/>;
       case "archive": return <ArchivePage {...sp}/>;
       case "attendance": return <AttendancePage {...sp}/>;
+      case "offsiteRequests": return <OffSiteRequestsPage {...sp}/>;
+      case "companyOffDays":  return <CompanyOffDaysPage  {...sp}/>;
       case "settings": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
       default: return <DashboardPage {...sp}/>;
     }
@@ -14731,7 +15076,7 @@ export default function CRMApp() {
       </div>
       <button onClick={function(){setShowPwaBanner(false);try{localStorage.setItem("crm_pwa_dismissed","1");}catch(e){}}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, color:"#fff", padding:"6px 12px", fontSize:12, cursor:"pointer", flexShrink:0 }}>Got it</button>
     </div>}
-    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads}/>
+    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads} attendanceSettings={attendanceSettings}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
       <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>

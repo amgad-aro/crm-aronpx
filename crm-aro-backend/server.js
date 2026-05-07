@@ -2104,11 +2104,18 @@ app.post("/api/attendance/check-out", auth, async function(req, res) {
     else if (att.deductionFraction === 0.5)  endStatus = "late_half";
     else if (att.deductionFraction === 1)    endStatus = "late_full";
 
-    // Off-site at check-out is a separate concept from check-in off-site.
-    // Phase 3: if outside geofence we accept anyway (no early-out deduction),
-    // but flag isOffSite=true so admins can see it. Phase 4 will turn this
-    // into a proper request flow if the user wants approval.
-    var outsideGeofence = !loc || (distance != null && distance > loc.radiusMeters);
+    // Phase 4: outside geofence on check-out → 403, frontend routes to the
+    // off-site modal (POST /api/offsite/request type=check_out). Symmetrical
+    // with the check-in flow.
+    if (!loc) return res.status(503).json({ error: "Office location not configured.", code: "no_office" });
+    if (distance != null && distance > loc.radiusMeters) {
+      return res.status(403).json({
+        error: "Outside office geofence",
+        code: "outside_geofence",
+        distanceMeters: Math.round(distance),
+        radiusMeters: loc.radiusMeters
+      });
+    }
 
     att.checkOut = {
       timestamp: now,
@@ -2117,7 +2124,7 @@ app.post("/api/attendance/check-out", auth, async function(req, res) {
       accuracyMeters: Math.round(acc),
       ipAddress: req.ip,
       deviceType: detectDeviceType(req.headers["user-agent"]),
-      isOffSite: outsideGeofence
+      isOffSite: false
     };
     att.status = endStatus;
     att.computedAt = now;
@@ -2187,6 +2194,362 @@ async function(req, res) {
     res.json(rows);
   } catch (e) {
     console.error("[GET /attendance/today/all]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =====================================================================
+// OFF-SITE REQUESTS — Phase 4 (doc §6)
+// Hybrid approval flow: the check-in (or check-out) is recorded immediately
+// with status="pending_offsite" so the original timestamp is preserved.
+// On approve we recompute the late tier from that timestamp; on reject we
+// void the entry (check-in → absent + full deduction; check-out → revert to
+// in_progress so the user can try again).
+// =====================================================================
+
+app.post("/api/offsite/request", auth, async function(req, res) {
+  try {
+    if (req.user.role === "admin") return res.status(400).json({ error: "Owner does not need off-site requests" });
+
+    var type = req.body && req.body.type;
+    var lat = Number(req.body && req.body.latitude);
+    var lng = Number(req.body && req.body.longitude);
+    var acc = Number((req.body && req.body.accuracy) || 0);
+    var reason = (req.body && req.body.reason) ? String(req.body.reason).trim() : "";
+    var attachmentUrl = (req.body && req.body.attachmentUrl) ? String(req.body.attachmentUrl) : "";
+
+    if (type !== "check_in" && type !== "check_out") return res.status(400).json({ error: "type must be check_in or check_out" });
+    if (!isFinite(lat) || !isFinite(lng)) return res.status(400).json({ error: "Invalid coordinates" });
+    if (reason.length < 10) return res.status(400).json({ error: "Reason must be at least 10 characters" });
+
+    var user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    var now = new Date();
+    var off = await getOffStatus(user, now);
+    if (off.off) return res.status(400).json({ error: "Today is off (" + off.reason + ")", code: "off_day" });
+
+    var dateKey = getCairoStartOfDay(now);
+
+    // One pending request at a time per user — keeps the inbox clean.
+    var existingPending = await OffSiteRequest.findOne({ userId: user._id, status: "pending" });
+    if (existingPending) return res.status(409).json({ error: "You already have a pending off-site request", code: "already_pending" });
+
+    var existingAtt = await Attendance.findOne({ userId: user._id, date: dateKey });
+    if (type === "check_in") {
+      if (existingAtt && existingAtt.checkIn && existingAtt.checkIn.timestamp) {
+        return res.status(409).json({ error: "Already checked in today", code: "already_checked_in" });
+      }
+    } else {
+      if (!existingAtt || !existingAtt.checkIn || !existingAtt.checkIn.timestamp) {
+        return res.status(400).json({ error: "Not checked in yet", code: "not_checked_in" });
+      }
+      if (existingAtt.checkOut && existingAtt.checkOut.timestamp) {
+        return res.status(409).json({ error: "Already checked out", code: "already_checked_out" });
+      }
+    }
+
+    var reqDoc = await OffSiteRequest.create({
+      userId: user._id, type: type,
+      requestedAt: now,
+      latitude: lat, longitude: lng,
+      reason: reason, attachmentUrl: attachmentUrl,
+      status: "pending"
+    });
+
+    var att;
+    var slot = {
+      timestamp: now,
+      latitude: lat, longitude: lng,
+      accuracyMeters: Math.round(acc),
+      ipAddress: req.ip,
+      deviceType: detectDeviceType(req.headers["user-agent"]),
+      isOffSite: true,
+      offSiteRequestId: reqDoc._id
+    };
+    if (type === "check_in") {
+      att = await Attendance.findOneAndUpdate(
+        { userId: user._id, date: dateKey },
+        { $set: {
+            userId: user._id, date: dateKey,
+            checkIn: slot,
+            status: "pending_offsite",
+            deductionFraction: 0, // recomputed on approval
+            computedAt: now
+          }},
+        { upsert: true, new: true }
+      );
+    } else {
+      existingAtt.checkOut = slot;
+      existingAtt.status = "pending_offsite";
+      existingAtt.computedAt = now;
+      await existingAtt.save();
+      att = existingAtt;
+    }
+    await OffSiteRequest.updateOne({ _id: reqDoc._id }, { $set: { attendanceId: att._id } });
+    reqDoc.attendanceId = att._id;
+
+    try {
+      broadcast("attendance_updated", { userId: String(user._id), attendance: att });
+      broadcast("offsite_request_updated", {});
+    } catch (e) {}
+
+    res.json({ request: reqDoc, attendance: att });
+  } catch (e) {
+    console.error("[POST /offsite/request]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/offsite/:id", auth, async function(req, res) {
+  try {
+    var r = await OffSiteRequest.findById(req.params.id);
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (String(r.userId) !== String(req.user.id)) return res.status(403).json({ error: "Not yours" });
+    if (r.status !== "pending") return res.status(400).json({ error: "Cannot cancel after admin action" });
+
+    var user = await User.findById(r.userId).lean();
+    r.status = "cancelled";
+    await r.save();
+
+    var att = r.attendanceId ? await Attendance.findById(r.attendanceId) : null;
+    if (att) {
+      if (r.type === "check_in") {
+        // Cancelling check-in request → drop the attendance entirely so the
+        // user can try again (on-site) the same day.
+        await Attendance.deleteOne({ _id: att._id });
+        att = null;
+      } else {
+        // Cancelling check-out request → revert to in_progress and restore
+        // the late tier originally set at check-in.
+        att.checkOut = undefined;
+        if (user && att.checkIn && att.checkIn.timestamp) {
+          var tier = computeLateTier(att.checkIn.timestamp, user.role);
+          att.deductionFraction = tier.deductionFraction;
+        }
+        att.status = "in_progress";
+        await att.save();
+      }
+      try { broadcast("attendance_updated", { userId: String(r.userId), attendance: att }); } catch(e){}
+    }
+    try { broadcast("offsite_request_updated", {}); } catch(e){}
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[DELETE /offsite/:id]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/offsite/pending", auth, requireAttendancePermission("approveOffSiteRequests"),
+async function(req, res) {
+  try {
+    var rows = await OffSiteRequest.find({ status: "pending" })
+      .populate("userId", "name role title teamName")
+      .sort({ requestedAt: 1 })
+      .lean();
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/offsite/:id/approve", auth, requireAttendancePermission("approveOffSiteRequests"),
+async function(req, res) {
+  try {
+    var r = await OffSiteRequest.findById(req.params.id);
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (r.status !== "pending") return res.status(400).json({ error: "Already " + r.status });
+
+    var att = r.attendanceId ? await Attendance.findById(r.attendanceId) : null;
+    if (!att) return res.status(500).json({ error: "Linked attendance missing" });
+    var user = await User.findById(r.userId).lean();
+
+    // Approval recomputes the late tier from the original check-in time. If
+    // check-out is set, we move to the late-tier status; otherwise we leave
+    // status as in_progress until check-out happens.
+    var tier = att.checkIn && att.checkIn.timestamp
+      ? computeLateTier(att.checkIn.timestamp, user.role)
+      : { status: "present", deductionFraction: 0 };
+    att.deductionFraction = tier.deductionFraction;
+    att.status = (att.checkOut && att.checkOut.timestamp) ? tier.status : "in_progress";
+    att.computedAt = new Date();
+    await att.save();
+
+    r.status = "approved";
+    r.reviewedBy = req.user.id;
+    r.reviewedAt = new Date();
+    await r.save();
+
+    try {
+      await AuditLog.create({
+        type: "OFFSITE_APPROVED",
+        targetUserId: r.userId,
+        performedBy: req.user.id,
+        before: {},
+        after: { requestId: String(r._id), type: r.type, attendanceId: String(att._id), tier: tier },
+        ipAddress: req.ip
+      });
+    } catch (e) {}
+
+    try {
+      broadcast("attendance_updated", { userId: String(r.userId), attendance: att });
+      broadcast("offsite_request_updated", {});
+    } catch (e) {}
+    res.json({ request: r, attendance: att });
+  } catch (e) {
+    console.error("[POST /offsite/:id/approve]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/offsite/:id/reject", auth, requireAttendancePermission("approveOffSiteRequests"),
+async function(req, res) {
+  try {
+    var r = await OffSiteRequest.findById(req.params.id);
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (r.status !== "pending") return res.status(400).json({ error: "Already " + r.status });
+
+    var notes = (req.body && req.body.notes) ? String(req.body.notes) : "";
+    var att = r.attendanceId ? await Attendance.findById(r.attendanceId) : null;
+
+    if (att) {
+      if (r.type === "check_in") {
+        // Reject check-in → mark day as absent (full deduction). We keep the
+        // attendance row so the audit trail is complete; checkIn is cleared.
+        att.checkIn = undefined;
+        att.status = "absent";
+        att.deductionFraction = 1;
+        await att.save();
+      } else {
+        // Reject check-out → revert to in_progress, restore the original late
+        // tier so the user can try checking out again from inside the office.
+        att.checkOut = undefined;
+        var user = await User.findById(r.userId).lean();
+        if (user && att.checkIn && att.checkIn.timestamp) {
+          var tier = computeLateTier(att.checkIn.timestamp, user.role);
+          att.deductionFraction = tier.deductionFraction;
+        }
+        att.status = "in_progress";
+        await att.save();
+      }
+    }
+
+    r.status = "rejected";
+    r.reviewedBy = req.user.id;
+    r.reviewedAt = new Date();
+    r.reviewNotes = notes;
+    await r.save();
+
+    try {
+      await AuditLog.create({
+        type: "OFFSITE_REJECTED",
+        targetUserId: r.userId,
+        performedBy: req.user.id,
+        before: {},
+        after: { requestId: String(r._id), type: r.type, notes: notes, attendanceId: att ? String(att._id) : null },
+        ipAddress: req.ip
+      });
+    } catch (e) {}
+
+    try {
+      broadcast("attendance_updated", { userId: String(r.userId), attendance: att });
+      broadcast("offsite_request_updated", {});
+    } catch (e) {}
+    res.json({ request: r, attendance: att });
+  } catch (e) {
+    console.error("[POST /offsite/:id/reject]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =====================================================================
+// COMPANY OFF-DAYS — Phase 4 (doc §11)
+// Calendar dates that are off for everyone. Removed from each user's
+// workingDays count during salary calc. Read by anyone (it's not sensitive);
+// write requires manageCompanyOffDays.
+// =====================================================================
+
+app.get("/api/company-off-days", auth, async function(req, res) {
+  try {
+    var year = parseInt(req.query.year, 10);
+    var query = {};
+    if (isFinite(year)) {
+      query.date = {
+        $gte: new Date(Date.UTC(year, 0, 1)),
+        $lt: new Date(Date.UTC(year + 1, 0, 1))
+      };
+    }
+    var rows = await CompanyOffDay.find(query).sort({ date: 1 }).populate("createdBy", "name").lean();
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/company-off-days", auth, requireAttendancePermission("manageCompanyOffDays"),
+async function(req, res) {
+  try {
+    var dateStr = (req.body && req.body.date) ? String(req.body.date) : "";
+    var name    = (req.body && req.body.name) ? String(req.body.name).trim() : "";
+    if (!dateStr) return res.status(400).json({ error: "date required (YYYY-MM-DD)" });
+    if (!name)    return res.status(400).json({ error: "name required" });
+    if (name.length > 100) return res.status(400).json({ error: "name too long" });
+
+    var m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
+    var dateKey = new Date(Date.UTC(parseInt(m[1],10), parseInt(m[2],10) - 1, parseInt(m[3],10)));
+
+    // Doc §11: cannot add off-days in past months. We compute "first day of
+    // current Cairo month" as the floor.
+    var nowParts = getCairoDateParts(new Date());
+    var monthFloor = new Date(Date.UTC(nowParts.year, nowParts.month - 1, 1));
+    if (dateKey < monthFloor) return res.status(400).json({ error: "Cannot add off-day in a past month" });
+
+    try {
+      var off = await CompanyOffDay.create({ date: dateKey, name: name, createdBy: req.user.id });
+      try {
+        await AuditLog.create({
+          type: "COMPANY_OFFDAY_ADDED",
+          performedBy: req.user.id,
+          after: { date: dateKey, name: name },
+          ipAddress: req.ip
+        });
+      } catch (e) {}
+      try { broadcast("company_offdays_updated", {}); } catch (e) {}
+      res.json(off);
+    } catch (dupErr) {
+      if (dupErr && dupErr.code === 11000) return res.status(409).json({ error: "An off-day already exists for that date" });
+      throw dupErr;
+    }
+  } catch (e) {
+    console.error("[POST /company-off-days]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/company-off-days/:id", auth, requireAttendancePermission("manageCompanyOffDays"),
+async function(req, res) {
+  try {
+    var off = await CompanyOffDay.findById(req.params.id);
+    if (!off) return res.status(404).json({ error: "Not found" });
+
+    var nowParts = getCairoDateParts(new Date());
+    var monthFloor = new Date(Date.UTC(nowParts.year, nowParts.month - 1, 1));
+    if (off.date < monthFloor) return res.status(400).json({ error: "Cannot delete off-day in a past month" });
+
+    await CompanyOffDay.deleteOne({ _id: off._id });
+    try {
+      await AuditLog.create({
+        type: "COMPANY_OFFDAY_REMOVED",
+        performedBy: req.user.id,
+        before: { date: off.date, name: off.name },
+        ipAddress: req.ip
+      });
+    } catch (e) {}
+    try { broadcast("company_offdays_updated", {}); } catch (e) {}
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[DELETE /company-off-days/:id]", e);
     res.status(500).json({ error: e.message });
   }
 });
