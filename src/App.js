@@ -4376,9 +4376,12 @@ var CheckInWidget = function(p) {
   }, [data && data.geofence ? data.geofence.latitude : null,
       data && data.geofence ? data.geofence.longitude : null]);
 
-  // Live duration tick (every 30s) for State 3.
+  // Live duration tick (every 30s) for State 3. Same Mongoose `{}` gotcha as
+  // the state machine — gate on the actual checkOut timestamp.
   useEffect(function(){
-    if (!data || !data.attendance || !data.attendance.checkIn || data.attendance.checkOut) return;
+    var a = data && data.attendance;
+    var inProgress = !!(a && a.checkIn && a.checkIn.timestamp && !(a.checkOut && a.checkOut.timestamp));
+    if (!inProgress) return;
     var t = setInterval(function(){ setTick(function(x){return x+1;}); }, 30000);
     return function(){ clearInterval(t); };
   }, [data]);
@@ -4419,12 +4422,18 @@ var CheckInWidget = function(p) {
 
   // State machine resolution. Order matters — pending > done > in-progress >
   // off-day > inside/outside.
+  // IMPORTANT: Mongoose 7 hydrates a doc with nested sub-object schemas as
+  // `{ checkOut: {} }` even when the field was never written. So we MUST
+  // gate on the actual `.timestamp` presence, not the bare object truthiness,
+  // or "checked in but not checked out" misclassifies as "done" → State 4
+  // → no Check-out button (the bug fix that motivated these helpers).
+  var hasCheckIn  = !!(data && data.attendance && data.attendance.checkIn  && data.attendance.checkIn.timestamp);
+  var hasCheckOut = !!(data && data.attendance && data.attendance.checkOut && data.attendance.checkOut.timestamp);
   var widgetState = (function(){
     if (!data) return "loading";
     if (data.pendingOffSite) return "pending_offsite";
-    var a = data.attendance;
-    if (a && a.checkIn && a.checkOut) return "done";
-    if (a && a.checkIn && !a.checkOut) return "in_progress";
+    if (hasCheckIn && hasCheckOut) return "done";
+    if (hasCheckIn && !hasCheckOut) return "in_progress";
     if (data.isOffDay) return "off_day";
     if (coordsErr) return "no_coords";
     if (coords == null) return "locating";
