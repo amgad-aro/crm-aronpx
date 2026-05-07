@@ -56,10 +56,16 @@ delete mongoose.models["DailyRequest"];
 var User = mongoose.model("User", new mongoose.Schema({
   name:{type:String,required:true}, username:{type:String,required:true,unique:true},
   password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
-  role:{type:String,enum:["admin","sales_admin","director","manager","team_leader","sales","viewer"],default:"sales"},
+  role:{type:String,enum:["admin","sales_admin","hr","director","manager","team_leader","sales","viewer"],default:"sales"},
   title:{type:String,default:""}, active:{type:Boolean,default:true},
   monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, lastActive:{type:Date,default:null}, qTargets:{type:Object,default:{}}, reportsTo:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
-  startingDate:{type:Date,default:null}
+  startingDate:{type:Date,default:null},
+  // Attendance & Salary system (docs/attendance-salary-requirements.md §17).
+  // baseSalary in EGP, null for Owner (admin) — excluded from all salary lists.
+  // saturdayPatternStartDate is required when saturdaySchedule="alternating".
+  baseSalary:{type:Number,default:null},
+  saturdaySchedule:{type:String,enum:["always_work","always_off","alternating"],default:"always_work"},
+  saturdayPatternStartDate:{type:Date,default:null}
 },{timestamps:true}));
 
 var Lead = mongoose.model("Lead", new mongoose.Schema({
@@ -265,6 +271,198 @@ var agentVacationSchema = new mongoose.Schema({
 });
 agentVacationSchema.index({ agentId: 1, endDate: 1 });
 var AgentVacation = mongoose.model("AgentVacation", agentVacationSchema);
+
+// =====================================================================
+// ATTENDANCE & SALARY SYSTEM — Phase 1 foundation
+// Spec: docs/attendance-salary-requirements.md
+//
+// Settings live in AppSetting under key="attendance_settings" (reuses the
+// existing key/value pattern next to "rotation", "projectWeights",
+// "campaigns"). The schemas below cover the attendance/salary domain only.
+// =====================================================================
+
+// CompanyOffDay — a single calendar date that is off for everyone (e.g. Labor
+// Day, company anniversary). date stored as start-of-day Africa/Cairo. Removed
+// from each user's workingDays count when computing salary.
+var CompanyOffDay = mongoose.model("CompanyOffDay", new mongoose.Schema({
+  date:      { type: Date, required: true, unique: true },
+  name:      { type: String, required: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
+}, { timestamps: true }));
+
+// Attendance — one document per user per calendar day. Created on check-in;
+// stays open (status="in_progress") until check-out. status reflects late tier
+// computed at check-in time. deductionFraction snapshots the cost as 0 / 0.25
+// / 0.5 / 1. override is set only when an admin uses the Day Override tool.
+var Attendance = mongoose.model("Attendance", new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+  date:   { type: Date, required: true, index: true },
+  checkIn: {
+    timestamp:       Date,
+    latitude:        Number,
+    longitude:       Number,
+    distanceMeters:  Number,
+    accuracyMeters:  Number,
+    ipAddress:       String,
+    deviceType:      String,
+    isOffSite:       { type: Boolean, default: false },
+    offSiteRequestId:{ type: mongoose.Schema.Types.ObjectId, ref: "OffSiteRequest" }
+  },
+  checkOut: {
+    timestamp:       Date,
+    latitude:        Number,
+    longitude:       Number,
+    distanceMeters:  Number,
+    accuracyMeters:  Number,
+    ipAddress:       String,
+    deviceType:      String,
+    isOffSite:       { type: Boolean, default: false },
+    offSiteRequestId:{ type: mongoose.Schema.Types.ObjectId, ref: "OffSiteRequest" }
+  },
+  status: {
+    type: String,
+    enum: ["in_progress","present","late_quarter","late_half","late_full","absent","pending_offsite","override"],
+    default: "in_progress"
+  },
+  deductionFraction: { type: Number, default: 0 },
+  override: {
+    action:            { type: String, enum: ["cancel_deduction","add_full_deduction","mark_off_day","apply_fraction"] },
+    reason:            String,
+    overriddenBy:      { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    overriddenAt:      Date,
+    sickLimitExceeded: { type: Boolean, default: false }
+  },
+  computedAt: { type: Date, default: Date.now }
+}, { timestamps: true }));
+Attendance.collection.createIndex({ userId: 1, date: 1 }, { unique: true }).catch(function(){});
+
+// OffSiteRequest — submitted when an employee is outside the geofence and needs
+// a remote check-in/out approved. Created in "pending" state; an attendance
+// record with status="pending_offsite" is also created at the same timestamp.
+// Approval flips both records to their normal flow (present + late tier).
+var OffSiteRequest = mongoose.model("OffSiteRequest", new mongoose.Schema({
+  userId:        { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  type:          { type: String, enum: ["check_in","check_out"], required: true },
+  requestedAt:   { type: Date, default: Date.now },
+  latitude:      Number,
+  longitude:     Number,
+  reason:        { type: String, required: true },
+  attachmentUrl: String,
+  status:        { type: String, enum: ["pending","approved","rejected","cancelled"], default: "pending" },
+  reviewedBy:    { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  reviewedAt:    Date,
+  reviewNotes:   String,
+  attendanceId:  { type: mongoose.Schema.Types.ObjectId, ref: "Attendance" }
+}, { timestamps: true }));
+OffSiteRequest.collection.createIndex({ userId: 1, requestedAt: -1 }).catch(function(){});
+OffSiteRequest.collection.createIndex({ status: 1, requestedAt: -1 }).catch(function(){});
+
+// SalaryRecord — one document per user per (year, month). Stores the snapshot
+// after computation; "finalized" locks it from further edits. baseSalary is
+// snapshotted at compute time so future base-salary changes don't retro-apply.
+var SalaryRecord = mongoose.model("SalaryRecord", new mongoose.Schema({
+  userId:          { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  year:            { type: Number, required: true },
+  month:           { type: Number, required: true }, // 1-12
+  baseSalary:      Number,
+  workingDays:     Number,
+  dailyRate:       Number,
+  deductionDays:   Number,
+  totalDeductions: Number,
+  netSalary:       Number,
+  finalized:       { type: Boolean, default: false },
+  finalizedBy:     { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  finalizedAt:     Date,
+  computedAt:      { type: Date, default: Date.now }
+}, { timestamps: true }));
+SalaryRecord.collection.createIndex({ userId: 1, year: 1, month: 1 }, { unique: true }).catch(function(){});
+
+// AuditLog — separate from SettingsAudit (which is settings-flatten-diff only).
+// This logs every sensitive attendance/salary mutation with before/after blobs
+// and free-form flags. type is an open string so new actions can be added
+// without a schema migration.
+var AuditLog = mongoose.model("AuditLog", new mongoose.Schema({
+  type:         { type: String, required: true },
+  targetUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  performedBy:  { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  before:       { type: mongoose.Schema.Types.Mixed, default: {} },
+  after:        { type: mongoose.Schema.Types.Mixed, default: {} },
+  reason:       String,
+  flags:        { type: mongoose.Schema.Types.Mixed, default: {} },
+  ipAddress:    String,
+  timestamp:    { type: Date, default: Date.now }
+}));
+AuditLog.collection.createIndex({ targetUserId: 1, timestamp: -1 }).catch(function(){});
+AuditLog.collection.createIndex({ performedBy: 1, timestamp: -1 }).catch(function(){});
+AuditLog.collection.createIndex({ type: 1, timestamp: -1 }).catch(function(){});
+
+// Defaults applied when no AppSetting key="attendance_settings" doc exists yet
+// (first server boot). Office is empty so the Owner must configure it before
+// anyone can check in. All permission toggles default ON for sales_admin + hr
+// per the doc's mockup; Owner can switch them off in /settings/permissions.
+var DEFAULT_ATTENDANCE_SETTINGS = {
+  companyLocations: [],
+  permissions: {
+    manageSalaries:         { salesAdmin: true, hr: true },
+    manageAttendance:       { salesAdmin: true, hr: true },
+    approveOffSiteRequests: { salesAdmin: true, hr: true },
+    manageCompanyOffDays:   { salesAdmin: true, hr: true }
+  }
+};
+
+// Read attendance_settings from AppSetting, merging the stored value over the
+// defaults so missing keys don't crash callers. Always returns a plain object.
+async function getAttendanceSettings() {
+  var doc = await AppSetting.findOne({ key: "attendance_settings" }).lean();
+  var stored = (doc && doc.value) || {};
+  return {
+    companyLocations: Array.isArray(stored.companyLocations) ? stored.companyLocations : DEFAULT_ATTENDANCE_SETTINGS.companyLocations,
+    permissions: {
+      manageSalaries:         Object.assign({}, DEFAULT_ATTENDANCE_SETTINGS.permissions.manageSalaries,         (stored.permissions || {}).manageSalaries         || {}),
+      manageAttendance:       Object.assign({}, DEFAULT_ATTENDANCE_SETTINGS.permissions.manageAttendance,       (stored.permissions || {}).manageAttendance       || {}),
+      approveOffSiteRequests: Object.assign({}, DEFAULT_ATTENDANCE_SETTINGS.permissions.approveOffSiteRequests, (stored.permissions || {}).approveOffSiteRequests || {}),
+      manageCompanyOffDays:   Object.assign({}, DEFAULT_ATTENDANCE_SETTINGS.permissions.manageCompanyOffDays,   (stored.permissions || {}).manageCompanyOffDays   || {})
+    }
+  };
+}
+
+// Permission decision for a single (role, action) pair against a settings doc.
+// Owner (admin) always passes. sales_admin and hr are gated by the toggle for
+// that action. Every other role is denied — attendance/salary endpoints are
+// admin-side, sales roles never use them.
+function hasAttendancePermission(role, action, settings) {
+  if (role === "admin") return true;
+  if (!settings || !settings.permissions || !settings.permissions[action]) return false;
+  if (role === "sales_admin") return settings.permissions[action].salesAdmin === true;
+  if (role === "hr")          return settings.permissions[action].hr === true;
+  return false;
+}
+
+// Express middleware factory — wraps hasAttendancePermission for use as a
+// route guard. Attaches the loaded settings to req so handlers don't refetch.
+function requireAttendancePermission(action) {
+  return async function(req, res, next) {
+    try {
+      var settings = await getAttendanceSettings();
+      if (!hasAttendancePermission(req.user.role, action, settings)) {
+        return res.status(403).json({ error: "Permission denied", action: action });
+      }
+      req.attendanceSettings = settings;
+      next();
+    } catch (e) {
+      console.error("[requireAttendancePermission]", e);
+      res.status(500).json({ error: "Permission check failed" });
+    }
+  };
+}
+
+// Owner-only gate — used for routes that must NEVER be delegated (office
+// location, permission toggles, unlocking finalized months, editing the base
+// salary of sales_admin/hr roles).
+function ownerOnly(req, res, next) {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Owner only" });
+  next();
+}
 
 // Flatten a plain object into dotted-path leaves. Arrays are treated as leaf
 // values (compared as a whole) so an audit entry for "tiers.tier1.agents"
