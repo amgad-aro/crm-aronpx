@@ -2554,6 +2554,277 @@ async function(req, res) {
   }
 });
 
+// =====================================================================
+// SALARY ENGINE — Phase 5A (doc §8)
+// Per-employee monthly calculation. Pre-finalization is computed on the fly
+// each request; post-finalization we serve the SalaryRecord snapshot so the
+// numbers can never drift from what was approved.
+// =====================================================================
+
+// Calendar working days in (year, month) for a user — total Cairo days minus
+// Fridays, off-Saturdays per the user's saturdaySchedule, and company off-days
+// that fall in the month. Pure function; takes the off-day list as input.
+function computeCalendarWorkingDays(user, year, month, companyOffDays) {
+  var daysInMonth = new Date(year, month, 0).getDate();
+  // Pre-build a fast lookup of company off-days as ISO date keys.
+  var coffSet = {};
+  (companyOffDays || []).forEach(function(c){
+    var d = new Date(c.date);
+    coffSet[d.getUTCFullYear() + "-" + (d.getUTCMonth() + 1) + "-" + d.getUTCDate()] = true;
+  });
+  var count = 0;
+  for (var d = 1; d <= daysInMonth; d++) {
+    var date = new Date(Date.UTC(year, month - 1, d));
+    var parts = getCairoDateParts(date);
+    if (parts.weekday === "Fri") continue;
+    if (parts.weekday === "Sat" && !isSaturdayWorkday(user, parts)) continue;
+    if (coffSet[year + "-" + month + "-" + d]) continue;
+    count++;
+  }
+  return count;
+}
+
+// Walk every workday in the month, count those without an attendance record
+// AND not overridden. Matches doc §8: "1 day for each absence — i.e. workday
+// with no check-in and no override". Future workdays don't count as absent
+// yet (live-month case: today is May 7, the rest of May isn't "missed").
+function computeMonthlyAbsences(user, year, month, companyOffDays, attendances) {
+  var coffSet = {};
+  (companyOffDays || []).forEach(function(c){
+    var d = new Date(c.date);
+    coffSet[d.getUTCFullYear() + "-" + (d.getUTCMonth() + 1) + "-" + d.getUTCDate()] = true;
+  });
+  var attSet = {};
+  (attendances || []).forEach(function(a){
+    var d = new Date(a.date);
+    attSet[d.getUTCFullYear() + "-" + (d.getUTCMonth() + 1) + "-" + d.getUTCDate()] = true;
+  });
+  var nowParts = getCairoDateParts(new Date());
+  var todayUTC = Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day);
+  var daysInMonth = new Date(year, month, 0).getDate();
+  var absences = 0;
+  for (var d = 1; d <= daysInMonth; d++) {
+    var dayUTC = Date.UTC(year, month - 1, d);
+    if (dayUTC >= todayUTC) continue;          // future / today still in progress
+    var parts = getCairoDateParts(new Date(dayUTC));
+    if (parts.weekday === "Fri") continue;
+    if (parts.weekday === "Sat" && !isSaturdayWorkday(user, parts)) continue;
+    if (coffSet[year + "-" + month + "-" + d]) continue;
+    if (attSet[year + "-" + month + "-" + d]) continue;
+    absences++;
+  }
+  return absences;
+}
+
+// Full salary computation. Returns a plain object matching SalaryRecord shape
+// (without _id / finalized fields). Pre-finalization, this is the live value
+// shown in the UI; post-finalization, the saved SalaryRecord wins.
+async function computeMonthlySalary(user, year, month) {
+  if (!user || user.role === "admin") return null;
+  var baseSalary = Number(user.baseSalary) || 0;
+
+  var start = new Date(Date.UTC(year, month - 1, 1));
+  var end   = new Date(Date.UTC(year, month, 1));
+
+  var [companyOffDays, attendances] = await Promise.all([
+    CompanyOffDay.find({ date: { $gte: start, $lt: end } }).lean(),
+    Attendance.find({ userId: user._id, date: { $gte: start, $lt: end } }).lean()
+  ]);
+
+  // Override action="mark_off_day" pulls the day out of working days entirely.
+  var overrideOff = attendances.filter(function(a){
+    return a.override && a.override.action === "mark_off_day";
+  }).length;
+  var calendarWorking = computeCalendarWorkingDays(user, year, month, companyOffDays);
+  var workingDays = Math.max(0, calendarWorking - overrideOff);
+
+  var absences = computeMonthlyAbsences(user, year, month, companyOffDays, attendances);
+
+  // Sum of per-day deduction fractions stored on the attendance docs
+  // (already reflects late tiers AND admin overrides — override writes to
+  // deductionFraction directly).
+  var fractionSum = attendances.reduce(function(s, a){
+    return s + (Number(a.deductionFraction) || 0);
+  }, 0);
+
+  var deductionDays = fractionSum + absences;
+  var dailyRate = workingDays > 0 ? (baseSalary / workingDays) : 0;
+  var totalDeductions = deductionDays * dailyRate;
+  var netSalary = baseSalary - totalDeductions;
+
+  return {
+    userId: user._id,
+    year: year,
+    month: month,
+    baseSalary: baseSalary,
+    workingDays: workingDays,
+    dailyRate: dailyRate,
+    deductionDays: deductionDays,
+    totalDeductions: totalDeductions,
+    netSalary: netSalary,
+    finalized: false,
+    finalizedBy: null,
+    finalizedAt: null,
+    computedAt: new Date()
+  };
+}
+
+// Permission decision — combined view + edit eligibility for one (requester,
+// target) pair. Returns { canView, canEdit }. Logic per doc §8/§14:
+//   - Owner can view + edit anyone (except other admins which don't have salary)
+//   - Self can view own salary (read-only — sales_admin/hr can't edit own pay)
+//   - Anyone with manageSalaries can view sales-side roles
+//   - sales_admin/hr targets are EDIT-restricted to Owner only
+function salaryAccess(requester, target, settings) {
+  var out = { canView: false, canEdit: false };
+  if (!target || target.role === "admin") return out;
+  var rRole = requester.role;
+  var isSelf = String(requester.id) === String(target._id);
+
+  if (rRole === "admin") {
+    out.canView = true;
+    out.canEdit = true;
+    return out;
+  }
+
+  if (isSelf) {
+    out.canView = true;
+    // Self-edit blocked even with manageSalaries (sales_admin/hr can't edit
+    // own pay). Sales-side roles never have manageSalaries anyway.
+    return out;
+  }
+
+  var hasPerm = hasAttendancePermission(rRole, "manageSalaries", settings);
+  if (!hasPerm) return out;
+
+  // Sales Admin / HR with manageSalaries can view + edit sales-side roles only.
+  var targetIsRestricted = target.role === "sales_admin" || target.role === "hr";
+  if (targetIsRestricted) return out;  // both view + edit denied per doc §14
+
+  out.canView = true;
+  out.canEdit = true;
+  return out;
+}
+
+app.get("/api/salary/users/:userId/:year/:month", auth, async function(req, res) {
+  try {
+    var year  = parseInt(req.params.year,  10);
+    var month = parseInt(req.params.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "Invalid year/month" });
+    }
+    var target = await User.findById(req.params.userId).lean();
+    if (!target) return res.status(404).json({ error: "User not found" });
+
+    var settings = await getAttendanceSettings();
+    var access = salaryAccess(req.user, target, settings);
+    if (!access.canView) return res.status(403).json({ error: "Permission denied" });
+
+    // Finalized snapshot wins — never recompute a finalized month.
+    var snap = await SalaryRecord.findOne({ userId: target._id, year: year, month: month })
+      .populate("finalizedBy", "name").lean();
+    var live = await computeMonthlySalary(target, year, month);
+
+    var payload = snap && snap.finalized ? snap : live;
+    if (!payload) return res.status(400).json({ error: "Cannot compute salary for this user" });
+
+    res.json({
+      salary: payload,
+      finalized: !!(snap && snap.finalized),
+      finalizedBy: snap && snap.finalizedBy ? snap.finalizedBy : null,
+      finalizedAt: snap && snap.finalizedAt ? snap.finalizedAt : null,
+      access: access,
+      target: {
+        _id: target._id, name: target.name, role: target.role, title: target.title,
+        teamId: target.teamId, teamName: target.teamName,
+        startingDate: target.startingDate,
+        baseSalary: target.baseSalary,
+        saturdaySchedule: target.saturdaySchedule,
+        saturdayPatternStartDate: target.saturdayPatternStartDate
+      }
+    });
+  } catch (e) {
+    console.error("[GET /salary/users/:userId/:year/:month]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/salary/list/:year/:month", auth, async function(req, res) {
+  try {
+    var year  = parseInt(req.params.year,  10);
+    var month = parseInt(req.params.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "Invalid year/month" });
+    }
+    var settings = await getAttendanceSettings();
+    var rRole = req.user.role;
+    if (rRole !== "admin" && !hasAttendancePermission(rRole, "manageSalaries", settings)) {
+      return res.status(403).json({ error: "Permission denied" });
+    }
+
+    // Owner sees everyone (excl. other admins which have no salary). SA/HR
+    // with manageSalaries see only sales-side roles per doc §14.
+    var query = { active: true, role: { $ne: "admin" } };
+    if (rRole !== "admin") {
+      query.role = { $nin: ["admin", "sales_admin", "hr"] };
+    }
+    var users = await User.find(query).lean();
+
+    // Pre-fetch finalized snapshots for the period in one query (avoids N+1).
+    var snaps = await SalaryRecord.find({
+      year: year, month: month,
+      userId: { $in: users.map(function(u){ return u._id; }) }
+    }).lean();
+    var snapByUser = {};
+    snaps.forEach(function(s){ snapByUser[String(s.userId)] = s; });
+
+    var rows = [];
+    for (var i = 0; i < users.length; i++) {
+      var u = users[i];
+      var snap = snapByUser[String(u._id)];
+      var salary = snap && snap.finalized ? snap : await computeMonthlySalary(u, year, month);
+      if (!salary) continue;
+      rows.push({
+        user: { _id: u._id, name: u.name, role: u.role, title: u.title, teamId: u.teamId, teamName: u.teamName },
+        salary: salary,
+        finalized: !!(snap && snap.finalized)
+      });
+    }
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /salary/list/:year/:month]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Per-employee monthly attendance (for the salary-sheet daily log). Owner /
+// anyone with manageSalaries can read; sales_admin/hr targets are gated to
+// Owner per doc §14.
+app.get("/api/attendance/users/:userId/month", auth, async function(req, res) {
+  try {
+    var year  = parseInt(req.query.year,  10);
+    var month = parseInt(req.query.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "year + month query params required" });
+    }
+    var target = await User.findById(req.params.userId).lean();
+    if (!target) return res.status(404).json({ error: "User not found" });
+    var settings = await getAttendanceSettings();
+    var access = salaryAccess(req.user, target, settings);
+    if (!access.canView) return res.status(403).json({ error: "Permission denied" });
+
+    var start = new Date(Date.UTC(year, month - 1, 1));
+    var end   = new Date(Date.UTC(year, month, 1));
+    var rows = await Attendance.find({
+      userId: target._id, date: { $gte: start, $lt: end }
+    }).sort({ date: 1 }).lean();
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /attendance/users/:userId/month]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== AGENT VACATIONS =====
 // Admin + Sales Admin manage date ranges where an agent is excluded from
 // auto-rotation. Rotation integration lives in the /auto-rotate endpoint and
