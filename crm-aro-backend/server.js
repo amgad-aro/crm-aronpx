@@ -1833,6 +1833,364 @@ app.patch("/api/settings/permissions", auth, ownerOnly, async function(req, res)
   }
 });
 
+// =====================================================================
+// ATTENDANCE — Phase 3: helpers + check-in/out + own & team views
+// =====================================================================
+
+// Africa/Cairo date helpers. Egypt observes DST (re-introduced 2023) so we
+// must NOT hard-code +2/+3 — Intl.DateTimeFormat handles the offset for us.
+// getCairoDateParts returns integer y/m/d/hour/minute + 3-letter weekday.
+// getCairoStartOfDay returns a UTC Date pinned at midnight of the Cairo
+// calendar day, used as the dedupe key in the Attendance unique index.
+function getCairoDateParts(date) {
+  var fmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Africa/Cairo",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+    weekday: "short"
+  });
+  var parts = fmt.formatToParts(date instanceof Date ? date : new Date(date));
+  var p = {};
+  for (var i = 0; i < parts.length; i++) p[parts[i].type] = parts[i].value;
+  // Some Intl impls return "24" for midnight — normalize.
+  var hour = p.hour === "24" ? "00" : p.hour;
+  return {
+    year:    parseInt(p.year, 10),
+    month:   parseInt(p.month, 10),
+    day:     parseInt(p.day, 10),
+    hour:    parseInt(hour, 10),
+    minute:  parseInt(p.minute, 10),
+    weekday: p.weekday   // "Mon" "Tue" "Wed" "Thu" "Fri" "Sat" "Sun"
+  };
+}
+function getCairoStartOfDay(date) {
+  var p = getCairoDateParts(date || new Date());
+  return new Date(Date.UTC(p.year, p.month - 1, p.day));
+}
+
+// Haversine distance in meters. Server-authoritative — never trust the client
+// (a spoofed payload can claim distance=0 from anywhere).
+function haversineDistance(lat1, lng1, lat2, lng2) {
+  var R = 6371000;
+  var toRad = function(d){ return d * Math.PI / 180; };
+  var phi1 = toRad(lat1), phi2 = toRad(lat2);
+  var dPhi = toRad(lat2 - lat1);
+  var dLam = toRad(lng2 - lng1);
+  var a = Math.sin(dPhi/2) * Math.sin(dPhi/2) +
+          Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLam/2) * Math.sin(dLam/2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function detectDeviceType(ua) {
+  if (!ua) return "unknown";
+  return /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? "mobile" : "desktop";
+}
+
+// Doc §2 — work shift by role. Returns null for roles with no attendance
+// tracking (admin/Owner, viewer). End time is informational only — there's
+// no early-checkout deduction (doc §5).
+function getRoleWorkShift(role) {
+  if (role === "sales" || role === "team_leader" || role === "manager" || role === "director") {
+    return { startTime: "11:00", endTime: "21:00" };
+  }
+  if (role === "sales_admin" || role === "hr") {
+    return { startTime: "10:00", endTime: "18:00" };
+  }
+  return null;
+}
+
+// Doc §7 — late tier from check-in time. Granularity is whole minutes. The
+// boundaries are inclusive on the lower tier (e.g. 11:15:30 = 15 minutes late
+// = no deduction; 11:16:00 = 16 minutes late = ¼ day).
+function computeLateTier(checkInTime, role) {
+  var shift = getRoleWorkShift(role);
+  if (!shift) return { status: "present", deductionFraction: 0 };
+  var hh = parseInt(shift.startTime.split(":")[0], 10);
+  var mm = parseInt(shift.startTime.split(":")[1], 10);
+  var startMin = hh * 60 + mm;
+  var ci = getCairoDateParts(checkInTime);
+  var ciMin = ci.hour * 60 + ci.minute;
+  var lateMin = ciMin - startMin;
+  if (lateMin <= 15) return { status: "present",      deductionFraction: 0    };
+  if (lateMin <= 30) return { status: "late_quarter", deductionFraction: 0.25 };
+  if (lateMin <= 60) return { status: "late_half",    deductionFraction: 0.5  };
+  return                    { status: "late_full",    deductionFraction: 1    };
+}
+
+// Doc §3 — Saturday alternating logic. saturdayPatternStartDate must be a
+// "work Saturday" (the doc's anchor). Even-numbered weeks since the anchor
+// are work Saturdays; odd are off. always_work / always_off short-circuit.
+function isSaturdayWorkday(user, cairoParts) {
+  var sched = user.saturdaySchedule || "always_work";
+  if (sched === "always_work") return true;
+  if (sched === "always_off")  return false;
+  if (sched === "alternating") {
+    if (!user.saturdayPatternStartDate) return true;
+    var anchor = getCairoDateParts(new Date(user.saturdayPatternStartDate));
+    var anchorUTC  = Date.UTC(anchor.year, anchor.month - 1, anchor.day);
+    var currentUTC = Date.UTC(cairoParts.year, cairoParts.month - 1, cairoParts.day);
+    var weeksDiff = Math.round((currentUTC - anchorUTC) / (7 * 86400000));
+    return Math.abs(weeksDiff) % 2 === 0;
+  }
+  return true;
+}
+
+// Resolve whether the user is off on a given moment. Returns
+// { off: bool, reason: "owner_no_tracking" | "friday" | "saturday" | "company:<name>" | null }.
+async function getOffStatus(user, when) {
+  if (user.role === "admin") return { off: true, reason: "owner_no_tracking" };
+  var parts = getCairoDateParts(when);
+  if (parts.weekday === "Fri") return { off: true, reason: "friday" };
+  if (parts.weekday === "Sat" && !isSaturdayWorkday(user, parts)) {
+    return { off: true, reason: "saturday" };
+  }
+  var dateKey = getCairoStartOfDay(when);
+  var coff = await CompanyOffDay.findOne({ date: dateKey }).lean();
+  if (coff) return { off: true, reason: "company:" + coff.name };
+  return { off: false, reason: null };
+}
+
+// Build the attendance/today payload. Single source of truth for the widget,
+// the attendance page, and any future poll. Owner gets a 400 — they have no
+// attendance and the widget should not be rendered for them.
+async function buildTodayPayload(user) {
+  var now = new Date();
+  var dateKey = getCairoStartOfDay(now);
+  var [attendance, settings, offStatus, pendingOff] = await Promise.all([
+    Attendance.findOne({ userId: user._id, date: dateKey }).lean(),
+    getAttendanceSettings(),
+    getOffStatus(user, now),
+    OffSiteRequest.findOne({ userId: user._id, status: "pending" }).sort({ requestedAt: -1 }).lean()
+  ]);
+  var loc = (settings.companyLocations || []).find(function(l){ return l.isActive; }) || null;
+  return {
+    attendance: attendance || null,
+    isOffDay: offStatus.off,
+    offReason: offStatus.reason,
+    workShift: getRoleWorkShift(user.role),
+    pendingOffSite: pendingOff || null,
+    geofence: loc ? {
+      name: loc.name,
+      latitude: loc.latitude,
+      longitude: loc.longitude,
+      radiusMeters: loc.radiusMeters
+    } : null,
+    serverTime: now.toISOString()
+  };
+}
+
+// ----- Employee endpoints -----
+
+app.get("/api/attendance/today", auth, async function(req, res) {
+  try {
+    if (req.user.role === "admin") {
+      return res.status(400).json({ error: "Owner does not have attendance" });
+    }
+    var user = await User.findById(req.user.id).lean();
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json(await buildTodayPayload(user));
+  } catch (e) {
+    console.error("[GET /attendance/today]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/attendance/check-in", auth, async function(req, res) {
+  try {
+    if (req.user.role === "admin") return res.status(400).json({ error: "Owner does not check in" });
+
+    var lat = Number(req.body && req.body.latitude);
+    var lng = Number(req.body && req.body.longitude);
+    var acc = Number((req.body && req.body.accuracy) || 0);
+    if (!isFinite(lat) || !isFinite(lng)) return res.status(400).json({ error: "Invalid coordinates" });
+
+    var user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    var settings = await getAttendanceSettings();
+    var loc = (settings.companyLocations || []).find(function(l){ return l.isActive; });
+    if (!loc) return res.status(503).json({ error: "Office location not configured. Contact Owner.", code: "no_office" });
+
+    var now = new Date();
+    var off = await getOffStatus(user, now);
+    if (off.off) return res.status(400).json({ error: "Today is off (" + off.reason + ")", code: "off_day", offReason: off.reason });
+
+    var distance = haversineDistance(lat, lng, loc.latitude, loc.longitude);
+    if (distance > loc.radiusMeters) {
+      // Off-site path is Phase 4 — the widget shows a "Request off-site" button
+      // when this 403 fires. Server reply includes distance so the UI can
+      // render "X meters away from the office".
+      return res.status(403).json({
+        error: "Outside office geofence",
+        code: "outside_geofence",
+        distanceMeters: Math.round(distance),
+        radiusMeters: loc.radiusMeters
+      });
+    }
+
+    var dateKey = getCairoStartOfDay(now);
+    var existing = await Attendance.findOne({ userId: user._id, date: dateKey });
+    if (existing && existing.checkIn && existing.checkIn.timestamp) {
+      return res.status(409).json({ error: "Already checked in today", code: "already_checked_in", attendance: existing });
+    }
+
+    var tier = computeLateTier(now, user.role);
+
+    var att = await Attendance.findOneAndUpdate(
+      { userId: user._id, date: dateKey },
+      { $set: {
+          userId: user._id, date: dateKey,
+          checkIn: {
+            timestamp: now,
+            latitude: lat, longitude: lng,
+            distanceMeters: Math.round(distance),
+            accuracyMeters: Math.round(acc),
+            ipAddress: req.ip,
+            deviceType: detectDeviceType(req.headers["user-agent"]),
+            isOffSite: false
+          },
+          status: "in_progress",
+          deductionFraction: tier.deductionFraction,
+          computedAt: now
+        }},
+      { upsert: true, new: true }
+    );
+
+    try {
+      broadcast("attendance_updated", { userId: String(user._id), attendance: att });
+    } catch (e) {}
+
+    res.json({ attendance: att, lateTier: tier });
+  } catch (e) {
+    console.error("[POST /attendance/check-in]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/attendance/check-out", auth, async function(req, res) {
+  try {
+    if (req.user.role === "admin") return res.status(400).json({ error: "Owner does not check out" });
+
+    var lat = Number(req.body && req.body.latitude);
+    var lng = Number(req.body && req.body.longitude);
+    var acc = Number((req.body && req.body.accuracy) || 0);
+    if (!isFinite(lat) || !isFinite(lng)) return res.status(400).json({ error: "Invalid coordinates" });
+
+    var user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    var settings = await getAttendanceSettings();
+    var loc = (settings.companyLocations || []).find(function(l){ return l.isActive; });
+    var distance = loc ? haversineDistance(lat, lng, loc.latitude, loc.longitude) : null;
+
+    var now = new Date();
+    var dateKey = getCairoStartOfDay(now);
+    var att = await Attendance.findOne({ userId: user._id, date: dateKey });
+    if (!att || !att.checkIn || !att.checkIn.timestamp) {
+      return res.status(400).json({ error: "Not checked in yet", code: "not_checked_in" });
+    }
+    if (att.checkOut && att.checkOut.timestamp) {
+      return res.status(409).json({ error: "Already checked out", code: "already_checked_out", attendance: att });
+    }
+    if (att.status === "pending_offsite") {
+      return res.status(400).json({ error: "Off-site check-in still pending approval", code: "offsite_pending" });
+    }
+
+    // On check-out the status flips from in_progress to the late tier set at
+    // check-in (preserved via deductionFraction). present / late_quarter /
+    // late_half / late_full are derived purely from that fraction.
+    var endStatus = "present";
+    if (att.deductionFraction === 0.25) endStatus = "late_quarter";
+    else if (att.deductionFraction === 0.5)  endStatus = "late_half";
+    else if (att.deductionFraction === 1)    endStatus = "late_full";
+
+    // Off-site at check-out is a separate concept from check-in off-site.
+    // Phase 3: if outside geofence we accept anyway (no early-out deduction),
+    // but flag isOffSite=true so admins can see it. Phase 4 will turn this
+    // into a proper request flow if the user wants approval.
+    var outsideGeofence = !loc || (distance != null && distance > loc.radiusMeters);
+
+    att.checkOut = {
+      timestamp: now,
+      latitude: lat, longitude: lng,
+      distanceMeters: distance != null ? Math.round(distance) : null,
+      accuracyMeters: Math.round(acc),
+      ipAddress: req.ip,
+      deviceType: detectDeviceType(req.headers["user-agent"]),
+      isOffSite: outsideGeofence
+    };
+    att.status = endStatus;
+    att.computedAt = now;
+    await att.save();
+
+    try {
+      broadcast("attendance_updated", { userId: String(user._id), attendance: att });
+    } catch (e) {}
+
+    res.json({ attendance: att });
+  } catch (e) {
+    console.error("[POST /attendance/check-out]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Own monthly history. Returns raw attendance docs for the requested month
+// (Africa/Cairo). Frontend fills in absent days for weekdays without a doc.
+app.get("/api/attendance/my-month", auth, async function(req, res) {
+  try {
+    if (req.user.role === "admin") return res.status(400).json({ error: "Owner has no attendance" });
+    var year  = parseInt(req.query.year,  10);
+    var month = parseInt(req.query.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "year + month query params required (month is 1-12)" });
+    }
+    var start = new Date(Date.UTC(year, month - 1, 1));
+    var end   = new Date(Date.UTC(year, month,     1));
+    var rows = await Attendance.find({
+      userId: req.user.id,
+      date: { $gte: start, $lt: end }
+    }).sort({ date: 1 }).lean();
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /attendance/my-month]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----- Admin endpoint: today's team view -----
+
+app.get("/api/attendance/today/all", auth, requireAttendancePermission("manageAttendance"),
+async function(req, res) {
+  try {
+    var dateKey = getCairoStartOfDay(new Date());
+    var users = await User.find({ role: { $ne: "admin" }, active: true })
+      .select("name role title teamId teamName saturdaySchedule saturdayPatternStartDate")
+      .lean();
+    var atts = await Attendance.find({ date: dateKey }).lean();
+    var attByUser = {};
+    atts.forEach(function(a){ attByUser[String(a.userId)] = a; });
+
+    // Hydrate off-status per user — Friday is a single shared check, but
+    // Saturday + company off-days vary, so resolve once per row.
+    var rows = [];
+    for (var i = 0; i < users.length; i++) {
+      var u = users[i];
+      var off = await getOffStatus(u, new Date());
+      rows.push({
+        user: { _id: u._id, name: u.name, role: u.role, title: u.title, teamId: u.teamId, teamName: u.teamName },
+        attendance: attByUser[String(u._id)] || null,
+        isOffDay: off.off,
+        offReason: off.reason,
+        workShift: getRoleWorkShift(u.role)
+      });
+    }
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /attendance/today/all]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== AGENT VACATIONS =====
 // Admin + Sales Admin manage date ranges where an agent is excluded from
 // auto-rotation. Rotation integration lives in the /auto-rotate endpoint and

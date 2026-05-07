@@ -888,6 +888,7 @@ var Sidebar = function(p) {
     isAdmin&&{id:"team",label:t.team,adminSection:true},
     isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
     isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
+    {id:"attendance",label:"Attendance",adminSection:true},
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
@@ -4254,7 +4255,476 @@ var MyDayPage = function(p) {
   </div>;
 };
 
-// ===== DASHBOARD =====
+// =====================================================================
+// ATTENDANCE — Phase 3
+// CheckInWidget is the single source of truth for the daily check-in flow.
+// mode="compact" pins it as a one-row card on dashboards. mode="full" is the
+// same card on /attendance with a monthly history table below.
+// =====================================================================
+
+// Format helpers shared by the widget and the page.
+var fmtCairoTime = function(d){
+  if (!d) return "—";
+  var x = new Date(d);
+  return x.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Cairo" });
+};
+var fmtCairoDate = function(d){
+  if (!d) return "—";
+  var x = new Date(d);
+  return x.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "Africa/Cairo" });
+};
+var fmtDuration = function(ms){
+  if (!ms || ms < 0) return "0m";
+  var mins = Math.floor(ms / 60000);
+  var h = Math.floor(mins / 60);
+  var m = mins % 60;
+  if (h <= 0) return m + "m";
+  return h + "h " + m + "m";
+};
+
+// Status badge → label + colors. Used by both widget (current state) and
+// monthly log rows.
+var attStatusBadge = function(status, off){
+  if (off === "friday")  return { label:"Friday off",   bg:"#F1F5F9", color:"#64748B" };
+  if (off === "saturday") return { label:"Saturday off", bg:"#F1F5F9", color:"#64748B" };
+  if (off && off.indexOf("company:") === 0) return { label:"Off: " + off.slice(8), bg:"#F1F5F9", color:"#64748B" };
+  switch (status) {
+    case "in_progress":      return { label:"In progress",  bg:"#DCFCE7", color:"#15803D" };
+    case "present":          return { label:"Present",      bg:"#DCFCE7", color:"#15803D" };
+    case "late_quarter":     return { label:"Late · ¼ day", bg:"#FEF3C7", color:"#B45309" };
+    case "late_half":        return { label:"Late · ½ day", bg:"#FED7AA", color:"#C2410C" };
+    case "late_full":        return { label:"Late · 1 day", bg:"#FEE2E2", color:"#B91C1C" };
+    case "absent":           return { label:"Absent",       bg:"#FEE2E2", color:"#B91C1C" };
+    case "pending_offsite":  return { label:"Off-site (pending)", bg:"#FEF9C3", color:"#A16207" };
+    case "override":         return { label:"Override",     bg:"#F3E8FF", color:"#7C3AED" };
+    default:                 return { label:"—",            bg:"#F1F5F9", color:"#64748B" };
+  }
+};
+
+// Resolve whether the current user has manageAttendance permission. Reads
+// from the App-level cache (attendanceSettings) which is updated in real-time
+// by the WS attendance_settings_updated event.
+var hasAttendancePerm = function(role, action, settings){
+  if (role === "admin") return true;
+  if (!settings || !settings.permissions || !settings.permissions[action]) return false;
+  if (role === "sales_admin") return settings.permissions[action].salesAdmin === true;
+  if (role === "hr")          return settings.permissions[action].hr === true;
+  return false;
+};
+
+var CheckInWidget = function(p) {
+  // p: { token, cu, mode: "compact"|"full", onNavigate?, onCheckedIn? }
+  var [data, setData] = useState(null);
+  var [coords, setCoords] = useState(null);
+  var [coordsErr, setCoordsErr] = useState("");
+  var [busy, setBusy] = useState(false);
+  var [error, setError] = useState("");
+  var [tick, setTick] = useState(0);
+
+  var refetch = useCallback(function(){
+    if (!p.token || !p.cu || p.cu.role === "admin") return;
+    apiFetch("/api/attendance/today", "GET", null, p.token).then(function(r){
+      setData(r);
+      setError("");
+    }).catch(function(err){
+      setError((err && err.message) || "Failed to load");
+    });
+  }, [p.token, p.cu]);
+
+  useEffect(function(){ refetch(); }, [refetch]);
+
+  // Geolocation poll: once on mount, then every 60s. enableHighAccuracy is on
+  // because the geofence radius is typically 50-150m — coarse cell-tower fixes
+  // produce false positives/negatives.
+  useEffect(function(){
+    if (!data || !data.geofence) return;
+    var stopped = false;
+    var poll = function(){
+      if (stopped || !navigator.geolocation) {
+        if (!navigator.geolocation) setCoordsErr("Browser does not support geolocation");
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(function(pos){
+        if (stopped) return;
+        setCoords({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: pos.coords.accuracy
+        });
+        setCoordsErr("");
+      }, function(err){
+        setCoordsErr(err.message || "Could not get location");
+      }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
+    };
+    poll();
+    var interval = setInterval(poll, 60000);
+    return function(){ stopped = true; clearInterval(interval); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data && data.geofence ? data.geofence.latitude : null,
+      data && data.geofence ? data.geofence.longitude : null]);
+
+  // Live duration tick (every 30s) for State 3.
+  useEffect(function(){
+    if (!data || !data.attendance || !data.attendance.checkIn || data.attendance.checkOut) return;
+    var t = setInterval(function(){ setTick(function(x){return x+1;}); }, 30000);
+    return function(){ clearInterval(t); };
+  }, [data]);
+
+  // Distance from user to office, when both coords + geofence are available.
+  // Computed client-side for display only — the server re-validates on POST.
+  var distanceMeters = (function(){
+    if (!coords || !data || !data.geofence) return null;
+    var R = 6371000;
+    var toRad = function(d){ return d * Math.PI / 180; };
+    var phi1 = toRad(coords.latitude), phi2 = toRad(data.geofence.latitude);
+    var dPhi = toRad(data.geofence.latitude - coords.latitude);
+    var dLam = toRad(data.geofence.longitude - coords.longitude);
+    var a = Math.sin(dPhi/2)**2 + Math.cos(phi1)*Math.cos(phi2)*Math.sin(dLam/2)**2;
+    return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+  })();
+  var insideGeofence = distanceMeters != null && data && data.geofence && distanceMeters <= data.geofence.radiusMeters;
+
+  // State machine resolution. Order matters — pending > done > in-progress >
+  // off-day > inside/outside.
+  var widgetState = (function(){
+    if (!data) return "loading";
+    if (data.pendingOffSite) return "pending_offsite";
+    var a = data.attendance;
+    if (a && a.checkIn && a.checkOut) return "done";
+    if (a && a.checkIn && !a.checkOut) return "in_progress";
+    if (data.isOffDay) return "off_day";
+    if (coordsErr) return "no_coords";
+    if (coords == null) return "locating";
+    return insideGeofence ? "ready_inside" : "ready_outside";
+  })();
+
+  var requestPosition = function(){
+    return new Promise(function(resolve, reject){
+      if (!navigator.geolocation) return reject(new Error("Geolocation not supported"));
+      navigator.geolocation.getCurrentPosition(function(pos){
+        resolve({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: pos.coords.accuracy
+        });
+      }, function(err){ reject(new Error(err.message || "Location denied")); },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+    });
+  };
+
+  var doCheckIn = async function(){
+    setError(""); setBusy(true);
+    try {
+      var pos = await requestPosition();
+      var resp = await apiFetch("/api/attendance/check-in", "POST", pos, p.token, p.csrfToken);
+      if (resp && resp.attendance) {
+        setData(function(prev){ return Object.assign({}, prev || {}, { attendance: resp.attendance }); });
+      } else {
+        refetch();
+      }
+      if (p.onCheckedIn) p.onCheckedIn();
+    } catch (err) {
+      setError((err && err.message) || "Check-in failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  var doCheckOut = async function(){
+    setError(""); setBusy(true);
+    try {
+      var pos = await requestPosition();
+      var resp = await apiFetch("/api/attendance/check-out", "POST", pos, p.token, p.csrfToken);
+      if (resp && resp.attendance) {
+        setData(function(prev){ return Object.assign({}, prev || {}, { attendance: resp.attendance }); });
+      } else {
+        refetch();
+      }
+    } catch (err) {
+      setError((err && err.message) || "Check-out failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  var requestOffSite = function(){
+    // Phase 4 will replace this with the actual modal flow.
+    setError("Off-site requests will be available in Phase 4");
+  };
+
+  // Owner is hidden entirely.
+  if (!p.cu || p.cu.role === "admin") return null;
+
+  // Visual primitives.
+  var pad = p.mode === "compact" ? "12px 16px" : "18px 22px";
+  var btnPrimary = function(bg){ return {
+    fontSize: 13, padding: "10px 18px", border: "none", borderRadius: 10,
+    background: bg, color: "#fff", cursor: "pointer", fontWeight: 600,
+    fontFamily: "inherit", whiteSpace: "nowrap", minHeight: 40
+  };};
+  var btnGhost = {
+    fontSize: 13, padding: "9px 16px", border: "0.5px solid rgba(0,0,0,0.15)",
+    background: "transparent", color: "#1a1a1a", borderRadius: 10, cursor: "pointer",
+    fontWeight: 500, fontFamily: "inherit", whiteSpace: "nowrap", minHeight: 40
+  };
+
+  // Color accents per state.
+  var accent = (function(){
+    if (widgetState === "ready_inside" || widgetState === "in_progress" || widgetState === "done") return C.success;
+    if (widgetState === "ready_outside" || widgetState === "no_coords") return C.danger;
+    if (widgetState === "pending_offsite") return C.warning;
+    if (widgetState === "off_day") return C.textLight;
+    return C.textLight;
+  })();
+
+  // Headline text + sublabel + button per state.
+  var headline = "";
+  var sub = "";
+  var btn = null;
+  if (widgetState === "loading") {
+    headline = "Loading…"; sub = "Checking your attendance status";
+  } else if (widgetState === "off_day") {
+    if (data.offReason === "friday")  { headline = "Friday";   sub = "Enjoy your day off"; }
+    else if (data.offReason === "saturday") { headline = "Saturday"; sub = "Enjoy your day off"; }
+    else if (data.offReason && data.offReason.indexOf("company:") === 0) {
+      headline = "Company off-day"; sub = data.offReason.slice(8);
+    } else { headline = "Day off"; sub = "Enjoy your day"; }
+  } else if (widgetState === "pending_offsite") {
+    headline = "Off-site " + (data.pendingOffSite.type === "check_in" ? "check-in" : "check-out") + " pending review";
+    sub = "Submitted " + fmtCairoTime(data.pendingOffSite.requestedAt);
+    btn = <button type="button" disabled style={btnGhost}>Cancel request</button>;
+  } else if (widgetState === "done") {
+    var ci = data.attendance.checkIn, co = data.attendance.checkOut;
+    var hours = (new Date(co.timestamp) - new Date(ci.timestamp)) / 3600000;
+    headline = "Done for today";
+    sub = fmtCairoTime(ci.timestamp) + " → " + fmtCairoTime(co.timestamp) + " · " + hours.toFixed(1) + "h";
+    if (p.onNavigate) btn = <button type="button" onClick={function(){p.onNavigate("attendance");}} style={btnGhost}>View details</button>;
+  } else if (widgetState === "in_progress") {
+    var ts = new Date(data.attendance.checkIn.timestamp);
+    var elapsedMs = Date.now() - ts.getTime();
+    headline = "Checked in at " + fmtCairoTime(ts);
+    sub = "You've been working for " + fmtDuration(elapsedMs);
+    btn = <button type="button" onClick={doCheckOut} disabled={busy} style={btnPrimary("#EA580C")}>{busy?"…":"Check out"}</button>;
+  } else if (widgetState === "ready_inside") {
+    headline = "Ready to check in";
+    sub = "Inside " + (data.geofence.name || "office") + " · " + (distanceMeters != null ? distanceMeters + "m" : "—");
+    btn = <button type="button" onClick={doCheckIn} disabled={busy} style={btnPrimary("#0F766E")}>{busy?"…":"Check in"}</button>;
+  } else if (widgetState === "ready_outside") {
+    headline = "Outside " + (data.geofence ? data.geofence.name : "office");
+    sub = (distanceMeters != null ? distanceMeters + "m away" : "Out of range") + " · In a meeting? Request off-site approval";
+    btn = <button type="button" onClick={requestOffSite} disabled={busy} style={btnGhost}>Request off-site</button>;
+  } else if (widgetState === "no_coords") {
+    headline = "Location unavailable";
+    sub = coordsErr || "Enable location in browser settings to check in";
+    btn = <button type="button" onClick={refetch} style={btnGhost}>Retry</button>;
+  } else if (widgetState === "locating") {
+    headline = "Locating…";
+    sub = "Waiting for your GPS fix";
+  }
+  // null branches: nothing to show
+
+  // Geofence not configured — Owner has not set the office yet.
+  if (data && !data.geofence && widgetState !== "off_day" && widgetState !== "in_progress" && widgetState !== "done") {
+    headline = "Office location not configured";
+    sub = "Ask the Owner to configure the geofence in Settings → Office Location";
+    btn = null;
+  }
+
+  return <div style={{
+    background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)",
+    borderLeft:"3px solid "+accent, padding:pad, display:"flex", alignItems:"center",
+    gap:14, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    marginBottom:16, opacity: widgetState==="off_day" ? 0.85 : 1
+  }}>
+    <div style={{flex:1, minWidth:0}}>
+      <div style={{fontSize:14, fontWeight:600, color:C.text, marginBottom:2}}>{headline}</div>
+      <div style={{fontSize:12, color:C.textLight, lineHeight:1.4}}>{sub}</div>
+      {error && <div style={{fontSize:11, color:C.danger, marginTop:4}}>{error}</div>}
+    </div>
+    {btn}
+  </div>;
+};
+
+var AttendancePage = function(p) {
+  var isOwner = p.cu && p.cu.role === "admin";
+  var canManage = hasAttendancePerm(p.cu && p.cu.role, "manageAttendance", p.attendanceSettings);
+  var [activeTab, setActiveTab] = useState(isOwner ? "team" : "mine");
+  // Real-time permission revoke: if we lose manageAttendance while on the
+  // Team tab, kick back to My tab. Owner is exempt.
+  useEffect(function(){
+    if (activeTab === "team" && !canManage && !isOwner) setActiveTab("mine");
+  }, [canManage, activeTab, isOwner]);
+
+  // ----- "My" tab: monthly history below the widget -----
+  var now = new Date();
+  var [year,setYear]   = useState(now.getFullYear());
+  var [month,setMonth] = useState(now.getMonth() + 1);
+  var [rows,setRows]   = useState([]);
+  var [loadingMine,setLoadingMine] = useState(false);
+
+  useEffect(function(){
+    if (activeTab !== "mine" || isOwner) return;
+    var cancelled = false;
+    setLoadingMine(true);
+    apiFetch("/api/attendance/my-month?year="+year+"&month="+month, "GET", null, p.token).then(function(r){
+      if (!cancelled) setRows(Array.isArray(r) ? r : []);
+    }).catch(function(){ if (!cancelled) setRows([]); })
+      .finally(function(){ if (!cancelled) setLoadingMine(false); });
+    return function(){ cancelled = true; };
+  }, [activeTab, year, month, p.token, isOwner]);
+
+  // ----- "Team" tab: today's roster -----
+  var [team,setTeam] = useState([]);
+  var [loadingTeam,setLoadingTeam] = useState(false);
+  useEffect(function(){
+    if (activeTab !== "team") return;
+    if (!canManage) return;
+    var cancelled = false;
+    setLoadingTeam(true);
+    apiFetch("/api/attendance/today/all", "GET", null, p.token).then(function(r){
+      if (!cancelled) setTeam(Array.isArray(r) ? r : []);
+    }).catch(function(){ if (!cancelled) setTeam([]); })
+      .finally(function(){ if (!cancelled) setLoadingTeam(false); });
+    return function(){ cancelled = true; };
+  }, [activeTab, canManage, p.token]);
+
+  var tabBtn = function(id, label){
+    var act = activeTab === id;
+    return <div key={id} onClick={function(){setActiveTab(id);}}
+      style={{padding:"8px 14px", fontSize:13, cursor:"pointer", borderRadius:8, whiteSpace:"nowrap", userSelect:"none", flexShrink:0,
+        color:act?"#1a1a1a":"#666", fontWeight:act?500:400,
+        background:act?"#fff":"transparent",
+        border:"0.5px solid "+(act?"rgba(0,0,0,0.1)":"transparent")}}>{label}</div>;
+  };
+
+  // Generate every Cairo day in the selected month to render absent rows for
+  // workdays that have no Attendance doc (visual completeness — server doesn't
+  // create absent rows until salary calc in Phase 5).
+  var monthLabel = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+  var daysInMonth = new Date(year, month, 0).getDate();
+  var rowsByDate = {};
+  rows.forEach(function(r){
+    var d = new Date(r.date);
+    rowsByDate[d.getUTCFullYear()+"-"+(d.getUTCMonth()+1)+"-"+d.getUTCDate()] = r;
+  });
+
+  var monthDays = [];
+  for (var d = 1; d <= daysInMonth; d++) {
+    var iso = year+"-"+month+"-"+d;
+    monthDays.push({
+      date: new Date(Date.UTC(year, month-1, d)),
+      attendance: rowsByDate[iso] || null
+    });
+  }
+
+  var prevMonth = function(){
+    if (month === 1) { setMonth(12); setYear(year - 1); }
+    else setMonth(month - 1);
+  };
+  var nextMonth = function(){
+    if (month === 12) { setMonth(1); setYear(year + 1); }
+    else setMonth(month + 1);
+  };
+
+  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+    <div style={{maxWidth:1200, margin:"0 auto"}}>
+
+      {/* Tab bar (only if more than one option is available) */}
+      {(canManage || !isOwner) && <div style={{display:"flex", gap:6, marginBottom:14, padding:6, background:"#F7F7F5", borderRadius:10, width:"fit-content", border:"0.5px solid rgba(0,0,0,0.05)"}}>
+        {!isOwner && tabBtn("mine", "My Attendance")}
+        {canManage && tabBtn("team", "Team Today")}
+      </div>}
+
+      {activeTab === "mine" && !isOwner && <div>
+        <CheckInWidget token={p.token} cu={p.cu} csrfToken={p.csrfToken} mode="full"/>
+
+        <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+          <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10}}>
+            <div style={{fontSize:14, fontWeight:600, color:C.text}}>Monthly log</div>
+            <div style={{display:"flex", alignItems:"center", gap:8}}>
+              <button type="button" onClick={prevMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>‹</button>
+              <div style={{fontSize:13, fontWeight:500, color:C.text, minWidth:120, textAlign:"center"}}>{monthLabel}</div>
+              <button type="button" onClick={nextMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>›</button>
+            </div>
+          </div>
+
+          {loadingMine ? <div style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
+            : <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
+                <thead>
+                  <tr style={{background:"#F7F7F5"}}>
+                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Date</th>
+                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Day</th>
+                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-in</th>
+                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-out</th>
+                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthDays.map(function(d){
+                    var weekday = d.date.toLocaleDateString("en-GB", { weekday:"short", timeZone:"UTC" });
+                    var a = d.attendance;
+                    var badge = attStatusBadge(a && a.status, !a && weekday === "Fri" ? "friday" : null);
+                    return <tr key={d.date.toISOString()} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
+                      <td style={{padding:"10px 16px"}}>{d.date.toLocaleDateString("en-GB", { day:"2-digit", month:"short", timeZone:"UTC" })}</td>
+                      <td style={{padding:"10px 16px", color:C.textLight}}>{weekday}</td>
+                      <td style={{padding:"10px 16px"}}>{a && a.checkIn ? fmtCairoTime(a.checkIn.timestamp) : "—"}</td>
+                      <td style={{padding:"10px 16px"}}>{a && a.checkOut ? fmtCairoTime(a.checkOut.timestamp) : "—"}</td>
+                      <td style={{padding:"10px 16px"}}>
+                        <span style={{display:"inline-block", padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:500, background:badge.bg, color:badge.color}}>{badge.label}</span>
+                      </td>
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>}
+        </div>
+      </div>}
+
+      {activeTab === "team" && canManage && <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+        <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>
+          <div style={{fontSize:14, fontWeight:600, color:C.text}}>Team — today</div>
+          <div style={{fontSize:12, color:C.textLight, marginTop:2}}>{fmtCairoDate(new Date())} · live status of every employee</div>
+        </div>
+        {loadingTeam ? <div style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
+          : <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
+              <thead>
+                <tr style={{background:"#F7F7F5"}}>
+                  <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Employee</th>
+                  <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Role</th>
+                  <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-in</th>
+                  <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-out</th>
+                  <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {team.map(function(row){
+                  var a = row.attendance;
+                  var off = row.isOffDay ? row.offReason : null;
+                  var badge = attStatusBadge(a && a.status, off);
+                  return <tr key={String(row.user._id)} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
+                    <td style={{padding:"10px 16px"}}>{row.user.name}</td>
+                    <td style={{padding:"10px 16px", color:C.textLight}}>{row.user.role}</td>
+                    <td style={{padding:"10px 16px"}}>{a && a.checkIn ? fmtCairoTime(a.checkIn.timestamp) : "—"}</td>
+                    <td style={{padding:"10px 16px"}}>{a && a.checkOut ? fmtCairoTime(a.checkOut.timestamp) : "—"}</td>
+                    <td style={{padding:"10px 16px"}}>
+                      <span style={{display:"inline-block", padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:500, background:badge.bg, color:badge.color}}>{badge.label}</span>
+                    </td>
+                  </tr>;
+                })}
+                {team.length === 0 && <tr><td colSpan={5} style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13}}>No employees</td></tr>}
+              </tbody>
+            </table>
+          </div>}
+      </div>}
+
+      {activeTab === "team" && !canManage && <div style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13, background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)"}}>
+        You no longer have permission to view the team attendance.
+      </div>}
+    </div>
+  </div>;
+};
 
 // ===== DASHBOARD =====
 
@@ -14115,7 +14585,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",settings:t.settings};
+  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",settings:t.settings};
   // Server already filters users by role — p.users IS the team
   var myId = String(currentUser.id||currentUser._id||"");
 
@@ -14140,11 +14610,13 @@ export default function CRMApp() {
   var scopedDailyReqs = tlScope ? (dailyReqs||[]).filter(function(r){var aid=String(r&&r.agentId&&r.agentId._id?r.agentId._id:(r&&r.agentId)||"");return tlScope.has(aid);}) : dailyReqs;
   var myTeamUsers = scopedUsers;
 
-  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev};
+  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings};
 
   var renderPage=function(){
     switch(currentPage){
-      case "dashboard": return <DashboardPage {...sp}/>;
+      case "dashboard": return currentUser.role !== "admin"
+        ? <div><CheckInWidget token={token} cu={currentUser} csrfToken={csrfToken} mode="compact" onNavigate={setPage}/><DashboardPage {...sp}/></div>
+        : <DashboardPage {...sp}/>;
       case "kpis": return <KPIsPage {...sp}/>
       case "calendar": return <CallCalendarPage {...sp}/>
       case "myday_disabled": return <MyDayPage {...sp}/>;
@@ -14158,6 +14630,7 @@ export default function CRMApp() {
       case "team": return <TeamPage {...sp}/>;
       case "users": return <UsersPage {...sp}/>;
       case "archive": return <ArchivePage {...sp}/>;
+      case "attendance": return <AttendancePage {...sp}/>;
       case "settings": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
       default: return <DashboardPage {...sp}/>;
     }
