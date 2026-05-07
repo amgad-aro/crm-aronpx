@@ -2797,6 +2797,135 @@ app.get("/api/salary/list/:year/:month", auth, async function(req, res) {
   }
 });
 
+// Day Override — Phase 5C (doc §10). Body: { userId, date YYYY-MM-DD,
+// action, reason ≥10 chars, fraction (only for action="apply_fraction") }.
+// Server enforces: requester has manageAttendance, target isn't admin, date
+// not in the future, month not finalized. Sick warning is detected here too
+// — flagged in the audit log when the requested override is the user's 3rd+
+// sick reason in the month. The frontend also previews this client-side.
+var SICK_RE = /sick|مرض|illness/i;
+
+app.post("/api/attendance/override", auth, requireAttendancePermission("manageAttendance"),
+async function(req, res) {
+  try {
+    var userId  = req.body && req.body.userId;
+    var dateStr = req.body && req.body.date;
+    var action  = req.body && req.body.action;
+    var reason  = (req.body && req.body.reason) ? String(req.body.reason).trim() : "";
+    var fraction = (req.body && req.body.fraction != null) ? Number(req.body.fraction) : null;
+    var ALLOWED = ["cancel_deduction", "add_full_deduction", "mark_off_day", "apply_fraction"];
+
+    if (!userId || !dateStr) return res.status(400).json({ error: "userId and date required" });
+    if (ALLOWED.indexOf(action) < 0) return res.status(400).json({ error: "Invalid action" });
+    if (reason.length < 10) return res.status(400).json({ error: "Reason must be at least 10 characters" });
+    if (action === "apply_fraction" && [0, 0.25, 0.5, 1].indexOf(fraction) < 0) {
+      return res.status(400).json({ error: "fraction must be 0, 0.25, 0.5, or 1" });
+    }
+
+    var m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
+    var y = parseInt(m[1], 10), mo = parseInt(m[2], 10), d = parseInt(m[3], 10);
+    var dateKey = new Date(Date.UTC(y, mo - 1, d));
+
+    // Cannot override future dates per doc §10.
+    var nowParts = getCairoDateParts(new Date());
+    var todayUTC = Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day);
+    if (dateKey.getTime() > todayUTC) return res.status(400).json({ error: "Cannot override a future date" });
+
+    var target = await User.findById(userId).lean();
+    if (!target || target.role === "admin") return res.status(404).json({ error: "Invalid user" });
+
+    // Finalized-month gate. Phase 5E creates these snapshots; the gate is in
+    // place now so the contract is consistent end-to-end.
+    var snap = await SalaryRecord.findOne({ userId: target._id, year: y, month: mo }).lean();
+    if (snap && snap.finalized) {
+      return res.status(403).json({ error: "Month is finalized — unlock it first to override days." });
+    }
+
+    // Sick limit check. Per doc §9, count past overrides this month with a
+    // matching reason; flag if this would be the 3rd. We don't block — the
+    // doc is explicit: "warn but allow".
+    var monthStart = new Date(Date.UTC(y, mo - 1, 1));
+    var monthEnd   = new Date(Date.UTC(y, mo, 1));
+    var monthOverrides = await Attendance.find({
+      userId: target._id,
+      date: { $gte: monthStart, $lt: monthEnd },
+      "override.action": { $exists: true, $ne: null }
+    }).lean();
+    var pastSick = monthOverrides.filter(function(a){
+      // Exclude the row we're about to update so re-saving the same day
+      // doesn't double-count itself.
+      if (a.date && new Date(a.date).getTime() === dateKey.getTime()) return false;
+      return a.override && a.override.reason && SICK_RE.test(a.override.reason);
+    }).length;
+    var sickLimitExceeded = SICK_RE.test(reason) && pastSick >= 2;
+
+    var newFraction = 0;
+    if      (action === "cancel_deduction")    newFraction = 0;
+    else if (action === "add_full_deduction")  newFraction = 1;
+    else if (action === "mark_off_day")        newFraction = 0;
+    else if (action === "apply_fraction")      newFraction = fraction;
+
+    var before = await Attendance.findOne({ userId: target._id, date: dateKey }).lean();
+
+    // Preserve any checkIn/checkOut data on the existing record — the
+    // override only changes deductionFraction + status + adds the override
+    // metadata. New records (overriding a totally absent day) are created
+    // without checkIn/checkOut.
+    var ovBlock = {
+      action: action,
+      reason: reason,
+      overriddenBy: req.user.id,
+      overriddenAt: new Date(),
+      sickLimitExceeded: sickLimitExceeded
+    };
+
+    var att;
+    if (before) {
+      att = await Attendance.findOneAndUpdate(
+        { _id: before._id },
+        { $set: {
+            status: "override",
+            deductionFraction: newFraction,
+            override: ovBlock,
+            computedAt: new Date()
+          }},
+        { new: true }
+      );
+    } else {
+      att = await Attendance.create({
+        userId: target._id, date: dateKey,
+        status: "override",
+        deductionFraction: newFraction,
+        override: ovBlock,
+        computedAt: new Date()
+      });
+    }
+
+    try {
+      await AuditLog.create({
+        type: "DAY_OVERRIDDEN",
+        targetUserId: target._id,
+        performedBy: req.user.id,
+        before: before || {},
+        after: att.toObject ? att.toObject() : att,
+        reason: reason,
+        flags: { sickLimitExceeded: sickLimitExceeded },
+        ipAddress: req.ip
+      });
+    } catch (e) {
+      console.error("[override audit]", e && e.message);
+    }
+
+    try { broadcast("attendance_updated", { userId: String(target._id), attendance: att }); } catch (e) {}
+
+    res.json({ attendance: att, sickLimitExceeded: sickLimitExceeded });
+  } catch (e) {
+    console.error("[POST /attendance/override]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Per-employee monthly attendance (for the salary-sheet daily log). Owner /
 // anyone with manageSalaries can read; sales_admin/hr targets are gated to
 // Owner per doc §14.

@@ -5218,6 +5218,15 @@ var SalarySheetPage = function(p) {
   var [attendance,setAttendance] = useState([]);
   var [loading,setLoading] = useState(false);
   var [error,setError] = useState("");
+  // Phase 5C — Day Override modal state.
+  var [ovrOpen,setOvrOpen]     = useState(false);
+  var [ovrDate,setOvrDate]     = useState(null);   // Date object for the row clicked
+  var [ovrCurrent,setOvrCurrent] = useState(null); // existing attendance doc for that day
+  var [ovrAction,setOvrAction] = useState("cancel_deduction");
+  var [ovrFraction,setOvrFraction] = useState(0.25);
+  var [ovrReason,setOvrReason] = useState("");
+  var [ovrSaving,setOvrSaving] = useState(false);
+  var [ovrError,setOvrError]   = useState("");
 
   var refetch = useCallback(function(){
     if (!p.salaryViewUserId || !p.token) return;
@@ -5290,6 +5299,51 @@ var SalarySheetPage = function(p) {
   var deductionFor = function(att){
     if (!att) return null; // computed at row level using off-day detection
     return Number(att.deductionFraction || 0) * Number(s.dailyRate || 0);
+  };
+
+  // Floor of today (UTC midnight) — rows with row.date > this are future and
+  // not clickable for override. Re-derived on every render so it stays fresh
+  // around the day boundary.
+  var todayUTCKey = (function(){
+    var n = new Date();
+    return Date.UTC(n.getFullYear(), n.getMonth(), n.getDate());
+  })();
+
+  // Sick-warning preview (Phase 5C). Counts existing override rows in this
+  // month with a sick keyword. The 3rd one tips the modal into a red banner.
+  var SICK_RE_FE = /sick|مرض|illness/i;
+  var sickPreviewCount = (attendance || []).filter(function(a){
+    if (!a.override || !a.override.action || !a.override.reason) return false;
+    if (ovrDate && a.date && new Date(a.date).getTime() === ovrDate.getTime()) return false;
+    return SICK_RE_FE.test(a.override.reason);
+  }).length;
+  var sickWarning = SICK_RE_FE.test(ovrReason || "") && sickPreviewCount >= 2;
+
+  var pad2 = function(n){ return n < 10 ? "0" + n : "" + n; };
+  var submitOverride = async function(){
+    if ((ovrReason || "").trim().length < 10) {
+      setOvrError("Reason must be at least 10 characters");
+      return;
+    }
+    setOvrSaving(true); setOvrError("");
+    try {
+      var dateStr = ovrDate.getUTCFullYear() + "-" + pad2(ovrDate.getUTCMonth() + 1) + "-" + pad2(ovrDate.getUTCDate());
+      var body = {
+        userId: p.salaryViewUserId,
+        date: dateStr,
+        action: ovrAction,
+        reason: (ovrReason || "").trim()
+      };
+      if (ovrAction === "apply_fraction") body.fraction = Number(ovrFraction);
+      await apiFetch("/api/attendance/override", "POST", body, p.token, p.csrfToken);
+      setOvrOpen(false);
+      // WS event will refetch, but call directly for snappy local update too.
+      refetch();
+    } catch (err) {
+      setOvrError((err && err.message) || "Save failed");
+    } finally {
+      setOvrSaving(false);
+    }
   };
 
   var actionBtn = {
@@ -5386,7 +5440,19 @@ var SalarySheetPage = function(p) {
                 var badge = attStatusBadge(a && a.status, off);
                 if (hasOverride) badge = { label:"Override", bg:"#F3E8FF", color:"#7C3AED" };
                 var ded = deductionFor(a);
-                return <tr key={row.date.toISOString()} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)", cursor: data.access && data.access.canEdit ? "pointer" : "default", background: hasOverride ? "#FFFBEB" : "transparent"}}>
+                var rowClickable = data.access && data.access.canEdit && !finalized && row.date.getTime() <= todayUTCKey;
+                var openModalForThisRow = function(){
+                  if (!rowClickable) return;
+                  setOvrDate(row.date);
+                  setOvrCurrent(a);
+                  setOvrAction(a && a.override && a.override.action ? a.override.action : "cancel_deduction");
+                  setOvrFraction(a && a.override && a.override.action === "apply_fraction" && a.deductionFraction ? Number(a.deductionFraction) : 0.25);
+                  setOvrReason(a && a.override && a.override.reason ? a.override.reason : "");
+                  setOvrError("");
+                  setOvrOpen(true);
+                };
+                return <tr key={row.date.toISOString()} onClick={openModalForThisRow}
+                  style={{borderTop:"0.5px solid rgba(0,0,0,0.05)", cursor: rowClickable ? "pointer" : "default", background: hasOverride ? "#FFFBEB" : "transparent"}}>
                   <td style={{padding:"10px 16px"}}>{row.date.toLocaleDateString("en-GB", { day:"2-digit", month:"short", timeZone:"UTC" })}</td>
                   <td style={{padding:"10px 16px", color:C.textLight}}>{weekday}</td>
                   <td style={{padding:"10px 16px"}}>{a && a.checkIn ? fmtCairoTime(a.checkIn.timestamp) : "—"}</td>
@@ -5404,6 +5470,70 @@ var SalarySheetPage = function(p) {
           </table>
         </div>
       </div>
+
+      {ovrOpen && <div className="crm-modal" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:20 }}>
+        <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:12, maxWidth:520, width:"100%", padding:24, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", maxHeight:"90vh", overflowY:"auto" }}>
+          <div style={{ fontSize:16, fontWeight:600, marginBottom:6, color:C.text }}>Override day</div>
+          <div style={{ fontSize:12, color:C.textLight, marginBottom:16 }}>
+            <div><b>{t.name || "—"}</b></div>
+            <div>{ovrDate ? ovrDate.toLocaleDateString("en-GB", { weekday:"long", day:"2-digit", month:"long", year:"numeric", timeZone:"UTC" }) : ""}</div>
+            <div style={{marginTop:4}}>
+              Current: {ovrCurrent
+                ? (ovrCurrent.status + (ovrCurrent.deductionFraction ? " · " + ovrCurrent.deductionFraction + " day deduction" : ""))
+                : "Absent (full day deduction)"}
+            </div>
+          </div>
+
+          <div style={{ marginBottom:16 }}>
+            <div style={{ fontSize:12, color:C.textLight, marginBottom:8, fontWeight:500 }}>Action</div>
+            {[
+              { value:"cancel_deduction",   label:"Cancel deduction (no charge)" },
+              { value:"add_full_deduction", label:"Add full day deduction" },
+              { value:"mark_off_day",       label:"Mark as off-day" },
+              { value:"apply_fraction",     label:"Apply specific deduction fraction" }
+            ].map(function(opt){
+              return <label key={opt.value} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", fontSize:13, color:C.text }}>
+                <input type="radio" name="ovrAction" value={opt.value}
+                  checked={ovrAction === opt.value}
+                  onChange={function(e){ setOvrAction(e.target.value); }}/>
+                {opt.label}
+              </label>;
+            })}
+            {ovrAction === "apply_fraction" && <div style={{ display:"flex", gap:8, marginTop:6, marginLeft:24 }}>
+              {[0, 0.25, 0.5, 1].map(function(f){
+                return <label key={f} style={{ display:"flex", alignItems:"center", gap:4, fontSize:12, color:C.text, cursor:"pointer" }}>
+                  <input type="radio" name="ovrFraction" value={f}
+                    checked={Number(ovrFraction) === f}
+                    onChange={function(){ setOvrFraction(f); }}/>
+                  {f === 0.25 ? "¼" : f === 0.5 ? "½" : f === 1 ? "1 day" : "0"}
+                </label>;
+              })}
+            </div>}
+          </div>
+
+          <div style={{ marginBottom:12 }}>
+            <label style={{ fontSize:12, color:C.textLight, display:"block", marginBottom:6 }}>Reason (min 10 characters)</label>
+            <textarea value={ovrReason} onChange={function(e){ setOvrReason(e.target.value); }}
+              rows={3} placeholder="e.g. Sick — prescription received on WhatsApp"
+              style={{ width:"100%", padding:10, border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:8, fontSize:13, fontFamily:"inherit", resize:"vertical", boxSizing:"border-box" }}/>
+          </div>
+
+          {sickWarning && <div style={{ background:"#FEE2E2", border:"0.5px solid #FCA5A5", borderRadius:8, padding:"10px 12px", marginBottom:12, fontSize:12, color:"#991B1B", lineHeight:1.5 }}>
+            ⚠ This would be {t.name}'s 3rd+ sick day this month — exceeds the 2-day limit. You can save anyway, but it will be flagged in the audit log.
+          </div>}
+
+          {ovrError && <div style={{ fontSize:12, color:C.danger, marginBottom:12 }}>{ovrError}</div>}
+
+          <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+            <button type="button" onClick={function(){ setOvrOpen(false); }} disabled={ovrSaving}
+              style={{ fontSize:13, padding:"9px 16px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text }}>Cancel</button>
+            <button type="button" onClick={submitOverride} disabled={ovrSaving}
+              style={{ fontSize:13, padding:"9px 16px", border:"none", background:"#185FA5", color:"#fff", borderRadius:8, cursor:"pointer", fontWeight:600, fontFamily:"inherit" }}>
+              {ovrSaving ? "Saving…" : "Save override"}
+            </button>
+          </div>
+        </div>
+      </div>}
     </div>
   </div>;
 };
