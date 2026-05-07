@@ -888,7 +888,7 @@ var Sidebar = function(p) {
     isAdmin&&{id:"team",label:t.team,adminSection:true},
     isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
     isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
-    {id:"attendance",label:"Attendance",adminSection:true},
+    p.cu.role!=="admin"&&{id:"attendance",label:"Attendance",adminSection:true},
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
@@ -4370,6 +4370,26 @@ var CheckInWidget = function(p) {
     return function(){ clearInterval(t); };
   }, [data]);
 
+  // Cross-tab / cross-device sync. The App-level WS handler re-dispatches
+  // attendance_updated as a window CustomEvent — we listen here and patch
+  // local state when the event is for the current user. Avoids the user
+  // having to refresh tab B after checking in on tab A.
+  useEffect(function(){
+    if (!p.cu || p.cu.role === "admin") return;
+    var handler = function(e){
+      if (!e || !e.detail) return;
+      var uid = String(p.cu.id || (p.cu._id || ""));
+      if (!uid || String(e.detail.userId) !== uid) return;
+      if (e.detail.attendance) {
+        setData(function(prev){ return Object.assign({}, prev || {}, { attendance: e.detail.attendance }); });
+      } else {
+        refetch();
+      }
+    };
+    window.addEventListener("crm:attendance_updated", handler);
+    return function(){ window.removeEventListener("crm:attendance_updated", handler); };
+  }, [p.cu, refetch]);
+
   // Distance from user to office, when both coords + geofence are available.
   // Computed client-side for display only — the server re-validates on POST.
   var distanceMeters = (function(){
@@ -4587,6 +4607,25 @@ var AttendancePage = function(p) {
       .finally(function(){ if (!cancelled) setLoadingTeam(false); });
     return function(){ cancelled = true; };
   }, [activeTab, canManage, p.token]);
+
+  // Real-time team updates — patches the matching row when any employee
+  // checks in/out anywhere. Doesn't add new rows (the roster set is fixed
+  // for a given day). Only active while Team tab is mounted.
+  useEffect(function(){
+    if (activeTab !== "team") return;
+    var handler = function(e){
+      if (!e || !e.detail) return;
+      var uid = String(e.detail.userId);
+      setTeam(function(prev){
+        return prev.map(function(row){
+          if (String(row.user._id) !== uid) return row;
+          return Object.assign({}, row, { attendance: e.detail.attendance || row.attendance });
+        });
+      });
+    };
+    window.addEventListener("crm:attendance_updated", handler);
+    return function(){ window.removeEventListener("crm:attendance_updated", handler); };
+  }, [activeTab]);
 
   var tabBtn = function(id, label){
     var act = activeTab === id;
@@ -14146,6 +14185,15 @@ export default function CRMApp() {
                 apiFetch("/api/settings/attendance","GET",null,token)
                   .then(function(s){ if (s) setAttendanceSettings(s); })
                   .catch(function(){});
+              }
+              break;
+            case "attendance_updated":
+              // Phase 3 — re-dispatch as a window event so the widget and
+              // AttendancePage Team tab can react without prop drilling.
+              // CheckInWidget filters to its own user (cross-tab/device sync);
+              // Team tab patches the matching row.
+              if (data && data.userId) {
+                try { window.dispatchEvent(new CustomEvent("crm:attendance_updated", { detail: data })); } catch(e){}
               }
               break;
             case "hello": break; // server greeting
