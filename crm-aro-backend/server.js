@@ -2060,6 +2060,13 @@ app.post("/api/attendance/check-in", auth, async function(req, res) {
       broadcast("attendance_updated", { userId: String(user._id), attendance: att });
     } catch (e) {}
 
+    // Phase 6 (doc §12) — fire 5-lates notification if this check-in pushes
+    // the user across the threshold. Helper short-circuits if already fired
+    // this month or count < 5, so it's safe to call unconditionally.
+    if (tier.deductionFraction > 0) {
+      maybeFireLateNotification(user).catch(function(){});
+    }
+
     res.json({ attendance: att, lateTier: tier });
   } catch (e) {
     console.error("[POST /attendance/check-in]", e);
@@ -2395,6 +2402,13 @@ async function(req, res) {
       broadcast("attendance_updated", { userId: String(r.userId), attendance: att });
       broadcast("offsite_request_updated", {});
     } catch (e) {}
+
+    // Phase 6 — re-evaluate the 5-lates threshold after approval (the
+    // original timestamp could have been late and only now becomes counted).
+    if (tier && tier.deductionFraction > 0) {
+      maybeFireLateNotification(user).catch(function(){});
+    }
+
     res.json({ request: r, attendance: att });
   } catch (e) {
     console.error("[POST /offsite/:id/approve]", e);
@@ -2922,6 +2936,157 @@ async function(req, res) {
     res.json({ attendance: att, sickLimitExceeded: sickLimitExceeded });
   } catch (e) {
     console.error("[POST /attendance/override]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =====================================================================
+// PHASE 6 — notifications, audit log read, bulk finalize
+// =====================================================================
+
+// Doc §12 — fire a single notification per (user, month) when the user crosses
+// 5 late check-ins. Counts organic lates only (deductionFraction > 0 with no
+// override.action) so admin overrides don't double-fire. No-op for Owner /
+// users without baseSalary tracking.
+async function maybeFireLateNotification(user) {
+  try {
+    if (!user || user.role === "admin") return;
+    var now = new Date();
+    var p = getCairoDateParts(now);
+    var monthStart = new Date(Date.UTC(p.year, p.month - 1, 1));
+    var monthEnd   = new Date(Date.UTC(p.year, p.month, 1));
+
+    var lates = await Attendance.countDocuments({
+      userId: user._id,
+      date: { $gte: monthStart, $lt: monthEnd },
+      deductionFraction: { $gt: 0 },
+      $or: [{ "override.action": { $exists: false } }, { "override.action": null }]
+    });
+    if (lates < 5) return;
+
+    var existing = await Notification.findOne({
+      type: "attendance_late_5",
+      leadId: String(user._id),
+      createdAt: { $gte: monthStart, $lt: monthEnd }
+    });
+    if (existing) return;
+
+    await Notification.create({
+      type: "attendance_late_5",
+      agentName: user.name,
+      leadId: String(user._id),  // reused to carry the employee id for click-navigation
+      reason: lates + " lates this month"
+    });
+    try { broadcast("notification_updated", {}); } catch (e) {}
+  } catch (e) {
+    console.error("[maybeFireLateNotification]", e && e.message);
+  }
+}
+
+// GET /api/audit — Owner sees all; SA/HR with manageSalaries OR
+// manageAttendance can see the subset for users they're allowed to manage.
+// Filters: targetUserId, type, limit (max 500). Sorted newest first.
+app.get("/api/audit", auth, async function(req, res) {
+  try {
+    var settings = await getAttendanceSettings();
+    var rRole = req.user.role;
+    var hasAny = rRole === "admin"
+      || hasAttendancePermission(rRole, "manageSalaries", settings)
+      || hasAttendancePermission(rRole, "manageAttendance", settings);
+    if (!hasAny) return res.status(403).json({ error: "Permission denied" });
+
+    var query = {};
+    if (req.query.targetUserId && mongoose.Types.ObjectId.isValid(req.query.targetUserId)) {
+      query.targetUserId = req.query.targetUserId;
+    }
+    if (req.query.type) query.type = String(req.query.type);
+
+    // Non-Owner: gate by salaryAccess against the targetUserId. If no target
+    // is specified we still allow the query but post-filter results to rows
+    // they're allowed to see — keeps the inbox useful without leaking SA/HR
+    // peer data.
+    var rawLimit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+    var rows = await AuditLog.find(query)
+      .sort({ timestamp: -1 })
+      .limit(rRole === "admin" ? rawLimit : rawLimit * 3)
+      .populate("targetUserId", "name role")
+      .populate("performedBy", "name role")
+      .lean();
+
+    if (rRole !== "admin") {
+      // Drop rows targeting sales_admin/hr peers (non-Owner can't see those).
+      rows = rows.filter(function(r){
+        if (!r.targetUserId) return true;
+        var trole = r.targetUserId.role;
+        return trole !== "sales_admin" && trole !== "hr";
+      }).slice(0, rawLimit);
+    }
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /api/audit]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/salary/list/:year/:month/finalize-all — Phase 6 (doc §13).
+// Bulk-finalizes every employee the requester is allowed to edit for the
+// selected month. Skips users who are already finalized. Logs MONTH_FINALIZED
+// per row. Returns counts of finalized + skipped.
+app.post("/api/salary/list/:year/:month/finalize-all", auth, async function(req, res) {
+  try {
+    var year  = parseInt(req.params.year,  10);
+    var month = parseInt(req.params.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "Invalid year/month" });
+    }
+    var settings = await getAttendanceSettings();
+    var rRole = req.user.role;
+    if (rRole !== "admin" && !hasAttendancePermission(rRole, "manageSalaries", settings)) {
+      return res.status(403).json({ error: "Permission denied" });
+    }
+    var query = { active: true, role: { $ne: "admin" } };
+    if (rRole !== "admin") query.role = { $nin: ["admin", "sales_admin", "hr"] };
+    var users = await User.find(query).lean();
+
+    var finalized = 0, skipped = 0;
+    for (var i = 0; i < users.length; i++) {
+      var u = users[i];
+      var existing = await SalaryRecord.findOne({ userId: u._id, year: year, month: month });
+      if (existing && existing.finalized) { skipped++; continue; }
+      var live = await computeMonthlySalary(u, year, month);
+      if (!live) { skipped++; continue; }
+      var snap = await SalaryRecord.findOneAndUpdate(
+        { userId: u._id, year: year, month: month },
+        { $set: {
+            userId: u._id, year: year, month: month,
+            baseSalary: live.baseSalary,
+            workingDays: live.workingDays, dailyRate: live.dailyRate,
+            deductionDays: live.deductionDays,
+            totalDeductions: live.totalDeductions,
+            netSalary: live.netSalary,
+            finalized: true,
+            finalizedBy: req.user.id, finalizedAt: new Date(),
+            computedAt: new Date()
+          }},
+        { upsert: true, new: true }
+      );
+      finalized++;
+      try {
+        await AuditLog.create({
+          type: "MONTH_FINALIZED",
+          targetUserId: u._id,
+          performedBy: req.user.id,
+          before: {},
+          after: snap.toObject ? snap.toObject() : snap,
+          flags: { bulk: true },
+          ipAddress: req.ip
+        });
+      } catch (e) {}
+      try { broadcast("salary_finalized", { userId: String(u._id), year: year, month: month }); } catch(e){}
+    }
+    res.json({ finalized: finalized, skipped: skipped, totalConsidered: users.length });
+  } catch (e) {
+    console.error("[POST /api/salary/list/:year/:month/finalize-all]", e);
     res.status(500).json({ error: e.message });
   }
 });
