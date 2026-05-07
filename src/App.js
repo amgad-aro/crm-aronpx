@@ -890,6 +890,7 @@ var Sidebar = function(p) {
     isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
     p.cu.role!=="admin"&&{id:"attendance",label:"Attendance",adminSection:true},
     hasAttendancePerm(p.cu && p.cu.role, "approveOffSiteRequests", p.attendanceSettings) && {id:"offsiteRequests", label:"Off-site Requests", adminSection:true},
+    hasAttendancePerm(p.cu && p.cu.role, "manageSalaries",         p.attendanceSettings) && {id:"salaries",         label:"Salaries",           adminSection:true},
     hasAttendancePerm(p.cu && p.cu.role, "manageCompanyOffDays",   p.attendanceSettings) && {id:"companyOffDays",   label:"Company Off-Days",   adminSection:true},
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
@@ -5093,6 +5094,315 @@ var CompanyOffDaysPage = function(p) {
               })}
             </tbody>
           </table>}
+      </div>
+    </div>
+  </div>;
+};
+
+// =====================================================================
+// SALARIES — Phase 5B (doc §14)
+// SalariesListPage = grid view of all employees for the selected month.
+// SalarySheetPage  = per-employee header + 4 metric cards + daily log.
+// Action-bar buttons (Edit base / Audit / Export / Finalize) and the
+// Day Override modal are wired in Phase 5C–5E.
+// =====================================================================
+
+var fmtEGP = function(n){
+  if (n == null || !isFinite(Number(n))) return "—";
+  return Math.round(Number(n)).toLocaleString("en-US") + " EGP";
+};
+var fmtEGPRaw = function(n){
+  if (n == null || !isFinite(Number(n))) return "—";
+  return Math.round(Number(n)).toLocaleString("en-US");
+};
+
+var SalariesListPage = function(p) {
+  var canViewAny = hasAttendancePerm(p.cu && p.cu.role, "manageSalaries", p.attendanceSettings);
+  var now = new Date();
+  var [year,setYear]   = useState(now.getFullYear());
+  var [month,setMonth] = useState(now.getMonth() + 1);
+  var [rows,setRows]   = useState([]);
+  var [loading,setLoading] = useState(false);
+  var [error,setError] = useState("");
+
+  var refetch = useCallback(function(){
+    if (!canViewAny || !p.token) return;
+    setLoading(true); setError("");
+    apiFetch("/api/salary/list/"+year+"/"+month,"GET",null,p.token).then(function(r){
+      setRows(Array.isArray(r) ? r : []);
+    }).catch(function(err){
+      setError((err && err.message) || "Failed to load");
+      setRows([]);
+    }).finally(function(){ setLoading(false); });
+  },[canViewAny, p.token, year, month]);
+
+  useEffect(function(){ refetch(); },[refetch]);
+
+  if (!canViewAny) {
+    return <div style={{padding:"24px 16px"}}>
+      <div style={{maxWidth:1200, margin:"0 auto", background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", padding:24, textAlign:"center", color:C.textLight, fontSize:13, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+        You do not have permission to view salaries.
+      </div>
+    </div>;
+  }
+
+  var monthLabel = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+  var prevMonth = function(){ if (month === 1) { setMonth(12); setYear(year - 1); } else setMonth(month - 1); };
+  var nextMonth = function(){ if (month === 12) { setMonth(1); setYear(year + 1); } else setMonth(month + 1); };
+
+  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+    <div style={{maxWidth:1200, margin:"0 auto"}}>
+      <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+        <div style={{padding:"16px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap"}}>
+          <div>
+            <div style={{fontSize:15, fontWeight:600, color:C.text}}>Salaries</div>
+            <div style={{fontSize:12, color:C.textLight, marginTop:2}}>{rows.length} employees · click a row to open the salary sheet</div>
+          </div>
+          <div style={{display:"flex", gap:8, alignItems:"center"}}>
+            <button type="button" onClick={prevMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>‹</button>
+            <div style={{fontSize:13, fontWeight:500, color:C.text, minWidth:120, textAlign:"center"}}>{monthLabel}</div>
+            <button type="button" onClick={nextMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>›</button>
+          </div>
+        </div>
+
+        {loading ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
+          : error ? <div style={{padding:32, textAlign:"center", color:C.danger, fontSize:13}}>{error}</div>
+          : rows.length === 0 ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>No employees</div>
+          : <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
+              <thead>
+                <tr style={{background:"#F7F7F5"}}>
+                  <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Employee</th>
+                  <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Role</th>
+                  <th style={{textAlign:"right", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Working days</th>
+                  <th style={{textAlign:"right", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Deductions</th>
+                  <th style={{textAlign:"right", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Net salary</th>
+                  <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px", width:100}}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(function(row){
+                  var s = row.salary || {};
+                  var open = function(){ if (p.setSalaryViewUserId) p.setSalaryViewUserId(String(row.user._id)); };
+                  return <tr key={String(row.user._id)} onClick={open}
+                    style={{borderTop:"0.5px solid rgba(0,0,0,0.05)", cursor:"pointer"}}
+                    onMouseEnter={function(e){ e.currentTarget.style.background = "#FAFAFA"; }}
+                    onMouseLeave={function(e){ e.currentTarget.style.background = "transparent"; }}>
+                    <td style={{padding:"10px 16px"}}>{row.user.name}</td>
+                    <td style={{padding:"10px 16px", color:C.textLight}}>{row.user.role}</td>
+                    <td style={{padding:"10px 16px", textAlign:"right"}}>{s.workingDays != null ? s.workingDays : "—"}</td>
+                    <td style={{padding:"10px 16px", textAlign:"right", color: s.totalDeductions > 0 ? C.danger : C.text}}>
+                      {s.totalDeductions > 0 ? fmtEGPRaw(s.totalDeductions) : "0"} <span style={{color:C.textLight, fontSize:11}}>EGP</span>
+                    </td>
+                    <td style={{padding:"10px 16px", textAlign:"right", color:"#15803D", fontWeight:500}}>
+                      {fmtEGPRaw(s.netSalary)} <span style={{color:C.textLight, fontSize:11, fontWeight:400}}>EGP</span>
+                    </td>
+                    <td style={{padding:"10px 16px"}}>
+                      {row.finalized && <span style={{fontSize:10, padding:"2px 8px", borderRadius:6, background:"#F3E8FF", color:"#7C3AED", fontWeight:500}}>FINALIZED</span>}
+                    </td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </div>}
+      </div>
+    </div>
+  </div>;
+};
+
+var SalarySheetPage = function(p) {
+  // p.salaryViewUserId set by SalariesListPage row click; back button clears it.
+  var [year,setYear]   = useState(new Date().getFullYear());
+  var [month,setMonth] = useState(new Date().getMonth() + 1);
+  var [data,setData]   = useState(null);
+  var [attendance,setAttendance] = useState([]);
+  var [loading,setLoading] = useState(false);
+  var [error,setError] = useState("");
+
+  var refetch = useCallback(function(){
+    if (!p.salaryViewUserId || !p.token) return;
+    setLoading(true); setError("");
+    Promise.all([
+      apiFetch("/api/salary/users/"+p.salaryViewUserId+"/"+year+"/"+month, "GET", null, p.token),
+      apiFetch("/api/attendance/users/"+p.salaryViewUserId+"/month?year="+year+"&month="+month, "GET", null, p.token)
+    ]).then(function(results){
+      setData(results[0]);
+      setAttendance(Array.isArray(results[1]) ? results[1] : []);
+    }).catch(function(err){
+      setError((err && err.message) || "Failed to load");
+    }).finally(function(){ setLoading(false); });
+  },[p.salaryViewUserId, p.token, year, month]);
+
+  useEffect(function(){ refetch(); },[refetch]);
+
+  // Live update on WS attendance_updated for the displayed user.
+  useEffect(function(){
+    var handler = function(e){
+      if (!e || !e.detail) return;
+      if (String(e.detail.userId) !== String(p.salaryViewUserId)) return;
+      // Refetch — the salary engine + per-day log both depend on attendance.
+      refetch();
+    };
+    window.addEventListener("crm:attendance_updated", handler);
+    return function(){ window.removeEventListener("crm:attendance_updated", handler); };
+  }, [p.salaryViewUserId, refetch]);
+
+  var monthLabel = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+  var prevMonth = function(){ if (month === 1) { setMonth(12); setYear(year - 1); } else setMonth(month - 1); };
+  var nextMonth = function(){ if (month === 12) { setMonth(1); setYear(year + 1); } else setMonth(month + 1); };
+  var goBack = function(){ if (p.setSalaryViewUserId) p.setSalaryViewUserId(null); };
+
+  if (loading && !data) {
+    return <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>Loading salary sheet…</div>;
+  }
+  if (error) {
+    return <div style={{padding:24, fontFamily:"inherit"}}>
+      <div style={{maxWidth:1200, margin:"0 auto"}}>
+        <button type="button" onClick={goBack} style={{fontSize:12, padding:"6px 12px", border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, cursor:"pointer", marginBottom:12, fontFamily:"inherit"}}>‹ Salaries</button>
+        <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", padding:24, textAlign:"center", color:C.danger, fontSize:13}}>
+          {error}
+        </div>
+      </div>
+    </div>;
+  }
+  if (!data) return null;
+
+  var s = data.salary || {};
+  var t = data.target || {};
+  var finalized = !!data.finalized;
+
+  // Build daily log: every Cairo day in the month + lookup of attendance.
+  var daysInMonth = new Date(year, month, 0).getDate();
+  var attByKey = {};
+  attendance.forEach(function(a){
+    var d = new Date(a.date);
+    attByKey[d.getUTCFullYear()+"-"+(d.getUTCMonth()+1)+"-"+d.getUTCDate()] = a;
+  });
+
+  var rows = [];
+  for (var d = 1; d <= daysInMonth; d++) {
+    var dateUTC = new Date(Date.UTC(year, month - 1, d));
+    var dayKey  = year + "-" + month + "-" + d;
+    var att = attByKey[dayKey] || null;
+    rows.push({ date: dateUTC, attendance: att });
+  }
+
+  var deductionFor = function(att){
+    if (!att) return null; // computed at row level using off-day detection
+    return Number(att.deductionFraction || 0) * Number(s.dailyRate || 0);
+  };
+
+  var actionBtn = {
+    fontSize:12, padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.15)",
+    background:"transparent", borderRadius:8, cursor:"not-allowed",
+    fontFamily:"inherit", color:C.textLight, opacity:0.5
+  };
+
+  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+    <div style={{maxWidth:1200, margin:"0 auto"}}>
+      <button type="button" onClick={goBack} style={{fontSize:12, padding:"6px 12px", border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, cursor:"pointer", marginBottom:12, fontFamily:"inherit", color:C.text}}>‹ Salaries</button>
+
+      {/* Header */}
+      <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden", marginBottom:14}}>
+        <div style={{padding:"18px 22px", display:"flex", alignItems:"center", gap:14, flexWrap:"wrap", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>
+          <div style={{width:48, height:48, borderRadius:24, background:"#1a2942", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, fontWeight:600}}>
+            {(t.name || "?")[0]}
+          </div>
+          <div style={{flex:1, minWidth:0}}>
+            <div style={{fontSize:16, fontWeight:600, color:C.text}}>{t.name || "—"}</div>
+            <div style={{fontSize:12, color:C.textLight, marginTop:2}}>
+              {t.role || ""}{t.teamName ? " · " + t.teamName : ""}{t.startingDate ? " · started " + new Date(t.startingDate).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : ""}
+            </div>
+          </div>
+          <div style={{display:"flex", gap:8, alignItems:"center"}}>
+            <button type="button" onClick={prevMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>‹</button>
+            <div style={{fontSize:13, fontWeight:500, color:C.text, minWidth:120, textAlign:"center"}}>{monthLabel}</div>
+            <button type="button" onClick={nextMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>›</button>
+            {finalized && <span style={{fontSize:10, padding:"3px 10px", borderRadius:6, background:"#F3E8FF", color:"#7C3AED", fontWeight:600}}>FINALIZED</span>}
+          </div>
+        </div>
+
+        {/* 4 metric cards */}
+        <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:1, background:"rgba(0,0,0,0.06)"}}>
+          <div style={{background:"#fff", padding:"16px 20px"}}>
+            <div style={{fontSize:11, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.3px", marginBottom:6}}>Base salary</div>
+            <div style={{fontSize:18, fontWeight:600, color:C.text}}>{fmtEGPRaw(s.baseSalary)} <span style={{fontSize:12, color:C.textLight, fontWeight:400}}>EGP</span></div>
+          </div>
+          <div style={{background:"#fff", padding:"16px 20px"}}>
+            <div style={{fontSize:11, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.3px", marginBottom:6}}>Working days</div>
+            <div style={{fontSize:18, fontWeight:600, color:C.text}}>{s.workingDays != null ? s.workingDays : "—"}</div>
+            <div style={{fontSize:11, color:C.textLight, marginTop:2}}>Daily rate · {fmtEGPRaw(s.dailyRate)} EGP</div>
+          </div>
+          <div style={{background:"#fff", padding:"16px 20px"}}>
+            <div style={{fontSize:11, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.3px", marginBottom:6}}>Deductions</div>
+            <div style={{fontSize:18, fontWeight:600, color: s.totalDeductions > 0 ? C.danger : C.text}}>
+              {fmtEGPRaw(s.totalDeductions)} <span style={{fontSize:12, color:C.textLight, fontWeight:400}}>EGP</span>
+            </div>
+            <div style={{fontSize:11, color:C.textLight, marginTop:2}}>{(s.deductionDays || 0).toFixed(2).replace(/\.00$/, "")} days</div>
+          </div>
+          <div style={{background:"#fff", padding:"16px 20px"}}>
+            <div style={{fontSize:11, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.3px", marginBottom:6}}>Net salary</div>
+            <div style={{fontSize:18, fontWeight:600, color:"#15803D"}}>{fmtEGPRaw(s.netSalary)} <span style={{fontSize:12, color:C.textLight, fontWeight:400}}>EGP</span></div>
+          </div>
+        </div>
+
+        {/* Action bar — buttons are placeholders this commit; Phase 5C–5E wire them */}
+        <div style={{padding:"14px 22px", display:"flex", gap:8, flexWrap:"wrap", background:"#FAFAF7", borderTop:"0.5px solid rgba(0,0,0,0.06)"}}>
+          <button type="button" disabled style={actionBtn} title="Wired in Phase 5D">Edit base salary</button>
+          <button type="button" disabled style={actionBtn} title="Wired in Phase 6">Audit log</button>
+          <button type="button" disabled style={actionBtn} title="Wired in Phase 6">Export</button>
+          <div style={{flex:1}}/>
+          <button type="button" disabled style={Object.assign({}, actionBtn, { background:"#185FA5", color:"#fff", borderColor:"#185FA5", opacity:0.45 })} title="Wired in Phase 5E">
+            Finalize {monthLabel}
+          </button>
+        </div>
+      </div>
+
+      {/* Daily log */}
+      <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+        <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>
+          <div style={{fontSize:14, fontWeight:600, color:C.text}}>Daily log</div>
+          <div style={{fontSize:12, color:C.textLight, marginTop:2}}>Click any row to open the override modal (wired in Phase 5C)</div>
+        </div>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
+            <thead>
+              <tr style={{background:"#F7F7F5"}}>
+                <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Date</th>
+                <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Day</th>
+                <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-in</th>
+                <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-out</th>
+                <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Status</th>
+                <th style={{textAlign:"right", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Deduction</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(function(row){
+                var weekday = row.date.toLocaleDateString("en-GB", { weekday:"short", timeZone:"UTC" });
+                var a = row.attendance;
+                var hasOverride = a && a.override && a.override.action;
+                var off = null;
+                if (!a && weekday === "Fri") off = "friday";
+                var badge = attStatusBadge(a && a.status, off);
+                if (hasOverride) badge = { label:"Override", bg:"#F3E8FF", color:"#7C3AED" };
+                var ded = deductionFor(a);
+                return <tr key={row.date.toISOString()} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)", cursor: data.access && data.access.canEdit ? "pointer" : "default", background: hasOverride ? "#FFFBEB" : "transparent"}}>
+                  <td style={{padding:"10px 16px"}}>{row.date.toLocaleDateString("en-GB", { day:"2-digit", month:"short", timeZone:"UTC" })}</td>
+                  <td style={{padding:"10px 16px", color:C.textLight}}>{weekday}</td>
+                  <td style={{padding:"10px 16px"}}>{a && a.checkIn ? fmtCairoTime(a.checkIn.timestamp) : "—"}</td>
+                  <td style={{padding:"10px 16px"}}>{a && a.checkOut ? fmtCairoTime(a.checkOut.timestamp) : "—"}</td>
+                  <td style={{padding:"10px 16px"}}>
+                    <span style={{display:"inline-block", padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:500, background:badge.bg, color:badge.color}}>{badge.label}</span>
+                    {hasOverride && a.override.reason && <div style={{fontSize:11, color:C.textLight, marginTop:3}}>{a.override.reason}</div>}
+                  </td>
+                  <td style={{padding:"10px 16px", textAlign:"right", color: ded > 0 ? C.danger : C.text}}>
+                    {ded != null && ded > 0 ? fmtEGP(ded) : (a ? "0 EGP" : "—")}
+                  </td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>;
@@ -14216,6 +14526,7 @@ export default function CRMApp() {
   // page consumes it on mount and clears it.
   var [initAgentFilter,setInitAgentFilter]=useState(null);
   useEffect(function(){ if (page && page!=="leads") { setLeadSpecialFilter(null); setInitAgentFilter(null); } },[page]);
+  useEffect(function(){ if (page && page!=="salaries") { setSalaryViewUserId(null); } },[page]);
   var [leadsPage,setLeadsPage]=useState(1); var [leadsTotal,setLeadsTotal]=useState(0); var [leadsTotalPages,setLeadsTotalPages]=useState(0);
   var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
@@ -14234,6 +14545,9 @@ export default function CRMApp() {
   // first load. Only Owner / sales_admin / hr ever fetch this; sales-side
   // roles never use attendance settings so we skip the request for them.
   var [attendanceSettings,setAttendanceSettings]=useState(null);
+  // Phase 5B — selected user for salary sheet. null = list view, set = sheet
+  // view for that user. Cleared when the user navigates away from /salaries.
+  var [salaryViewUserId,setSalaryViewUserId]=useState(null);
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
   var [sidebarOpen,setSidebarOpen]=useState(false);
@@ -14976,7 +15290,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",companyOffDays:"Company Off-Days",settings:t.settings};
+  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings};
   // Server already filters users by role — p.users IS the team
   var myId = String(currentUser.id||currentUser._id||"");
 
@@ -15024,6 +15338,9 @@ export default function CRMApp() {
       case "attendance": return <AttendancePage {...sp}/>;
       case "offsiteRequests": return <OffSiteRequestsPage {...sp}/>;
       case "companyOffDays":  return <CompanyOffDaysPage  {...sp}/>;
+      case "salaries":        return salaryViewUserId
+        ? <SalarySheetPage   {...sp} salaryViewUserId={salaryViewUserId} setSalaryViewUserId={setSalaryViewUserId}/>
+        : <SalariesListPage  {...sp} setSalaryViewUserId={setSalaryViewUserId}/>;
       case "settings": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
       default: return <DashboardPage {...sp}/>;
     }
