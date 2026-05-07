@@ -4684,6 +4684,8 @@ var AttendancePage = function(p) {
   // ----- "Team" tab: today's roster -----
   var [team,setTeam] = useState([]);
   var [loadingTeam,setLoadingTeam] = useState(false);
+  // Phase 6 — 5-lates notifications surfaced above the roster.
+  var [lateAlerts,setLateAlerts] = useState([]);
   useEffect(function(){
     if (activeTab !== "team") return;
     if (!canManage) return;
@@ -4693,7 +4695,25 @@ var AttendancePage = function(p) {
       if (!cancelled) setTeam(Array.isArray(r) ? r : []);
     }).catch(function(){ if (!cancelled) setTeam([]); })
       .finally(function(){ if (!cancelled) setLoadingTeam(false); });
-    return function(){ cancelled = true; };
+    // Fetch this month's 5-lates notifications. Backend filters by createdAt
+    // implicitly via the once-per-month creation rule.
+    apiFetch("/api/notifications?type=attendance_late_5&limit=20", "GET", null, p.token).then(function(r){
+      if (cancelled) return;
+      var monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+      var rows = (Array.isArray(r) ? r : []).filter(function(n){
+        return new Date(n.createdAt || 0) >= monthStart;
+      });
+      setLateAlerts(rows);
+    }).catch(function(){ if (!cancelled) setLateAlerts([]); });
+    var refreshAlerts = function(){
+      apiFetch("/api/notifications?type=attendance_late_5&limit=20", "GET", null, p.token).then(function(r){
+        var monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+        var rows = (Array.isArray(r) ? r : []).filter(function(n){ return new Date(n.createdAt || 0) >= monthStart; });
+        setLateAlerts(rows);
+      }).catch(function(){});
+    };
+    window.addEventListener("crm:notification_updated", refreshAlerts);
+    return function(){ cancelled = true; window.removeEventListener("crm:notification_updated", refreshAlerts); };
   }, [activeTab, canManage, p.token]);
 
   // Real-time team updates — patches the matching row when any employee
@@ -4808,7 +4828,23 @@ var AttendancePage = function(p) {
         </div>
       </div>}
 
-      {activeTab === "team" && canManage && <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+      {activeTab === "team" && canManage && <>
+        {lateAlerts.length > 0 && <div style={{background:"#FEF9F0", border:"0.5px solid #FDE68A", borderRadius:12, padding:"12px 16px", marginBottom:14}}>
+          <div style={{fontSize:13, fontWeight:600, color:"#92400E", marginBottom:8}}>⚠ {lateAlerts.length} late-attendance alert{lateAlerts.length === 1 ? "" : "s"} this month</div>
+          <div style={{display:"flex", flexDirection:"column", gap:4}}>
+            {lateAlerts.map(function(n){
+              var open = function(){ if (p.openSalarySheet && n.leadId) p.openSalarySheet(n.leadId); };
+              return <div key={String(n._id)} onClick={open}
+                style={{cursor: p.openSalarySheet ? "pointer" : "default", fontSize:12, color:C.text, padding:"6px 8px", borderRadius:6}}
+                onMouseEnter={function(e){ e.currentTarget.style.background = "#FEF3C7"; }}
+                onMouseLeave={function(e){ e.currentTarget.style.background = "transparent"; }}>
+                <b>{n.agentName || "Employee"}</b> {n.reason || "5+ lates this month"}
+                <span style={{color:C.textLight, marginLeft:8, fontSize:11}}>· {n.createdAt ? new Date(n.createdAt).toLocaleDateString("en-GB", { day:"2-digit", month:"short" }) : ""}</span>
+              </div>;
+            })}
+          </div>
+        </div>}
+        <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
         <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>
           <div style={{fontSize:14, fontWeight:600, color:C.text}}>Team — today</div>
           <div style={{fontSize:12, color:C.textLight, marginTop:2}}>{fmtCairoDate(new Date())} · live status of every employee</div>
@@ -4844,7 +4880,8 @@ var AttendancePage = function(p) {
               </tbody>
             </table>
           </div>}
-      </div>}
+        </div>
+      </>}
 
       {activeTab === "team" && !canManage && <div style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13, background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)"}}>
         You no longer have permission to view the team attendance.
@@ -5124,6 +5161,8 @@ var SalariesListPage = function(p) {
   var [rows,setRows]   = useState([]);
   var [loading,setLoading] = useState(false);
   var [error,setError] = useState("");
+  var [bulkBusy,setBulkBusy] = useState(false);
+  var [bulkMsg,setBulkMsg]   = useState("");
 
   var refetch = useCallback(function(){
     if (!canViewAny || !p.token) return;
@@ -5137,6 +5176,29 @@ var SalariesListPage = function(p) {
   },[canViewAny, p.token, year, month]);
 
   useEffect(function(){ refetch(); },[refetch]);
+
+  // Refetch when any individual finalize/unlock fires elsewhere — keeps the
+  // FINALIZED badge in sync with the per-employee sheet.
+  useEffect(function(){
+    var handler = function(){ refetch(); };
+    window.addEventListener("crm:salary_finalized", handler);
+    return function(){ window.removeEventListener("crm:salary_finalized", handler); };
+  }, [refetch]);
+
+  var doBulkFinalize = async function(){
+    var monthLbl = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+    var pending = rows.filter(function(r){ return !r.finalized; }).length;
+    if (pending === 0) { setBulkMsg("Nothing to finalize — every visible employee is already finalized."); return; }
+    if (!window.confirm("Finalize " + monthLbl + " for " + pending + " employee" + (pending === 1 ? "" : "s") + "?\n\nThis locks each salary calculation and prevents further attendance, override, and finalize edits for the month.")) return;
+    setBulkBusy(true); setBulkMsg("");
+    try {
+      var resp = await apiFetch("/api/salary/list/"+year+"/"+month+"/finalize-all", "POST", null, p.token, p.csrfToken);
+      setBulkMsg("Finalized " + (resp.finalized || 0) + " · skipped " + (resp.skipped || 0));
+      refetch();
+    } catch (err) {
+      setBulkMsg("Failed: " + ((err && err.message) || "unknown"));
+    } finally { setBulkBusy(false); }
+  };
 
   if (!canViewAny) {
     return <div style={{padding:"24px 16px"}}>
@@ -5158,12 +5220,18 @@ var SalariesListPage = function(p) {
             <div style={{fontSize:15, fontWeight:600, color:C.text}}>Salaries</div>
             <div style={{fontSize:12, color:C.textLight, marginTop:2}}>{rows.length} employees · click a row to open the salary sheet</div>
           </div>
-          <div style={{display:"flex", gap:8, alignItems:"center"}}>
+          <div style={{display:"flex", gap:8, alignItems:"center", flexWrap:"wrap"}}>
+            <button type="button" onClick={doBulkFinalize} disabled={bulkBusy || rows.length === 0}
+              style={{fontSize:12, padding:"6px 12px", border:"0.5px solid rgba(24,95,165,0.3)", background:"#E6F1FB", color:"#185FA5", borderRadius:8, cursor: (bulkBusy || rows.length === 0) ? "not-allowed" : "pointer", fontWeight:500, fontFamily:"inherit", opacity: (bulkBusy || rows.length === 0) ? 0.6 : 1}}>
+              {bulkBusy ? "Finalizing…" : "Finalize all"}
+            </button>
             <button type="button" onClick={prevMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>‹</button>
             <div style={{fontSize:13, fontWeight:500, color:C.text, minWidth:120, textAlign:"center"}}>{monthLabel}</div>
             <button type="button" onClick={nextMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>›</button>
           </div>
         </div>
+
+        {bulkMsg && <div style={{padding:"8px 20px", fontSize:12, color: bulkMsg.indexOf("Failed") === 0 ? C.danger : "#0F6E56", background: bulkMsg.indexOf("Failed") === 0 ? "#FCEBEB" : "#EAF6F0", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>{bulkMsg}</div>}
 
         {loading ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
           : error ? <div style={{padding:32, textAlign:"center", color:C.danger, fontSize:13}}>{error}</div>
@@ -5237,6 +5305,11 @@ var SalarySheetPage = function(p) {
   // Phase 5E — Finalize / Unlock state.
   var [finBusy,setFinBusy] = useState(false);
   var [finError,setFinError] = useState("");
+  // Phase 6 — Audit log modal state.
+  var [auditOpen,setAuditOpen] = useState(false);
+  var [auditRows,setAuditRows] = useState([]);
+  var [auditLoading,setAuditLoading] = useState(false);
+  var [auditError,setAuditError] = useState("");
 
   var refetch = useCallback(function(){
     if (!p.salaryViewUserId || !p.token) return;
@@ -5341,6 +5414,68 @@ var SalarySheetPage = function(p) {
   var sickWarning = SICK_RE_FE.test(ovrReason || "") && sickPreviewCount >= 2;
 
   var pad2 = function(n){ return n < 10 ? "0" + n : "" + n; };
+
+  // Phase 6 — open audit log modal and fetch rows for this user.
+  var openAuditLog = function(){
+    setAuditOpen(true);
+    setAuditError("");
+    setAuditLoading(true);
+    apiFetch("/api/audit?targetUserId=" + p.salaryViewUserId + "&limit=200", "GET", null, p.token)
+      .then(function(r){ setAuditRows(Array.isArray(r) ? r : []); })
+      .catch(function(err){ setAuditError((err && err.message) || "Failed to load"); setAuditRows([]); })
+      .finally(function(){ setAuditLoading(false); });
+  };
+
+  // Phase 6 — CSV export of the daily log + summary metrics for the displayed
+  // (user, month). Fully client-side — no extra round-trip, no PDF library.
+  var doExportCsv = function(){
+    var fmtDateUTC = function(d){
+      return d.toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric", timeZone:"UTC" });
+    };
+    var lines = [];
+    lines.push("Employee,Role,Year,Month,Base salary (EGP),Working days,Daily rate (EGP),Deduction days,Total deductions (EGP),Net salary (EGP),Finalized");
+    lines.push([
+      JSON.stringify(t.name || ""),
+      JSON.stringify(t.role || ""),
+      year, month,
+      Math.round(s.baseSalary || 0),
+      s.workingDays != null ? s.workingDays : "",
+      Math.round(s.dailyRate || 0),
+      (s.deductionDays != null ? Number(s.deductionDays).toFixed(2) : ""),
+      Math.round(s.totalDeductions || 0),
+      Math.round(s.netSalary || 0),
+      finalized ? "yes" : "no"
+    ].join(","));
+    lines.push("");
+    lines.push("Date,Day,Check-in,Check-out,Status,Override reason,Deduction (EGP)");
+    rows.forEach(function(row){
+      var weekday = row.date.toLocaleDateString("en-GB", { weekday:"short", timeZone:"UTC" });
+      var a = row.attendance;
+      var hasOverride = a && a.override && a.override.action;
+      var status = hasOverride ? "Override" : (a ? a.status : (weekday === "Fri" ? "friday_off" : "absent"));
+      var ovReason = hasOverride ? (a.override.reason || "") : "";
+      var ded = a ? Math.round((Number(a.deductionFraction) || 0) * Number(s.dailyRate || 0)) : 0;
+      lines.push([
+        fmtDateUTC(row.date),
+        weekday,
+        a && a.checkIn ? fmtCairoTime(a.checkIn.timestamp) : "",
+        a && a.checkOut ? fmtCairoTime(a.checkOut.timestamp) : "",
+        status,
+        JSON.stringify(ovReason),
+        ded
+      ].join(","));
+    });
+    var csv = lines.join("\n");
+    var blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "salary-" + (t.name || "employee").replace(/\s+/g,"_") + "-" + year + "-" + (month < 10 ? "0" + month : month) + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  };
 
   var doFinalize = async function(){
     var monthLabelLocal = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
@@ -5481,8 +5616,10 @@ var SalarySheetPage = function(p) {
             ? <button type="button" onClick={openBaseSalaryModal}
                 style={{fontSize:12, padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text}}>Edit base salary</button>
             : <button type="button" disabled style={actionBtn} title={finalized ? "Month finalized — unlock first" : "You don't have permission to edit this user's salary"}>Edit base salary</button>}
-          <button type="button" disabled style={actionBtn} title="Wired in Phase 6">Audit log</button>
-          <button type="button" disabled style={actionBtn} title="Wired in Phase 6">Export</button>
+          <button type="button" onClick={openAuditLog}
+            style={{fontSize:12, padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text}}>Audit log</button>
+          <button type="button" onClick={doExportCsv}
+            style={{fontSize:12, padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text}}>Export CSV</button>
           <div style={{flex:1}}/>
           {finError && <span style={{fontSize:11, color:C.danger, alignSelf:"center"}}>{finError}</span>}
           {finalized
@@ -5663,6 +5800,65 @@ var SalarySheetPage = function(p) {
               style={{ fontSize:13, padding:"9px 16px", border:"none", background:"#185FA5", color:"#fff", borderRadius:8, cursor:"pointer", fontWeight:600, fontFamily:"inherit" }}>
               {bsSaving ? "Saving…" : "Save"}
             </button>
+          </div>
+        </div>
+      </div>}
+
+      {auditOpen && <div className="crm-modal" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:20 }}>
+        <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:12, maxWidth:720, width:"100%", padding:0, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", maxHeight:"85vh", display:"flex", flexDirection:"column" }}>
+          <div style={{ padding:"16px 22px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+            <div>
+              <div style={{ fontSize:15, fontWeight:600, color:C.text }}>Audit log · {t.name || "—"}</div>
+              <div style={{ fontSize:12, color:C.textLight, marginTop:2 }}>Last 200 entries · newest first</div>
+            </div>
+            <button type="button" onClick={function(){ setAuditOpen(false); }}
+              style={{ background:"transparent", border:"none", fontSize:20, cursor:"pointer", color:C.textLight, padding:4, lineHeight:1, fontFamily:"inherit" }}>×</button>
+          </div>
+          <div style={{ flex:1, overflowY:"auto", padding:"8px 22px 16px" }}>
+            {auditLoading ? <div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}>Loading…</div>
+              : auditError ? <div style={{ padding:24, textAlign:"center", color:C.danger, fontSize:13 }}>{auditError}</div>
+              : auditRows.length === 0 ? <div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No audit entries for this employee yet.</div>
+              : auditRows.map(function(r){
+                  var actor = r.performedBy && r.performedBy.name ? r.performedBy.name : "—";
+                  var when  = r.timestamp || r.createdAt;
+                  var typeLabels = {
+                    BASE_SALARY_CHANGED: "Base salary changed",
+                    DAY_OVERRIDDEN: "Day overridden",
+                    MONTH_FINALIZED: "Month finalized",
+                    MONTH_UNLOCKED: "Month unlocked",
+                    OFFSITE_APPROVED: "Off-site approved",
+                    OFFSITE_REJECTED: "Off-site rejected"
+                  };
+                  var label = typeLabels[r.type] || r.type;
+                  var detail = "";
+                  if (r.type === "BASE_SALARY_CHANGED") {
+                    detail = fmtEGPRaw((r.before || {}).baseSalary) + " EGP → " + fmtEGPRaw((r.after || {}).baseSalary) + " EGP";
+                  } else if (r.type === "DAY_OVERRIDDEN") {
+                    var act = (r.after || {}).override && r.after.override.action;
+                    detail = act ? ("action: " + act) : "";
+                  } else if (r.type === "MONTH_FINALIZED" || r.type === "MONTH_UNLOCKED") {
+                    var y = (r.after && r.after.year) || (r.before && r.before.year);
+                    var m = (r.after && r.after.month) || (r.before && r.before.month);
+                    if (y && m) detail = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+                  }
+                  return <div key={String(r._id)} style={{ padding:"12px 0", borderBottom:"0.5px solid rgba(0,0,0,0.05)" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", gap:12, alignItems:"flex-start" }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:13, fontWeight:500, color:C.text }}>
+                          {label}
+                          {r.flags && r.flags.sickLimitExceeded && <span style={{ marginLeft:8, fontSize:10, padding:"2px 6px", borderRadius:4, background:"#FEE2E2", color:"#B91C1C", fontWeight:600 }}>SICK LIMIT</span>}
+                          {r.flags && r.flags.bulk && <span style={{ marginLeft:8, fontSize:10, padding:"2px 6px", borderRadius:4, background:"#EEF2FF", color:"#4338CA", fontWeight:600 }}>BULK</span>}
+                        </div>
+                        {detail && <div style={{ fontSize:12, color:C.textLight, marginTop:2 }}>{detail}</div>}
+                        {r.reason && <div style={{ fontSize:12, color:C.text, marginTop:4, padding:"6px 10px", background:"#F7F7F5", borderRadius:6, lineHeight:1.4 }}>{r.reason}</div>}
+                      </div>
+                      <div style={{ flexShrink:0, fontSize:11, color:C.textLight, textAlign:"right" }}>
+                        <div>{actor}</div>
+                        <div style={{ marginTop:2 }}>{when ? new Date(when).toLocaleString("en-GB", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit", timeZone:"Africa/Cairo" }) : ""}</div>
+                      </div>
+                    </div>
+                  </div>;
+                })}
           </div>
         </div>
       </div>}
@@ -15074,6 +15270,10 @@ export default function CRMApp() {
               break;
             case "notification_updated":
               fetchNotifications();
+              // Phase 6 — also re-dispatch as window event so subscribers
+              // (AttendancePage 5-lates banner) can refresh without prop
+              // drilling.
+              try { window.dispatchEvent(new CustomEvent("crm:notification_updated")); } catch(e){}
               break;
             case "rotation_updated":
               if (data.leadId) fetchSingleLead(String(data.leadId));
@@ -15582,7 +15782,13 @@ export default function CRMApp() {
   var scopedDailyReqs = tlScope ? (dailyReqs||[]).filter(function(r){var aid=String(r&&r.agentId&&r.agentId._id?r.agentId._id:(r&&r.agentId)||"");return tlScope.has(aid);}) : dailyReqs;
   var myTeamUsers = scopedUsers;
 
-  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings};
+  var openSalarySheet = function(uid){
+    if (!uid) return;
+    setSalaryViewUserId(String(uid));
+    setPage("salaries");
+    try { localStorage.setItem("crm_page", "salaries"); } catch(e){}
+  };
+  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings,openSalarySheet:openSalarySheet};
 
   var renderPage=function(){
     switch(currentPage){
