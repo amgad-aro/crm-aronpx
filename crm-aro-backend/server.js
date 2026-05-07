@@ -2926,6 +2926,63 @@ async function(req, res) {
   }
 });
 
+// PATCH /api/users/:userId/base-salary — Phase 5D (doc §8). Updates a user's
+// baseSalary and writes a BASE_SALARY_CHANGED audit row. Permission gate is
+// salaryAccess(): Owner can edit anyone non-admin; SA/HR with manageSalaries
+// can edit sales-side roles; SA/HR cannot edit own pay or each other's.
+//
+// effectiveDate is recorded in the audit log for HR reference but doesn't
+// drive any time-based logic — current implementation always uses the latest
+// User.baseSalary in salary calculations (per Phase 5A note).
+app.patch("/api/users/:userId/base-salary", auth, async function(req, res) {
+  try {
+    var newSalary = Number(req.body && req.body.newSalary);
+    if (!isFinite(newSalary) || newSalary < 0) {
+      return res.status(400).json({ error: "newSalary must be a non-negative number" });
+    }
+    var reason        = (req.body && req.body.reason) ? String(req.body.reason).trim() : "";
+    var effectiveDate = (req.body && req.body.effectiveDate) ? String(req.body.effectiveDate) : "";
+
+    var target = await User.findById(req.params.userId);
+    if (!target) return res.status(404).json({ error: "User not found" });
+    if (target.role === "admin") return res.status(400).json({ error: "Owner has no salary" });
+
+    var settings = await getAttendanceSettings();
+    var access = salaryAccess(req.user, target.toObject(), settings);
+    if (!access.canEdit) return res.status(403).json({ error: "Permission denied" });
+
+    var oldValue = Number(target.baseSalary) || 0;
+    if (oldValue === newSalary) {
+      // Idempotent — log nothing, just return current state.
+      return res.json({ user: target, changed: false });
+    }
+
+    target.baseSalary = newSalary;
+    await target.save();
+
+    try {
+      await AuditLog.create({
+        type: "BASE_SALARY_CHANGED",
+        targetUserId: target._id,
+        performedBy: req.user.id,
+        before: { baseSalary: oldValue },
+        after:  { baseSalary: newSalary },
+        reason: reason,
+        flags:  effectiveDate ? { effectiveDate: effectiveDate } : {},
+        ipAddress: req.ip
+      });
+    } catch (e) {
+      console.error("[base-salary audit]", e && e.message);
+    }
+
+    try { broadcast("user_updated", { userId: String(target._id), user: target }); } catch (e) {}
+    res.json({ user: target, changed: true, oldValue: oldValue, newValue: newSalary });
+  } catch (e) {
+    console.error("[PATCH /users/:userId/base-salary]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Per-employee monthly attendance (for the salary-sheet daily log). Owner /
 // anyone with manageSalaries can read; sales_admin/hr targets are gated to
 // Owner per doc §14.

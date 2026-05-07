@@ -5227,6 +5227,13 @@ var SalarySheetPage = function(p) {
   var [ovrReason,setOvrReason] = useState("");
   var [ovrSaving,setOvrSaving] = useState(false);
   var [ovrError,setOvrError]   = useState("");
+  // Phase 5D — Edit Base Salary modal state.
+  var [bsOpen,setBsOpen]       = useState(false);
+  var [bsValue,setBsValue]     = useState("");
+  var [bsEffective,setBsEffective] = useState("");
+  var [bsReason,setBsReason]   = useState("");
+  var [bsSaving,setBsSaving]   = useState(false);
+  var [bsError,setBsError]     = useState("");
 
   var refetch = useCallback(function(){
     if (!p.salaryViewUserId || !p.token) return;
@@ -5320,6 +5327,35 @@ var SalarySheetPage = function(p) {
   var sickWarning = SICK_RE_FE.test(ovrReason || "") && sickPreviewCount >= 2;
 
   var pad2 = function(n){ return n < 10 ? "0" + n : "" + n; };
+
+  var openBaseSalaryModal = function(){
+    setBsValue(s.baseSalary != null ? String(s.baseSalary) : "");
+    setBsEffective("");
+    setBsReason("");
+    setBsError("");
+    setBsOpen(true);
+  };
+  var submitBaseSalary = async function(){
+    var newSalary = Number(bsValue);
+    if (!isFinite(newSalary) || newSalary < 0) {
+      setBsError("Enter a non-negative number");
+      return;
+    }
+    setBsSaving(true); setBsError("");
+    try {
+      var body = { newSalary: newSalary };
+      if (bsEffective) body.effectiveDate = bsEffective;
+      if (bsReason)    body.reason = bsReason.trim();
+      await apiFetch("/api/users/"+p.salaryViewUserId+"/base-salary", "PATCH", body, p.token, p.csrfToken);
+      setBsOpen(false);
+      refetch();
+    } catch (err) {
+      setBsError((err && err.message) || "Save failed");
+    } finally {
+      setBsSaving(false);
+    }
+  };
+
   var submitOverride = async function(){
     if ((ovrReason || "").trim().length < 10) {
       setOvrError("Reason must be at least 10 characters");
@@ -5400,9 +5436,13 @@ var SalarySheetPage = function(p) {
           </div>
         </div>
 
-        {/* Action bar — buttons are placeholders this commit; Phase 5C–5E wire them */}
+        {/* Action bar — Edit base salary wired in Phase 5D; Audit + Export
+            land in Phase 6; Finalize in Phase 5E */}
         <div style={{padding:"14px 22px", display:"flex", gap:8, flexWrap:"wrap", background:"#FAFAF7", borderTop:"0.5px solid rgba(0,0,0,0.06)"}}>
-          <button type="button" disabled style={actionBtn} title="Wired in Phase 5D">Edit base salary</button>
+          {data.access && data.access.canEdit && !finalized
+            ? <button type="button" onClick={openBaseSalaryModal}
+                style={{fontSize:12, padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text}}>Edit base salary</button>
+            : <button type="button" disabled style={actionBtn} title={finalized ? "Month finalized — unlock first" : "You don't have permission to edit this user's salary"}>Edit base salary</button>}
           <button type="button" disabled style={actionBtn} title="Wired in Phase 6">Audit log</button>
           <button type="button" disabled style={actionBtn} title="Wired in Phase 6">Export</button>
           <div style={{flex:1}}/>
@@ -5530,6 +5570,44 @@ var SalarySheetPage = function(p) {
             <button type="button" onClick={submitOverride} disabled={ovrSaving}
               style={{ fontSize:13, padding:"9px 16px", border:"none", background:"#185FA5", color:"#fff", borderRadius:8, cursor:"pointer", fontWeight:600, fontFamily:"inherit" }}>
               {ovrSaving ? "Saving…" : "Save override"}
+            </button>
+          </div>
+        </div>
+      </div>}
+
+      {bsOpen && <div className="crm-modal" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:20 }}>
+        <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:12, maxWidth:480, width:"100%", padding:24, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+          <div style={{ fontSize:16, fontWeight:600, marginBottom:6, color:C.text }}>Edit base salary</div>
+          <div style={{ fontSize:12, color:C.textLight, marginBottom:16 }}>
+            <div><b>{t.name || "—"}</b> · current: {fmtEGP(s.baseSalary)}</div>
+          </div>
+
+          <label style={{ fontSize:12, color:C.textLight, display:"block", marginBottom:6 }}>New base salary (EGP)</label>
+          <input type="number" min="0" step="1" value={bsValue}
+            onChange={function(e){ setBsValue(e.target.value); }}
+            style={{ width:"100%", padding:10, border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:8, fontSize:13, fontFamily:"inherit", boxSizing:"border-box", marginBottom:12 }}/>
+
+          <label style={{ fontSize:12, color:C.textLight, display:"block", marginBottom:6 }}>Effective date <span style={{ color:C.textLight, fontWeight:400 }}>(audit only)</span></label>
+          <input type="date" value={bsEffective}
+            onChange={function(e){ setBsEffective(e.target.value); }}
+            style={{ width:"100%", padding:10, border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:8, fontSize:13, fontFamily:"inherit", boxSizing:"border-box", marginBottom:12 }}/>
+          <div style={{ fontSize:11, color:C.textLight, marginTop:-8, marginBottom:12, lineHeight:1.4 }}>
+            Stored in the audit log. Salary calculations use the latest value immediately — phased effective dates are not yet implemented.
+          </div>
+
+          <label style={{ fontSize:12, color:C.textLight, display:"block", marginBottom:6 }}>Reason <span style={{ color:C.textLight, fontWeight:400 }}>(optional)</span></label>
+          <textarea value={bsReason} onChange={function(e){ setBsReason(e.target.value); }}
+            rows={2} placeholder="e.g. Promotion to senior; quarterly raise"
+            style={{ width:"100%", padding:10, border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:8, fontSize:13, fontFamily:"inherit", resize:"vertical", boxSizing:"border-box" }}/>
+
+          {bsError && <div style={{ fontSize:12, color:C.danger, marginTop:8 }}>{bsError}</div>}
+
+          <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:16 }}>
+            <button type="button" onClick={function(){ setBsOpen(false); }} disabled={bsSaving}
+              style={{ fontSize:13, padding:"9px 16px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text }}>Cancel</button>
+            <button type="button" onClick={submitBaseSalary} disabled={bsSaving}
+              style={{ fontSize:13, padding:"9px 16px", border:"none", background:"#185FA5", color:"#fff", borderRadius:8, cursor:"pointer", fontWeight:600, fontFamily:"inherit" }}>
+              {bsSaving ? "Saving…" : "Save"}
             </button>
           </div>
         </div>
