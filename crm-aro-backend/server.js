@@ -2926,6 +2926,111 @@ async function(req, res) {
   }
 });
 
+// POST /api/salary/:userId/:year/:month/finalize — Phase 5E (doc §13).
+// Snapshots the live computation into a SalaryRecord with finalized=true.
+// Subsequent reads serve the snapshot, override + base-salary endpoints
+// reject (override gate already enforced in Phase 5C). Permission: same as
+// edit (salaryAccess.canEdit).
+app.post("/api/salary/:userId/:year/:month/finalize", auth, async function(req, res) {
+  try {
+    var year  = parseInt(req.params.year,  10);
+    var month = parseInt(req.params.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "Invalid year/month" });
+    }
+
+    var target = await User.findById(req.params.userId).lean();
+    if (!target) return res.status(404).json({ error: "User not found" });
+
+    var settings = await getAttendanceSettings();
+    var access = salaryAccess(req.user, target, settings);
+    if (!access.canEdit) return res.status(403).json({ error: "Permission denied" });
+
+    var existing = await SalaryRecord.findOne({ userId: target._id, year: year, month: month });
+    if (existing && existing.finalized) {
+      return res.status(409).json({ error: "Already finalized", code: "already_finalized" });
+    }
+
+    var live = await computeMonthlySalary(target, year, month);
+    if (!live) return res.status(400).json({ error: "Cannot compute salary" });
+
+    var snap = await SalaryRecord.findOneAndUpdate(
+      { userId: target._id, year: year, month: month },
+      { $set: {
+          userId: target._id, year: year, month: month,
+          baseSalary:      live.baseSalary,
+          workingDays:     live.workingDays,
+          dailyRate:       live.dailyRate,
+          deductionDays:   live.deductionDays,
+          totalDeductions: live.totalDeductions,
+          netSalary:       live.netSalary,
+          finalized:       true,
+          finalizedBy:     req.user.id,
+          finalizedAt:     new Date(),
+          computedAt:      new Date()
+        }},
+      { upsert: true, new: true }
+    );
+
+    try {
+      await AuditLog.create({
+        type: "MONTH_FINALIZED",
+        targetUserId: target._id,
+        performedBy: req.user.id,
+        before: {},
+        after: snap.toObject ? snap.toObject() : snap,
+        ipAddress: req.ip
+      });
+    } catch (e) {}
+
+    try { broadcast("salary_finalized", { userId: String(target._id), year: year, month: month }); } catch(e){}
+    res.json({ salary: snap, finalized: true });
+  } catch (e) {
+    console.error("[POST /salary/:userId/:year/:month/finalize]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/salary/:userId/:year/:month/unlock — Owner only. Removes the
+// finalized snapshot so live computation resumes and override + base-salary
+// edits are unblocked. Audit-logged.
+app.post("/api/salary/:userId/:year/:month/unlock", auth, ownerOnly, async function(req, res) {
+  try {
+    var year  = parseInt(req.params.year,  10);
+    var month = parseInt(req.params.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "Invalid year/month" });
+    }
+    var target = await User.findById(req.params.userId).lean();
+    if (!target) return res.status(404).json({ error: "User not found" });
+
+    var existing = await SalaryRecord.findOne({ userId: target._id, year: year, month: month });
+    if (!existing || !existing.finalized) {
+      return res.status(409).json({ error: "Not finalized", code: "not_finalized" });
+    }
+
+    var snapshot = existing.toObject();
+    await SalaryRecord.deleteOne({ _id: existing._id });
+
+    try {
+      await AuditLog.create({
+        type: "MONTH_UNLOCKED",
+        targetUserId: target._id,
+        performedBy: req.user.id,
+        before: snapshot,
+        after: {},
+        ipAddress: req.ip
+      });
+    } catch (e) {}
+
+    try { broadcast("salary_finalized", { userId: String(target._id), year: year, month: month, unlocked: true }); } catch(e){}
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[POST /salary/:userId/:year/:month/unlock]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // PATCH /api/users/:userId/base-salary — Phase 5D (doc §8). Updates a user's
 // baseSalary and writes a BASE_SALARY_CHANGED audit row. Permission gate is
 // salaryAccess(): Owner can edit anyone non-admin; SA/HR with manageSalaries

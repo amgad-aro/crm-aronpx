@@ -5234,6 +5234,9 @@ var SalarySheetPage = function(p) {
   var [bsReason,setBsReason]   = useState("");
   var [bsSaving,setBsSaving]   = useState(false);
   var [bsError,setBsError]     = useState("");
+  // Phase 5E — Finalize / Unlock state.
+  var [finBusy,setFinBusy] = useState(false);
+  var [finError,setFinError] = useState("");
 
   var refetch = useCallback(function(){
     if (!p.salaryViewUserId || !p.token) return;
@@ -5261,6 +5264,17 @@ var SalarySheetPage = function(p) {
     };
     window.addEventListener("crm:attendance_updated", handler);
     return function(){ window.removeEventListener("crm:attendance_updated", handler); };
+  }, [p.salaryViewUserId, refetch]);
+
+  // Phase 5E — refetch when the salary is finalized/unlocked elsewhere.
+  useEffect(function(){
+    var handler = function(e){
+      if (!e || !e.detail) return;
+      if (String(e.detail.userId) !== String(p.salaryViewUserId)) return;
+      refetch();
+    };
+    window.addEventListener("crm:salary_finalized", handler);
+    return function(){ window.removeEventListener("crm:salary_finalized", handler); };
   }, [p.salaryViewUserId, refetch]);
 
   var monthLabel = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
@@ -5327,6 +5341,30 @@ var SalarySheetPage = function(p) {
   var sickWarning = SICK_RE_FE.test(ovrReason || "") && sickPreviewCount >= 2;
 
   var pad2 = function(n){ return n < 10 ? "0" + n : "" + n; };
+
+  var doFinalize = async function(){
+    var monthLabelLocal = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+    var msg = "Finalize " + monthLabelLocal + " for " + (t.name || "this employee") + "?\n\nThis locks the salary calculation and prevents further attendance, override, and finalize edits for the month. Owner can unlock if needed.";
+    if (!window.confirm(msg)) return;
+    setFinBusy(true); setFinError("");
+    try {
+      await apiFetch("/api/salary/"+p.salaryViewUserId+"/"+year+"/"+month+"/finalize", "POST", null, p.token, p.csrfToken);
+      refetch();
+    } catch (err) {
+      setFinError((err && err.message) || "Finalize failed");
+    } finally { setFinBusy(false); }
+  };
+  var doUnlock = async function(){
+    var monthLabelLocal = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+    if (!window.confirm("Unlock " + monthLabelLocal + " for " + (t.name || "this employee") + "?\n\nLive computation will resume and admins can edit attendance again.")) return;
+    setFinBusy(true); setFinError("");
+    try {
+      await apiFetch("/api/salary/"+p.salaryViewUserId+"/"+year+"/"+month+"/unlock", "POST", null, p.token, p.csrfToken);
+      refetch();
+    } catch (err) {
+      setFinError((err && err.message) || "Unlock failed");
+    } finally { setFinBusy(false); }
+  };
 
   var openBaseSalaryModal = function(){
     setBsValue(s.baseSalary != null ? String(s.baseSalary) : "");
@@ -5446,9 +5484,25 @@ var SalarySheetPage = function(p) {
           <button type="button" disabled style={actionBtn} title="Wired in Phase 6">Audit log</button>
           <button type="button" disabled style={actionBtn} title="Wired in Phase 6">Export</button>
           <div style={{flex:1}}/>
-          <button type="button" disabled style={Object.assign({}, actionBtn, { background:"#185FA5", color:"#fff", borderColor:"#185FA5", opacity:0.45 })} title="Wired in Phase 5E">
-            Finalize {monthLabel}
-          </button>
+          {finError && <span style={{fontSize:11, color:C.danger, alignSelf:"center"}}>{finError}</span>}
+          {finalized
+            ? <>
+                <span style={{fontSize:12, color:"#7C3AED", fontWeight:600, alignSelf:"center"}}>
+                  ✓ Finalized {data.finalizedAt ? "· " + fmtCairoDate(data.finalizedAt) : ""}
+                </span>
+                {p.cu && p.cu.role === "admin" && <button type="button" onClick={doUnlock} disabled={finBusy}
+                  style={{fontSize:12, padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:finBusy?"not-allowed":"pointer", fontFamily:"inherit", color:C.text, opacity:finBusy?0.6:1}}>
+                  {finBusy ? "Unlocking…" : "Unlock"}
+                </button>}
+              </>
+            : (data.access && data.access.canEdit
+              ? <button type="button" onClick={doFinalize} disabled={finBusy}
+                  style={{fontSize:12, padding:"8px 16px", border:"none", background:"#185FA5", color:"#fff", borderRadius:8, cursor:finBusy?"not-allowed":"pointer", fontWeight:600, fontFamily:"inherit", opacity:finBusy?0.6:1}}>
+                  {finBusy ? "Finalizing…" : "Finalize " + monthLabel}
+                </button>
+              : <button type="button" disabled style={Object.assign({}, actionBtn, { background:"#185FA5", color:"#fff", borderColor:"#185FA5", opacity:0.45 })} title="You don't have permission to finalize this user's salary">
+                  Finalize {monthLabel}
+                </button>)}
         </div>
       </div>
 
@@ -15060,6 +15114,11 @@ export default function CRMApp() {
             case "company_offdays_updated":
               // Phase 4 — fired on add/remove. Company Off-Days page refetches.
               try { window.dispatchEvent(new CustomEvent("crm:company_offdays_updated")); } catch(e){}
+              break;
+            case "salary_finalized":
+              // Phase 5E — fired on finalize/unlock for one (user, month).
+              // SalarySheetPage refetches if it's currently viewing that user.
+              try { window.dispatchEvent(new CustomEvent("crm:salary_finalized", { detail: data })); } catch(e){}
               break;
             case "hello": break; // server greeting
             default: break;
