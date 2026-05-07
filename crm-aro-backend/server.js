@@ -306,7 +306,10 @@ var Attendance = mongoose.model("Attendance", new mongoose.Schema({
     ipAddress:       String,
     deviceType:      String,
     isOffSite:       { type: Boolean, default: false },
-    offSiteRequestId:{ type: mongoose.Schema.Types.ObjectId, ref: "OffSiteRequest" }
+    offSiteRequestId:{ type: mongoose.Schema.Types.ObjectId, ref: "OffSiteRequest" },
+    // Multi-branch (2026-05-07) — name of the office location whose geofence
+    // matched this check-in. Optional on legacy docs.
+    locationName:    String
   },
   checkOut: {
     timestamp:       Date,
@@ -317,7 +320,8 @@ var Attendance = mongoose.model("Attendance", new mongoose.Schema({
     ipAddress:       String,
     deviceType:      String,
     isOffSite:       { type: Boolean, default: false },
-    offSiteRequestId:{ type: mongoose.Schema.Types.ObjectId, ref: "OffSiteRequest" }
+    offSiteRequestId:{ type: mongoose.Schema.Types.ObjectId, ref: "OffSiteRequest" },
+    locationName:    String
   },
   status: {
     type: String,
@@ -1788,8 +1792,10 @@ app.patch("/api/settings/office-location", auth, ownerOnly, async function(req, 
     if (!locations) return res.status(400).json({ error: "companyLocations array required" });
     if (locations.length === 0) return res.status(400).json({ error: "At least one office location required" });
 
-    // Normalize + validate each entry. Schema future-proofs for multiple offices
-    // (doc §4) but practically we expect exactly one for now.
+    // Multi-branch: any number of locations accepted. Each is validated
+    // independently and stored verbatim. Inactive entries are kept (not
+    // deleted) so historical attendance records can still resolve their
+    // locationName via human reading.
     var normalized = [];
     for (var i = 0; i < locations.length; i++) {
       var err = validateOfficeLocation(locations[i]);
@@ -1886,6 +1892,30 @@ function detectDeviceType(ua) {
   return /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? "mobile" : "desktop";
 }
 
+// Multi-branch geofence resolver. Returns:
+//   { matched: <loc>, distanceMeters: int, nearest: <loc>, nearestDist: int }
+// where `matched` is the closest active location whose radius the user is
+// inside (null if none match), and `nearest` is the closest active location
+// regardless of radius (used for the "outside — Xm to <branch>" UI).
+function resolveOfficeMatch(lat, lng, settings) {
+  var actives = (settings && settings.companyLocations || []).filter(function(l){ return l.isActive !== false; });
+  var nearest = null, nearestDist = Infinity;
+  var matched = null, matchedDist = Infinity;
+  for (var i = 0; i < actives.length; i++) {
+    var loc = actives[i];
+    var d = haversineDistance(lat, lng, loc.latitude, loc.longitude);
+    if (d < nearestDist) { nearest = loc; nearestDist = d; }
+    if (d <= loc.radiusMeters && d < matchedDist) { matched = loc; matchedDist = d; }
+  }
+  return {
+    matched: matched,
+    distanceMeters: matched ? Math.round(matchedDist) : null,
+    nearest: nearest,
+    nearestDist: nearest ? Math.round(nearestDist) : null,
+    hasAnyActive: actives.length > 0
+  };
+}
+
 // Doc §2 — work shift by role. Returns null for roles with no attendance
 // tracking (admin/Owner, viewer). End time is informational only — there's
 // no early-checkout deduction (doc §5).
@@ -1962,19 +1992,23 @@ async function buildTodayPayload(user) {
     getOffStatus(user, now),
     OffSiteRequest.findOne({ userId: user._id, status: "pending" }).sort({ requestedAt: -1 }).lean()
   ]);
-  var loc = (settings.companyLocations || []).find(function(l){ return l.isActive; }) || null;
+  var actives = (settings.companyLocations || []).filter(function(l){ return l.isActive !== false; });
+  var geofences = actives.map(function(l){
+    return { name: l.name, latitude: l.latitude, longitude: l.longitude, radiusMeters: l.radiusMeters };
+  });
   return {
     attendance: attendance || null,
     isOffDay: offStatus.off,
     offReason: offStatus.reason,
     workShift: getRoleWorkShift(user.role),
     pendingOffSite: pendingOff || null,
-    geofence: loc ? {
-      name: loc.name,
-      latitude: loc.latitude,
-      longitude: loc.longitude,
-      radiusMeters: loc.radiusMeters
-    } : null,
+    // Multi-branch: full list of active locations. The widget picks the
+    // closest one by distance for display.
+    geofences: geofences,
+    // Legacy single-location field kept for one deploy window so a stale
+    // browser bundle doesn't crash. Frontend now reads `geofences` first
+    // and falls back to `geofence` if absent.
+    geofence: geofences[0] || null,
     serverTime: now.toISOString()
   };
 }
@@ -2008,25 +2042,27 @@ app.post("/api/attendance/check-in", auth, async function(req, res) {
     if (!user) return res.status(404).json({ error: "User not found" });
 
     var settings = await getAttendanceSettings();
-    var loc = (settings.companyLocations || []).find(function(l){ return l.isActive; });
-    if (!loc) return res.status(503).json({ error: "Office location not configured. Contact Owner.", code: "no_office" });
+    var match = resolveOfficeMatch(lat, lng, settings);
+    if (!match.hasAnyActive) return res.status(503).json({ error: "No active office locations configured. Contact Owner.", code: "no_office" });
 
     var now = new Date();
     var off = await getOffStatus(user, now);
     if (off.off) return res.status(400).json({ error: "Today is off (" + off.reason + ")", code: "off_day", offReason: off.reason });
 
-    var distance = haversineDistance(lat, lng, loc.latitude, loc.longitude);
-    if (distance > loc.radiusMeters) {
-      // Off-site path is Phase 4 — the widget shows a "Request off-site" button
-      // when this 403 fires. Server reply includes distance so the UI can
-      // render "X meters away from the office".
+    if (!match.matched) {
+      // Outside every active branch's radius — the widget routes to the
+      // off-site request modal. Reply includes the nearest branch's info
+      // so the UI can render "X meters from <name>".
       return res.status(403).json({
         error: "Outside office geofence",
         code: "outside_geofence",
-        distanceMeters: Math.round(distance),
-        radiusMeters: loc.radiusMeters
+        distanceMeters: match.nearestDist,
+        radiusMeters: match.nearest ? match.nearest.radiusMeters : null,
+        nearestLocationName: match.nearest ? match.nearest.name : null
       });
     }
+    var loc = match.matched;
+    var distance = match.distanceMeters;
 
     var dateKey = getCairoStartOfDay(now);
     var existing = await Attendance.findOne({ userId: user._id, date: dateKey });
@@ -2047,7 +2083,8 @@ app.post("/api/attendance/check-in", auth, async function(req, res) {
             accuracyMeters: Math.round(acc),
             ipAddress: req.ip,
             deviceType: detectDeviceType(req.headers["user-agent"]),
-            isOffSite: false
+            isOffSite: false,
+            locationName: loc.name
           },
           status: "in_progress",
           deductionFraction: tier.deductionFraction,
@@ -2087,8 +2124,7 @@ app.post("/api/attendance/check-out", auth, async function(req, res) {
     if (!user) return res.status(404).json({ error: "User not found" });
 
     var settings = await getAttendanceSettings();
-    var loc = (settings.companyLocations || []).find(function(l){ return l.isActive; });
-    var distance = loc ? haversineDistance(lat, lng, loc.latitude, loc.longitude) : null;
+    var match = resolveOfficeMatch(lat, lng, settings);
 
     var now = new Date();
     var dateKey = getCairoStartOfDay(now);
@@ -2111,27 +2147,28 @@ app.post("/api/attendance/check-out", auth, async function(req, res) {
     else if (att.deductionFraction === 0.5)  endStatus = "late_half";
     else if (att.deductionFraction === 1)    endStatus = "late_full";
 
-    // Phase 4: outside geofence on check-out → 403, frontend routes to the
-    // off-site modal (POST /api/offsite/request type=check_out). Symmetrical
-    // with the check-in flow.
-    if (!loc) return res.status(503).json({ error: "Office location not configured.", code: "no_office" });
-    if (distance != null && distance > loc.radiusMeters) {
+    if (!match.hasAnyActive) return res.status(503).json({ error: "No active office locations configured.", code: "no_office" });
+    if (!match.matched) {
+      // Outside every active branch — symmetric with check-in. Frontend
+      // routes the 403 into the off-site request modal.
       return res.status(403).json({
         error: "Outside office geofence",
         code: "outside_geofence",
-        distanceMeters: Math.round(distance),
-        radiusMeters: loc.radiusMeters
+        distanceMeters: match.nearestDist,
+        radiusMeters: match.nearest ? match.nearest.radiusMeters : null,
+        nearestLocationName: match.nearest ? match.nearest.name : null
       });
     }
 
     att.checkOut = {
       timestamp: now,
       latitude: lat, longitude: lng,
-      distanceMeters: distance != null ? Math.round(distance) : null,
+      distanceMeters: match.distanceMeters,
       accuracyMeters: Math.round(acc),
       ipAddress: req.ip,
       deviceType: detectDeviceType(req.headers["user-agent"]),
-      isOffSite: false
+      isOffSite: false,
+      locationName: match.matched.name
     };
     att.status = endStatus;
     att.computedAt = now;

@@ -4348,9 +4348,15 @@ var CheckInWidget = function(p) {
 
   // Geolocation poll: once on mount, then every 60s. enableHighAccuracy is on
   // because the geofence radius is typically 50-150m — coarse cell-tower fixes
-  // produce false positives/negatives.
+  // produce false positives/negatives. Re-runs only when the underlying set of
+  // active locations changes (count is the cheapest stable key).
+  var geofenceCount = (function(){
+    if (data && Array.isArray(data.geofences)) return data.geofences.length;
+    if (data && data.geofence) return 1;
+    return 0;
+  })();
   useEffect(function(){
-    if (!data || !data.geofence) return;
+    if (geofenceCount === 0) return;
     var stopped = false;
     var poll = function(){
       if (stopped || !navigator.geolocation) {
@@ -4372,9 +4378,7 @@ var CheckInWidget = function(p) {
     poll();
     var interval = setInterval(poll, 60000);
     return function(){ stopped = true; clearInterval(interval); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data && data.geofence ? data.geofence.latitude : null,
-      data && data.geofence ? data.geofence.longitude : null]);
+  }, [geofenceCount]);
 
   // Live duration tick (every 30s) for State 3. Same Mongoose `{}` gotcha as
   // the state machine — gate on the actual checkOut timestamp.
@@ -4406,19 +4410,43 @@ var CheckInWidget = function(p) {
     return function(){ window.removeEventListener("crm:attendance_updated", handler); };
   }, [p.cu, refetch]);
 
-  // Distance from user to office, when both coords + geofence are available.
-  // Computed client-side for display only — the server re-validates on POST.
-  var distanceMeters = (function(){
-    if (!coords || !data || !data.geofence) return null;
+  // Multi-branch: data.geofences is the full list of active locations.
+  // (data.geofence is kept by the server for one deploy window — we fall
+  // back to it as a single-item list if the new field hasn't landed yet.)
+  // We compute haversine to every location and pick the closest matching
+  // (inside-radius) one for State 1; if none match, State 2 reports the
+  // distance to the nearest one regardless of radius.
+  var geofences = (function(){
+    if (data && Array.isArray(data.geofences)) return data.geofences;
+    if (data && data.geofence) return [data.geofence];
+    return [];
+  })();
+  var closestMatch = null;     // closest location whose radius the user is inside
+  var closestMatchDist = null;
+  var nearest = null;          // nearest by distance, regardless of radius (for State 2)
+  var nearestDist = null;
+  if (coords && geofences.length > 0) {
     var R = 6371000;
     var toRad = function(d){ return d * Math.PI / 180; };
-    var phi1 = toRad(coords.latitude), phi2 = toRad(data.geofence.latitude);
-    var dPhi = toRad(data.geofence.latitude - coords.latitude);
-    var dLam = toRad(data.geofence.longitude - coords.longitude);
-    var a = Math.sin(dPhi/2)**2 + Math.cos(phi1)*Math.cos(phi2)*Math.sin(dLam/2)**2;
-    return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
-  })();
-  var insideGeofence = distanceMeters != null && data && data.geofence && distanceMeters <= data.geofence.radiusMeters;
+    for (var gi = 0; gi < geofences.length; gi++) {
+      var loc = geofences[gi];
+      var phi1 = toRad(coords.latitude), phi2 = toRad(loc.latitude);
+      var dPhi = toRad(loc.latitude - coords.latitude);
+      var dLam = toRad(loc.longitude - coords.longitude);
+      var a = Math.sin(dPhi/2)**2 + Math.cos(phi1)*Math.cos(phi2)*Math.sin(dLam/2)**2;
+      var d = Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+      if (nearest === null || d < nearestDist) { nearest = loc; nearestDist = d; }
+      if (d <= loc.radiusMeters && (closestMatch === null || d < closestMatchDist)) {
+        closestMatch = loc; closestMatchDist = d;
+      }
+    }
+  }
+  var insideGeofence = closestMatch !== null;
+  // Display values mirror previous single-loc semantics so downstream JSX
+  // doesn't change shape: distanceMeters = "what you'd report to the user
+  // right now"; activeLocName = "which location's name to show".
+  var distanceMeters = insideGeofence ? closestMatchDist : nearestDist;
+  var activeLocName = insideGeofence ? closestMatch.name : (nearest ? nearest.name : null);
 
   // State machine resolution. Order matters — pending > done > in-progress >
   // off-day > inside/outside.
@@ -4592,11 +4620,11 @@ var CheckInWidget = function(p) {
     var ts = new Date(data.attendance.checkIn.timestamp);
     var elapsedMs = Date.now() - ts.getTime();
     headline = "Checked in at " + fmtCairoTime(ts);
-    // If user is currently outside the geofence, surface the off-site path
-    // up front instead of waiting for the 403 from /check-out. Inside (or
-    // when we don't yet know) → normal Check out button.
-    if (coords && data.geofence && !insideGeofence) {
-      sub = (distanceMeters != null ? distanceMeters + "m away" : "Outside office") + " · request off-site check-out";
+    // If user is currently outside every active branch's radius, surface
+    // the off-site path up front instead of waiting for the 403 from
+    // /check-out. Inside (or when we don't yet know) → normal Check out.
+    if (coords && geofences.length > 0 && !insideGeofence) {
+      sub = (distanceMeters != null ? distanceMeters + "m from " + (activeLocName || "office") : "Outside office") + " · request off-site check-out";
       btn = <button type="button" onClick={function(){openOffSiteModal("check_out");}} disabled={busy} style={btnGhost}>Request off-site check-out</button>;
     } else {
       sub = "You've been working for " + fmtDuration(elapsedMs);
@@ -4604,10 +4632,10 @@ var CheckInWidget = function(p) {
     }
   } else if (widgetState === "ready_inside") {
     headline = "Ready to check in";
-    sub = "Inside " + (data.geofence.name || "office") + " · " + (distanceMeters != null ? distanceMeters + "m" : "—");
+    sub = "Inside " + (activeLocName || "office") + " · " + (distanceMeters != null ? distanceMeters + "m" : "—");
     btn = <button type="button" onClick={doCheckIn} disabled={busy} style={btnPrimary("#0F766E")}>{busy?"…":"Check in"}</button>;
   } else if (widgetState === "ready_outside") {
-    headline = "Outside " + (data.geofence ? data.geofence.name : "office");
+    headline = activeLocName ? ("Outside " + activeLocName) : "Outside office";
     sub = (distanceMeters != null ? distanceMeters + "m away" : "Out of range") + " · In a meeting? Request off-site approval";
     btn = <button type="button" onClick={function(){openOffSiteModal("check_in");}} disabled={busy} style={btnGhost}>Request off-site</button>;
   } else if (widgetState === "no_coords") {
@@ -4620,10 +4648,10 @@ var CheckInWidget = function(p) {
   }
   // null branches: nothing to show
 
-  // Geofence not configured — Owner has not set the office yet.
-  if (data && !data.geofence && widgetState !== "off_day" && widgetState !== "in_progress" && widgetState !== "done") {
-    headline = "Office location not configured";
-    sub = "Ask the Owner to configure the geofence in Settings → Office Location";
+  // No active office locations configured — Owner hasn't set any yet.
+  if (data && geofences.length === 0 && widgetState !== "off_day" && widgetState !== "in_progress" && widgetState !== "done") {
+    headline = "Office locations not configured";
+    sub = "Ask the Owner to add a branch in Settings → Office Location";
     btn = null;
   }
 
@@ -12954,7 +12982,9 @@ var SettingsPage = function(p) {
   // Owner-only. Loaded lazily when either tab is opened. attLoc holds the
   // single active office (schema supports an array but UI is single-office for
   // now, doc §4). attPerms is the 4-action × {salesAdmin,hr} permission matrix.
-  var [attLoc,setAttLoc] = useState({ name:"ARO Investment HQ", latitude:"", longitude:"", radiusMeters:100, isActive:true });
+  // Multi-branch: store an array of locations. Existing singletons land at
+  // index 0 — backend already stores the array shape, so no migration needed.
+  var [attLocs,setAttLocs] = useState([]);
   var [attPerms,setAttPerms] = useState({
     manageSalaries:         { salesAdmin:true, hr:true },
     manageAttendance:       { salesAdmin:true, hr:true },
@@ -12972,16 +13002,15 @@ var SettingsPage = function(p) {
     apiFetch("/api/settings/attendance","GET",null,p.token).then(function(s){
       if (cancelled || !s) return;
       var locs = Array.isArray(s.companyLocations) ? s.companyLocations : [];
-      var first = locs[0] || null;
-      if (first) {
-        setAttLoc({
-          name: first.name || "ARO Investment HQ",
-          latitude:  first.latitude  != null ? String(first.latitude)  : "",
-          longitude: first.longitude != null ? String(first.longitude) : "",
-          radiusMeters: first.radiusMeters || 100,
-          isActive: first.isActive !== false
-        });
-      }
+      setAttLocs(locs.map(function(l){
+        return {
+          name: l.name || "",
+          latitude:  l.latitude  != null ? String(l.latitude)  : "",
+          longitude: l.longitude != null ? String(l.longitude) : "",
+          radiusMeters: l.radiusMeters || 100,
+          isActive: l.isActive !== false
+        };
+      }));
       if (s.permissions) setAttPerms(s.permissions);
       setAttLoaded(true);
     }).catch(function(err){
@@ -14532,48 +14561,75 @@ var SettingsPage = function(p) {
       })()}
 
       {activeTab==="officeLocation" && isOwner && (function(){
-        var fieldLabel = {fontSize:12,color:"#666",display:"block",marginBottom:6};
+        var fieldLabel = {fontSize:11,color:"#666",display:"block",marginBottom:4};
         var inputStyle = {padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",fontFamily:"inherit",width:"100%",boxSizing:"border-box"};
         var btnPrimary = {fontSize:12,padding:"8px 16px",border:"0.5px solid rgba(24,95,165,0.3)",background:"#185FA5",color:"#fff",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
         var btnGhost   = {fontSize:12,padding:"8px 14px",border:"0.5px solid rgba(0,0,0,0.15)",background:"transparent",borderRadius:8,cursor:"pointer",fontFamily:"inherit",color:"#1a1a1a"};
 
-        var useMyLocation = function(){
+        var updateRow = function(idx, patch){
+          setAttLocs(function(prev){
+            return prev.map(function(row, i){ return i === idx ? Object.assign({}, row, patch) : row; });
+          });
+        };
+        var addRow = function(){
+          setAttLocs(function(prev){
+            return prev.concat([{ name: "", latitude: "", longitude: "", radiusMeters: 100, isActive: true }]);
+          });
+        };
+        var deleteRow = function(idx){
+          if (!window.confirm("Delete this location? Past check-ins keep their recorded location name; future ones can no longer match here.")) return;
+          setAttLocs(function(prev){ return prev.filter(function(_, i){ return i !== idx; }); });
+        };
+        var captureGpsFor = function(idx){
           if (!navigator.geolocation) { setAttError("Browser does not support geolocation"); return; }
           setAttError(""); setAttMsg("Getting your location…");
           navigator.geolocation.getCurrentPosition(function(pos){
-            setAttLoc(function(prev){return Object.assign({},prev,{
+            updateRow(idx, {
               latitude:  String(pos.coords.latitude.toFixed(6)),
               longitude: String(pos.coords.longitude.toFixed(6))
-            });});
-            setAttMsg("Location captured ("+pos.coords.accuracy.toFixed(0)+"m accuracy)");
+            });
+            setAttMsg("Captured for row " + (idx + 1) + " (" + pos.coords.accuracy.toFixed(0) + "m accuracy)");
           }, function(err){
             setAttMsg("");
-            setAttError("Could not get location: "+(err.message||err.code));
-          }, {enableHighAccuracy:true, timeout:10000, maximumAge:0});
+            setAttError("Could not get location: " + (err.message || err.code));
+          }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
         };
 
-        var doSaveLoc = async function(){
+        var doSaveLocs = async function(){
           setAttError(""); setAttMsg(""); setAttSaving(true);
           try {
-            var payload = { companyLocations: [{
-              name: attLoc.name,
-              latitude:  Number(attLoc.latitude),
-              longitude: Number(attLoc.longitude),
-              radiusMeters: Number(attLoc.radiusMeters),
-              isActive: !!attLoc.isActive
-            }]};
-            var res = await apiFetch("/api/settings/office-location","PATCH",payload,p.token,p.csrfToken);
-            if (res && Array.isArray(res.companyLocations) && res.companyLocations[0]) {
-              var first = res.companyLocations[0];
-              setAttLoc({
-                name: first.name || "ARO Investment HQ",
-                latitude: String(first.latitude),
-                longitude: String(first.longitude),
-                radiusMeters: first.radiusMeters,
-                isActive: first.isActive !== false
-              });
+            // Client-side validation pass — surfaces row-specific errors
+            // before the round-trip. Server re-validates anyway.
+            for (var i = 0; i < attLocs.length; i++) {
+              var r = attLocs[i];
+              if (!r.name || !r.name.trim()) throw new Error("Row " + (i + 1) + ": name is required");
+              if (!isFinite(Number(r.latitude))  || Number(r.latitude)  < -90  || Number(r.latitude)  > 90)  throw new Error("Row " + (i + 1) + ": latitude must be between -90 and 90");
+              if (!isFinite(Number(r.longitude)) || Number(r.longitude) < -180 || Number(r.longitude) > 180) throw new Error("Row " + (i + 1) + ": longitude must be between -180 and 180");
+              var rad = Number(r.radiusMeters);
+              if (!isFinite(rad) || rad < 1 || rad > 10000) throw new Error("Row " + (i + 1) + ": radius must be between 1 and 10000");
             }
-            setAttMsg("Saved");
+            var payload = { companyLocations: attLocs.map(function(r){
+              return {
+                name: String(r.name).trim(),
+                latitude:  Number(r.latitude),
+                longitude: Number(r.longitude),
+                radiusMeters: Number(r.radiusMeters),
+                isActive: !!r.isActive
+              };
+            })};
+            var res = await apiFetch("/api/settings/office-location","PATCH",payload,p.token,p.csrfToken);
+            if (res && Array.isArray(res.companyLocations)) {
+              setAttLocs(res.companyLocations.map(function(l){
+                return {
+                  name: l.name || "",
+                  latitude:  l.latitude  != null ? String(l.latitude)  : "",
+                  longitude: l.longitude != null ? String(l.longitude) : "",
+                  radiusMeters: l.radiusMeters || 100,
+                  isActive: l.isActive !== false
+                };
+              }));
+            }
+            setAttMsg("Saved " + (res && res.companyLocations ? res.companyLocations.length : 0) + " location" + ((res && res.companyLocations && res.companyLocations.length === 1) ? "" : "s"));
           } catch (err) {
             setAttError((err && err.message) || "Save failed");
           } finally {
@@ -14582,38 +14638,52 @@ var SettingsPage = function(p) {
         };
 
         return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
-          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Office Location</div>
-          <div style={{fontSize:12,color:"#666",marginBottom:18}}>Geofence used for attendance check-in/check-out. Distance is computed server-side using the Haversine formula.</div>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Office Locations</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:18}}>Geofences used for attendance check-in/check-out. Add a row per branch — employees can check in from any active location. Distance is computed server-side using the Haversine formula.</div>
 
-          {!attLoaded ? <div style={{fontSize:12,color:"#666"}}>Loading…</div> : <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,maxWidth:700}}>
-            <div style={{gridColumn:"1 / -1"}}>
-              <label style={fieldLabel}>Name</label>
-              <input type="text" value={attLoc.name} onChange={function(e){setAttLoc(Object.assign({},attLoc,{name:e.target.value}));}} style={inputStyle} placeholder="ARO Investment HQ"/>
-            </div>
-            <div>
-              <label style={fieldLabel}>Latitude</label>
-              <input type="text" inputMode="decimal" value={attLoc.latitude} onChange={function(e){setAttLoc(Object.assign({},attLoc,{latitude:e.target.value}));}} style={inputStyle} placeholder="30.1376"/>
-            </div>
-            <div>
-              <label style={fieldLabel}>Longitude</label>
-              <input type="text" inputMode="decimal" value={attLoc.longitude} onChange={function(e){setAttLoc(Object.assign({},attLoc,{longitude:e.target.value}));}} style={inputStyle} placeholder="31.6817"/>
-            </div>
-            <div>
-              <label style={fieldLabel}>Radius (meters)</label>
-              <input type="number" min="1" max="10000" value={attLoc.radiusMeters} onChange={function(e){setAttLoc(Object.assign({},attLoc,{radiusMeters:e.target.value}));}} style={inputStyle}/>
-            </div>
-            <div style={{display:"flex",alignItems:"end"}}>
-              <label style={{fontSize:13,color:"#1a1a1a",display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
-                <input type="checkbox" checked={attLoc.isActive} onChange={function(e){setAttLoc(Object.assign({},attLoc,{isActive:e.target.checked}));}}/>
-                Active
-              </label>
-            </div>
-          </div>}
+          {!attLoaded ? <div style={{fontSize:12,color:"#666"}}>Loading…</div>
+            : attLocs.length === 0 ? <div style={{padding:"24px 16px",textAlign:"center",color:"#666",background:"#FAFAF7",border:"0.5px dashed rgba(0,0,0,0.1)",borderRadius:8,fontSize:13}}>
+                No office locations yet. Click <b>+ Add location</b> to create the first one.
+              </div>
+            : <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {attLocs.map(function(loc, idx){
+                return <div key={idx} style={{padding:"14px 16px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:10,background: loc.isActive ? "#fff" : "#FAFAF7"}}>
+                  <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 0.8fr 90px",gap:10,alignItems:"end"}}>
+                    <div>
+                      <label style={fieldLabel}>Name</label>
+                      <input type="text" value={loc.name} onChange={function(e){updateRow(idx,{name:e.target.value});}} style={inputStyle} placeholder="ARO HQ — Cairo"/>
+                    </div>
+                    <div>
+                      <label style={fieldLabel}>Latitude</label>
+                      <input type="text" inputMode="decimal" value={loc.latitude} onChange={function(e){updateRow(idx,{latitude:e.target.value});}} style={inputStyle} placeholder="30.1376"/>
+                    </div>
+                    <div>
+                      <label style={fieldLabel}>Longitude</label>
+                      <input type="text" inputMode="decimal" value={loc.longitude} onChange={function(e){updateRow(idx,{longitude:e.target.value});}} style={inputStyle} placeholder="31.6817"/>
+                    </div>
+                    <div>
+                      <label style={fieldLabel}>Radius (m)</label>
+                      <input type="number" min="1" max="10000" value={loc.radiusMeters} onChange={function(e){updateRow(idx,{radiusMeters:e.target.value});}} style={inputStyle}/>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:6,paddingBottom:6}}>
+                      <label style={{fontSize:12,color:"#1a1a1a",display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
+                        <input type="checkbox" checked={loc.isActive} onChange={function(e){updateRow(idx,{isActive:e.target.checked});}}/>
+                        Active
+                      </label>
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
+                    <button type="button" onClick={function(){captureGpsFor(idx);}} style={Object.assign({},btnGhost,{fontSize:11,padding:"5px 10px"})}>Use my current location</button>
+                    <button type="button" onClick={function(){deleteRow(idx);}} style={{fontSize:11,padding:"5px 10px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:6,cursor:"pointer",fontFamily:"inherit",color:"#A32D2D"}}>Delete</button>
+                  </div>
+                </div>;
+              })}
+            </div>}
 
           <div style={{display:"flex",gap:8,marginTop:18,flexWrap:"wrap",alignItems:"center"}}>
-            <button type="button" onClick={useMyLocation} style={btnGhost}>Use my current location</button>
-            <button type="button" onClick={doSaveLoc} disabled={attSaving||!attLoaded} style={Object.assign({},btnPrimary,{opacity:attSaving?0.6:1,cursor:attSaving?"not-allowed":"pointer"})}>
-              {attSaving?"Saving…":"Save office location"}
+            <button type="button" onClick={addRow} style={btnGhost}>+ Add location</button>
+            <button type="button" onClick={doSaveLocs} disabled={attSaving||!attLoaded} style={Object.assign({},btnPrimary,{opacity:attSaving?0.6:1,cursor:attSaving?"not-allowed":"pointer"})}>
+              {attSaving?"Saving…":"Save all locations"}
             </button>
             {attMsg   && <span style={{fontSize:12,color:"#0F6E56",background:"#EAF6F0",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attMsg}</span>}
             {attError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attError}</span>}
