@@ -888,10 +888,14 @@ var Sidebar = function(p) {
     isAdmin&&{id:"team",label:t.team,adminSection:true},
     isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
     isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
-    p.cu.role!=="admin"&&{id:"attendance",label:"Attendance",adminSection:true},
-    hasAttendancePerm(p.cu && p.cu.role, "approveOffSiteRequests", p.attendanceSettings) && {id:"offsiteRequests", label:"Off-site Requests", adminSection:true},
-    hasAttendancePerm(p.cu && p.cu.role, "manageSalaries",         p.attendanceSettings) && {id:"salaries",         label:"Salaries",           adminSection:true},
-    hasAttendancePerm(p.cu && p.cu.role, "manageCompanyOffDays",   p.attendanceSettings) && {id:"companyOffDays",   label:"Company Off-Days",   adminSection:true},
+    // Single Attendance entry — visible to anyone who can use any attendance
+    // tab. Inside the page, tabs are gated by the same per-action permissions.
+    (p.cu.role!=="admin"
+      || hasAttendancePerm(p.cu.role, "manageAttendance",       p.attendanceSettings)
+      || hasAttendancePerm(p.cu.role, "manageSalaries",         p.attendanceSettings)
+      || hasAttendancePerm(p.cu.role, "approveOffSiteRequests", p.attendanceSettings)
+      || hasAttendancePerm(p.cu.role, "manageCompanyOffDays",   p.attendanceSettings)
+    ) && {id:"attendance",label:"Attendance",adminSection:true},
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
@@ -4654,14 +4658,42 @@ var CheckInWidget = function(p) {
 };
 
 var AttendancePage = function(p) {
-  var isOwner = p.cu && p.cu.role === "admin";
-  var canManage = hasAttendancePerm(p.cu && p.cu.role, "manageAttendance", p.attendanceSettings);
-  var [activeTab, setActiveTab] = useState(isOwner ? "team" : "mine");
-  // Real-time permission revoke: if we lose manageAttendance while on the
-  // Team tab, kick back to My tab. Owner is exempt.
+  var isOwner          = p.cu && p.cu.role === "admin";
+  var canManage        = hasAttendancePerm(p.cu && p.cu.role, "manageAttendance",       p.attendanceSettings);
+  var canViewSalaries  = hasAttendancePerm(p.cu && p.cu.role, "manageSalaries",         p.attendanceSettings);
+  var canApproveOffSite= hasAttendancePerm(p.cu && p.cu.role, "approveOffSiteRequests", p.attendanceSettings);
+  var canManageOffDays = hasAttendancePerm(p.cu && p.cu.role, "manageCompanyOffDays",   p.attendanceSettings);
+
+  // Default tab: non-Owner lands on "mine"; Owner lands on the first available
+  // admin tab. p.initTab honors deep-link intents (e.g. 5-lates click → salaries).
+  var defaultTab = (function(){
+    if (p.initTab) return p.initTab;
+    if (!isOwner) return "mine";
+    if (canManage)         return "team";
+    if (canViewSalaries)   return "salaries";
+    if (canApproveOffSite) return "offsiteRequests";
+    if (canManageOffDays)  return "companyOffDays";
+    return "team";
+  })();
+  var [activeTab, setActiveTab] = useState(defaultTab);
+
+  // Real-time permission revoke. If the current tab's permission is taken
+  // away mid-session, fall back to the first available tab the user can see.
   useEffect(function(){
-    if (activeTab === "team" && !canManage && !isOwner) setActiveTab("mine");
-  }, [canManage, activeTab, isOwner]);
+    var allowed = (
+      (activeTab === "mine"            && !isOwner) ||
+      (activeTab === "team"             && canManage) ||
+      (activeTab === "salaries"         && canViewSalaries) ||
+      (activeTab === "offsiteRequests"  && canApproveOffSite) ||
+      (activeTab === "companyOffDays"   && canManageOffDays)
+    );
+    if (allowed) return;
+    if (!isOwner) { setActiveTab("mine"); return; }
+    if (canManage)         { setActiveTab("team");            return; }
+    if (canViewSalaries)   { setActiveTab("salaries");        return; }
+    if (canApproveOffSite) { setActiveTab("offsiteRequests"); return; }
+    if (canManageOffDays)  { setActiveTab("companyOffDays");  return; }
+  }, [activeTab, isOwner, canManage, canViewSalaries, canApproveOffSite, canManageOffDays]);
 
   // ----- "My" tab: monthly history below the widget -----
   var now = new Date();
@@ -4776,11 +4808,14 @@ var AttendancePage = function(p) {
   return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
     <div style={{maxWidth:1200, margin:"0 auto"}}>
 
-      {/* Tab bar (only if more than one option is available) */}
-      {(canManage || !isOwner) && <div style={{display:"flex", gap:6, marginBottom:14, padding:6, background:"#F7F7F5", borderRadius:10, width:"fit-content", border:"0.5px solid rgba(0,0,0,0.05)"}}>
-        {!isOwner && tabBtn("mine", "My Attendance")}
-        {canManage && tabBtn("team", "Team Today")}
-      </div>}
+      {/* Tab bar — every visible tab is gated by an attendance permission. */}
+      <div style={{display:"flex", gap:6, marginBottom:14, padding:6, background:"#F7F7F5", borderRadius:10, width:"fit-content", border:"0.5px solid rgba(0,0,0,0.05)", flexWrap:"wrap"}}>
+        {!isOwner            && tabBtn("mine",            "My Attendance")}
+        {canManage           && tabBtn("team",            "Team Today")}
+        {canViewSalaries     && tabBtn("salaries",        "Salaries")}
+        {canApproveOffSite   && tabBtn("offsiteRequests", "Off-site Requests")}
+        {canManageOffDays    && tabBtn("companyOffDays",  "Company Off-Days")}
+      </div>
 
       {activeTab === "mine" && !isOwner && <div>
         <CheckInWidget token={p.token} cu={p.cu} csrfToken={p.csrfToken} mode="full"/>
@@ -4833,10 +4868,15 @@ var AttendancePage = function(p) {
           <div style={{fontSize:13, fontWeight:600, color:"#92400E", marginBottom:8}}>⚠ {lateAlerts.length} late-attendance alert{lateAlerts.length === 1 ? "" : "s"} this month</div>
           <div style={{display:"flex", flexDirection:"column", gap:4}}>
             {lateAlerts.map(function(n){
-              var open = function(){ if (p.openSalarySheet && n.leadId) p.openSalarySheet(n.leadId); };
+              var canDrill = canViewSalaries && p.setSalaryViewUserId && n.leadId;
+              var open = function(){
+                if (!canDrill) return;
+                p.setSalaryViewUserId(String(n.leadId));
+                setActiveTab("salaries");
+              };
               return <div key={String(n._id)} onClick={open}
-                style={{cursor: p.openSalarySheet ? "pointer" : "default", fontSize:12, color:C.text, padding:"6px 8px", borderRadius:6}}
-                onMouseEnter={function(e){ e.currentTarget.style.background = "#FEF3C7"; }}
+                style={{cursor: canDrill ? "pointer" : "default", fontSize:12, color:C.text, padding:"6px 8px", borderRadius:6}}
+                onMouseEnter={function(e){ if (canDrill) e.currentTarget.style.background = "#FEF3C7"; }}
                 onMouseLeave={function(e){ e.currentTarget.style.background = "transparent"; }}>
                 <b>{n.agentName || "Employee"}</b> {n.reason || "5+ lates this month"}
                 <span style={{color:C.textLight, marginLeft:8, fontSize:11}}>· {n.createdAt ? new Date(n.createdAt).toLocaleDateString("en-GB", { day:"2-digit", month:"short" }) : ""}</span>
@@ -4886,6 +4926,18 @@ var AttendancePage = function(p) {
       {activeTab === "team" && !canManage && <div style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13, background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)"}}>
         You no longer have permission to view the team attendance.
       </div>}
+
+      {/* Salaries tab — list view with row-click drilldown to per-employee
+          sheet. salaryViewUserId is App-level state so the sheet survives
+          across tab switches. */}
+      {activeTab === "salaries" && canViewSalaries && (
+        p.salaryViewUserId
+          ? <SalarySheetPage  {...p} embedded={true}/>
+          : <SalariesListPage {...p} embedded={true}/>
+      )}
+
+      {activeTab === "offsiteRequests" && canApproveOffSite && <OffSiteRequestsPage {...p} embedded={true}/>}
+      {activeTab === "companyOffDays"  && canManageOffDays  && <CompanyOffDaysPage  {...p} embedded={true}/>}
     </div>
   </div>;
 };
@@ -4945,7 +4997,7 @@ var OffSiteRequestsPage = function(p) {
     </div>;
   }
 
-  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+  return <div style={p.embedded ? {} : {padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
     <div style={{maxWidth:1200, margin:"0 auto"}}>
       <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
         <div style={{padding:"16px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>
@@ -5070,7 +5122,7 @@ var CompanyOffDaysPage = function(p) {
   var monthFloor = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
   var todayKey = function(d){ var x = new Date(d); return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate())); };
 
-  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+  return <div style={p.embedded ? {} : {padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
     <div style={{maxWidth:900, margin:"0 auto"}}>
       <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
         <div style={{padding:"16px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap"}}>
@@ -5212,7 +5264,7 @@ var SalariesListPage = function(p) {
   var prevMonth = function(){ if (month === 1) { setMonth(12); setYear(year - 1); } else setMonth(month - 1); };
   var nextMonth = function(){ if (month === 12) { setMonth(1); setYear(year + 1); } else setMonth(month + 1); };
 
-  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+  return <div style={p.embedded ? {} : {padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
     <div style={{maxWidth:1200, margin:"0 auto"}}>
       <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
         <div style={{padding:"16px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap"}}>
@@ -5561,7 +5613,7 @@ var SalarySheetPage = function(p) {
     fontFamily:"inherit", color:C.textLight, opacity:0.5
   };
 
-  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+  return <div style={p.embedded ? {} : {padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
     <div style={{maxWidth:1200, margin:"0 auto"}}>
       <button type="button" onClick={goBack} style={{fontSize:12, padding:"6px 12px", border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, cursor:"pointer", marginBottom:12, fontFamily:"inherit", color:C.text}}>‹ Salaries</button>
 
@@ -15008,7 +15060,24 @@ export default function CRMApp() {
   // page consumes it on mount and clears it.
   var [initAgentFilter,setInitAgentFilter]=useState(null);
   useEffect(function(){ if (page && page!=="leads") { setLeadSpecialFilter(null); setInitAgentFilter(null); } },[page]);
-  useEffect(function(){ if (page && page!=="salaries") { setSalaryViewUserId(null); } },[page]);
+  useEffect(function(){
+    // Clear the salary-sheet drilldown when the user navigates away from
+    // Attendance entirely. Legacy page ids that now redirect to the
+    // attendance "salaries" tab are preserved.
+    if (page && page!=="attendance" && page!=="salaries" && page!=="offsiteRequests" && page!=="companyOffDays") {
+      setSalaryViewUserId(null);
+    }
+  },[page]);
+  // One-shot migration: rename legacy page ids to "attendance" so the page
+  // title + localStorage are consistent. AttendancePage instance keeps its
+  // initTab-derived activeTab state across the rename (same component type =
+  // React reuses the instance, useState init doesn't re-run).
+  useEffect(function(){
+    if (page === "salaries" || page === "offsiteRequests" || page === "companyOffDays") {
+      setPage("attendance");
+      try { localStorage.setItem("crm_page", "attendance"); } catch(e){}
+    }
+  },[page]);
   var [leadsPage,setLeadsPage]=useState(1); var [leadsTotal,setLeadsTotal]=useState(0); var [leadsTotalPages,setLeadsTotalPages]=useState(0);
   var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
@@ -15806,13 +15875,7 @@ export default function CRMApp() {
   var scopedDailyReqs = tlScope ? (dailyReqs||[]).filter(function(r){var aid=String(r&&r.agentId&&r.agentId._id?r.agentId._id:(r&&r.agentId)||"");return tlScope.has(aid);}) : dailyReqs;
   var myTeamUsers = scopedUsers;
 
-  var openSalarySheet = function(uid){
-    if (!uid) return;
-    setSalaryViewUserId(String(uid));
-    setPage("salaries");
-    try { localStorage.setItem("crm_page", "salaries"); } catch(e){}
-  };
-  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings,openSalarySheet:openSalarySheet};
+  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings,salaryViewUserId:salaryViewUserId,setSalaryViewUserId:setSalaryViewUserId};
 
   var renderPage=function(){
     switch(currentPage){
@@ -15833,11 +15896,13 @@ export default function CRMApp() {
       case "users": return <UsersPage {...sp}/>;
       case "archive": return <ArchivePage {...sp}/>;
       case "attendance": return <AttendancePage {...sp}/>;
-      case "offsiteRequests": return <OffSiteRequestsPage {...sp}/>;
-      case "companyOffDays":  return <CompanyOffDaysPage  {...sp}/>;
-      case "salaries":        return salaryViewUserId
-        ? <SalarySheetPage   {...sp} salaryViewUserId={salaryViewUserId} setSalaryViewUserId={setSalaryViewUserId}/>
-        : <SalariesListPage  {...sp} setSalaryViewUserId={setSalaryViewUserId}/>;
+      // Legacy page ids (salaries / offsiteRequests / companyOffDays) used to
+      // be standalone sidebar entries — they're now tabs inside AttendancePage.
+      // We keep these cases as deep-link migrations for users whose
+      // localStorage crm_page still points to one of them.
+      case "salaries":        return <AttendancePage {...sp} initTab="salaries"/>;
+      case "offsiteRequests": return <AttendancePage {...sp} initTab="offsiteRequests"/>;
+      case "companyOffDays":  return <AttendancePage {...sp} initTab="companyOffDays"/>;
       case "settings": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
       default: return <DashboardPage {...sp}/>;
     }
