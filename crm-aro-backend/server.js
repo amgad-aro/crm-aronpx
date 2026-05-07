@@ -42,7 +42,7 @@ var corsOptions = {
   // Reflect caller origin to avoid blocking Vercel custom domains.
   origin: true,
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"]
 };
 
