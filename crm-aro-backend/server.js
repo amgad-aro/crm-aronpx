@@ -56,10 +56,16 @@ delete mongoose.models["DailyRequest"];
 var User = mongoose.model("User", new mongoose.Schema({
   name:{type:String,required:true}, username:{type:String,required:true,unique:true},
   password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
-  role:{type:String,enum:["admin","sales_admin","director","manager","team_leader","sales","viewer"],default:"sales"},
+  role:{type:String,enum:["admin","sales_admin","hr","director","manager","team_leader","sales","viewer"],default:"sales"},
   title:{type:String,default:""}, active:{type:Boolean,default:true},
   monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, lastActive:{type:Date,default:null}, qTargets:{type:Object,default:{}}, reportsTo:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
-  startingDate:{type:Date,default:null}
+  startingDate:{type:Date,default:null},
+  // Attendance & Salary system (docs/attendance-salary-requirements.md §17).
+  // baseSalary in EGP, null for Owner (admin) — excluded from all salary lists.
+  // saturdayPatternStartDate is required when saturdaySchedule="alternating".
+  baseSalary:{type:Number,default:null},
+  saturdaySchedule:{type:String,enum:["always_work","always_off","alternating"],default:"always_work"},
+  saturdayPatternStartDate:{type:Date,default:null}
 },{timestamps:true}));
 
 var Lead = mongoose.model("Lead", new mongoose.Schema({
@@ -265,6 +271,198 @@ var agentVacationSchema = new mongoose.Schema({
 });
 agentVacationSchema.index({ agentId: 1, endDate: 1 });
 var AgentVacation = mongoose.model("AgentVacation", agentVacationSchema);
+
+// =====================================================================
+// ATTENDANCE & SALARY SYSTEM — Phase 1 foundation
+// Spec: docs/attendance-salary-requirements.md
+//
+// Settings live in AppSetting under key="attendance_settings" (reuses the
+// existing key/value pattern next to "rotation", "projectWeights",
+// "campaigns"). The schemas below cover the attendance/salary domain only.
+// =====================================================================
+
+// CompanyOffDay — a single calendar date that is off for everyone (e.g. Labor
+// Day, company anniversary). date stored as start-of-day Africa/Cairo. Removed
+// from each user's workingDays count when computing salary.
+var CompanyOffDay = mongoose.model("CompanyOffDay", new mongoose.Schema({
+  date:      { type: Date, required: true, unique: true },
+  name:      { type: String, required: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
+}, { timestamps: true }));
+
+// Attendance — one document per user per calendar day. Created on check-in;
+// stays open (status="in_progress") until check-out. status reflects late tier
+// computed at check-in time. deductionFraction snapshots the cost as 0 / 0.25
+// / 0.5 / 1. override is set only when an admin uses the Day Override tool.
+var Attendance = mongoose.model("Attendance", new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+  date:   { type: Date, required: true, index: true },
+  checkIn: {
+    timestamp:       Date,
+    latitude:        Number,
+    longitude:       Number,
+    distanceMeters:  Number,
+    accuracyMeters:  Number,
+    ipAddress:       String,
+    deviceType:      String,
+    isOffSite:       { type: Boolean, default: false },
+    offSiteRequestId:{ type: mongoose.Schema.Types.ObjectId, ref: "OffSiteRequest" }
+  },
+  checkOut: {
+    timestamp:       Date,
+    latitude:        Number,
+    longitude:       Number,
+    distanceMeters:  Number,
+    accuracyMeters:  Number,
+    ipAddress:       String,
+    deviceType:      String,
+    isOffSite:       { type: Boolean, default: false },
+    offSiteRequestId:{ type: mongoose.Schema.Types.ObjectId, ref: "OffSiteRequest" }
+  },
+  status: {
+    type: String,
+    enum: ["in_progress","present","late_quarter","late_half","late_full","absent","pending_offsite","override"],
+    default: "in_progress"
+  },
+  deductionFraction: { type: Number, default: 0 },
+  override: {
+    action:            { type: String, enum: ["cancel_deduction","add_full_deduction","mark_off_day","apply_fraction"] },
+    reason:            String,
+    overriddenBy:      { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    overriddenAt:      Date,
+    sickLimitExceeded: { type: Boolean, default: false }
+  },
+  computedAt: { type: Date, default: Date.now }
+}, { timestamps: true }));
+Attendance.collection.createIndex({ userId: 1, date: 1 }, { unique: true }).catch(function(){});
+
+// OffSiteRequest — submitted when an employee is outside the geofence and needs
+// a remote check-in/out approved. Created in "pending" state; an attendance
+// record with status="pending_offsite" is also created at the same timestamp.
+// Approval flips both records to their normal flow (present + late tier).
+var OffSiteRequest = mongoose.model("OffSiteRequest", new mongoose.Schema({
+  userId:        { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  type:          { type: String, enum: ["check_in","check_out"], required: true },
+  requestedAt:   { type: Date, default: Date.now },
+  latitude:      Number,
+  longitude:     Number,
+  reason:        { type: String, required: true },
+  attachmentUrl: String,
+  status:        { type: String, enum: ["pending","approved","rejected","cancelled"], default: "pending" },
+  reviewedBy:    { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  reviewedAt:    Date,
+  reviewNotes:   String,
+  attendanceId:  { type: mongoose.Schema.Types.ObjectId, ref: "Attendance" }
+}, { timestamps: true }));
+OffSiteRequest.collection.createIndex({ userId: 1, requestedAt: -1 }).catch(function(){});
+OffSiteRequest.collection.createIndex({ status: 1, requestedAt: -1 }).catch(function(){});
+
+// SalaryRecord — one document per user per (year, month). Stores the snapshot
+// after computation; "finalized" locks it from further edits. baseSalary is
+// snapshotted at compute time so future base-salary changes don't retro-apply.
+var SalaryRecord = mongoose.model("SalaryRecord", new mongoose.Schema({
+  userId:          { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  year:            { type: Number, required: true },
+  month:           { type: Number, required: true }, // 1-12
+  baseSalary:      Number,
+  workingDays:     Number,
+  dailyRate:       Number,
+  deductionDays:   Number,
+  totalDeductions: Number,
+  netSalary:       Number,
+  finalized:       { type: Boolean, default: false },
+  finalizedBy:     { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  finalizedAt:     Date,
+  computedAt:      { type: Date, default: Date.now }
+}, { timestamps: true }));
+SalaryRecord.collection.createIndex({ userId: 1, year: 1, month: 1 }, { unique: true }).catch(function(){});
+
+// AuditLog — separate from SettingsAudit (which is settings-flatten-diff only).
+// This logs every sensitive attendance/salary mutation with before/after blobs
+// and free-form flags. type is an open string so new actions can be added
+// without a schema migration.
+var AuditLog = mongoose.model("AuditLog", new mongoose.Schema({
+  type:         { type: String, required: true },
+  targetUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  performedBy:  { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  before:       { type: mongoose.Schema.Types.Mixed, default: {} },
+  after:        { type: mongoose.Schema.Types.Mixed, default: {} },
+  reason:       String,
+  flags:        { type: mongoose.Schema.Types.Mixed, default: {} },
+  ipAddress:    String,
+  timestamp:    { type: Date, default: Date.now }
+}));
+AuditLog.collection.createIndex({ targetUserId: 1, timestamp: -1 }).catch(function(){});
+AuditLog.collection.createIndex({ performedBy: 1, timestamp: -1 }).catch(function(){});
+AuditLog.collection.createIndex({ type: 1, timestamp: -1 }).catch(function(){});
+
+// Defaults applied when no AppSetting key="attendance_settings" doc exists yet
+// (first server boot). Office is empty so the Owner must configure it before
+// anyone can check in. All permission toggles default ON for sales_admin + hr
+// per the doc's mockup; Owner can switch them off in /settings/permissions.
+var DEFAULT_ATTENDANCE_SETTINGS = {
+  companyLocations: [],
+  permissions: {
+    manageSalaries:         { salesAdmin: true, hr: true },
+    manageAttendance:       { salesAdmin: true, hr: true },
+    approveOffSiteRequests: { salesAdmin: true, hr: true },
+    manageCompanyOffDays:   { salesAdmin: true, hr: true }
+  }
+};
+
+// Read attendance_settings from AppSetting, merging the stored value over the
+// defaults so missing keys don't crash callers. Always returns a plain object.
+async function getAttendanceSettings() {
+  var doc = await AppSetting.findOne({ key: "attendance_settings" }).lean();
+  var stored = (doc && doc.value) || {};
+  return {
+    companyLocations: Array.isArray(stored.companyLocations) ? stored.companyLocations : DEFAULT_ATTENDANCE_SETTINGS.companyLocations,
+    permissions: {
+      manageSalaries:         Object.assign({}, DEFAULT_ATTENDANCE_SETTINGS.permissions.manageSalaries,         (stored.permissions || {}).manageSalaries         || {}),
+      manageAttendance:       Object.assign({}, DEFAULT_ATTENDANCE_SETTINGS.permissions.manageAttendance,       (stored.permissions || {}).manageAttendance       || {}),
+      approveOffSiteRequests: Object.assign({}, DEFAULT_ATTENDANCE_SETTINGS.permissions.approveOffSiteRequests, (stored.permissions || {}).approveOffSiteRequests || {}),
+      manageCompanyOffDays:   Object.assign({}, DEFAULT_ATTENDANCE_SETTINGS.permissions.manageCompanyOffDays,   (stored.permissions || {}).manageCompanyOffDays   || {})
+    }
+  };
+}
+
+// Permission decision for a single (role, action) pair against a settings doc.
+// Owner (admin) always passes. sales_admin and hr are gated by the toggle for
+// that action. Every other role is denied — attendance/salary endpoints are
+// admin-side, sales roles never use them.
+function hasAttendancePermission(role, action, settings) {
+  if (role === "admin") return true;
+  if (!settings || !settings.permissions || !settings.permissions[action]) return false;
+  if (role === "sales_admin") return settings.permissions[action].salesAdmin === true;
+  if (role === "hr")          return settings.permissions[action].hr === true;
+  return false;
+}
+
+// Express middleware factory — wraps hasAttendancePermission for use as a
+// route guard. Attaches the loaded settings to req so handlers don't refetch.
+function requireAttendancePermission(action) {
+  return async function(req, res, next) {
+    try {
+      var settings = await getAttendanceSettings();
+      if (!hasAttendancePermission(req.user.role, action, settings)) {
+        return res.status(403).json({ error: "Permission denied", action: action });
+      }
+      req.attendanceSettings = settings;
+      next();
+    } catch (e) {
+      console.error("[requireAttendancePermission]", e);
+      res.status(500).json({ error: "Permission check failed" });
+    }
+  };
+}
+
+// Owner-only gate — used for routes that must NEVER be delegated (office
+// location, permission toggles, unlocking finalized months, editing the base
+// salary of sales_admin/hr roles).
+function ownerOnly(req, res, next) {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Owner only" });
+  next();
+}
 
 // Flatten a plain object into dotted-path leaves. Arrays are treated as leaf
 // values (compared as a whole) so an audit entry for "tiers.tier1.agents"
@@ -1496,6 +1694,1589 @@ app.delete("/api/settings/campaigns/:id", auth, async function(req, res) {
     try { broadcast("settings_updated", { key: "campaigns", value: { campaigns: nextList } }); } catch(e) {}
     res.json({ ok: true, id: id });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =====================================================================
+// ATTENDANCE SETTINGS — Phase 2
+// Owner-only endpoints for office location (geofence) + permission toggles.
+// All writes log to AuditLog and broadcast attendance_settings_updated so
+// connected clients can re-evaluate their access in real-time.
+// =====================================================================
+
+// Persist new attendance settings + log + broadcast. Always writes the full
+// merged value to AppSetting so partial updates can't corrupt the document.
+async function saveAttendanceSettings(nextValue, performedBy, before, type, ipAddress) {
+  await AppSetting.findOneAndUpdate(
+    { key: "attendance_settings" },
+    { $set: { value: nextValue } },
+    { upsert: true, new: true }
+  );
+  try {
+    await AuditLog.create({
+      type: type,
+      performedBy: performedBy,
+      before: before || {},
+      after: nextValue,
+      ipAddress: ipAddress || ""
+    });
+  } catch (e) {
+    console.error("[attendance_settings audit]", e && e.message);
+  }
+  try {
+    broadcast("attendance_settings_updated", {
+      permissions: nextValue.permissions,
+      companyLocations: nextValue.companyLocations
+    });
+  } catch (e) {}
+}
+
+// Validate one office-location entry. Returns null on success or an error
+// string. Coordinates are sanity-checked (not just typeof) so a string "30.5"
+// or NaN doesn't sneak through.
+function validateOfficeLocation(loc) {
+  if (!loc || typeof loc !== "object") return "location must be an object";
+  if (typeof loc.name !== "string" || !loc.name.trim()) return "name is required";
+  if (loc.name.length > 100) return "name must be <= 100 chars";
+  var lat = Number(loc.latitude);
+  var lng = Number(loc.longitude);
+  var rad = Number(loc.radiusMeters);
+  if (!isFinite(lat) || lat < -90  || lat > 90)  return "latitude must be a number in [-90, 90]";
+  if (!isFinite(lng) || lng < -180 || lng > 180) return "longitude must be a number in [-180, 180]";
+  if (!isFinite(rad) || rad < 1    || rad > 10000) return "radiusMeters must be a number in [1, 10000]";
+  return null;
+}
+
+// Validate the permissions object — every action key must exist with both
+// salesAdmin/hr booleans set. We accept truthy values but coerce to strict
+// booleans before storage so the doc shape is canonical.
+function normalizePermissions(input) {
+  var ACTIONS = ["manageSalaries", "manageAttendance", "approveOffSiteRequests", "manageCompanyOffDays"];
+  if (!input || typeof input !== "object") return null;
+  var out = {};
+  for (var i = 0; i < ACTIONS.length; i++) {
+    var k = ACTIONS[i];
+    var entry = input[k];
+    if (!entry || typeof entry !== "object") return null;
+    out[k] = {
+      salesAdmin: entry.salesAdmin === true,
+      hr:         entry.hr === true
+    };
+  }
+  return out;
+}
+
+// Read attendance settings. Owner / sales_admin / hr can all read (they each
+// need to know their own permission state to render the right UI). PATCH
+// endpoints below remain Owner-only.
+app.get("/api/settings/attendance", auth, async function(req, res) {
+  try {
+    var role = req.user.role;
+    if (role !== "admin" && role !== "sales_admin" && role !== "hr") {
+      return res.status(403).json({ error: "Permission denied" });
+    }
+    res.json(await getAttendanceSettings());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch("/api/settings/office-location", auth, ownerOnly, async function(req, res) {
+  try {
+    var locations = Array.isArray(req.body && req.body.companyLocations) ? req.body.companyLocations : null;
+    if (!locations) return res.status(400).json({ error: "companyLocations array required" });
+    if (locations.length === 0) return res.status(400).json({ error: "At least one office location required" });
+
+    // Normalize + validate each entry. Schema future-proofs for multiple offices
+    // (doc §4) but practically we expect exactly one for now.
+    var normalized = [];
+    for (var i = 0; i < locations.length; i++) {
+      var err = validateOfficeLocation(locations[i]);
+      if (err) return res.status(400).json({ error: "Location " + (i + 1) + ": " + err });
+      normalized.push({
+        name:         String(locations[i].name).trim(),
+        latitude:     Number(locations[i].latitude),
+        longitude:    Number(locations[i].longitude),
+        radiusMeters: Number(locations[i].radiusMeters),
+        isActive:     locations[i].isActive !== false
+      });
+    }
+
+    var prev = await getAttendanceSettings();
+    var next = { companyLocations: normalized, permissions: prev.permissions };
+    await saveAttendanceSettings(next, req.user.id, { companyLocations: prev.companyLocations },
+      "OFFICE_LOCATION_CHANGED", req.ip);
+    res.json(next);
+  } catch (e) {
+    console.error("[PATCH /settings/office-location]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch("/api/settings/permissions", auth, ownerOnly, async function(req, res) {
+  try {
+    var permissions = normalizePermissions(req.body && req.body.permissions);
+    if (!permissions) {
+      return res.status(400).json({
+        error: "permissions must contain manageSalaries, manageAttendance, approveOffSiteRequests, manageCompanyOffDays — each with salesAdmin and hr booleans"
+      });
+    }
+    var prev = await getAttendanceSettings();
+    var next = { companyLocations: prev.companyLocations, permissions: permissions };
+    await saveAttendanceSettings(next, req.user.id, { permissions: prev.permissions },
+      "PERMISSION_CHANGED", req.ip);
+    res.json(next);
+  } catch (e) {
+    console.error("[PATCH /settings/permissions]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =====================================================================
+// ATTENDANCE — Phase 3: helpers + check-in/out + own & team views
+// =====================================================================
+
+// Africa/Cairo date helpers. Egypt observes DST (re-introduced 2023) so we
+// must NOT hard-code +2/+3 — Intl.DateTimeFormat handles the offset for us.
+// getCairoDateParts returns integer y/m/d/hour/minute + 3-letter weekday.
+// getCairoStartOfDay returns a UTC Date pinned at midnight of the Cairo
+// calendar day, used as the dedupe key in the Attendance unique index.
+function getCairoDateParts(date) {
+  var fmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Africa/Cairo",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+    weekday: "short"
+  });
+  var parts = fmt.formatToParts(date instanceof Date ? date : new Date(date));
+  var p = {};
+  for (var i = 0; i < parts.length; i++) p[parts[i].type] = parts[i].value;
+  // Some Intl impls return "24" for midnight — normalize.
+  var hour = p.hour === "24" ? "00" : p.hour;
+  return {
+    year:    parseInt(p.year, 10),
+    month:   parseInt(p.month, 10),
+    day:     parseInt(p.day, 10),
+    hour:    parseInt(hour, 10),
+    minute:  parseInt(p.minute, 10),
+    weekday: p.weekday   // "Mon" "Tue" "Wed" "Thu" "Fri" "Sat" "Sun"
+  };
+}
+function getCairoStartOfDay(date) {
+  var p = getCairoDateParts(date || new Date());
+  return new Date(Date.UTC(p.year, p.month - 1, p.day));
+}
+
+// Haversine distance in meters. Server-authoritative — never trust the client
+// (a spoofed payload can claim distance=0 from anywhere).
+function haversineDistance(lat1, lng1, lat2, lng2) {
+  var R = 6371000;
+  var toRad = function(d){ return d * Math.PI / 180; };
+  var phi1 = toRad(lat1), phi2 = toRad(lat2);
+  var dPhi = toRad(lat2 - lat1);
+  var dLam = toRad(lng2 - lng1);
+  var a = Math.sin(dPhi/2) * Math.sin(dPhi/2) +
+          Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLam/2) * Math.sin(dLam/2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function detectDeviceType(ua) {
+  if (!ua) return "unknown";
+  return /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? "mobile" : "desktop";
+}
+
+// Doc §2 — work shift by role. Returns null for roles with no attendance
+// tracking (admin/Owner, viewer). End time is informational only — there's
+// no early-checkout deduction (doc §5).
+function getRoleWorkShift(role) {
+  if (role === "sales" || role === "team_leader" || role === "manager" || role === "director") {
+    return { startTime: "11:00", endTime: "21:00" };
+  }
+  if (role === "sales_admin" || role === "hr") {
+    return { startTime: "10:00", endTime: "18:00" };
+  }
+  return null;
+}
+
+// Doc §7 — late tier from check-in time. Granularity is whole minutes. The
+// boundaries are inclusive on the lower tier (e.g. 11:15:30 = 15 minutes late
+// = no deduction; 11:16:00 = 16 minutes late = ¼ day).
+function computeLateTier(checkInTime, role) {
+  var shift = getRoleWorkShift(role);
+  if (!shift) return { status: "present", deductionFraction: 0 };
+  var hh = parseInt(shift.startTime.split(":")[0], 10);
+  var mm = parseInt(shift.startTime.split(":")[1], 10);
+  var startMin = hh * 60 + mm;
+  var ci = getCairoDateParts(checkInTime);
+  var ciMin = ci.hour * 60 + ci.minute;
+  var lateMin = ciMin - startMin;
+  if (lateMin <= 15) return { status: "present",      deductionFraction: 0    };
+  if (lateMin <= 30) return { status: "late_quarter", deductionFraction: 0.25 };
+  if (lateMin <= 60) return { status: "late_half",    deductionFraction: 0.5  };
+  return                    { status: "late_full",    deductionFraction: 1    };
+}
+
+// Doc §3 — Saturday alternating logic. saturdayPatternStartDate must be a
+// "work Saturday" (the doc's anchor). Even-numbered weeks since the anchor
+// are work Saturdays; odd are off. always_work / always_off short-circuit.
+function isSaturdayWorkday(user, cairoParts) {
+  var sched = user.saturdaySchedule || "always_work";
+  if (sched === "always_work") return true;
+  if (sched === "always_off")  return false;
+  if (sched === "alternating") {
+    if (!user.saturdayPatternStartDate) return true;
+    var anchor = getCairoDateParts(new Date(user.saturdayPatternStartDate));
+    var anchorUTC  = Date.UTC(anchor.year, anchor.month - 1, anchor.day);
+    var currentUTC = Date.UTC(cairoParts.year, cairoParts.month - 1, cairoParts.day);
+    var weeksDiff = Math.round((currentUTC - anchorUTC) / (7 * 86400000));
+    return Math.abs(weeksDiff) % 2 === 0;
+  }
+  return true;
+}
+
+// Resolve whether the user is off on a given moment. Returns
+// { off: bool, reason: "owner_no_tracking" | "friday" | "saturday" | "company:<name>" | null }.
+async function getOffStatus(user, when) {
+  if (user.role === "admin") return { off: true, reason: "owner_no_tracking" };
+  var parts = getCairoDateParts(when);
+  if (parts.weekday === "Fri") return { off: true, reason: "friday" };
+  if (parts.weekday === "Sat" && !isSaturdayWorkday(user, parts)) {
+    return { off: true, reason: "saturday" };
+  }
+  var dateKey = getCairoStartOfDay(when);
+  var coff = await CompanyOffDay.findOne({ date: dateKey }).lean();
+  if (coff) return { off: true, reason: "company:" + coff.name };
+  return { off: false, reason: null };
+}
+
+// Build the attendance/today payload. Single source of truth for the widget,
+// the attendance page, and any future poll. Owner gets a 400 — they have no
+// attendance and the widget should not be rendered for them.
+async function buildTodayPayload(user) {
+  var now = new Date();
+  var dateKey = getCairoStartOfDay(now);
+  var [attendance, settings, offStatus, pendingOff] = await Promise.all([
+    Attendance.findOne({ userId: user._id, date: dateKey }).lean(),
+    getAttendanceSettings(),
+    getOffStatus(user, now),
+    OffSiteRequest.findOne({ userId: user._id, status: "pending" }).sort({ requestedAt: -1 }).lean()
+  ]);
+  var loc = (settings.companyLocations || []).find(function(l){ return l.isActive; }) || null;
+  return {
+    attendance: attendance || null,
+    isOffDay: offStatus.off,
+    offReason: offStatus.reason,
+    workShift: getRoleWorkShift(user.role),
+    pendingOffSite: pendingOff || null,
+    geofence: loc ? {
+      name: loc.name,
+      latitude: loc.latitude,
+      longitude: loc.longitude,
+      radiusMeters: loc.radiusMeters
+    } : null,
+    serverTime: now.toISOString()
+  };
+}
+
+// ----- Employee endpoints -----
+
+app.get("/api/attendance/today", auth, async function(req, res) {
+  try {
+    if (req.user.role === "admin") {
+      return res.status(400).json({ error: "Owner does not have attendance" });
+    }
+    var user = await User.findById(req.user.id).lean();
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json(await buildTodayPayload(user));
+  } catch (e) {
+    console.error("[GET /attendance/today]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/attendance/check-in", auth, async function(req, res) {
+  try {
+    if (req.user.role === "admin") return res.status(400).json({ error: "Owner does not check in" });
+
+    var lat = Number(req.body && req.body.latitude);
+    var lng = Number(req.body && req.body.longitude);
+    var acc = Number((req.body && req.body.accuracy) || 0);
+    if (!isFinite(lat) || !isFinite(lng)) return res.status(400).json({ error: "Invalid coordinates" });
+
+    var user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    var settings = await getAttendanceSettings();
+    var loc = (settings.companyLocations || []).find(function(l){ return l.isActive; });
+    if (!loc) return res.status(503).json({ error: "Office location not configured. Contact Owner.", code: "no_office" });
+
+    var now = new Date();
+    var off = await getOffStatus(user, now);
+    if (off.off) return res.status(400).json({ error: "Today is off (" + off.reason + ")", code: "off_day", offReason: off.reason });
+
+    var distance = haversineDistance(lat, lng, loc.latitude, loc.longitude);
+    if (distance > loc.radiusMeters) {
+      // Off-site path is Phase 4 — the widget shows a "Request off-site" button
+      // when this 403 fires. Server reply includes distance so the UI can
+      // render "X meters away from the office".
+      return res.status(403).json({
+        error: "Outside office geofence",
+        code: "outside_geofence",
+        distanceMeters: Math.round(distance),
+        radiusMeters: loc.radiusMeters
+      });
+    }
+
+    var dateKey = getCairoStartOfDay(now);
+    var existing = await Attendance.findOne({ userId: user._id, date: dateKey });
+    if (existing && existing.checkIn && existing.checkIn.timestamp) {
+      return res.status(409).json({ error: "Already checked in today", code: "already_checked_in", attendance: existing });
+    }
+
+    var tier = computeLateTier(now, user.role);
+
+    var att = await Attendance.findOneAndUpdate(
+      { userId: user._id, date: dateKey },
+      { $set: {
+          userId: user._id, date: dateKey,
+          checkIn: {
+            timestamp: now,
+            latitude: lat, longitude: lng,
+            distanceMeters: Math.round(distance),
+            accuracyMeters: Math.round(acc),
+            ipAddress: req.ip,
+            deviceType: detectDeviceType(req.headers["user-agent"]),
+            isOffSite: false
+          },
+          status: "in_progress",
+          deductionFraction: tier.deductionFraction,
+          computedAt: now
+        }},
+      { upsert: true, new: true }
+    );
+
+    try {
+      broadcast("attendance_updated", { userId: String(user._id), attendance: att });
+    } catch (e) {}
+
+    // Phase 6 (doc §12) — fire 5-lates notification if this check-in pushes
+    // the user across the threshold. Helper short-circuits if already fired
+    // this month or count < 5, so it's safe to call unconditionally.
+    if (tier.deductionFraction > 0) {
+      maybeFireLateNotification(user).catch(function(){});
+    }
+
+    res.json({ attendance: att, lateTier: tier });
+  } catch (e) {
+    console.error("[POST /attendance/check-in]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/attendance/check-out", auth, async function(req, res) {
+  try {
+    if (req.user.role === "admin") return res.status(400).json({ error: "Owner does not check out" });
+
+    var lat = Number(req.body && req.body.latitude);
+    var lng = Number(req.body && req.body.longitude);
+    var acc = Number((req.body && req.body.accuracy) || 0);
+    if (!isFinite(lat) || !isFinite(lng)) return res.status(400).json({ error: "Invalid coordinates" });
+
+    var user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    var settings = await getAttendanceSettings();
+    var loc = (settings.companyLocations || []).find(function(l){ return l.isActive; });
+    var distance = loc ? haversineDistance(lat, lng, loc.latitude, loc.longitude) : null;
+
+    var now = new Date();
+    var dateKey = getCairoStartOfDay(now);
+    var att = await Attendance.findOne({ userId: user._id, date: dateKey });
+    if (!att || !att.checkIn || !att.checkIn.timestamp) {
+      return res.status(400).json({ error: "Not checked in yet", code: "not_checked_in" });
+    }
+    if (att.checkOut && att.checkOut.timestamp) {
+      return res.status(409).json({ error: "Already checked out", code: "already_checked_out", attendance: att });
+    }
+    if (att.status === "pending_offsite") {
+      return res.status(400).json({ error: "Off-site check-in still pending approval", code: "offsite_pending" });
+    }
+
+    // On check-out the status flips from in_progress to the late tier set at
+    // check-in (preserved via deductionFraction). present / late_quarter /
+    // late_half / late_full are derived purely from that fraction.
+    var endStatus = "present";
+    if (att.deductionFraction === 0.25) endStatus = "late_quarter";
+    else if (att.deductionFraction === 0.5)  endStatus = "late_half";
+    else if (att.deductionFraction === 1)    endStatus = "late_full";
+
+    // Phase 4: outside geofence on check-out → 403, frontend routes to the
+    // off-site modal (POST /api/offsite/request type=check_out). Symmetrical
+    // with the check-in flow.
+    if (!loc) return res.status(503).json({ error: "Office location not configured.", code: "no_office" });
+    if (distance != null && distance > loc.radiusMeters) {
+      return res.status(403).json({
+        error: "Outside office geofence",
+        code: "outside_geofence",
+        distanceMeters: Math.round(distance),
+        radiusMeters: loc.radiusMeters
+      });
+    }
+
+    att.checkOut = {
+      timestamp: now,
+      latitude: lat, longitude: lng,
+      distanceMeters: distance != null ? Math.round(distance) : null,
+      accuracyMeters: Math.round(acc),
+      ipAddress: req.ip,
+      deviceType: detectDeviceType(req.headers["user-agent"]),
+      isOffSite: false
+    };
+    att.status = endStatus;
+    att.computedAt = now;
+    await att.save();
+
+    try {
+      broadcast("attendance_updated", { userId: String(user._id), attendance: att });
+    } catch (e) {}
+
+    res.json({ attendance: att });
+  } catch (e) {
+    console.error("[POST /attendance/check-out]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Own monthly history. Returns raw attendance docs for the requested month
+// (Africa/Cairo). Frontend fills in absent days for weekdays without a doc.
+app.get("/api/attendance/my-month", auth, async function(req, res) {
+  try {
+    if (req.user.role === "admin") return res.status(400).json({ error: "Owner has no attendance" });
+    var year  = parseInt(req.query.year,  10);
+    var month = parseInt(req.query.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "year + month query params required (month is 1-12)" });
+    }
+    var start = new Date(Date.UTC(year, month - 1, 1));
+    var end   = new Date(Date.UTC(year, month,     1));
+    var rows = await Attendance.find({
+      userId: req.user.id,
+      date: { $gte: start, $lt: end }
+    }).sort({ date: 1 }).lean();
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /attendance/my-month]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----- Admin endpoint: today's team view -----
+
+app.get("/api/attendance/today/all", auth, requireAttendancePermission("manageAttendance"),
+async function(req, res) {
+  try {
+    var dateKey = getCairoStartOfDay(new Date());
+    var users = await User.find({ role: { $ne: "admin" }, active: true })
+      .select("name role title teamId teamName saturdaySchedule saturdayPatternStartDate")
+      .lean();
+    var atts = await Attendance.find({ date: dateKey }).lean();
+    var attByUser = {};
+    atts.forEach(function(a){ attByUser[String(a.userId)] = a; });
+
+    // Hydrate off-status per user — Friday is a single shared check, but
+    // Saturday + company off-days vary, so resolve once per row.
+    var rows = [];
+    for (var i = 0; i < users.length; i++) {
+      var u = users[i];
+      var off = await getOffStatus(u, new Date());
+      rows.push({
+        user: { _id: u._id, name: u.name, role: u.role, title: u.title, teamId: u.teamId, teamName: u.teamName },
+        attendance: attByUser[String(u._id)] || null,
+        isOffDay: off.off,
+        offReason: off.reason,
+        workShift: getRoleWorkShift(u.role)
+      });
+    }
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /attendance/today/all]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =====================================================================
+// OFF-SITE REQUESTS — Phase 4 (doc §6)
+// Hybrid approval flow: the check-in (or check-out) is recorded immediately
+// with status="pending_offsite" so the original timestamp is preserved.
+// On approve we recompute the late tier from that timestamp; on reject we
+// void the entry (check-in → absent + full deduction; check-out → revert to
+// in_progress so the user can try again).
+// =====================================================================
+
+app.post("/api/offsite/request", auth, async function(req, res) {
+  try {
+    if (req.user.role === "admin") return res.status(400).json({ error: "Owner does not need off-site requests" });
+
+    var type = req.body && req.body.type;
+    var lat = Number(req.body && req.body.latitude);
+    var lng = Number(req.body && req.body.longitude);
+    var acc = Number((req.body && req.body.accuracy) || 0);
+    var reason = (req.body && req.body.reason) ? String(req.body.reason).trim() : "";
+    var attachmentUrl = (req.body && req.body.attachmentUrl) ? String(req.body.attachmentUrl) : "";
+
+    if (type !== "check_in" && type !== "check_out") return res.status(400).json({ error: "type must be check_in or check_out" });
+    if (!isFinite(lat) || !isFinite(lng)) return res.status(400).json({ error: "Invalid coordinates" });
+    if (reason.length < 10) return res.status(400).json({ error: "Reason must be at least 10 characters" });
+
+    var user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    var now = new Date();
+    var off = await getOffStatus(user, now);
+    if (off.off) return res.status(400).json({ error: "Today is off (" + off.reason + ")", code: "off_day" });
+
+    var dateKey = getCairoStartOfDay(now);
+
+    // One pending request at a time per user — keeps the inbox clean.
+    var existingPending = await OffSiteRequest.findOne({ userId: user._id, status: "pending" });
+    if (existingPending) return res.status(409).json({ error: "You already have a pending off-site request", code: "already_pending" });
+
+    var existingAtt = await Attendance.findOne({ userId: user._id, date: dateKey });
+    if (type === "check_in") {
+      if (existingAtt && existingAtt.checkIn && existingAtt.checkIn.timestamp) {
+        return res.status(409).json({ error: "Already checked in today", code: "already_checked_in" });
+      }
+    } else {
+      if (!existingAtt || !existingAtt.checkIn || !existingAtt.checkIn.timestamp) {
+        return res.status(400).json({ error: "Not checked in yet", code: "not_checked_in" });
+      }
+      if (existingAtt.checkOut && existingAtt.checkOut.timestamp) {
+        return res.status(409).json({ error: "Already checked out", code: "already_checked_out" });
+      }
+    }
+
+    var reqDoc = await OffSiteRequest.create({
+      userId: user._id, type: type,
+      requestedAt: now,
+      latitude: lat, longitude: lng,
+      reason: reason, attachmentUrl: attachmentUrl,
+      status: "pending"
+    });
+
+    var att;
+    var slot = {
+      timestamp: now,
+      latitude: lat, longitude: lng,
+      accuracyMeters: Math.round(acc),
+      ipAddress: req.ip,
+      deviceType: detectDeviceType(req.headers["user-agent"]),
+      isOffSite: true,
+      offSiteRequestId: reqDoc._id
+    };
+    if (type === "check_in") {
+      att = await Attendance.findOneAndUpdate(
+        { userId: user._id, date: dateKey },
+        { $set: {
+            userId: user._id, date: dateKey,
+            checkIn: slot,
+            status: "pending_offsite",
+            deductionFraction: 0, // recomputed on approval
+            computedAt: now
+          }},
+        { upsert: true, new: true }
+      );
+    } else {
+      existingAtt.checkOut = slot;
+      existingAtt.status = "pending_offsite";
+      existingAtt.computedAt = now;
+      await existingAtt.save();
+      att = existingAtt;
+    }
+    await OffSiteRequest.updateOne({ _id: reqDoc._id }, { $set: { attendanceId: att._id } });
+    reqDoc.attendanceId = att._id;
+
+    try {
+      broadcast("attendance_updated", { userId: String(user._id), attendance: att });
+      broadcast("offsite_request_updated", {});
+    } catch (e) {}
+
+    res.json({ request: reqDoc, attendance: att });
+  } catch (e) {
+    console.error("[POST /offsite/request]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/offsite/:id", auth, async function(req, res) {
+  try {
+    var r = await OffSiteRequest.findById(req.params.id);
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (String(r.userId) !== String(req.user.id)) return res.status(403).json({ error: "Not yours" });
+    if (r.status !== "pending") return res.status(400).json({ error: "Cannot cancel after admin action" });
+
+    var user = await User.findById(r.userId).lean();
+    r.status = "cancelled";
+    await r.save();
+
+    var att = r.attendanceId ? await Attendance.findById(r.attendanceId) : null;
+    if (att) {
+      if (r.type === "check_in") {
+        // Cancelling check-in request → drop the attendance entirely so the
+        // user can try again (on-site) the same day.
+        await Attendance.deleteOne({ _id: att._id });
+        att = null;
+      } else {
+        // Cancelling check-out request → revert to in_progress and restore
+        // the late tier originally set at check-in.
+        att.checkOut = undefined;
+        if (user && att.checkIn && att.checkIn.timestamp) {
+          var tier = computeLateTier(att.checkIn.timestamp, user.role);
+          att.deductionFraction = tier.deductionFraction;
+        }
+        att.status = "in_progress";
+        await att.save();
+      }
+      try { broadcast("attendance_updated", { userId: String(r.userId), attendance: att }); } catch(e){}
+    }
+    try { broadcast("offsite_request_updated", {}); } catch(e){}
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[DELETE /offsite/:id]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/offsite/pending", auth, requireAttendancePermission("approveOffSiteRequests"),
+async function(req, res) {
+  try {
+    var rows = await OffSiteRequest.find({ status: "pending" })
+      .populate("userId", "name role title teamName")
+      .sort({ requestedAt: 1 })
+      .lean();
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/offsite/:id/approve", auth, requireAttendancePermission("approveOffSiteRequests"),
+async function(req, res) {
+  try {
+    var r = await OffSiteRequest.findById(req.params.id);
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (r.status !== "pending") return res.status(400).json({ error: "Already " + r.status });
+
+    var att = r.attendanceId ? await Attendance.findById(r.attendanceId) : null;
+    if (!att) return res.status(500).json({ error: "Linked attendance missing" });
+    var user = await User.findById(r.userId).lean();
+
+    // Approval recomputes the late tier from the original check-in time. If
+    // check-out is set, we move to the late-tier status; otherwise we leave
+    // status as in_progress until check-out happens.
+    var tier = att.checkIn && att.checkIn.timestamp
+      ? computeLateTier(att.checkIn.timestamp, user.role)
+      : { status: "present", deductionFraction: 0 };
+    att.deductionFraction = tier.deductionFraction;
+    att.status = (att.checkOut && att.checkOut.timestamp) ? tier.status : "in_progress";
+    att.computedAt = new Date();
+    await att.save();
+
+    r.status = "approved";
+    r.reviewedBy = req.user.id;
+    r.reviewedAt = new Date();
+    await r.save();
+
+    try {
+      await AuditLog.create({
+        type: "OFFSITE_APPROVED",
+        targetUserId: r.userId,
+        performedBy: req.user.id,
+        before: {},
+        after: { requestId: String(r._id), type: r.type, attendanceId: String(att._id), tier: tier },
+        ipAddress: req.ip
+      });
+    } catch (e) {}
+
+    try {
+      broadcast("attendance_updated", { userId: String(r.userId), attendance: att });
+      broadcast("offsite_request_updated", {});
+    } catch (e) {}
+
+    // Phase 6 — re-evaluate the 5-lates threshold after approval (the
+    // original timestamp could have been late and only now becomes counted).
+    if (tier && tier.deductionFraction > 0) {
+      maybeFireLateNotification(user).catch(function(){});
+    }
+
+    res.json({ request: r, attendance: att });
+  } catch (e) {
+    console.error("[POST /offsite/:id/approve]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/offsite/:id/reject", auth, requireAttendancePermission("approveOffSiteRequests"),
+async function(req, res) {
+  try {
+    var r = await OffSiteRequest.findById(req.params.id);
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (r.status !== "pending") return res.status(400).json({ error: "Already " + r.status });
+
+    var notes = (req.body && req.body.notes) ? String(req.body.notes) : "";
+    var att = r.attendanceId ? await Attendance.findById(r.attendanceId) : null;
+
+    if (att) {
+      if (r.type === "check_in") {
+        // Reject check-in → mark day as absent (full deduction). We keep the
+        // attendance row so the audit trail is complete; checkIn is cleared.
+        att.checkIn = undefined;
+        att.status = "absent";
+        att.deductionFraction = 1;
+        await att.save();
+      } else {
+        // Reject check-out → revert to in_progress, restore the original late
+        // tier so the user can try checking out again from inside the office.
+        att.checkOut = undefined;
+        var user = await User.findById(r.userId).lean();
+        if (user && att.checkIn && att.checkIn.timestamp) {
+          var tier = computeLateTier(att.checkIn.timestamp, user.role);
+          att.deductionFraction = tier.deductionFraction;
+        }
+        att.status = "in_progress";
+        await att.save();
+      }
+    }
+
+    r.status = "rejected";
+    r.reviewedBy = req.user.id;
+    r.reviewedAt = new Date();
+    r.reviewNotes = notes;
+    await r.save();
+
+    try {
+      await AuditLog.create({
+        type: "OFFSITE_REJECTED",
+        targetUserId: r.userId,
+        performedBy: req.user.id,
+        before: {},
+        after: { requestId: String(r._id), type: r.type, notes: notes, attendanceId: att ? String(att._id) : null },
+        ipAddress: req.ip
+      });
+    } catch (e) {}
+
+    try {
+      broadcast("attendance_updated", { userId: String(r.userId), attendance: att });
+      broadcast("offsite_request_updated", {});
+    } catch (e) {}
+    res.json({ request: r, attendance: att });
+  } catch (e) {
+    console.error("[POST /offsite/:id/reject]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =====================================================================
+// COMPANY OFF-DAYS — Phase 4 (doc §11)
+// Calendar dates that are off for everyone. Removed from each user's
+// workingDays count during salary calc. Read by anyone (it's not sensitive);
+// write requires manageCompanyOffDays.
+// =====================================================================
+
+app.get("/api/company-off-days", auth, async function(req, res) {
+  try {
+    var year = parseInt(req.query.year, 10);
+    var query = {};
+    if (isFinite(year)) {
+      query.date = {
+        $gte: new Date(Date.UTC(year, 0, 1)),
+        $lt: new Date(Date.UTC(year + 1, 0, 1))
+      };
+    }
+    var rows = await CompanyOffDay.find(query).sort({ date: 1 }).populate("createdBy", "name").lean();
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/company-off-days", auth, requireAttendancePermission("manageCompanyOffDays"),
+async function(req, res) {
+  try {
+    var dateStr = (req.body && req.body.date) ? String(req.body.date) : "";
+    var name    = (req.body && req.body.name) ? String(req.body.name).trim() : "";
+    if (!dateStr) return res.status(400).json({ error: "date required (YYYY-MM-DD)" });
+    if (!name)    return res.status(400).json({ error: "name required" });
+    if (name.length > 100) return res.status(400).json({ error: "name too long" });
+
+    var m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
+    var dateKey = new Date(Date.UTC(parseInt(m[1],10), parseInt(m[2],10) - 1, parseInt(m[3],10)));
+
+    // Doc §11: cannot add off-days in past months. We compute "first day of
+    // current Cairo month" as the floor.
+    var nowParts = getCairoDateParts(new Date());
+    var monthFloor = new Date(Date.UTC(nowParts.year, nowParts.month - 1, 1));
+    if (dateKey < monthFloor) return res.status(400).json({ error: "Cannot add off-day in a past month" });
+
+    try {
+      var off = await CompanyOffDay.create({ date: dateKey, name: name, createdBy: req.user.id });
+      try {
+        await AuditLog.create({
+          type: "COMPANY_OFFDAY_ADDED",
+          performedBy: req.user.id,
+          after: { date: dateKey, name: name },
+          ipAddress: req.ip
+        });
+      } catch (e) {}
+      try { broadcast("company_offdays_updated", {}); } catch (e) {}
+      res.json(off);
+    } catch (dupErr) {
+      if (dupErr && dupErr.code === 11000) return res.status(409).json({ error: "An off-day already exists for that date" });
+      throw dupErr;
+    }
+  } catch (e) {
+    console.error("[POST /company-off-days]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/company-off-days/:id", auth, requireAttendancePermission("manageCompanyOffDays"),
+async function(req, res) {
+  try {
+    var off = await CompanyOffDay.findById(req.params.id);
+    if (!off) return res.status(404).json({ error: "Not found" });
+
+    var nowParts = getCairoDateParts(new Date());
+    var monthFloor = new Date(Date.UTC(nowParts.year, nowParts.month - 1, 1));
+    if (off.date < monthFloor) return res.status(400).json({ error: "Cannot delete off-day in a past month" });
+
+    await CompanyOffDay.deleteOne({ _id: off._id });
+    try {
+      await AuditLog.create({
+        type: "COMPANY_OFFDAY_REMOVED",
+        performedBy: req.user.id,
+        before: { date: off.date, name: off.name },
+        ipAddress: req.ip
+      });
+    } catch (e) {}
+    try { broadcast("company_offdays_updated", {}); } catch (e) {}
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[DELETE /company-off-days/:id]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =====================================================================
+// SALARY ENGINE — Phase 5A (doc §8)
+// Per-employee monthly calculation. Pre-finalization is computed on the fly
+// each request; post-finalization we serve the SalaryRecord snapshot so the
+// numbers can never drift from what was approved.
+// =====================================================================
+
+// Calendar working days in (year, month) for a user — total Cairo days minus
+// Fridays, off-Saturdays per the user's saturdaySchedule, and company off-days
+// that fall in the month. Pure function; takes the off-day list as input.
+function computeCalendarWorkingDays(user, year, month, companyOffDays) {
+  var daysInMonth = new Date(year, month, 0).getDate();
+  // Pre-build a fast lookup of company off-days as ISO date keys.
+  var coffSet = {};
+  (companyOffDays || []).forEach(function(c){
+    var d = new Date(c.date);
+    coffSet[d.getUTCFullYear() + "-" + (d.getUTCMonth() + 1) + "-" + d.getUTCDate()] = true;
+  });
+  var count = 0;
+  for (var d = 1; d <= daysInMonth; d++) {
+    var date = new Date(Date.UTC(year, month - 1, d));
+    var parts = getCairoDateParts(date);
+    if (parts.weekday === "Fri") continue;
+    if (parts.weekday === "Sat" && !isSaturdayWorkday(user, parts)) continue;
+    if (coffSet[year + "-" + month + "-" + d]) continue;
+    count++;
+  }
+  return count;
+}
+
+// Walk every workday in the month, count those without an attendance record
+// AND not overridden. Matches doc §8: "1 day for each absence — i.e. workday
+// with no check-in and no override". Future workdays don't count as absent
+// yet (live-month case: today is May 7, the rest of May isn't "missed").
+function computeMonthlyAbsences(user, year, month, companyOffDays, attendances) {
+  var coffSet = {};
+  (companyOffDays || []).forEach(function(c){
+    var d = new Date(c.date);
+    coffSet[d.getUTCFullYear() + "-" + (d.getUTCMonth() + 1) + "-" + d.getUTCDate()] = true;
+  });
+  var attSet = {};
+  (attendances || []).forEach(function(a){
+    var d = new Date(a.date);
+    attSet[d.getUTCFullYear() + "-" + (d.getUTCMonth() + 1) + "-" + d.getUTCDate()] = true;
+  });
+  var nowParts = getCairoDateParts(new Date());
+  var todayUTC = Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day);
+  var daysInMonth = new Date(year, month, 0).getDate();
+  var absences = 0;
+  for (var d = 1; d <= daysInMonth; d++) {
+    var dayUTC = Date.UTC(year, month - 1, d);
+    if (dayUTC >= todayUTC) continue;          // future / today still in progress
+    var parts = getCairoDateParts(new Date(dayUTC));
+    if (parts.weekday === "Fri") continue;
+    if (parts.weekday === "Sat" && !isSaturdayWorkday(user, parts)) continue;
+    if (coffSet[year + "-" + month + "-" + d]) continue;
+    if (attSet[year + "-" + month + "-" + d]) continue;
+    absences++;
+  }
+  return absences;
+}
+
+// Full salary computation. Returns a plain object matching SalaryRecord shape
+// (without _id / finalized fields). Pre-finalization, this is the live value
+// shown in the UI; post-finalization, the saved SalaryRecord wins.
+async function computeMonthlySalary(user, year, month) {
+  if (!user || user.role === "admin") return null;
+  var baseSalary = Number(user.baseSalary) || 0;
+
+  var start = new Date(Date.UTC(year, month - 1, 1));
+  var end   = new Date(Date.UTC(year, month, 1));
+
+  var [companyOffDays, attendances] = await Promise.all([
+    CompanyOffDay.find({ date: { $gte: start, $lt: end } }).lean(),
+    Attendance.find({ userId: user._id, date: { $gte: start, $lt: end } }).lean()
+  ]);
+
+  // Override action="mark_off_day" pulls the day out of working days entirely.
+  var overrideOff = attendances.filter(function(a){
+    return a.override && a.override.action === "mark_off_day";
+  }).length;
+  var calendarWorking = computeCalendarWorkingDays(user, year, month, companyOffDays);
+  var workingDays = Math.max(0, calendarWorking - overrideOff);
+
+  var absences = computeMonthlyAbsences(user, year, month, companyOffDays, attendances);
+
+  // Sum of per-day deduction fractions stored on the attendance docs
+  // (already reflects late tiers AND admin overrides — override writes to
+  // deductionFraction directly).
+  var fractionSum = attendances.reduce(function(s, a){
+    return s + (Number(a.deductionFraction) || 0);
+  }, 0);
+
+  var deductionDays = fractionSum + absences;
+  var dailyRate = workingDays > 0 ? (baseSalary / workingDays) : 0;
+  var totalDeductions = deductionDays * dailyRate;
+  var netSalary = baseSalary - totalDeductions;
+
+  return {
+    userId: user._id,
+    year: year,
+    month: month,
+    baseSalary: baseSalary,
+    workingDays: workingDays,
+    dailyRate: dailyRate,
+    deductionDays: deductionDays,
+    totalDeductions: totalDeductions,
+    netSalary: netSalary,
+    finalized: false,
+    finalizedBy: null,
+    finalizedAt: null,
+    computedAt: new Date()
+  };
+}
+
+// Permission decision — combined view + edit eligibility for one (requester,
+// target) pair. Returns { canView, canEdit }. Logic per doc §8/§14:
+//   - Owner can view + edit anyone (except other admins which don't have salary)
+//   - Self can view own salary (read-only — sales_admin/hr can't edit own pay)
+//   - Anyone with manageSalaries can view sales-side roles
+//   - sales_admin/hr targets are EDIT-restricted to Owner only
+function salaryAccess(requester, target, settings) {
+  var out = { canView: false, canEdit: false };
+  if (!target || target.role === "admin") return out;
+  var rRole = requester.role;
+  var isSelf = String(requester.id) === String(target._id);
+
+  if (rRole === "admin") {
+    out.canView = true;
+    out.canEdit = true;
+    return out;
+  }
+
+  if (isSelf) {
+    out.canView = true;
+    // Self-edit blocked even with manageSalaries (sales_admin/hr can't edit
+    // own pay). Sales-side roles never have manageSalaries anyway.
+    return out;
+  }
+
+  var hasPerm = hasAttendancePermission(rRole, "manageSalaries", settings);
+  if (!hasPerm) return out;
+
+  // Sales Admin / HR with manageSalaries can view + edit sales-side roles only.
+  var targetIsRestricted = target.role === "sales_admin" || target.role === "hr";
+  if (targetIsRestricted) return out;  // both view + edit denied per doc §14
+
+  out.canView = true;
+  out.canEdit = true;
+  return out;
+}
+
+app.get("/api/salary/users/:userId/:year/:month", auth, async function(req, res) {
+  try {
+    var year  = parseInt(req.params.year,  10);
+    var month = parseInt(req.params.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "Invalid year/month" });
+    }
+    var target = await User.findById(req.params.userId).lean();
+    if (!target) return res.status(404).json({ error: "User not found" });
+
+    var settings = await getAttendanceSettings();
+    var access = salaryAccess(req.user, target, settings);
+    if (!access.canView) return res.status(403).json({ error: "Permission denied" });
+
+    // Finalized snapshot wins — never recompute a finalized month.
+    var snap = await SalaryRecord.findOne({ userId: target._id, year: year, month: month })
+      .populate("finalizedBy", "name").lean();
+    var live = await computeMonthlySalary(target, year, month);
+
+    var payload = snap && snap.finalized ? snap : live;
+    if (!payload) return res.status(400).json({ error: "Cannot compute salary for this user" });
+
+    res.json({
+      salary: payload,
+      finalized: !!(snap && snap.finalized),
+      finalizedBy: snap && snap.finalizedBy ? snap.finalizedBy : null,
+      finalizedAt: snap && snap.finalizedAt ? snap.finalizedAt : null,
+      access: access,
+      target: {
+        _id: target._id, name: target.name, role: target.role, title: target.title,
+        teamId: target.teamId, teamName: target.teamName,
+        startingDate: target.startingDate,
+        baseSalary: target.baseSalary,
+        saturdaySchedule: target.saturdaySchedule,
+        saturdayPatternStartDate: target.saturdayPatternStartDate
+      }
+    });
+  } catch (e) {
+    console.error("[GET /salary/users/:userId/:year/:month]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/salary/list/:year/:month", auth, async function(req, res) {
+  try {
+    var year  = parseInt(req.params.year,  10);
+    var month = parseInt(req.params.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "Invalid year/month" });
+    }
+    var settings = await getAttendanceSettings();
+    var rRole = req.user.role;
+    if (rRole !== "admin" && !hasAttendancePermission(rRole, "manageSalaries", settings)) {
+      return res.status(403).json({ error: "Permission denied" });
+    }
+
+    // Owner sees everyone (excl. other admins which have no salary). SA/HR
+    // with manageSalaries see only sales-side roles per doc §14.
+    var query = { active: true, role: { $ne: "admin" } };
+    if (rRole !== "admin") {
+      query.role = { $nin: ["admin", "sales_admin", "hr"] };
+    }
+    var users = await User.find(query).lean();
+
+    // Pre-fetch finalized snapshots for the period in one query (avoids N+1).
+    var snaps = await SalaryRecord.find({
+      year: year, month: month,
+      userId: { $in: users.map(function(u){ return u._id; }) }
+    }).lean();
+    var snapByUser = {};
+    snaps.forEach(function(s){ snapByUser[String(s.userId)] = s; });
+
+    var rows = [];
+    for (var i = 0; i < users.length; i++) {
+      var u = users[i];
+      var snap = snapByUser[String(u._id)];
+      var salary = snap && snap.finalized ? snap : await computeMonthlySalary(u, year, month);
+      if (!salary) continue;
+      rows.push({
+        user: { _id: u._id, name: u.name, role: u.role, title: u.title, teamId: u.teamId, teamName: u.teamName },
+        salary: salary,
+        finalized: !!(snap && snap.finalized)
+      });
+    }
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /salary/list/:year/:month]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Day Override — Phase 5C (doc §10). Body: { userId, date YYYY-MM-DD,
+// action, reason ≥10 chars, fraction (only for action="apply_fraction") }.
+// Server enforces: requester has manageAttendance, target isn't admin, date
+// not in the future, month not finalized. Sick warning is detected here too
+// — flagged in the audit log when the requested override is the user's 3rd+
+// sick reason in the month. The frontend also previews this client-side.
+var SICK_RE = /sick|مرض|illness/i;
+
+app.post("/api/attendance/override", auth, requireAttendancePermission("manageAttendance"),
+async function(req, res) {
+  try {
+    var userId  = req.body && req.body.userId;
+    var dateStr = req.body && req.body.date;
+    var action  = req.body && req.body.action;
+    var reason  = (req.body && req.body.reason) ? String(req.body.reason).trim() : "";
+    var fraction = (req.body && req.body.fraction != null) ? Number(req.body.fraction) : null;
+    var ALLOWED = ["cancel_deduction", "add_full_deduction", "mark_off_day", "apply_fraction"];
+
+    if (!userId || !dateStr) return res.status(400).json({ error: "userId and date required" });
+    if (ALLOWED.indexOf(action) < 0) return res.status(400).json({ error: "Invalid action" });
+    if (reason.length < 10) return res.status(400).json({ error: "Reason must be at least 10 characters" });
+    if (action === "apply_fraction" && [0, 0.25, 0.5, 1].indexOf(fraction) < 0) {
+      return res.status(400).json({ error: "fraction must be 0, 0.25, 0.5, or 1" });
+    }
+
+    var m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
+    var y = parseInt(m[1], 10), mo = parseInt(m[2], 10), d = parseInt(m[3], 10);
+    var dateKey = new Date(Date.UTC(y, mo - 1, d));
+
+    // Cannot override future dates per doc §10.
+    var nowParts = getCairoDateParts(new Date());
+    var todayUTC = Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day);
+    if (dateKey.getTime() > todayUTC) return res.status(400).json({ error: "Cannot override a future date" });
+
+    var target = await User.findById(userId).lean();
+    if (!target || target.role === "admin") return res.status(404).json({ error: "Invalid user" });
+
+    // Finalized-month gate. Phase 5E creates these snapshots; the gate is in
+    // place now so the contract is consistent end-to-end.
+    var snap = await SalaryRecord.findOne({ userId: target._id, year: y, month: mo }).lean();
+    if (snap && snap.finalized) {
+      return res.status(403).json({ error: "Month is finalized — unlock it first to override days." });
+    }
+
+    // Sick limit check. Per doc §9, count past overrides this month with a
+    // matching reason; flag if this would be the 3rd. We don't block — the
+    // doc is explicit: "warn but allow".
+    var monthStart = new Date(Date.UTC(y, mo - 1, 1));
+    var monthEnd   = new Date(Date.UTC(y, mo, 1));
+    var monthOverrides = await Attendance.find({
+      userId: target._id,
+      date: { $gte: monthStart, $lt: monthEnd },
+      "override.action": { $exists: true, $ne: null }
+    }).lean();
+    var pastSick = monthOverrides.filter(function(a){
+      // Exclude the row we're about to update so re-saving the same day
+      // doesn't double-count itself.
+      if (a.date && new Date(a.date).getTime() === dateKey.getTime()) return false;
+      return a.override && a.override.reason && SICK_RE.test(a.override.reason);
+    }).length;
+    var sickLimitExceeded = SICK_RE.test(reason) && pastSick >= 2;
+
+    var newFraction = 0;
+    if      (action === "cancel_deduction")    newFraction = 0;
+    else if (action === "add_full_deduction")  newFraction = 1;
+    else if (action === "mark_off_day")        newFraction = 0;
+    else if (action === "apply_fraction")      newFraction = fraction;
+
+    var before = await Attendance.findOne({ userId: target._id, date: dateKey }).lean();
+
+    // Preserve any checkIn/checkOut data on the existing record — the
+    // override only changes deductionFraction + status + adds the override
+    // metadata. New records (overriding a totally absent day) are created
+    // without checkIn/checkOut.
+    var ovBlock = {
+      action: action,
+      reason: reason,
+      overriddenBy: req.user.id,
+      overriddenAt: new Date(),
+      sickLimitExceeded: sickLimitExceeded
+    };
+
+    var att;
+    if (before) {
+      att = await Attendance.findOneAndUpdate(
+        { _id: before._id },
+        { $set: {
+            status: "override",
+            deductionFraction: newFraction,
+            override: ovBlock,
+            computedAt: new Date()
+          }},
+        { new: true }
+      );
+    } else {
+      att = await Attendance.create({
+        userId: target._id, date: dateKey,
+        status: "override",
+        deductionFraction: newFraction,
+        override: ovBlock,
+        computedAt: new Date()
+      });
+    }
+
+    try {
+      await AuditLog.create({
+        type: "DAY_OVERRIDDEN",
+        targetUserId: target._id,
+        performedBy: req.user.id,
+        before: before || {},
+        after: att.toObject ? att.toObject() : att,
+        reason: reason,
+        flags: { sickLimitExceeded: sickLimitExceeded },
+        ipAddress: req.ip
+      });
+    } catch (e) {
+      console.error("[override audit]", e && e.message);
+    }
+
+    try { broadcast("attendance_updated", { userId: String(target._id), attendance: att }); } catch (e) {}
+
+    res.json({ attendance: att, sickLimitExceeded: sickLimitExceeded });
+  } catch (e) {
+    console.error("[POST /attendance/override]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =====================================================================
+// PHASE 6 — notifications, audit log read, bulk finalize
+// =====================================================================
+
+// Doc §12 — fire a single notification per (user, month) when the user crosses
+// 5 late check-ins. Counts organic lates only (deductionFraction > 0 with no
+// override.action) so admin overrides don't double-fire. No-op for Owner /
+// users without baseSalary tracking.
+async function maybeFireLateNotification(user) {
+  try {
+    if (!user || user.role === "admin") return;
+    var now = new Date();
+    var p = getCairoDateParts(now);
+    var monthStart = new Date(Date.UTC(p.year, p.month - 1, 1));
+    var monthEnd   = new Date(Date.UTC(p.year, p.month, 1));
+
+    var lates = await Attendance.countDocuments({
+      userId: user._id,
+      date: { $gte: monthStart, $lt: monthEnd },
+      deductionFraction: { $gt: 0 },
+      $or: [{ "override.action": { $exists: false } }, { "override.action": null }]
+    });
+    if (lates < 5) return;
+
+    var existing = await Notification.findOne({
+      type: "attendance_late_5",
+      leadId: String(user._id),
+      createdAt: { $gte: monthStart, $lt: monthEnd }
+    });
+    if (existing) return;
+
+    await Notification.create({
+      type: "attendance_late_5",
+      agentName: user.name,
+      leadId: String(user._id),  // reused to carry the employee id for click-navigation
+      reason: lates + " lates this month"
+    });
+    try { broadcast("notification_updated", {}); } catch (e) {}
+  } catch (e) {
+    console.error("[maybeFireLateNotification]", e && e.message);
+  }
+}
+
+// GET /api/audit — Owner sees all; SA/HR with manageSalaries OR
+// manageAttendance can see the subset for users they're allowed to manage.
+// Filters: targetUserId, type, limit (max 500). Sorted newest first.
+app.get("/api/audit", auth, async function(req, res) {
+  try {
+    var settings = await getAttendanceSettings();
+    var rRole = req.user.role;
+    var hasAny = rRole === "admin"
+      || hasAttendancePermission(rRole, "manageSalaries", settings)
+      || hasAttendancePermission(rRole, "manageAttendance", settings);
+    if (!hasAny) return res.status(403).json({ error: "Permission denied" });
+
+    var query = {};
+    if (req.query.targetUserId && mongoose.Types.ObjectId.isValid(req.query.targetUserId)) {
+      query.targetUserId = req.query.targetUserId;
+    }
+    if (req.query.type) query.type = String(req.query.type);
+
+    // Non-Owner: gate by salaryAccess against the targetUserId. If no target
+    // is specified we still allow the query but post-filter results to rows
+    // they're allowed to see — keeps the inbox useful without leaking SA/HR
+    // peer data.
+    var rawLimit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+    var rows = await AuditLog.find(query)
+      .sort({ timestamp: -1 })
+      .limit(rRole === "admin" ? rawLimit : rawLimit * 3)
+      .populate("targetUserId", "name role")
+      .populate("performedBy", "name role")
+      .lean();
+
+    if (rRole !== "admin") {
+      // Drop rows targeting sales_admin/hr peers (non-Owner can't see those).
+      rows = rows.filter(function(r){
+        if (!r.targetUserId) return true;
+        var trole = r.targetUserId.role;
+        return trole !== "sales_admin" && trole !== "hr";
+      }).slice(0, rawLimit);
+    }
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /api/audit]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/salary/list/:year/:month/finalize-all — Phase 6 (doc §13).
+// Bulk-finalizes every employee the requester is allowed to edit for the
+// selected month. Skips users who are already finalized. Logs MONTH_FINALIZED
+// per row. Returns counts of finalized + skipped.
+app.post("/api/salary/list/:year/:month/finalize-all", auth, async function(req, res) {
+  try {
+    var year  = parseInt(req.params.year,  10);
+    var month = parseInt(req.params.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "Invalid year/month" });
+    }
+    var settings = await getAttendanceSettings();
+    var rRole = req.user.role;
+    if (rRole !== "admin" && !hasAttendancePermission(rRole, "manageSalaries", settings)) {
+      return res.status(403).json({ error: "Permission denied" });
+    }
+    var query = { active: true, role: { $ne: "admin" } };
+    if (rRole !== "admin") query.role = { $nin: ["admin", "sales_admin", "hr"] };
+    var users = await User.find(query).lean();
+
+    var finalized = 0, skipped = 0;
+    for (var i = 0; i < users.length; i++) {
+      var u = users[i];
+      var existing = await SalaryRecord.findOne({ userId: u._id, year: year, month: month });
+      if (existing && existing.finalized) { skipped++; continue; }
+      var live = await computeMonthlySalary(u, year, month);
+      if (!live) { skipped++; continue; }
+      var snap = await SalaryRecord.findOneAndUpdate(
+        { userId: u._id, year: year, month: month },
+        { $set: {
+            userId: u._id, year: year, month: month,
+            baseSalary: live.baseSalary,
+            workingDays: live.workingDays, dailyRate: live.dailyRate,
+            deductionDays: live.deductionDays,
+            totalDeductions: live.totalDeductions,
+            netSalary: live.netSalary,
+            finalized: true,
+            finalizedBy: req.user.id, finalizedAt: new Date(),
+            computedAt: new Date()
+          }},
+        { upsert: true, new: true }
+      );
+      finalized++;
+      try {
+        await AuditLog.create({
+          type: "MONTH_FINALIZED",
+          targetUserId: u._id,
+          performedBy: req.user.id,
+          before: {},
+          after: snap.toObject ? snap.toObject() : snap,
+          flags: { bulk: true },
+          ipAddress: req.ip
+        });
+      } catch (e) {}
+      try { broadcast("salary_finalized", { userId: String(u._id), year: year, month: month }); } catch(e){}
+    }
+    res.json({ finalized: finalized, skipped: skipped, totalConsidered: users.length });
+  } catch (e) {
+    console.error("[POST /api/salary/list/:year/:month/finalize-all]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/salary/:userId/:year/:month/finalize — Phase 5E (doc §13).
+// Snapshots the live computation into a SalaryRecord with finalized=true.
+// Subsequent reads serve the snapshot, override + base-salary endpoints
+// reject (override gate already enforced in Phase 5C). Permission: same as
+// edit (salaryAccess.canEdit).
+app.post("/api/salary/:userId/:year/:month/finalize", auth, async function(req, res) {
+  try {
+    var year  = parseInt(req.params.year,  10);
+    var month = parseInt(req.params.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "Invalid year/month" });
+    }
+
+    var target = await User.findById(req.params.userId).lean();
+    if (!target) return res.status(404).json({ error: "User not found" });
+
+    var settings = await getAttendanceSettings();
+    var access = salaryAccess(req.user, target, settings);
+    if (!access.canEdit) return res.status(403).json({ error: "Permission denied" });
+
+    var existing = await SalaryRecord.findOne({ userId: target._id, year: year, month: month });
+    if (existing && existing.finalized) {
+      return res.status(409).json({ error: "Already finalized", code: "already_finalized" });
+    }
+
+    var live = await computeMonthlySalary(target, year, month);
+    if (!live) return res.status(400).json({ error: "Cannot compute salary" });
+
+    var snap = await SalaryRecord.findOneAndUpdate(
+      { userId: target._id, year: year, month: month },
+      { $set: {
+          userId: target._id, year: year, month: month,
+          baseSalary:      live.baseSalary,
+          workingDays:     live.workingDays,
+          dailyRate:       live.dailyRate,
+          deductionDays:   live.deductionDays,
+          totalDeductions: live.totalDeductions,
+          netSalary:       live.netSalary,
+          finalized:       true,
+          finalizedBy:     req.user.id,
+          finalizedAt:     new Date(),
+          computedAt:      new Date()
+        }},
+      { upsert: true, new: true }
+    );
+
+    try {
+      await AuditLog.create({
+        type: "MONTH_FINALIZED",
+        targetUserId: target._id,
+        performedBy: req.user.id,
+        before: {},
+        after: snap.toObject ? snap.toObject() : snap,
+        ipAddress: req.ip
+      });
+    } catch (e) {}
+
+    try { broadcast("salary_finalized", { userId: String(target._id), year: year, month: month }); } catch(e){}
+    res.json({ salary: snap, finalized: true });
+  } catch (e) {
+    console.error("[POST /salary/:userId/:year/:month/finalize]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/salary/:userId/:year/:month/unlock — Owner only. Removes the
+// finalized snapshot so live computation resumes and override + base-salary
+// edits are unblocked. Audit-logged.
+app.post("/api/salary/:userId/:year/:month/unlock", auth, ownerOnly, async function(req, res) {
+  try {
+    var year  = parseInt(req.params.year,  10);
+    var month = parseInt(req.params.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "Invalid year/month" });
+    }
+    var target = await User.findById(req.params.userId).lean();
+    if (!target) return res.status(404).json({ error: "User not found" });
+
+    var existing = await SalaryRecord.findOne({ userId: target._id, year: year, month: month });
+    if (!existing || !existing.finalized) {
+      return res.status(409).json({ error: "Not finalized", code: "not_finalized" });
+    }
+
+    var snapshot = existing.toObject();
+    await SalaryRecord.deleteOne({ _id: existing._id });
+
+    try {
+      await AuditLog.create({
+        type: "MONTH_UNLOCKED",
+        targetUserId: target._id,
+        performedBy: req.user.id,
+        before: snapshot,
+        after: {},
+        ipAddress: req.ip
+      });
+    } catch (e) {}
+
+    try { broadcast("salary_finalized", { userId: String(target._id), year: year, month: month, unlocked: true }); } catch(e){}
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[POST /salary/:userId/:year/:month/unlock]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/users/:userId/base-salary — Phase 5D (doc §8). Updates a user's
+// baseSalary and writes a BASE_SALARY_CHANGED audit row. Permission gate is
+// salaryAccess(): Owner can edit anyone non-admin; SA/HR with manageSalaries
+// can edit sales-side roles; SA/HR cannot edit own pay or each other's.
+//
+// effectiveDate is recorded in the audit log for HR reference but doesn't
+// drive any time-based logic — current implementation always uses the latest
+// User.baseSalary in salary calculations (per Phase 5A note).
+app.patch("/api/users/:userId/base-salary", auth, async function(req, res) {
+  try {
+    var newSalary = Number(req.body && req.body.newSalary);
+    if (!isFinite(newSalary) || newSalary < 0) {
+      return res.status(400).json({ error: "newSalary must be a non-negative number" });
+    }
+    var reason        = (req.body && req.body.reason) ? String(req.body.reason).trim() : "";
+    var effectiveDate = (req.body && req.body.effectiveDate) ? String(req.body.effectiveDate) : "";
+
+    var target = await User.findById(req.params.userId);
+    if (!target) return res.status(404).json({ error: "User not found" });
+    if (target.role === "admin") return res.status(400).json({ error: "Owner has no salary" });
+
+    var settings = await getAttendanceSettings();
+    var access = salaryAccess(req.user, target.toObject(), settings);
+    if (!access.canEdit) return res.status(403).json({ error: "Permission denied" });
+
+    var oldValue = Number(target.baseSalary) || 0;
+    if (oldValue === newSalary) {
+      // Idempotent — log nothing, just return current state.
+      return res.json({ user: target, changed: false });
+    }
+
+    target.baseSalary = newSalary;
+    await target.save();
+
+    try {
+      await AuditLog.create({
+        type: "BASE_SALARY_CHANGED",
+        targetUserId: target._id,
+        performedBy: req.user.id,
+        before: { baseSalary: oldValue },
+        after:  { baseSalary: newSalary },
+        reason: reason,
+        flags:  effectiveDate ? { effectiveDate: effectiveDate } : {},
+        ipAddress: req.ip
+      });
+    } catch (e) {
+      console.error("[base-salary audit]", e && e.message);
+    }
+
+    try { broadcast("user_updated", { userId: String(target._id), user: target }); } catch (e) {}
+    res.json({ user: target, changed: true, oldValue: oldValue, newValue: newSalary });
+  } catch (e) {
+    console.error("[PATCH /users/:userId/base-salary]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Per-employee monthly attendance (for the salary-sheet daily log). Owner /
+// anyone with manageSalaries can read; sales_admin/hr targets are gated to
+// Owner per doc §14.
+app.get("/api/attendance/users/:userId/month", auth, async function(req, res) {
+  try {
+    var year  = parseInt(req.query.year,  10);
+    var month = parseInt(req.query.month, 10);
+    if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: "year + month query params required" });
+    }
+    var target = await User.findById(req.params.userId).lean();
+    if (!target) return res.status(404).json({ error: "User not found" });
+    var settings = await getAttendanceSettings();
+    var access = salaryAccess(req.user, target, settings);
+    if (!access.canView) return res.status(403).json({ error: "Permission denied" });
+
+    var start = new Date(Date.UTC(year, month - 1, 1));
+    var end   = new Date(Date.UTC(year, month, 1));
+    var rows = await Attendance.find({
+      userId: target._id, date: { $gte: start, $lt: end }
+    }).sort({ date: 1 }).lean();
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /attendance/users/:userId/month]", e);
     res.status(500).json({ error: e.message });
   }
 });

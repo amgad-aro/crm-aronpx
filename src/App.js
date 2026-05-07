@@ -888,6 +888,10 @@ var Sidebar = function(p) {
     isAdmin&&{id:"team",label:t.team,adminSection:true},
     isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
     isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
+    p.cu.role!=="admin"&&{id:"attendance",label:"Attendance",adminSection:true},
+    hasAttendancePerm(p.cu && p.cu.role, "approveOffSiteRequests", p.attendanceSettings) && {id:"offsiteRequests", label:"Off-site Requests", adminSection:true},
+    hasAttendancePerm(p.cu && p.cu.role, "manageSalaries",         p.attendanceSettings) && {id:"salaries",         label:"Salaries",           adminSection:true},
+    hasAttendancePerm(p.cu && p.cu.role, "manageCompanyOffDays",   p.attendanceSettings) && {id:"companyOffDays",   label:"Company Off-Days",   adminSection:true},
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
@@ -4254,7 +4258,1613 @@ var MyDayPage = function(p) {
   </div>;
 };
 
-// ===== DASHBOARD =====
+// =====================================================================
+// ATTENDANCE — Phase 3
+// CheckInWidget is the single source of truth for the daily check-in flow.
+// mode="compact" pins it as a one-row card on dashboards. mode="full" is the
+// same card on /attendance with a monthly history table below.
+// =====================================================================
+
+// Format helpers shared by the widget and the page.
+var fmtCairoTime = function(d){
+  if (!d) return "—";
+  var x = new Date(d);
+  return x.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Cairo" });
+};
+var fmtCairoDate = function(d){
+  if (!d) return "—";
+  var x = new Date(d);
+  return x.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "Africa/Cairo" });
+};
+var fmtDuration = function(ms){
+  if (!ms || ms < 0) return "0m";
+  var mins = Math.floor(ms / 60000);
+  var h = Math.floor(mins / 60);
+  var m = mins % 60;
+  if (h <= 0) return m + "m";
+  return h + "h " + m + "m";
+};
+
+// Status badge → label + colors. Used by both widget (current state) and
+// monthly log rows.
+var attStatusBadge = function(status, off){
+  if (off === "friday")  return { label:"Friday off",   bg:"#F1F5F9", color:"#64748B" };
+  if (off === "saturday") return { label:"Saturday off", bg:"#F1F5F9", color:"#64748B" };
+  if (off && off.indexOf("company:") === 0) return { label:"Off: " + off.slice(8), bg:"#F1F5F9", color:"#64748B" };
+  switch (status) {
+    case "in_progress":      return { label:"In progress",  bg:"#DCFCE7", color:"#15803D" };
+    case "present":          return { label:"Present",      bg:"#DCFCE7", color:"#15803D" };
+    case "late_quarter":     return { label:"Late · ¼ day", bg:"#FEF3C7", color:"#B45309" };
+    case "late_half":        return { label:"Late · ½ day", bg:"#FED7AA", color:"#C2410C" };
+    case "late_full":        return { label:"Late · 1 day", bg:"#FEE2E2", color:"#B91C1C" };
+    case "absent":           return { label:"Absent",       bg:"#FEE2E2", color:"#B91C1C" };
+    case "pending_offsite":  return { label:"Off-site (pending)", bg:"#FEF9C3", color:"#A16207" };
+    case "override":         return { label:"Override",     bg:"#F3E8FF", color:"#7C3AED" };
+    default:                 return { label:"—",            bg:"#F1F5F9", color:"#64748B" };
+  }
+};
+
+// Resolve whether the current user has manageAttendance permission. Reads
+// from the App-level cache (attendanceSettings) which is updated in real-time
+// by the WS attendance_settings_updated event.
+var hasAttendancePerm = function(role, action, settings){
+  if (role === "admin") return true;
+  if (!settings || !settings.permissions || !settings.permissions[action]) return false;
+  if (role === "sales_admin") return settings.permissions[action].salesAdmin === true;
+  if (role === "hr")          return settings.permissions[action].hr === true;
+  return false;
+};
+
+var CheckInWidget = function(p) {
+  // p: { token, cu, mode: "compact"|"full", onNavigate?, onCheckedIn? }
+  var [data, setData] = useState(null);
+  var [coords, setCoords] = useState(null);
+  var [coordsErr, setCoordsErr] = useState("");
+  var [busy, setBusy] = useState(false);
+  var [error, setError] = useState("");
+  var [tick, setTick] = useState(0);
+  // Phase 4 — off-site request modal state.
+  var [modalOpen, setModalOpen] = useState(false);
+  var [modalType, setModalType] = useState("check_in");
+  var [modalReason, setModalReason] = useState("");
+  var [modalErr, setModalErr] = useState("");
+  var [modalBusy, setModalBusy] = useState(false);
+
+  var refetch = useCallback(function(){
+    if (!p.token || !p.cu || p.cu.role === "admin") return;
+    apiFetch("/api/attendance/today", "GET", null, p.token).then(function(r){
+      setData(r);
+      setError("");
+    }).catch(function(err){
+      setError((err && err.message) || "Failed to load");
+    });
+  }, [p.token, p.cu]);
+
+  useEffect(function(){ refetch(); }, [refetch]);
+
+  // Geolocation poll: once on mount, then every 60s. enableHighAccuracy is on
+  // because the geofence radius is typically 50-150m — coarse cell-tower fixes
+  // produce false positives/negatives.
+  useEffect(function(){
+    if (!data || !data.geofence) return;
+    var stopped = false;
+    var poll = function(){
+      if (stopped || !navigator.geolocation) {
+        if (!navigator.geolocation) setCoordsErr("Browser does not support geolocation");
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(function(pos){
+        if (stopped) return;
+        setCoords({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: pos.coords.accuracy
+        });
+        setCoordsErr("");
+      }, function(err){
+        setCoordsErr(err.message || "Could not get location");
+      }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
+    };
+    poll();
+    var interval = setInterval(poll, 60000);
+    return function(){ stopped = true; clearInterval(interval); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data && data.geofence ? data.geofence.latitude : null,
+      data && data.geofence ? data.geofence.longitude : null]);
+
+  // Live duration tick (every 30s) for State 3.
+  useEffect(function(){
+    if (!data || !data.attendance || !data.attendance.checkIn || data.attendance.checkOut) return;
+    var t = setInterval(function(){ setTick(function(x){return x+1;}); }, 30000);
+    return function(){ clearInterval(t); };
+  }, [data]);
+
+  // Cross-tab / cross-device sync. The App-level WS handler re-dispatches
+  // attendance_updated as a window CustomEvent — we listen here and patch
+  // local state when the event is for the current user. Avoids the user
+  // having to refresh tab B after checking in on tab A.
+  useEffect(function(){
+    if (!p.cu || p.cu.role === "admin") return;
+    var handler = function(e){
+      if (!e || !e.detail) return;
+      var uid = String(p.cu.id || (p.cu._id || ""));
+      if (!uid || String(e.detail.userId) !== uid) return;
+      if (e.detail.attendance) {
+        setData(function(prev){ return Object.assign({}, prev || {}, { attendance: e.detail.attendance }); });
+      } else {
+        refetch();
+      }
+    };
+    window.addEventListener("crm:attendance_updated", handler);
+    return function(){ window.removeEventListener("crm:attendance_updated", handler); };
+  }, [p.cu, refetch]);
+
+  // Distance from user to office, when both coords + geofence are available.
+  // Computed client-side for display only — the server re-validates on POST.
+  var distanceMeters = (function(){
+    if (!coords || !data || !data.geofence) return null;
+    var R = 6371000;
+    var toRad = function(d){ return d * Math.PI / 180; };
+    var phi1 = toRad(coords.latitude), phi2 = toRad(data.geofence.latitude);
+    var dPhi = toRad(data.geofence.latitude - coords.latitude);
+    var dLam = toRad(data.geofence.longitude - coords.longitude);
+    var a = Math.sin(dPhi/2)**2 + Math.cos(phi1)*Math.cos(phi2)*Math.sin(dLam/2)**2;
+    return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+  })();
+  var insideGeofence = distanceMeters != null && data && data.geofence && distanceMeters <= data.geofence.radiusMeters;
+
+  // State machine resolution. Order matters — pending > done > in-progress >
+  // off-day > inside/outside.
+  var widgetState = (function(){
+    if (!data) return "loading";
+    if (data.pendingOffSite) return "pending_offsite";
+    var a = data.attendance;
+    if (a && a.checkIn && a.checkOut) return "done";
+    if (a && a.checkIn && !a.checkOut) return "in_progress";
+    if (data.isOffDay) return "off_day";
+    if (coordsErr) return "no_coords";
+    if (coords == null) return "locating";
+    return insideGeofence ? "ready_inside" : "ready_outside";
+  })();
+
+  var requestPosition = function(){
+    return new Promise(function(resolve, reject){
+      if (!navigator.geolocation) return reject(new Error("Geolocation not supported"));
+      navigator.geolocation.getCurrentPosition(function(pos){
+        resolve({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: pos.coords.accuracy
+        });
+      }, function(err){ reject(new Error(err.message || "Location denied")); },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+    });
+  };
+
+  var doCheckIn = async function(){
+    setError(""); setBusy(true);
+    try {
+      var pos = await requestPosition();
+      var resp = await apiFetch("/api/attendance/check-in", "POST", pos, p.token, p.csrfToken);
+      if (resp && resp.attendance) {
+        setData(function(prev){ return Object.assign({}, prev || {}, { attendance: resp.attendance }); });
+      } else {
+        refetch();
+      }
+      if (p.onCheckedIn) p.onCheckedIn();
+    } catch (err) {
+      setError((err && err.message) || "Check-in failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  var doCheckOut = async function(){
+    setError(""); setBusy(true);
+    try {
+      var pos = await requestPosition();
+      var resp = await apiFetch("/api/attendance/check-out", "POST", pos, p.token, p.csrfToken);
+      if (resp && resp.attendance) {
+        setData(function(prev){ return Object.assign({}, prev || {}, { attendance: resp.attendance }); });
+      } else {
+        refetch();
+      }
+    } catch (err) {
+      var msg = (err && err.message) || "";
+      // Phase 4: backend returns 403 "Outside office geofence" when checking
+      // out from outside the office. Auto-open the off-site modal so the
+      // user doesn't need a second click. apiFetch loses the structured code
+      // field — match on the message text. Stable as long as the backend
+      // string doesn't change.
+      if (/outside/i.test(msg)) {
+        openOffSiteModal("check_out");
+      } else {
+        setError(msg || "Check-out failed");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  var openOffSiteModal = function(type){
+    setModalType(type);
+    setModalReason("");
+    setModalErr("");
+    setModalOpen(true);
+  };
+
+  var submitOffSite = async function(){
+    var trimmed = (modalReason || "").trim();
+    if (trimmed.length < 10) { setModalErr("Reason must be at least 10 characters"); return; }
+    setModalErr(""); setModalBusy(true);
+    try {
+      var pos = await requestPosition();
+      await apiFetch("/api/offsite/request", "POST", {
+        type: modalType,
+        latitude: pos.latitude,
+        longitude: pos.longitude,
+        accuracy: pos.accuracy,
+        reason: trimmed
+      }, p.token, p.csrfToken);
+      setModalOpen(false);
+      refetch();
+    } catch (err) {
+      setModalErr((err && err.message) || "Submit failed");
+    } finally {
+      setModalBusy(false);
+    }
+  };
+
+  var doCancelOffSite = async function(){
+    if (!data || !data.pendingOffSite) return;
+    setError(""); setBusy(true);
+    try {
+      await apiFetch("/api/offsite/" + data.pendingOffSite._id, "DELETE", null, p.token, p.csrfToken);
+      refetch();
+    } catch (err) {
+      setError((err && err.message) || "Cancel failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Owner is hidden entirely.
+  if (!p.cu || p.cu.role === "admin") return null;
+
+  // Visual primitives.
+  var pad = p.mode === "compact" ? "12px 16px" : "18px 22px";
+  var btnPrimary = function(bg){ return {
+    fontSize: 13, padding: "10px 18px", border: "none", borderRadius: 10,
+    background: bg, color: "#fff", cursor: "pointer", fontWeight: 600,
+    fontFamily: "inherit", whiteSpace: "nowrap", minHeight: 40
+  };};
+  var btnGhost = {
+    fontSize: 13, padding: "9px 16px", border: "0.5px solid rgba(0,0,0,0.15)",
+    background: "transparent", color: "#1a1a1a", borderRadius: 10, cursor: "pointer",
+    fontWeight: 500, fontFamily: "inherit", whiteSpace: "nowrap", minHeight: 40
+  };
+
+  // Color accents per state.
+  var accent = (function(){
+    if (widgetState === "ready_inside" || widgetState === "in_progress" || widgetState === "done") return C.success;
+    if (widgetState === "ready_outside" || widgetState === "no_coords") return C.danger;
+    if (widgetState === "pending_offsite") return C.warning;
+    if (widgetState === "off_day") return C.textLight;
+    return C.textLight;
+  })();
+
+  // Headline text + sublabel + button per state.
+  var headline = "";
+  var sub = "";
+  var btn = null;
+  if (widgetState === "loading") {
+    headline = "Loading…"; sub = "Checking your attendance status";
+  } else if (widgetState === "off_day") {
+    if (data.offReason === "friday")  { headline = "Friday";   sub = "Enjoy your day off"; }
+    else if (data.offReason === "saturday") { headline = "Saturday"; sub = "Enjoy your day off"; }
+    else if (data.offReason && data.offReason.indexOf("company:") === 0) {
+      headline = "Company off-day"; sub = data.offReason.slice(8);
+    } else { headline = "Day off"; sub = "Enjoy your day"; }
+  } else if (widgetState === "pending_offsite") {
+    headline = "Off-site " + (data.pendingOffSite.type === "check_in" ? "check-in" : "check-out") + " pending review";
+    sub = "Submitted " + fmtCairoTime(data.pendingOffSite.requestedAt);
+    btn = <button type="button" onClick={doCancelOffSite} disabled={busy} style={btnGhost}>{busy?"…":"Cancel request"}</button>;
+  } else if (widgetState === "done") {
+    var ci = data.attendance.checkIn, co = data.attendance.checkOut;
+    var hours = (new Date(co.timestamp) - new Date(ci.timestamp)) / 3600000;
+    headline = "Done for today";
+    sub = fmtCairoTime(ci.timestamp) + " → " + fmtCairoTime(co.timestamp) + " · " + hours.toFixed(1) + "h";
+    if (p.onNavigate) btn = <button type="button" onClick={function(){p.onNavigate("attendance");}} style={btnGhost}>View details</button>;
+  } else if (widgetState === "in_progress") {
+    var ts = new Date(data.attendance.checkIn.timestamp);
+    var elapsedMs = Date.now() - ts.getTime();
+    headline = "Checked in at " + fmtCairoTime(ts);
+    // If user is currently outside the geofence, surface the off-site path
+    // up front instead of waiting for the 403 from /check-out. Inside (or
+    // when we don't yet know) → normal Check out button.
+    if (coords && data.geofence && !insideGeofence) {
+      sub = (distanceMeters != null ? distanceMeters + "m away" : "Outside office") + " · request off-site check-out";
+      btn = <button type="button" onClick={function(){openOffSiteModal("check_out");}} disabled={busy} style={btnGhost}>Request off-site check-out</button>;
+    } else {
+      sub = "You've been working for " + fmtDuration(elapsedMs);
+      btn = <button type="button" onClick={doCheckOut} disabled={busy} style={btnPrimary("#EA580C")}>{busy?"…":"Check out"}</button>;
+    }
+  } else if (widgetState === "ready_inside") {
+    headline = "Ready to check in";
+    sub = "Inside " + (data.geofence.name || "office") + " · " + (distanceMeters != null ? distanceMeters + "m" : "—");
+    btn = <button type="button" onClick={doCheckIn} disabled={busy} style={btnPrimary("#0F766E")}>{busy?"…":"Check in"}</button>;
+  } else if (widgetState === "ready_outside") {
+    headline = "Outside " + (data.geofence ? data.geofence.name : "office");
+    sub = (distanceMeters != null ? distanceMeters + "m away" : "Out of range") + " · In a meeting? Request off-site approval";
+    btn = <button type="button" onClick={function(){openOffSiteModal("check_in");}} disabled={busy} style={btnGhost}>Request off-site</button>;
+  } else if (widgetState === "no_coords") {
+    headline = "Location unavailable";
+    sub = coordsErr || "Enable location in browser settings to check in";
+    btn = <button type="button" onClick={refetch} style={btnGhost}>Retry</button>;
+  } else if (widgetState === "locating") {
+    headline = "Locating…";
+    sub = "Waiting for your GPS fix";
+  }
+  // null branches: nothing to show
+
+  // Geofence not configured — Owner has not set the office yet.
+  if (data && !data.geofence && widgetState !== "off_day" && widgetState !== "in_progress" && widgetState !== "done") {
+    headline = "Office location not configured";
+    sub = "Ask the Owner to configure the geofence in Settings → Office Location";
+    btn = null;
+  }
+
+  return <>
+    <div style={{
+      background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)",
+      borderLeft:"3px solid "+accent, padding:pad, display:"flex", alignItems:"center",
+      gap:14, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      marginBottom:16, opacity: widgetState==="off_day" ? 0.85 : 1
+    }}>
+      <div style={{flex:1, minWidth:0}}>
+        <div style={{fontSize:14, fontWeight:600, color:C.text, marginBottom:2}}>{headline}</div>
+        <div style={{fontSize:12, color:C.textLight, lineHeight:1.4}}>{sub}</div>
+        {error && <div style={{fontSize:11, color:C.danger, marginTop:4}}>{error}</div>}
+      </div>
+      {btn}
+    </div>
+
+    {modalOpen && <div className="crm-modal" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:20 }}>
+      <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:12, maxWidth:480, width:"100%", padding:24, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+        <div style={{ fontSize:16, fontWeight:600, marginBottom:6, color:C.text }}>Request off-site {modalType === "check_in" ? "check-in" : "check-out"}</div>
+        <div style={{ fontSize:12, color:C.textLight, marginBottom:16, lineHeight:1.5 }}>
+          Your timestamp and GPS coordinates are captured automatically. The {modalType === "check_in" ? "check-in" : "check-out"} is recorded immediately and reviewed by an admin.
+        </div>
+        <label style={{ fontSize:12, color:C.textLight, display:"block", marginBottom:6 }}>Reason (min 10 characters)</label>
+        <textarea value={modalReason} onChange={function(e){setModalReason(e.target.value);}}
+          rows={4} placeholder="e.g. Site visit at New Cairo with Mr. Ahmed…"
+          style={{ width:"100%", padding:10, border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:8, fontSize:13, fontFamily:"inherit", resize:"vertical", boxSizing:"border-box" }}/>
+        {modalErr && <div style={{ fontSize:12, color:C.danger, marginTop:8 }}>{modalErr}</div>}
+        <div style={{ display:"flex", gap:8, marginTop:16, justifyContent:"flex-end" }}>
+          <button type="button" onClick={function(){setModalOpen(false);}} disabled={modalBusy}
+            style={{ fontSize:13, padding:"9px 16px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text }}>Cancel</button>
+          <button type="button" onClick={submitOffSite} disabled={modalBusy}
+            style={{ fontSize:13, padding:"9px 16px", border:"none", background:"#185FA5", color:"#fff", borderRadius:8, cursor:"pointer", fontWeight:600, fontFamily:"inherit" }}>
+            {modalBusy ? "Submitting…" : "Submit request"}
+          </button>
+        </div>
+      </div>
+    </div>}
+  </>;
+};
+
+var AttendancePage = function(p) {
+  var isOwner = p.cu && p.cu.role === "admin";
+  var canManage = hasAttendancePerm(p.cu && p.cu.role, "manageAttendance", p.attendanceSettings);
+  var [activeTab, setActiveTab] = useState(isOwner ? "team" : "mine");
+  // Real-time permission revoke: if we lose manageAttendance while on the
+  // Team tab, kick back to My tab. Owner is exempt.
+  useEffect(function(){
+    if (activeTab === "team" && !canManage && !isOwner) setActiveTab("mine");
+  }, [canManage, activeTab, isOwner]);
+
+  // ----- "My" tab: monthly history below the widget -----
+  var now = new Date();
+  var [year,setYear]   = useState(now.getFullYear());
+  var [month,setMonth] = useState(now.getMonth() + 1);
+  var [rows,setRows]   = useState([]);
+  var [loadingMine,setLoadingMine] = useState(false);
+
+  useEffect(function(){
+    if (activeTab !== "mine" || isOwner) return;
+    var cancelled = false;
+    setLoadingMine(true);
+    apiFetch("/api/attendance/my-month?year="+year+"&month="+month, "GET", null, p.token).then(function(r){
+      if (!cancelled) setRows(Array.isArray(r) ? r : []);
+    }).catch(function(){ if (!cancelled) setRows([]); })
+      .finally(function(){ if (!cancelled) setLoadingMine(false); });
+    return function(){ cancelled = true; };
+  }, [activeTab, year, month, p.token, isOwner]);
+
+  // ----- "Team" tab: today's roster -----
+  var [team,setTeam] = useState([]);
+  var [loadingTeam,setLoadingTeam] = useState(false);
+  // Phase 6 — 5-lates notifications surfaced above the roster.
+  var [lateAlerts,setLateAlerts] = useState([]);
+  useEffect(function(){
+    if (activeTab !== "team") return;
+    if (!canManage) return;
+    var cancelled = false;
+    setLoadingTeam(true);
+    apiFetch("/api/attendance/today/all", "GET", null, p.token).then(function(r){
+      if (!cancelled) setTeam(Array.isArray(r) ? r : []);
+    }).catch(function(){ if (!cancelled) setTeam([]); })
+      .finally(function(){ if (!cancelled) setLoadingTeam(false); });
+    // Fetch this month's 5-lates notifications. Backend filters by createdAt
+    // implicitly via the once-per-month creation rule.
+    apiFetch("/api/notifications?type=attendance_late_5&limit=20", "GET", null, p.token).then(function(r){
+      if (cancelled) return;
+      var monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+      var rows = (Array.isArray(r) ? r : []).filter(function(n){
+        return new Date(n.createdAt || 0) >= monthStart;
+      });
+      setLateAlerts(rows);
+    }).catch(function(){ if (!cancelled) setLateAlerts([]); });
+    var refreshAlerts = function(){
+      apiFetch("/api/notifications?type=attendance_late_5&limit=20", "GET", null, p.token).then(function(r){
+        var monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+        var rows = (Array.isArray(r) ? r : []).filter(function(n){ return new Date(n.createdAt || 0) >= monthStart; });
+        setLateAlerts(rows);
+      }).catch(function(){});
+    };
+    window.addEventListener("crm:notification_updated", refreshAlerts);
+    return function(){ cancelled = true; window.removeEventListener("crm:notification_updated", refreshAlerts); };
+  }, [activeTab, canManage, p.token]);
+
+  // Real-time team updates — patches the matching row when any employee
+  // checks in/out anywhere. Doesn't add new rows (the roster set is fixed
+  // for a given day). Only active while Team tab is mounted.
+  useEffect(function(){
+    if (activeTab !== "team") return;
+    var handler = function(e){
+      if (!e || !e.detail) return;
+      var uid = String(e.detail.userId);
+      setTeam(function(prev){
+        return prev.map(function(row){
+          if (String(row.user._id) !== uid) return row;
+          return Object.assign({}, row, { attendance: e.detail.attendance || row.attendance });
+        });
+      });
+    };
+    window.addEventListener("crm:attendance_updated", handler);
+    return function(){ window.removeEventListener("crm:attendance_updated", handler); };
+  }, [activeTab]);
+
+  var tabBtn = function(id, label){
+    var act = activeTab === id;
+    return <div key={id} onClick={function(){setActiveTab(id);}}
+      style={{padding:"8px 14px", fontSize:13, cursor:"pointer", borderRadius:8, whiteSpace:"nowrap", userSelect:"none", flexShrink:0,
+        color:act?"#1a1a1a":"#666", fontWeight:act?500:400,
+        background:act?"#fff":"transparent",
+        border:"0.5px solid "+(act?"rgba(0,0,0,0.1)":"transparent")}}>{label}</div>;
+  };
+
+  // Generate every Cairo day in the selected month to render absent rows for
+  // workdays that have no Attendance doc (visual completeness — server doesn't
+  // create absent rows until salary calc in Phase 5).
+  var monthLabel = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+  var daysInMonth = new Date(year, month, 0).getDate();
+  var rowsByDate = {};
+  rows.forEach(function(r){
+    var d = new Date(r.date);
+    rowsByDate[d.getUTCFullYear()+"-"+(d.getUTCMonth()+1)+"-"+d.getUTCDate()] = r;
+  });
+
+  var monthDays = [];
+  for (var d = 1; d <= daysInMonth; d++) {
+    var iso = year+"-"+month+"-"+d;
+    monthDays.push({
+      date: new Date(Date.UTC(year, month-1, d)),
+      attendance: rowsByDate[iso] || null
+    });
+  }
+
+  var prevMonth = function(){
+    if (month === 1) { setMonth(12); setYear(year - 1); }
+    else setMonth(month - 1);
+  };
+  var nextMonth = function(){
+    if (month === 12) { setMonth(1); setYear(year + 1); }
+    else setMonth(month + 1);
+  };
+
+  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+    <div style={{maxWidth:1200, margin:"0 auto"}}>
+
+      {/* Tab bar (only if more than one option is available) */}
+      {(canManage || !isOwner) && <div style={{display:"flex", gap:6, marginBottom:14, padding:6, background:"#F7F7F5", borderRadius:10, width:"fit-content", border:"0.5px solid rgba(0,0,0,0.05)"}}>
+        {!isOwner && tabBtn("mine", "My Attendance")}
+        {canManage && tabBtn("team", "Team Today")}
+      </div>}
+
+      {activeTab === "mine" && !isOwner && <div>
+        <CheckInWidget token={p.token} cu={p.cu} csrfToken={p.csrfToken} mode="full"/>
+
+        <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+          <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10}}>
+            <div style={{fontSize:14, fontWeight:600, color:C.text}}>Monthly log</div>
+            <div style={{display:"flex", alignItems:"center", gap:8}}>
+              <button type="button" onClick={prevMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>‹</button>
+              <div style={{fontSize:13, fontWeight:500, color:C.text, minWidth:120, textAlign:"center"}}>{monthLabel}</div>
+              <button type="button" onClick={nextMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>›</button>
+            </div>
+          </div>
+
+          {loadingMine ? <div style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
+            : <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
+                <thead>
+                  <tr style={{background:"#F7F7F5"}}>
+                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Date</th>
+                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Day</th>
+                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-in</th>
+                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-out</th>
+                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthDays.map(function(d){
+                    var weekday = d.date.toLocaleDateString("en-GB", { weekday:"short", timeZone:"UTC" });
+                    var a = d.attendance;
+                    var badge = attStatusBadge(a && a.status, !a && weekday === "Fri" ? "friday" : null);
+                    return <tr key={d.date.toISOString()} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
+                      <td style={{padding:"10px 16px"}}>{d.date.toLocaleDateString("en-GB", { day:"2-digit", month:"short", timeZone:"UTC" })}</td>
+                      <td style={{padding:"10px 16px", color:C.textLight}}>{weekday}</td>
+                      <td style={{padding:"10px 16px"}}>{a && a.checkIn ? fmtCairoTime(a.checkIn.timestamp) : "—"}</td>
+                      <td style={{padding:"10px 16px"}}>{a && a.checkOut ? fmtCairoTime(a.checkOut.timestamp) : "—"}</td>
+                      <td style={{padding:"10px 16px"}}>
+                        <span style={{display:"inline-block", padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:500, background:badge.bg, color:badge.color}}>{badge.label}</span>
+                      </td>
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>}
+        </div>
+      </div>}
+
+      {activeTab === "team" && canManage && <>
+        {lateAlerts.length > 0 && <div style={{background:"#FEF9F0", border:"0.5px solid #FDE68A", borderRadius:12, padding:"12px 16px", marginBottom:14}}>
+          <div style={{fontSize:13, fontWeight:600, color:"#92400E", marginBottom:8}}>⚠ {lateAlerts.length} late-attendance alert{lateAlerts.length === 1 ? "" : "s"} this month</div>
+          <div style={{display:"flex", flexDirection:"column", gap:4}}>
+            {lateAlerts.map(function(n){
+              var open = function(){ if (p.openSalarySheet && n.leadId) p.openSalarySheet(n.leadId); };
+              return <div key={String(n._id)} onClick={open}
+                style={{cursor: p.openSalarySheet ? "pointer" : "default", fontSize:12, color:C.text, padding:"6px 8px", borderRadius:6}}
+                onMouseEnter={function(e){ e.currentTarget.style.background = "#FEF3C7"; }}
+                onMouseLeave={function(e){ e.currentTarget.style.background = "transparent"; }}>
+                <b>{n.agentName || "Employee"}</b> {n.reason || "5+ lates this month"}
+                <span style={{color:C.textLight, marginLeft:8, fontSize:11}}>· {n.createdAt ? new Date(n.createdAt).toLocaleDateString("en-GB", { day:"2-digit", month:"short" }) : ""}</span>
+              </div>;
+            })}
+          </div>
+        </div>}
+        <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+        <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>
+          <div style={{fontSize:14, fontWeight:600, color:C.text}}>Team — today</div>
+          <div style={{fontSize:12, color:C.textLight, marginTop:2}}>{fmtCairoDate(new Date())} · live status of every employee</div>
+        </div>
+        {loadingTeam ? <div style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
+          : <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
+              <thead>
+                <tr style={{background:"#F7F7F5"}}>
+                  <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Employee</th>
+                  <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Role</th>
+                  <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-in</th>
+                  <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-out</th>
+                  <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {team.map(function(row){
+                  var a = row.attendance;
+                  var off = row.isOffDay ? row.offReason : null;
+                  var badge = attStatusBadge(a && a.status, off);
+                  return <tr key={String(row.user._id)} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
+                    <td style={{padding:"10px 16px"}}>{row.user.name}</td>
+                    <td style={{padding:"10px 16px", color:C.textLight}}>{row.user.role}</td>
+                    <td style={{padding:"10px 16px"}}>{a && a.checkIn ? fmtCairoTime(a.checkIn.timestamp) : "—"}</td>
+                    <td style={{padding:"10px 16px"}}>{a && a.checkOut ? fmtCairoTime(a.checkOut.timestamp) : "—"}</td>
+                    <td style={{padding:"10px 16px"}}>
+                      <span style={{display:"inline-block", padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:500, background:badge.bg, color:badge.color}}>{badge.label}</span>
+                    </td>
+                  </tr>;
+                })}
+                {team.length === 0 && <tr><td colSpan={5} style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13}}>No employees</td></tr>}
+              </tbody>
+            </table>
+          </div>}
+        </div>
+      </>}
+
+      {activeTab === "team" && !canManage && <div style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13, background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)"}}>
+        You no longer have permission to view the team attendance.
+      </div>}
+    </div>
+  </div>;
+};
+
+// =====================================================================
+// OFF-SITE REQUESTS INBOX — Phase 4
+// Admin / sales_admin / hr (gated by approveOffSiteRequests permission).
+// Shows raw lat/lng + an Open in Maps link (no third-party API key needed).
+// =====================================================================
+var OffSiteRequestsPage = function(p) {
+  var canApprove = hasAttendancePerm(p.cu && p.cu.role, "approveOffSiteRequests", p.attendanceSettings);
+  var [rows,setRows] = useState([]);
+  var [loading,setLoading] = useState(false);
+  var [error,setError] = useState("");
+  var [rejectingId,setRejectingId] = useState(null);
+  var [rejectNotes,setRejectNotes] = useState("");
+
+  var refetch = useCallback(function(){
+    if (!p.token) return;
+    setLoading(true);
+    apiFetch("/api/offsite/pending","GET",null,p.token).then(function(r){
+      setRows(Array.isArray(r) ? r : []);
+      setError("");
+    }).catch(function(err){
+      setError((err && err.message) || "Failed to load");
+      setRows([]);
+    }).finally(function(){ setLoading(false); });
+  },[p.token]);
+
+  useEffect(function(){
+    if (!canApprove) return;
+    refetch();
+    var handler = function(){ refetch(); };
+    window.addEventListener("crm:offsite_request_updated", handler);
+    return function(){ window.removeEventListener("crm:offsite_request_updated", handler); };
+  },[canApprove, refetch]);
+
+  var doApprove = async function(id){
+    try {
+      await apiFetch("/api/offsite/"+id+"/approve","POST",null,p.token,p.csrfToken);
+      refetch();
+    } catch (err) { alert((err && err.message) || "Approve failed"); }
+  };
+  var doReject = async function(id){
+    try {
+      await apiFetch("/api/offsite/"+id+"/reject","POST",{ notes: rejectNotes }, p.token, p.csrfToken);
+      setRejectingId(null); setRejectNotes("");
+      refetch();
+    } catch (err) { alert((err && err.message) || "Reject failed"); }
+  };
+
+  if (!canApprove) {
+    return <div style={{padding:"24px 16px"}}>
+      <div style={{maxWidth:1200, margin:"0 auto", background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", padding:24, textAlign:"center", color:C.textLight, fontSize:13, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+        You do not have permission to approve off-site requests.
+      </div>
+    </div>;
+  }
+
+  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+    <div style={{maxWidth:1200, margin:"0 auto"}}>
+      <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+        <div style={{padding:"16px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>
+          <div style={{fontSize:15, fontWeight:600, color:C.text}}>Off-site requests</div>
+          <div style={{fontSize:12, color:C.textLight, marginTop:2}}>{rows.length} pending</div>
+        </div>
+
+        {loading ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
+          : error ? <div style={{padding:32, textAlign:"center", color:C.danger, fontSize:13}}>{error}</div>
+          : rows.length === 0 ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>No pending requests</div>
+          : <div>
+            {rows.map(function(r){
+              var emp = r.userId || {};
+              var mapsUrl = "https://www.google.com/maps?q=" + r.latitude + "," + r.longitude;
+              var coordStr = (r.latitude != null ? Number(r.latitude).toFixed(4) : "—") + ", " + (r.longitude != null ? Number(r.longitude).toFixed(4) : "—");
+              return <div key={String(r._id)} style={{padding:"16px 20px", borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
+                <div style={{display:"flex", gap:12, alignItems:"flex-start", flexWrap:"wrap"}}>
+                  <div style={{flex:"1 1 280px", minWidth:0}}>
+                    <div style={{fontSize:14, fontWeight:600, color:C.text}}>{emp.name || "—"}</div>
+                    <div style={{fontSize:12, color:C.textLight, marginTop:2}}>
+                      {emp.role || ""} {emp.teamName ? "· " + emp.teamName : ""}
+                    </div>
+                    <div style={{fontSize:12, color:C.text, marginTop:8, fontWeight:500}}>
+                      {r.type === "check_in" ? "Off-site check-in" : "Off-site check-out"}
+                      <span style={{color:C.textLight, fontWeight:400, marginLeft:8}}>· submitted {fmtCairoTime(r.requestedAt)} · {fmtCairoDate(r.requestedAt)}</span>
+                    </div>
+                    <div style={{fontSize:12, color:C.text, marginTop:6, lineHeight:1.5, background:"#F7F7F5", padding:"8px 10px", borderRadius:6}}>
+                      {r.reason}
+                    </div>
+                    <div style={{fontSize:11, color:C.textLight, marginTop:8, display:"flex", alignItems:"center", gap:10, flexWrap:"wrap"}}>
+                      <span style={{fontFamily:"ui-monospace, Menlo, monospace"}}>{coordStr}</span>
+                      <a href={mapsUrl} target="_blank" rel="noopener noreferrer" style={{color:"#185FA5", textDecoration:"none", fontSize:11, fontWeight:500}}>📍 Open in Maps ↗</a>
+                    </div>
+                  </div>
+                  <div style={{display:"flex", gap:8, alignItems:"flex-start"}}>
+                    <button type="button" onClick={function(){doApprove(r._id);}}
+                      style={{fontSize:12, padding:"8px 16px", border:"none", background:"#0F766E", color:"#fff", borderRadius:8, cursor:"pointer", fontWeight:600, fontFamily:"inherit"}}>Approve</button>
+                    {rejectingId === String(r._id)
+                      ? null
+                      : <button type="button" onClick={function(){setRejectingId(String(r._id)); setRejectNotes("");}}
+                          style={{fontSize:12, padding:"8px 16px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text}}>Reject</button>}
+                  </div>
+                </div>
+                {rejectingId === String(r._id) && <div style={{marginTop:12, padding:12, background:"#FEF9F0", border:"0.5px solid #FDE68A", borderRadius:8}}>
+                  <label style={{fontSize:11, color:C.textLight, display:"block", marginBottom:6}}>Rejection notes (optional)</label>
+                  <textarea value={rejectNotes} onChange={function(e){setRejectNotes(e.target.value);}}
+                    rows={2} style={{width:"100%", padding:8, border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:6, fontSize:12, fontFamily:"inherit", resize:"vertical", boxSizing:"border-box"}}/>
+                  <div style={{display:"flex", gap:8, marginTop:8, justifyContent:"flex-end"}}>
+                    <button type="button" onClick={function(){setRejectingId(null); setRejectNotes("");}}
+                      style={{fontSize:12, padding:"6px 12px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:6, cursor:"pointer", fontFamily:"inherit"}}>Cancel</button>
+                    <button type="button" onClick={function(){doReject(r._id);}}
+                      style={{fontSize:12, padding:"6px 12px", border:"none", background:"#B91C1C", color:"#fff", borderRadius:6, cursor:"pointer", fontWeight:600, fontFamily:"inherit"}}>Confirm reject</button>
+                  </div>
+                </div>}
+              </div>;
+            })}
+          </div>}
+      </div>
+    </div>
+  </div>;
+};
+
+// =====================================================================
+// COMPANY OFF-DAYS — Phase 4 (doc §11)
+// Admin / sales_admin / hr (gated by manageCompanyOffDays).
+// =====================================================================
+var CompanyOffDaysPage = function(p) {
+  var canManage = hasAttendancePerm(p.cu && p.cu.role, "manageCompanyOffDays", p.attendanceSettings);
+  var now = new Date();
+  var [year,setYear] = useState(now.getFullYear());
+  var [rows,setRows] = useState([]);
+  var [loading,setLoading] = useState(false);
+  var [newDate,setNewDate] = useState("");
+  var [newName,setNewName] = useState("");
+  var [adding,setAdding] = useState(false);
+  var [error,setError] = useState("");
+
+  var refetch = useCallback(function(){
+    if (!p.token) return;
+    setLoading(true);
+    apiFetch("/api/company-off-days?year="+year,"GET",null,p.token).then(function(r){
+      setRows(Array.isArray(r) ? r : []);
+    }).catch(function(){ setRows([]); })
+      .finally(function(){ setLoading(false); });
+  },[year, p.token]);
+
+  useEffect(function(){
+    refetch();
+    var handler = function(){ refetch(); };
+    window.addEventListener("crm:company_offdays_updated", handler);
+    return function(){ window.removeEventListener("crm:company_offdays_updated", handler); };
+  },[refetch]);
+
+  var doAdd = async function(){
+    if (!newDate || !newName) { setError("Date and name required"); return; }
+    setError(""); setAdding(true);
+    try {
+      await apiFetch("/api/company-off-days","POST",{ date: newDate, name: newName }, p.token, p.csrfToken);
+      setNewDate(""); setNewName("");
+      refetch();
+    } catch (err) {
+      setError((err && err.message) || "Add failed");
+    } finally { setAdding(false); }
+  };
+
+  var doDelete = async function(id){
+    if (!window.confirm("Delete this off-day?")) return;
+    try {
+      await apiFetch("/api/company-off-days/"+id,"DELETE",null,p.token,p.csrfToken);
+      refetch();
+    } catch (err) { alert((err && err.message) || "Delete failed"); }
+  };
+
+  if (!canManage) {
+    return <div style={{padding:"24px 16px"}}>
+      <div style={{maxWidth:1200, margin:"0 auto", background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", padding:24, textAlign:"center", color:C.textLight, fontSize:13, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+        You do not have permission to manage company off-days.
+      </div>
+    </div>;
+  }
+
+  var monthFloor = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
+  var todayKey = function(d){ var x = new Date(d); return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate())); };
+
+  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+    <div style={{maxWidth:900, margin:"0 auto"}}>
+      <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+        <div style={{padding:"16px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap"}}>
+          <div>
+            <div style={{fontSize:15, fontWeight:600, color:C.text}}>Company Off-Days</div>
+            <div style={{fontSize:12, color:C.textLight, marginTop:2}}>Holidays and non-working days for everyone — removed from the working-days count in salaries.</div>
+          </div>
+          <div style={{display:"flex", gap:8, alignItems:"center"}}>
+            <button type="button" onClick={function(){setYear(year - 1);}} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>‹</button>
+            <div style={{fontSize:13, fontWeight:500, color:C.text, minWidth:60, textAlign:"center"}}>{year}</div>
+            <button type="button" onClick={function(){setYear(year + 1);}} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>›</button>
+          </div>
+        </div>
+
+        <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", background:"#FAFAF7", display:"flex", gap:8, alignItems:"flex-end", flexWrap:"wrap"}}>
+          <div style={{flex:"1 1 160px", minWidth:140}}>
+            <label style={{fontSize:11, color:C.textLight, display:"block", marginBottom:4}}>Date</label>
+            <input type="date" value={newDate} onChange={function(e){setNewDate(e.target.value);}}
+              style={{padding:"7px 10px", border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:6, fontSize:13, fontFamily:"inherit", width:"100%", boxSizing:"border-box"}}/>
+          </div>
+          <div style={{flex:"2 1 240px", minWidth:200}}>
+            <label style={{fontSize:11, color:C.textLight, display:"block", marginBottom:4}}>Name</label>
+            <input type="text" value={newName} onChange={function(e){setNewName(e.target.value);}} placeholder="e.g. Labor Day"
+              style={{padding:"7px 10px", border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:6, fontSize:13, fontFamily:"inherit", width:"100%", boxSizing:"border-box"}}/>
+          </div>
+          <button type="button" onClick={doAdd} disabled={adding}
+            style={{fontSize:12, padding:"8px 16px", border:"none", background:"#185FA5", color:"#fff", borderRadius:6, cursor:"pointer", fontWeight:600, fontFamily:"inherit", height:32, opacity:adding?0.6:1}}>
+            {adding ? "Adding…" : "+ Add off-day"}
+          </button>
+          {error && <div style={{flex:"1 1 100%", fontSize:12, color:C.danger}}>{error}</div>}
+        </div>
+
+        {loading ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
+          : rows.length === 0 ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>No off-days for {year}</div>
+          : <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
+            <thead>
+              <tr style={{background:"#F7F7F5"}}>
+                <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Date</th>
+                <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Name</th>
+                <th style={{textAlign:"right", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px", width:100}}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(function(off){
+                var d = new Date(off.date);
+                var dStr = d.toLocaleDateString("en-GB", { weekday:"short", day:"2-digit", month:"short", year:"numeric", timeZone:"UTC" });
+                var inPast = todayKey(off.date) < monthFloor;
+                return <tr key={String(off._id)} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
+                  <td style={{padding:"10px 16px"}}>{dStr}</td>
+                  <td style={{padding:"10px 16px"}}>{off.name}</td>
+                  <td style={{padding:"10px 16px", textAlign:"right"}}>
+                    {inPast
+                      ? <span style={{fontSize:11, color:C.textLight}}>locked</span>
+                      : <button type="button" onClick={function(){doDelete(off._id);}}
+                          style={{fontSize:11, padding:"4px 10px", border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:6, cursor:"pointer", color:C.danger, fontFamily:"inherit"}}>Delete</button>}
+                  </td>
+                </tr>;
+              })}
+            </tbody>
+          </table>}
+      </div>
+    </div>
+  </div>;
+};
+
+// =====================================================================
+// SALARIES — Phase 5B (doc §14)
+// SalariesListPage = grid view of all employees for the selected month.
+// SalarySheetPage  = per-employee header + 4 metric cards + daily log.
+// Action-bar buttons (Edit base / Audit / Export / Finalize) and the
+// Day Override modal are wired in Phase 5C–5E.
+// =====================================================================
+
+var fmtEGP = function(n){
+  if (n == null || !isFinite(Number(n))) return "—";
+  return Math.round(Number(n)).toLocaleString("en-US") + " EGP";
+};
+var fmtEGPRaw = function(n){
+  if (n == null || !isFinite(Number(n))) return "—";
+  return Math.round(Number(n)).toLocaleString("en-US");
+};
+
+var SalariesListPage = function(p) {
+  var canViewAny = hasAttendancePerm(p.cu && p.cu.role, "manageSalaries", p.attendanceSettings);
+  var now = new Date();
+  var [year,setYear]   = useState(now.getFullYear());
+  var [month,setMonth] = useState(now.getMonth() + 1);
+  var [rows,setRows]   = useState([]);
+  var [loading,setLoading] = useState(false);
+  var [error,setError] = useState("");
+  var [bulkBusy,setBulkBusy] = useState(false);
+  var [bulkMsg,setBulkMsg]   = useState("");
+
+  var refetch = useCallback(function(){
+    if (!canViewAny || !p.token) return;
+    setLoading(true); setError("");
+    apiFetch("/api/salary/list/"+year+"/"+month,"GET",null,p.token).then(function(r){
+      setRows(Array.isArray(r) ? r : []);
+    }).catch(function(err){
+      setError((err && err.message) || "Failed to load");
+      setRows([]);
+    }).finally(function(){ setLoading(false); });
+  },[canViewAny, p.token, year, month]);
+
+  useEffect(function(){ refetch(); },[refetch]);
+
+  // Refetch when any individual finalize/unlock fires elsewhere — keeps the
+  // FINALIZED badge in sync with the per-employee sheet.
+  useEffect(function(){
+    var handler = function(){ refetch(); };
+    window.addEventListener("crm:salary_finalized", handler);
+    return function(){ window.removeEventListener("crm:salary_finalized", handler); };
+  }, [refetch]);
+
+  var doBulkFinalize = async function(){
+    var monthLbl = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+    var pending = rows.filter(function(r){ return !r.finalized; }).length;
+    if (pending === 0) { setBulkMsg("Nothing to finalize — every visible employee is already finalized."); return; }
+    if (!window.confirm("Finalize " + monthLbl + " for " + pending + " employee" + (pending === 1 ? "" : "s") + "?\n\nThis locks each salary calculation and prevents further attendance, override, and finalize edits for the month.")) return;
+    setBulkBusy(true); setBulkMsg("");
+    try {
+      var resp = await apiFetch("/api/salary/list/"+year+"/"+month+"/finalize-all", "POST", null, p.token, p.csrfToken);
+      setBulkMsg("Finalized " + (resp.finalized || 0) + " · skipped " + (resp.skipped || 0));
+      refetch();
+    } catch (err) {
+      setBulkMsg("Failed: " + ((err && err.message) || "unknown"));
+    } finally { setBulkBusy(false); }
+  };
+
+  if (!canViewAny) {
+    return <div style={{padding:"24px 16px"}}>
+      <div style={{maxWidth:1200, margin:"0 auto", background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", padding:24, textAlign:"center", color:C.textLight, fontSize:13, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+        You do not have permission to view salaries.
+      </div>
+    </div>;
+  }
+
+  var monthLabel = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+  var prevMonth = function(){ if (month === 1) { setMonth(12); setYear(year - 1); } else setMonth(month - 1); };
+  var nextMonth = function(){ if (month === 12) { setMonth(1); setYear(year + 1); } else setMonth(month + 1); };
+
+  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+    <div style={{maxWidth:1200, margin:"0 auto"}}>
+      <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+        <div style={{padding:"16px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap"}}>
+          <div>
+            <div style={{fontSize:15, fontWeight:600, color:C.text}}>Salaries</div>
+            <div style={{fontSize:12, color:C.textLight, marginTop:2}}>{rows.length} employees · click a row to open the salary sheet</div>
+          </div>
+          <div style={{display:"flex", gap:8, alignItems:"center", flexWrap:"wrap"}}>
+            <button type="button" onClick={doBulkFinalize} disabled={bulkBusy || rows.length === 0}
+              style={{fontSize:12, padding:"6px 12px", border:"0.5px solid rgba(24,95,165,0.3)", background:"#E6F1FB", color:"#185FA5", borderRadius:8, cursor: (bulkBusy || rows.length === 0) ? "not-allowed" : "pointer", fontWeight:500, fontFamily:"inherit", opacity: (bulkBusy || rows.length === 0) ? 0.6 : 1}}>
+              {bulkBusy ? "Finalizing…" : "Finalize all"}
+            </button>
+            <button type="button" onClick={prevMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>‹</button>
+            <div style={{fontSize:13, fontWeight:500, color:C.text, minWidth:120, textAlign:"center"}}>{monthLabel}</div>
+            <button type="button" onClick={nextMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>›</button>
+          </div>
+        </div>
+
+        {bulkMsg && <div style={{padding:"8px 20px", fontSize:12, color: bulkMsg.indexOf("Failed") === 0 ? C.danger : "#0F6E56", background: bulkMsg.indexOf("Failed") === 0 ? "#FCEBEB" : "#EAF6F0", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>{bulkMsg}</div>}
+
+        {loading ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
+          : error ? <div style={{padding:32, textAlign:"center", color:C.danger, fontSize:13}}>{error}</div>
+          : rows.length === 0 ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>No employees</div>
+          : <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
+              <thead>
+                <tr style={{background:"#F7F7F5"}}>
+                  <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Employee</th>
+                  <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Role</th>
+                  <th style={{textAlign:"right", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Working days</th>
+                  <th style={{textAlign:"right", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Deductions</th>
+                  <th style={{textAlign:"right", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Net salary</th>
+                  <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px", width:100}}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(function(row){
+                  var s = row.salary || {};
+                  var open = function(){ if (p.setSalaryViewUserId) p.setSalaryViewUserId(String(row.user._id)); };
+                  return <tr key={String(row.user._id)} onClick={open}
+                    style={{borderTop:"0.5px solid rgba(0,0,0,0.05)", cursor:"pointer"}}
+                    onMouseEnter={function(e){ e.currentTarget.style.background = "#FAFAFA"; }}
+                    onMouseLeave={function(e){ e.currentTarget.style.background = "transparent"; }}>
+                    <td style={{padding:"10px 16px"}}>{row.user.name}</td>
+                    <td style={{padding:"10px 16px", color:C.textLight}}>{row.user.role}</td>
+                    <td style={{padding:"10px 16px", textAlign:"right"}}>{s.workingDays != null ? s.workingDays : "—"}</td>
+                    <td style={{padding:"10px 16px", textAlign:"right", color: s.totalDeductions > 0 ? C.danger : C.text}}>
+                      {s.totalDeductions > 0 ? fmtEGPRaw(s.totalDeductions) : "0"} <span style={{color:C.textLight, fontSize:11}}>EGP</span>
+                    </td>
+                    <td style={{padding:"10px 16px", textAlign:"right", color:"#15803D", fontWeight:500}}>
+                      {fmtEGPRaw(s.netSalary)} <span style={{color:C.textLight, fontSize:11, fontWeight:400}}>EGP</span>
+                    </td>
+                    <td style={{padding:"10px 16px"}}>
+                      {row.finalized && <span style={{fontSize:10, padding:"2px 8px", borderRadius:6, background:"#F3E8FF", color:"#7C3AED", fontWeight:500}}>FINALIZED</span>}
+                    </td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </div>}
+      </div>
+    </div>
+  </div>;
+};
+
+var SalarySheetPage = function(p) {
+  // p.salaryViewUserId set by SalariesListPage row click; back button clears it.
+  var [year,setYear]   = useState(new Date().getFullYear());
+  var [month,setMonth] = useState(new Date().getMonth() + 1);
+  var [data,setData]   = useState(null);
+  var [attendance,setAttendance] = useState([]);
+  var [loading,setLoading] = useState(false);
+  var [error,setError] = useState("");
+  // Phase 5C — Day Override modal state.
+  var [ovrOpen,setOvrOpen]     = useState(false);
+  var [ovrDate,setOvrDate]     = useState(null);   // Date object for the row clicked
+  var [ovrCurrent,setOvrCurrent] = useState(null); // existing attendance doc for that day
+  var [ovrAction,setOvrAction] = useState("cancel_deduction");
+  var [ovrFraction,setOvrFraction] = useState(0.25);
+  var [ovrReason,setOvrReason] = useState("");
+  var [ovrSaving,setOvrSaving] = useState(false);
+  var [ovrError,setOvrError]   = useState("");
+  // Phase 5D — Edit Base Salary modal state.
+  var [bsOpen,setBsOpen]       = useState(false);
+  var [bsValue,setBsValue]     = useState("");
+  var [bsEffective,setBsEffective] = useState("");
+  var [bsReason,setBsReason]   = useState("");
+  var [bsSaving,setBsSaving]   = useState(false);
+  var [bsError,setBsError]     = useState("");
+  // Phase 5E — Finalize / Unlock state.
+  var [finBusy,setFinBusy] = useState(false);
+  var [finError,setFinError] = useState("");
+  // Phase 6 — Audit log modal state.
+  var [auditOpen,setAuditOpen] = useState(false);
+  var [auditRows,setAuditRows] = useState([]);
+  var [auditLoading,setAuditLoading] = useState(false);
+  var [auditError,setAuditError] = useState("");
+
+  var refetch = useCallback(function(){
+    if (!p.salaryViewUserId || !p.token) return;
+    setLoading(true); setError("");
+    Promise.all([
+      apiFetch("/api/salary/users/"+p.salaryViewUserId+"/"+year+"/"+month, "GET", null, p.token),
+      apiFetch("/api/attendance/users/"+p.salaryViewUserId+"/month?year="+year+"&month="+month, "GET", null, p.token)
+    ]).then(function(results){
+      setData(results[0]);
+      setAttendance(Array.isArray(results[1]) ? results[1] : []);
+    }).catch(function(err){
+      setError((err && err.message) || "Failed to load");
+    }).finally(function(){ setLoading(false); });
+  },[p.salaryViewUserId, p.token, year, month]);
+
+  useEffect(function(){ refetch(); },[refetch]);
+
+  // Live update on WS attendance_updated for the displayed user.
+  useEffect(function(){
+    var handler = function(e){
+      if (!e || !e.detail) return;
+      if (String(e.detail.userId) !== String(p.salaryViewUserId)) return;
+      // Refetch — the salary engine + per-day log both depend on attendance.
+      refetch();
+    };
+    window.addEventListener("crm:attendance_updated", handler);
+    return function(){ window.removeEventListener("crm:attendance_updated", handler); };
+  }, [p.salaryViewUserId, refetch]);
+
+  // Phase 5E — refetch when the salary is finalized/unlocked elsewhere.
+  useEffect(function(){
+    var handler = function(e){
+      if (!e || !e.detail) return;
+      if (String(e.detail.userId) !== String(p.salaryViewUserId)) return;
+      refetch();
+    };
+    window.addEventListener("crm:salary_finalized", handler);
+    return function(){ window.removeEventListener("crm:salary_finalized", handler); };
+  }, [p.salaryViewUserId, refetch]);
+
+  var monthLabel = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+  var prevMonth = function(){ if (month === 1) { setMonth(12); setYear(year - 1); } else setMonth(month - 1); };
+  var nextMonth = function(){ if (month === 12) { setMonth(1); setYear(year + 1); } else setMonth(month + 1); };
+  var goBack = function(){ if (p.setSalaryViewUserId) p.setSalaryViewUserId(null); };
+
+  if (loading && !data) {
+    return <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>Loading salary sheet…</div>;
+  }
+  if (error) {
+    return <div style={{padding:24, fontFamily:"inherit"}}>
+      <div style={{maxWidth:1200, margin:"0 auto"}}>
+        <button type="button" onClick={goBack} style={{fontSize:12, padding:"6px 12px", border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, cursor:"pointer", marginBottom:12, fontFamily:"inherit"}}>‹ Salaries</button>
+        <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", padding:24, textAlign:"center", color:C.danger, fontSize:13}}>
+          {error}
+        </div>
+      </div>
+    </div>;
+  }
+  if (!data) return null;
+
+  var s = data.salary || {};
+  var t = data.target || {};
+  var finalized = !!data.finalized;
+
+  // Build daily log: every Cairo day in the month + lookup of attendance.
+  var daysInMonth = new Date(year, month, 0).getDate();
+  var attByKey = {};
+  attendance.forEach(function(a){
+    var d = new Date(a.date);
+    attByKey[d.getUTCFullYear()+"-"+(d.getUTCMonth()+1)+"-"+d.getUTCDate()] = a;
+  });
+
+  var rows = [];
+  for (var d = 1; d <= daysInMonth; d++) {
+    var dateUTC = new Date(Date.UTC(year, month - 1, d));
+    var dayKey  = year + "-" + month + "-" + d;
+    var att = attByKey[dayKey] || null;
+    rows.push({ date: dateUTC, attendance: att });
+  }
+
+  var deductionFor = function(att){
+    if (!att) return null; // computed at row level using off-day detection
+    return Number(att.deductionFraction || 0) * Number(s.dailyRate || 0);
+  };
+
+  // Floor of today (UTC midnight) — rows with row.date > this are future and
+  // not clickable for override. Re-derived on every render so it stays fresh
+  // around the day boundary.
+  var todayUTCKey = (function(){
+    var n = new Date();
+    return Date.UTC(n.getFullYear(), n.getMonth(), n.getDate());
+  })();
+
+  // Sick-warning preview (Phase 5C). Counts existing override rows in this
+  // month with a sick keyword. The 3rd one tips the modal into a red banner.
+  var SICK_RE_FE = /sick|مرض|illness/i;
+  var sickPreviewCount = (attendance || []).filter(function(a){
+    if (!a.override || !a.override.action || !a.override.reason) return false;
+    if (ovrDate && a.date && new Date(a.date).getTime() === ovrDate.getTime()) return false;
+    return SICK_RE_FE.test(a.override.reason);
+  }).length;
+  var sickWarning = SICK_RE_FE.test(ovrReason || "") && sickPreviewCount >= 2;
+
+  var pad2 = function(n){ return n < 10 ? "0" + n : "" + n; };
+
+  // Phase 6 — open audit log modal and fetch rows for this user.
+  var openAuditLog = function(){
+    setAuditOpen(true);
+    setAuditError("");
+    setAuditLoading(true);
+    apiFetch("/api/audit?targetUserId=" + p.salaryViewUserId + "&limit=200", "GET", null, p.token)
+      .then(function(r){ setAuditRows(Array.isArray(r) ? r : []); })
+      .catch(function(err){ setAuditError((err && err.message) || "Failed to load"); setAuditRows([]); })
+      .finally(function(){ setAuditLoading(false); });
+  };
+
+  // Phase 6 — CSV export of the daily log + summary metrics for the displayed
+  // (user, month). Fully client-side — no extra round-trip, no PDF library.
+  var doExportCsv = function(){
+    var fmtDateUTC = function(d){
+      return d.toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric", timeZone:"UTC" });
+    };
+    var lines = [];
+    lines.push("Employee,Role,Year,Month,Base salary (EGP),Working days,Daily rate (EGP),Deduction days,Total deductions (EGP),Net salary (EGP),Finalized");
+    lines.push([
+      JSON.stringify(t.name || ""),
+      JSON.stringify(t.role || ""),
+      year, month,
+      Math.round(s.baseSalary || 0),
+      s.workingDays != null ? s.workingDays : "",
+      Math.round(s.dailyRate || 0),
+      (s.deductionDays != null ? Number(s.deductionDays).toFixed(2) : ""),
+      Math.round(s.totalDeductions || 0),
+      Math.round(s.netSalary || 0),
+      finalized ? "yes" : "no"
+    ].join(","));
+    lines.push("");
+    lines.push("Date,Day,Check-in,Check-out,Status,Override reason,Deduction (EGP)");
+    rows.forEach(function(row){
+      var weekday = row.date.toLocaleDateString("en-GB", { weekday:"short", timeZone:"UTC" });
+      var a = row.attendance;
+      var hasOverride = a && a.override && a.override.action;
+      var status = hasOverride ? "Override" : (a ? a.status : (weekday === "Fri" ? "friday_off" : "absent"));
+      var ovReason = hasOverride ? (a.override.reason || "") : "";
+      var ded = a ? Math.round((Number(a.deductionFraction) || 0) * Number(s.dailyRate || 0)) : 0;
+      lines.push([
+        fmtDateUTC(row.date),
+        weekday,
+        a && a.checkIn ? fmtCairoTime(a.checkIn.timestamp) : "",
+        a && a.checkOut ? fmtCairoTime(a.checkOut.timestamp) : "",
+        status,
+        JSON.stringify(ovReason),
+        ded
+      ].join(","));
+    });
+    var csv = lines.join("\n");
+    var blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "salary-" + (t.name || "employee").replace(/\s+/g,"_") + "-" + year + "-" + (month < 10 ? "0" + month : month) + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  };
+
+  var doFinalize = async function(){
+    var monthLabelLocal = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+    var msg = "Finalize " + monthLabelLocal + " for " + (t.name || "this employee") + "?\n\nThis locks the salary calculation and prevents further attendance, override, and finalize edits for the month. Owner can unlock if needed.";
+    if (!window.confirm(msg)) return;
+    setFinBusy(true); setFinError("");
+    try {
+      await apiFetch("/api/salary/"+p.salaryViewUserId+"/"+year+"/"+month+"/finalize", "POST", null, p.token, p.csrfToken);
+      refetch();
+    } catch (err) {
+      setFinError((err && err.message) || "Finalize failed");
+    } finally { setFinBusy(false); }
+  };
+  var doUnlock = async function(){
+    var monthLabelLocal = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+    if (!window.confirm("Unlock " + monthLabelLocal + " for " + (t.name || "this employee") + "?\n\nLive computation will resume and admins can edit attendance again.")) return;
+    setFinBusy(true); setFinError("");
+    try {
+      await apiFetch("/api/salary/"+p.salaryViewUserId+"/"+year+"/"+month+"/unlock", "POST", null, p.token, p.csrfToken);
+      refetch();
+    } catch (err) {
+      setFinError((err && err.message) || "Unlock failed");
+    } finally { setFinBusy(false); }
+  };
+
+  var openBaseSalaryModal = function(){
+    setBsValue(s.baseSalary != null ? String(s.baseSalary) : "");
+    setBsEffective("");
+    setBsReason("");
+    setBsError("");
+    setBsOpen(true);
+  };
+  var submitBaseSalary = async function(){
+    var newSalary = Number(bsValue);
+    if (!isFinite(newSalary) || newSalary < 0) {
+      setBsError("Enter a non-negative number");
+      return;
+    }
+    setBsSaving(true); setBsError("");
+    try {
+      var body = { newSalary: newSalary };
+      if (bsEffective) body.effectiveDate = bsEffective;
+      if (bsReason)    body.reason = bsReason.trim();
+      await apiFetch("/api/users/"+p.salaryViewUserId+"/base-salary", "PATCH", body, p.token, p.csrfToken);
+      setBsOpen(false);
+      refetch();
+    } catch (err) {
+      setBsError((err && err.message) || "Save failed");
+    } finally {
+      setBsSaving(false);
+    }
+  };
+
+  var submitOverride = async function(){
+    if ((ovrReason || "").trim().length < 10) {
+      setOvrError("Reason must be at least 10 characters");
+      return;
+    }
+    setOvrSaving(true); setOvrError("");
+    try {
+      var dateStr = ovrDate.getUTCFullYear() + "-" + pad2(ovrDate.getUTCMonth() + 1) + "-" + pad2(ovrDate.getUTCDate());
+      var body = {
+        userId: p.salaryViewUserId,
+        date: dateStr,
+        action: ovrAction,
+        reason: (ovrReason || "").trim()
+      };
+      if (ovrAction === "apply_fraction") body.fraction = Number(ovrFraction);
+      await apiFetch("/api/attendance/override", "POST", body, p.token, p.csrfToken);
+      setOvrOpen(false);
+      // WS event will refetch, but call directly for snappy local update too.
+      refetch();
+    } catch (err) {
+      setOvrError((err && err.message) || "Save failed");
+    } finally {
+      setOvrSaving(false);
+    }
+  };
+
+  var actionBtn = {
+    fontSize:12, padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.15)",
+    background:"transparent", borderRadius:8, cursor:"not-allowed",
+    fontFamily:"inherit", color:C.textLight, opacity:0.5
+  };
+
+  return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+    <div style={{maxWidth:1200, margin:"0 auto"}}>
+      <button type="button" onClick={goBack} style={{fontSize:12, padding:"6px 12px", border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, cursor:"pointer", marginBottom:12, fontFamily:"inherit", color:C.text}}>‹ Salaries</button>
+
+      {/* Header */}
+      <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden", marginBottom:14}}>
+        <div style={{padding:"18px 22px", display:"flex", alignItems:"center", gap:14, flexWrap:"wrap", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>
+          <div style={{width:48, height:48, borderRadius:24, background:"#1a2942", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, fontWeight:600}}>
+            {(t.name || "?")[0]}
+          </div>
+          <div style={{flex:1, minWidth:0}}>
+            <div style={{fontSize:16, fontWeight:600, color:C.text}}>{t.name || "—"}</div>
+            <div style={{fontSize:12, color:C.textLight, marginTop:2}}>
+              {t.role || ""}{t.teamName ? " · " + t.teamName : ""}{t.startingDate ? " · started " + new Date(t.startingDate).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : ""}
+            </div>
+          </div>
+          <div style={{display:"flex", gap:8, alignItems:"center"}}>
+            <button type="button" onClick={prevMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>‹</button>
+            <div style={{fontSize:13, fontWeight:500, color:C.text, minWidth:120, textAlign:"center"}}>{monthLabel}</div>
+            <button type="button" onClick={nextMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>›</button>
+            {finalized && <span style={{fontSize:10, padding:"3px 10px", borderRadius:6, background:"#F3E8FF", color:"#7C3AED", fontWeight:600}}>FINALIZED</span>}
+          </div>
+        </div>
+
+        {/* 4 metric cards */}
+        <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:1, background:"rgba(0,0,0,0.06)"}}>
+          <div style={{background:"#fff", padding:"16px 20px"}}>
+            <div style={{fontSize:11, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.3px", marginBottom:6}}>Base salary</div>
+            <div style={{fontSize:18, fontWeight:600, color:C.text}}>{fmtEGPRaw(s.baseSalary)} <span style={{fontSize:12, color:C.textLight, fontWeight:400}}>EGP</span></div>
+          </div>
+          <div style={{background:"#fff", padding:"16px 20px"}}>
+            <div style={{fontSize:11, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.3px", marginBottom:6}}>Working days</div>
+            <div style={{fontSize:18, fontWeight:600, color:C.text}}>{s.workingDays != null ? s.workingDays : "—"}</div>
+            <div style={{fontSize:11, color:C.textLight, marginTop:2}}>Daily rate · {fmtEGPRaw(s.dailyRate)} EGP</div>
+          </div>
+          <div style={{background:"#fff", padding:"16px 20px"}}>
+            <div style={{fontSize:11, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.3px", marginBottom:6}}>Deductions</div>
+            <div style={{fontSize:18, fontWeight:600, color: s.totalDeductions > 0 ? C.danger : C.text}}>
+              {fmtEGPRaw(s.totalDeductions)} <span style={{fontSize:12, color:C.textLight, fontWeight:400}}>EGP</span>
+            </div>
+            <div style={{fontSize:11, color:C.textLight, marginTop:2}}>{(s.deductionDays || 0).toFixed(2).replace(/\.00$/, "")} days</div>
+          </div>
+          <div style={{background:"#fff", padding:"16px 20px"}}>
+            <div style={{fontSize:11, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.3px", marginBottom:6}}>Net salary</div>
+            <div style={{fontSize:18, fontWeight:600, color:"#15803D"}}>{fmtEGPRaw(s.netSalary)} <span style={{fontSize:12, color:C.textLight, fontWeight:400}}>EGP</span></div>
+          </div>
+        </div>
+
+        {/* Action bar — Edit base salary wired in Phase 5D; Audit + Export
+            land in Phase 6; Finalize in Phase 5E */}
+        <div style={{padding:"14px 22px", display:"flex", gap:8, flexWrap:"wrap", background:"#FAFAF7", borderTop:"0.5px solid rgba(0,0,0,0.06)"}}>
+          {data.access && data.access.canEdit && !finalized
+            ? <button type="button" onClick={openBaseSalaryModal}
+                style={{fontSize:12, padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text}}>Edit base salary</button>
+            : <button type="button" disabled style={actionBtn} title={finalized ? "Month finalized — unlock first" : "You don't have permission to edit this user's salary"}>Edit base salary</button>}
+          <button type="button" onClick={openAuditLog}
+            style={{fontSize:12, padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text}}>Audit log</button>
+          <button type="button" onClick={doExportCsv}
+            style={{fontSize:12, padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text}}>Export CSV</button>
+          <div style={{flex:1}}/>
+          {finError && <span style={{fontSize:11, color:C.danger, alignSelf:"center"}}>{finError}</span>}
+          {finalized
+            ? <>
+                <span style={{fontSize:12, color:"#7C3AED", fontWeight:600, alignSelf:"center"}}>
+                  ✓ Finalized {data.finalizedAt ? "· " + fmtCairoDate(data.finalizedAt) : ""}
+                </span>
+                {p.cu && p.cu.role === "admin" && <button type="button" onClick={doUnlock} disabled={finBusy}
+                  style={{fontSize:12, padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:finBusy?"not-allowed":"pointer", fontFamily:"inherit", color:C.text, opacity:finBusy?0.6:1}}>
+                  {finBusy ? "Unlocking…" : "Unlock"}
+                </button>}
+              </>
+            : (data.access && data.access.canEdit
+              ? <button type="button" onClick={doFinalize} disabled={finBusy}
+                  style={{fontSize:12, padding:"8px 16px", border:"none", background:"#185FA5", color:"#fff", borderRadius:8, cursor:finBusy?"not-allowed":"pointer", fontWeight:600, fontFamily:"inherit", opacity:finBusy?0.6:1}}>
+                  {finBusy ? "Finalizing…" : "Finalize " + monthLabel}
+                </button>
+              : <button type="button" disabled style={Object.assign({}, actionBtn, { background:"#185FA5", color:"#fff", borderColor:"#185FA5", opacity:0.45 })} title="You don't have permission to finalize this user's salary">
+                  Finalize {monthLabel}
+                </button>)}
+        </div>
+      </div>
+
+      {/* Daily log */}
+      <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+        <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>
+          <div style={{fontSize:14, fontWeight:600, color:C.text}}>Daily log</div>
+          <div style={{fontSize:12, color:C.textLight, marginTop:2}}>Click any row to open the override modal (wired in Phase 5C)</div>
+        </div>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
+            <thead>
+              <tr style={{background:"#F7F7F5"}}>
+                <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Date</th>
+                <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Day</th>
+                <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-in</th>
+                <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-out</th>
+                <th style={{textAlign:"left",  padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Status</th>
+                <th style={{textAlign:"right", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Deduction</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(function(row){
+                var weekday = row.date.toLocaleDateString("en-GB", { weekday:"short", timeZone:"UTC" });
+                var a = row.attendance;
+                var hasOverride = a && a.override && a.override.action;
+                var off = null;
+                if (!a && weekday === "Fri") off = "friday";
+                var badge = attStatusBadge(a && a.status, off);
+                if (hasOverride) badge = { label:"Override", bg:"#F3E8FF", color:"#7C3AED" };
+                var ded = deductionFor(a);
+                var rowClickable = data.access && data.access.canEdit && !finalized && row.date.getTime() <= todayUTCKey;
+                var openModalForThisRow = function(){
+                  if (!rowClickable) return;
+                  setOvrDate(row.date);
+                  setOvrCurrent(a);
+                  setOvrAction(a && a.override && a.override.action ? a.override.action : "cancel_deduction");
+                  setOvrFraction(a && a.override && a.override.action === "apply_fraction" && a.deductionFraction ? Number(a.deductionFraction) : 0.25);
+                  setOvrReason(a && a.override && a.override.reason ? a.override.reason : "");
+                  setOvrError("");
+                  setOvrOpen(true);
+                };
+                return <tr key={row.date.toISOString()} onClick={openModalForThisRow}
+                  style={{borderTop:"0.5px solid rgba(0,0,0,0.05)", cursor: rowClickable ? "pointer" : "default", background: hasOverride ? "#FFFBEB" : "transparent"}}>
+                  <td style={{padding:"10px 16px"}}>{row.date.toLocaleDateString("en-GB", { day:"2-digit", month:"short", timeZone:"UTC" })}</td>
+                  <td style={{padding:"10px 16px", color:C.textLight}}>{weekday}</td>
+                  <td style={{padding:"10px 16px"}}>{a && a.checkIn ? fmtCairoTime(a.checkIn.timestamp) : "—"}</td>
+                  <td style={{padding:"10px 16px"}}>{a && a.checkOut ? fmtCairoTime(a.checkOut.timestamp) : "—"}</td>
+                  <td style={{padding:"10px 16px"}}>
+                    <span style={{display:"inline-block", padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:500, background:badge.bg, color:badge.color}}>{badge.label}</span>
+                    {hasOverride && a.override.reason && <div style={{fontSize:11, color:C.textLight, marginTop:3}}>{a.override.reason}</div>}
+                  </td>
+                  <td style={{padding:"10px 16px", textAlign:"right", color: ded > 0 ? C.danger : C.text}}>
+                    {ded != null && ded > 0 ? fmtEGP(ded) : (a ? "0 EGP" : "—")}
+                  </td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {ovrOpen && <div className="crm-modal" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:20 }}>
+        <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:12, maxWidth:520, width:"100%", padding:24, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", maxHeight:"90vh", overflowY:"auto" }}>
+          <div style={{ fontSize:16, fontWeight:600, marginBottom:6, color:C.text }}>Override day</div>
+          <div style={{ fontSize:12, color:C.textLight, marginBottom:16 }}>
+            <div><b>{t.name || "—"}</b></div>
+            <div>{ovrDate ? ovrDate.toLocaleDateString("en-GB", { weekday:"long", day:"2-digit", month:"long", year:"numeric", timeZone:"UTC" }) : ""}</div>
+            <div style={{marginTop:4}}>
+              Current: {ovrCurrent
+                ? (ovrCurrent.status + (ovrCurrent.deductionFraction ? " · " + ovrCurrent.deductionFraction + " day deduction" : ""))
+                : "Absent (full day deduction)"}
+            </div>
+          </div>
+
+          <div style={{ marginBottom:16 }}>
+            <div style={{ fontSize:12, color:C.textLight, marginBottom:8, fontWeight:500 }}>Action</div>
+            {[
+              { value:"cancel_deduction",   label:"Cancel deduction (no charge)" },
+              { value:"add_full_deduction", label:"Add full day deduction" },
+              { value:"mark_off_day",       label:"Mark as off-day" },
+              { value:"apply_fraction",     label:"Apply specific deduction fraction" }
+            ].map(function(opt){
+              return <label key={opt.value} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", cursor:"pointer", fontSize:13, color:C.text }}>
+                <input type="radio" name="ovrAction" value={opt.value}
+                  checked={ovrAction === opt.value}
+                  onChange={function(e){ setOvrAction(e.target.value); }}/>
+                {opt.label}
+              </label>;
+            })}
+            {ovrAction === "apply_fraction" && <div style={{ display:"flex", gap:8, marginTop:6, marginLeft:24 }}>
+              {[0, 0.25, 0.5, 1].map(function(f){
+                return <label key={f} style={{ display:"flex", alignItems:"center", gap:4, fontSize:12, color:C.text, cursor:"pointer" }}>
+                  <input type="radio" name="ovrFraction" value={f}
+                    checked={Number(ovrFraction) === f}
+                    onChange={function(){ setOvrFraction(f); }}/>
+                  {f === 0.25 ? "¼" : f === 0.5 ? "½" : f === 1 ? "1 day" : "0"}
+                </label>;
+              })}
+            </div>}
+          </div>
+
+          <div style={{ marginBottom:12 }}>
+            <label style={{ fontSize:12, color:C.textLight, display:"block", marginBottom:6 }}>Reason (min 10 characters)</label>
+            <textarea value={ovrReason} onChange={function(e){ setOvrReason(e.target.value); }}
+              rows={3} placeholder="e.g. Sick — prescription received on WhatsApp"
+              style={{ width:"100%", padding:10, border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:8, fontSize:13, fontFamily:"inherit", resize:"vertical", boxSizing:"border-box" }}/>
+          </div>
+
+          {sickWarning && <div style={{ background:"#FEE2E2", border:"0.5px solid #FCA5A5", borderRadius:8, padding:"10px 12px", marginBottom:12, fontSize:12, color:"#991B1B", lineHeight:1.5 }}>
+            ⚠ This would be {t.name}'s 3rd+ sick day this month — exceeds the 2-day limit. You can save anyway, but it will be flagged in the audit log.
+          </div>}
+
+          {ovrError && <div style={{ fontSize:12, color:C.danger, marginBottom:12 }}>{ovrError}</div>}
+
+          <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+            <button type="button" onClick={function(){ setOvrOpen(false); }} disabled={ovrSaving}
+              style={{ fontSize:13, padding:"9px 16px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text }}>Cancel</button>
+            <button type="button" onClick={submitOverride} disabled={ovrSaving}
+              style={{ fontSize:13, padding:"9px 16px", border:"none", background:"#185FA5", color:"#fff", borderRadius:8, cursor:"pointer", fontWeight:600, fontFamily:"inherit" }}>
+              {ovrSaving ? "Saving…" : "Save override"}
+            </button>
+          </div>
+        </div>
+      </div>}
+
+      {bsOpen && <div className="crm-modal" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:20 }}>
+        <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:12, maxWidth:480, width:"100%", padding:24, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+          <div style={{ fontSize:16, fontWeight:600, marginBottom:6, color:C.text }}>Edit base salary</div>
+          <div style={{ fontSize:12, color:C.textLight, marginBottom:16 }}>
+            <div><b>{t.name || "—"}</b> · current: {fmtEGP(s.baseSalary)}</div>
+          </div>
+
+          <label style={{ fontSize:12, color:C.textLight, display:"block", marginBottom:6 }}>New base salary (EGP)</label>
+          <input type="number" min="0" step="1" value={bsValue}
+            onChange={function(e){ setBsValue(e.target.value); }}
+            style={{ width:"100%", padding:10, border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:8, fontSize:13, fontFamily:"inherit", boxSizing:"border-box", marginBottom:12 }}/>
+
+          <label style={{ fontSize:12, color:C.textLight, display:"block", marginBottom:6 }}>Effective date <span style={{ color:C.textLight, fontWeight:400 }}>(audit only)</span></label>
+          <input type="date" value={bsEffective}
+            onChange={function(e){ setBsEffective(e.target.value); }}
+            style={{ width:"100%", padding:10, border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:8, fontSize:13, fontFamily:"inherit", boxSizing:"border-box", marginBottom:12 }}/>
+          <div style={{ fontSize:11, color:C.textLight, marginTop:-8, marginBottom:12, lineHeight:1.4 }}>
+            Stored in the audit log. Salary calculations use the latest value immediately — phased effective dates are not yet implemented.
+          </div>
+
+          <label style={{ fontSize:12, color:C.textLight, display:"block", marginBottom:6 }}>Reason <span style={{ color:C.textLight, fontWeight:400 }}>(optional)</span></label>
+          <textarea value={bsReason} onChange={function(e){ setBsReason(e.target.value); }}
+            rows={2} placeholder="e.g. Promotion to senior; quarterly raise"
+            style={{ width:"100%", padding:10, border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:8, fontSize:13, fontFamily:"inherit", resize:"vertical", boxSizing:"border-box" }}/>
+
+          {bsError && <div style={{ fontSize:12, color:C.danger, marginTop:8 }}>{bsError}</div>}
+
+          <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:16 }}>
+            <button type="button" onClick={function(){ setBsOpen(false); }} disabled={bsSaving}
+              style={{ fontSize:13, padding:"9px 16px", border:"0.5px solid rgba(0,0,0,0.15)", background:"transparent", borderRadius:8, cursor:"pointer", fontFamily:"inherit", color:C.text }}>Cancel</button>
+            <button type="button" onClick={submitBaseSalary} disabled={bsSaving}
+              style={{ fontSize:13, padding:"9px 16px", border:"none", background:"#185FA5", color:"#fff", borderRadius:8, cursor:"pointer", fontWeight:600, fontFamily:"inherit" }}>
+              {bsSaving ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      </div>}
+
+      {auditOpen && <div className="crm-modal" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:20 }}>
+        <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:12, maxWidth:720, width:"100%", padding:0, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", maxHeight:"85vh", display:"flex", flexDirection:"column" }}>
+          <div style={{ padding:"16px 22px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+            <div>
+              <div style={{ fontSize:15, fontWeight:600, color:C.text }}>Audit log · {t.name || "—"}</div>
+              <div style={{ fontSize:12, color:C.textLight, marginTop:2 }}>Last 200 entries · newest first</div>
+            </div>
+            <button type="button" onClick={function(){ setAuditOpen(false); }}
+              style={{ background:"transparent", border:"none", fontSize:20, cursor:"pointer", color:C.textLight, padding:4, lineHeight:1, fontFamily:"inherit" }}>×</button>
+          </div>
+          <div style={{ flex:1, overflowY:"auto", padding:"8px 22px 16px" }}>
+            {auditLoading ? <div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}>Loading…</div>
+              : auditError ? <div style={{ padding:24, textAlign:"center", color:C.danger, fontSize:13 }}>{auditError}</div>
+              : auditRows.length === 0 ? <div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No audit entries for this employee yet.</div>
+              : auditRows.map(function(r){
+                  var actor = r.performedBy && r.performedBy.name ? r.performedBy.name : "—";
+                  var when  = r.timestamp || r.createdAt;
+                  var typeLabels = {
+                    BASE_SALARY_CHANGED: "Base salary changed",
+                    DAY_OVERRIDDEN: "Day overridden",
+                    MONTH_FINALIZED: "Month finalized",
+                    MONTH_UNLOCKED: "Month unlocked",
+                    OFFSITE_APPROVED: "Off-site approved",
+                    OFFSITE_REJECTED: "Off-site rejected"
+                  };
+                  var label = typeLabels[r.type] || r.type;
+                  var detail = "";
+                  if (r.type === "BASE_SALARY_CHANGED") {
+                    detail = fmtEGPRaw((r.before || {}).baseSalary) + " EGP → " + fmtEGPRaw((r.after || {}).baseSalary) + " EGP";
+                  } else if (r.type === "DAY_OVERRIDDEN") {
+                    var act = (r.after || {}).override && r.after.override.action;
+                    detail = act ? ("action: " + act) : "";
+                  } else if (r.type === "MONTH_FINALIZED" || r.type === "MONTH_UNLOCKED") {
+                    var y = (r.after && r.after.year) || (r.before && r.before.year);
+                    var m = (r.after && r.after.month) || (r.before && r.before.month);
+                    if (y && m) detail = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+                  }
+                  return <div key={String(r._id)} style={{ padding:"12px 0", borderBottom:"0.5px solid rgba(0,0,0,0.05)" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", gap:12, alignItems:"flex-start" }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:13, fontWeight:500, color:C.text }}>
+                          {label}
+                          {r.flags && r.flags.sickLimitExceeded && <span style={{ marginLeft:8, fontSize:10, padding:"2px 6px", borderRadius:4, background:"#FEE2E2", color:"#B91C1C", fontWeight:600 }}>SICK LIMIT</span>}
+                          {r.flags && r.flags.bulk && <span style={{ marginLeft:8, fontSize:10, padding:"2px 6px", borderRadius:4, background:"#EEF2FF", color:"#4338CA", fontWeight:600 }}>BULK</span>}
+                        </div>
+                        {detail && <div style={{ fontSize:12, color:C.textLight, marginTop:2 }}>{detail}</div>}
+                        {r.reason && <div style={{ fontSize:12, color:C.text, marginTop:4, padding:"6px 10px", background:"#F7F7F5", borderRadius:6, lineHeight:1.4 }}>{r.reason}</div>}
+                      </div>
+                      <div style={{ flexShrink:0, fontSize:11, color:C.textLight, textAlign:"right" }}>
+                        <div>{actor}</div>
+                        <div style={{ marginTop:2 }}>{when ? new Date(when).toLocaleString("en-GB", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit", timeZone:"Africa/Cairo" }) : ""}</div>
+                      </div>
+                    </div>
+                  </div>;
+                })}
+          </div>
+        </div>
+      </div>}
+    </div>
+  </div>;
+};
 
 // ===== DASHBOARD =====
 
@@ -11255,6 +12865,48 @@ var SettingsPage = function(p) {
   var [loading,setLoading]=useState(true);
   var [activeTab,setActiveTab]=useState("general");
 
+  // Attendance & Salary — Phase 2 (Office Location + Permissions tabs).
+  // Owner-only. Loaded lazily when either tab is opened. attLoc holds the
+  // single active office (schema supports an array but UI is single-office for
+  // now, doc §4). attPerms is the 4-action × {salesAdmin,hr} permission matrix.
+  var [attLoc,setAttLoc] = useState({ name:"ARO Investment HQ", latitude:"", longitude:"", radiusMeters:100, isActive:true });
+  var [attPerms,setAttPerms] = useState({
+    manageSalaries:         { salesAdmin:true, hr:true },
+    manageAttendance:       { salesAdmin:true, hr:true },
+    approveOffSiteRequests: { salesAdmin:true, hr:true },
+    manageCompanyOffDays:   { salesAdmin:true, hr:true }
+  });
+  var [attLoaded,setAttLoaded] = useState(false);
+  var [attSaving,setAttSaving] = useState(false);
+  var [attMsg,setAttMsg] = useState("");
+  var [attError,setAttError] = useState("");
+  useEffect(function(){
+    if (activeTab !== "officeLocation" && activeTab !== "permissions") return;
+    if (attLoaded) return;
+    var cancelled = false;
+    apiFetch("/api/settings/attendance","GET",null,p.token).then(function(s){
+      if (cancelled || !s) return;
+      var locs = Array.isArray(s.companyLocations) ? s.companyLocations : [];
+      var first = locs[0] || null;
+      if (first) {
+        setAttLoc({
+          name: first.name || "ARO Investment HQ",
+          latitude:  first.latitude  != null ? String(first.latitude)  : "",
+          longitude: first.longitude != null ? String(first.longitude) : "",
+          radiusMeters: first.radiusMeters || 100,
+          isActive: first.isActive !== false
+        });
+      }
+      if (s.permissions) setAttPerms(s.permissions);
+      setAttLoaded(true);
+    }).catch(function(err){
+      // Endpoint is Owner-only; non-Owner users won't see the tabs anyway.
+      setAttError((err && err.message) || "Failed to load attendance settings");
+      setAttLoaded(true);
+    });
+    return function(){ cancelled = true; };
+  },[activeTab, attLoaded, p.token]);
+
   // Campaigns tab (Phase B) — state + lazy hydration when admin opens
   // the tab. knownCampaignNames is distinct lead.campaign values from
   // the server, surfaced in the Add Campaign autocomplete so admin can
@@ -11534,6 +13186,7 @@ var SettingsPage = function(p) {
   };
   var rotInpStyle={width:60,padding:"4px 8px",borderRadius:7,border:"1px solid #E2E8F0",fontSize:13,textAlign:"center"};
 
+  var isOwner = p.cu && p.cu.role === "admin";
   var tabs=[
     {id:"general",     label:"General"},
     {id:"rotation",    label:"Rotation"},
@@ -11541,7 +13194,9 @@ var SettingsPage = function(p) {
     p.cu&&p.cu.role!=="sales_admin"&&{id:"integrations",label:"Integrations"},
     {id:"rules",       label:"Business Rules"},
     {id:"campaigns",   label:"Campaigns"},
-    {id:"audit",       label:"Audit Log"}
+    {id:"audit",       label:"Audit Log"},
+    isOwner && {id:"officeLocation", label:"Office Location"},
+    isOwner && {id:"permissions",    label:"Permissions"}
   ].filter(Boolean);
   // Tab chip: white-on-gray, active = white bg with 0.5px border. Matches mockup .tab.
   var tabBtn=function(tab){
@@ -12791,6 +14446,161 @@ var SettingsPage = function(p) {
         </div>;
       })()}
 
+      {activeTab==="officeLocation" && isOwner && (function(){
+        var fieldLabel = {fontSize:12,color:"#666",display:"block",marginBottom:6};
+        var inputStyle = {padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",fontFamily:"inherit",width:"100%",boxSizing:"border-box"};
+        var btnPrimary = {fontSize:12,padding:"8px 16px",border:"0.5px solid rgba(24,95,165,0.3)",background:"#185FA5",color:"#fff",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+        var btnGhost   = {fontSize:12,padding:"8px 14px",border:"0.5px solid rgba(0,0,0,0.15)",background:"transparent",borderRadius:8,cursor:"pointer",fontFamily:"inherit",color:"#1a1a1a"};
+
+        var useMyLocation = function(){
+          if (!navigator.geolocation) { setAttError("Browser does not support geolocation"); return; }
+          setAttError(""); setAttMsg("Getting your location…");
+          navigator.geolocation.getCurrentPosition(function(pos){
+            setAttLoc(function(prev){return Object.assign({},prev,{
+              latitude:  String(pos.coords.latitude.toFixed(6)),
+              longitude: String(pos.coords.longitude.toFixed(6))
+            });});
+            setAttMsg("Location captured ("+pos.coords.accuracy.toFixed(0)+"m accuracy)");
+          }, function(err){
+            setAttMsg("");
+            setAttError("Could not get location: "+(err.message||err.code));
+          }, {enableHighAccuracy:true, timeout:10000, maximumAge:0});
+        };
+
+        var doSaveLoc = async function(){
+          setAttError(""); setAttMsg(""); setAttSaving(true);
+          try {
+            var payload = { companyLocations: [{
+              name: attLoc.name,
+              latitude:  Number(attLoc.latitude),
+              longitude: Number(attLoc.longitude),
+              radiusMeters: Number(attLoc.radiusMeters),
+              isActive: !!attLoc.isActive
+            }]};
+            var res = await apiFetch("/api/settings/office-location","PATCH",payload,p.token,p.csrfToken);
+            if (res && Array.isArray(res.companyLocations) && res.companyLocations[0]) {
+              var first = res.companyLocations[0];
+              setAttLoc({
+                name: first.name || "ARO Investment HQ",
+                latitude: String(first.latitude),
+                longitude: String(first.longitude),
+                radiusMeters: first.radiusMeters,
+                isActive: first.isActive !== false
+              });
+            }
+            setAttMsg("Saved");
+          } catch (err) {
+            setAttError((err && err.message) || "Save failed");
+          } finally {
+            setAttSaving(false);
+          }
+        };
+
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Office Location</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:18}}>Geofence used for attendance check-in/check-out. Distance is computed server-side using the Haversine formula.</div>
+
+          {!attLoaded ? <div style={{fontSize:12,color:"#666"}}>Loading…</div> : <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,maxWidth:700}}>
+            <div style={{gridColumn:"1 / -1"}}>
+              <label style={fieldLabel}>Name</label>
+              <input type="text" value={attLoc.name} onChange={function(e){setAttLoc(Object.assign({},attLoc,{name:e.target.value}));}} style={inputStyle} placeholder="ARO Investment HQ"/>
+            </div>
+            <div>
+              <label style={fieldLabel}>Latitude</label>
+              <input type="text" inputMode="decimal" value={attLoc.latitude} onChange={function(e){setAttLoc(Object.assign({},attLoc,{latitude:e.target.value}));}} style={inputStyle} placeholder="30.1376"/>
+            </div>
+            <div>
+              <label style={fieldLabel}>Longitude</label>
+              <input type="text" inputMode="decimal" value={attLoc.longitude} onChange={function(e){setAttLoc(Object.assign({},attLoc,{longitude:e.target.value}));}} style={inputStyle} placeholder="31.6817"/>
+            </div>
+            <div>
+              <label style={fieldLabel}>Radius (meters)</label>
+              <input type="number" min="1" max="10000" value={attLoc.radiusMeters} onChange={function(e){setAttLoc(Object.assign({},attLoc,{radiusMeters:e.target.value}));}} style={inputStyle}/>
+            </div>
+            <div style={{display:"flex",alignItems:"end"}}>
+              <label style={{fontSize:13,color:"#1a1a1a",display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
+                <input type="checkbox" checked={attLoc.isActive} onChange={function(e){setAttLoc(Object.assign({},attLoc,{isActive:e.target.checked}));}}/>
+                Active
+              </label>
+            </div>
+          </div>}
+
+          <div style={{display:"flex",gap:8,marginTop:18,flexWrap:"wrap",alignItems:"center"}}>
+            <button type="button" onClick={useMyLocation} style={btnGhost}>Use my current location</button>
+            <button type="button" onClick={doSaveLoc} disabled={attSaving||!attLoaded} style={Object.assign({},btnPrimary,{opacity:attSaving?0.6:1,cursor:attSaving?"not-allowed":"pointer"})}>
+              {attSaving?"Saving…":"Save office location"}
+            </button>
+            {attMsg   && <span style={{fontSize:12,color:"#0F6E56",background:"#EAF6F0",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attMsg}</span>}
+            {attError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attError}</span>}
+          </div>
+        </div>;
+      })()}
+
+      {activeTab==="permissions" && isOwner && (function(){
+        var btnPrimary = {fontSize:12,padding:"8px 16px",border:"0.5px solid rgba(24,95,165,0.3)",background:"#185FA5",color:"#fff",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+        var rows = [
+          { key:"manageSalaries",         label:"Manage Salaries",                  desc:"View and edit base salaries (sales-side roles only)." },
+          { key:"manageAttendance",       label:"Manage Attendance (incl. Override)", desc:"View team attendance, override individual days." },
+          { key:"approveOffSiteRequests", label:"Approve Off-site Requests",        desc:"Approve or reject employees' off-site check-in/out requests." },
+          { key:"manageCompanyOffDays",   label:"Manage Company Off-Days",          desc:"Add or remove holidays / non-working days for the whole company." }
+        ];
+        var setBox = function(action, who, value){
+          setAttPerms(function(prev){
+            var next = Object.assign({}, prev);
+            next[action] = Object.assign({}, prev[action]); next[action][who] = value;
+            return next;
+          });
+        };
+        var doSavePerms = async function(){
+          setAttError(""); setAttMsg(""); setAttSaving(true);
+          try {
+            var res = await apiFetch("/api/settings/permissions","PATCH",{ permissions: attPerms }, p.token, p.csrfToken);
+            if (res && res.permissions) setAttPerms(res.permissions);
+            setAttMsg("Saved");
+          } catch (err) {
+            setAttError((err && err.message) || "Save failed");
+          } finally {
+            setAttSaving(false);
+          }
+        };
+
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Permissions</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:18}}>Owner always has full access. Toggle which actions Sales Admin and HR can perform. Changes apply in real-time to connected users.</div>
+
+          {!attLoaded ? <div style={{fontSize:12,color:"#666"}}>Loading…</div> : <div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 110px 110px",gap:10,padding:"10px 0",borderBottom:"0.5px solid rgba(0,0,0,0.1)",fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px"}}>
+              <div>Action</div>
+              <div style={{textAlign:"center"}}>Sales Admin</div>
+              <div style={{textAlign:"center"}}>HR</div>
+            </div>
+            {rows.map(function(r){
+              var v = attPerms[r.key] || {};
+              return <div key={r.key} style={{display:"grid",gridTemplateColumns:"1fr 110px 110px",gap:10,padding:"14px 0",borderBottom:"0.5px solid rgba(0,0,0,0.06)",alignItems:"center"}}>
+                <div>
+                  <div style={{fontSize:13,fontWeight:500,color:"#1a1a1a"}}>{r.label}</div>
+                  <div style={{fontSize:11,color:"#666",marginTop:2,lineHeight:1.4}}>{r.desc}</div>
+                </div>
+                <div style={{textAlign:"center"}}>
+                  <input type="checkbox" checked={v.salesAdmin===true} onChange={function(e){setBox(r.key,"salesAdmin",e.target.checked);}} style={{width:18,height:18,cursor:"pointer"}}/>
+                </div>
+                <div style={{textAlign:"center"}}>
+                  <input type="checkbox" checked={v.hr===true} onChange={function(e){setBox(r.key,"hr",e.target.checked);}} style={{width:18,height:18,cursor:"pointer"}}/>
+                </div>
+              </div>;
+            })}
+          </div>}
+
+          <div style={{display:"flex",gap:8,marginTop:18,flexWrap:"wrap",alignItems:"center"}}>
+            <button type="button" onClick={doSavePerms} disabled={attSaving||!attLoaded} style={Object.assign({},btnPrimary,{opacity:attSaving?0.6:1,cursor:attSaving?"not-allowed":"pointer"})}>
+              {attSaving?"Saving…":"Save permissions"}
+            </button>
+            {attMsg   && <span style={{fontSize:12,color:"#0F6E56",background:"#EAF6F0",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attMsg}</span>}
+            {attError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attError}</span>}
+          </div>
+        </div>;
+      })()}
+
         </div>
       </div>
     </div>
@@ -13174,6 +14984,7 @@ export default function CRMApp() {
   // page consumes it on mount and clears it.
   var [initAgentFilter,setInitAgentFilter]=useState(null);
   useEffect(function(){ if (page && page!=="leads") { setLeadSpecialFilter(null); setInitAgentFilter(null); } },[page]);
+  useEffect(function(){ if (page && page!=="salaries") { setSalaryViewUserId(null); } },[page]);
   var [leadsPage,setLeadsPage]=useState(1); var [leadsTotal,setLeadsTotal]=useState(0); var [leadsTotalPages,setLeadsTotalPages]=useState(0);
   var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
@@ -13187,6 +14998,14 @@ export default function CRMApp() {
   // Notification collection, so the "seen" flag lives here rather than the DB.
   var [lastSeenDealAt,setLastSeenDealAt]=useState(0);
   var [rotHiddenBefore,setRotHiddenBefore]=useState(0);
+  // Attendance & Salary — Phase 2. Cached settings + permissions for the
+  // current session. Refetched on WS attendance_settings_updated. null until
+  // first load. Only Owner / sales_admin / hr ever fetch this; sales-side
+  // roles never use attendance settings so we skip the request for them.
+  var [attendanceSettings,setAttendanceSettings]=useState(null);
+  // Phase 5B — selected user for salary sheet. null = list view, set = sheet
+  // view for that user. Cleared when the user navigates away from /salaries.
+  var [salaryViewUserId,setSalaryViewUserId]=useState(null);
   var [loading,setLoading]=useState(false); var [dataError,setDataError]=useState(null);
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
   var [sidebarOpen,setSidebarOpen]=useState(false);
@@ -13331,6 +15150,25 @@ export default function CRMApp() {
     fetchProjectWeights(token).then(function(){ bumpProjectWeightsRev(); });
   },[token, bumpProjectWeightsRev]);
 
+  // Attendance settings — fetched once after login for users who can use them
+  // (Owner / sales_admin / hr). Sales-side roles never have access. The
+  // settings include permissions toggles + companyLocations and are refreshed
+  // on the WS attendance_settings_updated event below.
+  useEffect(function(){
+    if (!token || !currentUser) return;
+    var role = currentUser.role;
+    if (role !== "admin" && role !== "sales_admin" && role !== "hr") return;
+    var cancelled = false;
+    apiFetch("/api/settings/attendance","GET",null,token).then(function(s){
+      if (!cancelled && s) setAttendanceSettings(s);
+    }).catch(function(){
+      // sales_admin/hr will get 403 here once they're allowed to fetch their
+      // own scoped view (future endpoint). For now this is Owner-only — fail
+      // silently so the cache stays null and consumers fall back to defaults.
+    });
+    return function(){ cancelled = true; };
+  },[token, currentUser]);
+
   // Data-refresh polling intervals were removed — WebSocket listener below handles real-time updates.
   // ===== REAL-TIME WEBSOCKET SYNC (single source of truth — replaces all data-refresh polling) =====
   useEffect(function(){
@@ -13432,6 +15270,10 @@ export default function CRMApp() {
               break;
             case "notification_updated":
               fetchNotifications();
+              // Phase 6 — also re-dispatch as window event so subscribers
+              // (AttendancePage 5-lates banner) can refresh without prop
+              // drilling.
+              try { window.dispatchEvent(new CustomEvent("crm:notification_updated")); } catch(e){}
               break;
             case "rotation_updated":
               if (data.leadId) fetchSingleLead(String(data.leadId));
@@ -13439,6 +15281,44 @@ export default function CRMApp() {
               break;
             case "task_updated":
               apiFetch("/api/tasks","GET",null,token).then(function(t){ if(Array.isArray(t)) setTasks(t); }).catch(function(){});
+              break;
+            case "attendance_settings_updated":
+              // Phase 2 — Owner toggled permissions or office location. Update
+              // local cache so any open settings tabs and (in later phases)
+              // any permission-gated pages re-render with the new policy.
+              if (data && (data.permissions || data.companyLocations)) {
+                setAttendanceSettings(function(prev){
+                  return Object.assign({}, prev || {}, data);
+                });
+              } else if (currentUser && (currentUser.role==="admin" || currentUser.role==="sales_admin" || currentUser.role==="hr")) {
+                apiFetch("/api/settings/attendance","GET",null,token)
+                  .then(function(s){ if (s) setAttendanceSettings(s); })
+                  .catch(function(){});
+              }
+              break;
+            case "attendance_updated":
+              // Phase 3 — re-dispatch as a window event so the widget and
+              // AttendancePage Team tab can react without prop drilling.
+              // CheckInWidget filters to its own user (cross-tab/device sync);
+              // Team tab patches the matching row.
+              if (data && data.userId) {
+                try { window.dispatchEvent(new CustomEvent("crm:attendance_updated", { detail: data })); } catch(e){}
+              }
+              break;
+            case "offsite_request_updated":
+              // Phase 4 — fired on create/cancel/approve/reject. Off-site
+              // inbox page listens via crm:offsite_request_updated and
+              // refetches the pending list.
+              try { window.dispatchEvent(new CustomEvent("crm:offsite_request_updated")); } catch(e){}
+              break;
+            case "company_offdays_updated":
+              // Phase 4 — fired on add/remove. Company Off-Days page refetches.
+              try { window.dispatchEvent(new CustomEvent("crm:company_offdays_updated")); } catch(e){}
+              break;
+            case "salary_finalized":
+              // Phase 5E — fired on finalize/unlock for one (user, month).
+              // SalarySheetPage refetches if it's currently viewing that user.
+              try { window.dispatchEvent(new CustomEvent("crm:salary_finalized", { detail: data })); } catch(e){}
               break;
             case "hello": break; // server greeting
             default: break;
@@ -13877,7 +15757,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",settings:t.settings};
+  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings};
   // Server already filters users by role — p.users IS the team
   var myId = String(currentUser.id||currentUser._id||"");
 
@@ -13902,11 +15782,19 @@ export default function CRMApp() {
   var scopedDailyReqs = tlScope ? (dailyReqs||[]).filter(function(r){var aid=String(r&&r.agentId&&r.agentId._id?r.agentId._id:(r&&r.agentId)||"");return tlScope.has(aid);}) : dailyReqs;
   var myTeamUsers = scopedUsers;
 
-  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev};
+  var openSalarySheet = function(uid){
+    if (!uid) return;
+    setSalaryViewUserId(String(uid));
+    setPage("salaries");
+    try { localStorage.setItem("crm_page", "salaries"); } catch(e){}
+  };
+  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings,openSalarySheet:openSalarySheet};
 
   var renderPage=function(){
     switch(currentPage){
-      case "dashboard": return <DashboardPage {...sp}/>;
+      case "dashboard": return currentUser.role !== "admin"
+        ? <div><CheckInWidget token={token} cu={currentUser} csrfToken={csrfToken} mode="compact" onNavigate={setPage}/><DashboardPage {...sp}/></div>
+        : <DashboardPage {...sp}/>;
       case "kpis": return <KPIsPage {...sp}/>
       case "calendar": return <CallCalendarPage {...sp}/>
       case "myday_disabled": return <MyDayPage {...sp}/>;
@@ -13920,6 +15808,12 @@ export default function CRMApp() {
       case "team": return <TeamPage {...sp}/>;
       case "users": return <UsersPage {...sp}/>;
       case "archive": return <ArchivePage {...sp}/>;
+      case "attendance": return <AttendancePage {...sp}/>;
+      case "offsiteRequests": return <OffSiteRequestsPage {...sp}/>;
+      case "companyOffDays":  return <CompanyOffDaysPage  {...sp}/>;
+      case "salaries":        return salaryViewUserId
+        ? <SalarySheetPage   {...sp} salaryViewUserId={salaryViewUserId} setSalaryViewUserId={setSalaryViewUserId}/>
+        : <SalariesListPage  {...sp} setSalaryViewUserId={setSalaryViewUserId}/>;
       case "settings": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
       default: return <DashboardPage {...sp}/>;
     }
@@ -13972,7 +15866,7 @@ export default function CRMApp() {
       </div>
       <button onClick={function(){setShowPwaBanner(false);try{localStorage.setItem("crm_pwa_dismissed","1");}catch(e){}}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, color:"#fff", padding:"6px 12px", fontSize:12, cursor:"pointer", flexShrink:0 }}>Got it</button>
     </div>}
-    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads}/>
+    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads} attendanceSettings={attendanceSettings}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
       <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
