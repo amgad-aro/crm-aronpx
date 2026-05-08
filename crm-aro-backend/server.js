@@ -8068,9 +8068,152 @@ app.get("/api/daily-requests/:id/history", auth, async function(req, res) {
 });
 
 // ===== NOTIFICATIONS =====
+// BATCH 3 — Notification rows are stored as shared documents (no recipient
+// field on the schema), so per-role visibility is derived at read time:
+//   - type=deal/rotation: leadId → Lead.agentId → membership in caller scope
+//   - type=attendance_late_5: leadId is overloaded to carry the employee's
+//     User._id (see maybeFireLateNotification) → membership in caller scope
+// getVisibleNotifications encapsulates that derivation so GET and mark-seen
+// share one rule.
+async function getVisibleNotifications(req, baseQuery, limit) {
+  var role = req.user.role;
+  var notifs = await Notification.find(baseQuery).sort({ createdAt: -1 }).limit(limit).lean();
+  if (!notifs.length) return notifs;
+
+  var isFullView = (role === "admin" || role === "sales_admin");
+  var scopeIdSet = null;
+  if (!isFullView) {
+    var scopeIdsArr = (await getScopedUserIds(req.user)) || [];
+    scopeIdSet = new Set(scopeIdsArr.map(function(id){ return String(id); }));
+  }
+  var selfId = String(req.user.id);
+
+  // HR with manageAttendance sees all attendance_late_5 (matches the
+  // Attendance Team tab read path). HR sees nothing of deal/rotation.
+  var hrCanSeeAttendance = false;
+  if (role === "hr") {
+    try {
+      var att = await getAttendanceSettings();
+      hrCanSeeAttendance = hasAttendancePermission("hr", "manageAttendance", att);
+    } catch (e) { hrCanSeeAttendance = false; }
+  }
+
+  // Build leadId → agentId map for deal/rotation. Same lookup also gives
+  // the dead-lead filter (existing behavior — drop notifications whose
+  // referenced lead is gone or archived).
+  var leadAgentMap = new Map();
+  var aliveLeadIds = new Set();
+  var dealRotIds = notifs
+    .filter(function(n){ return (n.type === "deal" || n.type === "rotation") && n.leadId; })
+    .map(function(n){ return n.leadId; });
+  if (dealRotIds.length > 0) {
+    var objectIds = dealRotIds.map(function(id){
+      try { return mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : null; } catch(e){ return null; }
+    }).filter(Boolean);
+    if (objectIds.length > 0) {
+      var leadRows = await Lead.find(
+        { _id: { $in: objectIds }, archived: { $ne: true } },
+        { _id: 1, agentId: 1 }
+      ).lean();
+      leadRows.forEach(function(l){
+        var lid = String(l._id);
+        aliveLeadIds.add(lid);
+        if (l.agentId) leadAgentMap.set(lid, String(l.agentId));
+      });
+    }
+  }
+
+  return notifs.filter(function(n){
+    // Drop deal/rotation rows whose lead is gone or archived.
+    if ((n.type === "deal" || n.type === "rotation") && n.leadId && !aliveLeadIds.has(String(n.leadId))) {
+      return false;
+    }
+    if (isFullView) return true;
+
+    if (n.type === "attendance_late_5") {
+      if (role === "viewer") return false;
+      if (role === "hr") return hrCanSeeAttendance;
+      var leId = String(n.leadId || "");
+      if (!leId) return false;
+      if (role === "sales") return leId === selfId;
+      // director / manager / team_leader → employee userId must be in subtree
+      return !!(scopeIdSet && scopeIdSet.has(leId));
+    }
+
+    if (n.type === "deal" || n.type === "rotation") {
+      if (role === "viewer" || role === "hr") return false;
+      var lid = String(n.leadId || "");
+      if (!lid) return false; // legacy entries with no leadId are dropped for non-full view
+      var aid = leadAgentMap.get(lid);
+      if (!aid) return false;
+      if (role === "sales") return aid === selfId;
+      return !!(scopeIdSet && scopeIdSet.has(aid));
+    }
+
+    // Unknown type — drop for non-full view.
+    return false;
+  });
+}
+
 app.post("/api/notifications", auth, async function(req, res) {
   try {
-    var n = await Notification.create(req.body);
+    // BATCH 3 — type whitelist + per-call authorization. Without this gate
+    // any authenticated user can forge a notification with any leadId, which
+    // would defeat the GET-side scoping by seeding bogus rows.
+    var role = req.user.role;
+    var body = req.body || {};
+    var type = body.type;
+
+    if (type !== "deal" && type !== "rotation") {
+      // attendance_late_5 is server-managed (see maybeFireLateNotification)
+      // and must never be fired from a client. Other types are unrecognized.
+      return res.status(403).json({ error: "Invalid notification type" });
+    }
+
+    if (role !== "admin" && role !== "sales_admin") {
+      var leadId = body.leadId;
+      if (!leadId || !mongoose.Types.ObjectId.isValid(leadId)) {
+        return res.status(403).json({ error: "Invalid leadId" });
+      }
+      var oid = new mongoose.Types.ObjectId(leadId);
+      var callerId = String(req.user.id);
+      var allowed = false;
+
+      if (type === "deal") {
+        // Caller must be the agent on the referenced Lead OR DailyRequest.
+        // DR-funnel deal notifications post the DR._id as leadId before the
+        // Lead mirror is in place — see App.js addDealNotif call sites in the
+        // DR status-change and EOI-submission flows.
+        var lead = await Lead.findById(oid, { agentId: 1 }).lean();
+        if (lead && lead.agentId && String(lead.agentId) === callerId) {
+          allowed = true;
+        }
+        if (!allowed) {
+          var dr = await DailyRequest.findById(oid, { agentId: 1 }).lean();
+          if (dr && dr.agentId && String(dr.agentId) === callerId) {
+            allowed = true;
+          }
+        }
+      } else { // rotation
+        // Auto-rotate is client-triggered by the FROM agent after the lead's
+        // agentId has already flipped to the new owner, so current-agent-only
+        // would block legitimate sales-fired rotation notifications. Allow
+        // any past or present owner.
+        var leadR = await Lead.findById(oid, { agentId: 1, previousAgentIds: 1 }).lean();
+        if (leadR) {
+          if (leadR.agentId && String(leadR.agentId) === callerId) allowed = true;
+          if (!allowed && Array.isArray(leadR.previousAgentIds)) {
+            allowed = leadR.previousAgentIds.some(function(p){ return String(p) === callerId; });
+          }
+        }
+      }
+
+      if (!allowed) {
+        return res.status(403).json({ error: "Not allowed to fire notification for this lead" });
+      }
+    }
+
+    var n = await Notification.create(body);
     res.json(n);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -8083,30 +8226,10 @@ app.get("/api/notifications", auth, async function(req, res) {
     if (type) query.type = type;
     // Return the full history, newest first. Cap is defensive only.
     var limit = Math.min(parseInt(req.query.limit) || 2000, 5000);
-    var notifs = await Notification.find(query).sort({ createdAt: -1 }).limit(limit).lean();
-    // For deal/EOI AND rotation notifications, drop entries whose referenced lead no longer exists or is archived.
-    var idsToCheck = notifs
-      .filter(function(n){ return (n.type === "deal" || n.type === "rotation") && n.leadId; })
-      .map(function(n){ return n.leadId; });
-    var aliveLeadIds = new Set();
-    if (idsToCheck.length > 0) {
-      var objectIds = idsToCheck.map(function(id){
-        try { return mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : null; } catch(e){ return null; }
-      }).filter(Boolean);
-      if (objectIds.length > 0) {
-        var alive = await Lead.find({ _id: { $in: objectIds }, archived: { $ne: true } }, { _id: 1 }).lean();
-        alive.forEach(function(l){ aliveLeadIds.add(String(l._id)); });
-      }
-    }
-    var result = notifs
-      .filter(function(n){
-        if (n.type !== "deal" && n.type !== "rotation") return true;
-        if (!n.leadId) return true; // legacy entries without a leadId — leave visible
-        return aliveLeadIds.has(String(n.leadId));
-      })
-      .map(function(n) {
-        return Object.assign({}, n, { seen: n.seenBy && n.seenBy.indexOf(String(uid)) !== -1 });
-      });
+    var visible = await getVisibleNotifications(req, query, limit);
+    var result = visible.map(function(n) {
+      return Object.assign({}, n, { seen: n.seenBy && n.seenBy.indexOf(String(uid)) !== -1 });
+    });
     res.json(result);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -8115,9 +8238,17 @@ app.put("/api/notifications/mark-seen", auth, async function(req, res) {
   try {
     var uid = String(req.user.id);
     var type = req.body.type || null;
-    var query = { seenBy: { $ne: uid } };
-    if (type) query.type = type;
-    await Notification.updateMany(query, { $addToSet: { seenBy: uid } });
+    // BATCH 3 — caller may only mark-seen rows they are permitted to see.
+    // Reuse the same scope as GET; constrain updateMany to visible _ids.
+    var baseQuery = {};
+    if (type) baseQuery.type = type;
+    var visible = await getVisibleNotifications(req, baseQuery, 5000);
+    if (!visible.length) return res.json({ ok: true });
+    var visibleIds = visible.map(function(n){ return n._id; });
+    await Notification.updateMany(
+      { _id: { $in: visibleIds }, seenBy: { $ne: uid } },
+      { $addToSet: { seenBy: uid } }
+    );
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
