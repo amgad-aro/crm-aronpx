@@ -15004,9 +15004,13 @@ var KPIsPage = function(p) {
   // → cross-TL splits within company count full; admin sees everyone.
   var visibleUserIds = new Set((p.users||[]).map(function(u){return String(u._id||gid(u));}));
 
-  // Filter by selected Q and year
+  // Filter by selected Q and year. Uses getDealDate so KPIs aligns with the
+  // DealsPage / Sales Team MemberCard quarter categorisation (dealDate →
+  // localStorage extra → eoiDate → updatedAt → createdAt). Pre-fix this used
+  // updatedAt only, which mis-bucketed deals whose closing date was set to a
+  // different quarter than their last edit.
   var qDeals = myDeals.filter(function(d){
-    var dd = d.updatedAt||d.createdAt; if(!dd) return false;
+    var dd = getDealDate(d); if(!dd) return false;
     return getQ(dd)===selQ && getYear(dd)===selYear;
   });
   var qCalls = myActs.filter(function(a){
@@ -15157,7 +15161,7 @@ var KPIsPage = function(p) {
           // legacy share-based split rule (0.5 always if split) so the sum
           // across cards equals the deal's full value.
           var aQLeads = aLeads.filter(function(l){ if(!l.createdAt) return false; return getQ(l.createdAt)===selQ && getYear(l.createdAt)===selYear; });
-          var aQDeals = aDeals.filter(function(d){ var dd=d.updatedAt||d.createdAt; return dd && getQ(dd)===selQ && getYear(dd)===selYear; });
+          var aQDeals = aDeals.filter(function(d){ var dd=getDealDate(d); return dd && getQ(dd)===selQ && getYear(dd)===selYear; });
           var aQRev = aQDeals.reduce(function(s,d){ var w=getProjectWeight(d.project,d); var sp=getDealSplitFromObj(d); return s+parseBudget(d.budget)*w*(sp?0.5:1); }, 0);
           var aQCalls = p.activities.filter(function(ac){ var aauid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId; if(String(aauid)!==auid||ac.type!=="call"||!ac.createdAt) return false; return getQ(ac.createdAt)===selQ && getYear(ac.createdAt)===selYear; }).length;
           var aTarget = getEffectiveQTarget(a, p.users, selQ);
