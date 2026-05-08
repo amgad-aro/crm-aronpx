@@ -829,6 +829,171 @@ var LoginPage = function(p) {
         </div>
       </div>
       <button onClick={go} disabled={loading} style={{ width:"100%", padding:"14px", borderRadius:12, border:"none", background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", color:"#fff", fontSize:16, fontWeight:700, cursor:"pointer", opacity:loading?0.75:1 }}>{loading?t.loading:t.loginBtn}</button>
+      <div style={{ textAlign:"center", marginTop:16 }}>
+        <a href="/forgot-password" onClick={function(e){ e.preventDefault(); window.history.pushState({}, "", "/forgot-password"); window.dispatchEvent(new PopStateEvent("popstate")); }} style={{ color:C.textLight, fontSize:13, textDecoration:"none" }}>Forgot Password?</a>
+      </div>
+    </div>
+  </div>;
+};
+
+// ===== FORGOT PASSWORD =====
+// Owner-only flow on the backend. The UI is identical for any email so the
+// page never reveals whether an address is registered or owner-flagged.
+var ForgotPasswordPage = function() {
+  var [email, setEmail] = useState("");
+  var [submitted, setSubmitted] = useState(false);
+  var [loading, setLoading] = useState(false);
+  var [err, setErr] = useState("");
+  var go = async function() {
+    if (!email) return;
+    setLoading(true); setErr("");
+    try {
+      await apiFetch("/api/auth/forgot-password", "POST", { email: email });
+      setSubmitted(true);
+    } catch(e) {
+      // Backend always returns success; only network errors land here.
+      setErr("Connection error. Please try again.");
+    }
+    setLoading(false);
+  };
+  var backToLogin = function(e) {
+    if (e) e.preventDefault();
+    window.history.pushState({}, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  };
+  return <div style={{ minHeight:"100vh", background:"linear-gradient(135deg,"+C.primaryDark+" 0%,"+C.primary+" 55%,"+C.primaryLight+" 100%)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Cairo','Segoe UI',sans-serif", padding:16 }}>
+    <div style={{ background:"#fff", borderRadius:24, padding:"40px 36px", width:"100%", maxWidth:420, boxShadow:"0 24px 64px rgba(0,0,0,0.28)" }}>
+      <div style={{ textAlign:"center", marginBottom:34 }}>
+        <div style={{ width:68, height:68, borderRadius:18, background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", display:"inline-flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:22, color:"#fff", boxShadow:"0 8px 24px rgba(232,168,56,0.45)", marginBottom:16 }}>ARO</div>
+        <h1 style={{ margin:0, fontSize:24, fontWeight:800, color:C.text }}>Forgot Password</h1>
+      </div>
+      {submitted ? (
+        <div>
+          <div style={{ background:"#DCFCE7", color:"#166534", padding:"14px 16px", borderRadius:10, fontSize:14, marginBottom:18, textAlign:"center", lineHeight:1.5 }}>
+            If this email is registered, a reset link has been sent.
+          </div>
+          <a href="/" onClick={backToLogin} style={{ display:"block", textAlign:"center", color:C.primary, fontSize:14, fontWeight:600, textDecoration:"none" }}>Back to Login</a>
+        </div>
+      ) : (
+        <div>
+          {err && <div style={{ background:"#FEE2E2", color:"#B91C1C", padding:"10px 16px", borderRadius:10, fontSize:13, marginBottom:18, textAlign:"center" }}>{err}</div>}
+          <div style={{ marginBottom:24 }}>
+            <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:6, color:C.text }}>Email</label>
+            <input type="email" value={email} onChange={function(e){setEmail(e.target.value);}} placeholder="" style={{ width:"100%", padding:"12px 16px", borderRadius:12, border:"1px solid #E2E8F0", fontSize:15, outline:"none", boxSizing:"border-box" }} onKeyDown={function(e){if(e.key==="Enter")go();}}/>
+          </div>
+          <button onClick={go} disabled={loading} style={{ width:"100%", padding:"14px", borderRadius:12, border:"none", background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", color:"#fff", fontSize:16, fontWeight:700, cursor:"pointer", opacity:loading?0.75:1 }}>{loading?"Sending...":"Send Reset Link"}</button>
+          <div style={{ textAlign:"center", marginTop:16 }}>
+            <a href="/" onClick={backToLogin} style={{ color:C.textLight, fontSize:13, textDecoration:"none" }}>Back to Login</a>
+          </div>
+        </div>
+      )}
+    </div>
+  </div>;
+};
+
+// ===== RESET PASSWORD =====
+// Reads the token from ?token=... in the URL. No token → bounce to /login
+// before render. On success, redirects after 3s.
+var ResetPasswordPage = function() {
+  // Read token once on mount; subsequent state changes shouldn't re-parse it.
+  var token = useMemo(function(){
+    try { return new URLSearchParams(window.location.search).get("token") || ""; }
+    catch(e) { return ""; }
+  }, []);
+
+  var [pw, setPw] = useState("");
+  var [pw2, setPw2] = useState("");
+  var [showPw, setShowPw] = useState(false);
+  var [loading, setLoading] = useState(false);
+  var [err, setErr] = useState("");
+  var [done, setDone] = useState(false);
+  var [tokenInvalid, setTokenInvalid] = useState(false);
+
+  useEffect(function(){
+    if (!token) {
+      window.history.replaceState({}, "", "/");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
+  }, [token]);
+
+  useEffect(function(){
+    if (!done) return;
+    var to = setTimeout(function(){
+      window.history.replaceState({}, "", "/");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, 3000);
+    return function(){ clearTimeout(to); };
+  }, [done]);
+
+  var validate = function() {
+    if (pw.length < 8) return "Password must be at least 8 characters.";
+    if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) return "Password must contain at least one letter and one number.";
+    if (pw !== pw2) return "Passwords do not match.";
+    return "";
+  };
+
+  var go = async function() {
+    var v = validate();
+    if (v) { setErr(v); return; }
+    setLoading(true); setErr("");
+    try {
+      // Bypass the global apiFetch 401 handler — its window.location.reload()
+      // would clobber the page on an invalid/expired token.
+      var res = await fetch(API + "/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: token, newPassword: pw })
+      });
+      var data;
+      try { data = await res.json(); } catch(e){ data = {}; }
+      if (!res.ok) {
+        if (res.status === 400) setTokenInvalid(true);
+        else setErr(data.error || "Failed to reset password.");
+      } else {
+        setDone(true);
+      }
+    } catch(e) {
+      setErr("Connection error. Please try again.");
+    }
+    setLoading(false);
+  };
+
+  if (!token) return null;
+
+  return <div style={{ minHeight:"100vh", background:"linear-gradient(135deg,"+C.primaryDark+" 0%,"+C.primary+" 55%,"+C.primaryLight+" 100%)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Cairo','Segoe UI',sans-serif", padding:16 }}>
+    <div style={{ background:"#fff", borderRadius:24, padding:"40px 36px", width:"100%", maxWidth:420, boxShadow:"0 24px 64px rgba(0,0,0,0.28)" }}>
+      <div style={{ textAlign:"center", marginBottom:30 }}>
+        <div style={{ width:68, height:68, borderRadius:18, background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", display:"inline-flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:22, color:"#fff", boxShadow:"0 8px 24px rgba(232,168,56,0.45)", marginBottom:16 }}>ARO</div>
+        <h1 style={{ margin:0, fontSize:24, fontWeight:800, color:C.text }}>Reset Password</h1>
+      </div>
+      {tokenInvalid ? (
+        <div>
+          <div style={{ background:"#FEE2E2", color:"#B91C1C", padding:"14px 16px", borderRadius:10, fontSize:14, marginBottom:18, textAlign:"center", lineHeight:1.5 }}>
+            This link has expired or is invalid. Please request a new one.
+          </div>
+          <a href="/forgot-password" onClick={function(e){ e.preventDefault(); window.history.pushState({}, "", "/forgot-password"); window.dispatchEvent(new PopStateEvent("popstate")); }} style={{ display:"block", textAlign:"center", color:C.primary, fontSize:14, fontWeight:600, textDecoration:"none" }}>Request a new reset link</a>
+        </div>
+      ) : done ? (
+        <div style={{ background:"#DCFCE7", color:"#166534", padding:"14px 16px", borderRadius:10, fontSize:14, textAlign:"center", lineHeight:1.5 }}>
+          Password reset successfully. Redirecting to login...
+        </div>
+      ) : (
+        <div>
+          {err && <div style={{ background:"#FEE2E2", color:"#B91C1C", padding:"10px 16px", borderRadius:10, fontSize:13, marginBottom:18, textAlign:"center" }}>{err}</div>}
+          <div style={{ marginBottom:14 }}>
+            <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:6, color:C.text }}>New Password</label>
+            <div style={{ position:"relative" }}>
+              <input type={showPw?"text":"password"} value={pw} onChange={function(e){setPw(e.target.value);setErr("");}} placeholder="" style={{ width:"100%", padding:"12px 44px 12px 16px", borderRadius:12, border:"1px solid #E2E8F0", fontSize:15, outline:"none", boxSizing:"border-box" }}/>
+              <button onClick={function(){setShowPw(!showPw);}} style={{ position:"absolute", top:"50%", right:14, transform:"translateY(-50%)", background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}>{showPw?<EyeOff size={18}/>:<Eye size={18}/>}</button>
+            </div>
+          </div>
+          <div style={{ marginBottom:24 }}>
+            <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:6, color:C.text }}>Confirm Password</label>
+            <input type={showPw?"text":"password"} value={pw2} onChange={function(e){setPw2(e.target.value);setErr("");}} placeholder="" style={{ width:"100%", padding:"12px 16px", borderRadius:12, border:"1px solid #E2E8F0", fontSize:15, outline:"none", boxSizing:"border-box" }} onKeyDown={function(e){if(e.key==="Enter")go();}}/>
+          </div>
+          <button onClick={go} disabled={loading} style={{ width:"100%", padding:"14px", borderRadius:12, border:"none", background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", color:"#fff", fontSize:16, fontWeight:700, cursor:"pointer", opacity:loading?0.75:1 }}>{loading?"Resetting...":"Reset Password"}</button>
+        </div>
+      )}
     </div>
   </div>;
 };
@@ -15118,6 +15283,14 @@ var CallCalendarPage = function(p) {
 export default function CRMApp() {
   var [lang,setLang]=useState((function(){try{return "en";}catch(e){return "ar";}})());
   var [currentUser,setCurrentUser]=useState(null); var [token,setToken]=useState(null); var [csrfToken,setCsrfToken]=useState(null);
+  // Path-based routing for the unauthenticated reset flow. We don't pull in
+  // react-router; just observe popstate + a manual dispatch from in-page nav.
+  var [authPath,setAuthPath]=useState(function(){ try { return window.location.pathname; } catch(e){ return "/"; } });
+  useEffect(function(){
+    var onPop = function(){ try { setAuthPath(window.location.pathname); } catch(e){} };
+    window.addEventListener("popstate", onPop);
+    return function(){ window.removeEventListener("popstate", onPop); };
+  }, []);
   // Phase 2 Slice 3 — projectWeights cache rev. Bumped after fetch and after
   // any save so all consumers re-render and read the updated module cache.
   // The actual map lives at module scope (_projWeightsMap) because
@@ -15923,7 +16096,14 @@ export default function CRMApp() {
   var handleLogout=function(){setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
 
-  if(!currentUser) return <LoginPage t={t} onLogin={handleLogin}/>;
+  if(!currentUser) {
+    // Unauthenticated reset routes. authPath is updated on popstate so
+    // browser-back / pushState navigation between /, /forgot-password, and
+    // /reset-password swaps the page without a full reload.
+    if (authPath === "/forgot-password") return <ForgotPasswordPage/>;
+    if (authPath === "/reset-password")  return <ResetPasswordPage/>;
+    return <LoginPage t={t} onLogin={handleLogin}/>;
+  }
   if(loading) return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"#F0F2F5", fontFamily:"Cairo,sans-serif" }}><div style={{ textAlign:"center" }}><div style={{ width:40, height:40, borderRadius:"50%", border:"3px solid #E8ECF1", borderTopColor:C.accent, animation:"spin 0.8s linear infinite", margin:"0 auto 16px" }}/><div style={{ color:C.textLight, fontSize:14 }}>{t.loading}</div></div></div>;
   if(dataError) return <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", minHeight:"100vh", gap:16, fontFamily:"Cairo,sans-serif" }}><AlertCircle size={48} color={C.danger}/><div style={{ fontSize:16, color:C.danger, fontWeight:700 }}>{t.error}</div><div style={{ color:C.textLight }}>{dataError}</div><button onClick={function(){loadData(token);}} style={{ padding:"10px 24px", borderRadius:10, background:C.accent, border:"none", color:"#fff", fontWeight:700, cursor:"pointer" }}>{t.retry}</button></div>;
 

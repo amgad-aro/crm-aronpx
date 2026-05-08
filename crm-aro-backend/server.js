@@ -5,8 +5,10 @@ var cors = require("cors");
 var compression = require("compression");
 var bcrypt = require("bcryptjs");
 var jwt = require("jsonwebtoken");
+var crypto = require("crypto");
 var http = require("http");
 var WebSocketLib = require("ws");
+var Resend = require("resend").Resend;
 
 // Coerce anything the frontend sends for an ObjectId-typed field into a
 // 24-hex string or null. Handles: empty string, populated {_id, name, ...}
@@ -65,7 +67,16 @@ var User = mongoose.model("User", new mongoose.Schema({
   // saturdayPatternStartDate is required when saturdaySchedule="alternating".
   baseSalary:{type:Number,default:null},
   saturdaySchedule:{type:String,enum:["always_work","always_off","alternating"],default:"always_work"},
-  saturdayPatternStartDate:{type:Date,default:null}
+  saturdayPatternStartDate:{type:Date,default:null},
+  // Owner-only forgot-password flow. isOwner gates eligibility; the actual
+  // owner is amgadm22@gmail.com (see scripts/set-owner-flag.js). resetToken
+  // is a 64-hex single-use string with 1h expiry. passwordChangedAt is set
+  // on every successful reset and checked by auth() against decoded.iat to
+  // force-logout pre-reset JWTs (mirrors the active-toggle force-logout).
+  isOwner:{type:Boolean,default:false},
+  resetToken:{type:String,default:null,index:true},
+  resetTokenExpiry:{type:Date,default:null},
+  passwordChangedAt:{type:Date,default:null}
 },{timestamps:true}));
 
 var Lead = mongoose.model("Lead", new mongoose.Schema({
@@ -759,21 +770,30 @@ async function seedAdmin() {
 var userActiveCache = {};
 var USER_ACTIVE_CACHE_TTL_MS = 30 * 1000;
 
-async function checkUserActive(userId) {
+async function checkUserActive(userId, tokenIat) {
   var cached = userActiveCache[userId];
-  if (cached && (Date.now() - cached.t) < USER_ACTIVE_CACHE_TTL_MS) {
-    return cached.active;
+  if (!cached || (Date.now() - cached.t) >= USER_ACTIVE_CACHE_TTL_MS) {
+    try {
+      var u = await User.findById(userId).select("active passwordChangedAt").lean();
+      cached = userActiveCache[userId] = {
+        active: u ? u.active !== false : false,
+        // ms-epoch; null when the user has never reset their password
+        pwdChangedAtMs: (u && u.passwordChangedAt) ? new Date(u.passwordChangedAt).getTime() : null,
+        t: Date.now()
+      };
+    } catch (e) {
+      // Fail open on transient DB errors — locking everyone out on a brief
+      // Atlas hiccup is worse than briefly serving a deactivated user.
+      return true;
+    }
   }
-  try {
-    var u = await User.findById(userId).select("active").lean();
-    var isActive = u ? u.active !== false : false;
-    userActiveCache[userId] = { active: isActive, t: Date.now() };
-    return isActive;
-  } catch (e) {
-    // Fail open on transient DB errors — locking everyone out on a brief
-    // Atlas hiccup is worse than briefly serving a deactivated user.
-    return true;
+  if (!cached.active) return false;
+  // Force-logout JWTs issued before the password was last reset (mirrors the
+  // active-toggle force-logout). tokenIat is in seconds since epoch per RFC 7519.
+  if (cached.pwdChangedAtMs && typeof tokenIat === "number" && (tokenIat * 1000) < cached.pwdChangedAtMs) {
+    return false;
   }
+  return true;
 }
 
 async function auth(req, res, next) {
@@ -791,7 +811,7 @@ async function auth(req, res, next) {
   } catch (e) {
     return res.status(401).json({ error: "Invalid token" });
   }
-  var stillActive = await checkUserActive(decoded.id);
+  var stillActive = await checkUserActive(decoded.id, decoded.iat);
   if (!stillActive) {
     return res.status(401).json({ error: "Account deactivated", code: "deactivated" });
   }
@@ -1010,6 +1030,128 @@ app.post("/api/login", async function(req, res) {
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== FORGOT PASSWORD (OWNER ONLY) =====
+// Owner-gated reset flow. Always returns { success: true } so the response
+// doesn't reveal whether the email exists or whether the recipient is the
+// owner — only the actual owner ever receives an email. Token is 64-hex,
+// single-use, 1h expiry. Email goes through Resend; the link points to the
+// frontend reset page.
+var resendClient = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+
+function buildResetEmailHtml(resetUrl) {
+  return ""
+    + "<!doctype html><html><body style=\"margin:0;padding:0;background:#F0F2F5;font-family:'Segoe UI',Arial,sans-serif;\">"
+    +   "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#F0F2F5;padding:40px 16px;\">"
+    +     "<tr><td align=\"center\">"
+    +       "<table role=\"presentation\" width=\"480\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,0.08);\">"
+    +         "<tr><td style=\"background:linear-gradient(135deg,#1E3A5F,#2B5A8C);padding:28px 32px;color:#ffffff;text-align:center;\">"
+    +           "<div style=\"font-size:22px;font-weight:800;letter-spacing:0.5px;\">ARO CRM</div>"
+    +           "<div style=\"font-size:14px;opacity:0.9;margin-top:4px;\">Password Reset</div>"
+    +         "</td></tr>"
+    +         "<tr><td style=\"padding:32px;color:#1F2937;font-size:15px;line-height:1.6;\">"
+    +           "<p style=\"margin:0 0 16px;\">We received a request to reset your password.</p>"
+    +           "<p style=\"margin:0 0 24px;\">Click the button below to choose a new password:</p>"
+    +           "<div style=\"text-align:center;margin:0 0 24px;\">"
+    +             "<a href=\"" + resetUrl + "\" style=\"display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#E8A838,#F0B654);color:#ffffff;text-decoration:none;border-radius:10px;font-weight:700;font-size:15px;\">Reset Password</a>"
+    +           "</div>"
+    +           "<p style=\"margin:0 0 12px;font-size:13px;color:#6B7280;\">Or copy this link into your browser:</p>"
+    +           "<p style=\"margin:0 0 24px;font-size:12px;color:#2B5A8C;word-break:break-all;\">" + resetUrl + "</p>"
+    +           "<p style=\"margin:0 0 8px;font-size:13px;color:#6B7280;\">This link will expire in 1 hour.</p>"
+    +           "<p style=\"margin:0;font-size:13px;color:#6B7280;\">If you didn't request this, please ignore this email.</p>"
+    +         "</td></tr>"
+    +       "</table>"
+    +     "</td></tr>"
+    +   "</table>"
+    + "</body></html>";
+}
+
+app.post("/api/auth/forgot-password", async function(req, res) {
+  try {
+    var email = String((req.body && req.body.email) || "").trim().toLowerCase();
+    if (!email) return res.json({ success: true });
+
+    // Case-insensitive lookup; we intentionally don't restrict by active here.
+    var user = await User.findOne({
+      email: { $regex: "^" + email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", $options: "i" }
+    });
+
+    // Owner-only gate. We respond success either way to avoid leaking
+    // whether the email is registered or whether it belongs to the owner.
+    if (!user || user.isOwner !== true) {
+      return res.json({ success: true });
+    }
+
+    var token = crypto.randomBytes(32).toString("hex");
+    user.resetToken = token;
+    user.resetTokenExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1h
+    await user.save();
+
+    var frontendUrl = (process.env.FRONTEND_URL || "https://crm-aro.com").replace(/\/+$/, "");
+    var resetUrl = frontendUrl + "/reset-password?token=" + token;
+
+    if (!resendClient) {
+      console.error("[forgot-password] RESEND_API_KEY missing — cannot send email");
+      // Still respond success — operator can fall back to scripts/reset-owner-password.js
+      return res.json({ success: true });
+    }
+
+    try {
+      await resendClient.emails.send({
+        from: "ARO CRM <" + (process.env.RESEND_FROM_EMAIL || "noreply@aro-investment.com") + ">",
+        to: [user.email],
+        subject: "Reset Your ARO CRM Password",
+        html: buildResetEmailHtml(resetUrl)
+      });
+    } catch (sendErr) {
+      console.error("[forgot-password] Resend send failed:", sendErr && sendErr.message ? sendErr.message : sendErr);
+      // Don't surface the failure to the caller — owner can use the emergency script.
+    }
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error("[forgot-password] error:", e && e.message ? e.message : e);
+    // Same neutral response on error to avoid leaking lookup details.
+    res.json({ success: true });
+  }
+});
+
+app.post("/api/auth/reset-password", async function(req, res) {
+  try {
+    var token = String((req.body && req.body.token) || "").trim();
+    var newPassword = String((req.body && req.body.newPassword) || "");
+    if (!token || !newPassword) {
+      return res.status(400).json({ error: "Invalid or expired token" });
+    }
+    if (newPassword.length < 8 || !/[A-Za-z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      return res.status(400).json({ error: "Password must be at least 8 characters and contain a letter and a number" });
+    }
+
+    var user = await User.findOne({
+      resetToken: token,
+      resetTokenExpiry: { $gt: new Date() }
+    });
+    if (!user) {
+      return res.status(400).json({ error: "Invalid or expired token" });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.resetToken = null;
+    user.resetTokenExpiry = null;
+    user.passwordChangedAt = new Date();
+    await user.save();
+
+    // Force-logout existing sessions: bust the active-flag cache so the
+    // next protected request re-fetches passwordChangedAt and rejects any
+    // JWT issued before the reset (see checkUserActive above).
+    delete userActiveCache[String(user._id)];
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error("[reset-password] error:", e && e.message ? e.message : e);
+    res.status(500).json({ error: "Failed to reset password" });
   }
 });
 
