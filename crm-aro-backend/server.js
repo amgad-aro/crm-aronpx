@@ -8349,6 +8349,40 @@ app.put("/api/notifications/mark-seen", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== BACKFILL OFF-SITE NOTIFICATIONS =====
+// One-shot, idempotent backfill — creates offsite_pending Notification rows
+// for any OffSiteRequest still in "pending" state that doesn't already have
+// one. Safe to run multiple times. Returns the count actually created.
+app.post("/api/admin/backfill-offsite-notifications", auth, adminOnly, async function(req, res) {
+  try {
+    var pending = await OffSiteRequest.find({ status: "pending" }).populate("userId", "name").lean();
+    var created = 0;
+    var alreadyExists = 0;
+    for (var i = 0; i < pending.length; i++) {
+      var r = pending[i];
+      var existing = await Notification.findOne({ type: "offsite_pending", fromName: String(r._id) }).lean();
+      if (existing) { alreadyExists++; continue; }
+      var name = (r.userId && r.userId.name) || "";
+      await Notification.create({
+        type: "offsite_pending",
+        leadId: String(r.userId && r.userId._id ? r.userId._id : r.userId),
+        leadName: name,
+        agentName: name,
+        status: r.type || "",
+        reason: r.reason || "",
+        fromName: String(r._id),
+        createdAt: r.requestedAt || r.createdAt || new Date()
+      });
+      created++;
+    }
+    if (created > 0) { try { broadcast("notification_updated", {}); } catch(e){} }
+    res.json({ ok: true, totalPending: pending.length, created: created, alreadyExists: alreadyExists });
+  } catch (e) {
+    console.error("[backfill-offsite-notifications]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== BULK REASSIGN =====
 // ===== FIX MANAGER TEAM IDS =====
 // One-time endpoint to auto-assign teamId to managers based on their sales' teamIds
