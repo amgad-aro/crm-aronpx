@@ -3710,15 +3710,17 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     if (!req.user || !req.user.id) return res.status(401).json({ error: "No user" });
     var uid = new mongoose.Types.ObjectId(req.user.id);
 
-    // TL scope: strict team_leader only. Everyone else keeps self-only behaviour.
-    // scopeIds = [self, ...direct sales]; agentExpr/userExpr substitute in every match.
-    var scopeIds = [uid];
-    if (req.user.role === "team_leader") {
-      var tlDirectSales = await User.find({ reportsTo: uid }).select("_id").lean();
-      tlDirectSales.forEach(function(s){ scopeIds.push(s._id); });
+    // Subtree scope: TL / manager / director use getScopedUserIds (self +
+    // reportsTo subtree). Everyone else stays self-only. agentExpr/userExpr
+    // substitute into every downstream match.
+    var scopeIds;
+    if (req.user.role === "team_leader" || req.user.role === "manager" || req.user.role === "director") {
+      scopeIds = await getScopedUserIds(req.user);
+    } else {
+      scopeIds = [uid];
     }
-    var agentExpr = scopeIds.length > 1 ? { $in: scopeIds } : uid;
-    var userExpr  = scopeIds.length > 1 ? { $in: scopeIds } : uid;
+    var agentExpr = scopeIds.length > 1 ? { $in: scopeIds } : (scopeIds[0] || uid);
+    var userExpr  = scopeIds.length > 1 ? { $in: scopeIds } : (scopeIds[0] || uid);
 
     // CARD 1 — My Leads: assigned to scope AND (createdAt OR any in-scope assignment) falls in range.
     var myLeadsPipeline = [
@@ -3844,9 +3846,18 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     (parts[10] || []).forEach(function(r){ if (r && r._id) byStatus[r._id] = r.c; });
 
     var parseBudget = function(b){ return parseFloat(String(b||"0").replace(/,/g,"")) || 0; };
+    // Split-deal credit rule: if both agents are inside the caller's scope
+    // (subtree for TL/mgr/dir, or the caller themselves for sales), credit the
+    // full deal. If only one of the two is in scope, credit half. Sales never
+    // own both halves of a single deal, so they degenerate to the legacy 0.5.
+    var scopeIdsSet = new Set(scopeIds.map(function(id){ return String(id); }));
     var achieved = myDeals.reduce(function(s,d){
       var w = (typeof d.projectWeight === "number") ? d.projectWeight : 1;
-      var split = d.splitAgent2Id ? 0.5 : 1;
+      var hasSplit = !!d.splitAgent2Id;
+      var bothInScope = hasSplit
+        && scopeIdsSet.has(String(d.agentId))
+        && scopeIdsSet.has(String(d.splitAgent2Id));
+      var split = (hasSplit && !bothInScope) ? 0.5 : 1;
       return s + parseBudget(d.budget) * w * split;
     }, 0);
 

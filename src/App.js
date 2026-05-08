@@ -6599,8 +6599,9 @@ var DashboardPage = function(p) {
       });
       return out;
     };
-    // Scope DRs to self (TL already scoped server-side). p.dailyReqs is the full
-    // visible set; for sales role the backend returns own-only.
+    // Scope DRs: TL / manager / director already get a subtree-scoped p.dailyReqs
+    // from the server (BATCH 2 + 2.5), so isTeamScope just passes them through.
+    // Sales/admin/etc fall back to a self-only filter on the visible set.
     var myDrsScopedS = (p.dailyReqs||[]).filter(function(r){
       if (isTeamScope) return true;
       var aid = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
@@ -8418,13 +8419,25 @@ var DealsPage = function(p) {
   var deals = dealTab==="cancelled" ? cancelledDeals : activeDeals;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
+  // Split-deal credit rule (mirrors the backend my-stats reducer): for any
+  // non-admin caller, a split deal counts as FULL (1.0) when both agents are
+  // visible in p.users (i.e. both inside the caller's reportsTo subtree —
+  // p.users is server-scoped per role). When only one of the two is visible,
+  // the deal counts as 0.5. Sales p.users is just self, so split deals
+  // degenerate to 0.5 — same as the legacy behaviour.
+  var visibleUserIds = new Set((p.users||[]).map(function(u){return String(u._id||gid(u));}));
+  var splitMultiplier = function(d){
+    if (!getDealSplitFromObj(d)) return 1;
+    var pri = String((d.agentId && d.agentId._id) || d.agentId || "");
+    var sec = String((d.splitAgent2Id && d.splitAgent2Id._id) || d.splitAgent2Id || "");
+    return (visibleUserIds.has(pri) && visibleUserIds.has(sec)) ? 1 : 0.5;
+  };
   // Admin / Sales Admin: full top-line budget per deal — no project weight
   // and no split halving. This is the gross deal volume the company booked.
   // All other roles keep the share-based view (their slice of revenue).
   var total=deals.reduce(function(s,d){
     if(isOnlyAdmin) return s+parseBudget(d.budget);
-    var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);
-    return s+parseBudget(d.budget)*w*(sp?0.5:1);
+    return s+parseBudget(d.budget)*getProjectWeight(d.project,d)*splitMultiplier(d);
   },0);
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [showAdd,setShowAdd]=useState(false);
@@ -8466,8 +8479,7 @@ var DealsPage = function(p) {
   });
   var filteredTotal=filteredDeals.reduce(function(s,d){
     if(isOnlyAdmin) return s+parseBudget(d.budget);
-    var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);
-    return s+parseBudget(d.budget)*w*(sp?0.5:1);
+    return s+parseBudget(d.budget)*getProjectWeight(d.project,d)*splitMultiplier(d);
   },0);
 
   // Get stages from the lead document (server-side, shared across admins). Falls back to legacy localStorage if the lead doesn't have one yet.
