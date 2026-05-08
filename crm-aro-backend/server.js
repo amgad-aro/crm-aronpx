@@ -2718,6 +2718,10 @@ async function(req, res) {
       broadcast("attendance_updated", { userId: String(r.userId), attendance: att });
       broadcast("offsite_request_updated", {});
     } catch (e) {}
+
+    clearPendingOffSiteNotification(r._id).catch(function(){});
+    fireOffSiteNotification(r, "reject", { userName: (requesterUser && requesterUser.name) || "", notes: notes }).catch(function(){});
+
     res.json({ request: r, attendance: att });
   } catch (e) {
     console.error("[POST /offsite/:id/reject]", e);
@@ -8149,6 +8153,21 @@ async function getVisibleNotifications(req, baseQuery, limit) {
     } catch (e) { hrCanSeeAttendance = false; }
   }
 
+  // Off-site approver capability — anyone with approveOffSiteRequests sees
+  // pending rows. Owner is true unconditionally; sales_admin/hr depend on the
+  // settings toggle. Skip the AppSetting lookup entirely when there are no
+  // off-site rows in this batch or the role can't approve regardless.
+  var canApproveOffSite = false;
+  var hasOffsiteRows = notifs.some(function(n){
+    return n.type === "offsite_pending" || n.type === "offsite_approved" || n.type === "offsite_rejected";
+  });
+  if (hasOffsiteRows && (role === "admin" || role === "sales_admin" || role === "hr")) {
+    try {
+      var attSettings2 = await getAttendanceSettings();
+      canApproveOffSite = hasAttendancePermission(role, "approveOffSiteRequests", attSettings2);
+    } catch (e) { canApproveOffSite = false; }
+  }
+
   // Build leadId → agentId map for deal/rotation. Same lookup also gives
   // the dead-lead filter (existing behavior — drop notifications whose
   // referenced lead is gone or archived).
@@ -8179,6 +8198,18 @@ async function getVisibleNotifications(req, baseQuery, limit) {
     if ((n.type === "deal" || n.type === "rotation") && n.leadId && !aliveLeadIds.has(String(n.leadId))) {
       return false;
     }
+
+    // Off-site notifications — visibility split: pending rows go to approvers,
+    // approved/rejected rows go to the requester. These rules apply to every
+    // role (including admin/sales_admin) so the bell stays clean for users
+    // who can't act on a given row.
+    if (n.type === "offsite_pending") {
+      return canApproveOffSite;
+    }
+    if (n.type === "offsite_approved" || n.type === "offsite_rejected") {
+      return String(n.leadId || "") === selfId;
+    }
+
     if (isFullView) return true;
 
     if (n.type === "attendance_late_5") {
@@ -8274,7 +8305,15 @@ app.get("/api/notifications", auth, async function(req, res) {
     var uid = req.user.id;
     var type = req.query.type || null;
     var query = {};
-    if (type) query.type = type;
+    if (type) {
+      // Allow ?type=a,b,c to fetch multiple types in one round-trip. Used by
+      // the off-site bell which lumps pending/approved/rejected together.
+      if (String(type).indexOf(",") !== -1) {
+        query.type = { $in: String(type).split(",").map(function(s){ return s.trim(); }).filter(Boolean) };
+      } else {
+        query.type = type;
+      }
+    }
     // Return the full history, newest first. Cap is defensive only.
     var limit = Math.min(parseInt(req.query.limit) || 2000, 5000);
     var visible = await getVisibleNotifications(req, query, limit);
@@ -8292,7 +8331,13 @@ app.put("/api/notifications/mark-seen", auth, async function(req, res) {
     // BATCH 3 — caller may only mark-seen rows they are permitted to see.
     // Reuse the same scope as GET; constrain updateMany to visible _ids.
     var baseQuery = {};
-    if (type) baseQuery.type = type;
+    if (type) {
+      if (String(type).indexOf(",") !== -1) {
+        baseQuery.type = { $in: String(type).split(",").map(function(s){ return s.trim(); }).filter(Boolean) };
+      } else {
+        baseQuery.type = type;
+      }
+    }
     var visible = await getVisibleNotifications(req, baseQuery, 5000);
     if (!visible.length) return res.json({ ok: true });
     var visibleIds = visible.map(function(n){ return n._id; });

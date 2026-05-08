@@ -5,7 +5,7 @@ import {
   Settings, Home, Briefcase, Target, TrendingUp, UserPlus, CheckCircle,
   Activity, Layers, DollarSign, X, Lock, Globe, LogOut, Eye, EyeOff,
   Trash2, AlertCircle, Menu, Upload, MessageSquare, ChevronRight,
-  ClipboardList, Edit, Archive, Award, Zap, RotateCcw, ExternalLink, KeyRound, FileSpreadsheet
+  ClipboardList, Edit, Archive, Award, Zap, RotateCcw, ExternalLink, KeyRound, FileSpreadsheet, MapPin
 } from "lucide-react";
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
@@ -1441,11 +1441,12 @@ var buildDealItems = function(leads, dailyRequests, cu, myTeamUsers) {
 var Header = function(p) {
   var t = p.t; var isOnlyAdmin = p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin");
 
-  // Close deal notif + rot notif on outside click
+  // Close deal notif + rot notif + off-site notif on outside click
   var dealNotifRef = useRef(null);
   var rotNotifRef = useRef(null);
+  var offSiteNotifRef = useRef(null);
   useEffect(function(){
-    if(!p.showDealNotif&&!p.showRotNotif) return;
+    if(!p.showDealNotif&&!p.showRotNotif&&!p.showOffSiteNotif) return;
     var fn=function(e){
       if(p.showDealNotif&&dealNotifRef.current&&!dealNotifRef.current.contains(e.target)){
         p.setShowDealNotif(false);
@@ -1453,10 +1454,13 @@ var Header = function(p) {
       if(p.showRotNotif&&rotNotifRef.current&&!rotNotifRef.current.contains(e.target)){
         if(p.setShowRotNotif)p.setShowRotNotif(false);
       }
+      if(p.showOffSiteNotif&&offSiteNotifRef.current&&!offSiteNotifRef.current.contains(e.target)){
+        if(p.setShowOffSiteNotif)p.setShowOffSiteNotif(false);
+      }
     };
     setTimeout(function(){document.addEventListener("mousedown",fn);},0);
     return function(){document.removeEventListener("mousedown",fn);};
-  },[p.showDealNotif,p.showRotNotif]);
+  },[p.showDealNotif,p.showRotNotif,p.showOffSiteNotif]);
   return <div style={{ position:"sticky", top:0, zIndex:100, background:"#fff" }}>
   <div style={{ height:64, background:"#fff", borderBottom:"1px solid #E8ECF1", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 16px", gap:10 }}>
     <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
@@ -1562,6 +1566,66 @@ var Header = function(p) {
                   </div>
                 </div>
                 {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#EA580C", flexShrink:0 }}/>}
+              </div>;
+            })}
+          </div>
+        </div>}
+      </div>}
+
+      {/* BELL 4 — Off-site requests: shown to anyone with a visible row.
+          Approvers see "pending" rows (Owner always; SA/HR if their toggle is
+          on), the requester sees their own approved/rejected rows. The bell
+          hides itself entirely when both lists are empty so non-approver
+          requesters with no recent activity get no chrome. */}
+      {(p.offSiteNotifs && p.offSiteNotifs.length>0) && <div ref={offSiteNotifRef} style={{ position:"relative" }}>
+        <button onClick={function(){var next=!p.showOffSiteNotif;if(p.setShowOffSiteNotif)p.setShowOffSiteNotif(next);if(next){p.setShowNotif(false);p.setShowDealNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);if(p.onOffSiteNotifSeen)p.onOffSiteNotifSeen();}}} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:p.unseenOffSite>0?"#EFF6FF":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+          <MapPin size={15} color={p.unseenOffSite>0?"#1D4ED8":C.textLight}/>
+          {p.unseenOffSite>0&&!p.showOffSiteNotif&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:"#1D4ED8", color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{p.unseenOffSite>9?"9+":p.unseenOffSite}</span>}
+        </button>
+        {p.showOffSiteNotif&&<div style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
+          <div style={{ padding:"14px 18px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <MapPin size={16} color="#1D4ED8"/>
+              <span style={{ fontWeight:700, fontSize:14, color:C.text }}>Off-site requests</span>
+              {p.offSiteNotifs.length>0&&<span style={{ background:"#EFF6FF", color:"#1D4ED8", padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:600 }}>{p.offSiteNotifs.length}</span>}
+            </div>
+            <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+              {p.unseenOffSite>0&&<button onClick={function(){if(p.onOffSiteNotifSeen)p.onOffSiteNotifSeen();}} style={{ background:"#EFF6FF", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:"#1D4ED8", fontWeight:600, padding:"4px 10px" }}>Mark Read</button>}
+              <button onClick={function(){if(p.setShowOffSiteNotif)p.setShowOffSiteNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
+            </div>
+          </div>
+          <div style={{ overflowY:"auto", flex:1 }}>
+            {p.offSiteNotifs.length===0&&<div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}>
+              <div style={{ fontSize:28, marginBottom:8 }}>📍</div>No off-site activity
+            </div>}
+            {p.offSiteNotifs.map(function(n){
+              var isPending  = n.type==="offsite_pending";
+              var isApproved = n.type==="offsite_approved";
+              var isRejected = n.type==="offsite_rejected";
+              var label = isPending  ? "⏳ Pending off-site"
+                        : isApproved ? "✅ Off-site approved"
+                        : isRejected ? "❌ Off-site rejected"
+                        : "Off-site";
+              var iconBg = isPending  ? "linear-gradient(135deg,#EFF6FF,#DBEAFE)"
+                        : isApproved ? "linear-gradient(135deg,#DCFCE7,#BBF7D0)"
+                        : "linear-gradient(135deg,#FEE2E2,#FECACA)";
+              var dotColor = isPending ? "#1D4ED8" : isApproved ? "#15803D" : "#B91C1C";
+              var openItem = function(){
+                if (p.setShowOffSiteNotif) p.setShowOffSiteNotif(false);
+                if (p.onOffSiteNotifClick) p.onOffSiteNotifClick(n);
+              };
+              var subType = (n.status==="check_in") ? "check-in" : (n.status==="check_out" ? "check-out" : "");
+              var detail = isPending  ? (n.leadName ? n.leadName + (subType?" — "+subType:"") : (subType||""))
+                         : (subType ? subType.charAt(0).toUpperCase()+subType.slice(1) : "");
+              return <div key={n._id||n.id} onClick={openItem} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#F8FBFF", transition:"background 0.2s", cursor:"pointer" }}>
+                <div style={{ width:38, height:38, borderRadius:10, background:iconBg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><MapPin size={16} color={dotColor}/></div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}</div>
+                  {detail&&<div style={{ fontSize:11, color:C.textLight, marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{detail}</div>}
+                  {n.reason&&<div style={{ fontSize:11, color:C.textLight, marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{isRejected?"Reason: ":""}{n.reason}</div>}
+                  <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>{timeAgo(n.createdAt||n.time,p.t)}</div>
+                </div>
+                {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:dotColor, flexShrink:0 }}/>}
               </div>;
             })}
           </div>
@@ -15198,6 +15262,11 @@ export default function CRMApp() {
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
   var [rotNotifs,setRotNotifs]=useState([]);
+  // Off-site request bell — pending rows go to approvers, approved/rejected
+  // rows go to the requester. Visibility is enforced server-side; this client
+  // just renders whatever the API returns.
+  var [offSiteNotifs,setOffSiteNotifs]=useState([]);
+  var [showOffSiteNotif,setShowOffSiteNotif]=useState(false);
   // Client-side "last seen" markers for the Deal and Rotation bells. Stored per
   // user in localStorage so the badge clears across reloads on the same device.
   // Deal badge is driven by live lead/DR state (see buildDealItems), not the
@@ -15249,6 +15318,9 @@ export default function CRMApp() {
   var loadNotifications = function(tok){
     apiFetch("/api/notifications?type=deal","GET",null,tok).then(function(data){if(data)setDealNotifs(data);}).catch(function(e){ console.error("Notifications (deal) fetch failed:", e); });
     apiFetch("/api/notifications?type=rotation","GET",null,tok).then(function(data){if(data)setRotNotifs(data);}).catch(function(e){ console.error("Notifications (rotation) fetch failed:", e); });
+    // Off-site bell — server visibility filter takes care of who sees what,
+    // so this single fetch works for approvers and requesters alike.
+    apiFetch("/api/notifications?type=offsite_pending,offsite_approved,offsite_rejected&limit=200","GET",null,tok).then(function(data){if(Array.isArray(data))setOffSiteNotifs(data);}).catch(function(e){ console.error("Notifications (offsite) fetch failed:", e); });
   };
 
   useEffect(function(){
@@ -16079,7 +16151,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs.filter(function(n){return !rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore;})} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen&&(!rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore);}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){var now=Date.now();setRotHiddenBefore(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_rot_hidden_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={(function(){var items=buildDealItems(scopedLeads,scopedDailyReqs,currentUser,myTeamUsers);var cutoff=lastSeenDealAt||0;return items.filter(function(it){return new Date(it.time||0).getTime()>cutoff;}).length;})()} onDealNotifSeen={function(){var now=Date.now();setLastSeenDealAt(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_deal_seen_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs.filter(function(n){return !rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore;})} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen&&(!rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore);}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){var now=Date.now();setRotHiddenBefore(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_rot_hidden_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={(function(){var items=buildDealItems(scopedLeads,scopedDailyReqs,currentUser,myTeamUsers);var cutoff=lastSeenDealAt||0;return items.filter(function(it){return new Date(it.time||0).getTime()>cutoff;}).length;})()} onDealNotifSeen={function(){var now=Date.now();setLastSeenDealAt(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_deal_seen_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
