@@ -2544,6 +2544,8 @@ app.post("/api/offsite/request", auth, async function(req, res) {
       broadcast("offsite_request_updated", {});
     } catch (e) {}
 
+    fireOffSiteNotification(reqDoc, "submit", { userName: user.name, reason: reason }).catch(function(){});
+
     res.json({ request: reqDoc, attendance: att });
   } catch (e) {
     console.error("[POST /offsite/request]", e);
@@ -2583,6 +2585,7 @@ app.delete("/api/offsite/:id", auth, async function(req, res) {
       try { broadcast("attendance_updated", { userId: String(r.userId), attendance: att }); } catch(e){}
     }
     try { broadcast("offsite_request_updated", {}); } catch(e){}
+    clearPendingOffSiteNotification(r._id).catch(function(){});
     res.json({ ok: true });
   } catch (e) {
     console.error("[DELETE /offsite/:id]", e);
@@ -2652,6 +2655,9 @@ async function(req, res) {
       maybeFireLateNotification(user).catch(function(){});
     }
 
+    clearPendingOffSiteNotification(r._id).catch(function(){});
+    fireOffSiteNotification(r, "approve", { userName: (user && user.name) || "" }).catch(function(){});
+
     res.json({ request: r, attendance: att });
   } catch (e) {
     console.error("[POST /offsite/:id/approve]", e);
@@ -2668,6 +2674,7 @@ async function(req, res) {
 
     var notes = (req.body && req.body.notes) ? String(req.body.notes) : "";
     var att = r.attendanceId ? await Attendance.findById(r.attendanceId) : null;
+    var requesterUser = await User.findById(r.userId).lean();
 
     if (att) {
       if (r.type === "check_in") {
@@ -2681,9 +2688,8 @@ async function(req, res) {
         // Reject check-out → revert to in_progress, restore the original late
         // tier so the user can try checking out again from inside the office.
         att.checkOut = undefined;
-        var user = await User.findById(r.userId).lean();
-        if (user && att.checkIn && att.checkIn.timestamp) {
-          var tier = computeLateTier(att.checkIn.timestamp, user.role);
+        if (requesterUser && att.checkIn && att.checkIn.timestamp) {
+          var tier = computeLateTier(att.checkIn.timestamp, requesterUser.role);
           att.deductionFraction = tier.deductionFraction;
         }
         att.status = "in_progress";
@@ -3223,6 +3229,51 @@ async function maybeFireLateNotification(user) {
     try { broadcast("notification_updated", {}); } catch (e) {}
   } catch (e) {
     console.error("[maybeFireLateNotification]", e && e.message);
+  }
+}
+
+// Off-site request notifications. Fan-out is read-time (see
+// getVisibleNotifications): one shared row per event, visibility derived from
+// (a) approveOffSiteRequests permission for the pending row, and (b) leadId
+// === requester for the approved/rejected rows. The request _id is stuffed
+// into fromName so we can clean up the pending row when an action is taken.
+async function fireOffSiteNotification(reqDoc, action, opts) {
+  try {
+    var typeMap = {
+      submit:   "offsite_pending",
+      approve:  "offsite_approved",
+      reject:   "offsite_rejected"
+    };
+    var nType = typeMap[action];
+    if (!nType) return;
+    var name = (opts && opts.userName) || "";
+    var notes = (opts && opts.notes) || "";
+    var reason = (opts && opts.reason) || "";
+    await Notification.create({
+      type:     nType,
+      leadId:   String(reqDoc.userId),
+      leadName: name,
+      agentName: name,
+      status:   reqDoc.type || "",
+      reason:   action === "reject" ? notes : (action === "submit" ? reason : ""),
+      fromName: String(reqDoc._id)
+    });
+    try { broadcast("notification_updated", {}); } catch (e) {}
+  } catch (e) {
+    console.error("[fireOffSiteNotification]", e && e.message);
+  }
+}
+
+// Clear the pending row once the request is approved/rejected/cancelled so the
+// approver bell empties out. We delete rather than just marking seen because
+// "shared" notifications have no per-user clear path.
+async function clearPendingOffSiteNotification(reqId) {
+  try {
+    if (!reqId) return;
+    await Notification.deleteOne({ type: "offsite_pending", fromName: String(reqId) });
+    try { broadcast("notification_updated", {}); } catch (e) {}
+  } catch (e) {
+    console.error("[clearPendingOffSiteNotification]", e && e.message);
   }
 }
 
@@ -12968,10 +13019,80 @@ app.get("/api/reports/agents/:id/stuck-leads", auth, reportsAuth, async function
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);
 var wss = new WebSocketLib.Server({ server: httpServer });
+
+// BATCH 4 — per-socket scope cache. Computed on auth handshake, refreshed
+// on user-graph mutations (user_updated/user_deleted) and HR permission
+// flips (attendance_settings_updated). Shape:
+//   { isFullView: bool, scopeIdSet: Set<String>|null,
+//     hrManageAttendance: bool, hrManageSalaries: bool }
+// isFullView=true (admin/sales_admin) bypasses all scope checks.
+async function computeScopeForSocket(ws) {
+  if (!ws || !ws.userId) {
+    return { isFullView: false, scopeIdSet: new Set(), hrManageAttendance: false, hrManageSalaries: false };
+  }
+  var role = ws.role;
+  if (role === "admin" || role === "sales_admin") {
+    return { isFullView: true, scopeIdSet: null, hrManageAttendance: false, hrManageSalaries: false };
+  }
+  // getScopedUserIds reads only id+role off the user — synthesize the
+  // minimum it needs rather than refetching the User doc.
+  var fakeUser = { id: ws.userId, role: role };
+  var ids = await getScopedUserIds(fakeUser);
+  var scopeIdSet;
+  var isFullView = false;
+  if (ids === null) {
+    isFullView = true;
+    scopeIdSet = null;
+  } else {
+    scopeIdSet = new Set(ids.map(function(i){ return String(i); }));
+  }
+  var hrManageAttendance = false;
+  var hrManageSalaries = false;
+  if (role === "hr") {
+    try {
+      var att = await getAttendanceSettings();
+      hrManageAttendance = hasAttendancePermission("hr", "manageAttendance", att);
+      hrManageSalaries   = hasAttendancePermission("hr", "manageSalaries",   att);
+    } catch (e) { /* permissions stay false */ }
+  }
+  return { isFullView: isFullView, scopeIdSet: scopeIdSet, hrManageAttendance: hrManageAttendance, hrManageSalaries: hrManageSalaries };
+}
+
+// Owner-extraction helpers. Broadcast payloads carry agentId/userId either
+// as a populated object {_id,name,...} or as a raw ObjectId — handle both.
+function getLeadOwnerIds(lead) {
+  if (!lead) return [];
+  var ids = [];
+  if (lead.agentId) {
+    var aid = lead.agentId._id ? lead.agentId._id : lead.agentId;
+    if (aid) ids.push(String(aid));
+  }
+  if (lead.splitAgent2Id) {
+    var sid = lead.splitAgent2Id._id ? lead.splitAgent2Id._id : lead.splitAgent2Id;
+    if (sid) ids.push(String(sid));
+  }
+  return ids;
+}
+function getDrOwnerId(dr) {
+  if (!dr || !dr.agentId) return null;
+  return String(dr.agentId._id ? dr.agentId._id : dr.agentId);
+}
+function getActivityOwnerId(activity) {
+  if (!activity || !activity.userId) return null;
+  return String(activity.userId._id ? activity.userId._id : activity.userId);
+}
+function getUserIdFromPayload(data) {
+  if (!data) return null;
+  if (data.userId) return String(data.userId);
+  if (data.user && data.user._id) return String(data.user._id);
+  return null;
+}
+
 wss.on("connection", function(ws){
   ws.isAlive = true;
   ws.userId = null;
   ws.role = null;
+  ws.scopeCache = null; // populated on successful auth handshake (BATCH 4)
   ws.on("pong", function(){ ws.isAlive = true; });
   // Auth handshake: client must send {type:"auth", token} after connect.
   // Until authenticated, the client receives only the hello greeting.
@@ -12983,6 +13104,14 @@ wss.on("connection", function(ws){
           var decoded = jwt.verify(msg.token, process.env.JWT_SECRET || "secret");
           ws.userId = String(decoded.id || "");
           ws.role = String(decoded.role || "");
+          // BATCH 4 — precompute scope so the broadcast hot path is sync.
+          // Until this resolves, ws.scopeCache stays null and clientShould
+          // Receive fails closed for scope-relevant events (auth-window race).
+          computeScopeForSocket(ws)
+            .then(function(s){ ws.scopeCache = s; })
+            .catch(function(){
+              ws.scopeCache = { isFullView: false, scopeIdSet: new Set(), hrManageAttendance: false, hrManageSalaries: false };
+            });
           try { ws.send(JSON.stringify({ type: "auth_ok", ts: Date.now() })); } catch(e){}
         } catch(e) {
           try { ws.send(JSON.stringify({ type: "auth_failed", ts: Date.now() })); } catch(e){}
@@ -13001,30 +13130,101 @@ setInterval(function(){
   });
 }, 30000);
 
-// Per-client filter for events that carry lead/DR documents. Sales must only
-// receive events for documents currently assigned to them; everyone else
-// (admin / sales_admin / manager / team_leader) gets the unfiltered firehose.
+// BATCH 4 — per-client filter. Three branches:
+//   admin / sales_admin → firehose (full visibility)
+//   sales              → strict self-only on lead/dr/activity/user/attendance/salary
+//   everyone else      → subtree scope via cached scopeIdSet
+// Unauthenticated sockets fail closed; pre-auth events are dropped entirely
+// (tightened from prior sales-strict default — id-only events used to leak
+// during the auth window).
+// Events not enumerated below (lead_deleted, dr_deleted, notification_updated,
+// task_updated, rotation_updated, settings_updated, attendance_settings_updated,
+// company_offdays_updated, offsite_request_updated, unassigned_updated,
+// rotation_swept, etc.) forward unfiltered. They're either id-only prune
+// signals (REST GET acts as the gate) or global concerns (settings).
 var clientShouldReceive = function(client, type, data){
   if (!client) return false;
-  // Apply sales-style restrictions to any unauthenticated socket too — fail closed.
-  var restrict = (client.role === "sales") || !client.role;
-  if (!restrict) return true;
-  // Block rotation activity entirely from sales — they have no UI for it
-  // and the payload exposes other agents' identities.
-  if (type === "rotation_updated") return false;
+  if (!client.userId || !client.role) return false; // unauth → drop
+  var role = client.role;
+
+  if (role === "admin" || role === "sales_admin") return true;
+
+  if (role === "sales") {
+    if (type === "rotation_updated") return false;
+    if (type === "lead_updated") {
+      var sLead = data && data.lead;
+      if (!sLead) return false; // id-only — sales never refetches cross-team leads
+      var sAids = getLeadOwnerIds(sLead);
+      return sAids.indexOf(client.userId) !== -1;
+    }
+    if (type === "dr_updated") {
+      var sDr = data && data.dr;
+      if (!sDr) return false;
+      var sDid = getDrOwnerId(sDr);
+      return !!sDid && sDid === client.userId;
+    }
+    if (type === "activity_created") {
+      var sAOwn = getActivityOwnerId(data && data.activity);
+      return !!sAOwn && sAOwn === client.userId;
+    }
+    if (type === "user_updated" || type === "user_deleted") {
+      var sUOwn = getUserIdFromPayload(data);
+      return !!sUOwn && sUOwn === client.userId;
+    }
+    if (type === "attendance_updated" || type === "salary_finalized") {
+      var sAoUid = getUserIdFromPayload(data);
+      return !!sAoUid && sAoUid === client.userId;
+    }
+    return true;
+  }
+
+  // Scoped roles — team_leader / manager / director / viewer / hr.
+  var cache = client.scopeCache;
+  var scope = cache && cache.scopeIdSet;
+
+  // Cache missing (auth-window race): fail closed for scope-relevant
+  // events, forward the rest. Recompute is in flight.
+  if (!scope) {
+    if (type === "lead_updated" && data && data.lead) return false;
+    if (type === "dr_updated"   && data && data.dr)   return false;
+    if (type === "activity_created") return false;
+    if (type === "user_updated" || type === "user_deleted") return false;
+    if (type === "attendance_updated" || type === "salary_finalized") return false;
+    return true;
+  }
+
   if (type === "lead_updated") {
-    var lead = data && data.lead;
-    if (!lead) return false; // id-only payload — cannot prove ownership, drop
-    var aid = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
-    return !!aid && !!client.userId && String(aid) === client.userId;
+    var lpLead = data && data.lead;
+    if (!lpLead) return true; // id-only — REST GET is gated (BATCH 1)
+    var owners = getLeadOwnerIds(lpLead);
+    if (!owners.length) return false;
+    return owners.some(function(oid){ return scope.has(oid); });
   }
   if (type === "dr_updated") {
-    var dr = data && data.dr;
-    if (!dr) return false;
-    var did = dr.agentId && dr.agentId._id ? dr.agentId._id : dr.agentId;
-    return !!did && !!client.userId && String(did) === client.userId;
+    var lpDr = data && data.dr;
+    if (!lpDr) return true; // id-only — REST GET is gated
+    var dOwn = getDrOwnerId(lpDr);
+    return !!dOwn && scope.has(dOwn);
   }
-  // lead_deleted / dr_deleted carry only an id — safe to forward so clients can prune.
+  if (type === "activity_created") {
+    var actOwn = getActivityOwnerId(data && data.activity);
+    return !!actOwn && scope.has(actOwn);
+  }
+  if (type === "user_updated" || type === "user_deleted") {
+    var uId = getUserIdFromPayload(data);
+    return !!uId && scope.has(uId);
+  }
+  if (type === "attendance_updated") {
+    if (role === "hr" && cache.hrManageAttendance) return true;
+    var aUid = getUserIdFromPayload(data);
+    return !!aUid && scope.has(aUid);
+  }
+  if (type === "salary_finalized") {
+    if (role === "hr" && cache.hrManageSalaries) return true;
+    var slUid = getUserIdFromPayload(data);
+    return !!slUid && scope.has(slUid);
+  }
+
   return true;
 };
 
@@ -13037,6 +13237,20 @@ broadcast = function(type, data){
     if (!clientShouldReceive(client, type, data)) return;
     try { client.send(payload); } catch(e){}
   });
+  // BATCH 4 — refresh per-socket scope when the user graph mutates so newly
+  // added/removed reports start/stop being delivered. The current event uses
+  // the pre-mutation cache (one-event staleness window — acceptable per the
+  // approved plan). attendance_settings_updated triggers HR permission
+  // recompute too.
+  if (type === "user_updated" || type === "user_deleted" || type === "attendance_settings_updated") {
+    wss.clients.forEach(function(client){
+      if (!client.userId || !client.role) return;
+      if (client.role === "admin" || client.role === "sales_admin") return;
+      computeScopeForSocket(client)
+        .then(function(s){ client.scopeCache = s; })
+        .catch(function(){});
+    });
+  }
 };
 httpServer.listen(PORT, function() {
   console.log("CRM ARO Server + WebSocket running on port " + PORT);
