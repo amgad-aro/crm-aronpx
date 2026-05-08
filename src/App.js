@@ -6815,48 +6815,82 @@ var DashboardPage = function(p) {
         </div>;
       })()}
 
-      {/* Rank Team \u2014 own full-width row (split out so Agent Performance can sit between Rank and Urgent/Schedule) */}
-      <div style={{marginBottom:14}}>
-        {rankWidget({ mode: "sales", rangeLabel: rangeLabelS })}
-      </div>
-
-      {/* Agent Performance \u2014 same widget as the admin dashboard, fed by the
-          team-scope range. p.users is server-scoped to subtree per role. */}
-      {sec("Team Performance")}
-      <div style={{marginBottom:14}}>
-        {renderAgentPerformanceCard(rangeStartS, rangeEndS)}
-      </div>
-
-      {/* Urgent + Schedule row (2-column now that Rank Team sits above) */}
-      <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
-        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udea8"} Urgent {"\u2014"} Action Needed</div>
-          {urgent2.length===0&&urgentNew2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} No urgent items</div>}
-          {urgent2.map(function(l,i){var mins=Math.round((now-new Date(l.callbackTime).getTime())/60000);return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
-            <div style={{width:8,height:8,borderRadius:"50%",background:"#EF4444",flexShrink:0}}/>
-            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Overdue {mins>60?Math.round(mins/60)+"h":mins+"min"} {"\u00b7"} {l.status}</div></div>
-            <span style={{fontSize:11,fontWeight:700,color:"#DC2626",flexShrink:0}}>LATE</span>
-          </div>;})}
-          {urgentNew2.map(function(l,i){var hrs=Math.round((now-new Date(l.createdAt).getTime())/3600000);return <div key={"n"+i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
-            <div style={{width:8,height:8,borderRadius:"50%",background:"#3B82F6",flexShrink:0}}/>
-            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>New lead {"\u2014"} no action {hrs}h</div></div>
-            <span style={{fontSize:11,fontWeight:700,color:"#1D4ED8",flexShrink:0}}>NEW</span>
-          </div>;})}
+      {/* Layout splits by role. Team-scoped (TL/manager/director): Rank Team
+          (admin-mode leaderboard) gets its own row, Agent Performance below,
+          then a 2-col Urgent+Schedule row. Sales: original 3-col row with
+          their personal "My Rank vs Team" widget, no Agent Performance. */}
+      {isTeamScope ? <>
+        <div style={{marginBottom:14}}>
+          {rankWidget({ mode: "admin", rangeLabel: rangeLabelS })}
         </div>
-        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udcc5"} {scheduleTitle2}</div>
-          {schedule2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No callbacks scheduled in this range</div>}
-          {schedule2.map(function(l,i){
-            var t2=l.callbackTime?new Date(l.callbackTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"\u2014";
-            var isLate2=l.callbackTime&&new Date(l.callbackTime).getTime()<now;
-            return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
-              <div style={{fontSize:11,color:isLate2?"#DC2626":"#64748B",width:38,flexShrink:0,fontWeight:600}}>{t2}</div>
-              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:isLate2?"#DC2626":"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isLate2?"Overdue":"Callback scheduled"}</div></div>
-              <div style={{width:8,height:8,borderRadius:"50%",background:isLate2?"#EF4444":"#10B981",flexShrink:0}}/>
-            </div>;
-          })}
+
+        {sec("Team Performance")}
+        <div style={{marginBottom:14}}>
+          {renderAgentPerformanceCard(rangeStartS, rangeEndS)}
         </div>
-      </div>
+
+        <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
+          <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udea8"} Urgent {"\u2014"} Action Needed</div>
+            {urgent2.length===0&&urgentNew2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} No urgent items</div>}
+            {urgent2.map(function(l,i){var mins=Math.round((now-new Date(l.callbackTime).getTime())/60000);return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:"#EF4444",flexShrink:0}}/>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Overdue {mins>60?Math.round(mins/60)+"h":mins+"min"} {"\u00b7"} {l.status}</div></div>
+              <span style={{fontSize:11,fontWeight:700,color:"#DC2626",flexShrink:0}}>LATE</span>
+            </div>;})}
+            {urgentNew2.map(function(l,i){var hrs=Math.round((now-new Date(l.createdAt).getTime())/3600000);return <div key={"n"+i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:"#3B82F6",flexShrink:0}}/>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>New lead {"\u2014"} no action {hrs}h</div></div>
+              <span style={{fontSize:11,fontWeight:700,color:"#1D4ED8",flexShrink:0}}>NEW</span>
+            </div>;})}
+          </div>
+          <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udcc5"} {scheduleTitle2}</div>
+            {schedule2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No callbacks scheduled in this range</div>}
+            {schedule2.map(function(l,i){
+              var t2=l.callbackTime?new Date(l.callbackTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"\u2014";
+              var isLate2=l.callbackTime&&new Date(l.callbackTime).getTime()<now;
+              return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
+                <div style={{fontSize:11,color:isLate2?"#DC2626":"#64748B",width:38,flexShrink:0,fontWeight:600}}>{t2}</div>
+                <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:isLate2?"#DC2626":"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isLate2?"Overdue":"Callback scheduled"}</div></div>
+                <div style={{width:8,height:8,borderRadius:"50%",background:isLate2?"#EF4444":"#10B981",flexShrink:0}}/>
+              </div>;
+            })}
+          </div>
+        </div>
+      </> : <>
+        <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
+          {rankWidget({ mode: "sales", rangeLabel: rangeLabelS })}
+
+          <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udea8"} Urgent {"\u2014"} Action Needed</div>
+            {urgent2.length===0&&urgentNew2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} No urgent items</div>}
+            {urgent2.map(function(l,i){var mins=Math.round((now-new Date(l.callbackTime).getTime())/60000);return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:"#EF4444",flexShrink:0}}/>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Overdue {mins>60?Math.round(mins/60)+"h":mins+"min"} {"\u00b7"} {l.status}</div></div>
+              <span style={{fontSize:11,fontWeight:700,color:"#DC2626",flexShrink:0}}>LATE</span>
+            </div>;})}
+            {urgentNew2.map(function(l,i){var hrs=Math.round((now-new Date(l.createdAt).getTime())/3600000);return <div key={"n"+i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:"#3B82F6",flexShrink:0}}/>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>New lead {"\u2014"} no action {hrs}h</div></div>
+              <span style={{fontSize:11,fontWeight:700,color:"#1D4ED8",flexShrink:0}}>NEW</span>
+            </div>;})}
+          </div>
+          <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udcc5"} {scheduleTitle2}</div>
+            {schedule2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No callbacks scheduled in this range</div>}
+            {schedule2.map(function(l,i){
+              var t2=l.callbackTime?new Date(l.callbackTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"\u2014";
+              var isLate2=l.callbackTime&&new Date(l.callbackTime).getTime()<now;
+              return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
+                <div style={{fontSize:11,color:isLate2?"#DC2626":"#64748B",width:38,flexShrink:0,fontWeight:600}}>{t2}</div>
+                <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:isLate2?"#DC2626":"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isLate2?"Overdue":"Callback scheduled"}</div></div>
+                <div style={{width:8,height:8,borderRadius:"50%",background:isLate2?"#EF4444":"#10B981",flexShrink:0}}/>
+              </div>;
+            })}
+          </div>
+        </div>
+      </>}
 
       {/* Status + Funnel + Recent Activity row */}
       <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
