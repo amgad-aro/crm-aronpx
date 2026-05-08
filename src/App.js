@@ -6364,6 +6364,7 @@ var DashboardPage = function(p) {
   // sales-ranking endpoint for both roles).
   var rankWidget = function(opts){
     var mode = opts && opts.mode;
+    var compact = opts && opts.compact === true;
     var rangeLabel = (opts && opts.rangeLabel) || "";
     var rankRows = Array.isArray(salesRanking) ? salesRanking : [];
     var loading = salesRanking === null;
@@ -6373,17 +6374,24 @@ var DashboardPage = function(p) {
     var myRankTotal = rankRows.length;
     var myRankRow = myRankIdx >= 0 ? rankRows[myRankIdx] : {deals:0,meetings:0,score:0};
     var title = mode === "admin" ? "Rank Team" : "My Rank vs Team";
-    // Admin mode shares a grid row with other cards that stretch to the
-    // tallest sibling (Management Alerts / Callback Compliance / Leads by
-    // Status). Make the card a flex column so the rank list can flex:1 and
-    // fill the full card height with internal scrolling. Sales mode keeps
-    // its original fixed-max layout untouched.
+    // Admin mode (non-compact) shares a grid row with other cards that stretch
+    // to the tallest sibling (Management Alerts / Callback Compliance / Leads
+    // by Status). The card is a flex column so the rank list can flex:1 and
+    // fill the full card height with internal scrolling.
+    // Compact mode (admin content + sales-style sizing) is for cases where the
+    // widget sits as one of several similarly-sized cards in a wrapping grid
+    // (TL/manager/director dashboard row with Status/Funnel/Recent Activity):
+    // card is content-sized, list capped with internal scroll, matching the
+    // 228px inner-scroll pattern used by Recent Activity.
     var isAdminMode = mode === "admin";
+    var stretch = isAdminMode && !compact;
     var cardStyle = {background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"};
-    if (isAdminMode) { cardStyle.display = "flex"; cardStyle.flexDirection = "column"; cardStyle.height = "100%"; }
-    var listStyle = isAdminMode
+    if (stretch) { cardStyle.display = "flex"; cardStyle.flexDirection = "column"; cardStyle.height = "100%"; }
+    var listStyle = stretch
       ? {display:"flex",flexDirection:"column",gap:6,flex:1,minHeight:0,overflowY:"auto"}
-      : {display:"flex",flexDirection:"column",gap:6,maxHeight:360,overflowY:"auto"};
+      : compact
+        ? {display:"flex",flexDirection:"column",gap:6,maxHeight:228,overflowY:"auto"}
+        : {display:"flex",flexDirection:"column",gap:6,maxHeight:360,overflowY:"auto"};
     return <div className="crm-dash-card" style={cardStyle}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
         <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>{title}</div>
@@ -6751,6 +6759,108 @@ var DashboardPage = function(p) {
     var sparkMeetS     = spark7(allMyLeads.filter(function(l){return l.hadMeeting===true||l.status==="MeetingDone";}), function(l){ return l.meetingDoneAt||l.updatedAt||l.createdAt; });
     var sparkDealsS    = spark7(allMyLeads.filter(function(l){return l.status==="DoneDeal";}), function(l){ return l.dealDate||l.updatedAt||l.createdAt; });
 
+    // Reusable card JSX — defined once and arranged differently per role
+    // (team-scope arm groups them with Rank Team in a 4-col row; sales arm
+    // keeps the original 3+3 row split).
+    var urgentCardS = (
+      <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+        <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"🚨"} Urgent {"—"} Action Needed</div>
+        {urgent2.length===0&&urgentNew2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"✅"} No urgent items</div>}
+        {urgent2.map(function(l,i){var mins=Math.round((now-new Date(l.callbackTime).getTime())/60000);return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
+          <div style={{width:8,height:8,borderRadius:"50%",background:"#EF4444",flexShrink:0}}/>
+          <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Overdue {mins>60?Math.round(mins/60)+"h":mins+"min"} {"·"} {l.status}</div></div>
+          <span style={{fontSize:11,fontWeight:700,color:"#DC2626",flexShrink:0}}>LATE</span>
+        </div>;})}
+        {urgentNew2.map(function(l,i){var hrs=Math.round((now-new Date(l.createdAt).getTime())/3600000);return <div key={"n"+i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
+          <div style={{width:8,height:8,borderRadius:"50%",background:"#3B82F6",flexShrink:0}}/>
+          <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>New lead {"—"} no action {hrs}h</div></div>
+          <span style={{fontSize:11,fontWeight:700,color:"#1D4ED8",flexShrink:0}}>NEW</span>
+        </div>;})}
+      </div>
+    );
+    var scheduleCardS = (
+      <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+        <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"📅"} {scheduleTitle2}</div>
+        {schedule2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No callbacks scheduled in this range</div>}
+        {schedule2.map(function(l,i){
+          var t2=l.callbackTime?new Date(l.callbackTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—";
+          var isLate2=l.callbackTime&&new Date(l.callbackTime).getTime()<now;
+          return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
+            <div style={{fontSize:11,color:isLate2?"#DC2626":"#64748B",width:38,flexShrink:0,fontWeight:600}}>{t2}</div>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:isLate2?"#DC2626":"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isLate2?"Overdue":"Callback scheduled"}</div></div>
+            <div style={{width:8,height:8,borderRadius:"50%",background:isLate2?"#EF4444":"#10B981",flexShrink:0}}/>
+          </div>;
+        })}
+      </div>
+    );
+    var statusCardS = (
+      <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
+          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>My Leads {"—"} Status</div>
+          <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{rangeLabelS}</div>
+        </div>
+        {[
+          ["New Lead","NewLead","#3B82F6"],
+          ["Potential","Potential","#10B981"],
+          ["Hot Case","HotCase","#F59E0B"],
+          ["Call Back","CallBack","#EF4444"],
+          ["Meeting","MeetingDone","#8B5CF6"],
+          ["EOI","EOI","#A855F7"],
+          ["Done Deal","DoneDeal","#059669"],
+          ["No Answer","NoAnswer","#64748B"],
+          ["Not Int.","NotInterested","#94A3B8"]
+        ].map(function(s){return bRow(s[0],mySC2[s[1]]||0,myTotal2,s[2],function(){p.setFilter&&p.setFilter(s[1]);p.nav("leads");});})}
+        <div style={{borderTop:"1px solid #F1F5F9",marginTop:8,paddingTop:8,display:"flex",gap:14,alignItems:"center",fontSize:11,flexWrap:"wrap"}}>
+          <span title="Current state — ignores the date filter above" style={{fontSize:9,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:"0.08em",background:"#F1F5F9",padding:"2px 6px",borderRadius:4}}>NOW</span>
+          <span onClick={function(){p.setFilter&&p.setFilter("CallBack");p.nav("leads");}} style={{color:"#64748B",cursor:"pointer"}}>Overdue: <span style={{color:"#EF4444",fontWeight:700}}>{myOv2}</span></span>
+          <span onClick={function(){p.setFilter&&p.setFilter("NewLead");p.nav("leads");}} style={{color:"#64748B",cursor:"pointer"}}>Untouched: <span style={{color:"#3B82F6",fontWeight:700}}>{allMyLeads.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*DAY;}).length}</span></span>
+        </div>
+      </div>
+    );
+    var funnelCardS = (
+      <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box",overflow:"hidden"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
+          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>My Conversion Funnel</div>
+          <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{rangeLabelS}</div>
+        </div>
+        {funnelRowsS.map(function(row,i){
+          var pct = Math.max(6, Math.round((row.v/funnelMaxS)*100));
+          return <div key={i} onClick={row.nav} style={{display:"flex",alignItems:"center",gap:isMobile?6:8,marginBottom:8,minWidth:0,cursor:"pointer"}}>
+            <div style={{fontSize:11,color:"#64748B",width:isMobile?70:90,flexShrink:0,textAlign:"right",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{row.l}</div>
+            <div style={{flex:1,minWidth:0,height:22,borderRadius:4,background:"#F8FAFC",position:"relative",overflow:"hidden"}}>
+              <div style={{position:"absolute",inset:0,height:"100%",borderRadius:4,background:row.c,width:pct+"%",display:"flex",alignItems:"center",padding:"0 8px",minWidth:0,boxSizing:"border-box"}}>
+                <span style={{fontSize:11,fontWeight:700,color:row.tc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.v}</span>
+              </div>
+            </div>
+            <div style={{fontSize:10,color:"#94A3B8",width:isMobile?36:46,textAlign:"right",flexShrink:0}}>{funnelRowsS[0].v>0?Math.round(row.v/funnelRowsS[0].v*100)+"%":"0%"}</div>
+          </div>;
+        })}
+      </div>
+    );
+    var recentActivityCardS = (
+      <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
+          <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>Recent Activity</div>
+          <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>Last 20 · {rangeLabelS}</div>
+        </div>
+        {/* Fixed-height list — first ~4 visible (~57px each), the rest scroll inside the card. */}
+        <div style={{maxHeight:228,overflowY:"auto",paddingRight:4}}>
+          {myRecentActsS.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity in this range</div>}
+          {myRecentActsS.map(function(h,i){
+            var stC = statusColors2[h.lead&&h.lead.status]||"#94A3B8";
+            return <div key={i} onClick={function(){ if(h.lead) p.nav("leads",h.lead); }} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"8px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:h.lead?"pointer":"default"}}>
+              <span style={{fontSize:14,lineHeight:"18px",flexShrink:0}}>{eventIconS(h.event)}</span>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.leadName} {"—"} <span style={{color:stC,fontWeight:600}}>{h.lead&&h.lead.status}</span></div>
+                <div style={{fontSize:11,color:"#64748B",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.description||h.event}</div>
+                <div style={{fontSize:10,color:"#94A3B8",marginTop:2}}>{fmtActTime(h.timestamp)}</div>
+              </div>
+            </div>;
+          })}
+        </div>
+      </div>
+    );
+
     return <div className="crm-dash crm-dash-sales" style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100vw",boxSizing:"border-box",overflowX:"hidden"}}>
       {/* Header — clock now sits to the RIGHT of the date on the same line. */}
       <div className="crm-dash-header" style={{display:"flex",alignItems:isMobile?"stretch":"center",justifyContent:"space-between",marginBottom:isMobile?14:20,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
@@ -6815,147 +6925,43 @@ var DashboardPage = function(p) {
         </div>;
       })()}
 
-      {/* Layout splits by role. Team-scoped (TL/manager/director): Rank Team
-          (admin-mode leaderboard) gets its own row, Agent Performance below,
-          then a 2-col Urgent+Schedule row. Sales: original 3-col row with
-          their personal "My Rank vs Team" widget, no Agent Performance. */}
+      {/* Layout splits by role:
+          Team-scope (TL/manager/director): 2-col Urgent+Schedule, then 4-col
+            Rank Team (compact) + Status + Funnel + Recent Activity (auto-fit
+            grid wraps to 2-col on narrower screens), then full-width Agent
+            Performance.
+          Sales: original 3-col Rank+Urgent+Schedule, then 3-col
+            Status+Funnel+Recent Activity. No Agent Performance. */}
       {isTeamScope ? <>
-        <div style={{marginBottom:14}}>
-          {rankWidget({ mode: "admin", rangeLabel: rangeLabelS })}
+        <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
+          {urgentCardS}
+          {scheduleCardS}
+        </div>
+
+        <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
+          {rankWidget({ mode: "admin", compact: true, rangeLabel: rangeLabelS })}
+          {statusCardS}
+          {funnelCardS}
+          {recentActivityCardS}
         </div>
 
         {sec("Team Performance")}
         <div style={{marginBottom:14}}>
           {renderAgentPerformanceCard(rangeStartS, rangeEndS)}
         </div>
-
-        <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
-          <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udea8"} Urgent {"\u2014"} Action Needed</div>
-            {urgent2.length===0&&urgentNew2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} No urgent items</div>}
-            {urgent2.map(function(l,i){var mins=Math.round((now-new Date(l.callbackTime).getTime())/60000);return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
-              <div style={{width:8,height:8,borderRadius:"50%",background:"#EF4444",flexShrink:0}}/>
-              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Overdue {mins>60?Math.round(mins/60)+"h":mins+"min"} {"\u00b7"} {l.status}</div></div>
-              <span style={{fontSize:11,fontWeight:700,color:"#DC2626",flexShrink:0}}>LATE</span>
-            </div>;})}
-            {urgentNew2.map(function(l,i){var hrs=Math.round((now-new Date(l.createdAt).getTime())/3600000);return <div key={"n"+i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
-              <div style={{width:8,height:8,borderRadius:"50%",background:"#3B82F6",flexShrink:0}}/>
-              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>New lead {"\u2014"} no action {hrs}h</div></div>
-              <span style={{fontSize:11,fontWeight:700,color:"#1D4ED8",flexShrink:0}}>NEW</span>
-            </div>;})}
-          </div>
-          <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udcc5"} {scheduleTitle2}</div>
-            {schedule2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No callbacks scheduled in this range</div>}
-            {schedule2.map(function(l,i){
-              var t2=l.callbackTime?new Date(l.callbackTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"\u2014";
-              var isLate2=l.callbackTime&&new Date(l.callbackTime).getTime()<now;
-              return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
-                <div style={{fontSize:11,color:isLate2?"#DC2626":"#64748B",width:38,flexShrink:0,fontWeight:600}}>{t2}</div>
-                <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:isLate2?"#DC2626":"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isLate2?"Overdue":"Callback scheduled"}</div></div>
-                <div style={{width:8,height:8,borderRadius:"50%",background:isLate2?"#EF4444":"#10B981",flexShrink:0}}/>
-              </div>;
-            })}
-          </div>
-        </div>
       </> : <>
         <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
           {rankWidget({ mode: "sales", rangeLabel: rangeLabelS })}
+          {urgentCardS}
+          {scheduleCardS}
+        </div>
 
-          <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udea8"} Urgent {"\u2014"} Action Needed</div>
-            {urgent2.length===0&&urgentNew2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} No urgent items</div>}
-            {urgent2.map(function(l,i){var mins=Math.round((now-new Date(l.callbackTime).getTime())/60000);return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
-              <div style={{width:8,height:8,borderRadius:"50%",background:"#EF4444",flexShrink:0}}/>
-              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Overdue {mins>60?Math.round(mins/60)+"h":mins+"min"} {"\u00b7"} {l.status}</div></div>
-              <span style={{fontSize:11,fontWeight:700,color:"#DC2626",flexShrink:0}}>LATE</span>
-            </div>;})}
-            {urgentNew2.map(function(l,i){var hrs=Math.round((now-new Date(l.createdAt).getTime())/3600000);return <div key={"n"+i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
-              <div style={{width:8,height:8,borderRadius:"50%",background:"#3B82F6",flexShrink:0}}/>
-              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>New lead {"\u2014"} no action {hrs}h</div></div>
-              <span style={{fontSize:11,fontWeight:700,color:"#1D4ED8",flexShrink:0}}>NEW</span>
-            </div>;})}
-          </div>
-          <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udcc5"} {scheduleTitle2}</div>
-            {schedule2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No callbacks scheduled in this range</div>}
-            {schedule2.map(function(l,i){
-              var t2=l.callbackTime?new Date(l.callbackTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"\u2014";
-              var isLate2=l.callbackTime&&new Date(l.callbackTime).getTime()<now;
-              return <div key={i} onClick={function(){p.nav("leads",l);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:"pointer"}}>
-                <div style={{fontSize:11,color:isLate2?"#DC2626":"#64748B",width:38,flexShrink:0,fontWeight:600}}>{t2}</div>
-                <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div><div style={{fontSize:11,color:isLate2?"#DC2626":"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isLate2?"Overdue":"Callback scheduled"}</div></div>
-                <div style={{width:8,height:8,borderRadius:"50%",background:isLate2?"#EF4444":"#10B981",flexShrink:0}}/>
-              </div>;
-            })}
-          </div>
+        <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
+          {statusCardS}
+          {funnelCardS}
+          {recentActivityCardS}
         </div>
       </>}
-
-      {/* Status + Funnel + Recent Activity row */}
-      <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
-        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
-            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>My Leads {"\u2014"} Status</div>
-            <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{rangeLabelS}</div>
-          </div>
-          {[
-            ["New Lead","NewLead","#3B82F6"],
-            ["Potential","Potential","#10B981"],
-            ["Hot Case","HotCase","#F59E0B"],
-            ["Call Back","CallBack","#EF4444"],
-            ["Meeting","MeetingDone","#8B5CF6"],
-            ["EOI","EOI","#A855F7"],
-            ["Done Deal","DoneDeal","#059669"],
-            ["No Answer","NoAnswer","#64748B"],
-            ["Not Int.","NotInterested","#94A3B8"]
-          ].map(function(s){return bRow(s[0],mySC2[s[1]]||0,myTotal2,s[2],function(){p.setFilter&&p.setFilter(s[1]);p.nav("leads");});})}
-          <div style={{borderTop:"1px solid #F1F5F9",marginTop:8,paddingTop:8,display:"flex",gap:14,alignItems:"center",fontSize:11,flexWrap:"wrap"}}>
-            <span title="Current state — ignores the date filter above" style={{fontSize:9,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:"0.08em",background:"#F1F5F9",padding:"2px 6px",borderRadius:4}}>NOW</span>
-            <span onClick={function(){p.setFilter&&p.setFilter("CallBack");p.nav("leads");}} style={{color:"#64748B",cursor:"pointer"}}>Overdue: <span style={{color:"#EF4444",fontWeight:700}}>{myOv2}</span></span>
-            <span onClick={function(){p.setFilter&&p.setFilter("NewLead");p.nav("leads");}} style={{color:"#64748B",cursor:"pointer"}}>Untouched: <span style={{color:"#3B82F6",fontWeight:700}}>{allMyLeads.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*DAY;}).length}</span></span>
-          </div>
-        </div>
-        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box",overflow:"hidden"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
-            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>My Conversion Funnel</div>
-            <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>{rangeLabelS}</div>
-          </div>
-          {funnelRowsS.map(function(row,i){
-            var pct = Math.max(6, Math.round((row.v/funnelMaxS)*100));
-            return <div key={i} onClick={row.nav} style={{display:"flex",alignItems:"center",gap:isMobile?6:8,marginBottom:8,minWidth:0,cursor:"pointer"}}>
-              <div style={{fontSize:11,color:"#64748B",width:isMobile?70:90,flexShrink:0,textAlign:"right",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{row.l}</div>
-              <div style={{flex:1,minWidth:0,height:22,borderRadius:4,background:"#F8FAFC",position:"relative",overflow:"hidden"}}>
-                <div style={{position:"absolute",inset:0,height:"100%",borderRadius:4,background:row.c,width:pct+"%",display:"flex",alignItems:"center",padding:"0 8px",minWidth:0,boxSizing:"border-box"}}>
-                  <span style={{fontSize:11,fontWeight:700,color:row.tc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.v}</span>
-                </div>
-              </div>
-              <div style={{fontSize:10,color:"#94A3B8",width:isMobile?36:46,textAlign:"right",flexShrink:0}}>{funnelRowsS[0].v>0?Math.round(row.v/funnelRowsS[0].v*100)+"%":"0%"}</div>
-            </div>;
-          })}
-        </div>
-        <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:isMobile?10:14}}>
-            <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A"}}>Recent Activity</div>
-            <div style={{fontSize:10,color:"#94A3B8",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em"}}>Last 20 · {rangeLabelS}</div>
-          </div>
-          {/* Fixed-height list — first 4 visible (~57px each), the rest scroll inside the card. */}
-          <div style={{maxHeight:228,overflowY:"auto",paddingRight:4}}>
-            {myRecentActsS.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity in this range</div>}
-            {myRecentActsS.map(function(h,i){
-              var stC = statusColors2[h.lead&&h.lead.status]||"#94A3B8";
-              return <div key={i} onClick={function(){ if(h.lead) p.nav("leads",h.lead); }} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"8px 0",borderBottom:"1px solid #F8FAFC",minWidth:0,cursor:h.lead?"pointer":"default"}}>
-                <span style={{fontSize:14,lineHeight:"18px",flexShrink:0}}>{eventIconS(h.event)}</span>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.leadName} {"\u2014"} <span style={{color:stC,fontWeight:600}}>{h.lead&&h.lead.status}</span></div>
-                  <div style={{fontSize:11,color:"#64748B",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.description||h.event}</div>
-                  <div style={{fontSize:10,color:"#94A3B8",marginTop:2}}>{fmtActTime(h.timestamp)}</div>
-                </div>
-              </div>;
-            })}
-          </div>
-        </div>
-      </div>
     </div>;
   }
 
