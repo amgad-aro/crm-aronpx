@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 import {
-  Search, Bell, Plus, Phone, Calendar, Building, Users, BarChart3,
+  Search, Bell, Plus, Phone, Building, Users, BarChart3,
   Settings, Home, Briefcase, Target, TrendingUp, UserPlus, CheckCircle,
   Activity, Layers, DollarSign, X, Lock, Globe, LogOut, Eye, EyeOff,
   Trash2, AlertCircle, Menu, Upload, MessageSquare, ChevronRight,
@@ -77,7 +77,7 @@ var TR = {
     importExcel: "استيراد Excel", importDone: "تم الاستيراد", importErr: "خطأ — تأكد من الأعمدة: name, phone, source",
     activityLog: "سجل الأنشطة", clientHistory: "تاريخ الleads",
     duplicateFound: "⚠️ الرقم ده موجود بالفعل!", duplicateClient: "leads موجود بنفس الرقم",
-    monthlyTarget: "Monthly Target", myDay: "يومي",
+    monthlyTarget: "Monthly Target",
     salesDay:"مبيعات Today", salesWeek:"مبيعات This Week", salesMonth:"مبيعات This Month", dealsCount:"deal", newLeadsToday:"Leads جدد Today", bestAgent:"🏆 الأفضل هذا This Month", kpiTitle:"📊 KPIs — المبيعات",
     bulkReassign: "تحويل جماعي", selectAll: "تحديد الكل", reassignTo: "تحويل لـ",
     whatsapp: "واتساب", call: "اتصال",
@@ -147,7 +147,7 @@ var TR = {
     importExcel: "Import Excel", importDone: "Import Done", importErr: "Error — Check columns: name, phone, source",
     activityLog: "Activity Log", clientHistory: "Client History",
     duplicateFound: "⚠️ This number already exists!", duplicateClient: "Existing client with same number",
-    monthlyTarget: "Monthly Target", myDay: "My Day",
+    monthlyTarget: "Monthly Target",
     salesDay:"Today's Deals", salesWeek:"This Week's Deals", salesMonth:"This Month's Deals", dealsCount:"deal(s)", newLeadsToday:"New Leads Today", bestAgent:"🏆 Top Performer", kpiTitle:"📊 KPIs — Deals",
     bulkReassign: "Bulk Reassign", selectAll: "Select All", reassignTo: "Reassign To",
     whatsapp: "WhatsApp", call: "Call",
@@ -1016,11 +1016,8 @@ var SidebarIcon = function(id, active){
     case "eoi":
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7" stroke={col} strokeWidth={sw}/><path d="M9 6v3.5l2.5 2.5" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     case "tasks":
-    case "myday":
-    case "calendar":
     case "kpis":
       if (id==="kpis") return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M2 14l4-5 3 3 4-7 3 4" stroke={col} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round"/></svg>;
-      if (id==="calendar") return <svg style={base} viewBox="0 0 18 18" fill="none"><rect x="2" y="3" width="14" height="13" rx="2" stroke={col} strokeWidth={sw}/><path d="M2 7h14M6 1v4M12 1v4" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
       return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M3 5h12M3 9h8M3 13h10" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     case "reports":
       return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M2 14l4-5 3 3 4-7 3 4" stroke={col} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round"/></svg>;
@@ -1041,14 +1038,12 @@ var Sidebar = function(p) {
   var isSalesOrTL = p.cu.role==="sales"||p.cu.role==="team_leader";
   var items = [
     {id:"dashboard",label:t.dashboard},
-    p.cu.role==="team_leader"&&{id:"myday",label:t.myDay},
     {id:"leads",label:t.leads},
     {id:"dailyReq",label:t.dailyReq},
     {id:"deals",label:t.deals},
     {id:"eoi",label:"EOI"},
     {id:"tasks",label:t.tasks},
     isSalesOrTL&&{id:"kpis",label:"KPIs"},
-    isSales&&{id:"calendar",label:"Calendar"},
     isOnlyAdmin&&{id:"reports",label:t.reports,adminSection:true},
     isAdmin&&{id:"team",label:t.team,adminSection:true},
     isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
@@ -4303,129 +4298,6 @@ var LeadsPage = function(p) {
   </div>;
 };
 
-// ===== MY DAY PAGE =====
-var MyDayPage = function(p) {
-  var t = p.t; var sc = visibleStatuses(STATUSES(t), p.cu&&p.cu.role);
-  var isManager = p.cu.role==="manager"||p.cu.role==="team_leader";
-  var getAgName = function(l){ if(!l.agentId) return ""; var a=l.agentId; if(a.name) return a.name; var u=p.users.find(function(x){return String(gid(x))===String(a);}); return u?u.name:""; };
-  var [activeTab, setActiveTab] = useState("callbacks");
-  var myLeads = p.leads.filter(function(l){
-    if(l.archived) return false;
-    var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
-    if(isManager){
-      var teamUids=new Set((p.myTeamUsers||[]).map(function(u){return String(gid(u));}));
-      teamUids.add(String(p.cu.id));
-      return teamUids.has(aid);
-    }
-    return aid===p.cu.id;
-  });
-  var myTasks = p.tasks.filter(function(tk){var uid=tk.userId&&tk.userId._id?tk.userId._id:tk.userId;return uid===p.cu.id&&!tk.done;});
-  var now = Date.now();
-  var callbacks = myLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime)<=new Date(now+24*60*60*1000);}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
-  var overdue = callbacks.filter(function(l){return new Date(l.callbackTime)<new Date();});
-  var upcoming = callbacks.filter(function(l){return new Date(l.callbackTime)>=new Date();});
-  var noActivity = myLeads.filter(function(l){return !l.archived&&l.status!=="DoneDeal"&&l.status!=="NotInterested"&&(now-new Date(l.lastActivityTime).getTime())>1*24*60*60*1000;});
-  var today = new Date(); today.setHours(0,0,0,0);
-  var todayActs = p.activities.filter(function(a){var auid=a.userId&&a.userId._id?a.userId._id:a.userId;return String(auid)===String(p.cu.id)&&a.createdAt&&new Date(a.createdAt)>=today;});
-
-  var tabs = [
-    {id:"callbacks", label:"📞 Calls", count:callbacks.length, danger:overdue.length>0},
-    {id:"noact", label:"⚠️ No Contact", count:noActivity.length, danger:noActivity.length>0},
-    {id:"tasks", label:"✅ Tasks", count:myTasks.length, danger:false},
-    {id:"activity", label:"📊 My Activity", count:todayActs.length, danger:false},
-  ];
-
-  var tabBtn = function(tab){ var act=activeTab===tab.id; return <button key={tab.id} onClick={function(){setActiveTab(tab.id);}}
-    style={{ padding:"8px 14px", borderRadius:10, border:"none", background:act?C.accent:"#F1F5F9",
-      color:act?"#fff":tab.danger?"#EF4444":C.textLight, fontSize:12, fontWeight:act?700:500,
-      cursor:"pointer", display:"flex", alignItems:"center", gap:5, position:"relative", flexShrink:0 }}>
-    {tab.label}
-    {tab.count>0&&<span style={{ background:act?"rgba(255,255,255,0.3)":tab.danger?"#EF4444":"#CBD5E1", color:act||tab.danger?"#fff":C.textLight, borderRadius:10, padding:"1px 6px", fontSize:10, fontWeight:700 }}>{tab.count}</span>}
-  </button>; };
-
-  return <div style={{ padding:"18px 16px 40px" }}>
-    <div style={{ marginBottom:18 }}>
-      <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:4 }}>My Day 🌟</div>
-      <div style={{ fontSize:12, color:C.textLight }}>{new Date().toLocaleDateString("en-GB",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
-    </div>
-
-    {/* Summary cards */}
-    <div style={{ display:"flex", gap:8, marginBottom:18, flexWrap:"wrap" }}>
-      {[
-        {label:"My Clients",v:myLeads.length,c:"#3B82F6",bg:"#EFF6FF",icon:"👥"},
-        {label:"Today's Calls",v:todayActs.filter(function(a){return a.type==="call";}).length,c:"#10B981",bg:"#F0FDF4",icon:"📞"},
-        {label:"Overdue",v:overdue.length,c:overdue.length>0?"#EF4444":"#94A3B8",bg:overdue.length>0?"#FEF2F2":"#F8FAFC",icon:"⚠️"},
-        {label:"Tasks",v:myTasks.length,c:"#8B5CF6",bg:"#F5F3FF",icon:"✅"},
-      ].map(function(s){return <div key={s.label} style={{ flex:"1 1 80px", background:s.bg, borderRadius:12, padding:"12px 10px", textAlign:"center", border:"1px solid "+s.c+"22" }}>
-        <div style={{ fontSize:18 }}>{s.icon}</div>
-        <div style={{ fontSize:20, fontWeight:800, color:s.c, marginTop:4 }}>{s.v}</div>
-        <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>{s.label}</div>
-      </div>;})}
-    </div>
-
-    {/* Tabs */}
-    <div style={{ display:"flex", gap:6, marginBottom:16, overflowX:"auto", paddingBottom:4 }}>
-      {tabs.map(tabBtn)}
-    </div>
-
-    {/* Tab content */}
-    {activeTab==="callbacks"&&<div>
-      {overdue.length>0&&<div style={{ marginBottom:14 }}>
-        <div style={{ fontSize:11, fontWeight:700, color:"#EF4444", marginBottom:8, display:"flex", alignItems:"center", gap:5 }}><AlertCircle size={12}/> Overdue ({overdue.length})</div>
-        {overdue.map(function(l){var so=sc.find(function(s){return s.value===l.status;})||sc[0];
-          return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#FEF2F2", border:"1px solid #FECACA", marginBottom:6, cursor:"pointer" }}>
-            <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600, color:C.text }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:"#EF4444", fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
-            <div style={{ display:"flex", gap:5 }}>
-              <a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#EFF6FF", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#60A5FA"/></a>
-              <a href={"https://wa.me/"+waPhone(l.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#25D366", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:14 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
-            </div>
-          </div>;})}
-      </div>}
-      {upcoming.length>0&&<div>
-        <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:8 }}>Upcoming ({upcoming.length})</div>
-        {upcoming.map(function(l){var so=sc.find(function(s){return s.value===l.status;})||sc[0]; var ci=callbackColor(l.callbackTime);
-          return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#F8FAFC", border:"1px solid #E8ECF1", marginBottom:6, cursor:"pointer" }}>
-            <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:ci?ci.color:C.textLight, fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(0,16).replace("T"," "):""}</div></div>
-            <Badge bg={so.bg} color={so.color}>{so.label}</Badge>
-            <div style={{ display:"flex", gap:5 }}>
-              <a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#EFF6FF", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#60A5FA"/></a>
-              <a href={"https://wa.me/"+waPhone(l.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#25D366", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:14 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
-            </div>
-          </div>;})}
-      </div>}
-      {callbacks.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>🎉 No calls right now</div>}
-    </div>}
-
-    {activeTab==="noact"&&<div>
-      {noActivity.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>✅ All clients have recent contact</div>}
-      {noActivity.map(function(l){return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#FFFBEB", border:"1px solid #FDE68A", marginBottom:6, cursor:"pointer" }}>
-        <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{l.name}{isManager&&getAgName(l)?<span style={{ fontSize:10, color:"#8B5CF6", marginRight:6, fontWeight:400 }}>({getAgName(l)})</span>:null}</div><div style={{ fontSize:10, color:"#B45309", fontWeight:600 }}>Last contact: {timeAgo(l.lastActivityTime,t)}</div></div>
-        <div style={{ display:"flex", gap:5 }}>
-          <a href={"tel:"+cleanPhone(l.phone)} onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#EFF6FF", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}><Phone size={13} color="#60A5FA"/></a>
-          <a href={"https://wa.me/"+waPhone(l.phone)} target="_blank" rel="noreferrer" onClick={function(e){e.stopPropagation();}} style={{ width:30, height:30, borderRadius:8, background:"#25D366", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none", fontSize:14 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
-        </div>
-      </div>;})}
-    </div>}
-
-    {activeTab==="tasks"&&<div>
-      {myTasks.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>✅ No tasks</div>}
-      {myTasks.map(function(tk){var lName=tk.leadId&&tk.leadId.name?tk.leadId.name:"";
-        return <div key={gid(tk)} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, background:"#F8FAFC", border:"1px solid #E8ECF1", marginBottom:6 }}>
-          <div style={{ width:22, height:22, borderRadius:6, border:"2px solid #CBD5E1", flexShrink:0, background:"#fff" }}/>
-          <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:600 }}>{tk.title}</div><div style={{ fontSize:10, color:C.textLight }}>{lName}{lName&&tk.time?" · ":""}{tk.time}</div></div>
-          <Badge bg={tk.type==="call"?"#DCFCE7":tk.type==="meeting"?"#DBEAFE":"#FEF3C7"} color={tk.type==="call"?"#15803D":tk.type==="meeting"?"#1D4ED8":"#B45309"}>{tk.type}</Badge>
-        </div>;})}
-    </div>}
-
-    {activeTab==="activity"&&<div>
-      {todayActs.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight, fontSize:13 }}>No activity today</div>}
-      {todayActs.map(function(a,i){return <div key={a._id||i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"10px 12px", borderRadius:10, background:"#F8FAFC", border:"1px solid #E8ECF1", marginBottom:6 }}>
-        <span style={{ fontSize:18, flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":"📝"}</span>
-        <div style={{ flex:1 }}><div style={{ fontSize:12, fontWeight:500 }}>{a.note}</div><div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>{timeAgo(a.createdAt,t)}</div></div>
-      </div>;})}
-    </div>}
-  </div>;
-};
 
 // =====================================================================
 // ATTENDANCE — Phase 3
@@ -9161,7 +9033,7 @@ var TasksPage = function(p) {
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div>
-        <h2 style={{ margin:"0 0 2px", fontSize:18, fontWeight:800 }}>☀️ My Day & Tasks</h2>
+        <h2 style={{ margin:"0 0 2px", fontSize:18, fontWeight:800 }}>🌞 Tasks</h2>
         <div style={{ fontSize:12, color:C.textLight }}>{new Date().toLocaleDateString("en-GB",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
       </div>
       <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> New Task</Btn>
@@ -15267,113 +15139,6 @@ var KPIsPage = function(p) {
   </div>;
 };
 
-// ===== CALL CALENDAR PAGE =====
-var CallCalendarPage = function(p) {
-  var uid = String(p.cu.id);
-  var now = new Date();
-  var [viewDate, setViewDate] = useState(new Date(now.getFullYear(), now.getMonth(), 1));
-  var year = viewDate.getFullYear(); var month = viewDate.getMonth();
-  var daysInMonth = new Date(year, month+1, 0).getDate();
-  var firstDay = new Date(year, month, 1).getDay(); // 0=Sun
-  var monthNames = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
-
-  var myCallbacks = p.leads.filter(function(l){
-    var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
-    return String(aid)===uid&&l.callbackTime&&!l.archived;
-  });
-
-  var getCallbacksForDay = function(day){
-    return myCallbacks.filter(function(l){
-      var d = new Date(l.callbackTime);
-      return d.getFullYear()===year && d.getMonth()===month && d.getDate()===day;
-    });
-  };
-
-  var today = new Date();
-  var [selectedDay, setSelectedDay] = useState(null);
-
-  var cells = [];
-  // Empty cells for first day offset (Sunday=0, adjust for RTL week starting Saturday)
-  var offset = (firstDay+1)%7; // Mon=0
-  for(var i=0;i<offset;i++) cells.push(null);
-  for(var d=1;d<=daysInMonth;d++) cells.push(d);
-
-  var dayLabels = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-
-  return <div style={{ padding:"18px 16px 40px" }}>
-    <h2 style={{ margin:"0 0 18px", fontSize:18, fontWeight:700 }}>📅 Calls Calendar</h2>
-
-    {/* Month nav */}
-    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-      <button onClick={function(){setViewDate(new Date(year,month-1,1));setSelectedDay(null);}} style={{ width:32, height:32, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:16 }}>‹</button>
-      <span style={{ fontSize:15, fontWeight:700 }}>{monthNames[month]} {year}</span>
-      <button onClick={function(){setViewDate(new Date(year,month+1,1));setSelectedDay(null);}} style={{ width:32, height:32, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:16 }}>›</button>
-    </div>
-
-    {/* Day labels */}
-    <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:4, marginBottom:4 }}>
-      {dayLabels.map(function(d){return <div key={d} style={{ textAlign:"center", fontSize:10, fontWeight:600, color:C.textLight, padding:"4px 0" }}>{d}</div>;})}
-    </div>
-
-    {/* Calendar grid */}
-    <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:4, marginBottom:16 }}>
-      {cells.map(function(day,i){
-        if(!day) return <div key={"e"+i}/>;
-        var cbs = getCallbacksForDay(day);
-        var isToday = day===today.getDate()&&month===today.getMonth()&&year===today.getFullYear();
-        var isSel = day===selectedDay;
-        var hasCb = cbs.length>0;
-        return <div key={day} onClick={function(){setSelectedDay(isSel?null:day);}}
-          style={{ aspectRatio:"1", borderRadius:10, border:"2px solid", borderColor:isSel?C.accent:isToday?C.info:"#E8ECF1",
-            background:isSel?C.accent+"12":isToday?"#EFF6FF":"#FAFBFC",
-            display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-            cursor:hasCb?"pointer":"default", position:"relative", padding:4 }}>
-          <span style={{ fontSize:13, fontWeight:isToday||isSel?700:400, color:isSel?C.accent:isToday?C.info:C.text }}>{day}</span>
-          {hasCb&&<div style={{ display:"flex", gap:2, marginTop:2, flexWrap:"wrap", justifyContent:"center" }}>
-            {cbs.slice(0,3).map(function(l,ci){return <span key={ci} style={{ width:6, height:6, borderRadius:"50%", background:C.accent, display:"inline-block" }}/>;})}
-            {cbs.length>3&&<span style={{ fontSize:8, color:C.accent, fontWeight:700 }}>+{cbs.length-3}</span>}
-          </div>}
-        </div>;
-      })}
-    </div>
-
-    {/* Selected day callbacks */}
-    {selectedDay&&(function(){
-      var cbs=getCallbacksForDay(selectedDay);
-      return <Card>
-        <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>📞 Calls {selectedDay} {monthNames[month]}</div>
-        {cbs.length===0&&<div style={{ color:C.textLight, fontSize:13 }}>No Calls</div>}
-        {cbs.map(function(l){
-          var ci=callbackColor(l.callbackTime);
-          var sc=STATUSES(p.t); var so=sc.find(function(s){return s.value===l.status;})||sc[0];
-          return <div key={gid(l)} onClick={function(){p.nav("leads",true);p.setInitSelected(l);}}
-            style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 0", borderBottom:"1px solid #F1F5F9", cursor:"pointer" }}>
-            <div style={{ flex:1 }}>
-              <div style={{ fontSize:13, fontWeight:600 }}>{l.name}</div>
-              <div style={{ fontSize:11, color:C.textLight }}>{l.phone}</div>
-            </div>
-            <div style={{ textAlign:"left" }}>
-              <span style={{ background:so.bg, color:so.color, padding:"2px 8px", borderRadius:12, fontSize:10, fontWeight:600 }}>{so.label}</span>
-              <div style={{ fontSize:10, color:ci?ci.color:C.textLight, marginTop:3, fontWeight:600 }}>{l.callbackTime?l.callbackTime.slice(11,16):""}</div>
-            </div>
-          </div>;
-        })}
-      </Card>;
-    })()}
-
-    {/* Summary */}
-    <div style={{ marginTop:16, display:"flex", gap:10 }}>
-      <Card style={{ flex:1, textAlign:"center", padding:"12px" }}>
-        <div style={{ fontSize:20, fontWeight:700, color:C.accent }}>{myCallbacks.filter(function(l){var d=new Date(l.callbackTime);return d.getFullYear()===year&&d.getMonth()===month;}).length}</div>
-        <div style={{ fontSize:11, color:C.textLight, marginTop:4 }}>Calls This Month</div>
-      </Card>
-      <Card style={{ flex:1, textAlign:"center", padding:"12px" }}>
-        <div style={{ fontSize:20, fontWeight:700, color:C.danger }}>{myCallbacks.filter(function(l){return new Date(l.callbackTime)<new Date()&&l.status==="CallBack";}).length}</div>
-        <div style={{ fontSize:11, color:C.textLight, marginTop:4 }}>Overdue</div>
-      </Card>
-    </div>
-  </div>;
-};
 
 // ===== MAIN APP =====
 export default function CRMApp() {
@@ -15809,7 +15574,7 @@ export default function CRMApp() {
 
   var handleLogin=function(user,tok,csrfTok){
     setCurrentUser(user); setToken(tok); setCsrfToken(csrfTok); loadData(tok, user); loadNotifications(tok);
-    var defaultPage = user.role==="team_leader" ? "myday" : "dashboard";
+    var defaultPage = "dashboard";
     setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok,csrfToken:csrfTok})); } catch(e){}
   };
@@ -16205,7 +15970,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,myday:t.myDay,kpis:"KPIs",calendar:"Calls Calendar",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings};
+  var titles={dashboard:t.dashboard,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings};
   // Server already filters users by role — p.users IS the team
   var myId = String(currentUser.id||currentUser._id||"");
 
@@ -16238,8 +16003,6 @@ export default function CRMApp() {
         ? <div><CheckInWidget token={token} cu={currentUser} csrfToken={csrfToken} mode="compact" onNavigate={setPage}/><DashboardPage {...sp}/></div>
         : <DashboardPage {...sp}/>;
       case "kpis": return <KPIsPage {...sp}/>
-      case "calendar": return <CallCalendarPage {...sp}/>
-      case "myday_disabled": return <MyDayPage {...sp}/>;
       case "leads": return <LeadsPage {...sp} isRequest={false}/>;
       case "dailyReq": return <DailyRequestsPage {...sp}/>;
       case "deals": return <DealsPage {...sp}/>;
