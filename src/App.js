@@ -8316,6 +8316,20 @@ var getDealSplitFromObj = function(d){
   if(d&&d.splitAgent2Id) return {agent2Id:String(d.splitAgent2Id._id||d.splitAgent2Id),agent2Name:d.splitAgent2Name||"Shared"};
   try{return JSON.parse(localStorage.getItem("crm_deal_split_"+(d._id||d))||"null");}catch(e){return null;}
 };
+// Scope-based split-deal credit multiplier. Returns 1 when the deal isn't a
+// split, OR when both agents are in visibleUserIds (i.e. both sit in the
+// caller's reportsTo subtree per the server-scoped p.users); 0.5 otherwise.
+// Used by DealsPage Total + filteredTotal and the KPIsPage purple card to
+// answer "what total revenue is visible to this caller". Per-agent cards
+// (MemberCard, KPIsPage Team Members grid) keep the legacy share-based rule
+// (always 0.5 if split) inline so each card shows that agent's slice and the
+// sum across cards stays equal to the deal's full value.
+var splitMultiplier = function(d, visibleUserIds){
+  if (!d || !getDealSplitFromObj(d)) return 1;
+  var pri = String((d.agentId && d.agentId._id) || d.agentId || "");
+  var sec = String((d.splitAgent2Id && d.splitAgent2Id._id) || d.splitAgent2Id || "");
+  return (visibleUserIds && visibleUserIds.has(pri) && visibleUserIds.has(sec)) ? 1 : 0.5;
+};
 var saveDealSplit = function(lid,split){ try{localStorage.setItem("crm_deal_split_"+lid,JSON.stringify(split));}catch(e){}};
 var getDealExtra = function(lid){ try{return JSON.parse(localStorage.getItem("crm_deal_extra_"+lid)||"null");}catch(e){return null;}};
 var saveDealExtra = function(lid,extra){ try{localStorage.setItem("crm_deal_extra_"+lid,JSON.stringify(extra));}catch(e){}};
@@ -8413,25 +8427,19 @@ var DealsPage = function(p) {
   var deals = dealTab==="cancelled" ? cancelledDeals : activeDeals;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
-  // Split-deal credit rule (mirrors the backend my-stats reducer): for any
+  // Split-deal credit rule mirrors the backend my-stats reducer: for any
   // non-admin caller, a split deal counts as FULL (1.0) when both agents are
-  // visible in p.users (i.e. both inside the caller's reportsTo subtree —
-  // p.users is server-scoped per role). When only one of the two is visible,
-  // the deal counts as 0.5. Sales p.users is just self, so split deals
-  // degenerate to 0.5 — same as the legacy behaviour.
+  // visible in p.users (server-scoped subtree), else 0.5. Sales p.users is
+  // just self, so split deals degenerate to 0.5 — same as legacy. The shared
+  // splitMultiplier helper near getDealSplitFromObj is used here and on the
+  // KPIsPage purple card.
   var visibleUserIds = new Set((p.users||[]).map(function(u){return String(u._id||gid(u));}));
-  var splitMultiplier = function(d){
-    if (!getDealSplitFromObj(d)) return 1;
-    var pri = String((d.agentId && d.agentId._id) || d.agentId || "");
-    var sec = String((d.splitAgent2Id && d.splitAgent2Id._id) || d.splitAgent2Id || "");
-    return (visibleUserIds.has(pri) && visibleUserIds.has(sec)) ? 1 : 0.5;
-  };
   // Admin / Sales Admin: full top-line budget per deal — no project weight
   // and no split halving. This is the gross deal volume the company booked.
   // All other roles keep the share-based view (their slice of revenue).
   var total=deals.reduce(function(s,d){
     if(isOnlyAdmin) return s+parseBudget(d.budget);
-    return s+parseBudget(d.budget)*getProjectWeight(d.project,d)*splitMultiplier(d);
+    return s+parseBudget(d.budget)*getProjectWeight(d.project,d)*splitMultiplier(d, visibleUserIds);
   },0);
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [showAdd,setShowAdd]=useState(false);
@@ -8473,7 +8481,7 @@ var DealsPage = function(p) {
   });
   var filteredTotal=filteredDeals.reduce(function(s,d){
     if(isOnlyAdmin) return s+parseBudget(d.budget);
-    return s+parseBudget(d.budget)*getProjectWeight(d.project,d)*splitMultiplier(d);
+    return s+parseBudget(d.budget)*getProjectWeight(d.project,d)*splitMultiplier(d, visibleUserIds);
   },0);
 
   // Get stages from the lead document (server-side, shared across admins). Falls back to legacy localStorage if the lead doesn't have one yet.
@@ -10238,9 +10246,9 @@ var TeamPage = function(p) {
     };
     // For manager cards, revenue is the per-member share sum (matches the
     // header): a within-team split contributes both halves because each
-    // member's iteration adds their 50%. Distinct DEALS counts (qDeals.length /
-    // allAgentDeals.length) keep the team-wide matchesAgent set so a single
-    // split deal between two team members is still counted as 1 deal.
+    // member's iteration adds their 50%. Distinct DEALS counts (qDeals.length)
+    // keep the team-wide matchesAgent set so a single split deal between two
+    // team members is still counted as 1 deal.
     var perMemberShare = isManagerCard ? function(filterFn){
       var memberIds=[uid].concat(Array.from(teamUids||[]));
       return memberIds.reduce(function(total,mid){
@@ -10255,29 +10263,29 @@ var TeamPage = function(p) {
         },0);
       },0);
     } : null;
-    var al=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return String(aid)===uid&&!l.archived;});
-    var calls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;return String(auid)===uid&&ac.type==="call";}).length;
     var qTarget=getEffectiveQTarget(a,p.users,viewQ);
     var qDeals=allDeals.filter(function(d){if(!matchesAgent(d))return false;var dd=getDealDate(d);return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;});
     var qRevenue=isManagerCard
       ? perMemberShare(function(d){var dd=getDealDate(d);return dd&&getQ(dd)===viewQ&&new Date(dd).getFullYear()===viewYear;})
       : qDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
     var qProg=qTarget>0?Math.min(100,Math.round((qRevenue/qTarget)*100)):0;
-    var allAgentDeals=allDeals.filter(function(d){return matchesAgent(d);});
-    var totalRevenue=isManagerCard
-      ? perMemberShare(function(){return true;})
-      : allAgentDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
+    // Q-filtered Leads / Calls for the stat cells. Mirrors the agent's own
+    // primary-only filter (matches the legacy `al` / `calls` definition):
+    // the manager-card variant intentionally counts the manager's own
+    // leads/calls, not the team's, preserving prior behavior.
+    var qLeads=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;if(String(aid)!==uid||l.archived||!l.createdAt)return false;return getQ(l.createdAt)===viewQ&&new Date(l.createdAt).getFullYear()===viewYear;});
+    var qCalls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;if(String(auid)!==uid||ac.type!=="call"||!ac.createdAt)return false;return getQ(ac.createdAt)===viewQ&&new Date(ac.createdAt).getFullYear()===viewYear;}).length;
     var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<2*60*1000;
     var lastSeenStr=a.lastSeen?("Last seen: "+new Date(a.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" — "+timeAgo(a.lastSeen,p.t)):"Never logged in";
     var initials = (a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
     var grad = gradientForUid(uid);
     var roleLabel = a.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer"}[a.role]||"");
-    var totalRevenueM = (totalRevenue/1000000).toFixed(1)+"M";
+    var qRevenueM = (qRevenue/1000000).toFixed(1)+"M";
     var stats = [
-      { v: al.length,            l: "Leads", isDeals:false },
-      { v: allAgentDeals.length, l: "Deals", isDeals:true },
-      { v: totalRevenueM,        l: "Total", isDeals:false },
-      { v: calls,                l: "Calls", isDeals:false }
+      { v: qLeads.length,  l: "Leads", isDeals:false },
+      { v: qDeals.length,  l: "Deals", isDeals:true },
+      { v: qRevenueM,      l: "Total", isDeals:false },
+      { v: qCalls,         l: "Calls", isDeals:false }
     ];
     return <div key={uid} style={{ borderRadius:16, overflow:"hidden", background:"#fff", boxShadow:"0 2px 10px rgba(0,0,0,0.08)" }}>
       {/* Top — gradient hero */}
@@ -14990,6 +14998,12 @@ var KPIsPage = function(p) {
     ? (p.myTeamUsers||[]).reduce(function(s,u){ return s + (getEffectiveQTarget(u, p.users, selQ)||0); }, 0)
     : getEffectiveQTarget(myUser, p.users, selQ);
 
+  // Scope-based split-deal credit (rule (B) — purple card only). p.users is
+  // server-scoped per role: sales sees just self → splits always 0.5; TL sees
+  // self + reports → in-team splits count full; manager/director sees subtree
+  // → cross-TL splits within company count full; admin sees everyone.
+  var visibleUserIds = new Set((p.users||[]).map(function(u){return String(u._id||gid(u));}));
+
   // Filter by selected Q and year
   var qDeals = myDeals.filter(function(d){
     var dd = d.updatedAt||d.createdAt; if(!dd) return false;
@@ -15003,7 +15017,7 @@ var KPIsPage = function(p) {
     if(!l.createdAt) return false;
     return getQ(l.createdAt)===selQ && getYear(l.createdAt)===selYear;
   });
-  var qRev = qDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp?0.5:1);},0);
+  var qRev = qDeals.reduce(function(s,d){return s+parseBudget(d.budget)*getProjectWeight(d.project,d)*splitMultiplier(d, visibleUserIds);},0);
   var qProg = qTarget>0?Math.min(100,Math.round(qRev/qTarget*100)):0;
   var convRate = qLeads.length>0?Math.round(qDeals.length/qLeads.length*100):0;
 
@@ -15021,13 +15035,14 @@ var KPIsPage = function(p) {
   var kpiInitials = (kpiDisplayName||"?").split(" ").slice(0,2).map(function(x){return x[0]||"";}).join("").toUpperCase();
   var kpiRoleLabel = p.cu.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer"}[p.cu.role]||"");
   var kpiLastSeenStr = myUser.lastSeen ? ("Last seen: "+new Date(myUser.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" \u2014 "+timeAgo(myUser.lastSeen,p.t)) : "Never logged in";
-  var kpiTotalRevAll = myDeals.reduce(function(s,d){var w=getProjectWeight(d.project,d);var sp2=getDealSplitFromObj(d);return s+parseBudget(d.budget)*w*(sp2?0.5:1);},0);
-  var kpiTotalRevM = (kpiTotalRevAll/1000000).toFixed(1)+"M";
+  // Stat cells reflect the active Quarter+Year filter (was: all-time, which
+  // diverged from the DealsPage Q-filtered total — see KPIs Q-filter bugfix).
+  var qRevM = (qRev/1000000).toFixed(1)+"M";
   var kpiMemberStats = [
-    { v: myLeads.length, l: "Leads", isDeals:false },
-    { v: myDeals.length, l: "Deals", isDeals:true  },
-    { v: kpiTotalRevM,   l: "Total", isDeals:false },
-    { v: myActs.filter(function(a){return a.type==="call";}).length, l: "Calls", isDeals:false }
+    { v: qLeads.length, l: "Leads", isDeals:false },
+    { v: qDeals.length, l: "Deals", isDeals:true  },
+    { v: qRevM,         l: "Total", isDeals:false },
+    { v: qCalls.length, l: "Calls", isDeals:false }
   ];
   return <div className="kpi-page-v2" style={{ padding:"18px 16px 40px" }}>
     {/* Inter font + the 8 gradient classes — mirrors Admin's Sales Team page. */}
@@ -15138,12 +15153,15 @@ var KPIsPage = function(p) {
           var auid = String(gid(a));
           var aLeads = p.leads.filter(function(l){ var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||""); return aid===auid && !l.archived && l.source!=="Daily Request"; });
           var aDeals = aLeads.filter(function(l){ return l.status==="DoneDeal"; });
+          // Q-filtered slices for the stat cells. Per-agent cards keep the
+          // legacy share-based split rule (0.5 always if split) so the sum
+          // across cards equals the deal's full value.
+          var aQLeads = aLeads.filter(function(l){ if(!l.createdAt) return false; return getQ(l.createdAt)===selQ && getYear(l.createdAt)===selYear; });
           var aQDeals = aDeals.filter(function(d){ var dd=d.updatedAt||d.createdAt; return dd && getQ(dd)===selQ && getYear(dd)===selYear; });
           var aQRev = aQDeals.reduce(function(s,d){ var w=getProjectWeight(d.project,d); var sp=getDealSplitFromObj(d); return s+parseBudget(d.budget)*w*(sp?0.5:1); }, 0);
+          var aQCalls = p.activities.filter(function(ac){ var aauid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId; if(String(aauid)!==auid||ac.type!=="call"||!ac.createdAt) return false; return getQ(ac.createdAt)===selQ && getYear(ac.createdAt)===selYear; }).length;
           var aTarget = getEffectiveQTarget(a, p.users, selQ);
           var aProg = aTarget>0 ? Math.min(100, Math.round(aQRev/aTarget*100)) : 0;
-          var aCalls = p.activities.filter(function(ac){ var aauid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId; return String(aauid)===auid && ac.type==="call"; }).length;
-          var aTotalRev = aDeals.reduce(function(s,d){ var w=getProjectWeight(d.project,d); var sp=getDealSplitFromObj(d); return s+parseBudget(d.budget)*w*(sp?0.5:1); }, 0);
           var aGrad = kpiGradFor(auid);
           var aInitials = (a.name||"?").split(" ").slice(0,2).map(function(x){return x[0]||"";}).join("").toUpperCase();
           var aOnline = a.lastSeen && (Date.now()-new Date(a.lastSeen).getTime()) < 3*60*1000;
@@ -15170,10 +15188,10 @@ var KPIsPage = function(p) {
               <div style={{ height:1, background:"#e2e8f0", marginBottom:10, transform:"scaleY(0.5)" }}/>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:6 }}>
                 {[
-                  { v:aLeads.length, l:"Leads", isDeals:false },
-                  { v:aDeals.length, l:"Deals", isDeals:true },
-                  { v:(aTotalRev/1000000).toFixed(1)+"M", l:"Total", isDeals:false },
-                  { v:aCalls, l:"Calls", isDeals:false }
+                  { v:aQLeads.length, l:"Leads", isDeals:false },
+                  { v:aQDeals.length, l:"Deals", isDeals:true },
+                  { v:(aQRev/1000000).toFixed(1)+"M", l:"Total", isDeals:false },
+                  { v:aQCalls, l:"Calls", isDeals:false }
                 ].map(function(s,i){
                   var isZero = (s.v === 0) || (s.v === "0.0M") || (s.v === "0M") || (s.v === "0");
                   var color = s.isDeals ? (s.v > 0 ? "#15803d" : "#cbd5e1") : (isZero ? "#cbd5e1" : "#0f172a");
