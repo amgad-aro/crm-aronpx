@@ -851,6 +851,54 @@ function vacationAdmin(req, res, next) {
   next();
 }
 
+// ===== UNIVERSAL ROLE-SCOPED USER ID HELPER =====
+// Returns the array of user _ids the caller is allowed to see based on their
+// role's place in the reportsTo hierarchy. Returns null for admin/sales_admin
+// (no filter, see all). Used by every endpoint that needs to scope queries by
+// "agents the caller manages" so the walk lives in one place.
+//   - admin / sales_admin       → null (no filter)
+//   - director                  → self + managers under self + TLs/sales under those managers
+//   - manager                   → self + TLs under self + sales under those TLs (+ direct sales)
+//   - team_leader               → self + direct reports
+//   - sales / viewer / hr / *   → self only
+async function getScopedUserIds(user) {
+  if (!user) return [];
+  var role = user.role;
+  var rawId = user.id || user._id;
+  if (!rawId) return [];
+  if (role === "admin" || role === "sales_admin") return null;
+  var rootId = (rawId instanceof mongoose.Types.ObjectId) ? rawId : new mongoose.Types.ObjectId(rawId);
+  if (role !== "director" && role !== "manager" && role !== "team_leader") {
+    return [rootId];
+  }
+  var idSet = new Map();
+  var addId = function(id){ if (id) idSet.set(String(id), id); };
+  addId(rootId);
+  // Level 1: direct reports.
+  var level1 = await User.find({ reportsTo: rootId }).select("_id role").lean();
+  level1.forEach(function(u){ addId(u._id); });
+  if (role === "team_leader") return Array.from(idSet.values());
+  // Level 2: reports of TLs / managers under root.
+  var level1ParentIds = level1
+    .filter(function(u){ return u.role === "team_leader" || u.role === "manager"; })
+    .map(function(u){ return u._id; });
+  if (level1ParentIds.length) {
+    var level2 = await User.find({ reportsTo: { $in: level1ParentIds } }).select("_id role").lean();
+    level2.forEach(function(u){ addId(u._id); });
+    if (role === "manager") return Array.from(idSet.values());
+    // Director: walk one more level down for sales reporting to TLs that
+    // were themselves children of managers under this director.
+    var level2TLIds = level2
+      .filter(function(u){ return u.role === "team_leader"; })
+      .map(function(u){ return u._id; });
+    if (level2TLIds.length) {
+      var level3 = await User.find({ reportsTo: { $in: level2TLIds } }).select("_id").lean();
+      level3.forEach(function(u){ addId(u._id); });
+    }
+  }
+  return Array.from(idSet.values());
+}
+
 // isOnVacation(agentId) — 30s cached lookup used outside the rotation picker.
 // Inside the picker we do a single bulk prefetch per sweep instead (see
 // auto-rotate / autoAssignQueuedLead). Cache is invalidated on any write to
@@ -3561,19 +3609,18 @@ app.get("/api/dashboard/sales-ranking", auth, async function(req, res) {
     var to   = parseDate(req.query.to);
     var rangeMatch = (from || to) ? (function(){ var r = {}; if(from) r.$gte = from; if(to) r.$lte = to; return r; })() : null;
 
-    // Sales users — CRM-wide by default. For team_leader callers, narrow to
-    // self + direct sales so the ranking shows only their team.
+    // Sales users in scope. Sales-role caller and admin/sales_admin keep the
+    // CRM-wide ranking (sales need to see their own position vs the company);
+    // team_leader / manager / director are narrowed to their reportsTo subtree
+    // via getScopedUserIds() so the ranking only shows their own people.
     var salesUsers;
-    if (req.user && req.user.role === "team_leader") {
-      var tlUid = new mongoose.Types.ObjectId(req.user.id);
-      var tlSelf = await User.findById(tlUid).select("_id name title role active").lean();
-      var tlSales = await User.find({ reportsTo: tlUid, active: { $ne: false } })
+    var role = req.user && req.user.role;
+    if (role === "team_leader" || role === "manager" || role === "director") {
+      var scopedIds = await getScopedUserIds(req.user);
+      salesUsers = await User.find({ _id: { $in: scopedIds }, active: { $ne: false } })
         .select("_id name title role")
         .sort({ name: 1 })
         .lean();
-      salesUsers = [];
-      if (tlSelf && tlSelf.active !== false) salesUsers.push(tlSelf);
-      tlSales.forEach(function(u){ salesUsers.push(u); });
     } else {
       salesUsers = await User.find({ role: "sales", active: { $ne: false } })
         .select("_id name title")
@@ -3837,22 +3884,13 @@ app.get("/api/users", auth, async function(req, res) {
       users = await User.find().select("-password").sort({ createdAt: -1 });
       users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
 
-    } else if (role === "manager") {
-      var managerUser = await User.findById(uid).lean();
-      var visibleIds = [managerUser._id];
-
-      // Always: sees team leaders under him + their sales
-      var teamLeaders = await User.find({ reportsTo: managerUser._id, role: { $in: ["manager","team_leader"] } }).lean();
-      teamLeaders.forEach(function(tl) { visibleIds.push(tl._id); });
-      if (teamLeaders.length > 0) {
-        var tlIds = teamLeaders.map(function(tl) { return tl._id; });
-        var salesUnder = await User.find({ reportsTo: { $in: tlIds }, role: { $in: ["sales","team_leader"] } }).lean();
-        salesUnder.forEach(function(s) { visibleIds.push(s._id); });
-      }
-      // Also direct sales reporting to manager
-      var directSales = await User.find({ reportsTo: managerUser._id, role: "sales" }).lean();
-      directSales.forEach(function(s) { if(!visibleIds.some(function(id){ return String(id)===String(s._id); })) visibleIds.push(s._id); });
-      users = await User.find({ _id: { $in: visibleIds } }).select("-password").sort({ createdAt: -1 });
+    } else if (role === "manager" || role === "director") {
+      // Scope = caller's reportsTo subtree, computed by getScopedUserIds:
+      //   manager  → self + L1 reports + sales under those TLs
+      //   director → self + L1 managers + L2 TLs/sales under managers + L3 sales under those TLs
+      // Single source of truth — see getScopedUserIds() above for the walk.
+      var scopedUsersIds = await getScopedUserIds(req.user);
+      users = await User.find({ _id: { $in: scopedUsersIds } }).select("-password").sort({ createdAt: -1 });
       users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
 
     } else if (role === "team_leader") {
@@ -4187,8 +4225,19 @@ app.get("/api/leads", auth, async function(req, res) {
         { agentId: { $in: uniqueIds } },
         { splitAgent2Id: { $in: uniqueIds } }
       ];
+
+    } else if (role === "director") {
+      // Director scope = full reportsTo subtree (managers + their TLs + sales)
+      // via getScopedUserIds. Mirrors the sales/manager $or shape so split
+      // deals where the second agent is anywhere in the subtree are still
+      // visible. No teamId fallback — directors are reportsTo-only.
+      var dirScopedIds = await getScopedUserIds(req.user);
+      query.$or = [
+        { agentId: { $in: dirScopedIds } },
+        { splitAgent2Id: { $in: dirScopedIds } }
+      ];
     }
-    // admin: no filter
+    // admin / sales_admin: no filter
 
     // Standalone "Locked Only" filter: when set, only return leads whose
     // rotation-lock flag is true. Role-based visibility above is still
@@ -4218,10 +4267,11 @@ app.get("/api/leads", auth, async function(req, res) {
     // role. Admin / sales_admin (and any other non-listed role) are exempt.
     // sales: gate on the caller's OWN slice. Split-only access (no slice,
     //   only splitAgent2Id) bypasses — the rule has no slice to evaluate.
-    // manager / team_leader: gate on the lead's CURRENT holder's slice.
+    // manager / team_leader / director: gate on the lead's CURRENT holder's
+    //   slice — same holder-based logic for all three subtree-scoped roles.
     // total is reduced by the page-level exclusions; for the default
     // limit (1000) this is exact, and pagination is rarely paged beyond.
-    if (role === "sales" || role === "manager" || role === "team_leader") {
+    if (role === "sales" || role === "manager" || role === "team_leader" || role === "director") {
       var nowMsP = Date.now();
       var preCount = leads.length;
       leads = leads.filter(function(l) {
@@ -4387,11 +4437,28 @@ app.get("/api/leads", auth, async function(req, res) {
 //   - last history entry is older than 24h, OR history only carries the
 //     initial created/first_assigned entry with no follow-up action
 // Archived leads are excluded. Sorted by longest-idle first, capped at 50.
-app.get("/api/leads/untouched", auth, adminOnly, async function(req, res) {
+app.get("/api/leads/untouched", auth, async function(req, res) {
   try {
+    // Inline gate (replaces adminOnly): admit admin/sales_admin/manager/
+    // team_leader/director only. Director is added so the scoped subtree
+    // path can render the card after F-7.
+    var callerRole = req.user.role;
+    if (callerRole !== "admin" && callerRole !== "sales_admin" &&
+        callerRole !== "manager" && callerRole !== "team_leader" &&
+        callerRole !== "director") {
+      return res.status(403).json({ error: "Admin only" });
+    }
     var DAY = 24 * 60 * 60 * 1000;
     var now = Date.now();
-    var leads = await Lead.find({ agentId: { $ne: null }, archived: { $ne: true } })
+    // Restrict the lead pool to agents the caller is allowed to see. Admin /
+    // sales_admin pass through unfiltered (scopedIds === null); everyone else
+    // is bounded by their reportsTo subtree.
+    var scopedIds = await getScopedUserIds(req.user);
+    var untouchedQuery = { agentId: { $ne: null }, archived: { $ne: true } };
+    if (scopedIds !== null) {
+      untouchedQuery.agentId = { $in: scopedIds };
+    }
+    var leads = await Lead.find(untouchedQuery)
       .populate("agentId", "name")
       .lean();
     var out = [];
@@ -4552,6 +4619,22 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       });
       return res.json(obj);
     }
+    // Scope gate (BATCH 2.6) for subtree-bounded roles (manager / team_leader /
+    // director). Lead must have its CURRENT owner OR split agent inside the
+    // caller's reportsTo subtree, else 403. Existence is intentionally not
+    // hidden behind 404 here: Phase P below already returns 404 for "stale",
+    // and we want admins debugging to tell the two cases apart. Admin /
+    // sales_admin / viewer / hr pass through unrestricted.
+    if (role === "manager" || role === "team_leader" || role === "director") {
+      var leadAgentIdScope = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
+      var leadSplit2Scope  = lead.splitAgent2Id && lead.splitAgent2Id._id ? lead.splitAgent2Id._id : lead.splitAgent2Id;
+      var scopedSetForLead = new Set((await getScopedUserIds(req.user) || []).map(function(id){ return String(id); }));
+      var inScopeAgent = leadAgentIdScope && scopedSetForLead.has(String(leadAgentIdScope));
+      var inScopeSplit = leadSplit2Scope  && scopedSetForLead.has(String(leadSplit2Scope));
+      if (!inScopeAgent && !inScopeSplit) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
     // Admin / manager / team_leader: overlay top-level notes & lastFeedback
     // from the current owner's assignment slice (top-level is no longer written).
     var adminObj = Object.assign({}, lead);
@@ -4570,10 +4653,10 @@ app.get("/api/leads/:id", auth, async function(req, res) {
         adminObj.notesAuthorRole = adminHolderAssign.notesAuthorRole || "";
       }
     }
-    // Phase P — manager / team_leader: hide when current holder's slice is
-    // stale or manually hidden. Admin / sales_admin / viewer / director
+    // Phase P — manager / team_leader / director: hide when current holder's
+    // slice is stale or manually hidden. Admin / sales_admin / viewer / hr
     // continue to see it. EOIs / DoneDeals bypass via isSliceHidden.
-    if ((role === "manager" || role === "team_leader") && adminHolderAssign &&
+    if ((role === "manager" || role === "team_leader" || role === "director") && adminHolderAssign &&
         isSliceHidden(lead, adminHolderAssign, Date.now(), STALE_LEAD_MS)) {
       return res.status(404).json({ error: "Not found" });
     }
@@ -5041,6 +5124,37 @@ app.post("/api/agents/:id/unassign-all-leads", auth, async function(req, res) {
 // ===== IMAGE UPLOAD (base64) =====
 app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async function(req, res) {
   try {
+    // Scope gate (BATCH 2.7 L1): admin/SA pass; sales must own an
+    // assignments[] slice or be split-agent; TL/manager/director must have
+    // the lead's agentId or splitAgent2Id inside their reportsTo subtree.
+    // Viewer/hr (and unknown roles) blocked.
+    var roleL1 = req.user.role;
+    if (roleL1 !== "admin" && roleL1 !== "sales_admin") {
+      if (roleL1 !== "sales" && roleL1 !== "team_leader" && roleL1 !== "manager" && roleL1 !== "director") {
+        return res.status(403).json({ error: "Forbidden — read-only role" });
+      }
+      var sLeadL1 = await Lead.findById(req.params.id).select("agentId splitAgent2Id assignments").lean();
+      if (!sLeadL1) return res.status(404).json({ error: "Lead not found" });
+      var leadAidL1 = sLeadL1.agentId ? String(sLeadL1.agentId) : "";
+      var leadSidL1 = sLeadL1.splitAgent2Id ? String(sLeadL1.splitAgent2Id) : "";
+      if (roleL1 === "sales") {
+        var uidStrL1 = String(req.user.id);
+        var hasSliceL1 = (sLeadL1.assignments || []).some(function(a){
+          var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+          return String(aid) === uidStrL1;
+        });
+        if (!hasSliceL1 && leadSidL1 !== uidStrL1) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      } else {
+        var scopedL1 = (await getScopedUserIds(req.user) || []).map(function(id){ return String(id); });
+        var inAgentL1 = leadAidL1 && scopedL1.indexOf(leadAidL1) >= 0;
+        var inSplitL1 = leadSidL1 && scopedL1.indexOf(leadSidL1) >= 0;
+        if (!inAgentL1 && !inSplitL1) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      }
+    }
     var { imageData, imageType } = req.body; // imageType: "eoi" or "deal"
     if (!imageData) return res.status(400).json({ error: "No image data" });
     if (imageType === "deal") {
@@ -5057,6 +5171,34 @@ app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async f
 // ===== EOI DOCUMENTS (images + PDFs) =====
 app.post("/api/leads/:id/eoi-documents", auth, async function(req, res) {
   try {
+    // Scope gate (BATCH 2.7 L2): same shape as L1.
+    var roleL2 = req.user.role;
+    if (roleL2 !== "admin" && roleL2 !== "sales_admin") {
+      if (roleL2 !== "sales" && roleL2 !== "team_leader" && roleL2 !== "manager" && roleL2 !== "director") {
+        return res.status(403).json({ error: "Forbidden — read-only role" });
+      }
+      var sLeadL2 = await Lead.findById(req.params.id).select("agentId splitAgent2Id assignments").lean();
+      if (!sLeadL2) return res.status(404).json({ error: "Lead not found" });
+      var leadAidL2 = sLeadL2.agentId ? String(sLeadL2.agentId) : "";
+      var leadSidL2 = sLeadL2.splitAgent2Id ? String(sLeadL2.splitAgent2Id) : "";
+      if (roleL2 === "sales") {
+        var uidStrL2 = String(req.user.id);
+        var hasSliceL2 = (sLeadL2.assignments || []).some(function(a){
+          var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+          return String(aid) === uidStrL2;
+        });
+        if (!hasSliceL2 && leadSidL2 !== uidStrL2) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      } else {
+        var scopedL2 = (await getScopedUserIds(req.user) || []).map(function(id){ return String(id); });
+        var inAgentL2 = leadAidL2 && scopedL2.indexOf(leadAidL2) >= 0;
+        var inSplitL2 = leadSidL2 && scopedL2.indexOf(leadSidL2) >= 0;
+        if (!inAgentL2 && !inSplitL2) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      }
+    }
     var raw = (req.body && req.body.fileData) || "";
     var fileName = (req.body && req.body.fileName) ? String(req.body.fileName).slice(0,200) : "";
     if (!raw || typeof raw !== "string") return res.status(400).json({ error: "fileData is required" });
@@ -5080,6 +5222,34 @@ app.post("/api/leads/:id/eoi-documents", auth, async function(req, res) {
 
 app.post("/api/leads/:id/delete-eoi-document", auth, async function(req, res) {
   try {
+    // Scope gate (BATCH 2.7 L3): same shape as L1.
+    var roleL3 = req.user.role;
+    if (roleL3 !== "admin" && roleL3 !== "sales_admin") {
+      if (roleL3 !== "sales" && roleL3 !== "team_leader" && roleL3 !== "manager" && roleL3 !== "director") {
+        return res.status(403).json({ error: "Forbidden — read-only role" });
+      }
+      var sLeadL3 = await Lead.findById(req.params.id).select("agentId splitAgent2Id assignments").lean();
+      if (!sLeadL3) return res.status(404).json({ error: "Lead not found" });
+      var leadAidL3 = sLeadL3.agentId ? String(sLeadL3.agentId) : "";
+      var leadSidL3 = sLeadL3.splitAgent2Id ? String(sLeadL3.splitAgent2Id) : "";
+      if (roleL3 === "sales") {
+        var uidStrL3 = String(req.user.id);
+        var hasSliceL3 = (sLeadL3.assignments || []).some(function(a){
+          var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+          return String(aid) === uidStrL3;
+        });
+        if (!hasSliceL3 && leadSidL3 !== uidStrL3) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      } else {
+        var scopedL3 = (await getScopedUserIds(req.user) || []).map(function(id){ return String(id); });
+        var inAgentL3 = leadAidL3 && scopedL3.indexOf(leadAidL3) >= 0;
+        var inSplitL3 = leadSidL3 && scopedL3.indexOf(leadSidL3) >= 0;
+        if (!inAgentL3 && !inSplitL3) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      }
+    }
     var index = req.body && Number(req.body.index);
     var lead = await Lead.findById(req.params.id);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
@@ -5096,6 +5266,34 @@ app.post("/api/leads/:id/delete-eoi-document", auth, async function(req, res) {
 // ===== DELETE DEAL IMAGE =====
 app.post("/api/leads/:id/delete-deal-image", auth, async function(req, res) {
   try {
+    // Scope gate (BATCH 2.7 L4): same shape as L1.
+    var roleL4 = req.user.role;
+    if (roleL4 !== "admin" && roleL4 !== "sales_admin") {
+      if (roleL4 !== "sales" && roleL4 !== "team_leader" && roleL4 !== "manager" && roleL4 !== "director") {
+        return res.status(403).json({ error: "Forbidden — read-only role" });
+      }
+      var sLeadL4 = await Lead.findById(req.params.id).select("agentId splitAgent2Id assignments").lean();
+      if (!sLeadL4) return res.status(404).json({ error: "Lead not found" });
+      var leadAidL4 = sLeadL4.agentId ? String(sLeadL4.agentId) : "";
+      var leadSidL4 = sLeadL4.splitAgent2Id ? String(sLeadL4.splitAgent2Id) : "";
+      if (roleL4 === "sales") {
+        var uidStrL4 = String(req.user.id);
+        var hasSliceL4 = (sLeadL4.assignments || []).some(function(a){
+          var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+          return String(aid) === uidStrL4;
+        });
+        if (!hasSliceL4 && leadSidL4 !== uidStrL4) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      } else {
+        var scopedL4 = (await getScopedUserIds(req.user) || []).map(function(id){ return String(id); });
+        var inAgentL4 = leadAidL4 && scopedL4.indexOf(leadAidL4) >= 0;
+        var inSplitL4 = leadSidL4 && scopedL4.indexOf(leadSidL4) >= 0;
+        if (!inAgentL4 && !inSplitL4) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      }
+    }
     var { index } = req.body;
     var lead = await Lead.findById(req.params.id);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
@@ -5129,11 +5327,26 @@ app.post("/api/leads/:id/feedback", auth, async function(req, res) {
       // role with no operational write on lead notes/feedback.
       return res.status(403).json({ error: "sales_admin_read_only", message: "Sales Admin role does not write feedback" });
     }
-    if (role !== "admin" && role !== "manager" && role !== "team_leader") {
-      return res.status(403).json({ error: "forbidden", message: "Managerial write roles only (admin/manager/team_leader)" });
+    if (role !== "admin" && role !== "manager" && role !== "team_leader" && role !== "director") {
+      return res.status(403).json({ error: "forbidden", message: "Managerial write roles only (admin/manager/team_leader/director)" });
     }
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ error: "invalid_lead_id" });
+    }
+    // Scope gate (BATCH 2.7 L5): manager/TL/director must have the lead's
+    // current agent or split agent inside their reportsTo subtree. Admin
+    // unrestricted.
+    if (role === "manager" || role === "team_leader" || role === "director") {
+      var sLeadL5 = await Lead.findById(req.params.id).select("agentId splitAgent2Id").lean();
+      if (!sLeadL5) return res.status(404).json({ error: "lead_not_found" });
+      var leadAidL5 = sLeadL5.agentId ? String(sLeadL5.agentId) : "";
+      var leadSidL5 = sLeadL5.splitAgent2Id ? String(sLeadL5.splitAgent2Id) : "";
+      var scopedL5 = (await getScopedUserIds(req.user) || []).map(function(id){ return String(id); });
+      var inAgentL5 = leadAidL5 && scopedL5.indexOf(leadAidL5) >= 0;
+      var inSplitL5 = leadSidL5 && scopedL5.indexOf(leadSidL5) >= 0;
+      if (!inAgentL5 && !inSplitL5) {
+        return res.status(403).json({ error: "forbidden", message: "Lead is outside your reportsTo subtree" });
+      }
     }
     var text = String((req.body && req.body.text) || "").trim();
     if (!text) return res.status(400).json({ error: "text_required" });
@@ -5226,6 +5439,11 @@ app.post("/api/leads/:id/feedback", auth, async function(req, res) {
 // ===== EOI CANCEL (admin) — restores pre-EOI status on the lead, keeps record visible under EOI Deal Cancelled =====
 app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
   try {
+    // Read-only roles (viewer/hr) — explicit fail-close layer ahead of the
+    // admin-only gate so the error message reflects the role, not the route.
+    if (req.user.role === "viewer" || req.user.role === "hr") {
+      return res.status(403).json({ error: "Forbidden — read-only role" });
+    }
     if (req.user.role !== "admin" && req.user.role !== "sales_admin") return res.status(403).json({ error: "Only admin can cancel an EOI" });
     var existing = await Lead.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Lead not found" });
@@ -5278,6 +5496,19 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
     if (req.user.role !== "admin" && req.user.role !== "sales_admin" && req.user.role !== "sales") return res.status(403).json({ error: "Only admin or sales can convert an EOI to a deal" });
     var existing = await Lead.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Lead not found" });
+    // Scope gate (BATCH 2.7 L7): sales must own an assignments[] slice or
+    // be the split agent. Admin / sales_admin pass through.
+    if (req.user.role === "sales") {
+      var uidStrL7 = String(req.user.id);
+      var hasSliceL7 = (existing.assignments || []).some(function(a){
+        var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+        return String(aid) === uidStrL7;
+      });
+      var splitL7 = existing.splitAgent2Id ? String(existing.splitAgent2Id) : "";
+      if (!hasSliceL7 && splitL7 !== uidStrL7) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
     if (existing.eoiStatus !== "Approved") return res.status(400).json({ error: "EOI must be Approved before it can be converted to a Done Deal" });
     var todayIso = new Date().toISOString().slice(0,10);
     var update = {
@@ -5312,6 +5543,10 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
 // ===== DEAL CANCEL (admin) — restores pre-DoneDeal status, keeps lead in Deals page's Deal Cancelled tab =====
 app.post("/api/leads/:id/deal-cancel", auth, async function(req, res) {
   try {
+    // Read-only roles (viewer/hr) — explicit fail-close layer.
+    if (req.user.role === "viewer" || req.user.role === "hr") {
+      return res.status(403).json({ error: "Forbidden — read-only role" });
+    }
     if (req.user.role !== "admin" && req.user.role !== "sales_admin") return res.status(403).json({ error: "Only admin can cancel a deal" });
     var existing = await Lead.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ error: "Lead not found" });
@@ -5359,6 +5594,38 @@ app.post("/api/daily-requests/:id/deal-cancel", auth, async function(req, res) {
 
 app.put("/api/leads/:id", auth, async function(req, res) {
   try {
+    // Scope gate (BATCH 2.7 L9) — runs before every other check. Mirrors the
+    // GET /api/leads/:id pattern from BATCH 2.6: sales need an assignments[]
+    // slice or split-agent ownership; TL/manager/director need the lead's
+    // current agent or split agent inside their reportsTo subtree. Admin /
+    // sales_admin pass through. viewer / hr (and unknown roles) blocked.
+    var roleL9 = req.user.role;
+    if (roleL9 !== "admin" && roleL9 !== "sales_admin") {
+      if (roleL9 !== "sales" && roleL9 !== "team_leader" && roleL9 !== "manager" && roleL9 !== "director") {
+        return res.status(403).json({ error: "Forbidden — read-only role" });
+      }
+      var sLeadL9 = await Lead.findById(req.params.id).select("agentId splitAgent2Id assignments").lean();
+      if (!sLeadL9) return res.status(404).json({ error: "Lead not found" });
+      var leadAidL9 = sLeadL9.agentId ? String(sLeadL9.agentId) : "";
+      var leadSidL9 = sLeadL9.splitAgent2Id ? String(sLeadL9.splitAgent2Id) : "";
+      if (roleL9 === "sales") {
+        var uidStrL9 = String(req.user.id);
+        var hasSliceL9 = (sLeadL9.assignments || []).some(function(a){
+          var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+          return String(aid) === uidStrL9;
+        });
+        if (!hasSliceL9 && leadSidL9 !== uidStrL9) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      } else {
+        var scopedL9 = (await getScopedUserIds(req.user) || []).map(function(id){ return String(id); });
+        var inAgentL9 = leadAidL9 && scopedL9.indexOf(leadAidL9) >= 0;
+        var inSplitL9 = leadSidL9 && scopedL9.indexOf(leadSidL9) >= 0;
+        if (!inAgentL9 && !inSplitL9) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      }
+    }
     // Admin-only gate: "Deal Cancelled" can only be set by admin users.
     if (req.body.status === "Deal Cancelled" && req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(403).json({ error: "Only admin can set Deal Cancelled status" });
@@ -5644,8 +5911,14 @@ app.put("/api/leads/:id", auth, async function(req, res) {
   }
 });
 
-app.delete("/api/leads/:id", auth, adminOnly, async function(req, res) {
+app.delete("/api/leads/:id", auth, async function(req, res) {
   try {
+    // BATCH 2.7 L10 — tightened from adminOnly (which admits manager/TL) to
+    // strict admin/sales_admin only. Lead deletion is destructive; manager/TL
+    // must not be able to remove leads in other teams.
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
     await Lead.findByIdAndDelete(req.params.id);
     res.json({ ok: true });
   } catch (e) {
@@ -5654,8 +5927,14 @@ app.delete("/api/leads/:id", auth, adminOnly, async function(req, res) {
 });
 
 // ===== REMOVE ASSIGNMENT =====
-app.delete("/api/leads/:id/assignment/:agentId", auth, adminOnly, async function(req, res) {
+app.delete("/api/leads/:id/assignment/:agentId", auth, async function(req, res) {
   try {
+    // BATCH 2.7 L11 — tightened from adminOnly (manager/TL admitted) to
+    // strict admin/sales_admin only. Removing an assignment is destructive
+    // and must not be available to team-bounded roles cross-team.
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
     var lead = await Lead.findById(req.params.id);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
     if (!lead.assignments || lead.assignments.length <= 1) {
@@ -5683,10 +5962,32 @@ app.delete("/api/leads/:id/assignment/:agentId", auth, adminOnly, async function
 // ===== ROTATE LEAD =====
 app.post("/api/leads/:id/rotate", auth, async function(req, res) {
   try {
+    // Caller-role gate (BATCH 2.7 L12). Manual rotate is a managerial action:
+    // admin/SA pass through unrestricted; TL/manager/director are scope-gated
+    // (lead must be in their reportsTo subtree); sales/sales_admin/viewer/hr
+    // (and any unknown role) are blocked.
+    var roleL12 = req.user.role;
+    if (roleL12 !== "admin" && roleL12 !== "sales_admin") {
+      if (roleL12 !== "team_leader" && roleL12 !== "manager" && roleL12 !== "director") {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
     var { targetAgentId, reason, force } = req.body;
     if (!targetAgentId) return res.status(400).json({ error: "targetAgentId required" });
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title");
     if (!lead) return res.status(404).json({ error: "Lead not found" });
+    // Subtree scope check (BATCH 2.7 L12): TL/manager/director may only rotate
+    // leads whose current agent or split agent is inside their subtree.
+    if (roleL12 === "team_leader" || roleL12 === "manager" || roleL12 === "director") {
+      var leadAidL12 = lead.agentId && lead.agentId._id ? String(lead.agentId._id) : (lead.agentId ? String(lead.agentId) : "");
+      var leadSidL12 = lead.splitAgent2Id ? String(lead.splitAgent2Id._id || lead.splitAgent2Id) : "";
+      var scopedL12 = (await getScopedUserIds(req.user) || []).map(function(id){ return String(id); });
+      var inAgentL12 = leadAidL12 && scopedL12.indexOf(leadAidL12) >= 0;
+      var inSplitL12 = leadSidL12 && scopedL12.indexOf(leadSidL12) >= 0;
+      if (!inAgentL12 && !inSplitL12) {
+        return res.status(403).json({ error: "Forbidden — lead outside your subtree" });
+      }
+    }
     // Admin override: only admin/sales_admin can bypass the same-agent and
     // previously-assigned guards. All other callers are hard-gated below.
     var isAdminForce = force === true && (req.user.role === "admin" || req.user.role === "sales_admin");
@@ -7086,14 +7387,15 @@ app.get("/api/activities", auth, async function(req, res) {
       // Recent Activity, and any global activity list stay rotation-free.
       query.type = { $ne: "reassign" };
       query.note = { $not: /^🔄 Auto Rotation/ };
-    } else if (role === "team_leader") {
-      // Team leader sees activities of their direct sales only
-      var directSales = await User.find({ reportsTo: uid }).lean();
-      var teamIds = directSales.map(function(s){ return s._id; });
-      teamIds.push(new mongoose.Types.ObjectId(uid));
-      query.userId = { $in: teamIds };
+    } else {
+      // Team-bounded roles (team_leader / manager / director) get their
+      // reportsTo subtree via getScopedUserIds. Admin / sales_admin return
+      // null (no filter — full firehose). Everyone else collapses to self.
+      var scopedActorIds = await getScopedUserIds(req.user);
+      if (scopedActorIds !== null) {
+        query.userId = { $in: scopedActorIds };
+      }
     }
-    // manager/admin/sales_admin see all (or server already filtered users)
 
     // Optional createdAt filter (e.g. since today 00:00)
     if (req.query.since) {
@@ -7484,6 +7786,12 @@ app.get("/api/daily-requests", auth, async function(req, res) {
         direct.forEach(function(s){ visibleIds.push(s._id); });
       }
       query.agentId = { $in: visibleIds }; // only assigned ones
+    } else if (req.user.role === "director") {
+      // Director: assigned requests where the agent is anywhere in the
+      // director's reportsTo subtree (managers + TLs + sales). Single
+      // helper call — no parallel walk to maintain.
+      var dirScopedDrIds = await getScopedUserIds(req.user);
+      query.agentId = { $in: dirScopedDrIds };
     }
     var requests = await DailyRequest.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
     res.json(requests);
@@ -7527,6 +7835,33 @@ app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req
 
 app.put("/api/daily-requests/:id", auth, async function(req, res) {
   try {
+    // Scope gate (BATCH 2.6 + 2.7): caller must be in an allow-listed role,
+    // and either own the DR (sales) or have its current agent inside their
+    // reportsTo subtree (TL / manager / director). Admin / sales_admin pass
+    // through unrestricted. viewer / hr (and any unknown role) fail closed.
+    // 404 vs 403 split: 404 only when the DR truly doesn't exist; 403 when
+    // the caller has no permission.
+    var callerRoleDr = req.user.role;
+    var allowedRolesDrPut = ["admin", "sales_admin", "sales", "team_leader", "manager", "director"];
+    if (allowedRolesDrPut.indexOf(callerRoleDr) < 0) {
+      return res.status(403).json({ error: "Forbidden — read-only role" });
+    }
+    if (callerRoleDr === "sales" || callerRoleDr === "team_leader" ||
+        callerRoleDr === "manager" || callerRoleDr === "director") {
+      var scopeDr = await DailyRequest.findById(req.params.id).select("agentId").lean();
+      if (!scopeDr) return res.status(404).json({ error: "Not found" });
+      var drAgentIdStr = scopeDr.agentId ? String(scopeDr.agentId) : "";
+      if (callerRoleDr === "sales") {
+        if (drAgentIdStr !== String(req.user.id)) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      } else {
+        var scopedDrIds = (await getScopedUserIds(req.user) || []).map(function(id){ return String(id); });
+        if (!drAgentIdStr || scopedDrIds.indexOf(drAgentIdStr) < 0) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      }
+    }
     // Admin-only gate: "Deal Cancelled" can only be set by admin users.
     if (req.body.status === "Deal Cancelled" && req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(403).json({ error: "Only admin can set Deal Cancelled status" });
@@ -7808,8 +8143,14 @@ app.post("/api/fix-manager-teams", auth, adminOnly, async function(req, res) {
 });
 
 // ===== ARCHIVE LEAD =====
-app.put("/api/leads/:id/archive", auth, adminOnly, async function(req, res) {
+app.put("/api/leads/:id/archive", auth, async function(req, res) {
   try {
+    // BATCH 2.7 L14 — tightened from adminOnly (manager/TL admitted) to
+    // strict admin/sales_admin only. Archiving is destructive-adjacent and
+    // must not be available to team-bounded roles cross-team.
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
     var lead = await Lead.findByIdAndUpdate(req.params.id, { archived: true }, { new: true });
     res.json(lead);
   } catch(e) { res.status(500).json({ error: e.message }); }

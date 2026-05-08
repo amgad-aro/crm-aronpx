@@ -6470,12 +6470,14 @@ var DashboardPage = function(p) {
 
     // ============ MY DATA ============
     var myUidS = String(p.cu._id||p.cu.id);
-    // Team leader: server already scoped p.leads to self + direct sales, so
-    // the team's leads ARE "my" data for dashboard purposes. Filtering further
-    // by an assignments.some(...===myUidS) check would drop every team-sales lead
-    // (TL doesn't hold their own assignment slice) and leave the dashboard empty.
-    var isTL = p.cu.role === "team_leader";
-    var allMyLeads = isTL ? leads.slice() : leads.filter(function(l){
+    // Team-scoped roles (team_leader / manager / director): server already
+    // narrowed p.leads (and p.users / p.dailyReqs) to the caller's reportsTo
+    // subtree via getScopedUserIds, so the visible set IS "my" data for
+    // dashboard purposes. Filtering further by an assignments.some(===myUidS)
+    // check would drop every subordinate's lead (these roles don't hold their
+    // own assignment slice) and leave the dashboard empty.
+    var isTeamScope = p.cu.role === "team_leader" || p.cu.role === "manager" || p.cu.role === "director";
+    var allMyLeads = isTeamScope ? leads.slice() : leads.filter(function(l){
       return l.assignments && l.assignments.some(function(a){
         var aid = a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
         return String(aid)===myUidS;
@@ -6560,14 +6562,15 @@ var DashboardPage = function(p) {
       if (ev.indexOf("created")>=0||ev.indexOf("create")>=0) return "\u2728";
       return "\ud83d\udd14";
     };
-    // For TL: accept history entries authored by any team member (self + direct sales).
-    var tlMemberNames = isTL ? new Set((p.myTeamUsers||[]).map(function(u){return String(u.name||"");}).filter(Boolean)) : null;
+    // For team-scoped roles (TL / manager / director): accept history entries
+    // authored by any user in the caller's myTeamUsers set (self + subtree).
+    var teamMemberNames = isTeamScope ? new Set((p.myTeamUsers||[]).map(function(u){return String(u.name||"");}).filter(Boolean)) : null;
     var myRecentActsS = [];
     allMyLeads.forEach(function(l){
       (l.history||[]).forEach(function(h){
         if (!h || !h.timestamp) return;
         var by = String(h.byUser||"");
-        if (isTL ? !tlMemberNames.has(by) : by!==myNameS) return;
+        if (isTeamScope ? !teamMemberNames.has(by) : by!==myNameS) return;
         if (!inRangeS(h.timestamp)) return;
         myRecentActsS.push({
           lead: l,
@@ -6599,7 +6602,7 @@ var DashboardPage = function(p) {
     // Scope DRs to self (TL already scoped server-side). p.dailyReqs is the full
     // visible set; for sales role the backend returns own-only.
     var myDrsScopedS = (p.dailyReqs||[]).filter(function(r){
-      if (isTL) return true;
+      if (isTeamScope) return true;
       var aid = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
       return String(aid) === myUidS;
     });
@@ -6612,7 +6615,7 @@ var DashboardPage = function(p) {
       (l.history||[]).forEach(function(h){
         if (!h || !h.timestamp) return;
         var by = String(h.byUser||"");
-        if (isTL ? !tlMemberNames.has(by) : by !== myNameS) return;
+        if (isTeamScope ? !teamMemberNames.has(by) : by !== myNameS) return;
         var ev = String(h.event||"").toLowerCase();
         if (ev.indexOf("call")<0 && ev.indexOf("callback")<0 && ev.indexOf("note")<0 && ev.indexOf("feedback")<0 && ev.indexOf("status")<0) return;
         followupEventsS.push(h);
