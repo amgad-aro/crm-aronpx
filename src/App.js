@@ -8039,7 +8039,7 @@ var EOIPage = function(p) {
         <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>🎯 EOI ({eoiLeads.length})</h2>
         {total>0&&<div style={{ fontSize:13, fontWeight:700, color:"#9333EA", background:"#F3E8FF", padding:"5px 14px", borderRadius:20 }}>Total: {total.toLocaleString()} EGP</div>}
       </div>
-      {(isAdmin||p.cu.role==="sales")&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 14px", fontSize:12 }}><Plus size={13}/> Add EOI</Btn>}
+      {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 14px", fontSize:12 }}><Plus size={13}/> Add EOI</Btn>}
     </div>
     <div style={{ display:"flex", gap:6, marginBottom:14, flexWrap:"wrap" }}>
       {[["approved","\u2705 Approved",eoiApprovedList.length,"#15803D","#DCFCE7"],["pending","\u23f3 Pending",eoiPending.length,"#B45309","#FEF3C7"],["cancelled","\u274c EOI Cancelled",eoiCancelled.length,"#B91C1C","#FEE2E2"]].map(function(tab){
@@ -8089,12 +8089,13 @@ var EOIPage = function(p) {
             {d.eoiDeposit&&<span style={{ fontSize:11, color:C.textLight }}>Deposit: {d.eoiDeposit}</span>}
             {isAdmin&&<span style={{ fontSize:11, color:C.accent }}>👤 {getAg(d)}</span>}
           </div>
-          {/* Convert to Deal — per-row action, visible to admin + sales.
-              Internally sets status to the existing "DoneDeal" enum via
-              convertToDeal (no new status value). The button MUST call both
-              stopPropagation and preventDefault so the outer card's onClick
-              (which opens the details panel) doesn't fire on the same click. */}
-          {(p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="sales")&&<button onClick={function(e){e.stopPropagation();e.preventDefault();convertToDeal(d);}} onMouseDown={function(e){e.stopPropagation();}} onTouchStart={function(e){e.stopPropagation();}} disabled={convertingDeal} style={{ marginTop:10, width:"100%", padding:"8px 12px", borderRadius:9, border:"none", background:"#15803D", color:"#fff", fontSize:12, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1 }}>
+          {/* Convert to Deal — per-row action, admin/sales_admin only. Sales
+              who need to close their EOI use the Lead detail page status
+              picker (PUT /api/leads/:id) instead — that path is unchanged.
+              The button MUST call both stopPropagation and preventDefault so
+              the outer card's onClick (which opens the details panel) doesn't
+              fire on the same click. */}
+          {isOnlyAdmin&&<button onClick={function(e){e.stopPropagation();e.preventDefault();convertToDeal(d);}} onMouseDown={function(e){e.stopPropagation();}} onTouchStart={function(e){e.stopPropagation();}} disabled={convertingDeal} style={{ marginTop:10, width:"100%", padding:"8px 12px", borderRadius:9, border:"none", background:"#15803D", color:"#fff", fontSize:12, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1 }}>
             {convertingDeal?"Converting…":"✅ Convert to Deal"}
           </button>}
         </div>;
@@ -8124,16 +8125,17 @@ var EOIPage = function(p) {
             </td>
             <td style={{ padding:"8px 12px" }} onClick={function(e){e.stopPropagation();}}>
               <div style={{ display:"flex", gap:5, alignItems:"center" }}>
-                {/* Convert to Deal — per-row action, visible to admin + sales.
-                    Sets status to the existing "DoneDeal" enum via convertToDeal.
+                {/* Convert to Deal — per-row action, admin/sales_admin only.
+                    Sales who need to close their EOI use the Lead detail page
+                    status picker (PUT /api/leads/:id) instead — unchanged.
                     stopPropagation on the button itself is belt-and-suspenders
                     alongside the td's stopPropagation — keeps the row's
                     detail-panel onClick from firing on the same click. */}
-                {(p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="sales")&&<button onClick={function(e){e.stopPropagation();e.preventDefault();convertToDeal(d);}} onMouseDown={function(e){e.stopPropagation();}} disabled={convertingDeal} title="Convert to Deal" style={{ padding:"6px 10px", borderRadius:6, border:"none", background:"#15803D", color:"#fff", fontSize:11, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1, whiteSpace:"nowrap" }}>
+                {isOnlyAdmin&&<button onClick={function(e){e.stopPropagation();e.preventDefault();convertToDeal(d);}} onMouseDown={function(e){e.stopPropagation();}} disabled={convertingDeal} title="Convert to Deal" style={{ padding:"6px 10px", borderRadius:6, border:"none", background:"#15803D", color:"#fff", fontSize:11, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1, whiteSpace:"nowrap" }}>
                   {convertingDeal?"…":"Convert to Deal"}
                 </button>}
-                {isAdmin&&<button onClick={function(){setEditLead(d);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Edit size={13} color={C.info}/></button>}
-                {isAdmin&&<button onClick={function(){archiveLead(gid(d));}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Archive size={13} color={C.warning}/></button>}
+                {isOnlyAdmin&&<button onClick={function(){setEditLead(d);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Edit size={13} color={C.info}/></button>}
+                {isOnlyAdmin&&<button onClick={function(){archiveLead(gid(d));}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Archive size={13} color={C.warning}/></button>}
               </div>
             </td>
           </tr>;
@@ -8161,9 +8163,9 @@ var EOIPage = function(p) {
                     {cancelling?"Cancelling…":"❌ Cancel"}
                   </button>}
                 </div>}
-                <button disabled={convertingDeal} onClick={function(){convertToDeal(selectedEOI);}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"5px 12px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
+                {isOnlyAdmin&&<button disabled={convertingDeal} onClick={function(){convertToDeal(selectedEOI);}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"5px 12px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
                   {convertingDeal?"Converting…":"✅ Done Deal"}
-                </button>
+                </button>}
               </>;
             })()}
           </div>
@@ -8529,7 +8531,7 @@ var DealsPage = function(p) {
         <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.deals} ({filteredDeals.length})</h2>
         {filteredTotal>0&&<div style={{ fontSize:13, fontWeight:700, color:C.success, background:"#DCFCE7", padding:"5px 14px", borderRadius:20 }}>Total: {filteredTotal.toLocaleString()} EGP</div>}
       </div>
-      {(isOnlyAdmin||p.cu.role==="team_leader")&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> Add Deal</Btn>}
+      {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> Add Deal</Btn>}
     </div>
 
     {/* Deals tab bar: Active vs Deal Cancelled */}

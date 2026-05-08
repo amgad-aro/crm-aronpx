@@ -4513,7 +4513,17 @@ app.get("/api/leads/untouched", auth, async function(req, res) {
     // sales_admin pass through unfiltered (scopedIds === null); everyone else
     // is bounded by their reportsTo subtree.
     var scopedIds = await getScopedUserIds(req.user);
-    var untouchedQuery = { agentId: { $ne: null }, archived: { $ne: true } };
+    // Exclude leads that have moved out of the active sales funnel — EOI and
+    // DoneDeal are tracked on their own pages and shouldn't show up as
+    // "untouched" just because no further activity happened post-close.
+    // Covers both the canonical Lead.status enum and the parallel
+    // globalStatus flag that DR-mirror flows write.
+    var untouchedQuery = {
+      agentId: { $ne: null },
+      archived: { $ne: true },
+      status: { $nin: ["EOI", "DoneDeal"] },
+      globalStatus: { $nin: ["eoi", "donedeal"] }
+    };
     if (scopedIds !== null) {
       untouchedQuery.agentId = { $in: scopedIds };
     }
@@ -4749,6 +4759,15 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
 app.post("/api/leads", auth, async function(req, res) {
   try {
     console.log("NEW LEAD body:", JSON.stringify(req.body));
+    // Standalone "Add EOI" / "Add Deal" creation is admin/sales_admin only.
+    // The Lead-detail status-change flow goes through PUT /api/leads/:id and
+    // is unaffected. Sales/TL/manager creating regular (non-EOI/Deal) leads
+    // stays unchanged. Defense-in-depth pair to the EOI/Deals page button hide.
+    var statusIn = String((req.body && req.body.status) || "");
+    if ((statusIn === "EOI" || statusIn === "DoneDeal")
+        && req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Only admin / sales_admin may create EOI or Deal records directly. Use the lead status-change flow instead." });
+    }
     // Admin / sales_admin / manager / team_leader / integration keys may leave
     // agentId empty — those leads stay unassigned until an admin routes them.
     //
@@ -8811,8 +8830,12 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
       expired:leads.filter(function(l){var t=l.createdAt?now-new Date(l.createdAt):0;return t>30*DAY;}).length
     };
 
-    // Management alerts — refined per spec
+    // Management alerts — refined per spec. Exclude EOI/DoneDeal leads —
+    // they've moved out of the active funnel and shouldn't show as
+    // "untouched" just because nobody logged further activity after close.
     var untouchedLeadsCount = leads.filter(function(l){
+      if (l.status === "EOI" || l.status === "DoneDeal") return false;
+      if (l.globalStatus === "eoi" || l.globalStatus === "donedeal") return false;
       return (l.assignments||[]).length===0 || (l.assignments||[]).every(function(a){
         if (!a.lastActionAt) return true;
         if (a.assignedAt && new Date(a.lastActionAt).getTime()===new Date(a.assignedAt).getTime()) return true;
