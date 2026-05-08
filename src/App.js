@@ -6425,6 +6425,130 @@ var DashboardPage = function(p) {
     </div>;
   };
 
+  // Agent Performance widget — used by both the admin dashboard and the
+  // team-scoped (TL/manager/director) dashboard. Self-contained: takes range
+  // bounds, computes per-agent metrics, returns the rendered card. p.users is
+  // already subtree-scoped server-side per role; the role: "sales" filter is
+  // a safety belt so TL/manager/director rows can never appear in the table.
+  var renderAgentPerformanceCard = function(rsA, reA){
+    var interestedStatusesA = ["Interested","Hot Case","HotCase","Potential"];
+    var fDRa = (p.dailyReqs||[]).filter(function(r){
+      var rt = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+      return rt>=rsA && rt<=reA;
+    });
+    var fAgentPerfA = (p.users||[]).filter(function(u){return u.role==="sales";}).map(function(u){
+      var uid=String(u._id||gid(u));
+      var al=leads.filter(function(l){
+        return (l.assignments||[]).some(function(a){
+          var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+          if (String(aid)!==uid) return false;
+          var t = a.assignedAt ? new Date(a.assignedAt).getTime() : 0;
+          return !isNaN(t) && t>=rsA && t<=reA;
+        });
+      });
+      var adr=fDRa.filter(function(r){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;return String(aid)===uid;});
+      var aint=al.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && interestedStatusesA.includes(a.status);});}).length;
+      var ameet=al.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && (a.status==="Meeting Done"||a.status==="MeetingDone");});}).length;
+      var uname = u.name || "";
+      var arotOut=leads.filter(function(l){return (l.agentHistory||[]).some(function(h){return h && h.action==="Rotation" && h.fromAgent===uname;});}).length;
+      var arotIn=leads.filter(function(l){return (l.agentHistory||[]).some(function(h){return h && h.action==="Rotation" && h.toAgent===uname;});}).length;
+      var anoAns=al.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && (a.status==="NoAnswer"||a.status==="No Answer");});}).length;
+      var afup=al.filter(function(l){return l.callbackTime;}).length;
+      var aover=al.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now&&!["MeetingDone","DoneDeal","EOI"].includes(l.status);}).length;
+      var adeals=al.filter(function(l){return l.status==="DoneDeal"||l.globalStatus==="donedeal";}).length;
+      var _actPool = (todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
+      var aActs = _actPool.filter(function(x){
+        var xid = x.userId&&x.userId._id?x.userId._id:x.userId;
+        if (String(xid)!==uid) return false;
+        var t = x.createdAt?new Date(x.createdAt).getTime():0;
+        return t>=rsA && t<=reA;
+      });
+      var acalls = aActs.filter(function(x){ return x.type==="call" || ((x.note||"").toLowerCase().indexOf("call")>=0); }).length;
+      var aFbLeads = al.filter(function(l){
+        if (l.notes && String(l.notes).trim().length>0) return true;
+        if (l.lastFeedback && String(l.lastFeedback).trim().length>0) return true;
+        return (l.assignments||[]).some(function(a){
+          var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+          if (String(aid)!==uid) return false;
+          return (a.notes && String(a.notes).trim().length>0) || (a.lastFeedback && String(a.lastFeedback).trim().length>0);
+        });
+      }).length;
+      var fbPct = al.length>0 ? (aFbLeads/al.length) : 0;
+      var rtSum=0, rtCount=0;
+      al.forEach(function(l){
+        (l.assignments||[]).forEach(function(a){
+          var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
+          if(String(aid)===uid && a.lastActionAt && l.createdAt){
+            var diff=new Date(a.lastActionAt).getTime()-new Date(l.createdAt).getTime();
+            if(diff>=0){rtSum+=diff;rtCount++;}
+          }
+        });
+      });
+      var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
+      var ip=al.length>0?Math.round(aint/al.length*100):0;
+      var mp=al.length>0?Math.round(ameet/al.length*100):0;
+      var cbTotal = afup;
+      var cbOnTime = afup - aover;
+      var cbPct = cbTotal>0 ? (cbOnTime/cbTotal) : (afup===0?1:0);
+      var qActivity = al.length>0 ? Math.min(25, (aActs.length/al.length)*25) : 0;
+      var qFeedback = fbPct * 20;
+      var qResp = respH>0 ? Math.max(0, 20 - respH*2) : (rtCount>0?20:10);
+      var qMeeting = al.length>0 ? Math.min(15, (ameet/al.length)*100*0.15) : 0;
+      var qCallback = cbPct * 20;
+      var qualityScore = Math.round(qActivity + qFeedback + qResp + qMeeting + qCallback);
+      if (qualityScore>100) qualityScore = 100; if (qualityScore<0) qualityScore = 0;
+      var actScore=Math.min(100,(al.length+adr.length)*5);
+      var rtScore=respH>0?Math.max(0,100-respH*2):50;
+      var score=Math.round(actScore*0.4 + mp*0.3 + ip*0.2 + rtScore*0.1);
+      return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,calls:acalls,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,rotOut:arotOut,rotIn:arotIn,noAnswer:anoAns,respTime:respH>0?respH.toFixed(1):"—",score:score,quality:qualityScore};
+    }).sort(function(a,b){return b.quality-a.quality;});
+
+    return card(<>
+      <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:6}}>
+        <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Agent Performance</div>
+        <div style={{fontSize:10,color:"#94A3B8"}} title="Quality = activity + feedback + response time + meetings + callbacks">Quality = activity, feedback, response time, meetings & callbacks</div>
+      </div>
+      <div className="crm-dash-scroll" style={{overflowX:"auto",overflowY:"auto",maxHeight:360,WebkitOverflowScrolling:"touch",width:"100%"}}>
+      <div style={{display:"grid",gridTemplateColumns:isMobile?"36px 150px repeat(14, 56px)":"36px 160px repeat(14, minmax(0, 1fr))",gap:4,paddingTop:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,width:isMobile?"max-content":"100%",minWidth:isMobile?980:undefined,position:"sticky",top:0,zIndex:10,background:"#fff"}}>
+        {["","Agent","Leads","DR","Total","Calls","Follow","Overdue","Int","Meet","Deals","Rot OUT","Rot IN","No Ans","Resp.","Quality"].map(function(h,idx){return <div key={h+idx} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{h}</div>;})}
+      </div>
+      {fAgentPerfA.map(function(a,i){
+        var medals=["🥇","🥈","🥉"];
+        var avBg=["#DBEAFE","#DCFCE7","#FEF3C7","#EDE9FE","#FFE4E6"][i%5];
+        var avC=["#1D4ED8","#166534","#92400E","#5B21B6","#9F1239"][i%5];
+        var initials=(a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
+        var qBg = a.quality>=80?"#DCFCE7":a.quality>=60?"#FEF3C7":"#FEE2E2";
+        var qFg = a.quality>=80?"#166534":a.quality>=60?"#92400E":"#991B1B";
+        return <div key={a.uid} onClick={function(){ if(p.setInitAgentFilter) p.setInitAgentFilter(a.uid); if(p.setFilter) p.setFilter("all"); if(p.nav) p.nav("leads"); }} style={{display:"grid",gridTemplateColumns:isMobile?"36px 150px repeat(14, 56px)":"36px 160px repeat(14, minmax(0, 1fr))",gap:4,alignItems:"center",padding:"10px 0",borderBottom:"1px solid #F8FAFC",width:isMobile?"max-content":"100%",minWidth:isMobile?980:undefined,cursor:"pointer"}}>
+          <div style={{fontSize:11,color:"#888",textAlign:"center",fontWeight:500}}>{i+1}</div>
+          <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
+            <div style={{width:30,height:30,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>{initials}</div>
+            <div style={{minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a.name}</div>
+              <div style={{height:3,borderRadius:2,background:"#F1F5F9",width:60,marginTop:3}}><div style={{height:"100%",width:Math.min(100,a.quality)+"%",background:qFg,borderRadius:2}}/></div>
+            </div>
+          </div>
+          <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{a.leads}</div>
+          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#0F172A"}}>{a.dr}</div>
+          <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{a.total}</div>
+          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:a.calls>0?"#166534":"#94A3B8"}}>{a.calls}</div>
+          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#334155"}}>{a.followups}</div>
+          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:a.overdue>0?"#DC2626":"#94A3B8"}}>{a.overdue}</div>
+          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.interested>0?"#15803D":"#94A3B8"}}>{a.interested}</div>
+          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.meetings>0?"#6D28D9":"#94A3B8"}}>{a.meetings}</div>
+          <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#065F46"}}>{a.deals}</div>
+          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.rotOut>0?"#B45309":"#94A3B8"}} title="Leads rotated away from this agent">{a.rotOut||0}</div>
+          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.rotIn>0?"#0F766E":"#94A3B8"}} title="Leads rotated to this agent">{a.rotIn||0}</div>
+          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.noAnswer>0?"#64748B":"#94A3B8"}}>{a.noAnswer||0}</div>
+          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:"#334155"}}>{a.respTime!=="—"?a.respTime+"h":"—"}</div>
+          <div style={{textAlign:"center"}} title="Based on activity, feedback, response time, meetings & callbacks">
+            <span style={{display:"inline-block",fontSize:12,fontWeight:700,padding:"3px 8px",borderRadius:8,background:qBg,color:qFg,minWidth:40}}>{medals[i]||""} {a.quality}</span>
+          </div>
+        </div>;
+      })}
+      </div>
+    </>);
+  };
+
   if(!isOnlyAdmin) {
     // ============ DATE RANGE (calendar-based) ============
     // Today = 00:00→23:59, Week = Monday→today, Month = 1st→today,
@@ -6691,10 +6815,20 @@ var DashboardPage = function(p) {
         </div>;
       })()}
 
-      {/* Rank + Urgent + Schedule row */}
-      <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
+      {/* Rank Team \u2014 own full-width row (split out so Agent Performance can sit between Rank and Urgent/Schedule) */}
+      <div style={{marginBottom:14}}>
         {rankWidget({ mode: "sales", rangeLabel: rangeLabelS })}
+      </div>
 
+      {/* Agent Performance \u2014 same widget as the admin dashboard, fed by the
+          team-scope range. p.users is server-scoped to subtree per role. */}
+      {sec("Team Performance")}
+      <div style={{marginBottom:14}}>
+        {renderAgentPerformanceCard(rangeStartS, rangeEndS)}
+      </div>
+
+      {/* Urgent + Schedule row (2-column now that Rank Team sits above) */}
+      <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"minmax(0, 1fr)":"repeat(auto-fit,minmax(280px,1fr))",gap:isMobile?10:14,marginBottom:14}}>
         <div className="crm-dash-card" style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px":"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0,boxSizing:"border-box"}}>
           <div style={{fontSize:isMobile?14:15,fontWeight:700,color:"#0F172A",marginBottom:isMobile?10:14}}>{"\ud83d\udea8"} Urgent {"\u2014"} Action Needed</div>
           {urgent2.length===0&&urgentNew2.length===0&&<div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} No urgent items</div>}
@@ -6957,81 +7091,8 @@ var DashboardPage = function(p) {
     return Object.assign({},c,{ip:ip,mp:mp,quality:ip>30?"High":ip>15?"Medium":"Low"});
   });
 
-  // Agent performance — count leads by assignments[].assignedAt in active range (not lead.createdAt)
-  var fAgentPerf=(p.users||[]).filter(function(u){return u.role==="sales";}).map(function(u){
-    var uid=String(u._id||gid(u));
-    var al=leads.filter(function(l){
-      return (l.assignments||[]).some(function(a){
-        var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
-        if (String(aid)!==uid) return false;
-        var t = a.assignedAt ? new Date(a.assignedAt).getTime() : 0;
-        return !isNaN(t) && t>=rangeStart && t<=rangeEnd;
-      });
-    });
-    var adr=fDR.filter(function(r){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;return String(aid)===uid;});
-    var aint=al.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && interestedStatuses.includes(a.status);});}).length;
-    var ameet=al.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && (a.status==="Meeting Done"||a.status==="MeetingDone");});}).length;
-    // Rotations: lead-level agentHistory stores {action:"Rotation", fromAgent:<name>, toAgent:<name>, ...}
-    var uname = u.name || "";
-    var arotOut=leads.filter(function(l){return (l.agentHistory||[]).some(function(h){return h && h.action==="Rotation" && h.fromAgent===uname;});}).length;
-    var arotIn=leads.filter(function(l){return (l.agentHistory||[]).some(function(h){return h && h.action==="Rotation" && h.toAgent===uname;});}).length;
-    // No Answer: leads where this agent's assignment.status === "NoAnswer" (or "No Answer")
-    var anoAns=al.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && (a.status==="NoAnswer"||a.status==="No Answer");});}).length;
-    var afup=al.filter(function(l){return l.callbackTime;}).length;
-    var aover=al.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now&&!["MeetingDone","DoneDeal","EOI"].includes(l.status);}).length;
-    var adeals=al.filter(function(l){return l.status==="DoneDeal"||l.globalStatus==="donedeal";}).length;
-    // Activities for this agent in the active range (from fetched today pool or p.activities fallback)
-    var _actPool = (todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
-    var aActs = _actPool.filter(function(x){
-      var xid = x.userId&&x.userId._id?x.userId._id:x.userId;
-      if (String(xid)!==uid) return false;
-      var t = x.createdAt?new Date(x.createdAt).getTime():0;
-      return t>=rangeStart && t<=rangeEnd;
-    });
-    var acalls = aActs.filter(function(x){ return x.type==="call" || ((x.note||"").toLowerCase().indexOf("call")>=0); }).length;
-    // Feedback quality: % of this agent's leads that have notes/feedback populated
-    var aFbLeads = al.filter(function(l){
-      if (l.notes && String(l.notes).trim().length>0) return true;
-      if (l.lastFeedback && String(l.lastFeedback).trim().length>0) return true;
-      return (l.assignments||[]).some(function(a){
-        var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
-        if (String(aid)!==uid) return false;
-        return (a.notes && String(a.notes).trim().length>0) || (a.lastFeedback && String(a.lastFeedback).trim().length>0);
-      });
-    }).length;
-    var fbPct = al.length>0 ? (aFbLeads/al.length) : 0;
-    // Resp.Time: avg (assignment.lastActionAt - lead.createdAt) for this agent's assignments
-    var rtSum=0, rtCount=0;
-    al.forEach(function(l){
-      (l.assignments||[]).forEach(function(a){
-        var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
-        if(String(aid)===uid && a.lastActionAt && l.createdAt){
-          var diff=new Date(a.lastActionAt).getTime()-new Date(l.createdAt).getTime();
-          if(diff>=0){rtSum+=diff;rtCount++;}
-        }
-      });
-    });
-    var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
-    var ip=al.length>0?Math.round(aint/al.length*100):0;
-    var mp=al.length>0?Math.round(ameet/al.length*100):0;
-    // Callback compliance: (callbacks not overdue) / total callbacks
-    var cbTotal = afup;
-    var cbOnTime = afup - aover;
-    var cbPct = cbTotal>0 ? (cbOnTime/cbTotal) : (afup===0?1:0);
-    // Quality score (0-100): activity(25) + feedback(20) + resp time(20) + meeting rate(15) + callback compliance(20)
-    var qActivity = al.length>0 ? Math.min(25, (aActs.length/al.length)*25) : 0;
-    var qFeedback = fbPct * 20;
-    var qResp = respH>0 ? Math.max(0, 20 - respH*2) : (rtCount>0?20:10);
-    var qMeeting = al.length>0 ? Math.min(15, (ameet/al.length)*100*0.15) : 0;
-    var qCallback = cbPct * 20;
-    var qualityScore = Math.round(qActivity + qFeedback + qResp + qMeeting + qCallback);
-    if (qualityScore>100) qualityScore = 100; if (qualityScore<0) qualityScore = 0;
-    // Legacy composite score (kept for internal sort compat)
-    var actScore=Math.min(100,(al.length+adr.length)*5);
-    var rtScore=respH>0?Math.max(0,100-respH*2):50;
-    var score=Math.round(actScore*0.4 + mp*0.3 + ip*0.2 + rtScore*0.1);
-    return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,calls:acalls,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,rotOut:arotOut,rotIn:arotIn,noAnswer:anoAns,respTime:respH>0?respH.toFixed(1):"\u2014",score:score,quality:qualityScore};
-  }).sort(function(a,b){return b.quality-a.quality;});
+  // Agent Performance compute moved to renderAgentPerformanceCard() helper
+  // above so it can be shared between the admin and team-scoped dashboards.
 
   // Untouched leads are served by GET /api/leads/untouched — the local
   // leads[] is paginated, so any client-side filter here was capped to the
@@ -7567,50 +7628,7 @@ var DashboardPage = function(p) {
 
     {sec("Team Performance")}
     <div style={{marginBottom:14}}>
-    {card(<>
-      <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:6}}>
-        <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Agent Performance</div>
-        <div style={{fontSize:10,color:"#94A3B8"}} title="Quality = activity + feedback + response time + meetings + callbacks">Quality = activity, feedback, response time, meetings & callbacks</div>
-      </div>
-      <div className="crm-dash-scroll" style={{overflowX:"auto",overflowY:"auto",maxHeight:360,WebkitOverflowScrolling:"touch",width:"100%"}}>
-      <div style={{display:"grid",gridTemplateColumns:isMobile?"36px 150px repeat(14, 56px)":"36px 160px repeat(14, minmax(0, 1fr))",gap:4,paddingTop:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,width:isMobile?"max-content":"100%",minWidth:isMobile?980:undefined,position:"sticky",top:0,zIndex:10,background:"#fff"}}>
-        {["","Agent","Leads","DR","Total","Calls","Follow","Overdue","Int","Meet","Deals","Rot OUT","Rot IN","No Ans","Resp.","Quality"].map(function(h,idx){return <div key={h+idx} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{h}</div>;})}
-      </div>
-      {fAgentPerf.map(function(a,i){
-        var medals=["\ud83e\udd47","\ud83e\udd48","\ud83e\udd49"];
-        var avBg=["#DBEAFE","#DCFCE7","#FEF3C7","#EDE9FE","#FFE4E6"][i%5];
-        var avC=["#1D4ED8","#166534","#92400E","#5B21B6","#9F1239"][i%5];
-        var initials=(a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
-        var qBg = a.quality>=80?"#DCFCE7":a.quality>=60?"#FEF3C7":"#FEE2E2";
-        var qFg = a.quality>=80?"#166534":a.quality>=60?"#92400E":"#991B1B";
-        return <div key={a.uid} onClick={function(){ if(p.setInitAgentFilter) p.setInitAgentFilter(a.uid); if(p.setFilter) p.setFilter("all"); if(p.nav) p.nav("leads"); }} style={{display:"grid",gridTemplateColumns:isMobile?"36px 150px repeat(14, 56px)":"36px 160px repeat(14, minmax(0, 1fr))",gap:4,alignItems:"center",padding:"10px 0",borderBottom:"1px solid #F8FAFC",width:isMobile?"max-content":"100%",minWidth:isMobile?980:undefined,cursor:"pointer"}}>
-          <div style={{fontSize:11,color:"#888",textAlign:"center",fontWeight:500}}>{i+1}</div>
-          <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
-            <div style={{width:30,height:30,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>{initials}</div>
-            <div style={{minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a.name}</div>
-              <div style={{height:3,borderRadius:2,background:"#F1F5F9",width:60,marginTop:3}}><div style={{height:"100%",width:Math.min(100,a.quality)+"%",background:qFg,borderRadius:2}}/></div>
-            </div>
-          </div>
-          <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{a.leads}</div>
-          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#0F172A"}}>{a.dr}</div>
-          <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{a.total}</div>
-          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:a.calls>0?"#166534":"#94A3B8"}}>{a.calls}</div>
-          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:"#334155"}}>{a.followups}</div>
-          <div style={{fontSize:13,fontWeight:600,textAlign:"center",color:a.overdue>0?"#DC2626":"#94A3B8"}}>{a.overdue}</div>
-          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.interested>0?"#15803D":"#94A3B8"}}>{a.interested}</div>
-          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.meetings>0?"#6D28D9":"#94A3B8"}}>{a.meetings}</div>
-          <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#065F46"}}>{a.deals}</div>
-          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.rotOut>0?"#B45309":"#94A3B8"}} title="Leads rotated away from this agent">{a.rotOut||0}</div>
-          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.rotIn>0?"#0F766E":"#94A3B8"}} title="Leads rotated to this agent">{a.rotIn||0}</div>
-          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:a.noAnswer>0?"#64748B":"#94A3B8"}}>{a.noAnswer||0}</div>
-          <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:"#334155"}}>{a.respTime!=="\u2014"?a.respTime+"h":"\u2014"}</div>
-          <div style={{textAlign:"center"}} title="Based on activity, feedback, response time, meetings & callbacks">
-            <span style={{display:"inline-block",fontSize:12,fontWeight:700,padding:"3px 8px",borderRadius:8,background:qBg,color:qFg,minWidth:40}}>{medals[i]||""} {a.quality}</span>
-          </div>
-        </div>;
-      })}
-      </div>
-    </>)}
+      {renderAgentPerformanceCard(rangeStart, rangeEnd)}
     </div>
 
     <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit,minmax(260px,1fr))",gap:isMobile?10:14}}>
