@@ -3609,16 +3609,17 @@ app.get("/api/dashboard/sales-ranking", auth, async function(req, res) {
     var to   = parseDate(req.query.to);
     var rangeMatch = (from || to) ? (function(){ var r = {}; if(from) r.$gte = from; if(to) r.$lte = to; return r; })() : null;
 
-    // Sales users in scope. Sales-role caller and admin/sales_admin keep the
-    // CRM-wide ranking (sales need to see their own position vs the company);
-    // team_leader / manager / director are narrowed to their reportsTo subtree
-    // via getScopedUserIds() so the ranking only shows their own people.
+    // Ranked list is ALWAYS role: "sales" only — no admin / sales_admin /
+    // director / manager / team_leader / viewer / hr ever appears in the
+    // ranking, regardless of who's calling. The caller's role only narrows
+    // the SCOPE: TL/manager/director see sales in their reportsTo subtree;
+    // sales / admin / sales_admin / viewer / hr see CRM-wide sales.
     var salesUsers;
     var role = req.user && req.user.role;
     if (role === "team_leader" || role === "manager" || role === "director") {
       var scopedIds = await getScopedUserIds(req.user);
-      salesUsers = await User.find({ _id: { $in: scopedIds }, active: { $ne: false } })
-        .select("_id name title role")
+      salesUsers = await User.find({ _id: { $in: scopedIds }, role: "sales", active: { $ne: false } })
+        .select("_id name title")
         .sort({ name: 1 })
         .lean();
     } else {
