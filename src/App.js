@@ -9894,8 +9894,13 @@ var UsersPage = function(p) {
       var sd=editModal.startingDate||null;
       var sat=editModal.saturdaySchedule||"always_work";
       var satStart=sat==="alternating"?(editModal.saturdayPatternStartDate||null):null;
-      var upd=await apiFetch("/api/users/"+editModal.userId,"PUT",{title:editModal.title,role:editModal.role,startingDate:sd,saturdaySchedule:sat,saturdayPatternStartDate:satStart},p.token);
-      p.setUsers(function(prev){return prev.map(function(x){return gid(x)===editModal.userId?Object.assign({},x,{title:editModal.title,role:editModal.role,startingDate:sd,saturdaySchedule:sat,saturdayPatternStartDate:satStart}):x;});});
+      // Owner self-edit: omit `role` from the payload so the backend's
+      // role-lockdown guards don't 403 a legitimate self-edit. Owner role
+      // is permanent and already correct in the DB.
+      var payload={title:editModal.title,startingDate:sd,saturdaySchedule:sat,saturdayPatternStartDate:satStart};
+      if(!editModal.isOwner) payload.role=editModal.role;
+      var upd=await apiFetch("/api/users/"+editModal.userId,"PUT",payload,p.token);
+      p.setUsers(function(prev){return prev.map(function(x){return gid(x)===editModal.userId?Object.assign({},x,{title:editModal.title,role:editModal.isOwner?x.role:editModal.role,startingDate:sd,saturdaySchedule:sat,saturdayPatternStartDate:satStart}):x;});});
       setEditModal(null);
     }catch(e){alert(e.message);} setEditSaving(false);
   };
@@ -9937,8 +9942,16 @@ var UsersPage = function(p) {
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,t.username,t.title,t.role,t.phone,"Quarterly Target","Last Seen","Starting Date",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
-      <tbody>{p.users.map(function(u){var uid=gid(u);var displayName=u.username==="amgad"?"Amgad Mohamed":u.name;return <tr key={uid} style={{ borderBottom:"1px solid #F1F5F9" }}>
-        <td style={{ padding:"11px 12px" }}><div style={{ display:"flex", alignItems:"center", gap:8 }}><div style={{ width:32, height:32, borderRadius:8, background:C.primary+"15", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:12, color:C.primary, flexShrink:0 }}>{displayName[0]}</div><div><div style={{ fontSize:12, fontWeight:600 }}>{displayName}</div><div style={{ fontSize:10, color:C.textLight }}>{u.email}</div></div></div></td>
+      <tbody>{p.users.map(function(u){
+        var uid=gid(u);
+        var displayName=u.username==="amgad"?"Amgad Mohamed":u.name;
+        // Owner lockdown — mirrors the backend guards in PUT/DELETE /api/users/:id.
+        // ownerLocked rows hide Edit/Delete/active-toggle/password-reset for non-Owner viewers.
+        var isOwnerRow=!!u.isOwner;
+        var isSelf=String((p.cu&&p.cu.id)||"")===String(uid);
+        var ownerLocked=isOwnerRow&&!isSelf;
+        return <tr key={uid} style={{ borderBottom:"1px solid #F1F5F9" }}>
+        <td style={{ padding:"11px 12px" }}><div style={{ display:"flex", alignItems:"center", gap:8 }}><div style={{ width:32, height:32, borderRadius:8, background:C.primary+"15", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:12, color:C.primary, flexShrink:0 }}>{displayName[0]}</div><div><div style={{ fontSize:12, fontWeight:600, display:"flex", alignItems:"center", gap:5 }}>{displayName}{isOwnerRow&&<span title="Owner" style={{ fontSize:9, fontWeight:700, padding:"2px 6px", borderRadius:4, background:"#FEF3C7", color:"#92400E", letterSpacing:0.3 }}>👑 OWNER</span>}</div><div style={{ fontSize:10, color:C.textLight }}>{u.email}</div></div></div></td>
         <td style={{ padding:"11px 12px", fontSize:12, fontFamily:"monospace" }}>{u.username}</td>
         <td style={{ padding:"11px 12px", fontSize:12 }}>{u.title}</td>
         <td style={{ padding:"11px 12px" }}><Badge bg={(rc[u.role]||"#94A3B8")+"15"} color={rc[u.role]||"#94A3B8"}>{rl[u.role]||u.role}</Badge></td>
@@ -9970,10 +9983,10 @@ var UsersPage = function(p) {
             return d.toLocaleDateString("en-GB");
           })()}
         </td>
-        <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(u.role!=="admin")toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
-        <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){setPwModal({userId:uid,userName:displayName});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}} disabled={p.cu.role==="sales_admin"&&u.role==="admin"} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:p.cu.role==="sales_admin"&&u.role==="admin"?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", opacity:p.cu.role==="sales_admin"&&u.role==="admin"?0.3:1 }} title={t.changePassword}><KeyRound size={12} color={C.info}/></button>
-              {isOnlyAdmin&&<button onClick={function(){setEditModal({userId:uid,userName:displayName,title:u.title||"",role:u.role||"sales",startingDate:u.startingDate?String(u.startingDate).slice(0,10):"",saturdaySchedule:u.saturdaySchedule||"always_work",saturdayPatternStartDate:u.saturdayPatternStartDate?String(u.saturdayPatternStartDate).slice(0,10):""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.edit||"Edit"}><Edit size={12} color={C.accent}/></button>}
-              <button onClick={function(){setTeamModal({userId:uid,userName:u.name,userRole:u.role,teamId:u.teamId||"",teamName:u.teamName||"",reportsTo:u.reportsTo||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Edit Team"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(u.username!=="amgad")del(uid);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:u.username!=="amgad"?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", opacity:u.username==="amgad"?0.3:1 }}><Trash2 size={12} color={C.danger}/></button></div></td>
+        <td style={{ padding:"11px 12px" }}><Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){if(!isOwnerRow)toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge></td>
+        <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){if(!ownerLocked){setPwModal({userId:uid,userName:displayName});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}}} disabled={ownerLocked} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:ownerLocked?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", opacity:ownerLocked?0.3:1 }} title={ownerLocked?"Owner password resets via Forgot Password only":t.changePassword}><KeyRound size={12} color={C.info}/></button>
+              {isOnlyAdmin&&!ownerLocked&&<button onClick={function(){setEditModal({userId:uid,userName:displayName,isOwner:isOwnerRow,title:u.title||"",role:u.role||"sales",startingDate:u.startingDate?String(u.startingDate).slice(0,10):"",saturdaySchedule:u.saturdaySchedule||"always_work",saturdayPatternStartDate:u.saturdayPatternStartDate?String(u.saturdayPatternStartDate).slice(0,10):""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.edit||"Edit"}><Edit size={12} color={C.accent}/></button>}
+              <button onClick={function(){setTeamModal({userId:uid,userName:u.name,userRole:u.role,teamId:u.teamId||"",teamName:u.teamName||"",reportsTo:u.reportsTo||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Edit Team"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(!isOwnerRow&&u.role!=="admin")del(uid);}} disabled={isOwnerRow||u.role==="admin"} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:(isOwnerRow||u.role==="admin")?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", opacity:(isOwnerRow||u.role==="admin")?0.3:1 }} title={isOwnerRow?"Owner cannot be deleted":(u.role==="admin"?"Admin users cannot be deleted":"")}><Trash2 size={12} color={C.danger}/></button></div></td>
       </tr>;})}
       </tbody>
     </table></div></Card>
@@ -10004,10 +10017,18 @@ var UsersPage = function(p) {
           setEditModal(function(prev){return Object.assign({},prev,{title:newTitle},mapped?{role:mapped}:{});});
         }}
         options={[{value:"",label:"- Select Job Title -"}].concat(JOB_TITLES.map(function(j){return {value:j.label,label:j.label};}))}/>
-      <Inp label={t.role} type="select" value={editModal.role}
-        onChange={function(e){setEditModal(function(prev){return Object.assign({},prev,{role:e.target.value});});}}
-        options={[{value:"admin",label:t.admin},{value:"sales_admin",label:"Sales Admin"},{value:"director",label:"Sales Director"},{value:"manager",label:t.salesManager},{value:"team_leader",label:"Team Leader"},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/>
-      <div style={{fontSize:11,color:C.textLight,marginTop:-6,marginBottom:12}}>Selecting a Job Title auto-sets the Role. You can override the Role for edge cases.</div>
+      {editModal.isOwner
+        ? <div style={{ marginBottom:13 }}>
+            <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>{t.role}</label>
+            <select value="admin" disabled style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#F8FAFC", boxSizing:"border-box", opacity:0.7, cursor:"not-allowed" }}>
+              <option value="admin">{t.admin}</option>
+            </select>
+            <div style={{fontSize:11,color:"#92400E",marginTop:4,fontWeight:600}}>👑 Owner role cannot be changed</div>
+          </div>
+        : <Inp label={t.role} type="select" value={editModal.role}
+            onChange={function(e){setEditModal(function(prev){return Object.assign({},prev,{role:e.target.value});});}}
+            options={[{value:"sales_admin",label:"Sales Admin"},{value:"director",label:"Sales Director"},{value:"manager",label:t.salesManager},{value:"team_leader",label:"Team Leader"},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/>}
+      {!editModal.isOwner&&<div style={{fontSize:11,color:C.textLight,marginTop:-6,marginBottom:12}}>Selecting a Job Title auto-sets the Role. You can override the Role for edge cases.</div>}
       <div style={{ marginBottom:12 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:5 }}>Starting Date</label>
         <input type="date" value={editModal.startingDate||""} onChange={function(e){setEditModal(function(prev){return Object.assign({},prev,{startingDate:e.target.value});});}}
@@ -10091,7 +10112,7 @@ var UsersPage = function(p) {
         <Inp label={"Team Name"} value={nU.teamName||""} onChange={function(e){setNU(Object.assign({},nU,{teamName:e.target.value}));}} placeholder="e.g. Team A"/>
         <Inp label={"Team Code"} value={nU.teamId||""} onChange={function(e){setNU(Object.assign({},nU,{teamId:e.target.value}));}} placeholder="team-a"/>
       </div>}
-        <div style={{ gridColumn:"1/-1" }}><Inp label={t.role} type="select" value={nU.role} onChange={function(e){setNU(Object.assign({},nU,{role:e.target.value}));}} options={[{value:"admin",label:t.admin},{value:"sales_admin",label:"Sales Admin"},{value:"director",label:"Sales Director"},{value:"manager",label:t.salesManager},{value:"team_leader",label:"Team Leader"},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/></div>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={t.role} type="select" value={nU.role} onChange={function(e){setNU(Object.assign({},nU,{role:e.target.value}));}} options={[{value:"sales_admin",label:"Sales Admin"},{value:"director",label:"Sales Director"},{value:"manager",label:t.salesManager},{value:"team_leader",label:"Team Leader"},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/></div>
       </div>
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={add} loading={saving} style={{ flex:1 }}>{t.add}</Btn></div>
     </Modal>

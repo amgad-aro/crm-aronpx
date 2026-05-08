@@ -826,6 +826,22 @@ function adminOnly(req, res, next) {
   next();
 }
 
+// ===== OWNER LOCKDOWN HELPERS =====
+// The system has exactly one admin: the Owner (isOwner: true), seeded once
+// by seedAdmin(). These helpers gate the user-management endpoints so that
+// no API path can create another admin, promote anyone to admin, demote the
+// Owner, deactivate the Owner, or modify the Owner record from a different
+// account. Frontend role dropdowns mirror the same restriction.
+function isOwnerUser(u) {
+  return !!(u && u.isOwner === true);
+}
+function ownerProtected(target, requesterId) {
+  return isOwnerUser(target) && String(target._id) !== String(requesterId);
+}
+// Roles permitted on POST /api/users — schema enum minus "admin". Keep this
+// in sync with the User schema enum at the top of the file.
+var ALLOWED_CREATE_ROLES = ["sales_admin","hr","director","manager","team_leader","sales","viewer"];
+
 // Vacation admin gate — tighter than adminOnly. Managers/TLs intentionally
 // excluded; only full Admin or Sales Admin can create/delete vacations.
 function vacationAdmin(req, res, next) {
@@ -3862,11 +3878,24 @@ app.get("/api/users", auth, async function(req, res) {
 
 app.post("/api/users", auth, adminOnly, async function(req, res) {
   try {
+    // Owner lockdown — see ALLOWED_CREATE_ROLES above. The Owner is seeded
+    // once and is the only admin the system will ever have.
+    if (req.body.role === "admin") {
+      return res.status(403).json({ error: "Cannot create admin users" });
+    }
+    if (req.body.isOwner === true) {
+      return res.status(403).json({ error: "Cannot create Owner via API" });
+    }
+    var roleRequested = req.body.role || "sales";
+    if (ALLOWED_CREATE_ROLES.indexOf(roleRequested) < 0) {
+      return res.status(400).json({ error: "Invalid role" });
+    }
+
     var hashed = await bcrypt.hash(req.body.password || "sales123", 10);
     var teamId = req.body.teamId || "";
     var teamName = req.body.teamName || "";
     var monthlyTarget = req.body.monthlyTarget ? Number(req.body.monthlyTarget) : 15;
-    
+
     // Auto-set reportsTo: find manager with same teamId
     var reportsTo = req.body.reportsTo || null;
     if(!reportsTo && teamId) {
@@ -3880,7 +3909,7 @@ app.post("/api/users", auth, adminOnly, async function(req, res) {
       password: hashed,
       email: req.body.email || "",
       phone: req.body.phone || "",
-      role: req.body.role || "sales",
+      role: roleRequested,
       title: req.body.title || "",
       active: true,
       teamId: teamId,
@@ -3900,6 +3929,31 @@ app.post("/api/users", auth, adminOnly, async function(req, res) {
 
 app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
   try {
+    // Owner lockdown — load target first, then enforce:
+    //   1. Non-Owner accounts cannot modify the Owner record at all.
+    //   2. Nobody (including the Owner) can change role to/from "admin".
+    //   3. Nobody can flip isOwner via the API.
+    //   4. Nobody (including the Owner) can deactivate the Owner.
+    var target = await User.findById(req.params.id);
+    if (!target) return res.status(404).json({ error: "User not found" });
+    if (ownerProtected(target, req.user.id)) {
+      return res.status(403).json({ error: "Cannot modify the Owner account" });
+    }
+    if (req.body.role !== undefined) {
+      if (req.body.role === "admin") {
+        return res.status(403).json({ error: "Cannot promote users to admin" });
+      }
+      if (target.role === "admin") {
+        return res.status(403).json({ error: "Owner role cannot be changed" });
+      }
+    }
+    if (req.body.isOwner !== undefined) {
+      return res.status(403).json({ error: "Owner flag cannot be changed via API" });
+    }
+    if (req.body.active !== undefined && isOwnerUser(target)) {
+      return res.status(403).json({ error: "Owner cannot be deactivated" });
+    }
+
     var update = {};
     if (req.body.name) update.name = req.body.name;
     if (req.body.email) update.email = req.body.email;
@@ -3944,6 +3998,17 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
 
 app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
   try {
+    // Owner lockdown — Owner is permanent; admin role is permanent. Both
+    // checks are kept (rather than collapsing to one) as defense in depth
+    // in case a non-Owner admin ever exists due to data drift.
+    var target = await User.findById(req.params.id);
+    if (!target) return res.status(404).json({ error: "User not found" });
+    if (isOwnerUser(target)) {
+      return res.status(403).json({ error: "Owner cannot be deleted" });
+    }
+    if (target.role === "admin") {
+      return res.status(403).json({ error: "Admin users cannot be deleted" });
+    }
     // Orphan-safe: detach subordinates so the tree stays intact without the parent.
     await User.updateMany({ reportsTo: req.params.id }, { $set: { reportsTo: null } });
     var deletedUser = await User.findByIdAndDelete(req.params.id);
