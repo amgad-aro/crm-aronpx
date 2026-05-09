@@ -622,7 +622,10 @@ app.use(function(req, res, next){
         else if (path.indexOf("/api/daily-requests") === 0) {
           if (method === "DELETE") broadcast("dr_deleted", { drId: String(req.params.id||"") });
           else if (body && body._id) broadcast("dr_updated", { drId: String(body._id), dr: body });
-          else if (body && Array.isArray(body)) broadcast("dr_updated", {}); // bulk
+          // Bulk shape: handlers like /bulk-reassign return { ok, count, drs:[...] }.
+          // Pass the array through so clients upsert in place instead of refetching the full DR list.
+          else if (body && Array.isArray(body.drs)) broadcast("dr_updated", { drs: body.drs });
+          else if (body && Array.isArray(body)) broadcast("dr_updated", {}); // legacy bulk
           else broadcast("dr_updated", {});
         }
         // ----- Leads (includes rotate / eoi-cancel / deal-cancel / eoi-to-deal / upload-image / eoi-documents / archive / bulk-*) -----
@@ -7907,7 +7910,14 @@ app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
     var agentObjId = new mongoose.Types.ObjectId(agentId);
     await DailyRequest.updateMany({ _id: { $in: leadIds } }, { $set: { agentId: agentObjId } });
-    res.json({ ok: true, count: leadIds.length });
+    // Re-read the affected DRs so the broadcast carries usable data — without
+    // this the dr_updated event has an empty payload and every connected
+    // client falls back to a full /api/daily-requests refetch (App.js
+    // line 15546). For a 50-DR bulk reassign with 10 agents online that's
+    // 10 full-list refetches; with the docs included the broadcast handler
+    // upserts in place.
+    var updated = await DailyRequest.find({ _id: { $in: leadIds } }).populate("agentId", "name title").lean();
+    res.json({ ok: true, count: leadIds.length, drs: updated });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -8101,6 +8111,15 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
           await Lead.findByIdAndUpdate(mirror._id, { status: "Deal Cancelled", eoiApproved: false, lastActivityTime: new Date() });
         }
       }
+    }
+    // When the EOI/DoneDeal branch ran, surface the mirror Lead id on the
+    // response. Lets the DR add-flow upload eoi-documents to the mirror
+    // without having to refetch the full /api/leads list to look it up.
+    // mirrorLead is var-hoisted; undefined when the branch didn't run.
+    if (mirrorLead && mirrorLead._id) {
+      var resp = (r && r.toObject) ? r.toObject() : r;
+      resp.mirrorLeadId = String(mirrorLead._id);
+      return res.json(resp);
     }
     res.json(r);
   } catch(e) { res.status(500).json({ error: e.message }); }

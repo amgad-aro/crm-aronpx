@@ -9320,26 +9320,32 @@ var DailyRequestsPage = function(p) {
     if (full && !selected.createdAt) setSelected(full);
   }, [requests]);
 
-  var filtered=requests.filter(function(r){
-    if(filterStatus!=="all"){
-      // Permanent meeting filter: strictly hadMeeting === true (stamped on
-      // first transition, never cleared). Legacy rows are backfilled on
-      // server start.
-      if(filterStatus==="MeetingDone"){
-        if(r.hadMeeting!==true) return false;
-      } else if(filterStatus==="__noAgent"){
-        // "No Agent" pseudo-filter: only DRs with empty/null agentId.
-        var naAid = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
-        if (naAid) return false;
-      } else if(r.status!==filterStatus) return false;
-    }
-    if(agentFilter){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;if(aid!==agentFilter)return false;}
-    return matchSearch(r,p.search);
-  }).sort(function(a,b){
-    if(sortBy==="lastActivity")return new Date(b.lastActivityTime||0)-new Date(a.lastActivityTime||0);
-    if(sortBy==="newest")return new Date(b.createdAt||0)-new Date(a.createdAt||0);
-    return 0;
-  });
+  // Memoized so unrelated state changes (side panel open/close, status
+  // dropdown, modals) don't re-filter and re-sort the full list on every
+  // render. Recomputes only when the underlying data or any filter input
+  // actually changes.
+  var filtered = useMemo(function(){
+    return requests.filter(function(r){
+      if(filterStatus!=="all"){
+        // Permanent meeting filter: strictly hadMeeting === true (stamped on
+        // first transition, never cleared). Legacy rows are backfilled on
+        // server start.
+        if(filterStatus==="MeetingDone"){
+          if(r.hadMeeting!==true) return false;
+        } else if(filterStatus==="__noAgent"){
+          // "No Agent" pseudo-filter: only DRs with empty/null agentId.
+          var naAid = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
+          if (naAid) return false;
+        } else if(r.status!==filterStatus) return false;
+      }
+      if(agentFilter){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;if(aid!==agentFilter)return false;}
+      return matchSearch(r,p.search);
+    }).sort(function(a,b){
+      if(sortBy==="lastActivity")return new Date(b.lastActivityTime||0)-new Date(a.lastActivityTime||0);
+      if(sortBy==="newest")return new Date(b.createdAt||0)-new Date(a.createdAt||0);
+      return 0;
+    });
+  }, [requests, filterStatus, agentFilter, sortBy, p.search]);
 
   var reqStatus=function(rid,st){
     setPendingStatus({leadId:rid,newStatus:st});setShowStatusComment(true);
@@ -9487,23 +9493,33 @@ var DailyRequestsPage = function(p) {
         }
         if(isDoneDeal && !r.dealDate) upData.dealDate = new Date().toISOString().slice(0,10);
         r = await apiFetch("/api/daily-requests/"+gid(r),"PUT",upData,p.token);
-        // Upload any attached documents (EOI or DoneDeal) against the Lead mirror the PUT just built.
-        if((isEOI||isDoneDeal) && Array.isArray(form.eoiDocFiles) && form.eoiDocFiles.length>0){
-          try {
-            var leadsResp = await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);
-            var mirrorLead = (leadsResp&&leadsResp.data||[]).find(function(l){return l.phone===r.phone && l.source==="Daily Request";});
-            if(mirrorLead){
-              for(var di=0;di<form.eoiDocFiles.length;di++){
-                var ff = form.eoiDocFiles[di];
-                if(!ff||!ff.fileData) continue;
-                try { await apiFetch("/api/leads/"+gid(mirrorLead)+"/eoi-documents","POST",{fileData:ff.fileData,fileName:ff.fileName||""},p.token); }
-                catch(docErr){ console.error("Document upload failed:", docErr.message); }
-              }
-            }
-          } catch(lookupErr){ console.error("Mirror lookup failed:", lookupErr.message); }
+        // Backend PUT now surfaces mirrorLeadId on the response (server.js
+        // line ~8108) so we can target the mirror without scanning the full
+        // /api/leads list. Saves a 1000-row fetch per save and lets the doc
+        // uploads run in parallel.
+        var mirrorLeadId = r && r.mirrorLeadId ? String(r.mirrorLeadId) : "";
+        if((isEOI||isDoneDeal) && Array.isArray(form.eoiDocFiles) && form.eoiDocFiles.length>0 && mirrorLeadId){
+          await Promise.all(form.eoiDocFiles.map(function(ff){
+            if(!ff||!ff.fileData) return Promise.resolve();
+            return apiFetch("/api/leads/"+mirrorLeadId+"/eoi-documents","POST",{fileData:ff.fileData,fileName:ff.fileName||""},p.token)
+              .catch(function(docErr){ console.error("Document upload failed:", docErr.message); });
+          }));
         }
-        // Refresh the leads list so the EOI / Deals page picks up the mirror.
-        try { var fresh=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token); if(fresh&&fresh.data) p.setLeads(fresh.data); } catch(freshErr){}
+        // Refresh the mirror in p.leads so the EOI / Deals page picks it up.
+        // Single-lead GET instead of the previous 1000-row /api/leads pull;
+        // the server already broadcast lead_updated for this mirror via
+        // emitLead() so most of the time the row is already there — this
+        // fetch is a belt-and-braces refresh that doesn't block navigation.
+        if(mirrorLeadId){
+          apiFetch("/api/leads/"+mirrorLeadId,"GET",null,p.token).then(function(fresh){
+            if(fresh && fresh._id && p.setLeads){
+              p.setLeads(function(prev){
+                var found = prev.some(function(l){return gid(l)===String(fresh._id);});
+                return found ? prev.map(function(l){return gid(l)===String(fresh._id)?fresh:l;}) : [fresh].concat(prev);
+              });
+            }
+          }).catch(function(){});
+        }
         if(p.addDealNotif){
           p.addDealNotif({
             leadId:gid(r),
@@ -15541,6 +15557,22 @@ export default function CRMApp() {
                 setDailyReqs(function(prev){
                   var hit = prev.some(function(r){return gid(r)===String(dr._id);});
                   return hit ? prev.map(function(r){return gid(r)===String(dr._id)?dr:r;}) : [dr].concat(prev);
+                });
+              } else if (Array.isArray(data.drs) && data.drs.length) {
+                // Bulk path — backend now ships the affected DRs (e.g. bulk-reassign
+                // returns { drs: [...] }). Upsert each in place so we don't fall
+                // through to fetchDRs() and pull the whole list across every connected client.
+                var byId = {};
+                data.drs.forEach(function(d){ if(d && d._id) byId[String(d._id)] = d; });
+                setDailyReqs(function(prev){
+                  var seen = {};
+                  var merged = prev.map(function(r){
+                    var rid = gid(r);
+                    if (byId[rid]) { seen[rid] = true; return byId[rid]; }
+                    return r;
+                  });
+                  Object.keys(byId).forEach(function(k){ if(!seen[k]) merged.unshift(byId[k]); });
+                  return merged;
                 });
               } else {
                 fetchDRs();
