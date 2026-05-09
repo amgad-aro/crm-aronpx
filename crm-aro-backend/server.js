@@ -7489,8 +7489,42 @@ app.post("/api/leads/bulk-delete", auth, adminOnly, async function(req, res) {
   try {
     var { ids } = req.body;
     if(!ids||!ids.length) return res.json({ ok: true, count: 0 });
+    // Read first so we can capture phone+source for the mirror cascade.
+    // Match the single-DELETE behaviour at server.js:6002+ exactly so
+    // "Clear All" on the Archive page can't leave orphan DRs/notifications
+    // (the failure mode that produced the dashboard "DEALS: 1" bug —
+    // bulk-delete used to silently remove archived Leads with no cascade
+    // and no broadcast, leaving the paired DR unarchived in the DB).
+    var leadDocs = await Lead.find({ _id: { $in: ids }, archived: true }, { _id: 1, phone: 1, source: 1 }).lean();
+    var deletedIdStrs = leadDocs.map(function(l){ return String(l._id); });
     await Lead.deleteMany({ _id: { $in: ids }, archived: true });
-    res.json({ ok: true, count: ids.length });
+    // Mirror cascade: collect mirror phones (only from leads that ARE mirrors,
+    // i.e. source="Daily Request") and bulk-delete the paired DRs in one
+    // round-trip. Source guard prevents accidentally deleting standalone DRs
+    // that share a phone with non-mirror leads in the bulk set.
+    var mirrorPhones = leadDocs
+      .filter(function(l){ return l.source === "Daily Request" && l.phone; })
+      .map(function(l){ return l.phone; });
+    var uniqueMirrorPhones = Array.from(new Set(mirrorPhones));
+    if (uniqueMirrorPhones.length) {
+      try {
+        var drDel = await DailyRequest.deleteMany({ phone: { $in: uniqueMirrorPhones } });
+        if (drDel && drDel.deletedCount > 0) { try { broadcast("dr_updated", {}); } catch(e) {} }
+      } catch(drErr) { console.error("[bulk-delete DR cascade]", drErr && drErr.message); }
+    }
+    // Notification cascade: drop rows pointing at any of the deleted leads.
+    if (deletedIdStrs.length) {
+      try { await Notification.deleteMany({ leadId: { $in: deletedIdStrs } }); } catch(nErr) { console.error("[bulk-delete notif cascade]", nErr && nErr.message); }
+      try { broadcast("notification_updated", {}); } catch(e) {}
+    }
+    // Frontend WS notification: response body is {ok,count} so the broadcast
+    // middleware emits empty lead_updated. Once Fix B's fallback lands the
+    // frontend will fetchLeads() on empty payload — but emit lead_deleted
+    // explicitly here too so each removal is broadcast even pre-Fix-B.
+    deletedIdStrs.forEach(function(lid){
+      try { broadcast("lead_deleted", { leadId: lid }); } catch(e) {}
+    });
+    res.json({ ok: true, count: ids.length, deletedCount: deletedIdStrs.length });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

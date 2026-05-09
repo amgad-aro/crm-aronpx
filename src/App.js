@@ -15598,6 +15598,18 @@ export default function CRMApp() {
     var fetchDRs = function(){
       apiFetch("/api/daily-requests","GET",null,token).then(function(d){ if(Array.isArray(d)) setDailyReqs(d); }).catch(function(){});
     };
+    // Lightweight fallback for empty-payload lead_updated WS events. Mirrors
+    // the existing fetchDRs() fallback used by the dr_updated handler. Without
+    // this, server-side cascade emits (e.g. DR.delete cascading to mirror
+    // Lead.deleteMany at server.js:8189) that broadcast empty lead_updated
+    // payloads silently no-op on the client, leaving the deleted/archived
+    // mirror Lead in p.leads — which surfaces as ghost rows on DealsPage,
+    // EOIPage, and the dashboard KPI strip.
+    var fetchLeadsLight = function(){
+      apiFetch("/api/leads?page=1&limit=1000","GET",null,token).then(function(r){
+        if (r && Array.isArray(r.data)) setLeads(r.data);
+      }).catch(function(){});
+    };
     var fetchSingleLead = function(leadId){
       if(!leadId) return;
       apiFetch("/api/leads/"+leadId,"GET",null,token).then(function(fresh){
@@ -15642,6 +15654,11 @@ export default function CRMApp() {
                 }
               } else if (data.leadId) {
                 fetchSingleLead(String(data.leadId));
+              } else {
+                // Empty payload → server-side cascade or bulk op that didn't
+                // attach a doc. Mirrors the dr_updated→fetchDRs fallback so
+                // the local Lead state can't silently diverge from the DB.
+                fetchLeadsLight();
               }
               break;
             case "lead_deleted":
