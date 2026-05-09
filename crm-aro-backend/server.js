@@ -6001,6 +6001,14 @@ app.delete("/api/leads/:id", auth, async function(req, res) {
       return res.status(403).json({ error: "Admin only" });
     }
     await Lead.findByIdAndDelete(req.params.id);
+    // Cascade: drop any Notification rows pointing at this lead. Notification
+    // .leadId is a String (not an ObjectId ref) so MongoDB doesn't cascade
+    // automatically; without this the bell keeps a dead row that links
+    // nowhere when the user clicks. notification_updated tells every connected
+    // client to refetch, so the stale entry disappears immediately rather
+    // than waiting for the next loadNotifications cycle.
+    try { await Notification.deleteMany({ leadId: String(req.params.id) }); } catch(cascadeErr) { console.error("[lead-delete cascade]", cascadeErr && cascadeErr.message); }
+    try { broadcast("notification_updated", {}); } catch(e) {}
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -8467,6 +8475,14 @@ app.put("/api/leads/:id/archive", auth, async function(req, res) {
       return res.status(403).json({ error: "Admin only" });
     }
     var lead = await Lead.findByIdAndUpdate(req.params.id, { archived: true }, { new: true });
+    // Cascade: drop any Notification rows pointing at this lead. The GET-time
+    // filter at getVisibleNotifications already drops archived-lead rows for
+    // type=deal/rotation, but (a) other types (e.g. legacy "new_lead") slip
+    // through that filter, (b) the bell only re-fetches on socket reconnect
+    // or page reload so users saw stale rows lingering until next refresh.
+    // Eager cleanup + notification_updated emit closes both gaps.
+    try { await Notification.deleteMany({ leadId: String(req.params.id) }); } catch(cascadeErr) { console.error("[lead-archive cascade]", cascadeErr && cascadeErr.message); }
+    try { broadcast("notification_updated", {}); } catch(e) {}
     res.json(lead);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
