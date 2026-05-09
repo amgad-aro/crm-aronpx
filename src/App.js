@@ -1360,6 +1360,7 @@ var HeaderSearch = function(p) {
       return false;
     }).slice(0,10);
     drResults = (p.dailyRequests||[]).filter(function(r){
+      if (r.archived) return false; // unified archive rule (Divergence #7)
       if (r.name && r.name.toLowerCase().indexOf(lc)>=0) return true;
       if (r.phone && r.phone.indexOf(q)>=0) return true;
       if (r.phone2 && r.phone2.indexOf(q)>=0) return true;
@@ -1943,6 +1944,7 @@ var QuickPhoneSearch = function(p) {
     return (l.phone&&(l.phone.includes(q)||l.phone.endsWith(q)))||(l.phone2&&(l.phone2.includes(q)||l.phone2.endsWith(q)));
   }):[];
   var drResults=q.length>=4?(p.dailyReqs||[]).filter(function(r){
+    if (r.archived) return false; // unified archive rule (Divergence #7)
     return (r.phone&&(r.phone.includes(q)||r.phone.endsWith(q)))||(r.phone2&&(r.phone2.includes(q)||r.phone2.endsWith(q)));
   }):[];
   var sc=STATUSES(p.t);
@@ -6416,6 +6418,7 @@ var DashboardPage = function(p) {
   var renderAgentPerformanceCard = function(rsA, reA){
     var interestedStatusesA = ["Interested","Hot Case","HotCase","Potential"];
     var fDRa = (p.dailyReqs||[]).filter(function(r){
+      if (r.archived) return false; // unified archive rule (Divergence #7)
       var rt = r.createdAt ? new Date(r.createdAt).getTime() : 0;
       return rt>=rsA && rt<=reA;
     });
@@ -6710,6 +6713,7 @@ var DashboardPage = function(p) {
     // from the server (BATCH 2 + 2.5), so isTeamScope just passes them through.
     // Sales/admin/etc fall back to a self-only filter on the visible set.
     var myDrsScopedS = (p.dailyReqs||[]).filter(function(r){
+      if (r.archived) return false; // unified archive rule (Divergence #7)
       if (isTeamScope) return true;
       var aid = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
       return String(aid) === myUidS;
@@ -6972,7 +6976,7 @@ var DashboardPage = function(p) {
   var fTotal = fLeads.length||1;
   var fSC={}; fLeads.forEach(function(l){fSC[l.status]=(fSC[l.status]||0)+1;});
   // DR for current filter
-  var fDR = (p.dailyReqs||[]).filter(function(r){var rt=r.createdAt?new Date(r.createdAt).getTime():0;return rt>=rangeStart&&rt<=rangeEnd;});
+  var fDR = (p.dailyReqs||[]).filter(function(r){ if (r.archived) return false; /* unified archive rule (Divergence #7) */ var rt=r.createdAt?new Date(r.createdAt).getTime():0;return rt>=rangeStart&&rt<=rangeEnd;});
 
   // Helper: was status "X" set in the date range? Check assignments and agentHistory entries.
   var statusChangedInRange = function(l, targetStatus){
@@ -7044,6 +7048,7 @@ var DashboardPage = function(p) {
     return false;
   }).length;
   var meetingsFromDR = (p.dailyReqs||[]).filter(function(r){
+    if (r.archived) return false; // unified archive rule (Divergence #7)
     var rt=r.createdAt?new Date(r.createdAt).getTime():0;
     return (r.status==="Meeting"||r.status==="MeetingDone") && rt>=rangeStart && rt<=rangeEnd;
   }).length;
@@ -7062,6 +7067,7 @@ var DashboardPage = function(p) {
     return dealT>=rangeStart && dealT<=rangeEnd;
   }).length;
   var dealsFromDR = (p.dailyReqs||[]).filter(function(r){
+    if (r.archived) return false; // unified archive rule (Divergence #7)
     if (r.status!=="DoneDeal" && r.status!=="Done Deal" && r.status!=="Deal") return false;
     var t = r.lastActivityTime ? new Date(r.lastActivityTime).getTime() : (r.updatedAt ? new Date(r.updatedAt).getTime() : (r.createdAt ? new Date(r.createdAt).getTime() : 0));
     return t>=rangeStart && t<=rangeEnd;
@@ -7078,6 +7084,7 @@ var DashboardPage = function(p) {
     return cb < now && cb >= rangeStart && cb <= rangeEnd;
   }).length;
   var overdueDR = (p.dailyReqs||[]).filter(function(r){
+    if (r.archived) return false; // unified archive rule (Divergence #7)
     var d = r.dueDate||r.callbackTime;
     if (!d) return false;
     if (r.status==="Meeting"||r.status==="MeetingDone"||r.status==="DoneDeal") return false;
@@ -9188,8 +9195,22 @@ var TasksPage = function(p) {
 var ArchivePage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader";
   var isOnlyAdmin=p.cu.role==="admin";
-  var archived = p.leads.filter(function(l){ return l.archived; });
   var [archivedDR,setArchivedDR]=useState([]);
+  // Mirror-pair de-dupe: when both sides of a DR↔Lead pair are archived
+  // (which is now always the case after the cascade endpoints), only show
+  // the DR row in the DRs table and hide the mirror Lead from the leads
+  // table — the DR is the original record, the Lead is its mirror. The
+  // user's restore/delete on the DR cascades back to the Lead.
+  var archivedDRPhones = useMemo(function(){
+    var s = new Set();
+    archivedDR.forEach(function(r){ if (r && r.phone) s.add(String(r.phone)); });
+    return s;
+  }, [archivedDR]);
+  var archived = p.leads.filter(function(l){
+    if (!l.archived) return false;
+    if (l.source === "Daily Request" && l.phone && archivedDRPhones.has(String(l.phone))) return false;
+    return true;
+  });
   useEffect(function(){
     // Load archived DRs from the server (the API returns all DRs regardless of archived flag).
     apiFetch("/api/daily-requests","GET",null,p.token)
@@ -9211,8 +9232,15 @@ var ArchivePage = function(p) {
   };
   var restore=async function(lid){
     try{
-      await apiFetch("/api/leads/"+lid,"PUT",{archived:false},p.token);
+      // Dedicated /unarchive endpoint (server.js) cascades archived:false to
+      // the linked DR mirror. Generic PUT {archived:false} would skip the
+      // cascade, leaving the DR archived even after the lead came back.
+      await apiFetch("/api/leads/"+lid+"/unarchive","PUT",null,p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:false}):l;});});
+      // Mirror cascade also un-archives the DR; refresh local DR state if any
+      // is held by the parent so the Daily Requests page reflects it on next
+      // navigation. Server emits dr_updated which the WS handler picks up;
+      // this is just a belt-and-braces local nudge.
     }catch(e){alert(e.message);}
   };
   var canDelete = p.cu.role==="admin" || p.cu.role==="sales_admin";
@@ -15808,6 +15836,7 @@ export default function CRMApp() {
     // Helper: get my DR
     var getMyDR = function(){
       return dailyReqs.filter(function(r){
+        if (r.archived) return false; // unified archive rule (Divergence #7)
         var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");
         return aid===uid;
       });

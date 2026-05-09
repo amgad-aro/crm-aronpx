@@ -6007,7 +6007,20 @@ app.delete("/api/leads/:id", auth, async function(req, res) {
     if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(403).json({ error: "Admin only" });
     }
+    // Read first so we can capture phone+source for the mirror cascade.
+    // findByIdAndDelete returns the deleted doc on older versions but we
+    // want the doc regardless of driver behavior, so do an explicit read.
+    var leadDoc = await Lead.findById(req.params.id).lean();
     await Lead.findByIdAndDelete(req.params.id);
+    // Mirror cascade: if this lead was a DR mirror, hard-delete the
+    // originating DR(s) too. Source guard prevents a standalone non-mirror
+    // Lead from accidentally deleting an unrelated DR that shares its phone.
+    if (leadDoc && leadDoc.source === "Daily Request" && leadDoc.phone) {
+      try {
+        var drDel = await DailyRequest.deleteMany({ phone: leadDoc.phone });
+        if (drDel && drDel.deletedCount > 0) { try { broadcast("dr_updated", {}); } catch(e) {} }
+      } catch(drErr) { console.error("[lead-delete DR cascade]", drErr && drErr.message); }
+    }
     // Cascade: drop any Notification rows pointing at this lead. Notification
     // .leadId is a String (not an ObjectId ref) so MongoDB doesn't cascade
     // automatically; without this the bell keeps a dead row that links
@@ -8158,7 +8171,29 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
 
 app.delete("/api/daily-requests/:id", auth, adminOnly, async function(req, res) {
   try {
+    // Read first so we can capture phone for the mirror cascade after delete.
+    var drDoc = await DailyRequest.findById(req.params.id).lean();
     await DailyRequest.findByIdAndDelete(req.params.id);
+    // Cascade Notification rows pointing at this DR (matches the Lead.delete
+    // behaviour at L6010+, Divergence #6 in the audit).
+    try { await Notification.deleteMany({ leadId: String(req.params.id) }); } catch(nErr) { console.error("[dr-delete notif cascade]", nErr && nErr.message); }
+    try { broadcast("notification_updated", {}); } catch(e) {}
+    // Mirror cascade: hard-delete the mirror Lead(s) too. Phone+source
+    // guard prevents accidentally deleting an unrelated standalone Lead
+    // that shares the phone.
+    if (drDoc && drDoc.phone) {
+      try {
+        var mirrorIds = await Lead.find({ phone: drDoc.phone, source: "Daily Request" }, { _id: 1 }).lean();
+        if (mirrorIds.length) {
+          var mirrorIdStrs = mirrorIds.map(function(d){ return String(d._id); });
+          await Lead.deleteMany({ _id: { $in: mirrorIds.map(function(d){ return d._id; }) } });
+          // And the mirror Leads' notifications, mirroring Lead.delete cascade.
+          try { await Notification.deleteMany({ leadId: { $in: mirrorIdStrs } }); } catch(nErr2) { console.error("[dr-delete mirror notif cascade]", nErr2 && nErr2.message); }
+          try { broadcast("lead_updated", {}); } catch(e) {}
+          try { broadcast("notification_updated", {}); } catch(e) {}
+        }
+      } catch(mErr) { console.error("[dr-delete Lead cascade]", mErr && mErr.message); }
+    }
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -8168,6 +8203,27 @@ app.put("/api/daily-requests/:id/archive", auth, adminOnly, async function(req, 
   try {
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, { archived: true, lastActivityTime: new Date() }, { new: true }).populate("agentId", "name title");
     if (!r) return res.status(404).json({ error: "Daily Request not found" });
+    // Mirror cascade: if a mirror Lead exists for this DR (created when the
+    // DR transitioned to EOI/DoneDeal — see PUT /api/daily-requests/:id at
+    // L8050+), archive it too. Match by phone + source="Daily Request" so
+    // standalone non-mirror Leads sharing a phone are unaffected.
+    if (r.phone) {
+      try {
+        var mirrorRes = await Lead.updateMany({ phone: r.phone, source: "Daily Request", archived: { $ne: true } }, { $set: { archived: true } });
+        if (mirrorRes && mirrorRes.modifiedCount > 0) {
+          // Cascade notifications for any mirror leads we just archived,
+          // matching the Lead.archive cascade behaviour. Single deleteMany
+          // by phone-resolved leadIds keeps the round-trip count low.
+          var mirrorIds = await Lead.find({ phone: r.phone, source: "Daily Request" }, { _id: 1 }).lean();
+          var mirrorIdStrs = mirrorIds.map(function(d){ return String(d._id); });
+          if (mirrorIdStrs.length) {
+            try { await Notification.deleteMany({ leadId: { $in: mirrorIdStrs } }); } catch(nErr) { console.error("[dr-archive notif cascade]", nErr && nErr.message); }
+            try { broadcast("notification_updated", {}); } catch(e) {}
+          }
+          try { broadcast("lead_updated", {}); } catch(e) {}
+        }
+      } catch(mErr) { console.error("[dr-archive Lead cascade]", mErr && mErr.message); }
+    }
     res.json(r);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -8176,6 +8232,13 @@ app.put("/api/daily-requests/:id/unarchive", auth, adminOnly, async function(req
   try {
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, { archived: false, lastActivityTime: new Date() }, { new: true }).populate("agentId", "name title");
     if (!r) return res.status(404).json({ error: "Daily Request not found" });
+    // Mirror cascade: bring the linked mirror Lead back too.
+    if (r.phone) {
+      try {
+        var mRes = await Lead.updateMany({ phone: r.phone, source: "Daily Request", archived: true }, { $set: { archived: false } });
+        if (mRes && mRes.modifiedCount > 0) { try { broadcast("lead_updated", {}); } catch(e) {} }
+      } catch(mErr) { console.error("[dr-unarchive Lead cascade]", mErr && mErr.message); }
+    }
     res.json(r);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -8506,6 +8569,42 @@ app.put("/api/leads/:id/archive", auth, async function(req, res) {
     // Eager cleanup + notification_updated emit closes both gaps.
     try { await Notification.deleteMany({ leadId: String(req.params.id) }); } catch(cascadeErr) { console.error("[lead-archive cascade]", cascadeErr && cascadeErr.message); }
     try { broadcast("notification_updated", {}); } catch(e) {}
+    // Mirror cascade: if this lead is a DR mirror (source="Daily Request"),
+    // archive the originating DR too. Without this the DR keeps showing on
+    // the Daily Requests page even though the user archived its mirror from
+    // the EOI/Deals page. Phone+source is the established mirror linkage
+    // (see PUT /api/daily-requests/:id at L8135). Source guard prevents a
+    // standalone non-mirror Lead from accidentally archiving an unrelated
+    // DR that shares its phone.
+    if (lead && lead.source === "Daily Request" && lead.phone) {
+      try {
+        var drRes = await DailyRequest.updateMany({ phone: lead.phone, archived: { $ne: true } }, { $set: { archived: true, lastActivityTime: new Date() } });
+        if (drRes && drRes.modifiedCount > 0) { try { broadcast("dr_updated", {}); } catch(e) {} }
+      } catch(drErr) { console.error("[lead-archive DR cascade]", drErr && drErr.message); }
+    }
+    res.json(lead);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== UNARCHIVE LEAD =====
+// Dedicated endpoint mirrors the DR side (PUT /api/daily-requests/:id/unarchive)
+// and lets us cascade archived:false to the linked DR mirror in one place.
+// ArchivePage previously used the generic PUT /api/leads/:id with {archived:false}
+// which had no cascade — restored leads stayed paired with archived DRs.
+app.put("/api/leads/:id/unarchive", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    var lead = await Lead.findByIdAndUpdate(req.params.id, { archived: false }, { new: true });
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    // Mirror cascade: bring the linked DR back too if this lead is a DR mirror.
+    if (lead.source === "Daily Request" && lead.phone) {
+      try {
+        var drRes = await DailyRequest.updateMany({ phone: lead.phone, archived: true }, { $set: { archived: false, lastActivityTime: new Date() } });
+        if (drRes && drRes.modifiedCount > 0) { try { broadcast("dr_updated", {}); } catch(e) {} }
+      } catch(drErr) { console.error("[lead-unarchive DR cascade]", drErr && drErr.message); }
+    }
     res.json(lead);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
