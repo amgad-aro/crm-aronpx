@@ -8343,17 +8343,29 @@ app.get("/api/notifications", auth, async function(req, res) {
     var uid = req.user.id;
     var type = req.query.type || null;
     var query = {};
+    var requestedTypes = [];
     if (type) {
       // Allow ?type=a,b,c to fetch multiple types in one round-trip. Used by
       // the off-site bell which lumps pending/approved/rejected together.
       if (String(type).indexOf(",") !== -1) {
-        query.type = { $in: String(type).split(",").map(function(s){ return s.trim(); }).filter(Boolean) };
+        requestedTypes = String(type).split(",").map(function(s){ return s.trim(); }).filter(Boolean);
+        query.type = { $in: requestedTypes };
       } else {
+        requestedTypes = [type];
         query.type = type;
       }
     }
-    // Return the full history, newest first. Cap is defensive only.
-    var limit = Math.min(parseInt(req.query.limit) || 2000, 5000);
+    // Default cap depends on requested types. deal/rotation-only requests
+    // drop to 200 — the bell only renders the recent handful and the
+    // rotation collection has 8000+ rows, so the prior 2000 default was
+    // wasteful and slowed initial app load. Mixed-type requests (e.g. the
+    // combined deal+rotation+offsite call) must pass an explicit limit;
+    // requests with no type at all keep the 2000 default for compatibility.
+    var allDealOrRotation = requestedTypes.length > 0 && requestedTypes.every(function(t){
+      return t === "deal" || t === "rotation";
+    });
+    var defaultLimit = allDealOrRotation ? 200 : 2000;
+    var limit = Math.min(parseInt(req.query.limit) || defaultLimit, 5000);
     var visible = await getVisibleNotifications(req, query, limit);
     var result = visible.map(function(n) {
       return Object.assign({}, n, { seen: n.seenBy && n.seenBy.indexOf(String(uid)) !== -1 });

@@ -19,8 +19,21 @@ async function apiFetch(path, method, body, token, csrfToken) {
     opts.headers["X-CSRF-Token"] = csrfToken;
   }
   if (body) opts.body = JSON.stringify(body);
+  // 30s hard timeout via AbortController. Without it a hung backend leaves
+  // the App-level "Loading..." spinner stuck indefinitely (loadData awaits
+  // Promise.all of 5 fetches with no other escape hatch). On timeout we
+  // throw the same shape as a network error so callers' error paths fire.
+  var controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  if (controller) opts.signal = controller.signal;
+  var timer = controller ? setTimeout(function(){ try { controller.abort(); } catch(e){} }, 30000) : null;
   var res;
-  try { res = await fetch(API + path, opts); } catch(netErr) { throw new Error("Connection error"); }
+  try { res = await fetch(API + path, opts); }
+  catch(netErr) {
+    if (timer) clearTimeout(timer);
+    if (netErr && netErr.name === "AbortError") throw new Error("Request timed out");
+    throw new Error("Connection error");
+  }
+  if (timer) clearTimeout(timer);
   var data;
   try { data = await res.json(); } catch(e) { data = {}; }
   if (res.status === 401) {
@@ -15359,13 +15372,29 @@ export default function CRMApp() {
   var notifyRotationRef = useRef(notifyRotation);
   notifyRotationRef.current = notifyRotation;
 
-  // Fetch notifications from DB
+  // Fetch notifications from DB. Single combined fetch (was 3 separate
+  // calls) — backend supports comma-separated types. Saves 2 HTTP round-
+  // trips and 2x the auth-middleware cost during the mount-time burst.
+  // Bucket the response by type into the same three local state arrays
+  // the WS push paths target. limit=600 leaves room for the recent
+  // rotation backlog plus deals/offsite even though rotation dominates.
   var loadNotifications = function(tok){
-    apiFetch("/api/notifications?type=deal","GET",null,tok).then(function(data){if(data)setDealNotifs(data);}).catch(function(e){ console.error("Notifications (deal) fetch failed:", e); });
-    apiFetch("/api/notifications?type=rotation","GET",null,tok).then(function(data){if(data)setRotNotifs(data);}).catch(function(e){ console.error("Notifications (rotation) fetch failed:", e); });
-    // Off-site bell — server visibility filter takes care of who sees what,
-    // so this single fetch works for approvers and requesters alike.
-    apiFetch("/api/notifications?type=offsite_pending,offsite_approved,offsite_rejected&limit=200","GET",null,tok).then(function(data){if(Array.isArray(data))setOffSiteNotifs(data);}).catch(function(e){ console.error("Notifications (offsite) fetch failed:", e); });
+    apiFetch("/api/notifications?type=deal,rotation,offsite_pending,offsite_approved,offsite_rejected&limit=600","GET",null,tok)
+      .then(function(data){
+        if (!Array.isArray(data)) return;
+        var deal = [], rot = [], off = [];
+        for (var i = 0; i < data.length; i++) {
+          var n = data[i];
+          if (!n) continue;
+          if (n.type === "deal") deal.push(n);
+          else if (n.type === "rotation") rot.push(n);
+          else if (n.type === "offsite_pending" || n.type === "offsite_approved" || n.type === "offsite_rejected") off.push(n);
+        }
+        setDealNotifs(deal);
+        setRotNotifs(rot);
+        setOffSiteNotifs(off);
+      })
+      .catch(function(e){ console.error("Notifications fetch failed:", e); });
   };
 
   useEffect(function(){
