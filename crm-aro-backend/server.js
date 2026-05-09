@@ -5768,6 +5768,13 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     if (req.body.status === "EOI" && oldLead && oldLead.status && oldLead.status !== "EOI") {
       update.preEoiStatus = oldLead.status;
       update.eoiStatus = "Pending";
+      // Mirror the DoneDeal write pattern at L5783. Without this, the
+      // rotation hard-stops at server.js:6125 / 6254 and the bulk-redistribute
+      // filter at server.js:6758 — all keyed on globalStatus === "eoi" — never
+      // fire for EOI leads. Backup checks on status === "EOI" cover most code
+      // paths today, but any future query that only checks globalStatus would
+      // silently let EOI leads through.
+      update.globalStatus = "eoi";
     }
     // Capture previous status when transitioning INTO DoneDeal, so deal cancel
     // can restore it. Also clear eoiStatus and set globalStatus to "donedeal"
@@ -6682,6 +6689,17 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
   var reason = (req.body && req.body.reason) || "auto_timeout";
   var r = await autoRotateLead(req.params.id, req.user.name || "System", { reason: reason, role: req.user.role });
   if (r.ok) return res.status(r.status || 200).json(r.body);
+  // Soft-skip keys are EXPECTED outcomes (cooldown, exhausted, race lost,
+  // settings off, per-lead guards) — every per-browser sweep at App.js:15945
+  // hits some subset of these on every cycle. Returning 4xx for them
+  // pollutes the Network tab even though the frontend already silently
+  // handles each case via the `result.targetAgentId` check at App.js:15965.
+  // Only no_rotation_order and no_agents are real config errors that admins
+  // should notice — those keep their 409.
+  var SOFT_SKIPS = ["rotation_stopped","noRotation","rotation_disabled","rotation_paused","max_rotations","cooldown","not_eligible","exhausted","concurrent_rotation"];
+  if (r.status === 409 && SOFT_SKIPS.indexOf(r.error) !== -1) {
+    return res.json({ rotated: false, reason: r.error, message: r.message });
+  }
   var payload = { error: r.error };
   if (r.message) payload.message = r.message;
   if (r.reason)  payload.reason  = r.reason;
@@ -8003,6 +8021,11 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
         var mirrorExtra = {};
         if (req.body.status === "EOI") {
           mirrorExtra.eoiStatus = "Pending"; mirrorExtra.eoiApproved = false;
+          // Mirror the PUT-handler globalStatus write (server.js:5777). DR-
+          // sourced EOI leads need the flag too so the rotation hard-stops
+          // and reports filters that key on globalStatus === "eoi" fire for
+          // them just like for EOI leads created via the Leads page.
+          mirrorExtra.globalStatus = "eoi";
           // Only stamp eoiDate on the FIRST transition into EOI — preserve the original
           // closure date on every subsequent edit, so the deal-notifications panel doesn't
           // bump old EOIs back to "just now".

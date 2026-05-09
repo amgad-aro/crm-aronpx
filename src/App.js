@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
 
 import {
   Search, Bell, Plus, Phone, Building, Users, BarChart3,
@@ -237,6 +237,24 @@ var SOURCES = ["Facebook", "TikTok", "Snapchat", "WhatsApp", "Google Ads", "Refe
 // is correct; hiding from the dropdown just removes the confusing
 // "Daily Request (legacy)" entry from filters and edit modals.
 var HIDDEN_LEGACY_SOURCES = ["Daily Request"];
+
+// Source filter dropdown — top-level memoized component. Lifted out of
+// LeadsPage so frequent WS-driven parent re-renders (lead_updated etc.)
+// don't reconcile the underlying native <select> while the user has it
+// open — that reconciliation is what dismissed the OS dropdown and
+// produced the "black rectangle for ~1s" flicker (memory: ui_bug_dropdown
+// _flicker, 2026-05-05). Style is a top-level const so the style prop
+// reference is stable across renders. Caller MUST pass a stable onChange
+// (useCallback) and a stable legacyList ref (use the string-hash memo
+// pattern at LeadsPage:3008) for memo() to actually skip work.
+var SOURCE_FILTER_STYLE = { padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text };
+var SourceFilterSelect = memo(function SourceFilterSelect(props){
+  return <select value={props.value} onChange={props.onChange} style={SOURCE_FILTER_STYLE}>
+    <option value="">📡 All sources</option>
+    {SOURCES.map(function(s){ return <option key={s} value={s}>{s}</option>; })}
+    {props.legacyList.map(function(s){ return <option key={s} value={s}>{s} (legacy)</option>; })}
+  </select>;
+});
 
 // Build the dropdown options for a Lead source <select>. Always prepends a
 // disabled-feeling "Select source..." placeholder so the empty value is a
@@ -3000,19 +3018,30 @@ var LeadsPage = function(p) {
   var [sourceFilter, setSourceFilter] = useState("");
   var [campaignMode, setCampaignMode] = useState("all"); // "all" | "has" | "none" | "contains"
   var [campaignText, setCampaignText] = useState("");
-  // Defensive memo (2026-05-06): scan p.leads for legacy source values just
-  // once per leads-array reference change instead of every render. Was an
-  // inline IIFE in the source filter dropdown — ran on every keystroke,
-  // every modal open, every selection toggle. Suspected contributor to the
-  // dropdown-flicker symptom; cheap to memoize regardless.
-  var sourceFilterLegacyList = useMemo(function(){
+  // Two-step memo for the legacy-source list. Step 1 collapses p.leads to a
+  // stable join-key string; step 2 derives the array only when that key
+  // changes. Without the indirection, a plain useMemo([p.leads]) returns a
+  // NEW array reference on every WS-driven leads update even when the
+  // legacy set is unchanged — that ref churn breaks SourceFilterSelect's
+  // memo() and reconciles the native <select> while it's open, producing
+  // the dropdown-flicker symptom (ui_bug_dropdown_flicker, 2026-05-05).
+  var sourceFilterLegacyKey = useMemo(function(){
     var seenS = {};
     SOURCES.forEach(function(s){ seenS[s] = true; });
     HIDDEN_LEGACY_SOURCES.forEach(function(s){ seenS[s] = true; });
     var legacyMap = {};
     (p.leads || []).forEach(function(l){ if (l.source && !seenS[l.source]) legacyMap[l.source] = true; });
-    return Object.keys(legacyMap).sort();
+    return Object.keys(legacyMap).sort().join("|");
   }, [p.leads]);
+  var sourceFilterLegacyList = useMemo(function(){
+    return sourceFilterLegacyKey ? sourceFilterLegacyKey.split("|") : [];
+  }, [sourceFilterLegacyKey]);
+  // Stable onChange ref so SourceFilterSelect's memo() actually skips
+  // re-render. useState setters are stable, so deps are empty.
+  var onSourceFilterChange = useCallback(function(e){
+    setLockedOnly(false);
+    setSourceFilter(e.target.value);
+  }, []);
   var [panelHistory, setPanelHistory] = useState([]);
   var [dateRange, setDateRange] = useState("all"); // today | yesterday | week | month | quarter | all
   var fileRef = useRef(null);
@@ -3859,17 +3888,14 @@ var LeadsPage = function(p) {
           }
           setLockedOnly(!lockedOnly);
         }} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:lockedOnly?"#EC4899":"#E8ECF1", background:lockedOnly?"#FCE7F3":"#fff", color:lockedOnly?"#BE185D":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>🔒 Locked Only{lockedOnly?" ("+filtered.length+")":""}</button>}
-        {isOnlyAdmin&&<select value={sourceFilter} onChange={function(e){setLockedOnly(false);setSourceFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
-          {/* Source filter dropdown — "All sources" + canonical SOURCES +
-              any legacy values currently present in the visible lead set
-              (Instagram, "Snap Chat", lowercase "facebook" from
-              /api/leads/inbound). HIDDEN_LEGACY_SOURCES values (e.g.
-              "Daily Request") are suppressed — see the const for rationale.
-              Legacy list is memoized via sourceFilterLegacyList — see hook. */}
-          <option value="">📡 All sources</option>
-          {SOURCES.map(function(s){return <option key={s} value={s}>{s}</option>;})}
-          {sourceFilterLegacyList.map(function(s){return <option key={s} value={s}>{s} (legacy)</option>;})}
-        </select>}
+        {/* Source filter — extracted to top-level memo() component (see
+            SourceFilterSelect definition near SOURCES const) so WS-driven
+            parent re-renders don't reconcile the open native <select> and
+            dismiss the OS dropdown. legacyList ref is stable thanks to the
+            two-step string-hash memo above; onChange is wrapped in
+            useCallback. Both stability properties are load-bearing for
+            memo() to actually skip work. */}
+        {isOnlyAdmin && <SourceFilterSelect value={sourceFilter} onChange={onSourceFilterChange} legacyList={sourceFilterLegacyList} />}
         {isOnlyAdmin&&<select value={campaignMode} onChange={function(e){setLockedOnly(false);setCampaignMode(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
           <option value="all">📣 All campaigns</option>
           <option value="has">Has campaign</option>
