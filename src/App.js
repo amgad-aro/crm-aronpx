@@ -8506,6 +8506,7 @@ var DealsPage = function(p) {
     try{
       await apiFetch("/api/leads/"+lid+"/archive","PUT",null,p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?Object.assign({},l,{archived:true}):l;});});
+      if(selectedDeal&&gid(selectedDeal)===lid)setSelectedDeal(null);
     }catch(e){alert(e.message);}
   };
 
@@ -9326,6 +9327,10 @@ var DailyRequestsPage = function(p) {
   // actually changes.
   var filtered = useMemo(function(){
     return requests.filter(function(r){
+      // Defense in depth: the initial /api/daily-requests fetch already strips
+      // archived rows (line ~9305), but any subsequent setRequests path that
+      // upserts a server doc could re-introduce one. Re-check at render time.
+      if(r.archived) return false;
       if(filterStatus!=="all"){
         // Permanent meeting filter: strictly hadMeeting === true (stamped on
         // first transition, never cleared). Legacy rows are backfilled on
@@ -15540,10 +15545,18 @@ export default function CRMApp() {
             case "lead_updated":
               if (data.lead && data.lead._id) {
                 var lead = data.lead;
-                setLeads(function(prev){
-                  var hit = prev.some(function(l){return gid(l)===String(lead._id);});
-                  return hit ? prev.map(function(l){return gid(l)===String(lead._id)?lead:l;}) : [lead].concat(prev);
-                });
+                // Defense in depth: a lead that just got archived (e.g. via
+                // PUT /api/leads/:id/archive) shouldn't be upserted back into
+                // the visible list — drop it instead so any page that filters
+                // on !archived doesn't have to rely on its render-time guard.
+                if (lead.archived === true) {
+                  setLeads(function(prev){return prev.filter(function(l){return gid(l)!==String(lead._id);});});
+                } else {
+                  setLeads(function(prev){
+                    var hit = prev.some(function(l){return gid(l)===String(lead._id);});
+                    return hit ? prev.map(function(l){return gid(l)===String(lead._id)?lead:l;}) : [lead].concat(prev);
+                  });
+                }
               } else if (data.leadId) {
                 fetchSingleLead(String(data.leadId));
               }
@@ -15554,19 +15567,33 @@ export default function CRMApp() {
             case "dr_updated":
               if (data.dr && data.dr._id) {
                 var dr = data.dr;
-                setDailyReqs(function(prev){
-                  var hit = prev.some(function(r){return gid(r)===String(dr._id);});
-                  return hit ? prev.map(function(r){return gid(r)===String(dr._id)?dr:r;}) : [dr].concat(prev);
-                });
+                // Defense in depth: a DR that just got archived shouldn't be
+                // upserted back into the visible list — drop it instead so the
+                // DR page's render-time !archived guard isn't the only line
+                // of defense.
+                if (dr.archived === true) {
+                  setDailyReqs(function(prev){return prev.filter(function(r){return gid(r)!==String(dr._id);});});
+                } else {
+                  setDailyReqs(function(prev){
+                    var hit = prev.some(function(r){return gid(r)===String(dr._id);});
+                    return hit ? prev.map(function(r){return gid(r)===String(dr._id)?dr:r;}) : [dr].concat(prev);
+                  });
+                }
               } else if (Array.isArray(data.drs) && data.drs.length) {
                 // Bulk path — backend now ships the affected DRs (e.g. bulk-reassign
                 // returns { drs: [...] }). Upsert each in place so we don't fall
                 // through to fetchDRs() and pull the whole list across every connected client.
+                // Archived rows in the bulk payload are dropped, mirroring the single-DR path above.
                 var byId = {};
-                data.drs.forEach(function(d){ if(d && d._id) byId[String(d._id)] = d; });
+                var archivedIds = {};
+                data.drs.forEach(function(d){
+                  if(!d || !d._id) return;
+                  if(d.archived === true) archivedIds[String(d._id)] = true;
+                  else byId[String(d._id)] = d;
+                });
                 setDailyReqs(function(prev){
                   var seen = {};
-                  var merged = prev.map(function(r){
+                  var merged = prev.filter(function(r){return !archivedIds[gid(r)];}).map(function(r){
                     var rid = gid(r);
                     if (byId[rid]) { seen[rid] = true; return byId[rid]; }
                     return r;
