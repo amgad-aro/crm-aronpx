@@ -6277,39 +6277,23 @@ var DashboardPage = function(p) {
   var hourNow = new Date().getHours();
   var greeting = hourNow<6 ? "Good Night \ud83d\ude34" : hourNow<12 ? "Good Morning \u2600\ufe0f" : hourNow<18 ? "Good Afternoon \ud83c\udf24\ufe0f" : hourNow<24 ? "Good Evening \ud83c\udf19" : "Good Night \ud83d\ude34";
 
-  var total=leads.length;
-  var sc={};
-  leads.forEach(function(l){sc[l.status]=(sc[l.status]||0)+1;});
-  var newInRange=leads.filter(function(l){return l.createdAt&&(now-new Date(l.createdAt).getTime())<rangeMs;}).length;
-  var contacted=total-(sc["NewLead"]||0);
-  var interested=(sc["HotCase"]||0)+(sc["Potential"]||0)+(sc["MeetingDone"]||0)+(sc["DoneDeal"]||0);
-  var meetings=(sc["MeetingDone"]||0)+(sc["DoneDeal"]||0);
-  var deals=sc["DoneDeal"]||0;
-  var overdue=leads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).length;
-  var untouched=leads.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*DAY;}).length;
-
-  var campMap={};
-  leads.forEach(function(l){
-    var k=(l.campaign||"\u2014")+"|"+(l.project||"\u2014")+"|"+(l.source||"\u2014");
-    if(!campMap[k]) campMap[k]={campaign:l.campaign||"",project:l.project||"",source:l.source||"",leads:0,int:0,meet:0,deals:0};
-    campMap[k].leads++;
-    if(["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status)) campMap[k].int++;
-    if(["MeetingDone","DoneDeal"].includes(l.status)) campMap[k].meet++;
-    if(l.status==="DoneDeal") campMap[k].deals++;
-  });
-  var camps=Object.values(campMap).sort(function(a,b){return b.leads-a.leads;}).slice(0,8).map(function(c){
-    return Object.assign({},c,{ip:c.leads>0?Math.round(c.int/c.leads*100):0,mp:c.leads>0?Math.round(c.meet/c.leads*100):0,quality:c.leads>0&&Math.round(c.int/c.leads*100)>30?"High":Math.round(c.int/c.leads*100)>15?"Medium":"Low"});
-  });
-
-  var agentPerf=(p.users||[]).filter(function(u){return u.role==="sales";}).map(function(u){
-    var uid=String(u._id||gid(u));
-    var al=leads.filter(function(l){return l.assignments&&l.assignments.some(function(a){return String(a.agentId&&a.agentId._id?a.agentId._id:a.agentId)===uid;});});
-    var aint=al.filter(function(l){return["HotCase","Potential","MeetingDone","DoneDeal"].includes(l.status);}).length;
-    var ameet=al.filter(function(l){return["MeetingDone","DoneDeal"].includes(l.status);}).length;
-    var ip=al.length>0?Math.round(aint/al.length*100):0;
-    var mp=al.length>0?Math.round(ameet/al.length*100):0;
-    return {uid:uid,name:u.name,leads:al.length,interested:aint,ip:ip,meetings:ameet,mp:mp,overdue:al.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).length,deals:al.filter(function(l){return l.status==="DoneDeal";}).length,score:Math.min(99,ip+mp*2+(al.length>10?20:10))};
-  }).sort(function(a,b){return b.leads-a.leads;});
+  // Only `overdue` and `untouched` from this block are read downstream (admin
+  // Management Alerts at lines ~7747/7751). Memoized on `leads` so the click
+  // handler / 1 Hz clock rerender / fetch resolutions don't re-scan the list.
+  // `now` is captured at memo-compute time, which is fine for thresholds that
+  // shift in minutes, not milliseconds.
+  var overdueUntouched = useMemo(function(){
+    var nowMs = Date.now();
+    var overdueCount = 0, untouchedCount = 0;
+    for (var i=0;i<leads.length;i++) {
+      var l = leads[i];
+      if (l.callbackTime && new Date(l.callbackTime).getTime() < nowMs) overdueCount++;
+      if (l.status==="NewLead" && l.createdAt && (nowMs - new Date(l.createdAt).getTime()) > 2*DAY) untouchedCount++;
+    }
+    return { overdue: overdueCount, untouched: untouchedCount };
+  },[leads]);
+  var overdue = overdueUntouched.overdue;
+  var untouched = overdueUntouched.untouched;
 
   var dayNames=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   var todayIdx=new Date().getDay();
@@ -6454,14 +6438,28 @@ var DashboardPage = function(p) {
   // bounds, computes per-agent metrics, returns the rendered card. p.users is
   // already subtree-scoped server-side per role; the role: "sales" filter is
   // a safety belt so TL/manager/director rows can never appear in the table.
+  // Cache the (rsA, reA, data-identity) → fAgentPerfA result so the 4 fetch
+  // resolutions following a filter click don't re-run this O(users × leads)
+  // iteration. Filter changes still recompute; data-identity changes from
+  // /api/leads polling still recompute.
+  var agentPerfCacheRef = useRef({key:"",value:null});
   var renderAgentPerformanceCard = function(rsA, reA){
+    var users = p.users || [];
+    var dailyReqs = p.dailyReqs || [];
+    var activities = p.activities || [];
+    var ta = todayActivities;
+    var cacheKey = rsA+":"+reA+":"+leads.length+":"+users.length+":"+dailyReqs.length+":"+activities.length+":"+(ta?ta.length:-1);
+    var fAgentPerfA;
+    if (agentPerfCacheRef.current.key === cacheKey && agentPerfCacheRef.current.value) {
+      fAgentPerfA = agentPerfCacheRef.current.value;
+    } else {
     var interestedStatusesA = ["Interested","Hot Case","HotCase","Potential"];
-    var fDRa = (p.dailyReqs||[]).filter(function(r){
+    var fDRa = dailyReqs.filter(function(r){
       if (r.archived) return false; // unified archive rule (Divergence #7)
       var rt = r.createdAt ? new Date(r.createdAt).getTime() : 0;
       return rt>=rsA && rt<=reA;
     });
-    var fAgentPerfA = (p.users||[]).filter(function(u){return u.role==="sales";}).map(function(u){
+    fAgentPerfA = users.filter(function(u){return u.role==="sales";}).map(function(u){
       var uid=String(u._id||gid(u));
       var al=leads.filter(function(l){
         return (l.assignments||[]).some(function(a){
@@ -6481,7 +6479,7 @@ var DashboardPage = function(p) {
       var afup=al.filter(function(l){return l.callbackTime;}).length;
       var aover=al.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now&&!["MeetingDone","DoneDeal","EOI"].includes(l.status);}).length;
       var adeals=al.filter(function(l){return l.status==="DoneDeal"||l.globalStatus==="donedeal";}).length;
-      var _actPool = (todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
+      var _actPool = (ta && ta.length) ? ta : activities;
       var aActs = _actPool.filter(function(x){
         var xid = x.userId&&x.userId._id?x.userId._id:x.userId;
         if (String(xid)!==uid) return false;
@@ -6527,6 +6525,8 @@ var DashboardPage = function(p) {
       var score=Math.round(actScore*0.4 + mp*0.3 + ip*0.2 + rtScore*0.1);
       return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,calls:acalls,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,rotOut:arotOut,rotIn:arotIn,noAnswer:anoAns,respTime:respH>0?respH.toFixed(1):"—",score:score,quality:qualityScore};
     }).sort(function(a,b){return b.quality-a.quality;});
+    agentPerfCacheRef.current = {key:cacheKey, value:fAgentPerfA};
+    }
 
     return card(<>
       <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:6}}>
@@ -6580,6 +6580,11 @@ var DashboardPage = function(p) {
   // unconditionally above the sales early return (rules-of-hooks).
   var adminMetrics = useMemo(function(){
     if (!isOnlyAdmin) return {};
+    // Capture `now` inside the memo so a fresh Date.now() on every parent
+    // render doesn't invalidate this (~9s O(N²)) computation. The threshold
+    // checks (callback < now) shift in seconds, not milliseconds, so
+    // recomputing only when leads/filter actually change is correct.
+    var now = Date.now();
     var nowD = new Date();
     var todayDay = nowD.getDay();
     var daysSinceSat = (todayDay - 6 + 7) % 7;
@@ -6714,7 +6719,7 @@ var DashboardPage = function(p) {
       callbacksFiltered:callbacksFiltered, drFiltered:drFiltered
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[leads, p.dailyReqs, filter, isOnlyAdmin, now]);
+  },[leads, p.dailyReqs, filter, isOnlyAdmin]);
 
   if(!isOnlyAdmin) {
     // ============ DATE RANGE (calendar-based) ============
