@@ -593,6 +593,10 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
 // of this file.
 Activity.collection.createIndex({ userId: 1, createdAt: -1 }).catch(function(){});
 Activity.collection.createIndex({ leadId: 1, createdAt: -1 }).catch(function(){});
+// Admin / sales_admin get null scope from getScopedUserIds → /api/activities
+// query has no userId filter and falls back to a COLLSCAN without this index.
+// The since=<rangeStart> range + sort({createdAt:-1}) ride on this single field.
+Activity.collection.createIndex({ createdAt: -1 }).catch(function(){});
 DailyRequest.collection.createIndex({ agentId: 1, createdAt: -1 }).catch(function(){});
 DailyRequest.collection.createIndex({ createdAt: -1 }).catch(function(){});
 // Reports — Phase 1: DR pipeline + intake queries by status.
