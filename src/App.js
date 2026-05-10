@@ -6213,6 +6213,10 @@ var DashboardPage = function(p) {
   //    contains their own rows). Re-fetch whenever the period filter changes.
   var [salesRanking, setSalesRanking] = useState(null);
   var [myStats, setMyStats] = useState(null);
+  // Admin-only Key Metrics row — backend returns the 6 KPI numbers so the
+  // KPI cards render without waiting for the full /api/leads payload.
+  // null = loading (show skeleton), {} = fetch failed or non-admin.
+  var [adminStats, setAdminStats] = useState(null);
   useEffect(function(){
     if (!p.token) return;
     // Re-derive the active range here so the effect only depends on `filter`.
@@ -6250,6 +6254,16 @@ var DashboardPage = function(p) {
     apiFetch("/api/dashboard/my-stats?"+statsQs, "GET", null, p.token)
       .then(function(d){ if(!cancelled) setMyStats(d||{}); })
       .catch(function(){ if(!cancelled) setMyStats({}); });
+    // Admin Key Metrics: backend returns the 6 KPI numbers so the cards render
+    // without depending on the full /api/leads array being parsed/derived.
+    // Cleared back to null on every filter change so the cards show a skeleton
+    // while the new range is loading (avoids stale numbers from the prior filter).
+    if (isOnlyAdmin) {
+      setAdminStats(null);
+      apiFetch("/api/dashboard/admin-stats?"+qs, "GET", null, p.token)
+        .then(function(d){ if(!cancelled) setAdminStats(d||{}); })
+        .catch(function(){ if(!cancelled) setAdminStats({}); });
+    }
     return function(){ cancelled = true; };
   },[p.token, filter]);
   var now = Date.now();
@@ -7468,13 +7482,32 @@ var DashboardPage = function(p) {
         if (_dd > 6) return;
         _spark[6 - _dd]++;
       });
+      // KPI values come from /api/dashboard/admin-stats so the cards render
+      // without depending on p.leads being parsed + derived. While the request
+      // is in flight (adminStats === null) cards show a "—" placeholder so the
+      // user gets immediate feedback after a filter change. Fetch failure
+      // returns {} → counts read as 0.
+      var as = adminStats;
+      var loadingKpi = as === null;
+      var as_int   = (as && as.interested) || {};
+      var as_meet  = (as && as.meetings)   || {};
+      var as_deals = (as && as.deals)      || {};
+      var v_leads  = loadingKpi ? "—" : (as.leads || 0);
+      var v_dr     = loadingKpi ? "—" : (as.dailyRequests || 0);
+      var v_int    = loadingKpi ? "—" : (as_int.count || 0);
+      var v_meet   = loadingKpi ? "—" : (as_meet.count || 0);
+      var v_over   = loadingKpi ? "—" : (as.overdue || 0);
+      var v_deals  = loadingKpi ? "—" : (as_deals.count || 0);
+      var s_int    = loadingKpi ? "" : ((as_int.pct || 0) + "%");
+      var s_meet   = loadingKpi ? "" : ((as_meet.pct || 0) + "%");
+      var s_deals  = loadingKpi ? "" : ((as_deals.pct || 0) + "%");
       return <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2,1fr)":"repeat(auto-fit,minmax(160px,1fr))",gap:isMobile?10:14,marginBottom:0}}>
-        {kpiCard("Leads",fLeads.length,"in period","linear-gradient(135deg, #43c6db, #3b5cb8)","#ffffff",function(){p.nav("leads");},_spark)}
-        {kpiCard("Daily Requests",drFiltered,"in period","linear-gradient(135deg, #56ab2f, #a8e063)","#ffffff",function(){p.nav("dailyReq");},_spark)}
-        {kpiCard("Interested",interestedFiltered,Math.round(interestedFiltered/fTotal*100)+"%","linear-gradient(135deg, #f46b45, #eea849)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");},_spark)}
-        {kpiCard("Meetings",meetingsFiltered,Math.round(meetingsFiltered/fTotal*100)+"%","linear-gradient(135deg, #a18cd1, #e8a4c8)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");},_spark)}
-        {kpiCard("Overdue",overdueFiltered,"late callbacks","linear-gradient(135deg, #e52d27, #b31217)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");},_spark)}
-        {kpiCard("Deals",dealsFiltered,fTotal>0?((dealsFiltered/fTotal)*100).toFixed(1)+"%":"0%","linear-gradient(135deg, #f953c6, #b91d73)","#ffffff",function(){p.nav("deals");},_spark)}
+        {kpiCard("Leads",v_leads,"in period","linear-gradient(135deg, #43c6db, #3b5cb8)","#ffffff",function(){p.nav("leads");},_spark)}
+        {kpiCard("Daily Requests",v_dr,"in period","linear-gradient(135deg, #56ab2f, #a8e063)","#ffffff",function(){p.nav("dailyReq");},_spark)}
+        {kpiCard("Interested",v_int,s_int,"linear-gradient(135deg, #f46b45, #eea849)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");},_spark)}
+        {kpiCard("Meetings",v_meet,s_meet,"linear-gradient(135deg, #a18cd1, #e8a4c8)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("MeetingDone");},_spark)}
+        {kpiCard("Overdue",v_over,"late callbacks","linear-gradient(135deg, #e52d27, #b31217)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("CallBack");},_spark)}
+        {kpiCard("Deals",v_deals,s_deals,"linear-gradient(135deg, #f953c6, #b91d73)","#ffffff",function(){p.nav("deals");},_spark)}
       </div>;
     })()}
 
