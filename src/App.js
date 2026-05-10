@@ -6131,6 +6131,22 @@ var DashboardClock = function(p) {
   return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
 };
 
+// Module-scope cached Intl.DateTimeFormat for the activity-row time column.
+// toLocaleTimeString() constructs a fresh formatter on every call; on a
+// Quarter filter the activity feed can render ~1000 rows and the formatter
+// construction alone accounted for ~10s of a 26s click freeze (flamegraph:
+// "exactTime" at App.js:7512). Reusing one Intl instance is ~50x faster per
+// call. Cache is lazy so we never construct it on a page that doesn't render
+// activity rows.
+var _DASHBOARD_TIME_FMT = null;
+var _dashboardExactTime = function(d){
+  if (!d) return "";
+  try {
+    if (!_DASHBOARD_TIME_FMT) _DASHBOARD_TIME_FMT = new Intl.DateTimeFormat([], {hour:"numeric", minute:"2-digit"});
+    return _DASHBOARD_TIME_FMT.format(new Date(d));
+  } catch(e) { return ""; }
+};
+
 var DashboardPage = function(p) {
   var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [filter, setFilter] = useState("today");
@@ -7508,12 +7524,9 @@ var DashboardPage = function(p) {
     if (activityIsLead(a)) return "";
     return "DR";
   };
-  // Exact-time formatter for the activity rows — "3:45 PM".
-  var exactTime = function(d){
-    if (!d) return "";
-    try { return new Date(d).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}); }
-    catch(e) { return ""; }
-  };
+  // Exact-time formatter for the activity rows — "3:45 PM". Delegates to the
+  // module-scope cached Intl.DateTimeFormat (see _dashboardExactTime above).
+  var exactTime = _dashboardExactTime;
 
   // Locked leads: any assignment with noRotation === true
   var lockedCount = leads.filter(function(l){return (l.assignments||[]).some(function(a){return a.noRotation===true;});}).length;
@@ -7745,7 +7758,14 @@ var DashboardPage = function(p) {
             <span style={{fontSize:11,fontWeight:600,color:"#1D4ED8",cursor:"pointer"}} onClick={function(){setSeeAllOpen(true);}}>View All ({todayActsAll.length})</span>
           </div>
           <div style={{maxHeight:420,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
-          {todayActsAll.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity in {periodLabelForFilter(filter)}</div> : todayActsAll.map(function(a,i){
+          {/* Cap the inline card at the 30 most-recent rows. todayActsAll can
+              hold ~1000 entries on Quarter filter; rendering them all (5 nested
+              styled divs each) was the dominant Layout + getHostSibling cost on
+              filter click (~11s + 8s per flamegraph). The card has maxHeight:420
+              so only ~8 rows are ever visible at once; the rest were behind a
+              scroll inside the card. The full list is still reachable via the
+              "View All (N)" button — N still reflects the true count. */}
+          {todayActsAll.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity in {periodLabelForFilter(filter)}</div> : todayActsAll.slice(0,30).map(function(a,i,arr){
             var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
             var aName = a.userId&&a.userId.name?a.userId.name:agentName(aid);
             var lName = resolveClientName(a);
@@ -7807,7 +7827,7 @@ var DashboardPage = function(p) {
             var subtitleStyle = isDrRow
               ? { fontSize:11, color:"#64748B", marginTop:1, wordBreak:"break-word", whiteSpace:"normal" }
               : { fontSize:11, color:"#64748B", marginTop:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" };
-            return <div key={String(a._id||("k"+i))} onClick={onActClick} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"9px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:onActClick?"pointer":"default",opacity:isArchivedRow?0.7:1}}>
+            return <div key={String(a._id||("k"+i))} onClick={onActClick} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"9px 0",borderBottom:i<arr.length-1?"1px solid #F1F5F9":"none",cursor:onActClick?"pointer":"default",opacity:isArchivedRow?0.7:1}}>
               <div style={{width:34,height:34,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0,marginTop:2}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
@@ -8067,7 +8087,7 @@ var DashboardPage = function(p) {
             var subtitleStyleM = isDrRowM
               ? { fontSize:12, color:"#64748B", marginTop:2, wordBreak:"break-word", whiteSpace:"normal" }
               : { fontSize:12, color:"#64748B", marginTop:2 };
-            return <div key={(a._id||"")+"-"+i} onClick={onActClickM} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:onActClickM?"pointer":"default",opacity:isArchivedRowM?0.7:1}}>
+            return <div key={a._id ? String(a._id) : ("k"+i)} onClick={onActClickM} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 0",borderBottom:i<todayActsAll.length-1?"1px solid #F1F5F9":"none",cursor:onActClickM?"pointer":"default",opacity:isArchivedRowM?0.7:1}}>
               <div style={{width:36,height:36,borderRadius:"50%",background:ic.bg,color:ic.fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0,marginTop:2}}>{ic.icon}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>
