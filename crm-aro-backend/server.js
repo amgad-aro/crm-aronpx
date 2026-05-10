@@ -4004,6 +4004,121 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
   }
 });
 
+// ===== DASHBOARD — ADMIN STATS (CRM-wide, period-scoped) =====
+// Returns the 6 KPI counts the admin / sales_admin Dashboard's Key Metrics row
+// needs, without making the client hydrate the full /api/leads payload first.
+// All 6 counts run in parallel via Promise.all. Range params: ?from=<ISO>&to=<ISO>.
+app.get("/api/dashboard/admin-stats", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    var parseDate = function(s){ if(!s) return null; var d = new Date(String(s)); return isNaN(d.getTime()) ? null : d; };
+    var from = parseDate(req.query.from);
+    var to   = parseDate(req.query.to);
+    var rangeMatch = (from || to) ? (function(){ var r = {}; if(from) r.$gte = from; if(to) r.$lte = to; return r; })() : null;
+
+    // Match the admin Dashboard's in-memory interestedStatuses set
+    // (src/App.js DashboardPage) so numbers match what the page currently
+    // shows. Lead.status enum doesn't include "Interested" or "Hot Case",
+    // but assignments[].status is free-form and historical data may carry
+    // either form — keep all four for safety.
+    var interestedStatuses = ["Interested", "Hot Case", "HotCase", "Potential"];
+    var now = new Date();
+
+    // KPI 1 — leads created in range. Excludes archived + the daily-request
+    // mirror rows the admin path filters out at load (l.source!=="Daily Request").
+    var leadsMatch = { archived: { $ne: true }, source: { $ne: "Daily Request" } };
+    if (rangeMatch) leadsMatch.createdAt = rangeMatch;
+    var leadsP = Lead.countDocuments(leadsMatch);
+
+    // KPI 2 — daily requests created in range.
+    var drMatch = { archived: { $ne: true } };
+    if (rangeMatch) drMatch.createdAt = rangeMatch;
+    var drsP = DailyRequest.countDocuments(drMatch);
+
+    // KPI 3 — interested: top-level status OR any assignment slice status in the
+    // interested set, created in range. Mirrors the existing admin in-memory
+    // check at DashboardPage interestedFiltered.
+    var intLeadMatch = {
+      archived: { $ne: true },
+      source: { $ne: "Daily Request" },
+      $or: [
+        { status: { $in: interestedStatuses } },
+        { "assignments.status": { $in: interestedStatuses } }
+      ]
+    };
+    if (rangeMatch) intLeadMatch.createdAt = rangeMatch;
+    var intP = Lead.countDocuments(intLeadMatch);
+
+    // KPI 4 — meetings: hadMeeting=true OR status=MeetingDone, with
+    // meetAt=$ifNull(meetingDoneAt, updatedAt) in range. Uses the
+    // { hadMeeting:1, agentId:1 } index from this session's prior commit.
+    var meetPipeline = [
+      { $match: { archived: { $ne: true }, $or: [{ hadMeeting: true }, { status: "MeetingDone" }] } },
+      { $addFields: { meetAt: { $ifNull: ["$meetingDoneAt", "$updatedAt"] } } }
+    ];
+    if (rangeMatch) meetPipeline.push({ $match: { meetAt: rangeMatch } });
+    meetPipeline.push({ $count: "c" });
+    var meetP = Lead.aggregate(meetPipeline);
+
+    // KPI 5 — overdue: callbackTime < now and status NOT in {DoneDeal, EOI,
+    // NotInterested}. callbackTime is a String field; ISO 8601 strings sort
+    // lexicographically the same as their Date order so $lt with a string
+    // comparator works for the common case. Non-ISO legacy values that fall
+    // outside this ordering will be misclassified — acceptable for a dashboard
+    // KPI; the LeadsPage view still hydrates the full date semantics.
+    // Per spec — NOT range-bounded ("as of now" state count).
+    var overdueP = Lead.countDocuments({
+      archived: { $ne: true },
+      status: { $nin: ["DoneDeal", "EOI", "NotInterested"] },
+      callbackTime: { $ne: "", $lt: now.toISOString() }
+    });
+
+    // KPI 6 — deals: status=DoneDeal or globalStatus=donedeal, with dealAt in
+    // range. dealDate is a String — $toDate cast required. The range match on
+    // the computed field can't use an index, but the $match prefilter narrows
+    // to the DoneDeal subset first via { status:1, createdAt:-1 }.
+    var dealsPipeline = [
+      { $match: { archived: { $ne: true }, $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] } },
+      { $addFields: {
+          dealAt: {
+            $cond: [
+              { $and: [{ $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] }] },
+              { $toDate: "$dealDate" },
+              "$updatedAt"
+            ]
+          }
+        } }
+    ];
+    if (rangeMatch) dealsPipeline.push({ $match: { dealAt: rangeMatch } });
+    dealsPipeline.push({ $count: "c" });
+    var dealsP = Lead.aggregate(dealsPipeline);
+
+    var parts = await Promise.all([leadsP, drsP, intP, meetP, overdueP, dealsP]);
+    var pickCount = function(arr){ return (arr && arr[0] && arr[0].c) || 0; };
+    var leadsC         = parts[0] || 0;
+    var dailyRequestsC = parts[1] || 0;
+    var interestedC    = parts[2] || 0;
+    var meetingsC      = pickCount(parts[3]);
+    var overdueC       = parts[4] || 0;
+    var dealsC         = pickCount(parts[5]);
+
+    var pct = function(n){ return leadsC > 0 ? Math.round(n / leadsC * 100) : 0; };
+
+    res.json({
+      leads: leadsC,
+      dailyRequests: dailyRequestsC,
+      interested: { count: interestedC, pct: pct(interestedC) },
+      meetings:   { count: meetingsC,   pct: pct(meetingsC) },
+      overdue: overdueC,
+      deals:      { count: dealsC,      pct: pct(dealsC) }
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== USER ROUTES =====
 app.get("/api/users", auth, async function(req, res) {
   try {
