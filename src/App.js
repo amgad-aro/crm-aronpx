@@ -7590,7 +7590,7 @@ var DashboardPage = function(p) {
         })}
         <div ref={quarterDropdownRef} className="crm-dash-quarter-wrap" style={{position:"relative"}}>
           <button onClick={function(){setQOpen(!qOpen);}} style={{fontSize:12,padding:isMobile?"8px 12px":"6px 14px",minHeight:isMobile?36:undefined,border:(typeof filter==="string"&&filter.indexOf("Q")===0)?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:(typeof filter==="string"&&filter.indexOf("Q")===0)?"#EFF6FF":"#fff",color:(typeof filter==="string"&&filter.indexOf("Q")===0)?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:(typeof filter==="string"&&filter.indexOf("Q")===0)?600:500,flexShrink:0}}>{(typeof filter==="string"&&filter.indexOf("Q")===0)?filter:"Quarter"} &#9662;</button>
-          {qOpen&&<div style={{position:"absolute",top:"calc(100% + 4px)",right:0,background:"#fff",border:"1px solid #E2E8F0",borderRadius:10,minWidth:120,zIndex:99,boxShadow:"0 4px 16px rgba(0,0,0,0.08)"}}>
+          {qOpen&&<div style={{position:"absolute",top:"calc(100% + 4px)",left:isMobile?0:"auto",right:isMobile?"auto":0,background:"#fff",border:"1px solid #E2E8F0",borderRadius:10,minWidth:120,zIndex:99,boxShadow:"0 4px 16px rgba(0,0,0,0.08)"}}>
             {(function(){var _y=nowD.getFullYear();return ["Q1 "+_y,"Q2 "+_y,"Q3 "+_y,"Q4 "+_y];})().map(function(q){return <div key={q} onClick={function(){setFilter(q);setQOpen(false);}} style={{padding:"8px 14px",fontSize:12,color:"#334155",cursor:"pointer"}}>{q}</div>;})}
           </div>}
         </div>
