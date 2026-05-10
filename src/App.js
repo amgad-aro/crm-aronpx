@@ -16331,10 +16331,7 @@ export default function CRMApp() {
 +   ".crm-dash .crm-dash-header > * { width: 100% !important; min-width: 0 !important; }"
 +   ".crm-dash .crm-dash-filters { overflow-x: visible !important; flex-wrap: wrap !important; gap: 6px !important; }"
 +   ".crm-dash .crm-dash-filters > * { flex: 1 1 auto !important; min-width: 0 !important; }"
-+   /* Quarter wrapper opts out of the flex-grow rule above so its inner */
-+   /* dropdown's right:0 anchor sits against the button's right edge,    */
-+   /* not the row-slot edge. Higher specificity (3 classes vs 2+universal)*/
-+   /* beats the rule on the previous line.                              */
++   "/* Quarter wrapper opts out of the flex-grow rule above so the inner dropdown's right:0 anchor sits against the button's right edge, not the row-slot edge. Higher specificity (3 classes vs 2+universal) beats the previous rule. */"
 +   ".crm-dash .crm-dash-filters > .crm-dash-quarter-wrap { flex: 0 0 auto !important; }"
 +   ".crm-dash .crm-dash-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; }"
 +   ".crm-dash .crm-dash-row { grid-template-columns: minmax(0, 1fr) !important; gap: 10px !important; }"
