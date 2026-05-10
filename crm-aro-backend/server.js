@@ -9,6 +9,7 @@ var crypto = require("crypto");
 var http = require("http");
 var WebSocketLib = require("ws");
 var Resend = require("resend").Resend;
+var rateLimit = require("express-rate-limit");
 
 // Coerce anything the frontend sends for an ObjectId-typed field into a
 // 24-hex string or null. Handles: empty string, populated {_id, name, ...}
@@ -248,6 +249,23 @@ var Notification = mongoose.model("Notification", new mongoose.Schema({
   reason:{type:String,default:""},
   seenBy:[{type:String}]
 },{timestamps:true}));
+
+// Notification indexes — added 2026-05-10 after a live audit found the
+// collection was running every query as a full _id-only scan over 8,684 rows.
+// Hottest patterns: getVisibleNotifications (.find({type:...}).sort({createdAt:-1})),
+// the cascade Notification.deleteMany({leadId}) in the lead/DR delete+archive
+// paths, and the off-site dedupe lookup .findOne({type:"offsite_pending", fromName}).
+// Errors on creation are warned but not rethrown so a single bad index doesn't
+// take the process down — visible in logs if it ever fails to build.
+Notification.collection.createIndex({ type: 1, createdAt: -1 }).catch(function(e){
+  console.error("[notification index type+createdAt] not created:", e && e.message ? e.message : e);
+});
+Notification.collection.createIndex({ leadId: 1 }).catch(function(e){
+  console.error("[notification index leadId] not created:", e && e.message ? e.message : e);
+});
+Notification.collection.createIndex({ fromName: 1 }).catch(function(e){
+  console.error("[notification index fromName] not created:", e && e.message ? e.message : e);
+});
 
 // AppSetting — key/value store for global CRM settings (rotation config etc).
 // Single source of truth across all clients and server-side jobs.
@@ -581,6 +599,10 @@ DailyRequest.collection.createIndex({ createdAt: -1 }).catch(function(){});
 DailyRequest.collection.createIndex({ status: 1, createdAt: -1 }).catch(function(){});
 
 var app = express();
+// Railway sits behind a proxy; req.ip must reflect the real client IP for
+// rate limiting (and any future IP-based logic) to work, otherwise every
+// request looks like it's coming from the load balancer.
+app.set("trust proxy", 1);
 // gzip every response. Mounted first so it wraps all subsequent middleware
 // and route handlers. Cuts /api/leads payload (~10 MB JSON) ~8-10x on the wire.
 app.use(compression());
@@ -1066,7 +1088,34 @@ async function findLeadByPhone(rawPhone) {
 }
 
 // ===== AUTH ROUTES =====
-app.post("/api/login", async function(req, res) {
+// Per-IP rate limiters for the three credential-handling endpoints. trust
+// proxy is set above so req.ip resolves through Railway's X-Forwarded-For.
+// loginLimiter only counts FAILED attempts (skipSuccessfulRequests) so a
+// busy real user isn't punished for a typo here and there.
+var loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many login attempts. Please try again later." }
+});
+var forgotLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: true } // mirrors the constant-response pattern of the endpoint itself — don't leak rate-limit state to enumeration probes
+});
+var resetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many password reset attempts. Please try again later." }
+});
+
+app.post("/api/login", loginLimiter, async function(req, res) {
   try {
     var user = await User.findOne({ username: req.body.username, active: true });
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
@@ -1135,7 +1184,7 @@ function buildResetEmailHtml(resetUrl) {
     + "</body></html>";
 }
 
-app.post("/api/auth/forgot-password", async function(req, res) {
+app.post("/api/auth/forgot-password", forgotLimiter, async function(req, res) {
   try {
     var email = String((req.body && req.body.email) || "").trim().toLowerCase();
     if (!email) return res.json({ success: true });
@@ -1185,7 +1234,7 @@ app.post("/api/auth/forgot-password", async function(req, res) {
   }
 });
 
-app.post("/api/auth/reset-password", async function(req, res) {
+app.post("/api/auth/reset-password", resetLimiter, async function(req, res) {
   try {
     var token = String((req.body && req.body.token) || "").trim();
     var newPassword = String((req.body && req.body.newPassword) || "");
@@ -5038,6 +5087,13 @@ app.post("/api/leads/inbound", async function(req, res) {
 // ===== BULK REASSIGN (must be before /:id) =====
 app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
   try {
+    // Per the role matrix decided 2026-05-10: bulk reassign is admin/sales_admin
+    // only. adminOnly above also admits manager/team_leader (by historical
+    // misnaming) — this inline gate is the authoritative restriction until the
+    // adminOnly middleware itself is renamed and tightened in a later batch.
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Bulk reassign is restricted to admin and sales_admin" });
+    }
     var { leadIds, agentId, force } = req.body;
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
     var agentObjId = new mongoose.Types.ObjectId(agentId);
@@ -7979,6 +8035,12 @@ app.post("/api/daily-requests", auth, async function(req, res) {
 
 app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req, res) {
   try {
+    // Mirrors the leads-side restriction at /api/leads/bulk-reassign — bulk
+    // reassign is admin/sales_admin only. Inline check overrides adminOnly's
+    // legacy admission of manager/team_leader.
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Bulk reassign is restricted to admin and sales_admin" });
+    }
     var { leadIds, agentId } = req.body;
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
     var agentObjId = new mongoose.Types.ObjectId(agentId);

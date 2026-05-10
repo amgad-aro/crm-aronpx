@@ -3853,7 +3853,7 @@ var LeadsPage = function(p) {
         })}
       </div>}
       <div style={{ display:"flex", gap:7, flexWrap:"wrap" }}>
-        {selected2.length>0&&isAdmin&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> {t.bulkReassign} ({selected2.length})</Btn>}
+        {selected2.length>0&&isOnlyAdmin&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> {t.bulkReassign} ({selected2.length})</Btn>}
         {selected2.length>0&&isOnlyAdmin&&<Btn outline onClick={async function(){
           if(!window.confirm("Archive "+selected2.length+" leads?"))return;
           var ids=[...selected2];
@@ -9671,7 +9671,7 @@ var DailyRequestsPage = function(p) {
     {/* Toolbar */}
     <div style={{ display:"flex", gap:8, marginBottom:12, flexWrap:"wrap", alignItems:"center" }}>
       <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:12 }}><Plus size={13}/> Add Number</Btn>
-      {p.cu.role==="admin"&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> Bulk Reassign {selected2.length>0?"("+selected2.length+")":""}</Btn>}
+      {isOnlyAdmin&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> Bulk Reassign {selected2.length>0?"("+selected2.length+")":""}</Btn>}
       {p.cu.role==="admin"&&selected2.length>0&&<Btn outline onClick={async function(){
         if(!window.confirm("Archive "+selected2.length+" requests?")) return;
         var ids=[...selected2];
