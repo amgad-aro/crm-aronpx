@@ -3497,9 +3497,21 @@ var LeadsPage = function(p) {
         }
       }
       if(comment && !routeFeedbackViaApi && !dropFeedback) upData.notes = comment;
-      if(pendingStatus.newStatus === "EOI") upData.eoiDate = extra&&extra.eoiDate ? new Date(extra.eoiDate).toISOString() : new Date().toISOString();
-      // Set dealDate to today when converting to DoneDeal (don't use eoiDate)
-      if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date().toISOString().slice(0,10);
+      if(pendingStatus.newStatus === "EOI") {
+        // When the user picks an EOI date, anchor it to the current UTC
+        // time-of-day rather than UTC midnight — otherwise the deal bell shows
+        // a stale "X hr ago" equal to the user's TZ offset (Cairo +3 → 14-17h).
+        if (extra && extra.eoiDate) {
+          var pickedEoi = String(extra.eoiDate).slice(0,10);
+          var nowEoi = new Date().toISOString();
+          upData.eoiDate = pickedEoi + nowEoi.slice(10);
+        } else {
+          upData.eoiDate = new Date().toISOString();
+        }
+      }
+      // Stamp dealDate at the actual transition moment (full ISO), not UTC
+      // midnight of today — same reason as above.
+      if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date().toISOString();
       // Notify admin when DoneDeal or EOI
       if(pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI"){
         var notifEntry={leadName:selected?selected.name:"",leadId:pendingStatus.leadId,agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:""};
@@ -9561,9 +9573,21 @@ var DailyRequestsPage = function(p) {
           if(form.eoiDeposit) upData.eoiDeposit=form.eoiDeposit;
           // Only stamp eoiDate on first transition. If the DR already carries one
           // (re-save on an existing record), preserve it so notifications don't reset.
-          if(!r.eoiDate) upData.eoiDate = form.eoiDateInput ? new Date(form.eoiDateInput).toISOString() : new Date().toISOString();
+          // Anchor a picked date to the current UTC time-of-day (not UTC midnight)
+          // so the deal bell doesn't show a TZ-sized offset like "14h ago".
+          if(!r.eoiDate) {
+            if (form.eoiDateInput) {
+              var pickedDr = String(form.eoiDateInput).slice(0,10);
+              var nowDr = new Date().toISOString();
+              upData.eoiDate = pickedDr + nowDr.slice(10);
+            } else {
+              upData.eoiDate = new Date().toISOString();
+            }
+          }
         }
-        if(isDoneDeal && !r.dealDate) upData.dealDate = new Date().toISOString().slice(0,10);
+        // Full ISO (not date-only) so the deal-bell "X hr ago" display
+        // measures from the actual transition moment, not UTC midnight.
+        if(isDoneDeal && !r.dealDate) upData.dealDate = new Date().toISOString();
         r = await apiFetch("/api/daily-requests/"+gid(r),"PUT",upData,p.token);
         // Backend PUT now surfaces mirrorLeadId on the response (server.js
         // line ~8108) so we can target the mirror without scanning the full

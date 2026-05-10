@@ -8077,7 +8077,9 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
           // closure date on every subsequent edit, so the deal-notifications panel doesn't
           // bump old EOIs back to "just now".
           if (!existingLead || !existingLead.eoiDate) {
-            mirrorExtra.eoiDate = req.body.eoiDate || new Date().toISOString().slice(0,10);
+            // Full ISO (not date-only) so the deal-bell "X hr ago" display
+            // measures from the actual transition moment, not UTC midnight.
+            mirrorExtra.eoiDate = req.body.eoiDate || new Date().toISOString();
           }
         }
         if (req.body.status === "DoneDeal") {
@@ -8086,7 +8088,9 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
           // original closure date on every subsequent edit, so old deals don't re-surface
           // as "just closed" in the notifications panel.
           if (!existingLead || !existingLead.dealDate) {
-            mirrorExtra.dealDate = new Date().toISOString().slice(0,10);
+            // Full ISO (not date-only) so the deal-bell "X hr ago" display
+            // measures from the actual transition moment, not UTC midnight.
+            mirrorExtra.dealDate = new Date().toISOString();
           }
         }
         // GET /api/leads filters sales-role users on assignments.agentId, not
