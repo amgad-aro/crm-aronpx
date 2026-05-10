@@ -3737,22 +3737,18 @@ app.get("/api/dashboard/sales-ranking", auth, async function(req, res) {
     // Activities (all types) authored by a sales user in range.
     var actBase = { userId: { $in: salesIds } };
     if (rangeMatch) actBase.createdAt = rangeMatch;
-    var actRows = await Activity.aggregate([
+    var actAgg = Activity.aggregate([
       { $match: actBase },
       { $group: { _id: "$userId", c: { $sum: 1 } } }
     ]);
-    var activitiesByAgent = {};
-    actRows.forEach(function(r){ activitiesByAgent[String(r._id)] = r.c; });
 
     // Calls only (subset of activities, tracked separately for display).
     var callBase = { userId: { $in: salesIds }, type: "call" };
     if (rangeMatch) callBase.createdAt = rangeMatch;
-    var callRows = await Activity.aggregate([
+    var callAgg = Activity.aggregate([
       { $match: callBase },
       { $group: { _id: "$userId", c: { $sum: 1 } } }
     ]);
-    var callsByAgent = {};
-    callRows.forEach(function(r){ callsByAgent[String(r._id)] = r.c; });
 
     // Meetings: leads with hadMeeting === true, dated in range by meetingDoneAt
     // (falling back to updatedAt when meetingDoneAt is absent).
@@ -3762,17 +3758,28 @@ app.get("/api/dashboard/sales-ranking", auth, async function(req, res) {
     ];
     if (rangeMatch) meetPipeline.push({ $match: { meetAt: rangeMatch } });
     meetPipeline.push({ $group: { _id: "$agentId", c: { $sum: 1 } } });
-    var meetRows = await Lead.aggregate(meetPipeline);
-    var meetsByAgent = {};
-    meetRows.forEach(function(r){ meetsByAgent[String(r._id)] = r.c; });
+    var meetAgg = Lead.aggregate(meetPipeline);
 
     // Daily requests owned by a sales user, created in range.
     var drBase = { agentId: { $in: salesIds } };
     if (rangeMatch) drBase.createdAt = rangeMatch;
-    var drRows = await DailyRequest.aggregate([
+    var drAgg = DailyRequest.aggregate([
       { $match: drBase },
       { $group: { _id: "$agentId", c: { $sum: 1 } } }
     ]);
+
+    // Run the 4 aggregations in parallel. Mongoose Aggregate objects are
+    // lazy — the queries don't fire until awaited, so Promise.all is what
+    // actually triggers execution and lets MongoDB run them concurrently.
+    var parts = await Promise.all([actAgg, callAgg, meetAgg, drAgg]);
+    var actRows = parts[0], callRows = parts[1], meetRows = parts[2], drRows = parts[3];
+
+    var activitiesByAgent = {};
+    actRows.forEach(function(r){ activitiesByAgent[String(r._id)] = r.c; });
+    var callsByAgent = {};
+    callRows.forEach(function(r){ callsByAgent[String(r._id)] = r.c; });
+    var meetsByAgent = {};
+    meetRows.forEach(function(r){ meetsByAgent[String(r._id)] = r.c; });
     var drByAgent = {};
     drRows.forEach(function(r){ drByAgent[String(r._id)] = r.c; });
 
