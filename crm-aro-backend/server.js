@@ -209,6 +209,16 @@ User.collection.createIndex({ reportsTo: 1 }).catch(function(){});
 Lead.collection.createIndex({ splitAgent2Id: 1 }).catch(function(){});
 Lead.collection.createIndex({ splitAgent2Id: 1, createdAt: -1 }).catch(function(){});
 
+// Meeting aggregation indexes — sales-ranking meetRows matches
+// { hadMeeting: true, agentId: { $in: salesIds } } and my-stats meetLeads
+// matches { agentId, $or: [{ hadMeeting: true }, { status: "MeetingDone" }] }
+// then range-filters on $ifNull($meetingDoneAt, $updatedAt). Without an index
+// covering hadMeeting + agentId the meetRows scan fell back to { agentId: 1 }
+// then per-doc hadMeeting filter, which is the slowest of the 4 parallel
+// aggregations in /api/dashboard/sales-ranking.
+Lead.collection.createIndex({ hadMeeting: 1, agentId: 1 }).catch(function(){});
+Lead.collection.createIndex({ agentId: 1, meetingDoneAt: 1 }).catch(function(){});
+
 // Safety-net unique index on phone. Partial filter skips empty strings so the
 // constraint only applies to rows with a real phone value. If pre-existing
 // duplicates cause creation to fail, log and continue — the app-level guard in
