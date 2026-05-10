@@ -6187,13 +6187,16 @@ var DashboardPage = function(p) {
         .catch(function(){ if(!cancelled && todayActivities===null) setTodayActivities([]); });
     };
     load();
-    var id = setInterval(load, 30000);
+    // 90s cadence (was 30s). The dashboard activity card doesn't need
+    // sub-minute freshness; the parent's WebSocket activity_created
+    // handler already replaces p.activities in real time when a new
+    // activity is logged. The polling here is a safety-net refresh.
+    var id = setInterval(load, 90000);
     return function(){ cancelled = true; clearInterval(id); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token, filter]);
   // Untouched leads — server computes across the full Lead collection, so the
   // card is correct even when the local leads[] only holds the current page.
-  // Refresh on the same 30s cadence as the activity feed.
   useEffect(function(){
     if (!p.token) return;
     if (!isOnlyAdmin && p.cu.role !== "manager") return;
@@ -6204,7 +6207,11 @@ var DashboardPage = function(p) {
         .catch(function(){ if(!cancelled && untouchedData===null) setUntouchedData([]); });
     };
     load();
-    var id = setInterval(load, 30000);
+    // 5-minute cadence (was 30s). The "untouched leads" threshold is
+    // 24h+ of idle time so sub-minute freshness is meaningless, and the
+    // endpoint scans the full Lead collection — at 30s the polls stack
+    // up faster than they return. Filter clicks don't affect this card.
+    var id = setInterval(load, 300000);
     return function(){ cancelled = true; clearInterval(id); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token]);

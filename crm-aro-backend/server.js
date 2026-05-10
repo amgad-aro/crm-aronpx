@@ -4696,7 +4696,8 @@ app.get("/api/leads/untouched", auth, async function(req, res) {
       return res.status(403).json({ error: "Admin only" });
     }
     var DAY = 24 * 60 * 60 * 1000;
-    var now = Date.now();
+    var nowDate = new Date();
+    var dayAgoDate = new Date(nowDate.getTime() - DAY);
     // Restrict the lead pool to agents the caller is allowed to see. Admin /
     // sales_admin pass through unfiltered (scopedIds === null); everyone else
     // is bounded by their reportsTo subtree.
@@ -4706,60 +4707,82 @@ app.get("/api/leads/untouched", auth, async function(req, res) {
     // "untouched" just because no further activity happened post-close.
     // Covers both the canonical Lead.status enum and the parallel
     // globalStatus flag that DR-mirror flows write.
-    var untouchedQuery = {
+    var match = {
       agentId: { $ne: null },
       archived: { $ne: true },
       status: { $nin: ["EOI", "DoneDeal"] },
       globalStatus: { $nin: ["eoi", "donedeal"] }
     };
     if (scopedIds !== null) {
-      untouchedQuery.agentId = { $in: scopedIds };
+      match.agentId = { $in: scopedIds };
     }
-    var leads = await Lead.find(untouchedQuery)
-      .populate("agentId", "name")
-      .lean();
-    var out = [];
-    leads.forEach(function(l) {
-      var hist = Array.isArray(l.history) ? l.history : [];
-      // Follow-up = anything that isn't the initial "created" / "first_assigned"
-      // stamp. Reassignments count as activity too — the status log / feedback
-      // log still drives the dashboard, but reassign is a deliberate action.
-      var hasFollowUp = hist.some(function(h) {
-        if (!h || !h.event) return false;
-        var e = String(h.event).toLowerCase();
-        return e !== "created" && e !== "first_assigned";
-      });
-      // Latest timestamp across history + lead.lastActivityTime. Falls back to
-      // createdAt so brand-new leads without any history still anchor somewhere.
-      var latest = 0;
-      hist.forEach(function(h) {
-        var t = h && h.timestamp ? new Date(h.timestamp).getTime() : 0;
-        if (t > latest) latest = t;
-      });
-      if (l.lastActivityTime) {
-        var la = new Date(l.lastActivityTime).getTime();
-        if (la > latest) latest = la;
-      }
-      if (!latest && l.createdAt) latest = new Date(l.createdAt).getTime();
-      if (!latest) return;
-      var idleMs = now - latest;
-      // Untouched gate: no follow-up action AND idle for more than 24h.
-      // (A lead with a follow-up entry within the last 24h is "live".)
-      if (hasFollowUp && idleMs <= DAY) return;
-      if (idleMs <= DAY) return;
-      out.push({
-        _id: l._id,
-        name: l.name,
-        phone: l.phone,
-        agentId: l.agentId && l.agentId._id ? l.agentId._id : l.agentId,
-        agentName: (l.agentId && l.agentId.name) ? l.agentId.name : "",
-        lastActivityAt: new Date(latest),
-        hoursSinceActivity: Math.floor(idleMs / (60 * 60 * 1000)),
-        assignedOnly: !hasFollowUp
-      });
-    });
-    out.sort(function(a, b) { return new Date(a.lastActivityAt) - new Date(b.lastActivityAt); });
-    res.json(out.slice(0, 50));
+    // Aggregation pipeline — previously this loaded every matching lead's
+    // entire `history` (Mixed[]) array into Node and filtered in JS. With ~900
+    // leads and history entries that can run to dozens per lead, each call
+    // ran 2.5+s. The pipeline below computes hasFollowUp + latest in MongoDB,
+    // filters by idle > 1 day, sorts, limits to 50, then $lookup's the agent
+    // name. Only 50 small docs cross the wire.
+    var pipeline = [
+      { $match: match },
+      { $project: {
+          name: 1, phone: 1, agentId: 1, createdAt: 1, lastActivityTime: 1,
+          hasFollowUp: {
+            $cond: {
+              if: { $isArray: "$history" },
+              then: { $anyElementTrue: { $map: {
+                input: "$history",
+                as: "h",
+                in: {
+                  $and: [
+                    { $ne: [{ $ifNull: ["$$h.event", null] }, null] },
+                    { $not: { $in: [
+                      { $toLower: { $ifNull: ["$$h.event", ""] } },
+                      ["created", "first_assigned"]
+                    ]}}
+                  ]
+                }
+              }}},
+              else: false
+            }
+          },
+          histMax: {
+            $cond: {
+              if: { $isArray: "$history" },
+              then: { $max: { $map: {
+                input: "$history",
+                as: "h",
+                in: { $convert: { input: "$$h.timestamp", to: "date", onError: null, onNull: null } }
+              }}},
+              else: null
+            }
+          }
+      }},
+      { $addFields: {
+          latest: { $max: ["$histMax", "$lastActivityTime", "$createdAt"] }
+      }},
+      { $match: { latest: { $type: "date", $lt: dayAgoDate } } },
+      { $sort: { latest: 1 } },
+      { $limit: 50 },
+      { $lookup: {
+          from: "users",
+          localField: "agentId",
+          foreignField: "_id",
+          as: "_agent",
+          pipeline: [{ $project: { name: 1 } }]
+      }},
+      { $project: {
+          _id: 1,
+          name: 1,
+          phone: 1,
+          agentId: 1,
+          agentName: { $ifNull: [{ $arrayElemAt: ["$_agent.name", 0] }, ""] },
+          lastActivityAt: "$latest",
+          hoursSinceActivity: { $floor: { $divide: [{ $subtract: [nowDate, "$latest"] }, 3600000] } },
+          assignedOnly: { $not: "$hasFollowUp" }
+      }}
+    ];
+    var out = await Lead.aggregate(pipeline);
+    res.json(out);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -7755,7 +7778,14 @@ app.get("/api/activities", auth, async function(req, res) {
     if (limit > 2000) limit = 2000;
     var skip = (page - 1) * limit;
 
-    var total = await Activity.countDocuments(query);
+    // Skip the separate countDocuments roundtrip when ?since is provided —
+    // the dashboard's activity-feed poll uses ?since=…&limit=1000 and never
+    // reads r.total. countDocuments scans the index from sinceDate forward
+    // to count entries, and for admins on the firehose query that's the
+    // dominant cost (~800ms on production data). Other call sites paginate
+    // without ?since and still get the real total.
+    var skipCount = !!req.query.since;
+    var total = skipCount ? 0 : await Activity.countDocuments(query);
     // Manual Lead hydration instead of .populate("leadId", "name").
     // Reason: Activity.leadId points at EITHER a Lead or a DailyRequest,
     // and Mongoose's .populate with ref="Lead" silently REPLACES the field
@@ -7767,6 +7797,7 @@ app.get("/api/activities", auth, async function(req, res) {
     // after JSON serialization, which is exactly what the existing
     // activityLeadIdStr / _drsById resolver expects).
     var activitiesRaw = await Activity.find(query).populate("userId", "name").sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+    if (skipCount) total = activitiesRaw.length;
     var leadIdsToLoad = [];
     activitiesRaw.forEach(function(a){ if (a.leadId) leadIdsToLoad.push(a.leadId); });
     var leadDocs = [];
