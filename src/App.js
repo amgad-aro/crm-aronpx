@@ -6266,7 +6266,6 @@ var DashboardPage = function(p) {
     return (p.leads||[]).filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   },[p.leads]);
 
-  var timeStr = new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
   var hourNow = new Date().getHours();
   var greeting = hourNow<6 ? "Good Night \ud83d\ude34" : hourNow<12 ? "Good Morning \u2600\ufe0f" : hourNow<18 ? "Good Afternoon \ud83c\udf24\ufe0f" : hourNow<24 ? "Good Evening \ud83c\udf19" : "Good Night \ud83d\ude34";
 
@@ -6877,7 +6876,7 @@ var DashboardPage = function(p) {
       <div className="crm-dash-header" style={{display:"flex",alignItems:isMobile?"stretch":"center",justifyContent:"space-between",marginBottom:isMobile?14:20,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
         <div style={{minWidth:0,width:isMobile?"100%":"auto"}}>
           <div style={{fontSize:isMobile?16:20,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{greeting} {p.cu.name}</div>
-          <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{new Date().toDateString()} {"\u00b7"} {timeStr}</div>
+          <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{new Date().toDateString()} {"\u00b7"} <DashboardClock variant="sales" isMobile={isMobile}/></div>
         </div>
         <div className="crm-dash-filters" style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",width:isMobile?"100%":"auto"}}>
           {[["today","Today"],["yesterday","Yesterday"],["week","This Week"],["month","This Month"]].map(function(f){return <button key={f[0]} onClick={function(){setFilter(f[0]);}} style={{fontSize:12,padding:isMobile?"8px 10px":"6px 12px",minHeight:isMobile?36:undefined,border:filter===f[0]?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:filter===f[0]?"#EFF6FF":"#fff",color:filter===f[0]?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:filter===f[0]?600:500,flex:isMobile?"1 1 auto":"0 0 auto",flexShrink:0}}>{f[1]}</button>;})}
@@ -6977,10 +6976,6 @@ var DashboardPage = function(p) {
   }
 
   var nowD = new Date();
-  var dayNamesF=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-  var monthsF=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  var pad=function(n){return n<10?"0"+n:""+n;};
-  var dateLabel = dayNamesF[nowD.getDay()]+" "+nowD.getDate()+" "+monthsF[nowD.getMonth()]+" "+nowD.getFullYear()+" \u2014 "+pad(nowD.getHours())+":"+pad(nowD.getMinutes())+":"+pad(nowD.getSeconds());
 
   // Week starts Saturday (sat=0, fri=6). When today is Saturday, that Sat is start of week.
   var todayDay = nowD.getDay(); // 0=Sun..6=Sat
@@ -7441,7 +7436,7 @@ var DashboardPage = function(p) {
     <div className="crm-dash-header" style={{display:"flex",alignItems:isMobile?"flex-start":"center",justifyContent:"space-between",marginBottom:isMobile?16:24,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
       <div style={{minWidth:0,width:isMobile?"100%":"auto"}}>
         <div style={{fontSize:isMobile?16:22,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{greeting+" "+p.cu.name}</div>
-        <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,fontVariantNumeric:"tabular-nums",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{dateLabel}</div>
+        <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,fontVariantNumeric:"tabular-nums",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><DashboardClock variant="admin" isMobile={isMobile}/></div>
       </div>
       <div className="crm-dash-filters" style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",width:isMobile?"100%":"auto",overflowX:isMobile?"auto":"visible",WebkitOverflowScrolling:"touch"}}>
         {[["today","Today"],["yesterday","Yesterday"],["week","This Week"],["month","This Month"]].map(function(f){
