@@ -6560,6 +6560,148 @@ var DashboardPage = function(p) {
     </>);
   };
 
+  // Admin-only heavy derivations memoized so the dropdown click and the
+  // 30s poll cascade don't re-run the same filter-bound counts on every
+  // parent render. Returns {} for non-admin so the hook still fires
+  // unconditionally above the sales early return (rules-of-hooks).
+  var adminMetrics = useMemo(function(){
+    if (!isOnlyAdmin) return {};
+    var nowD = new Date();
+    var todayDay = nowD.getDay();
+    var daysSinceSat = (todayDay - 6 + 7) % 7;
+    var weekStart = new Date(nowD.getFullYear(),nowD.getMonth(),nowD.getDate()-daysSinceSat,0,0,0,0);
+    var weekEnd = new Date(weekStart.getTime() + 7*DAY - 1);
+    var todayStart = new Date(nowD.getFullYear(),nowD.getMonth(),nowD.getDate(),0,0,0,0);
+    var yestStart  = new Date(nowD.getFullYear(),nowD.getMonth(),nowD.getDate()-1,0,0,0,0);
+    var monthStart = new Date(nowD.getFullYear(),nowD.getMonth(),1,0,0,0,0);
+    var rangeStart, rangeEnd = now, periodEnd;
+    if (filter==="today") { rangeStart = todayStart.getTime(); periodEnd = todayStart.getTime()+DAY-1; }
+    else if (filter==="yesterday") { rangeStart = yestStart.getTime(); rangeEnd = yestStart.getTime()+DAY-1; periodEnd = rangeEnd; }
+    else if (filter==="week") { rangeStart = weekStart.getTime(); rangeEnd = weekEnd.getTime(); periodEnd = weekEnd.getTime(); }
+    else if (filter==="month") { rangeStart = monthStart.getTime(); periodEnd = new Date(nowD.getFullYear(),nowD.getMonth()+1,1,0,0,0,0).getTime()-1; }
+    else if (typeof filter==="string" && filter.indexOf("Q")===0) {
+      var qm = filter.match(/Q(\d)\s+(\d{4})/);
+      if (qm) { var qNum=parseInt(qm[1]); var qYear=parseInt(qm[2]); var qStartMonth=(qNum-1)*3; rangeStart = new Date(qYear,qStartMonth,1).getTime(); rangeEnd = new Date(qYear,qStartMonth+3,1).getTime()-1; periodEnd = rangeEnd; }
+      else { rangeStart = monthStart.getTime(); periodEnd = rangeEnd; }
+    } else { rangeStart = monthStart.getTime(); periodEnd = rangeEnd; }
+    var fLeads = leads.filter(function(l){var ct=l.createdAt?new Date(l.createdAt).getTime():0;return ct>=rangeStart&&ct<=rangeEnd;});
+    var fTotal = fLeads.length||1;
+    var fSC={}; fLeads.forEach(function(l){fSC[l.status]=(fSC[l.status]||0)+1;});
+    var fDR = (p.dailyReqs||[]).filter(function(r){ if (r.archived) return false; var rt=r.createdAt?new Date(r.createdAt).getTime():0;return rt>=rangeStart&&rt<=rangeEnd;});
+    var statusChangedInRange = function(l, targetStatus){
+      var assignMatch = (l.assignments||[]).some(function(a){
+        if (a.status!==targetStatus) return false;
+        var t = a.lastActionAt?new Date(a.lastActionAt).getTime():0;
+        return t>=rangeStart && t<=rangeEnd;
+      });
+      if (assignMatch) return true;
+      return (l.assignments||[]).some(function(a){
+        return (a.agentHistory||[]).some(function(h){
+          var t = h.createdAt?new Date(h.createdAt).getTime():0;
+          if (t<rangeStart||t>rangeEnd) return false;
+          var note = (h.note||"").toLowerCase();
+          return note.indexOf(targetStatus.toLowerCase())>=0;
+        });
+      });
+    };
+    var interestedStatuses = ["Interested","Hot Case","HotCase","Potential"];
+    var allLeadsUntimed = leads;
+    var meetingsFromLeads = allLeadsUntimed.filter(function(l){
+      if (!filter || filter === "all" || filter === "alltime") {
+        return (l.assignments||[]).some(function(a){
+          return a.status==="Meeting Done"||a.status==="MeetingDone";
+        }) || l.status==="MeetingDone";
+      }
+      var foundInAssignments = (l.assignments || []).some(function(a){
+        return (a.agentHistory || []).some(function(h){
+          if (!h) return false;
+          var note = String(h.note || "");
+          var isStatusChange = h.type === "status_change"
+            || /status\s*changed/i.test(note)
+            || /^Status:\s*Meeting/i.test(note);
+          if (!isStatusChange) return false;
+          var hasMeetingDone = /meeting\s*done|meetingdone/i.test(note);
+          if (!hasMeetingDone) return false;
+          var t = new Date(h.createdAt || h.at || h.date || 0).getTime();
+          return t >= rangeStart && t <= rangeEnd;
+        });
+      });
+      if (foundInAssignments) return true;
+      var foundInHistory = (l.history || []).some(function(h){
+        if (!h) return false;
+        var note = String(h.note || h.description || "");
+        var isStatusChange = h.event === "status_change"
+          || h.type === "status_change"
+          || /status\s*changed/i.test(note);
+        if (!isStatusChange) return false;
+        var hasMeetingDone = /meeting\s*done|meetingdone/i.test(note);
+        if (!hasMeetingDone) return false;
+        var t = new Date(h.createdAt || h.at || h.date || 0).getTime();
+        return t >= rangeStart && t <= rangeEnd;
+      });
+      if (foundInHistory) return true;
+      return false;
+    }).length;
+    var meetingsFromDR = (p.dailyReqs||[]).filter(function(r){
+      if (r.archived) return false;
+      var rt=r.createdAt?new Date(r.createdAt).getTime():0;
+      return (r.status==="Meeting"||r.status==="MeetingDone") && rt>=rangeStart && rt<=rangeEnd;
+    }).length;
+    var meetingsFiltered = meetingsFromLeads + meetingsFromDR;
+    var interestedFiltered = fLeads.filter(function(l){return (l.assignments||[]).some(function(a){return interestedStatuses.includes(a.status);})||interestedStatuses.includes(l.status);}).length;
+    var dealsFromLeads = leads.filter(function(l){
+      if (l.globalStatus!=="donedeal" && l.status!=="DoneDeal") return false;
+      var dealT = l.dealDate ? new Date(l.dealDate).getTime() : 0;
+      if (!dealT || isNaN(dealT)) {
+        dealT = 0;
+        (l.assignments||[]).forEach(function(a){ if(a.lastActionAt){ var t=new Date(a.lastActionAt).getTime(); if(!isNaN(t)&&t>dealT) dealT=t; } });
+      }
+      if (!dealT && l.updatedAt) dealT = new Date(l.updatedAt).getTime();
+      return dealT>=rangeStart && dealT<=rangeEnd;
+    }).length;
+    var dealsFromDR = (p.dailyReqs||[]).filter(function(r){
+      if (r.archived) return false;
+      if (r.status!=="DoneDeal" && r.status!=="Done Deal" && r.status!=="Deal") return false;
+      var t = r.lastActivityTime ? new Date(r.lastActivityTime).getTime() : (r.updatedAt ? new Date(r.updatedAt).getTime() : (r.createdAt ? new Date(r.createdAt).getTime() : 0));
+      return t>=rangeStart && t<=rangeEnd;
+    }).length;
+    var dealsFiltered = dealsFromLeads + dealsFromDR;
+    var overdueLeads = allLeadsUntimed.filter(function(l){
+      if (!l.callbackTime) return false;
+      if (["MeetingDone","DoneDeal","EOI"].includes(l.status)) return false;
+      var cb = new Date(l.callbackTime).getTime();
+      if (isNaN(cb)) return false;
+      return cb < now && cb >= rangeStart && cb <= rangeEnd;
+    }).length;
+    var overdueDR = (p.dailyReqs||[]).filter(function(r){
+      if (r.archived) return false;
+      var d = r.dueDate||r.callbackTime;
+      if (!d) return false;
+      if (r.status==="Meeting"||r.status==="MeetingDone"||r.status==="DoneDeal") return false;
+      var cb = new Date(d).getTime();
+      if (isNaN(cb)) return false;
+      return cb < now && cb >= rangeStart && cb <= rangeEnd;
+    }).length;
+    var overdueFiltered = overdueLeads + overdueDR;
+    var callbacksFiltered = fLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).toDateString()===nowD.toDateString();}).length;
+    var drFiltered = (p.dailyReqs||[]).filter(function(r){var rt=r.createdAt?new Date(r.createdAt).getTime():0;return rt>=rangeStart&&rt<=rangeEnd;}).length;
+    return {
+      nowD:nowD, todayDay:todayDay, daysSinceSat:daysSinceSat,
+      weekStart:weekStart, weekEnd:weekEnd,
+      todayStart:todayStart, yestStart:yestStart, monthStart:monthStart,
+      rangeStart:rangeStart, rangeEnd:rangeEnd, periodEnd:periodEnd,
+      fLeads:fLeads, fTotal:fTotal, fSC:fSC, fDR:fDR,
+      statusChangedInRange:statusChangedInRange,
+      interestedStatuses:interestedStatuses, allLeadsUntimed:allLeadsUntimed,
+      meetingsFromLeads:meetingsFromLeads, meetingsFromDR:meetingsFromDR, meetingsFiltered:meetingsFiltered,
+      interestedFiltered:interestedFiltered,
+      dealsFromLeads:dealsFromLeads, dealsFromDR:dealsFromDR, dealsFiltered:dealsFiltered,
+      overdueLeads:overdueLeads, overdueDR:overdueDR, overdueFiltered:overdueFiltered,
+      callbacksFiltered:callbacksFiltered, drFiltered:drFiltered
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[leads, p.dailyReqs, filter, isOnlyAdmin, now]);
+
   if(!isOnlyAdmin) {
     // ============ DATE RANGE (calendar-based) ============
     // Today = 00:00→23:59, Week = Monday→today, Month = 1st→today,
@@ -6969,154 +7111,19 @@ var DashboardPage = function(p) {
     </div>;
   }
 
-  var nowD = new Date();
-
-  // Week starts Saturday (sat=0, fri=6). When today is Saturday, that Sat is start of week.
-  var todayDay = nowD.getDay(); // 0=Sun..6=Sat
-  var daysSinceSat = (todayDay - 6 + 7) % 7; // Sat=0, Sun=1, ... Fri=6
-  var weekStart = new Date(nowD.getFullYear(),nowD.getMonth(),nowD.getDate()-daysSinceSat,0,0,0,0);
-  var weekEnd = new Date(weekStart.getTime() + 7*DAY - 1);
-
-  // Compute filter date range [rangeStart, rangeEnd]
-  var todayStart = new Date(nowD.getFullYear(),nowD.getMonth(),nowD.getDate(),0,0,0,0);
-  var yestStart  = new Date(nowD.getFullYear(),nowD.getMonth(),nowD.getDate()-1,0,0,0,0);
-  var monthStart = new Date(nowD.getFullYear(),nowD.getMonth(),1,0,0,0,0);
-  var rangeStart, rangeEnd = now, periodEnd;
-  if (filter==="today") { rangeStart = todayStart.getTime(); periodEnd = todayStart.getTime()+DAY-1; }
-  else if (filter==="yesterday") { rangeStart = yestStart.getTime(); rangeEnd = yestStart.getTime()+DAY-1; periodEnd = rangeEnd; }
-  else if (filter==="week") { rangeStart = weekStart.getTime(); rangeEnd = weekEnd.getTime(); periodEnd = weekEnd.getTime(); }
-  else if (filter==="month") { rangeStart = monthStart.getTime(); periodEnd = new Date(nowD.getFullYear(),nowD.getMonth()+1,1,0,0,0,0).getTime()-1; }
-  else if (typeof filter==="string" && filter.indexOf("Q")===0) {
-    var qm = filter.match(/Q(\d)\s+(\d{4})/);
-    if (qm) { var qNum=parseInt(qm[1]); var qYear=parseInt(qm[2]); var qStartMonth=(qNum-1)*3; rangeStart = new Date(qYear,qStartMonth,1).getTime(); rangeEnd = new Date(qYear,qStartMonth+3,1).getTime()-1; periodEnd = rangeEnd; }
-    else { rangeStart = monthStart.getTime(); periodEnd = rangeEnd; }
-  } else { rangeStart = monthStart.getTime(); periodEnd = rangeEnd; }
-
-  // Filter leads by date range
-  var fLeads = leads.filter(function(l){var ct=l.createdAt?new Date(l.createdAt).getTime():0;return ct>=rangeStart&&ct<=rangeEnd;});
-  var fTotal = fLeads.length||1;
-  var fSC={}; fLeads.forEach(function(l){fSC[l.status]=(fSC[l.status]||0)+1;});
-  // DR for current filter
-  var fDR = (p.dailyReqs||[]).filter(function(r){ if (r.archived) return false; /* unified archive rule (Divergence #7) */ var rt=r.createdAt?new Date(r.createdAt).getTime():0;return rt>=rangeStart&&rt<=rangeEnd;});
-
-  // Helper: was status "X" set in the date range? Check assignments and agentHistory entries.
-  var statusChangedInRange = function(l, targetStatus){
-    // Check if any assignment currently has this status AND lastActionAt is in range
-    var assignMatch = (l.assignments||[]).some(function(a){
-      if (a.status!==targetStatus) return false;
-      var t = a.lastActionAt?new Date(a.lastActionAt).getTime():0;
-      return t>=rangeStart && t<=rangeEnd;
-    });
-    if (assignMatch) return true;
-    // Check agentHistory for "Status: X" entries in range (per-assignment history)
-    return (l.assignments||[]).some(function(a){
-      return (a.agentHistory||[]).some(function(h){
-        var t = h.createdAt?new Date(h.createdAt).getTime():0;
-        if (t<rangeStart||t>rangeEnd) return false;
-        var note = (h.note||"").toLowerCase();
-        return note.indexOf(targetStatus.toLowerCase())>=0;
-      });
-    });
-  };
-  // Interested statuses
-  var interestedStatuses = ["Interested","Hot Case","HotCase","Potential"];
-  // Leads where ANY assignment has these statuses OR top-level
-  var allLeadsUntimed = leads; // all non-archived leads for overall counts
-  // Meetings: leads with "Meeting Done" status in assignments + DR with status "Meeting"
-  var meetingsFromLeads = allLeadsUntimed.filter(function(l){
-    // For "all time" view, keep current MeetingDone status as the signal
-    if (!filter || filter === "all" || filter === "alltime") {
-      return (l.assignments||[]).some(function(a){
-        return a.status==="Meeting Done"||a.status==="MeetingDone";
-      }) || l.status==="MeetingDone";
-    }
-
-    // For ranged filters, require an actual transition to MeetingDone
-    // within the selected window.
-
-    // Check assignment slices' agentHistory for status_change -> MeetingDone
-    var foundInAssignments = (l.assignments || []).some(function(a){
-      return (a.agentHistory || []).some(function(h){
-        if (!h) return false;
-        var note = String(h.note || "");
-        var isStatusChange = h.type === "status_change"
-          || /status\s*changed/i.test(note)
-          || /^Status:\s*Meeting/i.test(note);
-        if (!isStatusChange) return false;
-        var hasMeetingDone = /meeting\s*done|meetingdone/i.test(note);
-        if (!hasMeetingDone) return false;
-        var t = new Date(h.createdAt || h.at || h.date || 0).getTime();
-        return t >= rangeStart && t <= rangeEnd;
-      });
-    });
-    if (foundInAssignments) return true;
-
-    // Check top-level lead.history for status_change to MeetingDone
-    var foundInHistory = (l.history || []).some(function(h){
-      if (!h) return false;
-      var note = String(h.note || h.description || "");
-      var isStatusChange = h.event === "status_change"
-        || h.type === "status_change"
-        || /status\s*changed/i.test(note);
-      if (!isStatusChange) return false;
-      var hasMeetingDone = /meeting\s*done|meetingdone/i.test(note);
-      if (!hasMeetingDone) return false;
-      var t = new Date(h.createdAt || h.at || h.date || 0).getTime();
-      return t >= rangeStart && t <= rangeEnd;
-    });
-    if (foundInHistory) return true;
-
-    return false;
-  }).length;
-  var meetingsFromDR = (p.dailyReqs||[]).filter(function(r){
-    if (r.archived) return false; // unified archive rule (Divergence #7)
-    var rt=r.createdAt?new Date(r.createdAt).getTime():0;
-    return (r.status==="Meeting"||r.status==="MeetingDone") && rt>=rangeStart && rt<=rangeEnd;
-  }).length;
-  var meetingsFiltered = meetingsFromLeads + meetingsFromDR;
-  // Interested: any assignment status in [Interested, Hot Case, Potential]
-  var interestedFiltered = fLeads.filter(function(l){return (l.assignments||[]).some(function(a){return interestedStatuses.includes(a.status);})||interestedStatuses.includes(l.status);}).length;
-  // Deals: leads where globalStatus==="donedeal" dated by dealDate/latest assignment.lastActionAt + DR with DoneDeal status in range
-  var dealsFromLeads = leads.filter(function(l){
-    if (l.globalStatus!=="donedeal" && l.status!=="DoneDeal") return false;
-    var dealT = l.dealDate ? new Date(l.dealDate).getTime() : 0;
-    if (!dealT || isNaN(dealT)) {
-      dealT = 0;
-      (l.assignments||[]).forEach(function(a){ if(a.lastActionAt){ var t=new Date(a.lastActionAt).getTime(); if(!isNaN(t)&&t>dealT) dealT=t; } });
-    }
-    if (!dealT && l.updatedAt) dealT = new Date(l.updatedAt).getTime();
-    return dealT>=rangeStart && dealT<=rangeEnd;
-  }).length;
-  var dealsFromDR = (p.dailyReqs||[]).filter(function(r){
-    if (r.archived) return false; // unified archive rule (Divergence #7)
-    if (r.status!=="DoneDeal" && r.status!=="Done Deal" && r.status!=="Deal") return false;
-    var t = r.lastActivityTime ? new Date(r.lastActivityTime).getTime() : (r.updatedAt ? new Date(r.updatedAt).getTime() : (r.createdAt ? new Date(r.createdAt).getTime() : 0));
-    return t>=rangeStart && t<=rangeEnd;
-  }).length;
-  var dealsFiltered = dealsFromLeads + dealsFromDR;
-  // Overdue: leads/DRs whose callbackTime is past now AND falls inside the
-  // active period [rangeStart, rangeEnd]. Without the range bound the count
-  // would ignore the dashboard filter and always show "all overdue ever".
-  var overdueLeads = allLeadsUntimed.filter(function(l){
-    if (!l.callbackTime) return false;
-    if (["MeetingDone","DoneDeal","EOI"].includes(l.status)) return false;
-    var cb = new Date(l.callbackTime).getTime();
-    if (isNaN(cb)) return false;
-    return cb < now && cb >= rangeStart && cb <= rangeEnd;
-  }).length;
-  var overdueDR = (p.dailyReqs||[]).filter(function(r){
-    if (r.archived) return false; // unified archive rule (Divergence #7)
-    var d = r.dueDate||r.callbackTime;
-    if (!d) return false;
-    if (r.status==="Meeting"||r.status==="MeetingDone"||r.status==="DoneDeal") return false;
-    var cb = new Date(d).getTime();
-    if (isNaN(cb)) return false;
-    return cb < now && cb >= rangeStart && cb <= rangeEnd;
-  }).length;
-  var overdueFiltered = overdueLeads + overdueDR;
-  var callbacksFiltered = fLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).toDateString()===nowD.toDateString();}).length;
-  // Daily Requests in the active date range — counted from the actual dailyRequests collection
-  var drFiltered = (p.dailyReqs||[]).filter(function(r){var rt=r.createdAt?new Date(r.createdAt).getTime():0;return rt>=rangeStart&&rt<=rangeEnd;}).length;
+  // Pull memoized values out of adminMetrics — see the useMemo above.
+  var nowD = adminMetrics.nowD, todayDay = adminMetrics.todayDay, daysSinceSat = adminMetrics.daysSinceSat;
+  var weekStart = adminMetrics.weekStart, weekEnd = adminMetrics.weekEnd;
+  var todayStart = adminMetrics.todayStart, yestStart = adminMetrics.yestStart, monthStart = adminMetrics.monthStart;
+  var rangeStart = adminMetrics.rangeStart, rangeEnd = adminMetrics.rangeEnd, periodEnd = adminMetrics.periodEnd;
+  var fLeads = adminMetrics.fLeads, fTotal = adminMetrics.fTotal, fSC = adminMetrics.fSC, fDR = adminMetrics.fDR;
+  var statusChangedInRange = adminMetrics.statusChangedInRange;
+  var interestedStatuses = adminMetrics.interestedStatuses, allLeadsUntimed = adminMetrics.allLeadsUntimed;
+  var meetingsFromLeads = adminMetrics.meetingsFromLeads, meetingsFromDR = adminMetrics.meetingsFromDR, meetingsFiltered = adminMetrics.meetingsFiltered;
+  var interestedFiltered = adminMetrics.interestedFiltered;
+  var dealsFromLeads = adminMetrics.dealsFromLeads, dealsFromDR = adminMetrics.dealsFromDR, dealsFiltered = adminMetrics.dealsFiltered;
+  var overdueLeads = adminMetrics.overdueLeads, overdueDR = adminMetrics.overdueDR, overdueFiltered = adminMetrics.overdueFiltered;
+  var callbacksFiltered = adminMetrics.callbacksFiltered, drFiltered = adminMetrics.drFiltered;
 
   // Campaign performance (filtered)
   var fCampMap={};
