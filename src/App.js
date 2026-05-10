@@ -6146,12 +6146,6 @@ var DashboardPage = function(p) {
     window.addEventListener("resize", onResize);
     return function(){ window.removeEventListener("resize", onResize); };
   },[]);
-  // eslint-disable-next-line no-unused-vars
-  var [tick, setTick] = useState(0);
-  useEffect(function(){
-    var id = setInterval(function(){ setTick(function(t){return t+1;}); }, 1000);
-    return function(){ clearInterval(id); };
-  },[]);
   // Close the Quarter dropdown when clicking outside its wrapper
   useEffect(function(){
     var handleClickOutside = function(e){
