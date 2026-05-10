@@ -9468,8 +9468,13 @@ var DailyRequestsPage = function(p) {
       // Notify admin on DoneDeal or EOI
       if((pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI")&&p.addDealNotif){
         var req=requests.find(function(r){return gid(r)===pendingStatus.leadId;})||{};
+        // Prefer the mirror Lead._id (returned by the DR PUT at server.js:8108)
+        // so the notification's leadId resolves in getVisibleNotifications, which
+        // only checks the Lead collection. Falling back to the DR id keeps the
+        // POST whitelist happy but produces an unresolvable orphan row.
+        var dealNotifLeadId = (upd && upd.mirrorLeadId) ? String(upd.mirrorLeadId) : pendingStatus.leadId;
         p.addDealNotif({
-          leadId:pendingStatus.leadId,
+          leadId:dealNotifLeadId,
           leadName:req.name||upd.name||"",
           agentName:req.agentId&&req.agentId.name?req.agentId.name:p.cu.name,
           status:pendingStatus.newStatus,
@@ -9617,8 +9622,12 @@ var DailyRequestsPage = function(p) {
           }).catch(function(){});
         }
         if(p.addDealNotif){
+          // Prefer the mirror Lead._id (already resolved into mirrorLeadId above)
+          // so getVisibleNotifications can resolve the row — it only checks the
+          // Lead collection. Falling back to the DR id keeps the row creatable
+          // but produces an unresolvable orphan.
           p.addDealNotif({
-            leadId:gid(r),
+            leadId:mirrorLeadId||gid(r),
             leadName:r.name||"",
             agentName:(r.agentId&&r.agentId.name)?r.agentId.name:p.cu.name,
             status:form.status,
