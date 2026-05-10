@@ -6274,6 +6274,199 @@ var DashboardPage = function(p) {
     return (p.leads||[]).filter(function(l){return !l.archived&&l.source!=="Daily Request";});
   },[p.leads]);
 
+  // Active range used by the Agent Performance card. Both team-scope and admin
+  // paths previously derived this inline with slightly different range-end
+  // values (admin used end-of-period, team-scope used now). For past events —
+  // which is everything on a CRM — the two derivations produce identical event
+  // sets (filtering t<=reA where reA>=now is equivalent to filtering t<=now).
+  // We derive once here so renderAgentPerformanceCard can consume a memoized
+  // result instead of recomputing on every render.
+  var agentPerfRange = useMemo(function(){
+    var nd = new Date();
+    var cY = nd.getFullYear(), cM = nd.getMonth(), cD = nd.getDate();
+    var daysSinceSat = (nd.getDay() - 6 + 7) % 7;
+    var weekStart = new Date(cY, cM, cD - daysSinceSat, 0,0,0,0);
+    var todayStart = new Date(cY, cM, cD, 0,0,0,0);
+    var todayEnd = new Date(cY, cM, cD, 23,59,59,999);
+    var yestStart = new Date(cY, cM, cD-1, 0,0,0,0);
+    var yestEnd = new Date(cY, cM, cD-1, 23,59,59,999);
+    var monthStart = new Date(cY, cM, 1, 0,0,0,0);
+    var monthEnd = new Date(cY, cM+1, 0, 23,59,59,999);
+    var rsA, reA;
+    if (filter==="today") { rsA = todayStart.getTime(); reA = todayEnd.getTime(); }
+    else if (filter==="yesterday") { rsA = yestStart.getTime(); reA = yestEnd.getTime(); }
+    else if (filter==="week") { rsA = weekStart.getTime(); reA = Date.now(); }
+    else if (filter==="month") { rsA = monthStart.getTime(); reA = Math.min(Date.now(), monthEnd.getTime()); }
+    else if (typeof filter==="string" && /^Q\d\s+\d{4}$/.test(filter)) {
+      var mm = filter.match(/^Q(\d)\s+(\d{4})$/);
+      var qn = parseInt(mm[1]), qy = parseInt(mm[2]);
+      rsA = new Date(qy, (qn-1)*3, 1, 0,0,0,0).getTime();
+      reA = Math.min(Date.now(), new Date(qy, qn*3, 0, 23,59,59,999).getTime());
+    } else { rsA = todayStart.getTime(); reA = todayEnd.getTime(); }
+    return { rsA: rsA, reA: reA };
+  },[filter]);
+
+  // Agent Performance per-row data — previously computed inline inside
+  // renderAgentPerformanceCard as O(users × leads × assignments). For 50
+  // agents × 5000 leads × 3 assignments × ~7 filter passes per agent that
+  // was ~9s of synchronous work on a Quarter click and crashed mobile.
+  // Pre-indexing leads/DRs/activities by agentId in three linear passes
+  // drops the per-user work to O(|al[uid]| × avg_assignments_per_lead) and
+  // the total to O(leads × avg_assignments + activities + dailyReqs + users).
+  // Result is identical to the original (verified semantic equivalence
+  // per check / status / feedback / response-time predicate).
+  var agentPerfMemo = useMemo(function(){
+    var rsA = agentPerfRange.rsA, reA = agentPerfRange.reA;
+    var now = Date.now();
+    var interestedStatusesA = ["Interested","Hot Case","HotCase","Potential"];
+    var users = p.users || [];
+    var dailyReqs = p.dailyReqs || [];
+    var actPool = (todayActivities && todayActivities.length) ? todayActivities : (p.activities || []);
+
+    // Pass 1: bucket leads by every agentId that has an in-range assignment.
+    // Same pass also tallies rotation in/out by agent NAME (agentHistory keys
+    // on name, not id), deduped per lead so a doubly-rotated lead counts once.
+    var alByAgent = new Map();
+    var rotOutByName = new Map(), rotInByName = new Map();
+    for (var i=0; i<leads.length; i++) {
+      var l = leads[i];
+      var assigns = l.assignments;
+      if (assigns && assigns.length) {
+        var added = null;
+        for (var j=0; j<assigns.length; j++) {
+          var a = assigns[j];
+          var rawAid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+          if (!rawAid) continue;
+          var aidStr = String(rawAid);
+          if (added && added.has(aidStr)) continue;
+          var t = a.assignedAt ? new Date(a.assignedAt).getTime() : 0;
+          if (!isNaN(t) && t>=rsA && t<=reA) {
+            if (!added) added = new Set();
+            added.add(aidStr);
+            var arr = alByAgent.get(aidStr);
+            if (!arr) { arr = []; alByAgent.set(aidStr, arr); }
+            arr.push(l);
+          }
+        }
+      }
+      var hist = l.agentHistory;
+      if (hist && hist.length) {
+        var froms = null, tos = null;
+        for (var k=0; k<hist.length; k++) {
+          var h = hist[k];
+          if (!h || h.action!=="Rotation") continue;
+          if (h.fromAgent) { if (!froms) froms = new Set(); froms.add(h.fromAgent); }
+          if (h.toAgent)   { if (!tos)   tos   = new Set(); tos.add(h.toAgent); }
+        }
+        if (froms) froms.forEach(function(name){ rotOutByName.set(name, (rotOutByName.get(name)||0)+1); });
+        if (tos)   tos.forEach(function(name){   rotInByName.set(name,  (rotInByName.get(name)||0)+1); });
+      }
+    }
+
+    // Pass 2: in-range non-archived DRs bucketed by agentId.
+    var drsByAgent = new Map();
+    for (var d=0; d<dailyReqs.length; d++) {
+      var r = dailyReqs[d];
+      if (r.archived) continue;
+      var rt = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+      if (isNaN(rt) || rt<rsA || rt>reA) continue;
+      var raid = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
+      if (!raid) continue;
+      var raidStr = String(raid);
+      var arrR = drsByAgent.get(raidStr);
+      if (!arrR) { arrR = []; drsByAgent.set(raidStr, arrR); }
+      arrR.push(r);
+    }
+
+    // Pass 3: in-range activities bucketed by userId; also pre-tally calls
+    // so we don't have to re-scan per agent.
+    var actsByAgent = new Map();
+    var actCallsByAgent = new Map();
+    for (var x=0; x<actPool.length; x++) {
+      var act = actPool[x];
+      var xaid = act.userId && act.userId._id ? act.userId._id : act.userId;
+      if (!xaid) continue;
+      var xt = act.createdAt ? new Date(act.createdAt).getTime() : 0;
+      if (isNaN(xt) || xt<rsA || xt>reA) continue;
+      var xidStr = String(xaid);
+      var aarr = actsByAgent.get(xidStr);
+      if (!aarr) { aarr = []; actsByAgent.set(xidStr, aarr); }
+      aarr.push(act);
+      if (act.type==="call" || ((act.note||"").toLowerCase().indexOf("call")>=0)) {
+        actCallsByAgent.set(xidStr, (actCallsByAgent.get(xidStr)||0)+1);
+      }
+    }
+
+    // Pass 4: per-sales-user, walk only that agent's bucketed leads. Inside
+    // each lead, walk only its assignments (small) once to derive every
+    // per-uid metric. Total work: O(sum of |al[uid]| × avg_assignments).
+    return users.filter(function(u){return u.role==="sales";}).map(function(u){
+      var uid = String(u._id||gid(u));
+      var uname = u.name || "";
+      var al = alByAgent.get(uid) || [];
+      var adr = drsByAgent.get(uid) || [];
+      var aActs = actsByAgent.get(uid) || [];
+      var acalls = actCallsByAgent.get(uid) || 0;
+      var arotOut = rotOutByName.get(uname) || 0;
+      var arotIn = rotInByName.get(uname) || 0;
+
+      var aint=0, ameet=0, anoAns=0, afup=0, aover=0, adeals=0, aFbLeads=0;
+      var rtSum=0, rtCount=0;
+      for (var ai=0; ai<al.length; ai++) {
+        var lead = al[ai];
+        var hasInt=false, hasMeet=false, hasNoAns=false, hasAgentFb=false;
+        var lassigns = lead.assignments;
+        if (lassigns) {
+          for (var aj=0; aj<lassigns.length; aj++) {
+            var asg = lassigns[aj];
+            var asgAid = asg.agentId && asg.agentId._id ? asg.agentId._id : asg.agentId;
+            if (String(asgAid)!==uid) continue;
+            var asgSt = asg.status;
+            if (!hasInt && interestedStatusesA.indexOf(asgSt)>=0) hasInt = true;
+            if (!hasMeet && (asgSt==="Meeting Done" || asgSt==="MeetingDone")) hasMeet = true;
+            if (!hasNoAns && (asgSt==="NoAnswer" || asgSt==="No Answer")) hasNoAns = true;
+            if (!hasAgentFb) {
+              if ((asg.notes && String(asg.notes).trim().length>0) || (asg.lastFeedback && String(asg.lastFeedback).trim().length>0)) hasAgentFb = true;
+            }
+            if (asg.lastActionAt && lead.createdAt) {
+              var diff = new Date(asg.lastActionAt).getTime() - new Date(lead.createdAt).getTime();
+              if (diff>=0) { rtSum+=diff; rtCount++; }
+            }
+          }
+        }
+        if (hasInt) aint++;
+        if (hasMeet) ameet++;
+        if (hasNoAns) anoAns++;
+        if (lead.callbackTime) {
+          afup++;
+          if (new Date(lead.callbackTime).getTime()<now && !["MeetingDone","DoneDeal","EOI"].includes(lead.status)) aover++;
+        }
+        if (lead.status==="DoneDeal" || lead.globalStatus==="donedeal") adeals++;
+        var leadLevelFb = (lead.notes && String(lead.notes).trim().length>0) || (lead.lastFeedback && String(lead.lastFeedback).trim().length>0);
+        if (leadLevelFb || hasAgentFb) aFbLeads++;
+      }
+
+      var fbPct = al.length>0 ? (aFbLeads/al.length) : 0;
+      var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
+      var ip = al.length>0 ? Math.round(aint/al.length*100) : 0;
+      var mp = al.length>0 ? Math.round(ameet/al.length*100) : 0;
+      var cbTotal = afup;
+      var cbOnTime = afup - aover;
+      var cbPct = cbTotal>0 ? (cbOnTime/cbTotal) : (afup===0 ? 1 : 0);
+      var qActivity = al.length>0 ? Math.min(25, (aActs.length/al.length)*25) : 0;
+      var qFeedback = fbPct * 20;
+      var qResp = respH>0 ? Math.max(0, 20 - respH*2) : (rtCount>0?20:10);
+      var qMeeting = al.length>0 ? Math.min(15, (ameet/al.length)*100*0.15) : 0;
+      var qCallback = cbPct * 20;
+      var qualityScore = Math.round(qActivity + qFeedback + qResp + qMeeting + qCallback);
+      if (qualityScore>100) qualityScore = 100; if (qualityScore<0) qualityScore = 0;
+      var actScore = Math.min(100, (al.length+adr.length)*5);
+      var rtScore = respH>0 ? Math.max(0, 100-respH*2) : 50;
+      var score = Math.round(actScore*0.4 + mp*0.3 + ip*0.2 + rtScore*0.1);
+      return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,calls:acalls,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,rotOut:arotOut,rotIn:arotIn,noAnswer:anoAns,respTime:respH>0?respH.toFixed(1):"—",score:score,quality:qualityScore};
+    }).sort(function(a,b){return b.quality-a.quality;});
+  },[leads, p.users, p.dailyReqs, p.activities, todayActivities, agentPerfRange]);
+
   var hourNow = new Date().getHours();
   var greeting = hourNow<6 ? "Good Night \ud83d\ude34" : hourNow<12 ? "Good Morning \u2600\ufe0f" : hourNow<18 ? "Good Afternoon \ud83c\udf24\ufe0f" : hourNow<24 ? "Good Evening \ud83c\udf19" : "Good Night \ud83d\ude34";
 
@@ -6434,100 +6627,13 @@ var DashboardPage = function(p) {
   };
 
   // Agent Performance widget — used by both the admin dashboard and the
-  // team-scoped (TL/manager/director) dashboard. Self-contained: takes range
-  // bounds, computes per-agent metrics, returns the rendered card. p.users is
-  // already subtree-scoped server-side per role; the role: "sales" filter is
-  // a safety belt so TL/manager/director rows can never appear in the table.
-  // Cache the (rsA, reA, data-identity) → fAgentPerfA result so the 4 fetch
-  // resolutions following a filter click don't re-run this O(users × leads)
-  // iteration. Filter changes still recompute; data-identity changes from
-  // /api/leads polling still recompute.
-  var agentPerfCacheRef = useRef({key:"",value:null});
-  var renderAgentPerformanceCard = function(rsA, reA){
-    var users = p.users || [];
-    var dailyReqs = p.dailyReqs || [];
-    var activities = p.activities || [];
-    var ta = todayActivities;
-    var cacheKey = rsA+":"+reA+":"+leads.length+":"+users.length+":"+dailyReqs.length+":"+activities.length+":"+(ta?ta.length:-1);
-    var fAgentPerfA;
-    if (agentPerfCacheRef.current.key === cacheKey && agentPerfCacheRef.current.value) {
-      fAgentPerfA = agentPerfCacheRef.current.value;
-    } else {
-    var interestedStatusesA = ["Interested","Hot Case","HotCase","Potential"];
-    var fDRa = dailyReqs.filter(function(r){
-      if (r.archived) return false; // unified archive rule (Divergence #7)
-      var rt = r.createdAt ? new Date(r.createdAt).getTime() : 0;
-      return rt>=rsA && rt<=reA;
-    });
-    fAgentPerfA = users.filter(function(u){return u.role==="sales";}).map(function(u){
-      var uid=String(u._id||gid(u));
-      var al=leads.filter(function(l){
-        return (l.assignments||[]).some(function(a){
-          var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
-          if (String(aid)!==uid) return false;
-          var t = a.assignedAt ? new Date(a.assignedAt).getTime() : 0;
-          return !isNaN(t) && t>=rsA && t<=reA;
-        });
-      });
-      var adr=fDRa.filter(function(r){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;return String(aid)===uid;});
-      var aint=al.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && interestedStatusesA.includes(a.status);});}).length;
-      var ameet=al.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && (a.status==="Meeting Done"||a.status==="MeetingDone");});}).length;
-      var uname = u.name || "";
-      var arotOut=leads.filter(function(l){return (l.agentHistory||[]).some(function(h){return h && h.action==="Rotation" && h.fromAgent===uname;});}).length;
-      var arotIn=leads.filter(function(l){return (l.agentHistory||[]).some(function(h){return h && h.action==="Rotation" && h.toAgent===uname;});}).length;
-      var anoAns=al.filter(function(l){return (l.assignments||[]).some(function(a){var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;return String(aid)===uid && (a.status==="NoAnswer"||a.status==="No Answer");});}).length;
-      var afup=al.filter(function(l){return l.callbackTime;}).length;
-      var aover=al.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now&&!["MeetingDone","DoneDeal","EOI"].includes(l.status);}).length;
-      var adeals=al.filter(function(l){return l.status==="DoneDeal"||l.globalStatus==="donedeal";}).length;
-      var _actPool = (ta && ta.length) ? ta : activities;
-      var aActs = _actPool.filter(function(x){
-        var xid = x.userId&&x.userId._id?x.userId._id:x.userId;
-        if (String(xid)!==uid) return false;
-        var t = x.createdAt?new Date(x.createdAt).getTime():0;
-        return t>=rsA && t<=reA;
-      });
-      var acalls = aActs.filter(function(x){ return x.type==="call" || ((x.note||"").toLowerCase().indexOf("call")>=0); }).length;
-      var aFbLeads = al.filter(function(l){
-        if (l.notes && String(l.notes).trim().length>0) return true;
-        if (l.lastFeedback && String(l.lastFeedback).trim().length>0) return true;
-        return (l.assignments||[]).some(function(a){
-          var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
-          if (String(aid)!==uid) return false;
-          return (a.notes && String(a.notes).trim().length>0) || (a.lastFeedback && String(a.lastFeedback).trim().length>0);
-        });
-      }).length;
-      var fbPct = al.length>0 ? (aFbLeads/al.length) : 0;
-      var rtSum=0, rtCount=0;
-      al.forEach(function(l){
-        (l.assignments||[]).forEach(function(a){
-          var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
-          if(String(aid)===uid && a.lastActionAt && l.createdAt){
-            var diff=new Date(a.lastActionAt).getTime()-new Date(l.createdAt).getTime();
-            if(diff>=0){rtSum+=diff;rtCount++;}
-          }
-        });
-      });
-      var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
-      var ip=al.length>0?Math.round(aint/al.length*100):0;
-      var mp=al.length>0?Math.round(ameet/al.length*100):0;
-      var cbTotal = afup;
-      var cbOnTime = afup - aover;
-      var cbPct = cbTotal>0 ? (cbOnTime/cbTotal) : (afup===0?1:0);
-      var qActivity = al.length>0 ? Math.min(25, (aActs.length/al.length)*25) : 0;
-      var qFeedback = fbPct * 20;
-      var qResp = respH>0 ? Math.max(0, 20 - respH*2) : (rtCount>0?20:10);
-      var qMeeting = al.length>0 ? Math.min(15, (ameet/al.length)*100*0.15) : 0;
-      var qCallback = cbPct * 20;
-      var qualityScore = Math.round(qActivity + qFeedback + qResp + qMeeting + qCallback);
-      if (qualityScore>100) qualityScore = 100; if (qualityScore<0) qualityScore = 0;
-      var actScore=Math.min(100,(al.length+adr.length)*5);
-      var rtScore=respH>0?Math.max(0,100-respH*2):50;
-      var score=Math.round(actScore*0.4 + mp*0.3 + ip*0.2 + rtScore*0.1);
-      return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,calls:acalls,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,rotOut:arotOut,rotIn:arotIn,noAnswer:anoAns,respTime:respH>0?respH.toFixed(1):"—",score:score,quality:qualityScore};
-    }).sort(function(a,b){return b.quality-a.quality;});
-    agentPerfCacheRef.current = {key:cacheKey, value:fAgentPerfA};
-    }
-
+  // team-scoped (TL/manager/director) dashboard. The per-agent metrics are
+  // pre-computed via the agentPerfMemo useMemo above (filter-keyed). The rsA
+  // and reA params are accepted for backward call-site compatibility but no
+  // longer drive the compute; both call sites pass values that map to the
+  // same memoized range (see agentPerfRange).
+  var renderAgentPerformanceCard = function(/* rsA, reA */){
+    var fAgentPerfA = agentPerfMemo;
     return card(<>
       <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:6}}>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Agent Performance</div>
