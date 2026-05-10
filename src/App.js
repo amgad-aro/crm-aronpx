@@ -6111,6 +6111,26 @@ var SalarySheetPage = function(p) {
 
 // ===== DASHBOARD =====
 
+// Isolated 1 Hz clock — owns its own setInterval so DashboardPage's heavy
+// derivations don't recompute every second. Returns a string; the parent
+// keeps its container styling.
+var DashboardClock = function(p) {
+  // eslint-disable-next-line no-unused-vars
+  var [tick, setTick] = useState(0);
+  useEffect(function(){
+    var id = setInterval(function(){ setTick(function(t){ return t+1; }); }, 1000);
+    return function(){ clearInterval(id); };
+  },[]);
+  var d = new Date();
+  if (p.variant === "admin") {
+    var dayNames = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+    var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    var pad = function(n){ return n<10 ? "0"+n : ""+n; };
+    return dayNames[d.getDay()]+" "+d.getDate()+" "+months[d.getMonth()]+" "+d.getFullYear()+" — "+pad(d.getHours())+":"+pad(d.getMinutes())+":"+pad(d.getSeconds());
+  }
+  return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+};
+
 var DashboardPage = function(p) {
   var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [filter, setFilter] = useState("today");
