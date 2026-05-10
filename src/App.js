@@ -2005,43 +2005,6 @@ var PhoneCell = function(p) {
   >{show ? p.phone : masked}</span>;
 };
 
-// ===== SECURITY WATERMARK =====
-// Tiled diagonal overlay showing "<name> • YYYY-MM-DD HH:mm" across the
-// viewport. Deters screenshot leaks — the screenshot itself identifies the
-// employee and capture time. Two stacked layers (black + white, both at 6%)
-// keep the watermark legible on light content AND on the dark sidebar/side
-// panels. pointer-events:none so clicks pass through; SVG-in-data-URI tile
-// auto-fits any viewport with no resize listener; setInterval refreshes the
-// timestamp once a minute.
-var SecurityWatermark = function(p) {
-  var [now, setNow] = useState(new Date());
-  useEffect(function(){
-    var id = setInterval(function(){ setNow(new Date()); }, 60000);
-    return function(){ clearInterval(id); };
-  }, []);
-  if (!p.name) return null;
-  var pad = function(n){ return n<10 ? "0"+n : ""+n; };
-  var ts = now.getFullYear() + "-" + pad(now.getMonth()+1) + "-" + pad(now.getDate())
-         + " " + pad(now.getHours()) + ":" + pad(now.getMinutes());
-  var label = (p.name + " • " + ts)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  var bgFor = function(color){
-    var svg = "<svg xmlns='http://www.w3.org/2000/svg' width='250' height='150'>"
-            + "<text x='125' y='75' fill='" + color + "' fill-opacity='0.06' "
-            + "font-family='Cairo,Segoe UI,Tahoma,sans-serif' font-size='14' font-weight='600' "
-            + "text-anchor='middle' transform='rotate(-30 125 75)'>"
-            + label + "</text></svg>";
-    var encoded = svg.replace(/</g, "%3C").replace(/>/g, "%3E").replace(/#/g, "%23");
-    return "url(\"data:image/svg+xml," + encoded + "\")";
-  };
-  var layerStyle = { position:"fixed", top:0, left:0, right:0, bottom:0, pointerEvents:"none", zIndex:9999, backgroundRepeat:"repeat", backgroundPosition:"0 0" };
-  return <>
-    <style>{"@media print{.sec-watermark{display:block !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}}"}</style>
-    <div className="sec-watermark" aria-hidden="true" style={Object.assign({}, layerStyle, { backgroundImage: bgFor("black") })}/>
-    <div className="sec-watermark" aria-hidden="true" style={Object.assign({}, layerStyle, { backgroundImage: bgFor("white") })}/>
-  </>;
-};
-
 // ===== LEAD JOURNEY =====
 // Unified grouped-by-agent-era view of a lead's audit trail. Replaces the old
 // rotation-history card, side-panel activity list, and full-history modal body.
@@ -16408,6 +16371,5 @@ export default function CRMApp() {
       <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs.filter(function(n){return !rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore;})} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen&&(!rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore);}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){var now=Date.now();setRotHiddenBefore(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_rot_hidden_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={(function(){var items=buildDealItems(scopedLeads,scopedDailyReqs,currentUser,myTeamUsers);var cutoff=lastSeenDealAt||0;return items.filter(function(it){return new Date(it.time||0).getTime()>cutoff;}).length;})()} onDealNotifSeen={function(){var now=Date.now();setLastSeenDealAt(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_deal_seen_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
-    <SecurityWatermark name={currentUser.username==="amgad"?"Amgad Mohamed":currentUser.name}/>
   </div>;
 }
