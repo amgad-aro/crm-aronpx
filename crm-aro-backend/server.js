@@ -312,6 +312,107 @@ agentVacationSchema.index({ agentId: 1, endDate: 1 });
 var AgentVacation = mongoose.model("AgentVacation", agentVacationSchema);
 
 // =====================================================================
+// COMMISSION SYSTEM — Phase A foundation
+// One Commission per closed Lead (Lead.status === "DoneDeal"). Snapshot
+// fields are hard copies — they survive User deactivation/deletion. Cycles
+// + incentives embedded; bounded count per deal, always read together.
+// =====================================================================
+
+// Recipient appears inside snapshot.salesAgent / teamLeader / manager /
+// director / splitChain.* and inside cycle payoutBreakdown / incentive.
+// userName is authoritative; userId is convenience-only and may dangle.
+var commissionRecipientSchema = new mongoose.Schema({
+  userName:          { type: String, required: true },
+  userId:            { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  userActiveAtClose: { type: Boolean, default: true },
+  role:              { type: String, enum: ["sales","team_leader","manager","director"], required: true },
+  distributionType:  { type: String, enum: ["percentage","fixed_egp"], default: "percentage" },
+  value:             { type: Number, default: 0 } // pct (0-100) or EGP, per distributionType
+}, { _id: false });
+
+// Single stage marker inside a cycle. Empty date => stage not reached yet.
+var commissionStageSchema = new mongoose.Schema({
+  date:   { type: String, default: "" },     // ISO yyyy-mm-dd entered by admin
+  notes:  { type: String, default: "" },
+  byUser: { type: String, default: "" }      // SNAPSHOT of admin name who marked
+}, { _id: false });
+
+var commissionCycleSchema = new mongoose.Schema({
+  cycleNumber:        { type: Number, required: true },
+  state:              { type: String,
+                        enum: ["pending_claim","claim_submitted","invoice_submitted","received","paid_to_team","cancelled"],
+                        default: "pending_claim" },
+  expectedAmount:     { type: Number, default: 0 },
+  receivedAmount:     { type: Number, default: 0 },
+  claim_submitted:    { type: commissionStageSchema, default: function(){ return {}; } },
+  invoice_submitted:  { type: commissionStageSchema, default: function(){ return {}; } },
+  received:           { type: commissionStageSchema, default: function(){ return {}; } },
+  paid_to_team:       { type: commissionStageSchema, default: function(){ return {}; } },
+  payoutBreakdown:   [{
+    userName: String,
+    userId:   { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    role:     String,
+    amount:   Number
+  }],
+  closedAt: { type: Date, default: null }
+}, { _id: true, timestamps: true });
+
+var commissionIncentiveSchema = new mongoose.Schema({
+  recipients: [{
+    userName:     { type: String, required: true },
+    userId:       { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    role:         { type: String, enum: ["sales","team_leader","manager","director"], required: true },
+    amount:       { type: Number, default: 0 },
+    status:       { type: String, enum: ["pending","received"], default: "pending" },
+    receivedDate: { type: String, default: "" }
+  }]
+}, { _id: false });
+
+var commissionSchema = new mongoose.Schema({
+  leadId:              { type: mongoose.Schema.Types.ObjectId, ref: "Lead", required: true, index: true },
+
+  // Snapshot — never overwritten on Lead changes; only via explicit admin edit.
+  snapshot: {
+    customerName:    { type: String, required: true },
+    customerPhone:   { type: String, default: "" },
+    developer:       { type: String, default: "" },     // free text, admin fills
+    unitDetails:     { type: String, default: "" },     // free text, admin fills
+    projectName:     { type: String, default: "" },
+    dealTotal:       { type: Number, default: 0 },      // EGP (parsed Lead.budget)
+    dealDate:        { type: String, default: "" },     // ISO from Lead.dealDate
+    salesAgent:      { type: commissionRecipientSchema, required: true },
+    teamLeader:      { type: commissionRecipientSchema, default: null },
+    manager:         { type: commissionRecipientSchema, default: null },
+    director:        { type: commissionRecipientSchema, default: null },
+    isSplitDeal:     { type: Boolean, default: false },
+    splitChain: {
+      salesAgent2:   { type: commissionRecipientSchema, default: null },
+      teamLeader2:   { type: commissionRecipientSchema, default: null },
+      manager2:      { type: commissionRecipientSchema, default: null },
+      director2:     { type: commissionRecipientSchema, default: null }
+    }
+  },
+
+  expectedTotal:           { type: Number, default: 0 },
+  expectedCollectionDate:  { type: String, default: "" },
+
+  status:        { type: String, enum: ["active","cancelled","fully_paid"], default: "active", index: true },
+  cancelledAt:   { type: Date, default: null },
+  cancelReason:  { type: String, default: "" },
+
+  cycles:        [commissionCycleSchema],
+  incentive:     { type: commissionIncentiveSchema, default: function(){ return { recipients: [] }; } },
+
+  lastAlertedAt: { type: Date, default: null }
+}, { timestamps: true });
+
+commissionSchema.index({ leadId: 1, status: 1 });
+commissionSchema.index({ status: 1, expectedCollectionDate: 1 });
+commissionSchema.index({ createdAt: -1 });
+
+var Commission = mongoose.model("Commission", commissionSchema);
+
+// =====================================================================
 // ATTENDANCE & SALARY SYSTEM — Phase 1 foundation
 // Spec: docs/attendance-salary-requirements.md
 //
@@ -888,6 +989,248 @@ function vacationAdmin(req, res, next) {
     return res.status(403).json({ error: "Admin or Sales Admin only" });
   }
   next();
+}
+
+// Commission gate — admin and sales_admin only. Mirrors vacationAdmin.
+function salesAdminOnly(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+  if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  next();
+}
+
+// ===== COMMISSION HELPERS =====
+// parseDealTotalFromBudget — Lead.budget is a free-form string (e.g.
+// "5,000,000", "5000000 EGP"). Strip non-digits/non-decimal chars and parseFloat.
+function parseDealTotalFromBudget(budget) {
+  if (budget == null) return 0;
+  var s = String(budget).replace(/[^0-9.]/g, "");
+  if (!s) return 0;
+  var n = parseFloat(s);
+  return isFinite(n) ? n : 0;
+}
+
+// walkChain — given a sales User._id, walk reportsTo upward and collect
+// the first encountered team_leader, manager, and director. Returns
+// { teamLeader, manager, director } where each is a recipient object or null.
+async function walkReportsToChain(salesUserId) {
+  var out = { teamLeader: null, manager: null, director: null };
+  if (!salesUserId) return out;
+  var safety = 0;
+  var current;
+  try {
+    current = await User.findById(salesUserId).lean();
+  } catch (e) { return out; }
+  while (current && safety < 8) {
+    safety++;
+    var nextId = current.reportsTo;
+    if (!nextId) break;
+    var parent;
+    try {
+      parent = await User.findById(nextId).lean();
+    } catch (e) { break; }
+    if (!parent) break;
+    if (parent.role === "team_leader" && !out.teamLeader) {
+      out.teamLeader = recipientFromUser(parent, "team_leader");
+    } else if (parent.role === "manager" && !out.manager) {
+      out.manager = recipientFromUser(parent, "manager");
+    } else if (parent.role === "director" && !out.director) {
+      out.director = recipientFromUser(parent, "director");
+    }
+    current = parent;
+  }
+  return out;
+}
+
+// recipientFromUser — build a snapshot recipient with default distribution.
+function recipientFromUser(user, role) {
+  if (!user) return null;
+  return {
+    userName: user.name || "(unknown)",
+    userId: user._id || null,
+    userActiveAtClose: user.active !== false,
+    role: role,
+    distributionType: "percentage",
+    value: 0
+  };
+}
+
+// buildSnapshotForLead — assemble the full snapshot block from a Lead doc.
+// Walks reportsTo upward for the primary sales agent and (if split) for the
+// second sales agent. Both chains stand independent — same manager appearing
+// in both is fine; payouts SUM at paid_to_team time.
+async function buildSnapshotForLead(leadDoc) {
+  if (!leadDoc) throw new Error("buildSnapshotForLead: leadDoc required");
+  var primaryAgent = null;
+  if (leadDoc.agentId) {
+    try { primaryAgent = await User.findById(leadDoc.agentId).lean(); } catch(e){}
+  }
+  if (!primaryAgent) throw new Error("buildSnapshotForLead: lead has no resolvable primary agent");
+  var primaryRecipient = recipientFromUser(primaryAgent, "sales");
+  var primaryChain = await walkReportsToChain(primaryAgent._id);
+
+  var isSplit = !!leadDoc.splitAgent2Id;
+  var splitChainOut = {
+    salesAgent2: null, teamLeader2: null, manager2: null, director2: null
+  };
+  if (isSplit) {
+    var secondAgent = null;
+    try { secondAgent = await User.findById(leadDoc.splitAgent2Id).lean(); } catch(e){}
+    if (secondAgent) {
+      splitChainOut.salesAgent2 = recipientFromUser(secondAgent, "sales");
+      var secondChain = await walkReportsToChain(secondAgent._id);
+      splitChainOut.teamLeader2 = secondChain.teamLeader;
+      splitChainOut.manager2    = secondChain.manager;
+      splitChainOut.director2   = secondChain.director;
+    } else if (leadDoc.splitAgent2Name) {
+      // Fallback: salesAgent2 user no longer exists — preserve the snapshot name only.
+      splitChainOut.salesAgent2 = {
+        userName: leadDoc.splitAgent2Name, userId: null,
+        userActiveAtClose: false, role: "sales",
+        distributionType: "percentage", value: 0
+      };
+    }
+  }
+
+  return {
+    customerName: leadDoc.name || "(unknown)",
+    customerPhone: leadDoc.phone || "",
+    developer: "",
+    unitDetails: "",
+    projectName: leadDoc.project || "",
+    dealTotal: parseDealTotalFromBudget(leadDoc.budget),
+    dealDate: leadDoc.dealDate || "",
+    salesAgent: primaryRecipient,
+    teamLeader: primaryChain.teamLeader,
+    manager: primaryChain.manager,
+    director: primaryChain.director,
+    isSplitDeal: isSplit,
+    splitChain: splitChainOut
+  };
+}
+
+// ensureCommissionForLead — invoked from the four lifecycle hooks. Same-agent
+// revival flips a cancelled doc back to active. Different-agent close inserts
+// a NEW commission and leaves any prior cancelled one in place.
+async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
+  try {
+    var leadDoc = leadIdOrDoc && leadIdOrDoc._id
+      ? leadIdOrDoc
+      : await Lead.findById(leadIdOrDoc).lean();
+    if (!leadDoc) return null;
+    if (!leadDoc.agentId) return null; // no agent => no snapshot possible
+
+    var primaryAgentIdStr = String(leadDoc.agentId._id || leadDoc.agentId);
+
+    // Check for any existing commissions on this lead.
+    var existing = await Commission.find({ leadId: leadDoc._id }).sort({ createdAt: -1 }).lean();
+
+    // Find an active one — should never exist twice but safe-guard if it does.
+    var alreadyActive = existing.find(function(c){ return c.status === "active"; });
+    if (alreadyActive) return alreadyActive; // already covered
+
+    // Same-agent revival path.
+    if (existing.length) {
+      var lastCancelled = existing.find(function(c){
+        if (c.status !== "cancelled") return false;
+        var sa = c.snapshot && c.snapshot.salesAgent;
+        var saId = sa && sa.userId ? String(sa.userId) : "";
+        return saId === primaryAgentIdStr;
+      });
+      if (lastCancelled) {
+        await Commission.findByIdAndUpdate(lastCancelled._id, {
+          $set: {
+            status: "active",
+            cancelledAt: null,
+            cancelReason: ""
+          }
+        });
+        try {
+          await Activity.create({
+            userId: actingUser ? actingUser.id : null,
+            leadId: leadDoc._id,
+            type: "status_change",
+            note: "[Commission] Revived for same agent on lead reopen",
+            clientName: leadDoc.name || "",
+            clientPhone: leadDoc.phone || ""
+          });
+        } catch(e){}
+        return lastCancelled;
+      }
+    }
+
+    // No matching record — build a brand-new one.
+    var snapshot = await buildSnapshotForLead(leadDoc);
+    var created = await Commission.create({
+      leadId: leadDoc._id,
+      snapshot: snapshot,
+      expectedTotal: 0,
+      expectedCollectionDate: "",
+      status: "active",
+      cycles: [{
+        cycleNumber: 1,
+        state: "pending_claim",
+        expectedAmount: 0,
+        receivedAmount: 0,
+        payoutBreakdown: []
+      }],
+      incentive: { recipients: [] }
+    });
+    try {
+      await Activity.create({
+        userId: actingUser ? actingUser.id : null,
+        leadId: leadDoc._id,
+        type: "status_change",
+        note: "[Commission] Auto-created on deal close",
+        clientName: leadDoc.name || "",
+        clientPhone: leadDoc.phone || ""
+      });
+    } catch(e){}
+    return created;
+  } catch (e) {
+    console.error("[ensureCommissionForLead]", e && e.message ? e.message : e);
+    return null;
+  }
+}
+
+// cascadeCommissionCancel — flips active commission for a lead to cancelled,
+// closes any open cycles, leaves paid_to_team cycles untouched (history must
+// survive). Used by the deal-cancel hook.
+async function cascadeCommissionCancel(leadId, reason) {
+  try {
+    var commissions = await Commission.find({ leadId: leadId, status: "active" });
+    if (!commissions.length) return 0;
+    var now = new Date();
+    for (var i = 0; i < commissions.length; i++) {
+      var c = commissions[i];
+      c.status = "cancelled";
+      c.cancelledAt = now;
+      c.cancelReason = reason || "Deal cancelled";
+      if (Array.isArray(c.cycles)) {
+        for (var j = 0; j < c.cycles.length; j++) {
+          var cyc = c.cycles[j];
+          if (cyc.state !== "paid_to_team" && cyc.state !== "cancelled") {
+            cyc.state = "cancelled";
+            cyc.closedAt = now;
+          }
+        }
+      }
+      await c.save();
+    }
+    try {
+      await Activity.create({
+        userId: null,
+        leadId: leadId,
+        type: "status_change",
+        note: "[Commission] " + (reason || "Deal cancelled — cascaded to commission")
+      });
+    } catch(e){}
+    return commissions.length;
+  } catch (e) {
+    console.error("[cascadeCommissionCancel]", e && e.message ? e.message : e);
+    return 0;
+  }
 }
 
 // ===== UNIVERSAL ROLE-SCOPED USER ID HELPER =====
@@ -5097,6 +5440,9 @@ app.post("/api/leads", auth, async function(req, res) {
     initEntry.timestamp = lead.createdAt || new Date();
     await pushHistory(lead._id, initEntry);
     lead = await Lead.findById(lead._id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    if (initialStatus === "DoneDeal") {
+      try { await ensureCommissionForLead(lead, req.user); } catch(e){ console.error("[commission hook post-leads]", e && e.message); }
+    }
     res.json(lead);
   } catch (e) {
     console.error("POST /api/leads error:", e.message);
@@ -5832,6 +6178,7 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
     }
     try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[DoneDeal] EOI converted to Done Deal" }); } catch(e){}
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    try { await ensureCommissionForLead(lead, req.user); } catch(e){ console.error("[commission hook eoi-to-deal]", e && e.message); }
     res.json(lead);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -5861,6 +6208,7 @@ app.post("/api/leads/:id/deal-cancel", auth, async function(req, res) {
       catch(syncErr){ console.error("DR sync (deal-cancel) error:", syncErr.message); }
     }
     try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[HotCase] Deal cancelled — returned to Hot Case" }); } catch(e){}
+    try { await cascadeCommissionCancel(req.params.id, "Deal cancelled by " + (req.user && req.user.name ? req.user.name : "admin")); } catch(e){ console.error("[commission hook deal-cancel]", e && e.message); }
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(lead);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -5880,6 +6228,7 @@ app.post("/api/daily-requests/:id/deal-cancel", auth, async function(req, res) {
         var mirror = await Lead.findOne({ phone: existing.phone, source: "Daily Request" });
         if (mirror) {
           await Lead.findByIdAndUpdate(mirror._id, { status: restored, dealStatus: "Deal Cancelled", dealApproved: false, preDealStatus: "", lastActivityTime: new Date() });
+          try { await cascadeCommissionCancel(mirror._id, "Deal cancelled (DR side) by " + (req.user && req.user.name ? req.user.name : "admin")); } catch(e){ console.error("[commission hook dr-deal-cancel]", e && e.message); }
         }
       } catch(syncErr){ console.error("Lead mirror (deal-cancel) error:", syncErr.message); }
     }
@@ -6208,6 +6557,16 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         }
       }
     } catch(syncErr) { console.error("DR sync error (non-fatal):", syncErr.message); }
+    // Commission hook — fire only on an explicit transition INTO DoneDeal.
+    // Requires req.body.status === "DoneDeal" (so oldLead was loaded above)
+    // AND oldLead.status was not already DoneDeal. ensureCommissionForLead
+    // is idempotent, but the explicit check skips wasted work on no-op edits.
+    try {
+      if (req.body.status === "DoneDeal" && lead && lead.status === "DoneDeal" &&
+          oldLead && oldLead.status !== "DoneDeal") {
+        await ensureCommissionForLead(lead, req.user);
+      }
+    } catch(e){ console.error("[commission hook put-leads]", e && e.message); }
     res.json(lead);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -13550,6 +13909,121 @@ app.get("/api/reports/agents/:id/stuck-leads", auth, reportsAuth, async function
   } catch (e) {
     console.error("[reports/agents/:id/stuck-leads]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "agent_stuck_leads_failed" });
+  }
+});
+
+// ===== COMMISSIONS — Phase A read API (admin / sales_admin only) =====
+// All endpoints under /api/commissions/* require salesAdminOnly.
+// Phase D will add cycle/incentive write routes; Phase B handles auto-create
+// + cancel cascade via lifecycle hooks in the Lead routes.
+
+app.get("/api/commissions", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var q = {};
+    var status = String(req.query.status || "").trim();
+    if (status === "cancelled") {
+      q.status = "cancelled";
+    } else if (status && status !== "all") {
+      // Filter pills map to either commission.status or active-cycle state.
+      // Cycle-state filters apply to active commissions only.
+      if (status === "active" || status === "fully_paid") {
+        q.status = status;
+      } else {
+        // pending_claim | claim_submitted | invoice_submitted | received | paid_to_team
+        q.status = "active";
+        q["cycles.state"] = status;
+      }
+    } else {
+      q.status = { $ne: "cancelled" };
+    }
+    var search = String(req.query.q || "").trim();
+    if (search) {
+      var rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      q.$or = [
+        { "snapshot.customerName": rx },
+        { "snapshot.projectName": rx },
+        { "snapshot.developer": rx }
+      ];
+    }
+    var agentId = String(req.query.agentId || "").trim();
+    if (agentId && mongoose.Types.ObjectId.isValid(agentId)) {
+      q.$or = q.$or || [];
+      q.$or.push({ "snapshot.salesAgent.userId": new mongoose.Types.ObjectId(agentId) });
+      q.$or.push({ "snapshot.splitChain.salesAgent2.userId": new mongoose.Types.ObjectId(agentId) });
+    }
+    var from = String(req.query.from || "").trim();
+    var to   = String(req.query.to   || "").trim();
+    if (from || to) {
+      q["snapshot.dealDate"] = {};
+      if (from) q["snapshot.dealDate"].$gte = from;
+      if (to)   q["snapshot.dealDate"].$lte = to;
+    }
+    var rows = await Commission.find(q).sort({ createdAt: -1 }).limit(100).lean();
+    res.json({ data: rows });
+  } catch (e) {
+    console.error("[GET /api/commissions]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "commissions_list_failed" });
+  }
+});
+
+app.get("/api/commissions/stats", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var active = await Commission.find({ status: "active" }).select("expectedTotal cycles").lean();
+    var cancelledCount = await Commission.countDocuments({ status: "cancelled" });
+    var dealsCount = active.length;
+    var receivedTotal = 0;
+    var activeCycles = 0;
+    var expectedSum = 0;
+    for (var i = 0; i < active.length; i++) {
+      var c = active[i];
+      expectedSum += Number(c.expectedTotal || 0);
+      if (Array.isArray(c.cycles)) {
+        for (var j = 0; j < c.cycles.length; j++) {
+          var cy = c.cycles[j];
+          receivedTotal += Number(cy.receivedAmount || 0);
+          if (cy.state !== "cancelled" && cy.state !== "paid_to_team") activeCycles++;
+        }
+      }
+    }
+    var remainingTotal = Math.max(0, expectedSum - receivedTotal);
+    res.json({
+      dealsCount: dealsCount,
+      remainingTotal: remainingTotal,
+      receivedTotal: receivedTotal,
+      activeCycles: activeCycles,
+      cancelledCount: cancelledCount
+    });
+  } catch (e) {
+    console.error("[GET /api/commissions/stats]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "commissions_stats_failed" });
+  }
+});
+
+app.get("/api/commissions/by-lead/:leadId", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.leadId)) return res.status(400).json({ error: "Invalid leadId" });
+    // Prefer the active commission; fall back to most recent of any status.
+    var c = await Commission.findOne({ leadId: req.params.leadId, status: "active" }).lean();
+    if (!c) {
+      c = await Commission.findOne({ leadId: req.params.leadId }).sort({ createdAt: -1 }).lean();
+    }
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    res.json(c);
+  } catch (e) {
+    console.error("[GET /api/commissions/by-lead/:leadId]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "commissions_by_lead_failed" });
+  }
+});
+
+app.get("/api/commissions/:id", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id).lean();
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    res.json(c);
+  } catch (e) {
+    console.error("[GET /api/commissions/:id]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "commission_get_failed" });
   }
 });
 

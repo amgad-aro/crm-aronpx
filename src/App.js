@@ -1073,6 +1073,7 @@ var Sidebar = function(p) {
     {id:"dailyReq",label:t.dailyReq},
     {id:"deals",label:t.deals},
     {id:"eoi",label:"EOI"},
+    isOnlyAdmin&&{id:"commissions",label:"Commissions",adminSection:true},
     {id:"tasks",label:t.tasks},
     isSalesOrTL&&{id:"kpis",label:"KPIs"},
     isOnlyAdmin&&{id:"reports",label:t.reports,adminSection:true},
@@ -9140,6 +9141,8 @@ var DealsPage = function(p) {
             </td>
             <td style={{ padding:"8px 12px" }}>
               <div style={{ display:"flex", gap:5 }}>
+                {isOnlyAdmin&&p.navigateToCommission&&<button onClick={function(e){e.stopPropagation();p.navigateToCommission(gid(d));}} title="View Commission"
+                  style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>💰</button>}
                 {isOnlyAdmin&&<button onClick={function(){setSplitModal(d);var sp=getDealSplitFromObj(d);setSplitAgent2(sp?sp.agent2Id:"");}} title="Split Deal"
                   style={{ width:28, height:28, borderRadius:6, border:"1px solid "+(getDealSplitFromObj(d)?"#8B5CF6":"#E2E8F0"), background:getDealSplitFromObj(d)?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12 }}>🤝</button>}
                 {isOnlyAdmin&&<button onClick={function(){setEditDeal(d);}} title={t.edit}
@@ -15535,6 +15538,389 @@ var KPIsPage = function(p) {
   </div>;
 };
 
+// ===== COMMISSIONS PAGE — Phase C (read-only) =====
+// admin / sales_admin only. Fetches /api/commissions + /api/commissions/stats.
+// Cycle write actions land in Phase D — for now everything is display-only.
+var CommissionsPage = function(p) {
+  var t = p.t;
+  // ALL hooks before any role-gate (CRA rules-of-hooks).
+  var [statusFilter, setStatusFilter] = useState("all");
+  var [search, setSearch] = useState("");
+  var [agentFilter, setAgentFilter] = useState("");
+  var [rows, setRows] = useState(null);
+  var [stats, setStats] = useState(null);
+  var [loadErr, setLoadErr] = useState("");
+  var [expandedId, setExpandedId] = useState(null);
+  var [reloadTick, setReloadTick] = useState(0);
+
+  useEffect(function(){
+    var cancelled = false;
+    var qs = [];
+    if (statusFilter && statusFilter !== "all") qs.push("status=" + encodeURIComponent(statusFilter));
+    if (search.trim()) qs.push("q=" + encodeURIComponent(search.trim()));
+    if (agentFilter) qs.push("agentId=" + encodeURIComponent(agentFilter));
+    var url = "/api/commissions" + (qs.length ? "?" + qs.join("&") : "");
+    setRows(null); setLoadErr("");
+    apiFetch(url, "GET", null, p.token)
+      .then(function(d){ if(!cancelled) setRows((d && d.data) || []); })
+      .catch(function(e){ if(!cancelled){ setRows([]); setLoadErr(e && e.message ? e.message : "Failed to load commissions"); } });
+    apiFetch("/api/commissions/stats", "GET", null, p.token)
+      .then(function(d){ if(!cancelled) setStats(d || {}); })
+      .catch(function(){ if(!cancelled) setStats({}); });
+    return function(){ cancelled = true; };
+  }, [statusFilter, search, agentFilter, p.token, reloadTick]);
+
+  // One-shot consume of selectedCommissionLeadId from CRMApp state.
+  // Hits /by-lead/:leadId, expands the matching card, then clears the cue.
+  useEffect(function(){
+    if (!p.selectedCommissionLeadId) return;
+    var cancelled = false;
+    apiFetch("/api/commissions/by-lead/" + p.selectedCommissionLeadId, "GET", null, p.token)
+      .then(function(c){
+        if (cancelled || !c) return;
+        setExpandedId(String(c._id || ""));
+        // If this commission isn't in the current filter, switch to "all" so it shows up.
+        setStatusFilter("all");
+        setReloadTick(function(v){ return v + 1; });
+        // Defer scroll until after the next render cycle.
+        try {
+          setTimeout(function(){
+            var el = document.getElementById("commission-card-" + String(c._id || ""));
+            if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" });
+          }, 250);
+        } catch(e){}
+      })
+      .catch(function(){})
+      .then(function(){
+        if (p.setSelectedCommissionLeadId) { try { p.setSelectedCommissionLeadId(null); } catch(e){} }
+      });
+    return function(){ cancelled = true; };
+  }, [p.selectedCommissionLeadId, p.token]);
+
+  // Role-gate AFTER hooks.
+  if (!p.cu || (p.cu.role !== "admin" && p.cu.role !== "sales_admin")) {
+    return <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight }}>
+      Commissions are not available for your role.
+    </div>;
+  }
+
+  var fmtMoney = function(n){
+    var v = Number(n || 0);
+    if (!isFinite(v) || v === 0) return "—";
+    return Math.round(v).toLocaleString() + " EGP";
+  };
+  var fmtDate = function(s){
+    if (!s) return "—";
+    try { return new Date(s).toLocaleDateString("en-GB"); } catch(e) { return s; }
+  };
+  var todayMs = Date.now();
+  var sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+  var isImminentMissing = function(c){
+    if (!c || c.status !== "active" || !c.expectedCollectionDate) return false;
+    var due;
+    try { due = new Date(c.expectedCollectionDate).getTime(); } catch(e){ return false; }
+    if (!isFinite(due)) return false;
+    if (due - todayMs > sevenDaysMs) return false;
+    if (!Array.isArray(c.cycles)) return false;
+    return c.cycles.some(function(cy){
+      if (!cy || cy.state === "paid_to_team" || cy.state === "cancelled") return false;
+      var stages = ["claim_submitted","invoice_submitted","received","paid_to_team"];
+      for (var i = 0; i < stages.length; i++) {
+        var s = cy[stages[i]];
+        if (!s || !s.date) return true;
+      }
+      return false;
+    });
+  };
+  var imminentCount = (rows || []).filter(isImminentMissing).length;
+
+  var STATUS_PILLS = [
+    { id:"all", label:"All" },
+    { id:"pending_claim", label:"Pending Claim" },
+    { id:"claim_submitted", label:"Claim Submitted" },
+    { id:"invoice_submitted", label:"Invoice Submitted" },
+    { id:"received", label:"Received" },
+    { id:"paid_to_team", label:"Paid" },
+    { id:"cancelled", label:"Cancelled" }
+  ];
+
+  var STAGE_LABELS = {
+    claim_submitted: "مطالبة (Claim)",
+    invoice_submitted: "فاتورة إلكترونية (Invoice)",
+    received: "تحصيل (Received)",
+    paid_to_team: "دفع الفريق (Paid)"
+  };
+
+  var renderRecipient = function(label, r){
+    if (!r) return null;
+    var inactive = r.userActiveAtClose === false;
+    return <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 10px", background:"#F8FAFC", borderRadius:6, marginBottom:4 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+        <span style={{ fontSize:11, fontWeight:700, color:C.textLight, minWidth:80, textTransform:"capitalize" }}>{label}</span>
+        <span style={{ fontSize:12, fontWeight:600, color:C.text }}>{r.userName || "(unknown)"}</span>
+        {inactive && <span title="User deactivated" style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:"#FEE2E2", color:"#B91C1C" }}>⊘ inactive</span>}
+      </div>
+      <div style={{ fontSize:11, color:C.textLight }}>
+        {r.distributionType === "fixed_egp" ? fmtMoney(r.value) : (Number(r.value || 0) + "%")}
+      </div>
+    </div>;
+  };
+
+  var renderStageDot = function(cycle, stageKey){
+    var st = cycle && cycle[stageKey];
+    var done = !!(st && st.date);
+    return <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, flex:1, minWidth:0 }}>
+      <div style={{ width:14, height:14, borderRadius:"50%", background: done ? C.success : "#E2E8F0", border:"2px solid "+(done?C.success:"#CBD5E1") }}/>
+      <div style={{ fontSize:10, fontWeight:600, color:C.textLight, textAlign:"center", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:"100%" }}>{STAGE_LABELS[stageKey]}</div>
+      <div style={{ fontSize:9, color: done ? C.text : "#CBD5E1" }}>{done ? fmtDate(st.date) : "—"}</div>
+    </div>;
+  };
+
+  var renderCycle = function(cycle, isActiveCycle){
+    var pillBg = "#F1F5F9", pillFg = C.textLight;
+    if (cycle.state === "paid_to_team") { pillBg = "#DCFCE7"; pillFg = "#15803D"; }
+    else if (cycle.state === "cancelled") { pillBg = "#FEE2E2"; pillFg = "#B91C1C"; }
+    else if (cycle.state === "received") { pillBg = "#DBEAFE"; pillFg = "#1D4ED8"; }
+    return <div key={String(cycle._id || cycle.cycleNumber)} style={{ border:"1px solid #E2E8F0", borderRadius:10, padding:"10px 12px", marginBottom:8, background: isActiveCycle ? "#FAFBFF" : "#fff" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: isActiveCycle ? 12 : 0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:13, fontWeight:700, color:C.text }}>Cycle #{cycle.cycleNumber}</span>
+          <span style={{ fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:10, background: pillBg, color: pillFg }}>
+            {String(cycle.state || "").replace(/_/g, " ")}
+          </span>
+        </div>
+        <div style={{ fontSize:11, color:C.textLight }}>
+          {Number(cycle.expectedAmount || 0) > 0 && <span>Expected: <b>{fmtMoney(cycle.expectedAmount)}</b></span>}
+          {Number(cycle.receivedAmount || 0) > 0 && <span style={{ marginLeft:10 }}>Received: <b>{fmtMoney(cycle.receivedAmount)}</b></span>}
+        </div>
+      </div>
+      {isActiveCycle && <div style={{ display:"flex", alignItems:"flex-start", gap:8, marginTop:6 }}>
+        {renderStageDot(cycle, "claim_submitted")}
+        {renderStageDot(cycle, "invoice_submitted")}
+        {renderStageDot(cycle, "received")}
+        {renderStageDot(cycle, "paid_to_team")}
+      </div>}
+      {isActiveCycle && Array.isArray(cycle.payoutBreakdown) && cycle.payoutBreakdown.length > 0 && <div style={{ marginTop:10, paddingTop:8, borderTop:"1px dashed #E2E8F0" }}>
+        <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>Payout breakdown</div>
+        {cycle.payoutBreakdown.map(function(b, i){
+          return <div key={i} style={{ display:"flex", justifyContent:"space-between", fontSize:12, padding:"3px 0" }}>
+            <span style={{ color:C.text }}>{b.userName} <span style={{ color:C.textLight }}>({b.role})</span></span>
+            <span style={{ fontWeight:600, color:C.success }}>{fmtMoney(b.amount)}</span>
+          </div>;
+        })}
+      </div>}
+    </div>;
+  };
+
+  var renderIncentive = function(inc){
+    var recipients = (inc && Array.isArray(inc.recipients)) ? inc.recipients : [];
+    if (recipients.length === 0) {
+      return <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"8px 0" }}>No incentive recipients recorded.</div>;
+    }
+    return <div>
+      {recipients.map(function(r, i){
+        var pillBg = r.status === "received" ? "#DCFCE7" : "#FEF9C3";
+        var pillFg = r.status === "received" ? "#15803D" : "#B45309";
+        return <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 10px", background:"#F8FAFC", borderRadius:6, marginBottom:4 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <span style={{ fontSize:12, fontWeight:600, color:C.text }}>{r.userName}</span>
+            <span style={{ fontSize:10, color:C.textLight, textTransform:"capitalize" }}>({r.role})</span>
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ fontSize:12, fontWeight:600, color:C.success }}>{fmtMoney(r.amount)}</span>
+            <span style={{ fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:10, background: pillBg, color: pillFg }}>
+              {r.status === "received" ? "✅ " + fmtDate(r.receivedDate) : "⏳ pending"}
+            </span>
+          </div>
+        </div>;
+      })}
+    </div>;
+  };
+
+  var goToDeal = function(c){
+    var leadId = c && c.leadId;
+    if (!leadId) return;
+    var matchingLead = (p.leads || []).find(function(l){ return String(l._id || gid(l)) === String(leadId); });
+    if (p.nav) {
+      p.nav("deals", matchingLead || null);
+    } else if (p.setPage) {
+      p.setPage("deals");
+    }
+  };
+
+  var renderCard = function(c){
+    var isCancelled = c.status === "cancelled";
+    var isFullyPaid = c.status === "fully_paid";
+    var snap = c.snapshot || {};
+    var isExpanded = expandedId === String(c._id);
+    var activeCycle = (c.cycles || []).filter(function(cy){ return cy.state !== "paid_to_team" && cy.state !== "cancelled"; }).slice(-1)[0] || null;
+    var paidCycles = (c.cycles || []).filter(function(cy){ return cy.state === "paid_to_team" || cy.state === "cancelled"; });
+    var totalReceived = (c.cycles || []).reduce(function(s, cy){ return s + Number(cy.receivedAmount || 0); }, 0);
+    var imminent = isImminentMissing(c);
+
+    return <div id={"commission-card-" + String(c._id)} key={String(c._id)} style={{
+      background:"#fff", borderRadius:14, border:"1px solid " + (imminent ? "#FCA5A5" : "#E8ECF1"),
+      boxShadow:"0 1px 4px rgba(0,0,0,0.07)", padding:"14px 16px", marginBottom:12,
+      opacity: isCancelled ? 0.6 : 1
+    }}>
+      {/* Header */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:12, marginBottom:10 }}>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:4 }}>
+            <span style={{ fontSize:15, fontWeight:700, color:C.text, textDecoration: isCancelled ? "line-through" : "none" }}>
+              {snap.customerName || "(unknown)"}
+            </span>
+            {snap.developer && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontWeight:700 }}>{snap.developer}</span>}
+            {snap.isSplitDeal && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#F5F3FF", color:"#7C3AED", fontWeight:700 }}>🤝 Split</span>}
+            {isFullyPaid && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontWeight:700 }}>Fully paid</span>}
+            {isCancelled && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#FEE2E2", color:"#B91C1C", fontWeight:700 }}>Cancelled</span>}
+            {imminent && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#FEE2E2", color:"#B91C1C", fontWeight:700 }}>⏰ collection due</span>}
+          </div>
+          <div style={{ fontSize:12, color:C.textLight }}>
+            {snap.projectName || "—"}
+            {snap.unitDetails && <span> · {snap.unitDetails}</span>}
+            <span> · closed {fmtDate(snap.dealDate)}</span>
+          </div>
+        </div>
+        <div style={{ textAlign:"right" }}>
+          <div style={{ fontSize:18, fontWeight:700, color:C.success }}>{fmtMoney(snap.dealTotal)}</div>
+          <div style={{ fontSize:10, color:C.textLight }}>deal total</div>
+        </div>
+      </div>
+
+      {/* Overview row */}
+      <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:12 }}>
+        <div style={{ flex:1, minWidth:120, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
+          <div style={{ fontSize:10, color:C.textLight }}>Expected commission</div>
+          <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{fmtMoney(c.expectedTotal)}</div>
+        </div>
+        <div style={{ flex:1, minWidth:120, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
+          <div style={{ fontSize:10, color:C.textLight }}>Received so far</div>
+          <div style={{ fontSize:13, fontWeight:700, color:C.success }}>{fmtMoney(totalReceived)}</div>
+        </div>
+        <div style={{ flex:1, minWidth:120, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
+          <div style={{ fontSize:10, color:C.textLight }}>Expected collection</div>
+          <div style={{ fontSize:13, fontWeight:700, color: imminent ? "#B91C1C" : C.text }}>{fmtDate(c.expectedCollectionDate)}</div>
+        </div>
+        <div style={{ flex:1, minWidth:120, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
+          <div style={{ fontSize:10, color:C.textLight }}>Cycles</div>
+          <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{(c.cycles || []).length}</div>
+        </div>
+      </div>
+
+      {/* Team chain (always shown) */}
+      <div style={{ marginBottom:10 }}>
+        {renderRecipient("Sales", snap.salesAgent)}
+        {renderRecipient("Team Lead", snap.teamLeader)}
+        {renderRecipient("Manager", snap.manager)}
+        {renderRecipient("Director", snap.director)}
+        {snap.isSplitDeal && snap.splitChain && (snap.splitChain.salesAgent2 || snap.splitChain.teamLeader2 || snap.splitChain.manager2 || snap.splitChain.director2) && <div style={{ marginTop:6, paddingTop:6, borderTop:"1px dashed #E2E8F0" }}>
+          <div style={{ fontSize:10, fontWeight:700, color:"#7C3AED", marginBottom:4, textTransform:"uppercase" }}>Split chain</div>
+          {renderRecipient("Sales 2", snap.splitChain.salesAgent2)}
+          {renderRecipient("Team Lead 2", snap.splitChain.teamLeader2)}
+          {renderRecipient("Manager 2", snap.splitChain.manager2)}
+          {renderRecipient("Director 2", snap.splitChain.director2)}
+        </div>}
+      </div>
+
+      {/* Active cycle (always expanded if not paid/cancelled) */}
+      {activeCycle && renderCycle(activeCycle, true)}
+
+      {/* Other cycles — collapsible */}
+      {paidCycles.length > 0 && <div style={{ marginTop:8 }}>
+        <button onClick={function(){ setExpandedId(isExpanded ? null : String(c._id)); }} style={{
+          background:"none", border:"none", color:C.textLight, fontSize:11, fontWeight:700, cursor:"pointer",
+          padding:"4px 0", display:"flex", alignItems:"center", gap:4
+        }}>
+          <ChevronRight size={12} style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition:"transform 0.15s" }}/>
+          {isExpanded ? "Hide" : "Show"} {paidCycles.length} previous cycle{paidCycles.length === 1 ? "" : "s"}
+        </button>
+        {isExpanded && paidCycles.map(function(cy){ return renderCycle(cy, false); })}
+      </div>}
+
+      {/* Incentive */}
+      <div style={{ marginTop:12, paddingTop:10, borderTop:"1px solid #F1F5F9" }}>
+        <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:6, textTransform:"uppercase" }}>Incentive (developer-direct)</div>
+        {renderIncentive(c.incentive)}
+      </div>
+
+      {/* Footer */}
+      <div style={{ marginTop:12, paddingTop:10, borderTop:"1px solid #F1F5F9", display:"flex", justifyContent:"flex-end", gap:8 }}>
+        <button onClick={function(){ goToDeal(c); }} style={{
+          padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff",
+          cursor:"pointer", fontSize:12, fontWeight:600, color:C.text,
+          display:"inline-flex", alignItems:"center", gap:4
+        }}>
+          <ExternalLink size={12}/> View Deal
+        </button>
+      </div>
+    </div>;
+  };
+
+  var loading = rows === null;
+
+  return <div style={{ padding:"24px 16px", maxWidth:1100, margin:"0 auto" }}>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+      <h1 style={{ margin:0, fontSize:22, fontWeight:700, color:C.text }}>Commissions</h1>
+      <div style={{ fontSize:11, color:C.textLight }}>admin / sales_admin only</div>
+    </div>
+
+    {/* Stats row */}
+    <div style={{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" }}>
+      <StatCard label="Active Deals"          value={(stats && stats.dealsCount) != null ? stats.dealsCount : "—"} icon={Briefcase} c={C.info}/>
+      <StatCard label="Remaining Commission"  value={(stats && stats.remainingTotal) != null ? fmtMoney(stats.remainingTotal) : "—"} icon={DollarSign} c={C.warning}/>
+      <StatCard label="Received Commission"   value={(stats && stats.receivedTotal) != null ? fmtMoney(stats.receivedTotal) : "—"} icon={CheckCircle} c={C.success}/>
+      <StatCard label="Active Cycles"         value={(stats && stats.activeCycles) != null ? stats.activeCycles : "—"} icon={Activity} c={C.accent}/>
+    </div>
+
+    {/* Imminent alert banner */}
+    {imminentCount > 0 && <div style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", color:"#B91C1C", padding:"10px 14px", borderRadius:10, marginBottom:14, display:"flex", alignItems:"center", gap:8, fontSize:13, fontWeight:600 }}>
+      <AlertCircle size={16}/>
+      {imminentCount} commission{imminentCount === 1 ? "" : "s"} ha{imminentCount === 1 ? "s" : "ve"} an expected collection within 7 days and missing cycle stages.
+    </div>}
+
+    {/* Filter pills */}
+    <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
+      {STATUS_PILLS.map(function(s){
+        var active = statusFilter === s.id;
+        return <button key={s.id} onClick={function(){ setStatusFilter(s.id); }} style={{
+          padding:"5px 12px", borderRadius:8, border:"1px solid",
+          borderColor: active ? C.accent : "#E2E8F0",
+          background: active ? C.accent + "12" : "#fff",
+          color: active ? C.accent : C.textLight,
+          fontSize:12, fontWeight:600, cursor:"pointer"
+        }}>{s.label}</button>;
+      })}
+    </div>
+
+    {/* Search + agent filter */}
+    <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
+      <input type="text" placeholder="Search customer / project / developer…" value={search} onChange={function(e){ setSearch(e.target.value); }} style={{
+        flex:1, minWidth:200, padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, outline:"none"
+      }}/>
+      <select value={agentFilter} onChange={function(e){ setAgentFilter(e.target.value); }} style={{
+        padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff", minWidth:160
+      }}>
+        <option value="">All agents</option>
+        {(p.users || []).filter(function(u){ return u && (u.role === "sales" || u.role === "team_leader"); }).map(function(u){
+          return <option key={String(u._id)} value={String(u._id)}>{u.name}</option>;
+        })}
+      </select>
+      {(search || agentFilter || statusFilter !== "all") && <button onClick={function(){ setSearch(""); setAgentFilter(""); setStatusFilter("all"); }} style={{
+        padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:12, color:C.textLight
+      }}>Clear</button>}
+    </div>
+
+    {/* List */}
+    {loading && <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight }}>Loading…</div>}
+    {!loading && loadErr && <div style={{ padding:"16px", background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8, color:"#B91C1C", fontSize:13, marginBottom:14 }}>{loadErr}</div>}
+    {!loading && rows && rows.length === 0 && <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight, background:"#fff", borderRadius:14, border:"1px solid #E8ECF1" }}>
+      No commissions match the current filters.
+    </div>}
+    {!loading && rows && rows.length > 0 && rows.map(renderCard)}
+  </div>;
+};
+
 
 // ===== MAIN APP =====
 export default function CRMApp() {
@@ -15617,6 +16003,9 @@ export default function CRMApp() {
   var [isMobile,setIsMobile]=useState(window.innerWidth<768);
   var [sidebarOpen,setSidebarOpen]=useState(false);
   var [initSelected,setInitSelected]=useState(null);
+  // One-shot lead-id for the Commissions page to auto-expand on mount.
+  // Set by the 💰 button on a Deal row; CommissionsPage reads + clears it.
+  var [selectedCommissionLeadId,setSelectedCommissionLeadId]=useState(null);
   var [search,setSearch]=useState("");
   var [isOnline,setIsOnline]=useState(navigator.onLine);
   var [showPwaBanner,setShowPwaBanner]=useState(function(){
@@ -16266,7 +16655,13 @@ export default function CRMApp() {
   var scopedDailyReqs = tlScope ? (dailyReqs||[]).filter(function(r){var aid=String(r&&r.agentId&&r.agentId._id?r.agentId._id:(r&&r.agentId)||"");return tlScope.has(aid);}) : dailyReqs;
   var myTeamUsers = scopedUsers;
 
-  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings,salaryViewUserId:salaryViewUserId,setSalaryViewUserId:setSalaryViewUserId};
+  var navigateToCommission=function(leadId){
+    if(!leadId) return;
+    try { setSelectedCommissionLeadId(String(leadId)); } catch(e){}
+    setPage("commissions");
+    try { localStorage.setItem("crm_page","commissions"); } catch(e){}
+  };
+  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings,salaryViewUserId:salaryViewUserId,setSalaryViewUserId:setSalaryViewUserId,setPage:setPage,navigateToCommission:navigateToCommission,selectedCommissionLeadId:selectedCommissionLeadId,setSelectedCommissionLeadId:setSelectedCommissionLeadId};
 
   var renderPage=function(){
     switch(currentPage){
@@ -16278,6 +16673,7 @@ export default function CRMApp() {
       case "dailyReq": return <DailyRequestsPage {...sp}/>;
       case "deals": return <DealsPage {...sp}/>;
       case "eoi": return <EOIPage {...sp}/>;
+      case "commissions": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <CommissionsPage {...sp}/> : <DashboardPage {...sp}/>;
       case "projects": return <ProjectsPage {...sp}/>;
       case "tasks": return <TasksPage {...sp}/>;
       case "reports": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <ReportsPage {...sp}/> : <DashboardPage {...sp}/>;
