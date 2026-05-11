@@ -2962,6 +2962,10 @@ var LeadsPage = function(p) {
   var tabSc = sc.filter(function(s){ return s.value!=="EOI" && s.value!=="DoneDeal"; });
   var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
+  // Filter dropdown only — includes inactive agents (active first, then inactive)
+  // so admins can still filter to historical leads owned by deactivated users.
+  // Never use for assignment selects: inactive users must stay excluded there.
+  var salesUsersForFilter = (function(){var act=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});var ina=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&!u.active;});return act.concat(ina);})();
   var isManager = p.cu.role==="manager"||p.cu.role==="team_leader";
   var myTeamUsers = p.myTeamUsers || salesUsers;
   var isReq = !!p.isRequest;
@@ -3896,7 +3900,7 @@ var LeadsPage = function(p) {
         </select>
         {isAdmin&&<select value={agentFilter} onChange={function(e){setLockedOnly(false);setAgentFilter(e.target.value);setNoAgentFilter(false);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
           <option value="">👤 All Agents</option>
-          {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
+          {salesUsersForFilter.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}{u.active?"":" (inactive)"}</option>;})}
         </select>}
         {isOnlyAdmin&&<button onClick={function(){setLockedOnly(false);setNoAgentFilter(!noAgentFilter);setAgentFilter("");}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:noAgentFilter?"#EF4444":"#E8ECF1", background:noAgentFilter?"#FEE2E2":"#fff", color:noAgentFilter?"#B91C1C":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>🚫 No Agent {noAgentFilter?"✓":""}</button>}
         <button onClick={function(){setLockedOnly(false);setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP Only {vipFilter?"✓":""}</button>
@@ -4117,8 +4121,16 @@ var LeadsPage = function(p) {
                         // their name as the current value. Server-side /rotate returns 400
                         // "same_agent" if an admin tries to rotate to the current owner, so
                         // the guard doesn't need to live in the UI.
+                        // Inactive owners aren't in the pool — inject a disabled option so
+                        // the SELECT renders their name instead of falling back to "— No Agent —".
                         var pool = isOnlyAdmin ? salesUsers : (p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";});
-                        return pool.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
+                        var opts = pool.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
+                        var ownerId = lead.agentId&&lead.agentId._id ? String(lead.agentId._id) : (lead.agentId ? String(lead.agentId) : "");
+                        if (ownerId && !pool.some(function(u){return gid(u)===ownerId;})) {
+                          var ownerName = (lead.agentId&&lead.agentId.name) || (function(){var uu=p.users.find(function(x){return gid(x)===ownerId;});return uu?uu.name:"Unknown";})();
+                          opts.unshift(<option key={"__inactive_"+ownerId} value={ownerId} disabled>{ownerName} (inactive)</option>);
+                        }
+                        return opts;
                       })()}
                     </select>
                   </td>}
@@ -4191,8 +4203,16 @@ var LeadsPage = function(p) {
                 // Include the current owner in options so the <select> can display
                 // their name as the current value. Server-side /rotate returns 400
                 // "same_agent" if an admin tries to rotate to the current owner.
+                // Inactive owners aren't in the pool — inject a disabled option so
+                // the SELECT renders their name instead of falling back to "— No Agent —".
                 var poolSel = isOnlyAdmin ? (p.myTeamUsers||salesUsers) : (p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";});
-                return poolSel.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
+                var opts = poolSel.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
+                var ownerId = selected.agentId&&selected.agentId._id ? String(selected.agentId._id) : (selected.agentId ? String(selected.agentId) : "");
+                if (ownerId && !poolSel.some(function(u){return gid(u)===ownerId;})) {
+                  var ownerName = (selected.agentId&&selected.agentId.name) || (function(){var uu=p.users.find(function(x){return gid(x)===ownerId;});return uu?uu.name:"Unknown";})();
+                  opts.unshift(<option key={"__inactive_"+ownerId} value={ownerId} disabled>{ownerName} (inactive)</option>);
+                }
+                return opts;
               })()}
             </select>
           </div>}
@@ -8702,6 +8722,8 @@ var DealsPage = function(p) {
     return s+parseBudget(d.budget)*getProjectWeight(d.project,d)*splitMultiplier(d, visibleUserIds);
   },0);
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
+  // Filter dropdown only — includes inactive agents so admins can filter historical deals.
+  var salesUsersForFilter=(function(){var act=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});var ina=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&!u.active;});return act.concat(ina);})();
   var [showAdd,setShowAdd]=useState(false);
   var [editDeal,setEditDeal]=useState(null);
   var [selectedDeal,setSelectedDeal]=useState(null);
@@ -8817,7 +8839,7 @@ var DealsPage = function(p) {
       <input placeholder="🔍 Search by name, project or phone..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, minWidth:220 }}/>
       {isAdmin&&<select value={dealAgent} onChange={function(e){setDealAgent(e.target.value);}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
         <option value="">👤 All Agents</option>
-        {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
+        {salesUsersForFilter.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}{u.active?"":" (inactive)"}</option>;})}
       </select>}
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
         <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>📅 From:</span>
@@ -9547,6 +9569,8 @@ var DailyRequestsPage = function(p) {
   var sc=visibleStatuses(DR_STATUSES(t), p.cu&&p.cu.role).filter(function(s){ return s.value!=="Deal Cancelled"; });
   var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
+  // Filter dropdown only — includes inactive agents so admins can filter historical DRs.
+  var salesUsersForFilter=(function(){var act=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});var ina=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&!u.active;});return act.concat(ina);})();
   var [requests,setRequests]=useState([]);
   var [loading,setLoading]=useState(true);
   var [showAdd,setShowAdd]=useState(false);
@@ -9910,7 +9934,7 @@ var DailyRequestsPage = function(p) {
     <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
       {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
         <option value="">👤 All Agents</option>
-        {salesUsers.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}</option>;})}
+        {salesUsersForFilter.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}{u.active?"":" (inactive)"}</option>;})}
       </select>}
       <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
         <option value="lastActivity">⏱ Last Activity</option>
@@ -10058,7 +10082,18 @@ var DailyRequestsPage = function(p) {
                       try{var upd=await apiFetch("/api/daily-requests/"+rid,"PUT",{agentId:newAgent},p.token);setRequests(function(prev){return prev.map(function(x){return gid(x)===rid?upd:x;});});if(selected&&gid(selected)===rid)setSelected(upd);}catch(ex){}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", maxWidth:110 }}>
                       {isOnlyAdmin&&<option value="">— No Agent —</option>}
-                      {(isOnlyAdmin?salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";})).map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;})}
+                      {(function(){
+                        // Inactive owners aren't in the pool — inject a disabled option so
+                        // the SELECT renders their name instead of falling back to "— No Agent —".
+                        var pool = isOnlyAdmin?salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";});
+                        var opts = pool.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
+                        var ownerId = r.agentId&&r.agentId._id ? String(r.agentId._id) : (r.agentId ? String(r.agentId) : "");
+                        if (ownerId && !pool.some(function(u){return gid(u)===ownerId;})) {
+                          var ownerName = (r.agentId&&r.agentId.name) || (function(){var uu=p.users.find(function(x){return gid(x)===ownerId;});return uu?uu.name:"Unknown";})();
+                          opts.unshift(<option key={"__inactive_"+ownerId} value={ownerId} disabled>{ownerName} (inactive)</option>);
+                        }
+                        return opts;
+                      })()}
                     </select>
                   </td>}
                   <td style={{ padding:"10px 12px", fontSize:11, color:C.accent }}>{timeAgo(r.lastActivityTime,t)}</td>
