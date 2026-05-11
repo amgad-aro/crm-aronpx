@@ -1587,34 +1587,25 @@ var Header = function(p) {
               <div style={{ fontSize:28, marginBottom:8 }}>🔄</div>No rotations
             </div>}
             {p.rotNotifs&&p.rotNotifs.map(function(n){
-              var isCommission = n.type === "commission_stage_missing" || n.type === "commission_received_payout_ready";
               var canNav = !!n.leadId;
               var openItem = function(){
                 if (p.setShowRotNotif) p.setShowRotNotif(false);
                 if (!canNav) return;
-                if (isCommission) {
-                  if (p.navigateToCommission) p.navigateToCommission(n.leadId);
-                  return;
-                }
-                // Reuse the same nav + initSelected path Leads page already uses for row clicks.
                 var target = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);}) || { _id: n.leadId, name: n.leadName||"" };
                 if (p.onRotNotifClick) p.onRotNotifClick(target);
                 else if (p.onLeadClick) p.onLeadClick(target);
               };
-              var iconBg = isCommission ? "linear-gradient(135deg,#F0FDF4,#DCFCE7)" : "linear-gradient(135deg,#FFF7ED,#FFEDD5)";
-              var iconNode = isCommission ? <span style={{ fontSize:18 }}>💰</span> : <RotateCcw size={16} color="#EA580C"/>;
-              var titleText = isCommission ? (n.leadName || "Commission") : n.leadName;
               return <div key={n._id||n.id} onClick={canNav?openItem:undefined} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#FFFBF5", transition:"background 0.2s", cursor:canNav?"pointer":"default" }}>
-                <div style={{ width:38, height:38, borderRadius:10, background:iconBg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>{iconNode}</div>
+                <div style={{ width:38, height:38, borderRadius:10, background:"linear-gradient(135deg,#FFF7ED,#FFEDD5)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><RotateCcw size={16} color="#EA580C"/></div>
                 <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{titleText}</div>
-                  {!isCommission && <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.fromName} → {n.toName}</div>}
+                  <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{n.leadName}</div>
+                  <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.fromName} → {n.toName}</div>
                   <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:2 }}>
-                    <span style={{ fontSize:10, color: isCommission ? "#15803D" : "#EA580C", fontWeight:600, background: isCommission ? "#F0FDF4" : "#FFF7ED", padding:"1px 6px", borderRadius:4 }}>{n.reason}</span>
+                    <span style={{ fontSize:10, color:"#EA580C", fontWeight:600, background:"#FFF7ED", padding:"1px 6px", borderRadius:4 }}>{n.reason}</span>
                     <span style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.createdAt||n.time,p.t)}</span>
                   </div>
                 </div>
-                {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background: isCommission ? "#15803D" : "#EA580C", flexShrink:0 }}/>}
+                {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#EA580C", flexShrink:0 }}/>}
               </div>;
             })}
           </div>
@@ -15173,7 +15164,8 @@ var SettingsPage = function(p) {
           <div style={{ fontWeight:500, fontSize:14, color:"#1a1a1a", marginBottom:4 }}>Per-1000 commission rates</div>
           <div style={{ color:"#666", fontSize:12, marginBottom:14 }}>
             Rates are applied to <code>dealTotal × projectWeight × splitMultiplier</code>. Sales rate depends on the agent's quarter achievement bucket
-            (&lt;2× = base, 2-3× = target met, ≥3× = double target). Changes do not auto-cascade — click <b>Recompute</b> on the Commissions page after saving.
+            (&lt;2× = base, 2-3× = target met, ≥3× = double target). Changes apply to new closes automatically; existing commissions keep their stored
+            shares until they next recompute (via a new sibling close, cancel, or admin script).
           </div>
 
           <div style={{ background:"#F7F7F5", borderRadius:10, padding:"14px 16px", marginBottom:14, border:"1px solid #E8ECF1" }}>
@@ -15223,7 +15215,7 @@ var SettingsPage = function(p) {
               style={{ fontSize:12, padding:"6px 14px", border:"0.5px solid rgba(24,95,165,0.3)", background:"#E6F1FB", color:"#185FA5", borderRadius:8, cursor: commRatesSaving ? "wait" : "pointer", fontWeight:500 }}>
               {commRatesSaving ? "Saving…" : "Save rates"}
             </button>
-            {commRatesSavedFlag && <span style={{ fontSize:12, color:"#0F6E56" }}>✓ Saved (admin must click Recompute to apply)</span>}
+            {commRatesSavedFlag && <span style={{ fontSize:12, color:"#0F6E56" }}>✓ Saved (applies to new closes; run admin script to backfill existing)</span>}
           </div>
         </div>;
       })()}
@@ -16414,6 +16406,7 @@ var CommissionsPage = function(p) {
   var [editingIncentive, setEditingIncentive] = useState(null); // commission obj
   var [addingPayoutFor, setAddingPayoutFor] = useState(null);   // {commission}
   var [cashFlow, setCashFlow] = useState(null);                 // {totalReceived, totalPaid, ..., byRecipient}
+  var [commissionNotifs, setCommissionNotifs] = useState([]);   // Phase R-4: in-page banner items
   var [savingFlag, setSavingFlag] = useState(false);
   var [toast, setToast] = useState(null);                       // {kind, msg}
 
@@ -16470,6 +16463,24 @@ var CommissionsPage = function(p) {
     var h = setTimeout(function(){ setToast(null); }, 3500);
     return function(){ clearTimeout(h); };
   }, [toast]);
+
+  // Phase R-4: commission notifications banner — fetch on mount + on every
+  // websocket notification_updated event (server broadcasts this on create,
+  // dismiss, cancel cascade, and the cron sweeper).
+  useEffect(function(){
+    var cancelled = false;
+    var load = function(){
+      apiFetch("/api/notifications/commission", "GET", null, p.token)
+        .then(function(d){ if (!cancelled && Array.isArray(d)) setCommissionNotifs(d); })
+        .catch(function(){});
+    };
+    load();
+    window.addEventListener("crm:notification_updated", load);
+    return function(){
+      cancelled = true;
+      window.removeEventListener("crm:notification_updated", load);
+    };
+  }, [p.token]);
 
   // Role-gate AFTER hooks.
   if (!p.cu || (p.cu.role !== "admin" && p.cu.role !== "sales_admin")) {
@@ -16801,13 +16812,7 @@ var CommissionsPage = function(p) {
 
       {/* Team chain (always shown) */}
       <div style={{ marginBottom:10 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
-          <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase" }}>Recipients</div>
-          {!isCancelled && <button onClick={async function(){
-            try { await writeCommission("POST", "/api/commissions/" + c._id + "/recompute", {}, "Recomputed"); } catch(_e){}
-          }} disabled={savingFlag} title="Recompute computed shares from current rates + Q achievement (skips overrides)"
-            style={{ padding:"3px 10px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor: savingFlag ? "wait" : "pointer", fontSize:11, color:C.textLight }}>↻ Recompute</button>}
-        </div>
+        <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase", marginBottom:6 }}>Recipients</div>
         {renderRecipient("Sales", snap.salesAgent, ctx)}
         {renderRecipient("Team Lead", snap.teamLeader, ctx)}
         {renderRecipient("Manager", snap.manager, ctx)}
@@ -16918,28 +16923,10 @@ var CommissionsPage = function(p) {
 
   var loading = rows === null;
 
-  // Phase R-1: quick quarter picker for bulk recompute. Defaults to current
-  // calendar quarter. Admin can type any "YYYY-Qn" to scope the recompute.
-  var nowQDate = new Date();
-  var defaultQKey = nowQDate.getUTCFullYear() + "-Q" + (Math.floor(nowQDate.getUTCMonth() / 3) + 1);
-  var doRecomputeQuarter = async function(){
-    var qk = window.prompt("Recompute all commissions in which quarter? (e.g. 2026-Q2)", defaultQKey);
-    if (!qk) return;
-    if (!/^\d{4}-Q[1-4]$/.test(qk)) { alert("Invalid quarter key. Format: YYYY-Qn (e.g. 2026-Q2)"); return; }
-    try {
-      var r = await writeCommission("POST", "/api/commissions/recompute-all?qKey=" + encodeURIComponent(qk), {}, "Recomputed " + qk);
-      setToast({ kind: "ok", msg: "Recomputed " + (r && r.count) + " commission" + ((r && r.count === 1) ? "" : "s") + " in " + qk });
-    } catch(_e){}
-  };
-
   return <div style={{ padding:"24px 16px", maxWidth:1100, margin:"0 auto" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
       <h1 style={{ margin:0, fontSize:22, fontWeight:700, color:C.text }}>Commissions</h1>
-      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-        <button onClick={doRecomputeQuarter} disabled={savingFlag} title="Recompute all commissions in a quarter (e.g. after changing rates)"
-          style={{ padding:"6px 14px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: savingFlag ? "wait" : "pointer", fontSize:12, fontWeight:600, color:C.text }}>↻ Recompute quarter</button>
-        <div style={{ fontSize:11, color:C.textLight }}>admin / sales_admin only</div>
-      </div>
+      <div style={{ fontSize:11, color:C.textLight }}>admin / sales_admin only</div>
     </div>
 
     {/* Stats row */}
@@ -16949,6 +16936,52 @@ var CommissionsPage = function(p) {
       <StatCard label="Received Commission"   value={(stats && stats.receivedTotal) != null ? fmtMoney(stats.receivedTotal) : "—"} icon={CheckCircle} c={C.success}/>
       <StatCard label="Active Cycles"         value={(stats && stats.activeCycles) != null ? stats.activeCycles : "—"} icon={Activity} c={C.accent}/>
     </div>
+
+    {/* Phase R-4: commission notifications banner. Only the unseen rows render
+        (the dismiss button adds the user to seenBy on the server). One card
+        per notification, severity color by type. */}
+    {(function(){
+      var unseen = (commissionNotifs || []).filter(function(n){ return !n.seen; });
+      if (unseen.length === 0) return null;
+      var style = function(type){
+        if (type === "commission_cancellation_impact") return { bg:"#FEF2F2", border:"#FCA5A5", fg:"#B91C1C", chip:"#FEE2E2" };
+        // commission_stage_missing + any future type → amber
+        return { bg:"#FFFBEB", border:"#FCD34D", fg:"#B45309", chip:"#FEF3C7" };
+      };
+      var dismiss = async function(id){
+        try {
+          await apiFetch("/api/notifications/" + id + "/dismiss", "POST", {}, p.token);
+          setCommissionNotifs(function(prev){ return prev.map(function(n){ return String(n._id) === String(id) ? Object.assign({}, n, { seen: true }) : n; }); });
+        } catch(e){
+          setToast({ kind:"err", msg:"Dismiss failed" });
+        }
+      };
+      var goToDeal = function(n){
+        if (!n.leadId) return;
+        if (p.navigateToCommission) { p.navigateToCommission(n.leadId); return; }
+        // Fallback within the same page: expand the matching commission card.
+        var match = (rows || []).find(function(c){ return String(c.leadId) === String(n.leadId); });
+        if (match) {
+          setExpandedId(String(match._id));
+          try { setTimeout(function(){ var el = document.getElementById("commission-card-" + String(match._id)); if (el && el.scrollIntoView) el.scrollIntoView({ behavior:"smooth", block:"center" }); }, 50); } catch(_e){}
+        }
+      };
+      return <div style={{ marginBottom:14, display:"flex", flexDirection:"column", gap:8 }}>
+        {unseen.map(function(n){
+          var s = style(n.type);
+          return <div key={String(n._id)} style={{ background:s.bg, border:"1px solid "+s.border, color:s.fg, padding:"10px 14px", borderRadius:10, display:"flex", alignItems:"center", gap:10, fontSize:13 }}>
+            <span style={{ fontSize:18, lineHeight:1 }}>💰</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontWeight:700 }}>{n.leadName || "Commission"}</div>
+              <div style={{ fontSize:12, marginTop:2 }}>{n.reason || ""}</div>
+              <div style={{ fontSize:10, marginTop:2, opacity:0.75 }}>{timeAgo(n.createdAt, p.t)}</div>
+            </div>
+            {n.leadId && <button onClick={function(){ goToDeal(n); }} style={{ padding:"4px 10px", borderRadius:6, border:"1px solid "+s.border, background:s.chip, color:s.fg, fontSize:11, fontWeight:600, cursor:"pointer" }}>Go to deal</button>}
+            <button onClick={function(){ dismiss(n._id); }} title="Dismiss" style={{ padding:"4px 8px", borderRadius:6, border:"1px solid "+s.border, background:"#fff", color:s.fg, fontSize:11, fontWeight:600, cursor:"pointer" }}>✕</button>
+          </div>;
+        })}
+      </div>;
+    })()}
 
     {/* Imminent alert banner */}
     {imminentCount > 0 && <div style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", color:"#B91C1C", padding:"10px 14px", borderRadius:10, marginBottom:14, display:"flex", alignItems:"center", gap:8, fontSize:13, fontWeight:600 }}>
@@ -17133,10 +17166,9 @@ export default function CRMApp() {
   // the WS push paths target. limit=600 leaves room for the recent
   // rotation backlog plus deals/offsite even though rotation dominates.
   var loadNotifications = function(tok){
-    // Commission notifications piggy-back on the rotation bell since they
-    // share the admin/sales_admin visibility gate. The bell's .map() branches
-    // on n.type to render the 💰 icon + route via navigateToCommission.
-    apiFetch("/api/notifications?type=deal,rotation,offsite_pending,offsite_approved,offsite_rejected,commission_stage_missing,commission_received_payout_ready&limit=600","GET",null,tok)
+    // Phase R-4: commission_* notifications were removed from the rotation bell.
+    // They surface only on the Commissions page banner via /api/notifications/commission.
+    apiFetch("/api/notifications?type=deal,rotation,offsite_pending,offsite_approved,offsite_rejected&limit=600","GET",null,tok)
       .then(function(data){
         if (!Array.isArray(data)) return;
         var deal = [], rot = [], off = [];
@@ -17144,7 +17176,7 @@ export default function CRMApp() {
           var n = data[i];
           if (!n) continue;
           if (n.type === "deal") deal.push(n);
-          else if (n.type === "rotation" || n.type === "commission_stage_missing" || n.type === "commission_received_payout_ready") rot.push(n);
+          else if (n.type === "rotation") rot.push(n);
           else if (n.type === "offsite_pending" || n.type === "offsite_approved" || n.type === "offsite_rejected") off.push(n);
         }
         setDealNotifs(deal);

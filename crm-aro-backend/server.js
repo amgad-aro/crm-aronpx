@@ -9625,6 +9625,11 @@ async function getVisibleNotifications(req, baseQuery, limit) {
       return false;
     }
 
+    // Phase R-4: commission_* notifications never appear in the rotation bell.
+    // They surface only via the in-page banner on the Commissions page through
+    // a dedicated endpoint (GET /api/notifications/commission below).
+    if (n.type && n.type.indexOf("commission_") === 0) return false;
+
     // Off-site notifications — visibility split: pending rows go to approvers,
     // approved/rejected rows go to the requester. These rules apply to every
     // role (including admin/sales_admin) so the bell stays clean for users
@@ -9785,6 +9790,51 @@ app.put("/api/notifications/mark-seen", auth, async function(req, res) {
     );
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== PHASE R-4 — COMMISSION NOTIFICATIONS =====
+// commission_* notifications are filtered out of /api/notifications (the bell
+// endpoint) and surfaced only here, on the Commissions page banner. Admin /
+// sales_admin only.
+app.get("/api/notifications/commission", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var uid = String(req.user.id);
+    var rows = await Notification.find({ type: { $regex: /^commission_/ } })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .lean();
+    var withSeen = rows.map(function(n){
+      return Object.assign({}, n, { seen: Array.isArray(n.seenBy) && n.seenBy.indexOf(uid) !== -1 });
+    });
+    res.json(withSeen);
+  } catch(e) {
+    console.error("[GET /api/notifications/commission]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "notifications_commission_failed" });
+  }
+});
+
+// POST /api/notifications/:id/dismiss — per-id dismiss for the commission
+// banner. Restricted to commission_* types (other notification streams use
+// the bulk mark-seen flow). Adds the caller's user id to seenBy.
+app.post("/api/notifications/:id/dismiss", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var n = await Notification.findById(req.params.id);
+    if (!n) return res.status(404).json({ error: "Notification not found" });
+    if (!n.type || n.type.indexOf("commission_") !== 0) {
+      return res.status(400).json({ error: "Dismiss is only supported for commission_* notifications" });
+    }
+    var uid = String(req.user.id);
+    if (!Array.isArray(n.seenBy)) n.seenBy = [];
+    if (n.seenBy.indexOf(uid) === -1) {
+      n.seenBy.push(uid);
+      await n.save();
+    }
+    res.json({ ok: true });
+  } catch(e) {
+    console.error("[POST /api/notifications/:id/dismiss]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "notification_dismiss_failed" });
+  }
 });
 
 // ===== BACKFILL OFF-SITE NOTIFICATIONS =====
@@ -15005,20 +15055,14 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage", auth, salesAdminOnly, as
 
     cyc[stage] = { date: date, notes: notes, byUser: byUser };
 
-    var notifPayload = null;
     if (stage === "received") {
       var amount = Number(body.amount);
       if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: "amount required (>0) when advancing to received" });
       cyc.receivedAmount = amount;
       cyc.state = "received";
-      notifPayload = {
-        type: "commission_received_payout_ready",
-        leadId: String(c.leadId),
-        leadName: (c.snapshot && c.snapshot.customerName) || "",
-        reason: "Cycle " + cyc.cycleNumber + " received " + Math.round(amount).toLocaleString() + " EGP — ready to pay team",
-        fromName: String(c._id),
-        budget: String(amount)
-      };
+      // Phase R-4: removed commission_received_payout_ready notification.
+      // Cycles are cash-flow tracking only; team payouts are a separate flow
+      // (commission.payouts[]) that admin schedules manually.
     } else if (stage === "paid_to_team") {
       cyc.state = "paid_to_team";
       cyc.closedAt = new Date();
@@ -15042,17 +15086,6 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage", auth, salesAdminOnly, as
       : "";
     await logCommissionActivity(req.user, c.leadId, "commission_stage_advance",
       "[Commission] cycle " + cyc.cycleNumber + " → " + stage + " on " + date + noteSuffix);
-
-    // Notification (immediate fire; idempotency not required because each
-    // stage transition is a discrete, admin-initiated event)
-    if (notifPayload) {
-      try {
-        await Notification.create(notifPayload);
-        try { broadcast("notification_updated", {}); } catch(e){}
-      } catch(notifErr) {
-        console.error("[notification commission_received_payout_ready]", notifErr && notifErr.message);
-      }
-    }
 
     res.json(c.toObject());
   } catch(e) {
