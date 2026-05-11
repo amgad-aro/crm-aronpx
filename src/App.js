@@ -13857,6 +13857,26 @@ var SettingsPage = function(p) {
     return function(){ cancelled=true; };
   },[activeTab,p.token]);
 
+  // Branches tab (AssetTracker S1) — admin role OR isOwner flag. Gated tightly
+  // because Settings itself is admin/sales_admin-visible but AssetTracker is
+  // restricted to admin/owner only; sales_admin won't see the tab at all.
+  var canManageBranches = !!(p.cu && (p.cu.role === "admin" || p.cu.isOwner === true));
+  var [branches,setBranches] = useState([]);
+  var [branchesLoaded,setBranchesLoaded] = useState(false);
+  var [branchForm,setBranchForm] = useState({ id:null, name:"", code:"", address:"", isActive:true });
+  var [branchSaving,setBranchSaving] = useState(false);
+  var [branchError,setBranchError] = useState("");
+  var [branchMsg,setBranchMsg] = useState("");
+  useEffect(function(){
+    if (activeTab !== "branches" || !canManageBranches) return;
+    var cancelled = false;
+    apiFetch("/api/branches","GET",null,p.token)
+      .then(function(data){ if (!cancelled && Array.isArray(data)) setBranches(data); })
+      .catch(function(err){ if (!cancelled) setBranchError((err && err.message) || "Failed to load branches"); })
+      .finally(function(){ if (!cancelled) setBranchesLoaded(true); });
+    return function(){ cancelled = true; };
+  },[activeTab,canManageBranches,p.token]);
+
   useEffect(function(){
     var cancelled=false;
     apiFetch("/api/settings/rotation","GET",null,p.token).then(function(s){
@@ -14122,6 +14142,7 @@ var SettingsPage = function(p) {
     {id:"commissions", label:"Commissions"},
     {id:"campaigns",   label:"Campaigns"},
     {id:"audit",       label:"Audit Log"},
+    canManageBranches && {id:"branches", label:"Branches"},
     isOwner && {id:"officeLocation", label:"Office Location"},
     isOwner && {id:"permissions",    label:"Permissions"}
   ].filter(Boolean);
@@ -15647,6 +15668,110 @@ var SettingsPage = function(p) {
             {attMsg   && <span style={{fontSize:12,color:"#0F6E56",background:"#EAF6F0",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attMsg}</span>}
             {attError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attError}</span>}
           </div>
+        </div>;
+      })()}
+
+      {activeTab==="branches" && canManageBranches && (function(){
+        var inputStyle = {padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",fontFamily:"inherit",width:"100%",boxSizing:"border-box"};
+        var fieldLabel = {fontSize:12,color:"#666",display:"block",marginBottom:6};
+        var btnPrimary = {fontSize:12,padding:"8px 16px",border:"0.5px solid rgba(24,95,165,0.3)",background:"#185FA5",color:"#fff",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+        var btnGhost = {fontSize:12,padding:"8px 14px",border:"0.5px solid rgba(0,0,0,0.1)",background:"#fff",color:"#1a1a1a",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+        var resetForm = function(){ setBranchForm({id:null,name:"",code:"",address:"",isActive:true}); setBranchError(""); };
+        var startEdit = function(b){
+          setBranchForm({ id:b._id, name:b.name||"", code:b.code||"", address:b.address||"", isActive:b.isActive!==false });
+          setBranchError(""); setBranchMsg("");
+        };
+        var save = async function(){
+          setBranchError(""); setBranchMsg("");
+          var nm = (branchForm.name||"").trim();
+          var cd = (branchForm.code||"").trim().toUpperCase();
+          if (!nm) { setBranchError("الاسم مطلوب"); return; }
+          if (!cd) { setBranchError("الكود مطلوب"); return; }
+          setBranchSaving(true);
+          try {
+            var payload = { name:nm, code:cd, address:(branchForm.address||"").trim(), isActive:branchForm.isActive };
+            var saved;
+            if (branchForm.id) {
+              saved = await apiFetch("/api/branches/"+branchForm.id, "PATCH", payload, p.token, p.csrfToken);
+              setBranches(branches.map(function(b){ return String(b._id)===String(saved._id) ? saved : b; }));
+              setBranchMsg("Branch updated");
+            } else {
+              saved = await apiFetch("/api/branches", "POST", payload, p.token, p.csrfToken);
+              setBranches([saved].concat(branches));
+              setBranchMsg("Branch created");
+            }
+            resetForm();
+            setTimeout(function(){ setBranchMsg(""); }, 2500);
+          } catch (err) {
+            setBranchError((err && err.message) || "Save failed");
+          } finally {
+            setBranchSaving(false);
+          }
+        };
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Branches</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:18}}>Office branches used by AssetTracker. Code is used inside asset codes — short, uppercase, three or four letters works best.</div>
+
+          {/* Add / edit form */}
+          <div style={{background:"#F7F7F5",border:"0.5px solid rgba(0,0,0,0.08)",borderRadius:10,padding:14,marginBottom:18}}>
+            <div style={{fontSize:13,fontWeight:500,marginBottom:10}}>{branchForm.id ? "Edit branch" : "Add branch"}</div>
+            <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:12,marginBottom:10}}>
+              <div>
+                <label style={fieldLabel}>Name</label>
+                <input style={inputStyle} value={branchForm.name} onChange={function(e){setBranchForm(Object.assign({},branchForm,{name:e.target.value}));}} placeholder="التجمع الخامس"/>
+              </div>
+              <div>
+                <label style={fieldLabel}>Code (uppercase)</label>
+                <input style={inputStyle} value={branchForm.code} maxLength={6} onChange={function(e){setBranchForm(Object.assign({},branchForm,{code:e.target.value.toUpperCase()}));}} placeholder="TGM"/>
+              </div>
+            </div>
+            <div style={{marginBottom:10}}>
+              <label style={fieldLabel}>Address (optional)</label>
+              <input style={inputStyle} value={branchForm.address} onChange={function(e){setBranchForm(Object.assign({},branchForm,{address:e.target.value}));}} placeholder=""/>
+            </div>
+            <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"#1a1a1a",marginBottom:14,cursor:"pointer"}}>
+              <input type="checkbox" checked={branchForm.isActive} onChange={function(e){setBranchForm(Object.assign({},branchForm,{isActive:e.target.checked}));}} style={{width:14,height:14,cursor:"pointer"}}/>
+              Active
+            </label>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+              <button type="button" onClick={save} disabled={branchSaving} style={Object.assign({},btnPrimary,{opacity:branchSaving?0.6:1,cursor:branchSaving?"not-allowed":"pointer"})}>
+                {branchSaving ? "Saving…" : (branchForm.id ? "Save changes" : "Add branch")}
+              </button>
+              {branchForm.id && <button type="button" onClick={resetForm} style={btnGhost}>Cancel</button>}
+              {branchMsg   && <span style={{fontSize:12,color:"#0F6E56",background:"#EAF6F0",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{branchMsg}</span>}
+              {branchError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{branchError}</span>}
+            </div>
+          </div>
+
+          {/* List */}
+          {!branchesLoaded ? <div style={{fontSize:12,color:"#666"}}>Loading…</div> : (
+            branches.length === 0
+              ? <div style={{fontSize:12,color:"#666",padding:"12px 0"}}>No branches yet.</div>
+              : <div>
+                  <div style={{display:"grid",gridTemplateColumns:"1.5fr 90px 1.5fr 80px 80px",gap:10,padding:"10px 0",borderBottom:"0.5px solid rgba(0,0,0,0.1)",fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px"}}>
+                    <div>Name</div>
+                    <div>Code</div>
+                    <div>Address</div>
+                    <div style={{textAlign:"center"}}>Status</div>
+                    <div style={{textAlign:"right"}}>Action</div>
+                  </div>
+                  {branches.map(function(b){
+                    return <div key={b._id} style={{display:"grid",gridTemplateColumns:"1.5fr 90px 1.5fr 80px 80px",gap:10,padding:"12px 0",borderBottom:"0.5px solid rgba(0,0,0,0.06)",alignItems:"center",fontSize:13}}>
+                      <div style={{fontWeight:500,color:"#1a1a1a"}}>{b.name}</div>
+                      <div style={{fontFamily:"ui-monospace, SFMono-Regular, monospace",fontSize:12,color:"#444"}}>{b.code}</div>
+                      <div style={{color:"#666"}}>{b.address || "—"}</div>
+                      <div style={{textAlign:"center"}}>
+                        <span style={{fontSize:11,padding:"3px 8px",borderRadius:6,fontWeight:500,background:b.isActive!==false?"#EAF6F0":"#F4F4F4",color:b.isActive!==false?"#0F6E56":"#888"}}>
+                          {b.isActive!==false ? "Active" : "Inactive"}
+                        </span>
+                      </div>
+                      <div style={{textAlign:"right"}}>
+                        <button type="button" onClick={function(){startEdit(b);}} style={Object.assign({},btnGhost,{padding:"4px 10px"})}>Edit</button>
+                      </div>
+                    </div>;
+                  })}
+                </div>
+          )}
         </div>;
       })()}
 

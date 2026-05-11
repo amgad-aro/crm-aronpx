@@ -745,6 +745,92 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   dealStatus:{type:String,default:""}
 },{timestamps:true}));
 
+// ===== ASSET TRACKER MODELS =====
+// Admin/owner-only feature. Routes live in the "/api/assets" block further
+// down and are gated by requireAssetAccess (defined below adminOnly). The
+// AssetCategory.sequence field is the per-category counter used by Asset's
+// pre-save hook to mint assetCodes like "ARO-LT-0042"; bumped via $inc so
+// concurrent creates never collide. CustodyHistory is append-only — never
+// delete rows; soft-delete on Asset (status=retired) preserves the audit trail.
+
+var Branch = mongoose.model("Branch", new mongoose.Schema({
+  name:        { type: String, required: true },
+  code:        { type: String, required: true, uppercase: true, trim: true },
+  address:     { type: String, default: "" },
+  isActive:    { type: Boolean, default: true }
+}, { timestamps: true }));
+Branch.collection.createIndex({ code: 1 }, { unique: true }).catch(function(){});
+
+var AssetCategory = mongoose.model("AssetCategory", new mongoose.Schema({
+  name:                  { type: String, required: true },
+  nameAr:                { type: String, default: "" },
+  group:                 { type: String, enum: ["it", "furniture", "appliance"], required: true },
+  codePrefix:            { type: String, required: true, uppercase: true, trim: true },
+  icon:                  { type: String, default: "ti-box" },
+  defaultAssignmentType: { type: String, enum: ["personal", "shared"], default: "personal" },
+  sequence:              { type: Number, default: 0 }
+}, { timestamps: true }));
+AssetCategory.collection.createIndex({ codePrefix: 1 }, { unique: true }).catch(function(){});
+
+var assetSchema = new mongoose.Schema({
+  assetCode:        { type: String, required: true, unique: true, index: true },
+  name:             { type: String, required: true },
+  categoryId:       { type: mongoose.Schema.Types.ObjectId, ref: "AssetCategory", required: true, index: true },
+  branchId:         { type: mongoose.Schema.Types.ObjectId, ref: "Branch", required: true, index: true },
+  purchasePrice:    { type: Number, default: 0 },
+  purchaseDate:     { type: Date, default: null },
+  supplier:         { type: String, default: "" },
+  serialNumber:     { type: String, default: "" },
+  assignmentType:   { type: String, enum: ["personal", "shared"], default: "personal" },
+  currentCustodian: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
+  status:           { type: String, enum: ["active", "maintenance", "lost", "retired"], default: "active", index: true },
+  notes:            { type: String, default: "" },
+  qrCodeData:       { type: String, default: "" }
+}, { timestamps: true });
+
+// Auto-mint assetCode + qrCodeData on first save. sequence is incremented
+// atomically via findOneAndUpdate($inc) so concurrent creates of the same
+// category can't collide on the resulting "ARO-XX-NNNN" code. APP_URL drives
+// the QR target — falls back to the Vercel production URL if unset.
+assetSchema.pre("save", async function(next) {
+  if (!this.isNew || this.assetCode) {
+    if (this.assetCode && !this.qrCodeData) {
+      this.qrCodeData = (process.env.APP_URL || "https://crm-aronpx.vercel.app").replace(/\/$/, "") + "/assets/" + this.assetCode;
+    }
+    return next();
+  }
+  try {
+    var cat = await mongoose.model("AssetCategory").findOneAndUpdate(
+      { _id: this.categoryId },
+      { $inc: { sequence: 1 } },
+      { new: true }
+    );
+    if (!cat) return next(new Error("Asset category not found"));
+    var padded = String(cat.sequence).padStart(4, "0");
+    this.assetCode = "ARO-" + String(cat.codePrefix).toUpperCase() + "-" + padded;
+    this.qrCodeData = (process.env.APP_URL || "https://crm-aronpx.vercel.app").replace(/\/$/, "") + "/assets/" + this.assetCode;
+    next();
+  } catch (e) {
+    next(e);
+  }
+});
+
+var Asset = mongoose.model("Asset", assetSchema);
+
+var CustodyHistory = mongoose.model("CustodyHistory", new mongoose.Schema({
+  assetId:      { type: mongoose.Schema.Types.ObjectId, ref: "Asset", required: true, index: true },
+  fromUserId:   { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  toUserId:     { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  fromBranchId: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null },
+  toBranchId:   { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null },
+  // status_changed covers maintenance/active flips that the spec's six listed
+  // actions don't address; the other six match the spec verbatim.
+  action:       { type: String, enum: ["registered", "assigned", "transferred", "returned", "marked_lost", "retired", "status_changed"], required: true },
+  notes:        { type: String, default: "" },
+  performedBy:  { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  performedAt:  { type: Date, default: Date.now }
+}, { timestamps: true }));
+
 // Phase II indexes — Activity + DailyRequest. Declared here because the models
 // above are referenced; matches the additive pattern used for Lead at the top
 // of this file.
@@ -832,6 +918,8 @@ app.use(function(req, res, next){
 mongoose.connect(process.env.MONGODB_URI).then(function() {
   console.log("Connected to MongoDB");
   seedAdmin();
+  seedFirstBranch().catch(function(e){ console.error("[seed branch]", e && e.message); });
+  seedAssetCategories().catch(function(e){ console.error("[seed asset categories]", e && e.message); });
   // Clean up null entries in previousAgentIds from old rotation code
   Lead.updateMany({ previousAgentIds: null }, { $pull: { previousAgentIds: null } }).catch(function(){});
   // One-time backfill for rows that reached MeetingDone before the
@@ -924,6 +1012,44 @@ async function backfillLeadHistory() {
   console.log("[history backfill] done");
 }
 
+// ===== ASSET TRACKER SEEDERS =====
+// Both are idempotent. seedFirstBranch only creates the row when zero branches
+// exist (so admins who later rename/disable it don't get it re-created), while
+// seedAssetCategories upserts each row keyed on codePrefix so re-runs are no-ops
+// and new categories can be added to the array safely.
+
+async function seedFirstBranch() {
+  var count = await Branch.countDocuments();
+  if (count > 0) return;
+  await Branch.create({ name: "التجمع الخامس", code: "TGM", isActive: true });
+  console.log("[seed] First branch created: التجمع الخامس (TGM)");
+}
+
+var ASSET_CATEGORY_SEED = [
+  { name: "Laptop",          nameAr: "لاب توب",   group: "it",        codePrefix: "LT", icon: "ti-device-laptop",    defaultAssignmentType: "personal" },
+  { name: "Mobile",          nameAr: "موبايل",    group: "it",        codePrefix: "MB", icon: "ti-device-mobile",    defaultAssignmentType: "personal" },
+  { name: "Printer",         nameAr: "طابعة",          group: "it",        codePrefix: "PR", icon: "ti-printer",          defaultAssignmentType: "shared"   },
+  { name: "Screen",          nameAr: "شاشة",                group: "it",        codePrefix: "SC", icon: "ti-device-desktop",   defaultAssignmentType: "personal" },
+  { name: "Desk",            nameAr: "مكتب",                group: "furniture", codePrefix: "DS", icon: "ti-table",            defaultAssignmentType: "personal" },
+  { name: "Chair",           nameAr: "كرسي",                group: "furniture", codePrefix: "CH", icon: "ti-armchair",         defaultAssignmentType: "personal" },
+  { name: "Cabinet",         nameAr: "دولاب",          group: "furniture", codePrefix: "CB", icon: "ti-box",              defaultAssignmentType: "shared"   },
+  { name: "Microwave",       nameAr: "ميكرويف", group: "appliance", codePrefix: "MW", icon: "ti-microwave",       defaultAssignmentType: "shared"   },
+  { name: "Water Dispenser", nameAr: "كولدير",    group: "appliance", codePrefix: "WD", icon: "ti-droplet",          defaultAssignmentType: "shared"   },
+  { name: "AC",              nameAr: "تكييف",          group: "appliance", codePrefix: "AC", icon: "ti-air-conditioning", defaultAssignmentType: "shared"   },
+  { name: "Fridge",          nameAr: "ثلاجة",          group: "appliance", codePrefix: "FR", icon: "ti-fridge",           defaultAssignmentType: "shared"   }
+];
+
+async function seedAssetCategories() {
+  for (var i = 0; i < ASSET_CATEGORY_SEED.length; i++) {
+    var c = ASSET_CATEGORY_SEED[i];
+    await AssetCategory.updateOne(
+      { codePrefix: c.codePrefix },
+      { $setOnInsert: c },
+      { upsert: true }
+    );
+  }
+}
+
 // ===== CREATE DEFAULT ADMIN =====
 async function seedAdmin() {
   try {
@@ -1010,6 +1136,18 @@ function adminOnly(req, res, next) {
     return res.status(403).json({ error: "Admin only" });
   }
   next();
+}
+
+// AssetTracker gate: admin role OR isOwner=true. JWT only carries role, so the
+// Owner case needs one DB read; admins pass without a lookup.
+async function requireAssetAccess(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+  if (req.user.role === "admin") return next();
+  try {
+    var u = await User.findById(req.user.id).select("isOwner active").lean();
+    if (u && u.active !== false && u.isOwner === true) return next();
+  } catch(e) { /* fall through to 403 */ }
+  return res.status(403).json({ error: "Forbidden" });
 }
 
 // ===== OWNER LOCKDOWN HELPERS =====
@@ -15537,6 +15675,81 @@ async function sweepCommissionAlerts() {
 }
 setInterval(sweepCommissionAlerts, 6 * 60 * 60 * 1000); // every 6h
 setTimeout(sweepCommissionAlerts, 60 * 1000);            // first run 60s after boot
+
+// ===== ASSET TRACKER — read/setup endpoints (S1) =====
+// Admin/owner only. Models + middleware + seeders live near the top of this
+// file; the broader CRUD + custody + reports endpoints land in later slices.
+
+app.get("/api/asset-categories", auth, requireAssetAccess, async function(req, res) {
+  try {
+    var rows = await AssetCategory.find({}).sort({ group: 1, name: 1 }).lean();
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/branches", auth, requireAssetAccess, async function(req, res) {
+  try {
+    var q = {};
+    if (req.query.active === "true") q.isActive = true;
+    var rows = await Branch.find(q).sort({ isActive: -1, name: 1 }).lean();
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/branches", auth, requireAssetAccess, async function(req, res) {
+  try {
+    var name = String((req.body && req.body.name) || "").trim();
+    var code = String((req.body && req.body.code) || "").trim().toUpperCase();
+    if (!name) return res.status(400).json({ error: "Name is required" });
+    if (!code) return res.status(400).json({ error: "Code is required" });
+    var existing = await Branch.findOne({ code: code }).lean();
+    if (existing) return res.status(409).json({ error: "A branch with this code already exists" });
+    var doc = await Branch.create({
+      name: name,
+      code: code,
+      address: String((req.body && req.body.address) || "").trim(),
+      isActive: req.body && req.body.isActive === false ? false : true
+    });
+    res.json(doc);
+  } catch (e) {
+    if (e && e.code === 11000) return res.status(409).json({ error: "A branch with this code already exists" });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch("/api/branches/:id", auth, requireAssetAccess, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "Invalid id" });
+    }
+    var patch = {};
+    if (req.body && typeof req.body.name === "string") {
+      var nm = req.body.name.trim();
+      if (!nm) return res.status(400).json({ error: "Name cannot be empty" });
+      patch.name = nm;
+    }
+    if (req.body && typeof req.body.code === "string") {
+      var cd = req.body.code.trim().toUpperCase();
+      if (!cd) return res.status(400).json({ error: "Code cannot be empty" });
+      var clash = await Branch.findOne({ code: cd, _id: { $ne: req.params.id } }).lean();
+      if (clash) return res.status(409).json({ error: "A branch with this code already exists" });
+      patch.code = cd;
+    }
+    if (req.body && typeof req.body.address === "string") patch.address = req.body.address.trim();
+    if (req.body && typeof req.body.isActive === "boolean") patch.isActive = req.body.isActive;
+    if (Object.keys(patch).length === 0) return res.status(400).json({ error: "No fields to update" });
+    var doc = await Branch.findByIdAndUpdate(req.params.id, { $set: patch }, { new: true });
+    if (!doc) return res.status(404).json({ error: "Branch not found" });
+    res.json(doc);
+  } catch (e) {
+    if (e && e.code === 11000) return res.status(409).json({ error: "A branch with this code already exists" });
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
