@@ -17118,7 +17118,8 @@ export default function CRMApp() {
   // Deal badge is driven by live lead/DR state (see buildDealItems), not the
   // Notification collection, so the "seen" flag lives here rather than the DB.
   var [lastSeenDealAt,setLastSeenDealAt]=useState(0);
-  var [rotHiddenBefore,setRotHiddenBefore]=useState(0);
+  // Phase: rotation "Clear all" no longer hides notifications client-side —
+  // it just marks them seen on the server. rotHiddenBefore state removed.
   // Attendance & Salary — Phase 2. Cached settings + permissions for the
   // current session. Refetched on WS attendance_settings_updated. null until
   // first load. Only Owner / sales_admin / hr ever fetch this; sales-side
@@ -17208,13 +17209,15 @@ export default function CRMApp() {
   },[]);
 
   // Load per-user bell "seen" markers from localStorage once the user is known.
+  // Also evict the now-inert crm_rot_hidden_<uid> key (was used by the
+  // dropped rotation client-side hide-cutoff; server-side mark-seen now drives
+  // the unread indicator instead).
   useEffect(function(){
     var uid = gid(currentUser); if (!uid) return;
     try {
       var dv = localStorage.getItem("crm_deal_seen_"+uid);
       if (dv) setLastSeenDealAt(parseInt(dv,10)||0);
-      var rv = localStorage.getItem("crm_rot_hidden_"+uid);
-      if (rv) setRotHiddenBefore(parseInt(rv,10)||0);
+      localStorage.removeItem("crm_rot_hidden_"+uid);
     } catch(e){}
   },[currentUser&&gid(currentUser)]);
 
@@ -17878,7 +17881,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} navigateToCommission={navigateToCommission} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs.filter(function(n){return !rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore;})} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen&&(!rotHiddenBefore||new Date(n.createdAt||n.time||0).getTime()>rotHiddenBefore);}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){var now=Date.now();setRotHiddenBefore(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_rot_hidden_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={(function(){var items=buildDealItems(scopedLeads,scopedDailyReqs,currentUser,myTeamUsers);var cutoff=lastSeenDealAt||0;return items.filter(function(it){return new Date(it.time||0).getTime()>cutoff;}).length;})()} onDealNotifSeen={function(){var now=Date.now();setLastSeenDealAt(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_deal_seen_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} navigateToCommission={navigateToCommission} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={(function(){var items=buildDealItems(scopedLeads,scopedDailyReqs,currentUser,myTeamUsers);var cutoff=lastSeenDealAt||0;return items.filter(function(it){return new Date(it.time||0).getTime()>cutoff;}).length;})()} onDealNotifSeen={function(){var now=Date.now();setLastSeenDealAt(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_deal_seen_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
