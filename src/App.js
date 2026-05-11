@@ -15690,6 +15690,28 @@ var FormRow = function(p) {
   </div>;
 };
 
+// Money input — accepts the codebase-standard pattern (state stores the
+// formatted string like "1,500,000"; caller does Number(value.replace(/,/g,""))
+// on submit). Strips non-digits on each keystroke and re-formats.
+var MoneyInput = function(p) {
+  return <input type="text" inputMode="numeric"
+    value={p.value || ""}
+    autoFocus={!!p.autoFocus}
+    placeholder={p.placeholder || ""}
+    onChange={function(e){
+      var raw = e.target.value.replace(/,/g, "").replace(/[^0-9]/g, "");
+      p.onChange(raw === "" ? "" : Number(raw).toLocaleString());
+    }}
+    style={p.style || { width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}
+  />;
+};
+// Helper for parsing on submit. Returns Number or NaN if blank.
+function parseMoney(formatted) {
+  var s = String(formatted || "").replace(/,/g, "").trim();
+  if (!s) return NaN;
+  return Number(s);
+}
+
 // Snapshot edit — partial PATCH of {developer, unitDetails, dealTotal,
 // expectedTotal, expectedCollectionDate} plus per-role distribution.
 var CommissionSnapshotEditModal = function(p) {
@@ -15697,10 +15719,13 @@ var CommissionSnapshotEditModal = function(p) {
   var snap = (c && c.snapshot) || {};
   var [developer, setDeveloper]               = useState(snap.developer || "");
   var [unitDetails, setUnitDetails]           = useState(snap.unitDetails || "");
-  var [dealTotal, setDealTotal]               = useState(snap.dealTotal != null ? String(snap.dealTotal) : "");
-  var [expectedTotal, setExpectedTotal]       = useState(c && c.expectedTotal != null ? String(c.expectedTotal) : "");
+  // Money fields hold the formatted string ("1,500,000"); parsed on submit.
+  var [dealTotal, setDealTotal]               = useState(Number(snap.dealTotal || 0) > 0 ? Number(snap.dealTotal).toLocaleString() : "");
+  var [expectedTotal, setExpectedTotal]       = useState(c && Number(c.expectedTotal || 0) > 0 ? Number(c.expectedTotal).toLocaleString() : "");
   var [expectedDate, setExpectedDate]         = useState((c && c.expectedCollectionDate) || "");
   // Distribution edits — one entry per role recipient that exists on the snapshot.
+  // For fixed_egp rows we store the formatted money string; for percentage we
+  // keep the raw numeric string (no comma formatting since % values are small).
   var initDist = function(){
     var out = {};
     var roles = [
@@ -15716,11 +15741,15 @@ var CommissionSnapshotEditModal = function(p) {
       roles.push(["director2",   snap.splitChain.director2]);
     }
     roles.forEach(function(pair){
-      if (pair[1]) out[pair[0]] = {
-        userName: pair[1].userName,
-        distributionType: pair[1].distributionType || "percentage",
-        value: pair[1].value != null ? String(pair[1].value) : "0"
-      };
+      if (pair[1]) {
+        var rawV = pair[1].value != null ? pair[1].value : 0;
+        var type = pair[1].distributionType || "percentage";
+        out[pair[0]] = {
+          userName: pair[1].userName,
+          distributionType: type,
+          value: type === "fixed_egp" && Number(rawV) > 0 ? Number(rawV).toLocaleString() : String(rawV)
+        };
+      }
     });
     return out;
   };
@@ -15730,12 +15759,17 @@ var CommissionSnapshotEditModal = function(p) {
     var body = {};
     if (developer !== (snap.developer || "")) body.developer = developer;
     if (unitDetails !== (snap.unitDetails || "")) body.unitDetails = unitDetails;
-    if (dealTotal !== "" && Number(dealTotal) !== Number(snap.dealTotal || 0)) body.dealTotal = Number(dealTotal);
-    if (expectedTotal !== "" && Number(expectedTotal) !== Number(c.expectedTotal || 0)) body.expectedTotal = Number(expectedTotal);
+    var parsedDeal = parseMoney(dealTotal);
+    if (isFinite(parsedDeal) && parsedDeal !== Number(snap.dealTotal || 0)) body.dealTotal = parsedDeal;
+    var parsedExp = parseMoney(expectedTotal);
+    if (isFinite(parsedExp) && parsedExp !== Number(c.expectedTotal || 0)) body.expectedTotal = parsedExp;
     if (expectedDate !== (c.expectedCollectionDate || "")) body.expectedCollectionDate = expectedDate;
     Object.keys(dist).forEach(function(k){
       var d = dist[k];
-      body[k] = { distributionType: d.distributionType, value: Number(d.value || 0) };
+      // For fixed_egp the value is comma-formatted; strip commas before send.
+      var v = d.distributionType === "fixed_egp" ? parseMoney(d.value) : Number(d.value || 0);
+      if (!isFinite(v)) v = 0;
+      body[k] = { distributionType: d.distributionType, value: v };
     });
     try {
       await p.writeCommission("PATCH", "/api/commissions/" + c._id + "/snapshot", body, "Snapshot saved");
@@ -15744,10 +15778,11 @@ var CommissionSnapshotEditModal = function(p) {
   };
 
   // Live computed payout preview using the form's current expectedTotal.
-  var expectedNum = Number(expectedTotal || 0);
+  var expectedNum = parseMoney(expectedTotal) || 0;
   var distRows = Object.keys(dist).map(function(k){
     var d = dist[k];
-    var v = Number(d.value || 0);
+    var v = d.distributionType === "fixed_egp" ? (parseMoney(d.value) || 0) : Number(d.value || 0);
+    if (!isFinite(v)) v = 0;
     var computed = d.distributionType === "fixed_egp" ? v : (expectedNum * v / 100);
     return { key: k, name: d.userName, type: d.distributionType, value: d.value, computed: computed };
   });
@@ -15756,8 +15791,8 @@ var CommissionSnapshotEditModal = function(p) {
     <FormRow label="Developer"><input type="text" value={developer} onChange={function(e){ setDeveloper(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
     <FormRow label="Unit details"><textarea rows={2} value={unitDetails} onChange={function(e){ setUnitDetails(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/></FormRow>
     <div style={{ display:"flex", gap:10 }}>
-      <FormRow label="Deal total (EGP)"><input type="number" min={0} value={dealTotal} onChange={function(e){ setDealTotal(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
-      <FormRow label="Expected commission (EGP)"><input type="number" min={0} value={expectedTotal} onChange={function(e){ setExpectedTotal(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
+      <FormRow label="Deal total (EGP)"><MoneyInput value={dealTotal} onChange={setDealTotal}/></FormRow>
+      <FormRow label="Expected commission (EGP)"><MoneyInput value={expectedTotal} onChange={setExpectedTotal}/></FormRow>
       <FormRow label="Expected collection"><input type="date" value={expectedDate} onChange={function(e){ setExpectedDate(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
     </div>
     <div style={{ marginTop:6, marginBottom:8, fontSize:12, fontWeight:700, color:"#475569" }}>Distribution</div>
@@ -15773,7 +15808,16 @@ var CommissionSnapshotEditModal = function(p) {
             <option value="percentage">%</option>
             <option value="fixed_egp">EGP</option>
           </select>
-          <input type="number" min={0} value={r.value} onChange={function(e){ var v = e.target.value; setDist(function(prev){ var n = Object.assign({}, prev); n[r.key] = Object.assign({}, prev[r.key], { value: v }); return n; }); }} style={{ width:80, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
+          {r.type === "fixed_egp"
+            ? <input type="text" inputMode="numeric" value={r.value || ""}
+                onChange={function(e){
+                  var raw = e.target.value.replace(/,/g, "").replace(/[^0-9]/g, "");
+                  var fmt = raw === "" ? "" : Number(raw).toLocaleString();
+                  setDist(function(prev){ var n = Object.assign({}, prev); n[r.key] = Object.assign({}, prev[r.key], { value: fmt }); return n; });
+                }}
+                style={{ width:110, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
+            : <input type="number" min={0} value={r.value} onChange={function(e){ var v = e.target.value; setDist(function(prev){ var n = Object.assign({}, prev); n[r.key] = Object.assign({}, prev[r.key], { value: v }); return n; }); }} style={{ width:80, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
+          }
           <div style={{ fontSize:11, color:C.success, fontWeight:600, minWidth:90, textAlign:"right" }}>= {Math.round(r.computed).toLocaleString()} EGP</div>
         </div>;
       })}
@@ -15790,10 +15834,16 @@ var CommissionSnapshotEditModal = function(p) {
 var CommissionCycleStageModal = function(p) {
   var c = p.target && p.target.commission;
   var cyc = p.target && p.target.cycle;
+  // mode: "advance" (default) advances to nextStage; "edit" updates an already-
+  // completed stageName without changing cycle.state.
+  var mode = (p.target && p.target.mode) || "advance";
   var nextStage = p.target && p.target.nextStage;
-  var [date, setDate]     = useState(new Date().toISOString().slice(0,10));
-  var [notes, setNotes]   = useState("");
-  var [amount, setAmount] = useState("");
+  var stageKey = mode === "edit" ? (p.target && p.target.stageName) : nextStage;
+  var initial  = (p.target && p.target.initialValues) || {};
+  var [date, setDate]     = useState(initial.date || new Date().toISOString().slice(0,10));
+  var [notes, setNotes]   = useState(initial.notes || "");
+  var [amount, setAmount] = useState(initial.amount != null && initial.amount !== "" && Number(initial.amount) > 0
+    ? Number(initial.amount).toLocaleString() : "");
 
   var snap = (c && c.snapshot) || {};
   var STAGE_LABELS_LOCAL = {
@@ -15802,10 +15852,18 @@ var CommissionCycleStageModal = function(p) {
     received: "Mark Received (تحصيل)",
     paid_to_team: "Mark Paid to Team (دفع الفريق)"
   };
+  var STAGE_LABELS_EDIT = {
+    claim_submitted: "Edit Claim (مطالبة)",
+    invoice_submitted: "Edit Invoice (فاتورة إلكترونية)",
+    received: "Edit Received (تحصيل)",
+    paid_to_team: "Edit Paid to Team (دفع الفريق)"
+  };
+  var titleLabel = mode === "edit" ? STAGE_LABELS_EDIT[stageKey] : STAGE_LABELS_LOCAL[stageKey];
 
   // Live preview of the payoutBreakdown using the same logic the server uses.
+  // Shown for both advance-to-received and edit-of-received.
   var previewRows = [];
-  if (nextStage === "received" && Number(amount) > 0) {
+  if (stageKey === "received" && Number(parseMoney(amount) || 0) > 0) {
     var ordered = [];
     function push(r){ if (r && Number(r.value || 0) > 0) ordered.push(r); }
     push(snap.salesAgent); push(snap.teamLeader); push(snap.manager); push(snap.director);
@@ -15813,7 +15871,7 @@ var CommissionCycleStageModal = function(p) {
       push(snap.splitChain.salesAgent2); push(snap.splitChain.teamLeader2);
       push(snap.splitChain.manager2); push(snap.splitChain.director2);
     }
-    var amt = Number(amount);
+    var amt = parseMoney(amount);
     var remaining = amt;
     var raw = ordered.map(function(r){
       var payout = 0;
@@ -15831,26 +15889,31 @@ var CommissionCycleStageModal = function(p) {
   }
 
   var save = async function(){
-    var body = { stage: nextStage, date: date, notes: notes };
-    if (nextStage === "received") {
-      var amt = Number(amount);
+    var body = { date: date, notes: notes };
+    if (mode === "advance") body.stage = nextStage;
+    if (stageKey === "received") {
+      var amt = parseMoney(amount);
       if (!isFinite(amt) || amt <= 0) { alert("Amount is required (>0) for the received stage"); return; }
       body.amount = amt;
     }
+    var path = mode === "edit"
+      ? "/api/commissions/" + c._id + "/cycles/" + cyc._id + "/stage/" + stageKey
+      : "/api/commissions/" + c._id + "/cycles/" + cyc._id + "/stage";
+    var msg = mode === "edit" ? "Stage updated" : "Stage advanced";
     try {
-      await p.writeCommission("PATCH", "/api/commissions/" + c._id + "/cycles/" + cyc._id + "/stage", body, "Stage advanced");
+      await p.writeCommission("PATCH", path, body, msg);
       p.onClose();
     } catch(e){}
   };
 
-  return <Modal show={true} onClose={p.onClose} title={"Cycle " + (cyc && cyc.cycleNumber) + " → " + (STAGE_LABELS_LOCAL[nextStage] || nextStage)} w={520}>
+  return <Modal show={true} onClose={p.onClose} title={"Cycle " + (cyc && cyc.cycleNumber) + (mode === "edit" ? " — " : " → ") + (titleLabel || stageKey)} w={520}>
     <FormRow label="Date"><input type="date" value={date} onChange={function(e){ setDate(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
     <FormRow label="Notes (optional)"><textarea rows={2} value={notes} onChange={function(e){ setNotes(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/></FormRow>
-    {nextStage === "received" && <FormRow label="Amount received (EGP) — كم استلمنا في هذه الدفعة؟">
-      <input type="number" min={0} value={amount} onChange={function(e){ setAmount(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }} autoFocus/>
+    {stageKey === "received" && <FormRow label={mode === "edit" ? "Amount received (EGP)" : "Amount received (EGP) — كم استلمنا في هذه الدفعة؟"}>
+      <MoneyInput value={amount} onChange={setAmount} autoFocus={mode !== "edit"}/>
     </FormRow>}
-    {nextStage === "received" && previewRows.length > 0 && <div style={{ background:"#F0FDF4", borderRadius:8, padding:"8px 10px", marginBottom:12 }}>
-      <div style={{ fontSize:11, fontWeight:700, color:"#15803D", marginBottom:6, textTransform:"uppercase" }}>Payout preview</div>
+    {stageKey === "received" && previewRows.length > 0 && <div style={{ background:"#F0FDF4", borderRadius:8, padding:"8px 10px", marginBottom:12 }}>
+      <div style={{ fontSize:11, fontWeight:700, color:"#15803D", marginBottom:6, textTransform:"uppercase" }}>Payout preview{mode === "edit" ? " (will replace current breakdown)" : ""}</div>
       {previewRows.map(function(r, i){
         return <div key={i} style={{ display:"flex", justifyContent:"space-between", fontSize:12, padding:"3px 0" }}>
           <span style={{ color:C.text }}>{r.userName} <span style={{ color:C.textLight }}>({r.role})</span></span>
@@ -15860,30 +15923,48 @@ var CommissionCycleStageModal = function(p) {
     </div>}
     <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
       <button onClick={p.onClose} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
-      <button onClick={save} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{p.savingFlag ? "Saving…" : "Advance"}</button>
+      <button onClick={save} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{p.savingFlag ? "Saving…" : (mode === "edit" ? "Save" : "Advance")}</button>
     </div>
   </Modal>;
 };
 
-// Add a new cycle — single field.
+// Add or edit a cycle — single field (expectedAmount). The same modal serves
+// both flows via target.mode: "add" (POST) or "edit" (PATCH metadata).
 var CommissionCycleAddModal = function(p) {
-  var c = p.target;
-  var [expected, setExpected] = useState("");
+  var mode = (p.target && p.target.mode) || "add";
+  var c = (p.target && p.target.commission) || p.target;
+  var cyc = p.target && p.target.cycle;
+  var initialExpected = mode === "edit" && cyc && Number(cyc.expectedAmount || 0) > 0
+    ? Number(cyc.expectedAmount).toLocaleString() : "";
+  var [expected, setExpected] = useState(initialExpected);
   var save = async function(){
-    var n = Number(expected || 0);
+    var n = parseMoney(expected);
     if (!isFinite(n) || n < 0) { alert("expectedAmount must be a non-negative number"); return; }
     try {
-      await p.writeCommission("POST", "/api/commissions/" + c._id + "/cycles", { expectedAmount: n }, "Cycle added");
+      var path, method, msg;
+      if (mode === "edit") {
+        path = "/api/commissions/" + c._id + "/cycles/" + cyc._id;
+        method = "PATCH";
+        msg = "Cycle updated";
+      } else {
+        path = "/api/commissions/" + c._id + "/cycles";
+        method = "POST";
+        msg = "Cycle added";
+      }
+      await p.writeCommission(method, path, { expectedAmount: n }, msg);
       p.onClose();
     } catch(e){}
   };
-  return <Modal show={true} onClose={p.onClose} title="Add Cycle" w={420}>
+  var title = mode === "edit"
+    ? "Edit Cycle " + (cyc && cyc.cycleNumber) + " — expected amount"
+    : "Add Cycle";
+  return <Modal show={true} onClose={p.onClose} title={title} w={420}>
     <FormRow label="Expected amount (EGP) for this cycle">
-      <input type="number" min={0} value={expected} onChange={function(e){ setExpected(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }} autoFocus/>
+      <MoneyInput value={expected} onChange={setExpected} autoFocus={true}/>
     </FormRow>
     <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
       <button onClick={p.onClose} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
-      <button onClick={save} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{p.savingFlag ? "Saving…" : "Add"}</button>
+      <button onClick={save} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{p.savingFlag ? "Saving…" : (mode === "edit" ? "Save" : "Add")}</button>
     </div>
   </Modal>;
 };
@@ -15891,8 +15972,19 @@ var CommissionCycleAddModal = function(p) {
 // Incentive editor — full replacement of recipients[]. Each row is editable.
 var CommissionIncentiveEditModal = function(p) {
   var c = p.target;
+  // amount is held as the formatted-money string ("1,500") to match the
+  // codebase convention; parsed on submit via parseMoney().
   var initial = (c && c.incentive && Array.isArray(c.incentive.recipients))
-    ? c.incentive.recipients.map(function(r){ return { userName: r.userName || "", userId: r.userId || "", role: r.role || "sales", amount: r.amount != null ? String(r.amount) : "0", status: r.status || "pending", receivedDate: r.receivedDate || "" }; })
+    ? c.incentive.recipients.map(function(r){
+        return {
+          userName: r.userName || "",
+          userId: r.userId || "",
+          role: r.role || "sales",
+          amount: Number(r.amount || 0) > 0 ? Number(r.amount).toLocaleString() : "",
+          status: r.status || "pending",
+          receivedDate: r.receivedDate || ""
+        };
+      })
     : [];
   var [rows, setRows] = useState(initial);
 
@@ -15910,7 +16002,14 @@ var CommissionIncentiveEditModal = function(p) {
 
   var save = async function(){
     var body = { recipients: rows.map(function(r){
-      var rec = { userName: String(r.userName || "").trim(), role: r.role, amount: Number(r.amount || 0), status: r.status, receivedDate: r.receivedDate };
+      var parsedAmt = parseMoney(r.amount);
+      var rec = {
+        userName: String(r.userName || "").trim(),
+        role: r.role,
+        amount: isFinite(parsedAmt) ? parsedAmt : 0,
+        status: r.status,
+        receivedDate: r.receivedDate
+      };
       if (r.userId) rec.userId = r.userId;
       return rec;
     }) };
@@ -15947,7 +16046,13 @@ var CommissionIncentiveEditModal = function(p) {
           {matching.map(function(u){ return <option key={String(u._id)} value={String(u._id)}>{u.name}</option>; })}
         </select>
         <input type="text" placeholder="Or type name" value={r.userName} onChange={function(e){ setRow(idx, { userName: e.target.value, userId: "" }); }} style={{ flex:1, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>
-        <input type="number" min={0} placeholder="Amount" value={r.amount} onChange={function(e){ setRow(idx, { amount: e.target.value }); }} style={{ width:90, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>
+        <input type="text" inputMode="numeric" placeholder="Amount" value={r.amount}
+          onChange={function(e){
+            var raw = e.target.value.replace(/,/g, "").replace(/[^0-9]/g, "");
+            var fmt = raw === "" ? "" : Number(raw).toLocaleString();
+            setRow(idx, { amount: fmt });
+          }}
+          style={{ width:100, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>
         <select value={r.status} onChange={function(e){ setRow(idx, { status: e.target.value, receivedDate: e.target.value === "received" ? (r.receivedDate || new Date().toISOString().slice(0,10)) : "" }); }} style={{ padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12, width:100 }}>
           <option value="pending">Pending</option>
           <option value="received">Received</option>
@@ -16123,21 +16228,46 @@ var CommissionsPage = function(p) {
     </div>;
   };
 
-  var renderStageDot = function(cycle, stageKey){
+  // Tiny pencil SVG — 10px, matches the design tokens of the existing buttons.
+  var PencilIcon = function(col){
+    return <svg width="10" height="10" viewBox="0 0 14 14" fill="none" style={{display:"block"}}><path d="M2 12l3-1L11 5l-2-2-6 6-1 3zM9 3l2 2" stroke={col||"#64748B"} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+  };
+
+  var renderStageDot = function(c, cycle, stageKey){
     var st = cycle && cycle[stageKey];
     var done = !!(st && st.date);
+    var isCancelled = c && c.status === "cancelled";
+    var canEdit = done && !isCancelled;
+    var openEdit = function(e){
+      if (e && e.stopPropagation) e.stopPropagation();
+      setEditingCycleStage({
+        commission: c, cycle: cycle, mode: "edit", stageName: stageKey,
+        initialValues: {
+          date: (st && st.date) || "",
+          notes: (st && st.notes) || "",
+          amount: stageKey === "received" ? (cycle.receivedAmount || "") : ""
+        }
+      });
+    };
     return <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, flex:1, minWidth:0 }}>
-      <div style={{ width:14, height:14, borderRadius:"50%", background: done ? C.success : "#E2E8F0", border:"2px solid "+(done?C.success:"#CBD5E1") }}/>
+      <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+        <div style={{ width:14, height:14, borderRadius:"50%", background: done ? C.success : "#E2E8F0", border:"2px solid "+(done?C.success:"#CBD5E1") }}/>
+        {canEdit && <button onClick={openEdit} disabled={savingFlag} title={"Edit " + (STAGE_LABELS[stageKey] || stageKey)}
+          style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, width:18, height:18, padding:0, cursor: savingFlag ? "wait" : "pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+          {PencilIcon(C.textLight)}
+        </button>}
+      </div>
       <div style={{ fontSize:10, fontWeight:600, color:C.textLight, textAlign:"center", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:"100%" }}>{STAGE_LABELS[stageKey]}</div>
       <div style={{ fontSize:9, color: done ? C.text : "#CBD5E1" }}>{done ? fmtDate(st.date) : "—"}</div>
     </div>;
   };
 
-  var renderCycle = function(cycle, isActiveCycle){
+  var renderCycle = function(c, cycle, isActiveCycle){
     var pillBg = "#F1F5F9", pillFg = C.textLight;
     if (cycle.state === "paid_to_team") { pillBg = "#DCFCE7"; pillFg = "#15803D"; }
     else if (cycle.state === "cancelled") { pillBg = "#FEE2E2"; pillFg = "#B91C1C"; }
     else if (cycle.state === "received") { pillBg = "#DBEAFE"; pillFg = "#1D4ED8"; }
+    var canEditExpected = ["pending_claim","claim_submitted","invoice_submitted"].indexOf(cycle.state) >= 0 && c.status !== "cancelled";
     return <div key={String(cycle._id || cycle.cycleNumber)} style={{ border:"1px solid #E2E8F0", borderRadius:10, padding:"10px 12px", marginBottom:8, background: isActiveCycle ? "#FAFBFF" : "#fff" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: isActiveCycle ? 12 : 0 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
@@ -16146,16 +16276,20 @@ var CommissionsPage = function(p) {
             {String(cycle.state || "").replace(/_/g, " ")}
           </span>
         </div>
-        <div style={{ fontSize:11, color:C.textLight }}>
+        <div style={{ fontSize:11, color:C.textLight, display:"flex", alignItems:"center", gap:6 }}>
           {Number(cycle.expectedAmount || 0) > 0 && <span>Expected: <b>{fmtMoney(cycle.expectedAmount)}</b></span>}
-          {Number(cycle.receivedAmount || 0) > 0 && <span style={{ marginLeft:10 }}>Received: <b>{fmtMoney(cycle.receivedAmount)}</b></span>}
+          {canEditExpected && <button onClick={function(){ setAddingCycleFor({ commission: c, cycle: cycle, mode: "edit" }); }} disabled={savingFlag} title="Edit expected amount"
+            style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, width:18, height:18, padding:0, cursor: savingFlag ? "wait" : "pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            {PencilIcon(C.textLight)}
+          </button>}
+          {Number(cycle.receivedAmount || 0) > 0 && <span style={{ marginLeft:6 }}>Received: <b>{fmtMoney(cycle.receivedAmount)}</b></span>}
         </div>
       </div>
       {isActiveCycle && <div style={{ display:"flex", alignItems:"flex-start", gap:8, marginTop:6 }}>
-        {renderStageDot(cycle, "claim_submitted")}
-        {renderStageDot(cycle, "invoice_submitted")}
-        {renderStageDot(cycle, "received")}
-        {renderStageDot(cycle, "paid_to_team")}
+        {renderStageDot(c, cycle, "claim_submitted")}
+        {renderStageDot(c, cycle, "invoice_submitted")}
+        {renderStageDot(c, cycle, "received")}
+        {renderStageDot(c, cycle, "paid_to_team")}
       </div>}
       {isActiveCycle && Array.isArray(cycle.payoutBreakdown) && cycle.payoutBreakdown.length > 0 && <div style={{ marginTop:10, paddingTop:8, borderTop:"1px dashed #E2E8F0" }}>
         <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>Payout breakdown</div>
@@ -16298,7 +16432,7 @@ var CommissionsPage = function(p) {
       </div>
 
       {/* Active cycle (always expanded if not paid/cancelled) */}
-      {activeCycle && renderCycle(activeCycle, true)}
+      {activeCycle && renderCycle(c, activeCycle, true)}
       {/* Cycle action row — Advance Stage on active cycle, Add Cycle (always), Delete on early states */}
       {!isCancelled && <div style={{ display:"flex", gap:6, marginTop:6, marginBottom:8, flexWrap:"wrap" }}>
         {activeCycle && (activeCycle.state === "pending_claim" || activeCycle.state === "claim_submitted" || activeCycle.state === "invoice_submitted" || activeCycle.state === "received") && <button
@@ -16312,10 +16446,28 @@ var CommissionsPage = function(p) {
           disabled={savingFlag}
           style={{ padding:"5px 12px", borderRadius:8, border:"1px solid " + C.accent, background: C.accent + "12", color: C.accent, fontSize:12, fontWeight:600, cursor: savingFlag ? "wait" : "pointer" }}
         >▶ Advance Stage</button>}
-        {activeCycle && (activeCycle.state === "pending_claim" || activeCycle.state === "claim_submitted") && <button
+        {activeCycle && ["pending_claim","claim_submitted","invoice_submitted","received","paid_to_team"].indexOf(activeCycle.state) >= 0 && <button
           onClick={async function(){
-            if (!window.confirm("Delete cycle " + activeCycle.cycleNumber + "? This cannot be undone.")) return;
-            try { await writeCommission("DELETE", "/api/commissions/" + c._id + "/cycles/" + activeCycle._id, null, "Cycle deleted"); } catch(_e){}
+            var early = ["pending_claim","claim_submitted","invoice_submitted"].indexOf(activeCycle.state) >= 0;
+            if (early) {
+              if (!window.confirm("Delete cycle " + activeCycle.cycleNumber + "? This cannot be undone.")) return;
+              try { await writeCommission("DELETE", "/api/commissions/" + c._id + "/cycles/" + activeCycle._id, null, "Cycle deleted"); } catch(_e){}
+            } else {
+              // Destructive: prompt the admin to type the cycle number. Backend
+              // also enforces this match via body.confirmCycleNumber.
+              var typed = window.prompt(
+                "⚠ DESTRUCTIVE — cycle " + activeCycle.cycleNumber + " is in state '" + activeCycle.state + "'.\n" +
+                "This will reverse the recorded payouts in audit logs (no money is actually refunded).\n\n" +
+                "To confirm, type the cycle number (" + activeCycle.cycleNumber + ") below:"
+              );
+              if (typed == null) return;
+              var n = Number(String(typed).trim());
+              if (!isFinite(n) || n !== Number(activeCycle.cycleNumber)) {
+                alert("Cycle number didn't match — delete cancelled.");
+                return;
+              }
+              try { await writeCommission("DELETE", "/api/commissions/" + c._id + "/cycles/" + activeCycle._id, { confirmCycleNumber: n }, "Cycle deleted"); } catch(_e){}
+            }
           }}
           disabled={savingFlag}
           style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #FCA5A5", background:"#fff", color:"#B91C1C", fontSize:12, fontWeight:600, cursor: savingFlag ? "wait" : "pointer" }}
@@ -16336,7 +16488,7 @@ var CommissionsPage = function(p) {
           <ChevronRight size={12} style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition:"transform 0.15s" }}/>
           {isExpanded ? "Hide" : "Show"} {paidCycles.length} previous cycle{paidCycles.length === 1 ? "" : "s"}
         </button>
-        {isExpanded && paidCycles.map(function(cy){ return renderCycle(cy, false); })}
+        {isExpanded && paidCycles.map(function(cy){ return renderCycle(c, cy, false); })}
       </div>}
 
       {/* Incentive */}

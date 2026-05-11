@@ -14259,6 +14259,9 @@ var CYCLE_STAGE_NEXT = {
   invoice_submitted: "received",
   received:          "paid_to_team"
 };
+// Linear stage ordering — used by the EDIT-stage endpoint to verify a stage
+// has already been reached (cycle.state ≥ stageName position).
+var CYCLE_STAGE_ORDER = ["pending_claim","claim_submitted","invoice_submitted","received","paid_to_team"];
 app.patch("/api/commissions/:id/cycles/:cycleId/stage", auth, salesAdminOnly, async function(req, res) {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
@@ -14342,9 +14345,113 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage", auth, salesAdminOnly, as
   }
 });
 
-// DELETE cycle — only allowed in early states (pending_claim or
-// claim_submitted). Anything past invoice_submitted has financial
-// consequences and must not be silently removed.
+// PATCH cycle stage EDIT — corrects an already-completed stage without
+// changing the cycle.state. Distinct from the advance endpoint above so
+// the forward-only state machine semantics stay clean.
+// :stageName ∈ {claim_submitted, invoice_submitted, received, paid_to_team}.
+// Allowed when cycle.state has already reached or passed stageName.
+app.patch("/api/commissions/:id/cycles/:cycleId/stage/:stageName", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (c.status === "cancelled") return res.status(400).json({ error: "cannot edit a cancelled commission" });
+
+    var cyc = c.cycles.id(req.params.cycleId);
+    if (!cyc) return res.status(404).json({ error: "Cycle not found" });
+
+    var stageName = String(req.params.stageName || "");
+    var editableStages = ["claim_submitted","invoice_submitted","received","paid_to_team"];
+    if (editableStages.indexOf(stageName) < 0) {
+      return res.status(400).json({ error: "stageName must be one of " + editableStages.join(", ") });
+    }
+
+    var curIdx   = CYCLE_STAGE_ORDER.indexOf(cyc.state);
+    var stageIdx = CYCLE_STAGE_ORDER.indexOf(stageName);
+    if (curIdx < stageIdx) {
+      return res.status(400).json({
+        error: "cannot edit stage '" + stageName + "' — cycle is still in '" + cyc.state + "' (not yet reached)"
+      });
+    }
+
+    var body = req.body || {};
+    var date = String(body.date || (cyc[stageName] && cyc[stageName].date) || "");
+    var notes = body.notes !== undefined ? String(body.notes) : (cyc[stageName] && cyc[stageName].notes) || "";
+    var byUser = (req.user && req.user.name) || "";
+
+    cyc[stageName] = { date: date, notes: notes, byUser: byUser };
+
+    // received-stage edits also update receivedAmount + recompute payoutBreakdown
+    // from the CURRENT snapshot (so a distribution edit that happened after the
+    // initial mark-received is reflected). cycle.state stays put.
+    if (stageName === "received") {
+      var amount = body.amount !== undefined ? Number(body.amount) : Number(cyc.receivedAmount || 0);
+      if (!isFinite(amount) || amount <= 0) {
+        return res.status(400).json({ error: "amount must be > 0 for received stage" });
+      }
+      cyc.receivedAmount = amount;
+      cyc.payoutBreakdown = computeCyclePayoutBreakdown(c.snapshot, amount);
+    }
+
+    c.markModified("cycles");
+    await c.save();
+
+    await logCommissionActivity(req.user, c.leadId, "commission_stage_edit",
+      "[Commission] cycle " + cyc.cycleNumber + " — edited " + stageName + " (date=" + date + (stageName === "received" ? ", amount=" + Number(cyc.receivedAmount).toLocaleString() + " EGP" : "") + ")");
+
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PATCH cycle stage edit]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "cycle_stage_edit_failed" });
+  }
+});
+
+// PATCH cycle metadata — currently just expectedAmount. Allowed only while
+// the cycle hasn't received money yet (state ∈ {pending_claim,
+// claim_submitted, invoice_submitted}).
+app.patch("/api/commissions/:id/cycles/:cycleId", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (c.status === "cancelled") return res.status(400).json({ error: "cannot edit a cancelled commission" });
+
+    var cyc = c.cycles.id(req.params.cycleId);
+    if (!cyc) return res.status(404).json({ error: "Cycle not found" });
+
+    var earlyStates = ["pending_claim","claim_submitted","invoice_submitted"];
+    if (earlyStates.indexOf(cyc.state) < 0) {
+      return res.status(400).json({
+        error: "cannot edit cycle metadata in state '" + cyc.state + "' — only " + earlyStates.join(", ") + " are editable"
+      });
+    }
+
+    var body = req.body || {};
+    if (body.expectedAmount === undefined) {
+      return res.status(400).json({ error: "expectedAmount required" });
+    }
+    var n = Number(body.expectedAmount);
+    if (!isFinite(n) || n < 0) {
+      return res.status(400).json({ error: "expectedAmount must be a non-negative number" });
+    }
+    var prev = Number(cyc.expectedAmount || 0);
+    cyc.expectedAmount = n;
+    c.markModified("cycles");
+    await c.save();
+
+    await logCommissionActivity(req.user, c.leadId, "commission_cycle_edit",
+      "[Commission] cycle " + cyc.cycleNumber + " — expectedAmount " + prev.toLocaleString() + " → " + n.toLocaleString() + " EGP");
+
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PATCH cycle meta]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "cycle_edit_failed" });
+  }
+});
+
+// DELETE cycle — pending_claim / claim_submitted / invoice_submitted: free
+// delete. received / paid_to_team: require body.confirmCycleNumber matching
+// cyc.cycleNumber (admin types the cycle number to confirm — destructive).
 app.delete("/api/commissions/:id/cycles/:cycleId", auth, salesAdminOnly, async function(req, res) {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
@@ -14352,8 +14459,20 @@ app.delete("/api/commissions/:id/cycles/:cycleId", auth, salesAdminOnly, async f
     if (!c) return res.status(404).json({ error: "Commission not found" });
     var cyc = c.cycles.id(req.params.cycleId);
     if (!cyc) return res.status(404).json({ error: "Cycle not found" });
-    if (cyc.state !== "pending_claim" && cyc.state !== "claim_submitted") {
-      return res.status(400).json({ error: "cannot delete cycle in state '" + cyc.state + "' — only pending_claim or claim_submitted are removable" });
+    var earlyDeleteStates = ["pending_claim","claim_submitted","invoice_submitted"];
+    var destructiveStates = ["received","paid_to_team"];
+    if (earlyDeleteStates.indexOf(cyc.state) >= 0) {
+      // free delete
+    } else if (destructiveStates.indexOf(cyc.state) >= 0) {
+      var confirmed = req.body && Number(req.body.confirmCycleNumber);
+      if (!isFinite(confirmed) || confirmed !== Number(cyc.cycleNumber)) {
+        return res.status(400).json({
+          error: "destructive_confirmation_required",
+          message: "Confirm by passing confirmCycleNumber matching cycle " + cyc.cycleNumber
+        });
+      }
+    } else {
+      return res.status(400).json({ error: "cannot delete cycle in state '" + cyc.state + "'" });
     }
     var num = cyc.cycleNumber;
     cyc.deleteOne();
