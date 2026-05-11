@@ -396,7 +396,11 @@ var getTeamScopeIds = function(currentUser, allUsers) {
   var tlId = String(currentUser.id || currentUser._id || "");
   var ids = new Set([tlId]);
   (allUsers || []).forEach(function(u){
-    if (!u || !u.active) return;
+    // Include inactive members of the TL's team: their historical leads must
+    // remain visible to the TL, and they must appear in agent filter dropdowns
+    // (with "(inactive)" suffix). Active-only filtering for new assignments
+    // still happens downstream where assignment lists are built.
+    if (!u) return;
     if (u.role !== "sales" && u.role !== "team_leader") return;
     var rt = u.reportsTo && u.reportsTo._id ? String(u.reportsTo._id) : String(u.reportsTo || "");
     if (rt === tlId) ids.add(String(u._id));
@@ -4123,7 +4127,7 @@ var LeadsPage = function(p) {
                         // the guard doesn't need to live in the UI.
                         // Inactive owners aren't in the pool — inject a disabled option so
                         // the SELECT renders their name instead of falling back to "— No Agent —".
-                        var pool = isOnlyAdmin ? salesUsers : (p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";});
+                        var pool = isOnlyAdmin ? salesUsers : (p.myTeamUsers||salesUsers).filter(function(u){return (u.role==="sales"||u.role==="team_leader")&&u.active;});
                         var opts = pool.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
                         var ownerId = lead.agentId&&lead.agentId._id ? String(lead.agentId._id) : (lead.agentId ? String(lead.agentId) : "");
                         if (ownerId && !pool.some(function(u){return gid(u)===ownerId;})) {
@@ -4205,7 +4209,7 @@ var LeadsPage = function(p) {
                 // "same_agent" if an admin tries to rotate to the current owner.
                 // Inactive owners aren't in the pool — inject a disabled option so
                 // the SELECT renders their name instead of falling back to "— No Agent —".
-                var poolSel = isOnlyAdmin ? (p.myTeamUsers||salesUsers) : (p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";});
+                var poolSel = isOnlyAdmin ? (p.myTeamUsers||salesUsers) : (p.myTeamUsers||salesUsers).filter(function(u){return (u.role==="sales"||u.role==="team_leader")&&u.active;});
                 var opts = poolSel.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
                 var ownerId = selected.agentId&&selected.agentId._id ? String(selected.agentId._id) : (selected.agentId ? String(selected.agentId) : "");
                 if (ownerId && !poolSel.some(function(u){return gid(u)===ownerId;})) {
@@ -10085,7 +10089,7 @@ var DailyRequestsPage = function(p) {
                       {(function(){
                         // Inactive owners aren't in the pool — inject a disabled option so
                         // the SELECT renders their name instead of falling back to "— No Agent —".
-                        var pool = isOnlyAdmin?salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return u.role==="sales"||u.role==="team_leader";});
+                        var pool = isOnlyAdmin?salesUsers:(p.myTeamUsers||salesUsers).filter(function(u){return (u.role==="sales"||u.role==="team_leader")&&u.active;});
                         var opts = pool.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
                         var ownerId = r.agentId&&r.agentId._id ? String(r.agentId._id) : (r.agentId ? String(r.agentId) : "");
                         if (ownerId && !pool.some(function(u){return gid(u)===ownerId;})) {
