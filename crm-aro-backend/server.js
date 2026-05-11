@@ -319,15 +319,34 @@ var AgentVacation = mongoose.model("AgentVacation", agentVacationSchema);
 // =====================================================================
 
 // Recipient appears inside snapshot.salesAgent / teamLeader / manager /
-// director / splitChain.* and inside cycle payoutBreakdown / incentive.
-// userName is authoritative; userId is convenience-only and may dangle.
+// director / splitChain.*. userName is authoritative; userId is convenience-only
+// and may dangle.
+//
+// Phase R-1: replaces per-recipient distributionType/value with per-1000
+// computed shares. computedShare is the authoritative number owed to this
+// recipient (before override). overrideAmount, if set (>0), wins over computedShare
+// when calculating effective owed for payout / debt math. Recompute updates the
+// computed fields but never touches overrides — admin must clear them explicitly.
 var commissionRecipientSchema = new mongoose.Schema({
   userName:          { type: String, required: true },
   userId:            { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   userActiveAtClose: { type: Boolean, default: true },
   role:              { type: String, enum: ["sales","team_leader","manager","director"], required: true },
-  distributionType:  { type: String, enum: ["percentage","fixed_egp"], default: "percentage" },
-  value:             { type: Number, default: 0 } // pct (0-100) or EGP, per distributionType
+
+  // Computed at snapshot creation/recompute time (Phase R-1).
+  computedShare:        { type: Number, default: 0 },     // EGP owed (before override)
+  rate:                 { type: Number, default: 0 },     // per-1000 rate used (5/6/7/2/1/0.5)
+  rateBucket:           { type: String, default: "" },    // "base" | "target_met" | "double_target" | "fixed"
+  isHalfWeight:         { type: Boolean, default: false }, // projectWeight < 1
+  effectiveDealTotal:   { type: Number, default: 0 },     // dealTotal × projectWeight × splitMultiplier
+  targetSnapshot:       { type: Number, default: 0 },     // sales agent's Q target at compute time
+  performanceSnapshot:  { type: Number, default: 0 },     // sales agent's Q effective achievement at compute time
+
+  // Override — admin sets explicitly, recompute leaves untouched.
+  overrideAmount:       { type: Number, default: null },
+  overrideReason:       { type: String, default: "" },
+
+  computedAt:           { type: Date, default: null }
 }, { _id: false });
 
 // Single stage marker inside a cycle. Empty date => stage not reached yet.
@@ -337,6 +356,8 @@ var commissionStageSchema = new mongoose.Schema({
   byUser: { type: String, default: "" }      // SNAPSHOT of admin name who marked
 }, { _id: false });
 
+// Cycle records cash flow from the developer only. Per-recipient payouts moved
+// to Commission.payouts[] in Phase R-1 (cycle.payoutBreakdown dropped).
 var commissionCycleSchema = new mongoose.Schema({
   cycleNumber:        { type: Number, required: true },
   state:              { type: String,
@@ -348,13 +369,23 @@ var commissionCycleSchema = new mongoose.Schema({
   invoice_submitted:  { type: commissionStageSchema, default: function(){ return {}; } },
   received:           { type: commissionStageSchema, default: function(){ return {}; } },
   paid_to_team:       { type: commissionStageSchema, default: function(){ return {}; } },
-  payoutBreakdown:   [{
-    userName: String,
-    userId:   { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
-    role:     String,
-    amount:   Number
-  }],
   closedAt: { type: Date, default: null }
+}, { _id: true, timestamps: true });
+
+// Per-payout event — money flowing from us to a recipient. Created by
+// POST /api/commissions/:id/payouts. appliedToDebt is auto-computed at
+// creation time from the recipient's current net position across all
+// commissions; netPaid = amount - appliedToDebt.
+var commissionPayoutSchema = new mongoose.Schema({
+  recipientUserName: { type: String, required: true },
+  recipientUserId:   { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  recipientRole:     { type: String, enum: ["sales","team_leader","manager","director"], required: true },
+  amount:            { type: Number, required: true },     // requested amount (before debt deduction)
+  appliedToDebt:     { type: Number, default: 0 },         // deducted to satisfy prior overpayment
+  netPaid:           { type: Number, default: 0 },         // amount - appliedToDebt (what recipient actually got)
+  date:              { type: String, default: "" },        // ISO yyyy-mm-dd
+  notes:             { type: String, default: "" },
+  byUser:            { type: String, default: "" }
 }, { _id: true, timestamps: true });
 
 var commissionIncentiveSchema = new mongoose.Schema({
@@ -401,7 +432,22 @@ var commissionSchema = new mongoose.Schema({
   cancelReason:  { type: String, default: "" },
 
   cycles:        [commissionCycleSchema],
+  payouts:       [commissionPayoutSchema],
   incentive:     { type: commissionIncentiveSchema, default: function(){ return { recipients: [] }; } },
+
+  // Phase R-1: snapshot of the per-1000 rates active at compute time, so the
+  // commission stays interpretable even after Settings rates change.
+  ratesSnapshot: {
+    sales: {
+      base:          { type: Number, default: 5 },
+      target_met:    { type: Number, default: 6 },
+      double_target: { type: Number, default: 7 }
+    },
+    team_leader:     { type: Number, default: 2 },
+    manager:         { type: Number, default: 1 },
+    director:        { type: Number, default: 0.5 }
+  },
+  computedAt:    { type: Date, default: null },
 
   lastAlertedAt: { type: Date, default: null }
 }, { timestamps: true });
@@ -1040,6 +1086,392 @@ function parseDealTotalFromBudget(budget) {
   return isFinite(n) ? n : 0;
 }
 
+// ===== PHASE R-1 — RATES, ACHIEVEMENT, BUCKET, SHARE COMPUTATION =====
+
+// Default per-1000 commission rates. AppSetting key="commissionRates" overrides.
+var COMMISSION_RATES_DEFAULT = {
+  sales:       { base: 5, target_met: 6, double_target: 7 },
+  team_leader: 2,
+  manager:     1,
+  director:    0.5
+};
+
+// 30s in-memory cache, mirroring the projectWeights pattern. Busted on PUT.
+var _commRatesCache = { at: 0, rates: null };
+function bustCommissionRatesCache() { _commRatesCache.at = 0; _commRatesCache.rates = null; }
+async function getCommissionRates() {
+  var now = Date.now();
+  if (!_commRatesCache.rates || (now - _commRatesCache.at) > 30000) {
+    var doc = await AppSetting.findOne({ key: "commissionRates" }).lean();
+    var v = (doc && doc.value && typeof doc.value === "object") ? doc.value : {};
+    var s = (v.sales && typeof v.sales === "object") ? v.sales : {};
+    var clean = {
+      sales: {
+        base:          isFinite(Number(s.base))          ? Number(s.base)          : COMMISSION_RATES_DEFAULT.sales.base,
+        target_met:    isFinite(Number(s.target_met))    ? Number(s.target_met)    : COMMISSION_RATES_DEFAULT.sales.target_met,
+        double_target: isFinite(Number(s.double_target)) ? Number(s.double_target) : COMMISSION_RATES_DEFAULT.sales.double_target
+      },
+      team_leader: isFinite(Number(v.team_leader)) ? Number(v.team_leader) : COMMISSION_RATES_DEFAULT.team_leader,
+      manager:     isFinite(Number(v.manager))     ? Number(v.manager)     : COMMISSION_RATES_DEFAULT.manager,
+      director:    isFinite(Number(v.director))    ? Number(v.director)    : COMMISSION_RATES_DEFAULT.director
+    };
+    _commRatesCache.rates = clean;
+    _commRatesCache.at = now;
+  }
+  // Return a deep-cloned object so callers can't mutate the cache.
+  var r = _commRatesCache.rates;
+  return {
+    sales: { base: r.sales.base, target_met: r.sales.target_met, double_target: r.sales.double_target },
+    team_leader: r.team_leader, manager: r.manager, director: r.director
+  };
+}
+
+// qBoundsFromDate — given an ISO yyyy-mm-dd string or Date, return the calendar
+// quarter bounds AS ISO STRINGS (compatible with Lead.dealDate string comparison).
+// qStart inclusive, qEnd inclusive. qKey is "YYYY-Qn".
+function qBoundsFromDate(date) {
+  var d = (date instanceof Date) ? date : new Date(date);
+  if (isNaN(d.getTime())) return null;
+  var year = d.getUTCFullYear();
+  var qNum = Math.floor(d.getUTCMonth() / 3) + 1; // 1..4
+  var startMonth = (qNum - 1) * 3;                // 0,3,6,9
+  var endMonth   = startMonth + 2;                // 2,5,8,11
+  var qStart = new Date(Date.UTC(year, startMonth, 1));
+  var qEnd   = new Date(Date.UTC(year, endMonth + 1, 0, 23, 59, 59, 999));
+  return {
+    qStart: qStart, qEnd: qEnd,
+    qStartIso: qStart.toISOString().slice(0,10),
+    qEndIso:   qEnd.toISOString().slice(0,10),
+    year: year, qNum: qNum,
+    qKey: year + "-Q" + qNum
+  };
+}
+
+// computeAgentQAchievement — sum of (budget × projectWeight) for a given agent
+// across a calendar quarter, with split deals counted at 0.5. Filters by
+// status=DoneDeal (cancelled deals naturally drop out — cancel flips Lead.status
+// back to HotCase). Excludes archived leads. Returns EGP number.
+async function computeAgentQAchievement(agentId, qStartIso, qEndIso) {
+  if (!agentId) return 0;
+  var aOid;
+  try { aOid = (typeof agentId === "string") ? new mongoose.Types.ObjectId(agentId) : agentId; }
+  catch(e){ return 0; }
+  var rows = await Lead.find({
+    status: "DoneDeal",
+    archived: { $ne: true },
+    dealDate: { $gte: qStartIso, $lte: qEndIso },
+    $or: [ { agentId: aOid }, { splitAgent2Id: aOid } ]
+  }).select("budget projectWeight agentId splitAgent2Id").lean();
+  var total = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var d = rows[i];
+    var w  = (typeof d.projectWeight === "number") ? d.projectWeight : 1;
+    var bg = parseDealTotalFromBudget(d.budget);
+    var isPrimary = String(d.agentId) === String(aOid);
+    var hasSplit  = !!d.splitAgent2Id;
+    var mult = (isPrimary && hasSplit) ? 0.5 : (isPrimary ? 1 : 0.5);
+    total += bg * w * mult;
+  }
+  return total;
+}
+
+// computeRateBucket — INCLUSIVE thresholds per Phase R-1 locked rule:
+//   ratio < 2  → "base"          (default 5/1000)
+//   ratio < 3  → "target_met"    (default 6/1000)
+//   ratio >= 3 → "double_target" (default 7/1000)
+// target ≤ 0 → "base" (no target set, default to base).
+function computeRateBucket(achievement, target) {
+  if (!isFinite(target) || target <= 0) return "base";
+  var ratio = Number(achievement) / Number(target);
+  if (!isFinite(ratio)) return "base";
+  if (ratio >= 3) return "double_target";
+  if (ratio >= 2) return "target_met";
+  return "base";
+}
+
+// computeRecipientShare — pure function. Returns the EGP share owed to this
+// recipient given the deal context. splitMultiplier is 0.5 for either chain of
+// a split deal, 1 otherwise. salesBucket only matters for role=sales.
+function computeRecipientShare(args) {
+  var role = args.role;
+  var dealTotal = Number(args.dealTotal || 0);
+  var weight = (typeof args.projectWeight === "number") ? args.projectWeight : 1;
+  var splitMult = (args.splitMultiplier != null) ? Number(args.splitMultiplier) : 1;
+  var rates = args.rates || COMMISSION_RATES_DEFAULT;
+  var effective = dealTotal * weight * splitMult;
+  var rate = 0;
+  if (role === "sales") {
+    var bucket = args.salesBucket || "base";
+    rate = Number((rates.sales && rates.sales[bucket]) || 0);
+  } else if (role === "team_leader") {
+    rate = Number(rates.team_leader || 0);
+  } else if (role === "manager") {
+    rate = Number(rates.manager || 0);
+  } else if (role === "director") {
+    rate = Number(rates.director || 0);
+  }
+  var share = effective * rate / 1000;
+  return { share: share, rate: rate, effective: effective };
+}
+
+// computeAllRecipientShares — populate computedShare/rate/rateBucket/etc. on
+// every recipient slot of a commission. Reads current per-1000 rates and
+// snapshots them onto commission.ratesSnapshot. Computes each sales agent's
+// quarter achievement independently (primary vs split). Skips overrideAmount
+// (set explicitly by admin — recompute leaves it alone).
+//
+// Mutates the commission doc in place. Caller is responsible for save() and
+// for c.markModified("snapshot") + c.markModified("ratesSnapshot").
+async function computeAllRecipientShares(c) {
+  if (!c || !c.snapshot) return c;
+  var rates = await getCommissionRates();
+  var dealTotal = Number(c.snapshot.dealTotal || 0);
+  var dealDate  = c.snapshot.dealDate || "";
+  var bounds    = qBoundsFromDate(dealDate);
+  var isSplit   = !!c.snapshot.isSplitDeal;
+  var splitMult = isSplit ? 0.5 : 1;
+
+  // Project weight: prefer the live Lead.projectWeight (denormalised cache),
+  // fall back to AppSetting lookup by project name, default 1.
+  var weight = 1;
+  if (c.leadId) {
+    try {
+      var l = await Lead.findById(c.leadId).select("projectWeight").lean();
+      if (l && typeof l.projectWeight === "number") weight = l.projectWeight;
+    } catch(e) { /* fall through to weight=1 */ }
+  }
+  var isHalfWeight = weight < 1;
+
+  // Per-sales-agent quarter achievement + bucket. Primary chain reads from
+  // snapshot.salesAgent.userId; split chain reads from splitChain.salesAgent2.userId.
+  async function bucketForSalesAgent(salesAgentRec) {
+    if (!salesAgentRec || !salesAgentRec.userId || !bounds) {
+      return { bucket: "base", target: 0, performance: 0 };
+    }
+    var uOid;
+    try { uOid = new mongoose.Types.ObjectId(salesAgentRec.userId); } catch(e){ return { bucket:"base", target:0, performance:0 }; }
+    var u = await User.findById(uOid).select("qTargets").lean();
+    var target = readQTargetServer(u, bounds.year, bounds.qNum);
+    var perf = await computeAgentQAchievement(uOid, bounds.qStartIso, bounds.qEndIso);
+    var bucket = computeRateBucket(perf, target);
+    return { bucket: bucket, target: target, performance: perf };
+  }
+
+  function applyTo(recipient, salesBucketInfo) {
+    if (!recipient) return;
+    var hasOverride = recipient.overrideAmount != null && Number(recipient.overrideAmount) > 0;
+    var calc = computeRecipientShare({
+      role: recipient.role,
+      dealTotal: dealTotal,
+      projectWeight: weight,
+      splitMultiplier: splitMult,
+      salesBucket: salesBucketInfo.bucket,
+      rates: rates
+    });
+    recipient.computedShare = calc.share;
+    recipient.rate = calc.rate;
+    recipient.rateBucket = (recipient.role === "sales") ? salesBucketInfo.bucket : "fixed";
+    recipient.isHalfWeight = isHalfWeight;
+    recipient.effectiveDealTotal = calc.effective;
+    recipient.targetSnapshot = salesBucketInfo.target;
+    recipient.performanceSnapshot = salesBucketInfo.performance;
+    recipient.computedAt = new Date();
+    // overrideAmount + overrideReason untouched (per spec test R-1.7).
+    if (hasOverride) {
+      // tag still recomputed for transparency; effective owed is overrideAmount
+      // (the payout-time math picks override over computedShare).
+    }
+  }
+
+  // Primary chain — uses snapshot.salesAgent's quarter.
+  var primaryInfo = await bucketForSalesAgent(c.snapshot.salesAgent);
+  applyTo(c.snapshot.salesAgent,  primaryInfo);
+  applyTo(c.snapshot.teamLeader,  primaryInfo);
+  applyTo(c.snapshot.manager,     primaryInfo);
+  applyTo(c.snapshot.director,    primaryInfo);
+
+  // Split chain — INDEPENDENT bucket from splitAgent2's own quarter.
+  if (isSplit && c.snapshot.splitChain) {
+    var sec = c.snapshot.splitChain;
+    var secInfo = await bucketForSalesAgent(sec.salesAgent2);
+    applyTo(sec.salesAgent2, secInfo);
+    applyTo(sec.teamLeader2, secInfo);
+    applyTo(sec.manager2,    secInfo);
+    applyTo(sec.director2,   secInfo);
+  }
+
+  c.ratesSnapshot = {
+    sales: { base: rates.sales.base, target_met: rates.sales.target_met, double_target: rates.sales.double_target },
+    team_leader: rates.team_leader, manager: rates.manager, director: rates.director
+  };
+  c.computedAt = new Date();
+  return c;
+}
+
+// recomputeQuarterSiblings — find all non-cancelled commissions where the given
+// agent appears (as primary OR split) AND whose dealDate falls in the same
+// calendar quarter as anchorDate. Recomputes each. Returns array of
+// {commissionId, leadName, beforeByRecipient, afterByRecipient} for diff use.
+// Skips the commission whose _id matches options.skipId (used to avoid double-
+// computing the just-saved doc).
+async function recomputeQuarterSiblings(agentId, anchorDate, options) {
+  options = options || {};
+  if (!agentId || !anchorDate) return [];
+  var bounds = qBoundsFromDate(anchorDate);
+  if (!bounds) return [];
+  var aOid;
+  try { aOid = (typeof agentId === "string") ? new mongoose.Types.ObjectId(agentId) : agentId; }
+  catch(e){ return []; }
+
+  var query = {
+    status: { $ne: "cancelled" },
+    "snapshot.dealDate": { $gte: bounds.qStartIso, $lte: bounds.qEndIso },
+    $or: [
+      { "snapshot.salesAgent.userId": aOid },
+      { "snapshot.splitChain.salesAgent2.userId": aOid }
+    ]
+  };
+  if (options.skipId) {
+    try { query._id = { $ne: new mongoose.Types.ObjectId(options.skipId) }; } catch(e){}
+  }
+  var siblings = await Commission.find(query);
+  var report = [];
+  for (var i = 0; i < siblings.length; i++) {
+    var c = siblings[i];
+    var before = snapshotRecipientSummary(c);
+    await computeAllRecipientShares(c);
+    c.markModified("snapshot");
+    c.markModified("ratesSnapshot");
+    await c.save();
+    var after = snapshotRecipientSummary(c);
+    report.push({
+      commissionId: String(c._id),
+      leadName: (c.snapshot && c.snapshot.customerName) || "",
+      before: before, after: after
+    });
+  }
+  return report;
+}
+
+// snapshotRecipientSummary — flatten the 8 possible recipient slots into a
+// keyed object { userName: {role, computedShare, overrideAmount} } for diffing.
+// Same userName appearing in multiple slots gets summed (split-deal manager etc).
+function snapshotRecipientSummary(c) {
+  var out = {};
+  function add(r) {
+    if (!r || !r.userName) return;
+    var key = r.userName;
+    var owed = (r.overrideAmount != null && Number(r.overrideAmount) > 0)
+      ? Number(r.overrideAmount) : Number(r.computedShare || 0);
+    if (out[key]) out[key].owed += owed;
+    else out[key] = { role: r.role, owed: owed };
+  }
+  if (!c || !c.snapshot) return out;
+  add(c.snapshot.salesAgent);
+  add(c.snapshot.teamLeader);
+  add(c.snapshot.manager);
+  add(c.snapshot.director);
+  if (c.snapshot.isSplitDeal && c.snapshot.splitChain) {
+    add(c.snapshot.splitChain.salesAgent2);
+    add(c.snapshot.splitChain.teamLeader2);
+    add(c.snapshot.splitChain.manager2);
+    add(c.snapshot.splitChain.director2);
+  }
+  return out;
+}
+
+// computeRecipientNetPositions — global aggregation across ALL commissions.
+// Returns map { userName: { owed, paid, perCommOverpaid, applied, debt, netPosition, role } }.
+//
+// Per-commission model: debt is rooted in commission-level overpayments rather
+// than global owed-vs-paid. This makes the "deduct from future payouts" feature
+// work even when a recipient is simultaneously owed money on other commissions.
+//
+//   owed             = Σ effectiveOwed on NON-CANCELLED commissions where recipient appears
+//   paid             = Σ netPaid (cash that flowed to recipient — lifetime)
+//   perCommOverpaid  = Σ_C max(0, Σ amount paid to recipient on C - owedOnCommission(C))
+//                      (owedOnCommission = 0 if C is cancelled)
+//   applied          = Σ appliedToDebt across all payouts to recipient
+//   debt             = max(0, perCommOverpaid - applied)
+//   netPosition      = owed - paid   (cash-flow position; >0 → we owe them more cash)
+async function computeRecipientNetPositions() {
+  var all = await Commission.find({}).select("status snapshot payouts").lean();
+  var byName = {};
+  function ensure(name, role) {
+    if (!byName[name]) byName[name] = {
+      owed: 0, paid: 0, perCommOverpaid: 0, applied: 0,
+      role: role || ""
+    };
+    return byName[name];
+  }
+  function effectiveOwed(r) {
+    if (!r || !r.userName) return 0;
+    var v = (r.overrideAmount != null && Number(r.overrideAmount) > 0)
+      ? Number(r.overrideAmount) : Number(r.computedShare || 0);
+    return isFinite(v) && v > 0 ? v : 0;
+  }
+  function collectOwed(c) {
+    var out = {};
+    function add(r) {
+      if (!r || !r.userName) return;
+      var v = effectiveOwed(r);
+      if (v <= 0) return;
+      out[r.userName] = (out[r.userName] || 0) + v;
+      ensure(r.userName, r.role); // touch — so a recipient with only owed still appears
+    }
+    if (!c.snapshot) return out;
+    add(c.snapshot.salesAgent);
+    add(c.snapshot.teamLeader);
+    add(c.snapshot.manager);
+    add(c.snapshot.director);
+    if (c.snapshot.isSplitDeal && c.snapshot.splitChain) {
+      add(c.snapshot.splitChain.salesAgent2);
+      add(c.snapshot.splitChain.teamLeader2);
+      add(c.snapshot.splitChain.manager2);
+      add(c.snapshot.splitChain.director2);
+    }
+    return out;
+  }
+  for (var i = 0; i < all.length; i++) {
+    var c = all[i];
+    var cancelled = c.status === "cancelled";
+    var owedByName = collectOwed(c);
+    // For non-cancelled commissions, add owed totals globally.
+    if (!cancelled) {
+      Object.keys(owedByName).forEach(function(name){
+        byName[name].owed += owedByName[name];
+      });
+    }
+    // Aggregate payouts to compute per-commission gross-paid and per-recipient
+    // cash + applied totals.
+    var amountByName = {};
+    if (Array.isArray(c.payouts)) {
+      for (var j = 0; j < c.payouts.length; j++) {
+        var p = c.payouts[j];
+        if (!p || !p.recipientUserName) continue;
+        var n = p.recipientUserName;
+        ensure(n, p.recipientRole);
+        amountByName[n] = (amountByName[n] || 0) + Number(p.amount || 0);
+        byName[n].paid += Number(p.netPaid || 0);
+        byName[n].applied += Number(p.appliedToDebt || 0);
+      }
+    }
+    // Per-commission overpayment: amount credited toward owed minus actual owed.
+    // Cancelled commission → owed=0 → entire `amount` counts as overpayment.
+    Object.keys(amountByName).forEach(function(name){
+      var owedOnComm = cancelled ? 0 : (owedByName[name] || 0);
+      var over = Math.max(0, amountByName[name] - owedOnComm);
+      if (over > 0) byName[name].perCommOverpaid += over;
+    });
+  }
+  Object.keys(byName).forEach(function(k){
+    var n = byName[k];
+    n.debt = Math.max(0, n.perCommOverpaid - n.applied);
+    n.netPosition = n.owed - n.paid;
+  });
+  return byName;
+}
+
 // walkChain — given a sales User._id, walk reportsTo upward and collect
 // the first encountered team_leader, manager, and director. Returns
 // { teamLeader, manager, director } where each is a recipient object or null.
@@ -1072,16 +1504,16 @@ async function walkReportsToChain(salesUserId) {
   return out;
 }
 
-// recipientFromUser — build a snapshot recipient with default distribution.
+// recipientFromUser — build a snapshot recipient. Phase R-1: computed fields
+// (computedShare, rate, etc.) are set later by computeAllRecipientShares; this
+// helper just stamps identity + role.
 function recipientFromUser(user, role) {
   if (!user) return null;
   return {
     userName: user.name || "(unknown)",
     userId: user._id || null,
     userActiveAtClose: user.active !== false,
-    role: role,
-    distributionType: "percentage",
-    value: 0
+    role: role
   };
 }
 
@@ -1116,8 +1548,7 @@ async function buildSnapshotForLead(leadDoc) {
       // Fallback: salesAgent2 user no longer exists — preserve the snapshot name only.
       splitChainOut.salesAgent2 = {
         userName: leadDoc.splitAgent2Name, userId: null,
-        userActiveAtClose: false, role: "sales",
-        distributionType: "percentage", value: 0
+        userActiveAtClose: false, role: "sales"
       };
     }
   }
@@ -1185,6 +1616,24 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
             clientPhone: leadDoc.phone || ""
           });
         } catch(e){}
+        // Phase R-1: revived deal re-enters the agent's quarter — recompute
+        // siblings so the agent's bucket reflects the now-larger achievement.
+        try {
+          var revived = await Commission.findById(lastCancelled._id);
+          if (revived) {
+            await computeAllRecipientShares(revived);
+            revived.markModified("snapshot");
+            revived.markModified("ratesSnapshot");
+            await revived.save();
+            var dDate = revived.snapshot && revived.snapshot.dealDate;
+            var primId = revived.snapshot && revived.snapshot.salesAgent && revived.snapshot.salesAgent.userId;
+            var splitId = revived.snapshot && revived.snapshot.splitChain && revived.snapshot.splitChain.salesAgent2 && revived.snapshot.splitChain.salesAgent2.userId;
+            if (primId)  await recomputeQuarterSiblings(primId,  dDate, { skipId: revived._id });
+            if (splitId) await recomputeQuarterSiblings(splitId, dDate, { skipId: revived._id });
+          }
+        } catch(rcErr) {
+          console.error("[ensureCommissionForLead revive recompute]", rcErr && rcErr.message);
+        }
         return lastCancelled;
       }
     }
@@ -1201,9 +1650,9 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
         cycleNumber: 1,
         state: "pending_claim",
         expectedAmount: 0,
-        receivedAmount: 0,
-        payoutBreakdown: []
+        receivedAmount: 0
       }],
+      payouts: [],
       incentive: { recipients: [] }
     });
     try {
@@ -1216,6 +1665,22 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
         clientPhone: leadDoc.phone || ""
       });
     } catch(e){}
+    // Phase R-1: compute initial shares + fan out to sibling commissions in
+    // the same quarter (this new deal may have pushed the agent past a
+    // threshold, retroactively bumping prior deals).
+    try {
+      await computeAllRecipientShares(created);
+      created.markModified("snapshot");
+      created.markModified("ratesSnapshot");
+      await created.save();
+      var dDate2 = created.snapshot && created.snapshot.dealDate;
+      var primId2 = created.snapshot && created.snapshot.salesAgent && created.snapshot.salesAgent.userId;
+      var splitId2 = created.snapshot && created.snapshot.splitChain && created.snapshot.splitChain.salesAgent2 && created.snapshot.splitChain.salesAgent2.userId;
+      if (primId2)  await recomputeQuarterSiblings(primId2,  dDate2, { skipId: created._id });
+      if (splitId2) await recomputeQuarterSiblings(splitId2, dDate2, { skipId: created._id });
+    } catch(rcErr2) {
+      console.error("[ensureCommissionForLead create recompute]", rcErr2 && rcErr2.message);
+    }
     return created;
   } catch (e) {
     console.error("[ensureCommissionForLead]", e && e.message ? e.message : e);
@@ -1236,6 +1701,11 @@ async function cascadeCommissionCancel(leadId, reason, actingUser) {
     var commissions = await Commission.find({ leadId: leadId, status: "active" });
     if (!commissions.length) return 0;
     var now = new Date();
+    // Phase R-1: remember each cancelled commission's quarter+agent so we can
+    // fan out to sibling commissions after the cancel saves (this deal is
+    // removed from the agent's quarter achievement, which may demote them
+    // below a threshold and reduce prior deals' computed shares).
+    var anchors = []; // [{primaryAgentId, splitAgent2Id, dealDate, leadName, commissionId}]
     for (var i = 0; i < commissions.length; i++) {
       var c = commissions[i];
       c.status = "cancelled";
@@ -1251,6 +1721,14 @@ async function cascadeCommissionCancel(leadId, reason, actingUser) {
         }
       }
       await c.save();
+      var snap = c.snapshot || {};
+      anchors.push({
+        commissionId: String(c._id),
+        leadName: snap.customerName || "",
+        dealDate: snap.dealDate || "",
+        primaryAgentId: snap.salesAgent && snap.salesAgent.userId,
+        splitAgent2Id: snap.splitChain && snap.splitChain.salesAgent2 && snap.splitChain.salesAgent2.userId
+      });
     }
     if (actingUser && actingUser.id) {
       try {
@@ -1266,6 +1744,60 @@ async function cascadeCommissionCancel(leadId, reason, actingUser) {
     } else {
       console.log("[cascadeCommissionCancel] no actingUser — skipped Activity row for lead " + String(leadId));
     }
+
+    // Fan-out recompute + impact notification (Phase R-1).
+    try {
+      var allReports = [];
+      for (var a = 0; a < anchors.length; a++) {
+        var anc = anchors[a];
+        if (anc.primaryAgentId) {
+          var r1 = await recomputeQuarterSiblings(anc.primaryAgentId, anc.dealDate, { skipId: anc.commissionId });
+          if (Array.isArray(r1)) allReports = allReports.concat(r1);
+        }
+        if (anc.splitAgent2Id) {
+          var r2 = await recomputeQuarterSiblings(anc.splitAgent2Id, anc.dealDate, { skipId: anc.commissionId });
+          if (Array.isArray(r2)) allReports = allReports.concat(r2);
+        }
+      }
+      // Build impact summary: tally recipients whose owed value changed.
+      var deltas = {}; // userName -> deltaEgp (newOwed - oldOwed; negative = was overpaid)
+      allReports.forEach(function(rep){
+        var names = {};
+        Object.keys(rep.before || {}).forEach(function(k){ names[k] = true; });
+        Object.keys(rep.after  || {}).forEach(function(k){ names[k] = true; });
+        Object.keys(names).forEach(function(name){
+          var b = (rep.before && rep.before[name]) ? Number(rep.before[name].owed || 0) : 0;
+          var aa = (rep.after  && rep.after[name])  ? Number(rep.after[name].owed  || 0) : 0;
+          var d = aa - b;
+          if (Math.abs(d) < 0.5) return; // ignore sub-1-EGP rounding noise
+          deltas[name] = (deltas[name] || 0) + d;
+        });
+      });
+      // Recipients overpaid by this cancel: those whose owed dropped (delta<0).
+      var overpaidRecipients = Object.keys(deltas).filter(function(k){ return deltas[k] < -0.5; });
+      if (overpaidRecipients.length > 0) {
+        // Sum overpayment magnitude (= -sum of negative deltas).
+        var totalOverpayEgp = overpaidRecipients.reduce(function(s,k){ return s + (-deltas[k]); }, 0);
+        var firstLead = anchors[0] && anchors[0].leadName ? anchors[0].leadName : "";
+        var reasonText = "Deal cancelled" + (firstLead ? " (" + firstLead + ")" : "") + ". "
+          + overpaidRecipients.length + " recipient" + (overpaidRecipients.length === 1 ? "" : "s")
+          + " now overpaid (" + Math.round(totalOverpayEgp).toLocaleString() + " EGP total to deduct from future payouts)";
+        try {
+          await Notification.create({
+            type: "commission_cancellation_impact",
+            leadName: firstLead,
+            leadId: String(leadId),
+            reason: reasonText
+          });
+          try { broadcast("notification_updated", {}); } catch(e){}
+        } catch(notifErr) {
+          console.error("[notification commission_cancellation_impact]", notifErr && notifErr.message);
+        }
+      }
+    } catch(fanErr) {
+      console.error("[cascadeCommissionCancel fanout]", fanErr && fanErr.message);
+    }
+
     return commissions.length;
   } catch (e) {
     console.error("[cascadeCommissionCancel]", e && e.message ? e.message : e);
@@ -2125,6 +2657,87 @@ app.put("/api/settings/project-weights", auth, async function(req, res) {
     res.json(sanitized);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== COMMISSION RATES (Phase R-1) =====
+// AppSetting key="commissionRates" with shape:
+//   { sales: {base, target_met, double_target}, team_leader, manager, director }
+// Defaults come from COMMISSION_RATES_DEFAULT. No cascade — admin must click
+// Recompute All to apply new rates to existing commissions (locked decision).
+app.get("/api/settings/commission-rates", auth, salesAdminOnly, async function(req, res) {
+  try {
+    res.json(await getCommissionRates());
+  } catch (e) {
+    res.status(500).json({ error: e && e.message ? e.message : "rates_get_failed" });
+  }
+});
+
+app.put("/api/settings/commission-rates", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var body = (req.body && typeof req.body === "object") ? req.body : {};
+    function num(v, def) {
+      var n = Number(v);
+      if (!isFinite(n) || n < 0) return def;
+      return n;
+    }
+    var s = (body.sales && typeof body.sales === "object") ? body.sales : {};
+    var clean = {
+      sales: {
+        base:          num(s.base,          COMMISSION_RATES_DEFAULT.sales.base),
+        target_met:    num(s.target_met,    COMMISSION_RATES_DEFAULT.sales.target_met),
+        double_target: num(s.double_target, COMMISSION_RATES_DEFAULT.sales.double_target)
+      },
+      team_leader: num(body.team_leader, COMMISSION_RATES_DEFAULT.team_leader),
+      manager:     num(body.manager,     COMMISSION_RATES_DEFAULT.manager),
+      director:    num(body.director,    COMMISSION_RATES_DEFAULT.director)
+    };
+
+    var existing = await AppSetting.findOne({ key: "commissionRates" }).lean();
+    var prev = (existing && existing.value && typeof existing.value === "object") ? existing.value : {};
+    var prevSales = (prev.sales && typeof prev.sales === "object") ? prev.sales : {};
+
+    // Diff per-field for audit (mirrors projectWeights pattern).
+    var changes = [];
+    function diff(field, oldV, newV) {
+      if (oldV === undefined || oldV === null) oldV = "";
+      if (oldV !== newV) changes.push({ field: field, oldValue: oldV, newValue: newV });
+    }
+    diff("commissionRates.sales.base",          prevSales.base          != null ? Number(prevSales.base)          : COMMISSION_RATES_DEFAULT.sales.base,          clean.sales.base);
+    diff("commissionRates.sales.target_met",    prevSales.target_met    != null ? Number(prevSales.target_met)    : COMMISSION_RATES_DEFAULT.sales.target_met,    clean.sales.target_met);
+    diff("commissionRates.sales.double_target", prevSales.double_target != null ? Number(prevSales.double_target) : COMMISSION_RATES_DEFAULT.sales.double_target, clean.sales.double_target);
+    diff("commissionRates.team_leader",         prev.team_leader        != null ? Number(prev.team_leader)        : COMMISSION_RATES_DEFAULT.team_leader,         clean.team_leader);
+    diff("commissionRates.manager",             prev.manager            != null ? Number(prev.manager)            : COMMISSION_RATES_DEFAULT.manager,             clean.manager);
+    diff("commissionRates.director",            prev.director           != null ? Number(prev.director)           : COMMISSION_RATES_DEFAULT.director,            clean.director);
+
+    await AppSetting.findOneAndUpdate(
+      { key: "commissionRates" },
+      { $set: { value: clean }},
+      { upsert: true, new: true }
+    );
+    bustCommissionRatesCache();
+
+    if (changes.length) {
+      try {
+        var actorName = (req.user && req.user.name) ? req.user.name : "Admin";
+        var actorId   = (req.user && req.user.id)   ? req.user.id   : null;
+        var rows = changes.map(function(c){
+          return {
+            actorId: actorId, actorName: actorName,
+            field: c.field, oldValue: c.oldValue, newValue: c.newValue,
+            timestamp: new Date()
+          };
+        });
+        await SettingsAudit.insertMany(rows, { ordered: false });
+      } catch (auditErr) {
+        console.error("[commission-rates audit]", auditErr && auditErr.message);
+      }
+    }
+
+    try { broadcast("settings_updated", { key: "commissionRates", value: clean }); } catch(e) {}
+    res.json(clean);
+  } catch (e) {
+    res.status(500).json({ error: e && e.message ? e.message : "rates_put_failed" });
   }
 });
 
@@ -14055,6 +14668,44 @@ app.get("/api/commissions/stats", auth, salesAdminOnly, async function(req, res)
   }
 });
 
+// GET /api/commissions/cash-flow (Phase R-1) — must be declared BEFORE
+// /api/commissions/:id to avoid Express matching "cash-flow" as the :id.
+app.get("/api/commissions/cash-flow", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var all = await Commission.find({}).select("status cycles payouts snapshot").lean();
+    var totalReceived = 0, totalPaid = 0;
+    for (var i = 0; i < all.length; i++) {
+      var c = all[i];
+      if (c.status !== "cancelled" && Array.isArray(c.cycles)) {
+        for (var j = 0; j < c.cycles.length; j++) {
+          totalReceived += Number(c.cycles[j].receivedAmount || 0);
+        }
+      }
+      if (Array.isArray(c.payouts)) {
+        for (var k = 0; k < c.payouts.length; k++) totalPaid += Number(c.payouts[k].netPaid || 0);
+      }
+    }
+    var nets = await computeRecipientNetPositions();
+    var owedToRecipients = 0, outstandingDebt = 0;
+    Object.keys(nets).forEach(function(name){
+      var n = nets[name];
+      if (n.netPosition > 0) owedToRecipients += n.netPosition;
+      if (n.debt > 0) outstandingDebt += n.debt;
+    });
+    res.json({
+      totalReceived: totalReceived,
+      totalPaid:     totalPaid,
+      available:     totalReceived - totalPaid,
+      owedToRecipients: owedToRecipients,
+      outstandingDebt:  outstandingDebt,
+      byRecipient: nets
+    });
+  } catch(e) {
+    console.error("[GET /api/commissions/cash-flow]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "cash_flow_failed" });
+  }
+});
+
 app.get("/api/commissions/by-lead/:leadId", auth, salesAdminOnly, async function(req, res) {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.leadId)) return res.status(400).json({ error: "Invalid leadId" });
@@ -14104,77 +14755,15 @@ async function logCommissionActivity(actingUser, leadId, type, note) {
   }
 }
 
-// Helper: validate a recipient distribution payload. Returns null on success
-// or a string error message.
-function validateDistributionPayload(d) {
-  if (!d || typeof d !== "object") return null; // partial — skip
-  if (d.distributionType !== undefined &&
-      d.distributionType !== "percentage" && d.distributionType !== "fixed_egp") {
-    return "distributionType must be 'percentage' or 'fixed_egp'";
-  }
-  if (d.value !== undefined) {
-    var v = Number(d.value);
-    if (!isFinite(v) || v < 0) return "value must be a non-negative number";
-  }
-  return null;
-}
+// Phase R-1 removed validateDistributionPayload + computeCyclePayoutBreakdown.
+// Shares are now computed by computeAllRecipientShares (rate-bucket based);
+// payouts are tracked at the commission level (Commission.payouts[]) instead
+// of inline on each cycle.
 
-// Helper: compute payoutBreakdown for a cycle hitting "received" state.
-// Walks the snapshot recipient roles in order (sales, TL, mgr, dir + split
-// chain when present), applies % or fixed_egp rules per the Phase D spec,
-// then merges entries with the same userName so a person who appears in both
-// chains (split deal) shows up as a single summed line.
-function computeCyclePayoutBreakdown(snapshot, amount) {
-  if (!snapshot || !(amount > 0)) return [];
-  var ordered = [];
-  function push(r) {
-    if (r && Number(r.value || 0) > 0) ordered.push(r);
-  }
-  push(snapshot.salesAgent);
-  push(snapshot.teamLeader);
-  push(snapshot.manager);
-  push(snapshot.director);
-  if (snapshot.isSplitDeal && snapshot.splitChain) {
-    push(snapshot.splitChain.salesAgent2);
-    push(snapshot.splitChain.teamLeader2);
-    push(snapshot.splitChain.manager2);
-    push(snapshot.splitChain.director2);
-  }
-  var remaining = Number(amount);
-  var rows = [];
-  for (var i = 0; i < ordered.length; i++) {
-    var r = ordered[i];
-    var payout = 0;
-    if (r.distributionType === "fixed_egp") {
-      payout = Math.min(Number(r.value), Math.max(0, remaining));
-    } else {
-      payout = Number(amount) * (Number(r.value) / 100);
-    }
-    if (payout <= 0) continue;
-    remaining -= payout;
-    rows.push({
-      userName: r.userName,
-      userId: r.userId || null,
-      role: r.role,
-      amount: payout
-    });
-  }
-  // Merge by userName — same person appearing in both chains sums up.
-  var merged = {};
-  var order = [];
-  rows.forEach(function(r){
-    var key = r.userName || "(unknown)";
-    if (merged[key]) {
-      merged[key].amount += r.amount;
-    } else {
-      merged[key] = { userName: r.userName, userId: r.userId, role: r.role, amount: r.amount };
-      order.push(key);
-    }
-  });
-  return order.map(function(k){ return merged[k]; });
-}
-
-// PATCH snapshot — partial edit of snapshot fields + per-role distribution.
+// PATCH snapshot — partial edit of snapshot fields + per-role override.
+// Phase R-1: distribution editor replaced with per-role overrideAmount/overrideReason.
+// After any save, this commission alone gets recomputed (no sibling fan-out —
+// snapshot.dealTotal edits intentionally don't ripple).
 app.patch("/api/commissions/:id/snapshot", auth, salesAdminOnly, async function(req, res) {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
@@ -14212,44 +14801,140 @@ app.patch("/api/commissions/:id/snapshot", auth, salesAdminOnly, async function(
       changed.push(tf);
     }
 
+    // Phase R-1: per-role override (overrideAmount, overrideReason). Empty
+    // / null / 0 amount clears the override (recompute falls back to computedShare).
     var primaryRoles = ["salesAgent","teamLeader","manager","director"];
     var splitRoles   = ["salesAgent2","teamLeader2","manager2","director2"];
-    function applyDistribution(target, payload, label) {
+    function applyOverride(target, payload, label) {
       if (!payload || typeof payload !== "object") return null;
       if (!target) return "no recipient at " + label + " to update";
-      var err = validateDistributionPayload(payload);
-      if (err) return err;
-      if (payload.distributionType !== undefined) target.distributionType = payload.distributionType;
-      if (payload.value !== undefined) target.value = Number(payload.value);
-      changed.push(label);
+      if (payload.overrideAmount !== undefined) {
+        var raw = payload.overrideAmount;
+        if (raw === "" || raw === null) {
+          target.overrideAmount = null;
+          target.overrideReason = "";
+        } else {
+          var on = Number(raw);
+          if (!isFinite(on) || on < 0) return label + ".overrideAmount must be a non-negative number";
+          target.overrideAmount = on > 0 ? on : null;
+          if (target.overrideAmount == null) target.overrideReason = "";
+          else if (payload.overrideReason !== undefined) target.overrideReason = String(payload.overrideReason || "");
+        }
+        changed.push(label + ".override");
+      } else if (payload.overrideReason !== undefined) {
+        target.overrideReason = String(payload.overrideReason || "");
+        changed.push(label + ".overrideReason");
+      }
       return null;
     }
     for (var k = 0; k < primaryRoles.length; k++) {
       var pr = primaryRoles[k];
       if (body[pr]) {
-        var err = applyDistribution(c.snapshot[pr], body[pr], pr);
-        if (err) return res.status(400).json({ error: err });
+        var ovErr = applyOverride(c.snapshot[pr], body[pr], pr);
+        if (ovErr) return res.status(400).json({ error: ovErr });
       }
     }
     if (c.snapshot.splitChain) {
       for (var s = 0; s < splitRoles.length; s++) {
         var sr = splitRoles[s];
         if (body[sr]) {
-          var err2 = applyDistribution(c.snapshot.splitChain[sr], body[sr], "splitChain." + sr);
-          if (err2) return res.status(400).json({ error: err2 });
+          var ovErr2 = applyOverride(c.snapshot.splitChain[sr], body[sr], "splitChain." + sr);
+          if (ovErr2) return res.status(400).json({ error: ovErr2 });
         }
       }
     }
 
     if (changed.length === 0) return res.status(400).json({ error: "no editable fields supplied" });
 
+    // Phase R-1: any snapshot save → recompute THIS commission only (per
+    // locked rule: snapshot.dealTotal edits do not ripple to siblings).
+    try {
+      await computeAllRecipientShares(c);
+    } catch(rcErr) {
+      console.error("[snapshot PATCH recompute]", rcErr && rcErr.message);
+    }
     c.markModified("snapshot");
+    c.markModified("ratesSnapshot");
     await c.save();
     await logCommissionActivity(req.user, c.leadId, "commission_snapshot_edit", "[Commission] snapshot edit: " + changed.join(", "));
     res.json(c.toObject());
   } catch(e) {
     console.error("[PATCH /api/commissions/:id/snapshot]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "snapshot_edit_failed" });
+  }
+});
+
+// ===== PHASE R-1 RECOMPUTE ENDPOINTS =====
+// POST /api/commissions/:id/recompute — recompute this commission + fan out
+// to sibling commissions in the same quarter for both primary and split agents.
+app.post("/api/commissions/:id/recompute", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+
+    await computeAllRecipientShares(c);
+    c.markModified("snapshot");
+    c.markModified("ratesSnapshot");
+    await c.save();
+
+    var siblingReports = [];
+    var snap = c.snapshot || {};
+    var primId  = snap.salesAgent && snap.salesAgent.userId;
+    var splitId = snap.splitChain && snap.splitChain.salesAgent2 && snap.splitChain.salesAgent2.userId;
+    if (primId)  siblingReports = siblingReports.concat(await recomputeQuarterSiblings(primId,  snap.dealDate, { skipId: c._id }));
+    if (splitId) siblingReports = siblingReports.concat(await recomputeQuarterSiblings(splitId, snap.dealDate, { skipId: c._id }));
+
+    await logCommissionActivity(req.user, c.leadId, "commission_recompute",
+      "[Commission] recompute (siblings affected: " + siblingReports.length + ")");
+    res.json({ commission: c.toObject(), siblingsRecomputed: siblingReports.length });
+  } catch(e) {
+    console.error("[POST /api/commissions/:id/recompute]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "recompute_failed" });
+  }
+});
+
+// POST /api/commissions/recompute-all — bulk. Optional filters:
+//   ?agentId=<userId>  — only commissions where this user is primary or split sales
+//   ?qKey=YYYY-Qn      — only commissions whose dealDate falls in that quarter
+// Both can be combined. With no filters, recomputes EVERY non-cancelled commission
+// (potentially expensive — logs a warning).
+app.post("/api/commissions/recompute-all", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var agentId = req.query.agentId || null;
+    var qKey    = req.query.qKey    || null;
+    var query   = { status: { $ne: "cancelled" } };
+    if (agentId && mongoose.Types.ObjectId.isValid(agentId)) {
+      var aOid = new mongoose.Types.ObjectId(agentId);
+      query.$or = [
+        { "snapshot.salesAgent.userId": aOid },
+        { "snapshot.splitChain.salesAgent2.userId": aOid }
+      ];
+    }
+    if (qKey && /^\d{4}-Q[1-4]$/.test(qKey)) {
+      var parts = qKey.split("-Q");
+      var anchor = new Date(Date.UTC(Number(parts[0]), (Number(parts[1]) - 1) * 3, 15));
+      var b = qBoundsFromDate(anchor);
+      query["snapshot.dealDate"] = { $gte: b.qStartIso, $lte: b.qEndIso };
+    }
+    if (!agentId && !qKey) {
+      console.warn("[recompute-all] no filters — recomputing all non-cancelled commissions");
+    }
+
+    var docs = await Commission.find(query);
+    for (var i = 0; i < docs.length; i++) {
+      var c = docs[i];
+      await computeAllRecipientShares(c);
+      c.markModified("snapshot");
+      c.markModified("ratesSnapshot");
+      await c.save();
+    }
+    await logCommissionActivity(req.user, null, "commission_recompute_bulk",
+      "[Commission] recompute-all (agentId=" + (agentId || "*") + ", qKey=" + (qKey || "*") + ", count=" + docs.length + ")");
+    res.json({ count: docs.length, agentId: agentId || null, qKey: qKey || null });
+  } catch(e) {
+    console.error("[POST /api/commissions/recompute-all]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "recompute_all_failed" });
   }
 });
 
@@ -14270,8 +14955,7 @@ app.post("/api/commissions/:id/cycles", auth, salesAdminOnly, async function(req
       cycleNumber: maxN + 1,
       state: "pending_claim",
       expectedAmount: expected,
-      receivedAmount: 0,
-      payoutBreakdown: []
+      receivedAmount: 0
     });
     await c.save();
     var newCycle = c.cycles[c.cycles.length - 1];
@@ -14326,7 +15010,6 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage", auth, salesAdminOnly, as
       var amount = Number(body.amount);
       if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: "amount required (>0) when advancing to received" });
       cyc.receivedAmount = amount;
-      cyc.payoutBreakdown = computeCyclePayoutBreakdown(c.snapshot, amount);
       cyc.state = "received";
       notifPayload = {
         type: "commission_received_payout_ready",
@@ -14414,16 +15097,14 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage/:stageName", auth, salesAd
 
     cyc[stageName] = { date: date, notes: notes, byUser: byUser };
 
-    // received-stage edits also update receivedAmount + recompute payoutBreakdown
-    // from the CURRENT snapshot (so a distribution edit that happened after the
-    // initial mark-received is reflected). cycle.state stays put.
+    // received-stage edits update only receivedAmount; per-recipient payouts
+    // are managed separately via Commission.payouts[] (Phase R-1).
     if (stageName === "received") {
       var amount = body.amount !== undefined ? Number(body.amount) : Number(cyc.receivedAmount || 0);
       if (!isFinite(amount) || amount <= 0) {
         return res.status(400).json({ error: "amount must be > 0 for received stage" });
       }
       cyc.receivedAmount = amount;
-      cyc.payoutBreakdown = computeCyclePayoutBreakdown(c.snapshot, amount);
     }
 
     c.markModified("cycles");
@@ -14589,6 +15270,185 @@ app.patch("/api/commissions/:id/incentive/:index", auth, salesAdminOnly, async f
     res.status(500).json({ error: e && e.message ? e.message : "incentive_mark_failed" });
   }
 });
+
+// ===== PHASE R-1/R-2 — COMMISSION PAYOUTS =====
+// Helper: find every recipient slot on a commission matching a userName.
+// Returns array of {role, slotKey, owed} where owed = overrideAmount ?? computedShare.
+function recipientSlotsByUserName(c, userName) {
+  var slots = [];
+  function check(slotKey, r) {
+    if (!r || !r.userName) return;
+    if (r.userName !== userName) return;
+    var owed = (r.overrideAmount != null && Number(r.overrideAmount) > 0)
+      ? Number(r.overrideAmount) : Number(r.computedShare || 0);
+    slots.push({ slotKey: slotKey, role: r.role, owed: owed });
+  }
+  if (!c || !c.snapshot) return slots;
+  check("salesAgent", c.snapshot.salesAgent);
+  check("teamLeader", c.snapshot.teamLeader);
+  check("manager",    c.snapshot.manager);
+  check("director",   c.snapshot.director);
+  if (c.snapshot.isSplitDeal && c.snapshot.splitChain) {
+    check("salesAgent2", c.snapshot.splitChain.salesAgent2);
+    check("teamLeader2", c.snapshot.splitChain.teamLeader2);
+    check("manager2",    c.snapshot.splitChain.manager2);
+    check("director2",   c.snapshot.splitChain.director2);
+  }
+  return slots;
+}
+
+// POST /api/commissions/:id/payouts — record a payout. Phase R-2 validates
+// snapshot membership, this-commission remaining-share cap, and global cash
+// available (received - paid across all NON-CANCELLED commissions for received,
+// across ALL commissions for paid). appliedToDebt is auto-deducted from the
+// recipient's net position before persistence.
+app.post("/api/commissions/:id/payouts", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (c.status === "cancelled") return res.status(400).json({ error: "cannot record a payout on a cancelled commission" });
+
+    var body = req.body || {};
+    var userName = String(body.recipientUserName || "").trim();
+    var role     = String(body.recipientRole || "").trim();
+    var amount   = Number(body.amount);
+    var date     = String(body.date || new Date().toISOString().slice(0,10));
+    var notes    = String(body.notes || "");
+    if (!userName) return res.status(400).json({ error: "recipientUserName required" });
+    if (["sales","team_leader","manager","director"].indexOf(role) < 0) {
+      return res.status(400).json({ error: "recipientRole must be sales | team_leader | manager | director" });
+    }
+    if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: "amount must be > 0" });
+
+    // R-2.1: recipient must be in this commission's snapshot.
+    var slots = recipientSlotsByUserName(c, userName);
+    if (slots.length === 0) {
+      return res.status(400).json({ error: "Recipient '" + userName + "' is not in this commission's snapshot" });
+    }
+    var matchRole = slots.some(function(s){ return s.role === role; });
+    if (!matchRole) return res.status(400).json({ error: "Recipient '" + userName + "' is on this snapshot but not with role '" + role + "'" });
+
+    // R-2.2: paidSoFar(this commission, this recipient) + amount ≤ effectiveOwed.
+    var owedThisCommission = slots.reduce(function(s, x){ return s + x.owed; }, 0);
+    var paidThisCommission = (c.payouts || []).reduce(function(s, p){
+      if (p.recipientUserName === userName) return s + Number(p.netPaid || 0);
+      return s;
+    }, 0);
+    // The incoming amount is what admin wants to count toward owed. appliedToDebt
+    // does NOT count against this commission's owed (it's just settling prior overpayment).
+    // We need to figure out how much of "amount" will become netPaid vs appliedToDebt
+    // BEFORE we can validate against owed.
+    var nets = await computeRecipientNetPositions();
+    var n = nets[userName] || { owed: 0, paid: 0, netPosition: 0, debt: 0 };
+    var debt = Math.max(0, n.debt);
+    var appliedToDebt = Math.min(debt, amount);
+    var netPaid = amount - appliedToDebt;
+
+    if (paidThisCommission + netPaid > owedThisCommission + 0.5) {
+      return res.status(400).json({
+        error: "exceeds remaining share for this commission: owed " + Math.round(owedThisCommission).toLocaleString() +
+               " EGP, already paid " + Math.round(paidThisCommission).toLocaleString() +
+               " EGP, requested net " + Math.round(netPaid).toLocaleString() + " EGP"
+      });
+    }
+
+    // R-2.3: company cash on hand. totalReceived counts NON-CANCELLED commissions
+    // only (cancelled cash is conceptually returned to the developer). totalPaid
+    // counts every payout across the system.
+    var all = await Commission.find({}).select("status cycles payouts").lean();
+    var totalReceived = 0, totalPaid = 0;
+    for (var i = 0; i < all.length; i++) {
+      var cc = all[i];
+      if (cc.status !== "cancelled" && Array.isArray(cc.cycles)) {
+        for (var j = 0; j < cc.cycles.length; j++) {
+          totalReceived += Number(cc.cycles[j].receivedAmount || 0);
+        }
+      }
+      if (Array.isArray(cc.payouts)) {
+        for (var k = 0; k < cc.payouts.length; k++) totalPaid += Number(cc.payouts[k].netPaid || 0);
+      }
+    }
+    var available = totalReceived - totalPaid;
+    if (netPaid > available + 0.5) {
+      return res.status(400).json({
+        error: "exceeds company cash on hand: available " + Math.round(available).toLocaleString() +
+               " EGP, requested net " + Math.round(netPaid).toLocaleString() + " EGP"
+      });
+    }
+
+    // Resolve userId if a slot has one.
+    var resolvedUid = null;
+    var slotWithId = slots.find(function(s){ return s.role === role; });
+    if (slotWithId) {
+      // Re-walk the snapshot to fetch the userId for the named slot.
+      var snap = c.snapshot;
+      var keyOrder = ["salesAgent","teamLeader","manager","director"];
+      for (var ki = 0; ki < keyOrder.length; ki++) {
+        var rk = snap[keyOrder[ki]];
+        if (rk && rk.userName === userName && rk.role === role) { resolvedUid = rk.userId; break; }
+      }
+      if (!resolvedUid && snap.splitChain) {
+        var splitKeys = ["salesAgent2","teamLeader2","manager2","director2"];
+        for (var sk = 0; sk < splitKeys.length; sk++) {
+          var rk2 = snap.splitChain[splitKeys[sk]];
+          if (rk2 && rk2.userName === userName && rk2.role === role) { resolvedUid = rk2.userId; break; }
+        }
+      }
+    }
+
+    c.payouts.push({
+      recipientUserName: userName,
+      recipientUserId:   resolvedUid || null,
+      recipientRole:     role,
+      amount:            amount,
+      appliedToDebt:     appliedToDebt,
+      netPaid:           netPaid,
+      date:              date,
+      notes:             notes,
+      byUser:            (req.user && req.user.name) || ""
+    });
+    c.markModified("payouts");
+    await c.save();
+
+    await logCommissionActivity(req.user, c.leadId, "commission_payout_create",
+      "[Commission] payout " + Math.round(amount).toLocaleString() + " EGP to " + userName +
+      " (" + role + ") on " + date +
+      (appliedToDebt > 0 ? " — " + Math.round(appliedToDebt).toLocaleString() + " applied to debt, net " + Math.round(netPaid).toLocaleString() : ""));
+
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[POST /api/commissions/:id/payouts]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "payout_create_failed" });
+  }
+});
+
+// DELETE /api/commissions/:id/payouts/:payoutId — remove a payout. Debt
+// recalculates implicitly (net positions are computed on the fly).
+app.delete("/api/commissions/:id/payouts/:payoutId", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    var p = c.payouts && c.payouts.id ? c.payouts.id(req.params.payoutId) : null;
+    if (!p) return res.status(404).json({ error: "Payout not found" });
+    var snapshot = {
+      recipient: p.recipientUserName, amount: Number(p.amount || 0),
+      net: Number(p.netPaid || 0), debt: Number(p.appliedToDebt || 0)
+    };
+    p.deleteOne();
+    c.markModified("payouts");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_payout_delete",
+      "[Commission] payout to " + snapshot.recipient + " (" + Math.round(snapshot.amount).toLocaleString() + " EGP) deleted");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[DELETE /api/commissions/:id/payouts/:payoutId]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "payout_delete_failed" });
+  }
+});
+
+// (cash-flow GET moved above /api/commissions/:id to fix Express route ordering)
 
 // ===== COMMISSIONS — Phase D.3 cron sweeper =====
 // Daily-ish (every 6h) check for active commissions with imminent expected

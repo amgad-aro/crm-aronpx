@@ -8253,6 +8253,15 @@ var EOIPage = function(p) {
   var convertToDeal=async function(lead){
     if(p.cu.role!=="admin"&&p.cu.role!=="sales_admin"&&p.cu.role!=="sales") { alert("Only admin or sales can convert an EOI to a deal"); return; }
     if(lead.eoiStatus!=="Approved") { alert("EOI must be Approved before converting to a Done Deal"); return; }
+    // Phase R-1: warn when the deal's dealDate falls outside the current year.
+    // Commission attribution uses dealDate's quarter, so a cross-year close can
+    // retroactively change last year's commission shares.
+    var dealYr = null;
+    try { if (lead.dealDate) dealYr = new Date(lead.dealDate).getUTCFullYear(); } catch(e){}
+    var curYr = new Date().getUTCFullYear();
+    if (dealYr && isFinite(dealYr) && dealYr !== curYr) {
+      if (!window.confirm("⚠ This deal's date is in " + dealYr + " (not the current year " + curYr + "). Commission shares will be attributed to " + dealYr + " — confirm continue?")) return;
+    }
     if(!window.confirm("Convert this EOI to a Done Deal? The lead will move to the Deals page.")) return;
     setConvertingDeal(true);
     var leadId = gid(lead);
@@ -13753,6 +13762,32 @@ var SettingsPage = function(p) {
       .finally(function(){ if(!cancelled) setAuditLoaded(true); });
     return function(){ cancelled=true; };
   },[p.token]);
+  // Commissions tab (Phase R-1) — per-1000 commission rates, separate AppSetting.
+  // Not part of doSave's rotation bundle; uses its own PUT to /api/settings/commission-rates.
+  var [commRates,setCommRates] = useState({ sales:{base:5,target_met:6,double_target:7}, team_leader:2, manager:1, director:0.5 });
+  var [commRatesLoaded,setCommRatesLoaded] = useState(false);
+  var [commRatesSaving,setCommRatesSaving] = useState(false);
+  var [commRatesSavedFlag,setCommRatesSavedFlag] = useState(false);
+  useEffect(function(){
+    var cancelled = false;
+    apiFetch("/api/settings/commission-rates","GET",null,p.token)
+      .then(function(d){ if (!cancelled && d && typeof d === "object") setCommRates(d); })
+      .catch(function(){}) // endpoint may not exist yet — keep defaults
+      .finally(function(){ if (!cancelled) setCommRatesLoaded(true); });
+    return function(){ cancelled = true; };
+  },[p.token]);
+  var saveCommRates = async function(){
+    setCommRatesSaving(true);
+    try {
+      var d = await apiFetch("/api/settings/commission-rates","PUT", commRates, p.token);
+      if (d && typeof d === "object") setCommRates(d);
+      setCommRatesSavedFlag(true);
+      setTimeout(function(){ setCommRatesSavedFlag(false); }, 2500);
+    } catch(e){
+      alert("Save failed: " + (e && e.message ? e.message : "Unknown"));
+    }
+    setCommRatesSaving(false);
+  };
   // Hard cap on total rotation events per lead. 0 = no cap. Persisted on
   // the rotation AppSetting alongside rotationStopAfterDays / srHaltNI etc;
   // hydrated below and saved via the shared doSave PUT.
@@ -14093,6 +14128,7 @@ var SettingsPage = function(p) {
     {id:"team",        label:"Team & Roles"},
     p.cu&&p.cu.role!=="sales_admin"&&{id:"integrations",label:"Integrations"},
     {id:"rules",       label:"Business Rules"},
+    {id:"commissions", label:"Commissions"},
     {id:"campaigns",   label:"Campaigns"},
     {id:"audit",       label:"Audit Log"},
     isOwner && {id:"officeLocation", label:"Office Location"},
@@ -15117,6 +15153,80 @@ var SettingsPage = function(p) {
           </div>
         </div>;
       })()}
+      {activeTab==="commissions"&&(function(){
+        var rateInput = { width:80, padding:"6px 8px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:13, textAlign:"center" };
+        var setSales = function(key, val){
+          setCommRates(function(prev){
+            var nxt = Object.assign({}, prev);
+            nxt.sales = Object.assign({}, prev.sales || {}, (function(){ var o = {}; o[key] = Number(val) || 0; return o; })());
+            return nxt;
+          });
+        };
+        var setTop = function(key, val){
+          setCommRates(function(prev){
+            var nxt = Object.assign({}, prev);
+            nxt[key] = Number(val) || 0;
+            return nxt;
+          });
+        };
+        return <div style={{ padding:"6px 4px", fontSize:13 }}>
+          <div style={{ fontWeight:500, fontSize:14, color:"#1a1a1a", marginBottom:4 }}>Per-1000 commission rates</div>
+          <div style={{ color:"#666", fontSize:12, marginBottom:14 }}>
+            Rates are applied to <code>dealTotal × projectWeight × splitMultiplier</code>. Sales rate depends on the agent's quarter achievement bucket
+            (&lt;2× = base, 2-3× = target met, ≥3× = double target). Changes do not auto-cascade — click <b>Recompute</b> on the Commissions page after saving.
+          </div>
+
+          <div style={{ background:"#F7F7F5", borderRadius:10, padding:"14px 16px", marginBottom:14, border:"1px solid #E8ECF1" }}>
+            <div style={{ fontWeight:600, fontSize:12, color:"#1a1a1a", marginBottom:10, textTransform:"uppercase" }}>Sales agent (bucketed)</div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:14 }}>
+              <label style={{ display:"flex", flexDirection:"column", gap:4, fontSize:12, color:"#444" }}>
+                Base (&lt;2× target)
+                <input type="number" min={0} step="0.1" value={commRates.sales && commRates.sales.base != null ? commRates.sales.base : 5}
+                  onChange={function(e){ setSales("base", e.target.value); }} style={rateInput}/>
+              </label>
+              <label style={{ display:"flex", flexDirection:"column", gap:4, fontSize:12, color:"#444" }}>
+                Target met (2× — 3×)
+                <input type="number" min={0} step="0.1" value={commRates.sales && commRates.sales.target_met != null ? commRates.sales.target_met : 6}
+                  onChange={function(e){ setSales("target_met", e.target.value); }} style={rateInput}/>
+              </label>
+              <label style={{ display:"flex", flexDirection:"column", gap:4, fontSize:12, color:"#444" }}>
+                Double target (≥3×)
+                <input type="number" min={0} step="0.1" value={commRates.sales && commRates.sales.double_target != null ? commRates.sales.double_target : 7}
+                  onChange={function(e){ setSales("double_target", e.target.value); }} style={rateInput}/>
+              </label>
+            </div>
+          </div>
+
+          <div style={{ background:"#F7F7F5", borderRadius:10, padding:"14px 16px", marginBottom:14, border:"1px solid #E8ECF1" }}>
+            <div style={{ fontWeight:600, fontSize:12, color:"#1a1a1a", marginBottom:10, textTransform:"uppercase" }}>Chain (fixed)</div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:14 }}>
+              <label style={{ display:"flex", flexDirection:"column", gap:4, fontSize:12, color:"#444" }}>
+                Team leader
+                <input type="number" min={0} step="0.1" value={commRates.team_leader != null ? commRates.team_leader : 2}
+                  onChange={function(e){ setTop("team_leader", e.target.value); }} style={rateInput}/>
+              </label>
+              <label style={{ display:"flex", flexDirection:"column", gap:4, fontSize:12, color:"#444" }}>
+                Manager
+                <input type="number" min={0} step="0.1" value={commRates.manager != null ? commRates.manager : 1}
+                  onChange={function(e){ setTop("manager", e.target.value); }} style={rateInput}/>
+              </label>
+              <label style={{ display:"flex", flexDirection:"column", gap:4, fontSize:12, color:"#444" }}>
+                Director
+                <input type="number" min={0} step="0.1" value={commRates.director != null ? commRates.director : 0.5}
+                  onChange={function(e){ setTop("director", e.target.value); }} style={rateInput}/>
+              </label>
+            </div>
+          </div>
+
+          <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+            <button type="button" onClick={saveCommRates} disabled={commRatesSaving || !commRatesLoaded}
+              style={{ fontSize:12, padding:"6px 14px", border:"0.5px solid rgba(24,95,165,0.3)", background:"#E6F1FB", color:"#185FA5", borderRadius:8, cursor: commRatesSaving ? "wait" : "pointer", fontWeight:500 }}>
+              {commRatesSaving ? "Saving…" : "Save rates"}
+            </button>
+            {commRatesSavedFlag && <span style={{ fontSize:12, color:"#0F6E56" }}>✓ Saved (admin must click Recompute to apply)</span>}
+          </div>
+        </div>;
+      })()}
       {activeTab==="campaigns"&&(function(){
         var fmtMoney = function(n){ try { return Number(n||0).toLocaleString("en-US"); } catch(_){ return String(n); }};
         var fmtDate  = function(iso){ if (!iso) return "—"; try { return new Date(iso).toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"numeric"}); } catch(_){ return String(iso); }};
@@ -15848,8 +15958,9 @@ function parseMoney(formatted) {
   return Number(s);
 }
 
-// Snapshot edit — partial PATCH of {developer, unitDetails, dealTotal,
-// expectedTotal, expectedCollectionDate} plus per-role distribution.
+// Snapshot edit (Phase R-1) — partial PATCH of {developer, unitDetails, dealTotal,
+// expectedTotal, expectedCollectionDate} plus per-recipient overrideAmount/
+// overrideReason. Computed shares are read-only here (server recomputes on save).
 var CommissionSnapshotEditModal = function(p) {
   var c = p.target;
   var snap = (c && c.snapshot) || {};
@@ -15859,10 +15970,10 @@ var CommissionSnapshotEditModal = function(p) {
   var [dealTotal, setDealTotal]               = useState(Number(snap.dealTotal || 0) > 0 ? Number(snap.dealTotal).toLocaleString() : "");
   var [expectedTotal, setExpectedTotal]       = useState(c && Number(c.expectedTotal || 0) > 0 ? Number(c.expectedTotal).toLocaleString() : "");
   var [expectedDate, setExpectedDate]         = useState((c && c.expectedCollectionDate) || "");
-  // Distribution edits — one entry per role recipient that exists on the snapshot.
-  // For fixed_egp rows we store the formatted money string; for percentage we
-  // keep the raw numeric string (no comma formatting since % values are small).
-  var initDist = function(){
+
+  // Override edits — one entry per recipient slot. value is the comma-formatted
+  // amount string ("" = clear override). reason is free text.
+  var initOverrides = function(){
     var out = {};
     var roles = [
       ["salesAgent", snap.salesAgent],
@@ -15877,19 +15988,22 @@ var CommissionSnapshotEditModal = function(p) {
       roles.push(["director2",   snap.splitChain.director2]);
     }
     roles.forEach(function(pair){
-      if (pair[1]) {
-        var rawV = pair[1].value != null ? pair[1].value : 0;
-        var type = pair[1].distributionType || "percentage";
-        out[pair[0]] = {
-          userName: pair[1].userName,
-          distributionType: type,
-          value: type === "fixed_egp" && Number(rawV) > 0 ? Number(rawV).toLocaleString() : String(rawV)
-        };
-      }
+      if (!pair[1]) return;
+      var ov = pair[1].overrideAmount;
+      out[pair[0]] = {
+        userName: pair[1].userName,
+        role: pair[1].role,
+        computedShare: Number(pair[1].computedShare || 0),
+        rate: Number(pair[1].rate || 0),
+        rateBucket: pair[1].rateBucket || "",
+        isHalfWeight: !!pair[1].isHalfWeight,
+        overrideAmount: ov != null && Number(ov) > 0 ? Number(ov).toLocaleString() : "",
+        overrideReason: pair[1].overrideReason || ""
+      };
     });
     return out;
   };
-  var [dist, setDist] = useState(initDist);
+  var [overrides, setOverrides] = useState(initOverrides);
 
   var save = async function(){
     var body = {};
@@ -15900,12 +16014,22 @@ var CommissionSnapshotEditModal = function(p) {
     var parsedExp = parseMoney(expectedTotal);
     if (isFinite(parsedExp) && parsedExp !== Number(c.expectedTotal || 0)) body.expectedTotal = parsedExp;
     if (expectedDate !== (c.expectedCollectionDate || "")) body.expectedCollectionDate = expectedDate;
-    Object.keys(dist).forEach(function(k){
-      var d = dist[k];
-      // For fixed_egp the value is comma-formatted; strip commas before send.
-      var v = d.distributionType === "fixed_egp" ? parseMoney(d.value) : Number(d.value || 0);
-      if (!isFinite(v)) v = 0;
-      body[k] = { distributionType: d.distributionType, value: v };
+    Object.keys(overrides).forEach(function(k){
+      var o = overrides[k];
+      // Diff against original snapshot — only send changed overrides.
+      var origSlot = (k.indexOf("2") > -1 && snap.splitChain) ? snap.splitChain[k] : snap[k];
+      var origAmt = origSlot && origSlot.overrideAmount != null ? Number(origSlot.overrideAmount) : null;
+      var origReason = (origSlot && origSlot.overrideReason) || "";
+      var parsedOv = o.overrideAmount === "" ? null : parseMoney(o.overrideAmount);
+      var newAmt = (parsedOv != null && isFinite(parsedOv) && parsedOv > 0) ? parsedOv : null;
+      var amtChanged = (origAmt || 0) !== (newAmt || 0);
+      var reasonChanged = origReason !== (o.overrideReason || "");
+      if (amtChanged || reasonChanged) {
+        body[k] = {
+          overrideAmount: newAmt == null ? "" : newAmt,
+          overrideReason: o.overrideReason || ""
+        };
+      }
     });
     try {
       await p.writeCommission("PATCH", "/api/commissions/" + c._id + "/snapshot", body, "Snapshot saved");
@@ -15913,17 +16037,17 @@ var CommissionSnapshotEditModal = function(p) {
     } catch(e){}
   };
 
-  // Live computed payout preview using the form's current expectedTotal.
-  var expectedNum = parseMoney(expectedTotal) || 0;
-  var distRows = Object.keys(dist).map(function(k){
-    var d = dist[k];
-    var v = d.distributionType === "fixed_egp" ? (parseMoney(d.value) || 0) : Number(d.value || 0);
-    if (!isFinite(v)) v = 0;
-    var computed = d.distributionType === "fixed_egp" ? v : (expectedNum * v / 100);
-    return { key: k, name: d.userName, type: d.distributionType, value: d.value, computed: computed };
+  var rows = Object.keys(overrides).map(function(k){
+    var o = overrides[k];
+    var rateStr = o.rate > 0 ? o.rate + "/1000" : "—";
+    var bucketLabel = o.rateBucket === "double_target" ? "double target"
+                    : o.rateBucket === "target_met"    ? "target met"
+                    : o.rateBucket === "base"          ? "base"
+                    : o.rateBucket || "—";
+    return Object.assign({ key: k, rateStr: rateStr, bucketLabel: bucketLabel }, o);
   });
 
-  return <Modal show={true} onClose={p.onClose} title="Edit Commission Snapshot" w={620}>
+  return <Modal show={true} onClose={p.onClose} title="Edit Commission Snapshot" w={680}>
     <FormRow label="Developer"><input type="text" value={developer} onChange={function(e){ setDeveloper(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
     <FormRow label="Unit details"><textarea rows={2} value={unitDetails} onChange={function(e){ setUnitDetails(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/></FormRow>
     <div style={{ display:"flex", gap:10 }}>
@@ -15931,30 +16055,35 @@ var CommissionSnapshotEditModal = function(p) {
       <FormRow label="Expected commission (EGP)"><MoneyInput value={expectedTotal} onChange={setExpectedTotal}/></FormRow>
       <FormRow label="Expected collection"><input type="date" value={expectedDate} onChange={function(e){ setExpectedDate(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
     </div>
-    <div style={{ marginTop:6, marginBottom:8, fontSize:12, fontWeight:700, color:"#475569" }}>Distribution</div>
+    <div style={{ marginTop:6, marginBottom:8, fontSize:12, fontWeight:700, color:"#475569" }}>Recipient shares (computed) and overrides</div>
+    <div style={{ fontSize:10, color:C.textLight, marginBottom:6, lineHeight:1.4 }}>
+      Computed share + rate are read-only and recompute on save. Override amount lets admin pin a custom EGP value; clear it to revert to computed.
+    </div>
     <div style={{ background:"#F8FAFC", borderRadius:8, padding:"8px 10px", marginBottom:12 }}>
-      {distRows.length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>No recipients on snapshot.</div>}
-      {distRows.map(function(r){
+      {rows.length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>No recipients on snapshot.</div>}
+      {rows.map(function(r){
         return <div key={r.key} style={{ display:"flex", alignItems:"center", gap:8, padding:"5px 0", borderBottom:"1px solid #E2E8F0" }}>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ fontSize:12, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.key}</div>
-            <div style={{ fontSize:10, color:C.textLight }}>{r.name}</div>
+            <div style={{ fontSize:10, color:C.textLight }}>{r.userName} ({r.role})</div>
           </div>
-          <select value={r.type} onChange={function(e){ var v = e.target.value; setDist(function(prev){ var n = Object.assign({}, prev); n[r.key] = Object.assign({}, prev[r.key], { distributionType: v }); return n; }); }} style={{ padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}>
-            <option value="percentage">%</option>
-            <option value="fixed_egp">EGP</option>
-          </select>
-          {r.type === "fixed_egp"
-            ? <input type="text" inputMode="numeric" value={r.value || ""}
-                onChange={function(e){
-                  var raw = e.target.value.replace(/,/g, "").replace(/[^0-9]/g, "");
-                  var fmt = raw === "" ? "" : Number(raw).toLocaleString();
-                  setDist(function(prev){ var n = Object.assign({}, prev); n[r.key] = Object.assign({}, prev[r.key], { value: fmt }); return n; });
-                }}
-                style={{ width:110, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
-            : <input type="number" min={0} value={r.value} onChange={function(e){ var v = e.target.value; setDist(function(prev){ var n = Object.assign({}, prev); n[r.key] = Object.assign({}, prev[r.key], { value: v }); return n; }); }} style={{ width:80, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
-          }
-          <div style={{ fontSize:11, color:C.success, fontWeight:600, minWidth:90, textAlign:"right" }}>= {Math.round(r.computed).toLocaleString()} EGP</div>
+          <div style={{ minWidth:130, textAlign:"right" }}>
+            <div style={{ fontSize:11, color:C.success, fontWeight:600 }}>= {Math.round(r.computedShare).toLocaleString()} EGP</div>
+            <div style={{ fontSize:9, color:C.textLight }}>{r.rateStr} · {r.bucketLabel}{r.isHalfWeight ? " · ½×" : ""}</div>
+          </div>
+          <input type="text" inputMode="numeric" placeholder="override EGP" value={r.overrideAmount || ""}
+            onChange={function(e){
+              var raw = e.target.value.replace(/,/g, "").replace(/[^0-9]/g, "");
+              var fmt = raw === "" ? "" : Number(raw).toLocaleString();
+              setOverrides(function(prev){ var n = Object.assign({}, prev); n[r.key] = Object.assign({}, prev[r.key], { overrideAmount: fmt }); return n; });
+            }}
+            style={{ width:110, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
+          <input type="text" placeholder="reason" value={r.overrideReason || ""}
+            onChange={function(e){
+              var v = e.target.value;
+              setOverrides(function(prev){ var n = Object.assign({}, prev); n[r.key] = Object.assign({}, prev[r.key], { overrideReason: v }); return n; });
+            }}
+            style={{ width:130, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
         </div>;
       })}
     </div>
@@ -15996,34 +16125,9 @@ var CommissionCycleStageModal = function(p) {
   };
   var titleLabel = mode === "edit" ? STAGE_LABELS_EDIT[stageKey] : STAGE_LABELS_LOCAL[stageKey];
 
-  // Live preview of the payoutBreakdown using the same logic the server uses.
-  // Shown for both advance-to-received and edit-of-received.
-  var previewRows = [];
-  if (stageKey === "received" && Number(parseMoney(amount) || 0) > 0) {
-    var ordered = [];
-    function push(r){ if (r && Number(r.value || 0) > 0) ordered.push(r); }
-    push(snap.salesAgent); push(snap.teamLeader); push(snap.manager); push(snap.director);
-    if (snap.isSplitDeal && snap.splitChain) {
-      push(snap.splitChain.salesAgent2); push(snap.splitChain.teamLeader2);
-      push(snap.splitChain.manager2); push(snap.splitChain.director2);
-    }
-    var amt = parseMoney(amount);
-    var remaining = amt;
-    var raw = ordered.map(function(r){
-      var payout = 0;
-      if (r.distributionType === "fixed_egp") payout = Math.min(Number(r.value), Math.max(0, remaining));
-      else payout = amt * (Number(r.value) / 100);
-      if (payout > 0) remaining -= payout;
-      return { userName: r.userName, role: r.role, amount: payout };
-    }).filter(function(r){ return r.amount > 0; });
-    var merged = {}, order = [];
-    raw.forEach(function(r){
-      if (merged[r.userName]) merged[r.userName].amount += r.amount;
-      else { merged[r.userName] = { userName: r.userName, role: r.role, amount: r.amount }; order.push(r.userName); }
-    });
-    previewRows = order.map(function(k){ return merged[k]; });
-  }
-
+  // Phase R-1: per-recipient payouts moved off the cycle. The received-stage
+  // modal now collects amount only (cash flow from the developer); recipient
+  // payouts are recorded separately via the commission-level Payouts UI.
   var save = async function(){
     var body = { date: date, notes: notes };
     if (mode === "advance") body.stage = nextStage;
@@ -16048,15 +16152,6 @@ var CommissionCycleStageModal = function(p) {
     {stageKey === "received" && <FormRow label={mode === "edit" ? "Amount received (EGP)" : "Amount received (EGP) — كم استلمنا في هذه الدفعة؟"}>
       <MoneyInput value={amount} onChange={setAmount} autoFocus={mode !== "edit"}/>
     </FormRow>}
-    {stageKey === "received" && previewRows.length > 0 && <div style={{ background:"#F0FDF4", borderRadius:8, padding:"8px 10px", marginBottom:12 }}>
-      <div style={{ fontSize:11, fontWeight:700, color:"#15803D", marginBottom:6, textTransform:"uppercase" }}>Payout preview{mode === "edit" ? " (will replace current breakdown)" : ""}</div>
-      {previewRows.map(function(r, i){
-        return <div key={i} style={{ display:"flex", justifyContent:"space-between", fontSize:12, padding:"3px 0" }}>
-          <span style={{ color:C.text }}>{r.userName} <span style={{ color:C.textLight }}>({r.role})</span></span>
-          <span style={{ fontWeight:600, color:"#15803D" }}>{Math.round(r.amount).toLocaleString()} EGP</span>
-        </div>;
-      })}
-    </div>}
     <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
       <button onClick={p.onClose} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
       <button onClick={save} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{p.savingFlag ? "Saving…" : (mode === "edit" ? "Save" : "Advance")}</button>
@@ -16101,6 +16196,98 @@ var CommissionCycleAddModal = function(p) {
     <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
       <button onClick={p.onClose} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
       <button onClick={save} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{p.savingFlag ? "Saving…" : (mode === "edit" ? "Save" : "Add")}</button>
+    </div>
+  </Modal>;
+};
+
+// Phase R-1 — record a payout to a team recipient. The system auto-deducts
+// any outstanding debt from the gross amount; netPaid = amount - appliedToDebt
+// is the actual cash that flows to the recipient.
+var CommissionPayoutAddModal = function(p) {
+  var c = p.target && p.target.commission;
+  var snap = (c && c.snapshot) || {};
+
+  // Build the recipient dropdown from snapshot slots, including split chain.
+  var recipientOptions = [];
+  function add(slotKey, r) {
+    if (!r || !r.userName) return;
+    var owed = (r.overrideAmount != null && Number(r.overrideAmount) > 0)
+      ? Number(r.overrideAmount) : Number(r.computedShare || 0);
+    recipientOptions.push({
+      slotKey: slotKey, userName: r.userName, role: r.role,
+      owed: owed
+    });
+  }
+  add("salesAgent", snap.salesAgent);
+  add("teamLeader", snap.teamLeader);
+  add("manager",    snap.manager);
+  add("director",   snap.director);
+  if (snap.isSplitDeal && snap.splitChain) {
+    add("salesAgent2", snap.splitChain.salesAgent2);
+    add("teamLeader2", snap.splitChain.teamLeader2);
+    add("manager2",    snap.splitChain.manager2);
+    add("director2",   snap.splitChain.director2);
+  }
+
+  var [pickIdx, setPickIdx] = useState(0);
+  var [amount, setAmount]   = useState("");
+  var [date, setDate]       = useState(new Date().toISOString().slice(0,10));
+  var [notes, setNotes]     = useState("");
+
+  var sel = recipientOptions[pickIdx] || null;
+  // Already paid (net) to this recipient on THIS commission.
+  var paidThis = (c.payouts || []).reduce(function(s, po){
+    return s + (sel && po.recipientUserName === sel.userName ? Number(po.netPaid || 0) : 0);
+  }, 0);
+  var remaining = sel ? Math.max(0, sel.owed - paidThis) : 0;
+  // Predicted debt deduction from cashFlow.byRecipient.
+  var byRecipient = (p.cashFlow && p.cashFlow.byRecipient) || {};
+  var rec = sel ? byRecipient[sel.userName] : null;
+  var predictedDebt = rec ? Math.max(0, Number(rec.debt || 0)) : 0;
+  var amtNum = parseMoney(amount) || 0;
+  var predictedAppliedToDebt = Math.min(predictedDebt, amtNum);
+  var predictedNetPaid = Math.max(0, amtNum - predictedAppliedToDebt);
+
+  var save = async function(){
+    if (!sel) return;
+    var n = parseMoney(amount);
+    if (!isFinite(n) || n <= 0) { alert("Amount must be > 0"); return; }
+    try {
+      await p.writeCommission("POST", "/api/commissions/" + c._id + "/payouts", {
+        recipientUserName: sel.userName, recipientRole: sel.role,
+        amount: n, date: date, notes: notes
+      }, "Payout recorded");
+      p.onClose();
+    } catch(e){}
+  };
+
+  return <Modal show={true} onClose={p.onClose} title="Record Payout" w={520}>
+    {recipientOptions.length === 0 && <div style={{ padding:"8px 10px", background:"#FEF3C7", color:"#92400E", borderRadius:8, marginBottom:10, fontSize:12 }}>
+      No recipients on this commission's snapshot.
+    </div>}
+    {recipientOptions.length > 0 && <div>
+      <FormRow label="Recipient">
+        <select value={pickIdx} onChange={function(e){ setPickIdx(Number(e.target.value)); }}
+          style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}>
+          {recipientOptions.map(function(o, i){
+            return <option key={i} value={i}>{o.userName} ({o.role}) — owed {Math.round(o.owed).toLocaleString()} EGP</option>;
+          })}
+        </select>
+      </FormRow>
+      <div style={{ fontSize:11, color:C.textLight, marginBottom:8 }}>
+        Remaining for this recipient on this commission: <b style={{ color:C.text }}>{Math.round(remaining).toLocaleString()} EGP</b>.
+        {predictedDebt > 0 && <span style={{ color:"#B91C1C" }}> Outstanding debt globally: {Math.round(predictedDebt).toLocaleString()} EGP.</span>}
+      </div>
+      <FormRow label="Gross amount (EGP)"><MoneyInput value={amount} onChange={setAmount} autoFocus={true}/></FormRow>
+      {amtNum > 0 && predictedDebt > 0 && <div style={{ background:"#FEF3C7", borderRadius:8, padding:"6px 10px", marginBottom:10, fontSize:11, color:"#92400E" }}>
+        Debt deduction preview: {Math.round(predictedAppliedToDebt).toLocaleString()} EGP applied to debt, net cash to recipient = <b>{Math.round(predictedNetPaid).toLocaleString()} EGP</b>.
+      </div>}
+      <FormRow label="Date"><input type="date" value={date} onChange={function(e){ setDate(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
+      <FormRow label="Notes (optional)"><textarea rows={2} value={notes} onChange={function(e){ setNotes(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/></FormRow>
+    </div>}
+    <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:6 }}>
+      <button onClick={p.onClose} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
+      <button onClick={save} disabled={p.savingFlag || recipientOptions.length === 0} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{p.savingFlag ? "Saving…" : "Record"}</button>
     </div>
   </Modal>;
 };
@@ -16225,6 +16412,8 @@ var CommissionsPage = function(p) {
   var [editingCycleStage, setEditingCycleStage] = useState(null); // {commission, cycle, nextStage}
   var [addingCycleFor, setAddingCycleFor] = useState(null);     // commission obj
   var [editingIncentive, setEditingIncentive] = useState(null); // commission obj
+  var [addingPayoutFor, setAddingPayoutFor] = useState(null);   // {commission}
+  var [cashFlow, setCashFlow] = useState(null);                 // {totalReceived, totalPaid, ..., byRecipient}
   var [savingFlag, setSavingFlag] = useState(false);
   var [toast, setToast] = useState(null);                       // {kind, msg}
 
@@ -16242,6 +16431,9 @@ var CommissionsPage = function(p) {
     apiFetch("/api/commissions/stats", "GET", null, p.token)
       .then(function(d){ if(!cancelled) setStats(d || {}); })
       .catch(function(){ if(!cancelled) setStats({}); });
+    apiFetch("/api/commissions/cash-flow", "GET", null, p.token)
+      .then(function(d){ if(!cancelled) setCashFlow(d || {}); })
+      .catch(function(){ if(!cancelled) setCashFlow({}); });
     return function(){ cancelled = true; };
   }, [statusFilter, search, agentFilter, p.token, reloadTick]);
 
@@ -16349,17 +16541,43 @@ var CommissionsPage = function(p) {
     paid_to_team: "دفع الفريق (Paid)"
   };
 
-  var renderRecipient = function(label, r){
+  // Phase R-1 recipient row — shows computedShare, rate badge, bucket badge,
+  // half-weight badge, override (when set), and the recipient's paid/owed
+  // totals across this commission. payoutsByName + netPositions are computed
+  // once per render from the commission doc + the cash-flow nets prop.
+  var renderRecipient = function(label, r, ctx){
     if (!r) return null;
     var inactive = r.userActiveAtClose === false;
+    var hasOverride = r.overrideAmount != null && Number(r.overrideAmount) > 0;
+    var effOwed = hasOverride ? Number(r.overrideAmount) : Number(r.computedShare || 0);
+    var bucketLabel = r.rateBucket === "double_target" ? "double target"
+                    : r.rateBucket === "target_met"    ? "target met"
+                    : r.rateBucket === "base"          ? "base"
+                    : r.rateBucket === "fixed"         ? "fixed"
+                    : "";
+    var bucketBg = r.rateBucket === "double_target" ? "#DCFCE7"
+                 : r.rateBucket === "target_met"    ? "#DBEAFE"
+                 : "#F1F5F9";
+    var bucketFg = r.rateBucket === "double_target" ? "#15803D"
+                 : r.rateBucket === "target_met"    ? "#1D4ED8"
+                 : "#64748B";
+    var paidThisCommission = (ctx && ctx.paidByName && ctx.paidByName[r.userName]) || 0;
+    var netPos = ctx && ctx.netByName && ctx.netByName[r.userName];
+    var debtGlobal = netPos ? Number(netPos.debt || 0) : 0;
     return <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 10px", background:"#F8FAFC", borderRadius:6, marginBottom:4 }}>
-      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
         <span style={{ fontSize:11, fontWeight:700, color:C.textLight, minWidth:80, textTransform:"capitalize" }}>{label}</span>
         <span style={{ fontSize:12, fontWeight:600, color:C.text }}>{r.userName || "(unknown)"}</span>
         {inactive && <span title="User deactivated" style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:"#FEE2E2", color:"#B91C1C" }}>⊘ inactive</span>}
+        {r.isHalfWeight && <span title="Project weight < 1" style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:"#FEF3C7", color:"#92400E" }}>½×</span>}
+        {Number(r.rate) > 0 && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:"#EEF2FF", color:"#3730A3" }}>{r.rate}/1000</span>}
+        {bucketLabel && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:bucketBg, color:bucketFg }}>{bucketLabel}</span>}
+        {hasOverride && <span title={"Override: " + (r.overrideReason || "no reason")} style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:"#FDF4FF", color:"#86198F" }}>override</span>}
+        {debtGlobal > 0 && <span title="This recipient has outstanding debt across commissions" style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:"#FEE2E2", color:"#B91C1C" }}>debt {Math.round(debtGlobal).toLocaleString()}</span>}
       </div>
-      <div style={{ fontSize:11, color:C.textLight }}>
-        {r.distributionType === "fixed_egp" ? fmtMoney(r.value) : (Number(r.value || 0) + "%")}
+      <div style={{ textAlign:"right", minWidth:140 }}>
+        <div style={{ fontSize:12, fontWeight:600, color:C.success }}>{fmtMoney(effOwed)}{hasOverride && <span style={{ fontSize:10, color:C.textLight, marginLeft:4, textDecoration:"line-through" }}>{fmtMoney(r.computedShare)}</span>}</div>
+        <div style={{ fontSize:10, color:C.textLight }}>Paid {fmtMoney(paidThisCommission)} / Owed {fmtMoney(effOwed)}</div>
       </div>
     </div>;
   };
@@ -16427,15 +16645,35 @@ var CommissionsPage = function(p) {
         {renderStageDot(c, cycle, "received")}
         {renderStageDot(c, cycle, "paid_to_team")}
       </div>}
-      {isActiveCycle && Array.isArray(cycle.payoutBreakdown) && cycle.payoutBreakdown.length > 0 && <div style={{ marginTop:10, paddingTop:8, borderTop:"1px dashed #E2E8F0" }}>
-        <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>Payout breakdown</div>
-        {cycle.payoutBreakdown.map(function(b, i){
-          return <div key={i} style={{ display:"flex", justifyContent:"space-between", fontSize:12, padding:"3px 0" }}>
-            <span style={{ color:C.text }}>{b.userName} <span style={{ color:C.textLight }}>({b.role})</span></span>
-            <span style={{ fontWeight:600, color:C.success }}>{fmtMoney(b.amount)}</span>
-          </div>;
-        })}
-      </div>}
+    </div>;
+  };
+
+  // Phase R-1: per-commission payouts list. Replaces the per-cycle payoutBreakdown
+  // — payouts are now first-class records on the commission, tracking cash flow
+  // OUT (to recipients) separately from cash flow IN (cycle.receivedAmount).
+  var renderPayouts = function(c){
+    var payouts = (c && Array.isArray(c.payouts)) ? c.payouts : [];
+    var isCancelled = c.status === "cancelled";
+    return <div style={{ marginTop:8 }}>
+      {payouts.length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 0" }}>No payouts recorded.</div>}
+      {payouts.map(function(po){
+        return <div key={String(po._id)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 10px", background:"#F8FAFC", borderRadius:6, marginBottom:4 }}>
+          <div style={{ minWidth:0, flex:1 }}>
+            <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{po.recipientUserName} <span style={{ fontSize:10, color:C.textLight, textTransform:"capitalize" }}>({po.recipientRole})</span></div>
+            <div style={{ fontSize:10, color:C.textLight }}>{fmtDate(po.date)}{po.notes ? " · " + po.notes : ""}{Number(po.appliedToDebt || 0) > 0 ? " · " + Math.round(po.appliedToDebt).toLocaleString() + " applied to debt" : ""}</div>
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ textAlign:"right" }}>
+              <div style={{ fontSize:12, fontWeight:600, color:C.success }}>{fmtMoney(po.netPaid)}</div>
+              {Number(po.amount) !== Number(po.netPaid) && <div style={{ fontSize:9, color:C.textLight }}>gross {fmtMoney(po.amount)}</div>}
+            </div>
+            {!isCancelled && <button onClick={async function(){
+              if (!window.confirm("Delete this payout? Debt accounting will recompute.")) return;
+              try { await writeCommission("DELETE", "/api/commissions/" + c._id + "/payouts/" + po._id, null, "Payout deleted"); } catch(_e){}
+            }} disabled={savingFlag} title="Delete payout" style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:4, padding:"2px 6px", fontSize:10, color:"#B91C1C", cursor: savingFlag ? "wait" : "pointer" }}>✕</button>}
+          </div>
+        </div>;
+      })}
     </div>;
   };
 
@@ -16496,6 +16734,15 @@ var CommissionsPage = function(p) {
     var totalReceived = (c.cycles || []).reduce(function(s, cy){ return s + Number(cy.receivedAmount || 0); }, 0);
     var imminent = isImminentMissing(c);
 
+    // Phase R-1 ctx: paid-by-recipient-on-this-commission + global net positions
+    var paidByName = (c.payouts || []).reduce(function(acc, po){
+      var k = po.recipientUserName || "(unknown)";
+      acc[k] = (acc[k] || 0) + Number(po.netPaid || 0);
+      return acc;
+    }, {});
+    var netByName = (cashFlow && cashFlow.byRecipient) || {};
+    var ctx = { paidByName: paidByName, netByName: netByName };
+
     return <div id={"commission-card-" + String(c._id)} key={String(c._id)} style={{
       background:"#fff", borderRadius:14, border:"1px solid " + (imminent ? "#FCA5A5" : "#E8ECF1"),
       boxShadow:"0 1px 4px rgba(0,0,0,0.07)", padding:"14px 16px", marginBottom:12,
@@ -16554,17 +16801,34 @@ var CommissionsPage = function(p) {
 
       {/* Team chain (always shown) */}
       <div style={{ marginBottom:10 }}>
-        {renderRecipient("Sales", snap.salesAgent)}
-        {renderRecipient("Team Lead", snap.teamLeader)}
-        {renderRecipient("Manager", snap.manager)}
-        {renderRecipient("Director", snap.director)}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase" }}>Recipients</div>
+          {!isCancelled && <button onClick={async function(){
+            try { await writeCommission("POST", "/api/commissions/" + c._id + "/recompute", {}, "Recomputed"); } catch(_e){}
+          }} disabled={savingFlag} title="Recompute computed shares from current rates + Q achievement (skips overrides)"
+            style={{ padding:"3px 10px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor: savingFlag ? "wait" : "pointer", fontSize:11, color:C.textLight }}>↻ Recompute</button>}
+        </div>
+        {renderRecipient("Sales", snap.salesAgent, ctx)}
+        {renderRecipient("Team Lead", snap.teamLeader, ctx)}
+        {renderRecipient("Manager", snap.manager, ctx)}
+        {renderRecipient("Director", snap.director, ctx)}
         {snap.isSplitDeal && snap.splitChain && (snap.splitChain.salesAgent2 || snap.splitChain.teamLeader2 || snap.splitChain.manager2 || snap.splitChain.director2) && <div style={{ marginTop:6, paddingTop:6, borderTop:"1px dashed #E2E8F0" }}>
           <div style={{ fontSize:10, fontWeight:700, color:"#7C3AED", marginBottom:4, textTransform:"uppercase" }}>Split chain</div>
-          {renderRecipient("Sales 2", snap.splitChain.salesAgent2)}
-          {renderRecipient("Team Lead 2", snap.splitChain.teamLeader2)}
-          {renderRecipient("Manager 2", snap.splitChain.manager2)}
-          {renderRecipient("Director 2", snap.splitChain.director2)}
+          {renderRecipient("Sales 2", snap.splitChain.salesAgent2, ctx)}
+          {renderRecipient("Team Lead 2", snap.splitChain.teamLeader2, ctx)}
+          {renderRecipient("Manager 2", snap.splitChain.manager2, ctx)}
+          {renderRecipient("Director 2", snap.splitChain.director2, ctx)}
         </div>}
+      </div>
+
+      {/* Payouts to team (Phase R-1) */}
+      <div style={{ marginTop:6, marginBottom:12, paddingTop:6, borderTop:"1px solid #F1F5F9" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase" }}>Payouts</div>
+          {!isCancelled && <button onClick={function(){ setAddingPayoutFor({ commission: c }); }} disabled={savingFlag} title="Record a payout to a team member"
+            style={{ padding:"3px 10px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor: savingFlag ? "wait" : "pointer", fontSize:11, color:C.textLight }}>+ Add Payout</button>}
+        </div>
+        {renderPayouts(c)}
       </div>
 
       {/* Active cycle (always expanded if not paid/cancelled) */}
@@ -16654,10 +16918,28 @@ var CommissionsPage = function(p) {
 
   var loading = rows === null;
 
+  // Phase R-1: quick quarter picker for bulk recompute. Defaults to current
+  // calendar quarter. Admin can type any "YYYY-Qn" to scope the recompute.
+  var nowQDate = new Date();
+  var defaultQKey = nowQDate.getUTCFullYear() + "-Q" + (Math.floor(nowQDate.getUTCMonth() / 3) + 1);
+  var doRecomputeQuarter = async function(){
+    var qk = window.prompt("Recompute all commissions in which quarter? (e.g. 2026-Q2)", defaultQKey);
+    if (!qk) return;
+    if (!/^\d{4}-Q[1-4]$/.test(qk)) { alert("Invalid quarter key. Format: YYYY-Qn (e.g. 2026-Q2)"); return; }
+    try {
+      var r = await writeCommission("POST", "/api/commissions/recompute-all?qKey=" + encodeURIComponent(qk), {}, "Recomputed " + qk);
+      setToast({ kind: "ok", msg: "Recomputed " + (r && r.count) + " commission" + ((r && r.count === 1) ? "" : "s") + " in " + qk });
+    } catch(_e){}
+  };
+
   return <div style={{ padding:"24px 16px", maxWidth:1100, margin:"0 auto" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
       <h1 style={{ margin:0, fontSize:22, fontWeight:700, color:C.text }}>Commissions</h1>
-      <div style={{ fontSize:11, color:C.textLight }}>admin / sales_admin only</div>
+      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+        <button onClick={doRecomputeQuarter} disabled={savingFlag} title="Recompute all commissions in a quarter (e.g. after changing rates)"
+          style={{ padding:"6px 14px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: savingFlag ? "wait" : "pointer", fontSize:12, fontWeight:600, color:C.text }}>↻ Recompute quarter</button>
+        <div style={{ fontSize:11, color:C.textLight }}>admin / sales_admin only</div>
+      </div>
     </div>
 
     {/* Stats row */}
@@ -16719,6 +17001,7 @@ var CommissionsPage = function(p) {
     {editingCycleStage && <CommissionCycleStageModal target={editingCycleStage} onClose={function(){ setEditingCycleStage(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
     {addingCycleFor && <CommissionCycleAddModal target={addingCycleFor} onClose={function(){ setAddingCycleFor(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
     {editingIncentive && <CommissionIncentiveEditModal target={editingIncentive} onClose={function(){ setEditingIncentive(null); }} writeCommission={writeCommission} savingFlag={savingFlag} users={p.users}/>}
+    {addingPayoutFor && <CommissionPayoutAddModal target={addingPayoutFor} onClose={function(){ setAddingPayoutFor(null); }} writeCommission={writeCommission} savingFlag={savingFlag} cashFlow={cashFlow}/>}
 
     {/* Toast — top-right transient feedback. Auto-dismisses via useEffect. */}
     {toast && <div style={{
