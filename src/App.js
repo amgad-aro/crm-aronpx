@@ -8519,6 +8519,10 @@ var getEffectiveQTarget = function(user, allUsers, forQ) {
   var uid = String(typeof user === "string" ? user : gid(user));
   var userObj = typeof user === "object" ? user : (allUsers||[]).find(function(u){return String(gid(u))===uid;}) || {};
   var curQ = forQ || (function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+  // Year-aware: forQ stays "Q1".."Q4". Year defaults to current calendar year
+  // (matches the backend readQTargetServer convention).
+  var qNum = parseInt(String(curQ).replace("Q","")) || 1;
+  var curYearNum = new Date().getFullYear();
 
   if((userObj.role === "manager"||userObj.role === "team_leader") && allUsers) {
     // Find team members by reportsTo (primary) or teamId (fallback)
@@ -8537,7 +8541,7 @@ var getEffectiveQTarget = function(user, allUsers, forQ) {
       var total = teamMembers.reduce(function(sum, u){
         var qt = (u.qTargets&&Object.keys(u.qTargets).length>0) ? u.qTargets :
           (function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+gid(u))||"{}");}catch(e){return {};}})();
-        return sum + (qt[curQ]||0);
+        return sum + readQTargetClient(qt, curYearNum, qNum);
       }, 0);
       if(total > 0) return total;
     }
@@ -8546,7 +8550,30 @@ var getEffectiveQTarget = function(user, allUsers, forQ) {
   // Own qTargets
   var qt = (userObj.qTargets&&Object.keys(userObj.qTargets).length>0) ? userObj.qTargets :
     (function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){return {};}})();
-  return qt[curQ]||0;
+  return readQTargetClient(qt, curYearNum, qNum);
+};
+
+// ===== qTargets year-aware helpers (Phase R-0) =====
+// User.qTargets keys are now "<YYYY>-Q<n>" (e.g. "2026-Q2"). Old data may
+// still hold bare "Q1".."Q4" keys; the legacy fallback honors them only for
+// the CURRENT calendar year, matching the backend readQTargetServer rule.
+var qKeyForClient = function(date) {
+  var d = (date instanceof Date) ? date : new Date(date);
+  if (isNaN(d.getTime())) return null;
+  return d.getFullYear() + "-Q" + (Math.floor(d.getMonth() / 3) + 1);
+};
+var readQTargetClient = function(qtOrUser, year, qNum) {
+  // Accepts either a User object (uses .qTargets) or the qTargets object directly.
+  var qt = (qtOrUser && qtOrUser.qTargets) ? qtOrUser.qTargets : qtOrUser;
+  if (!qt || typeof qt !== "object") return 0;
+  var newKey = year + "-Q" + qNum;
+  if (qt[newKey] !== undefined) return Number(qt[newKey]) || 0;
+  var currentYear = new Date().getFullYear();
+  if (year === currentYear) {
+    var legacyKey = "Q" + qNum;
+    if (qt[legacyKey] !== undefined) return Number(qt[legacyKey]) || 0;
+  }
+  return 0;
 };
 
 // Phase 2 Slice 3 — projectWeights are now sourced from the AppSetting doc
@@ -8642,10 +8669,13 @@ var calcCommission = function(user, allDeals, allUsers, forQ) {
   var qt = (qtUser&&qtUser.qTargets&&Object.keys(qtUser.qTargets).length>0) ? qtUser.qTargets : (function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+uid)||"{}");}catch(e){return {};}})();
   var getQ = function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
   var curQ = forQ || (function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+  // Year-aware read of qTargets (Phase R-0). Year defaults to current.
+  var qNumCC = parseInt(String(curQ).replace("Q","")) || 1;
+  var curYearCC = new Date().getFullYear();
   // For team leader: use sum of team targets
   var qTarget = (qtUser && (qtUser.role === "manager"||qtUser.role === "team_leader") && qtUser.reportsTo && allUsers)
     ? getEffectiveQTarget(qtUser, allUsers, curQ)
-    : (qt[curQ] || 0);
+    : readQTargetClient(qt, curYearCC, qNumCC);
 
   // Get deals for this agent in current Q
   var agentDeals = allDeals.filter(function(d){
@@ -9140,7 +9170,8 @@ var DealsPage = function(p) {
                   if(!agUser) return 5000;
                   var agU=p.users.find(function(u){return gid(u)===ag;});var qt=(agU&&agU.qTargets&&Object.keys(agU.qTargets).length>0)?agU.qTargets:(function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+ag)||"{}");}catch(e){return {};}})();
                   var curQNow=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
-                  var qTarget=qt[curQNow]||0;
+                  var qNumNow=parseInt(curQNow.replace("Q",""))||1;
+                  var qTarget=readQTargetClient(qt, new Date().getFullYear(), qNumNow);
                   if(!qTarget) return 5000;
                   // calc total effective revenue for this agent in current Q
                   var allDealsNow=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
@@ -10415,11 +10446,25 @@ var UsersPage = function(p) {
         <td style={{ padding:"11px 12px", fontSize:12, direction:"ltr" }}>{u.phone}</td>
         <td style={{ padding:"8px 12px" }}>
           {p.cu.role==="admin"
-            ?<button onClick={function(){var qt=getQTargets(uid);setQtModal({user:u,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
+            ?<button onClick={function(){
+                var qt=getQTargets(uid);
+                var yr=new Date().getFullYear();
+                setQtModal({
+                  user:u,
+                  year: yr,
+                  allTargets: Object.assign({}, qt),
+                  targets:{
+                    Q1: readQTargetClient(qt, yr, 1),
+                    Q2: readQTargetClient(qt, yr, 2),
+                    Q3: readQTargetClient(qt, yr, 3),
+                    Q4: readQTargetClient(qt, yr, 4)
+                  }
+                });
+              }}
                 title="Quarterly Targets"
                 style={{ padding:"3px 10px", borderRadius:6, border:"1px solid "+C.accent, background:C.accent+"10", color:C.accent, fontSize:11, fontWeight:700, cursor:"pointer" }}>Q</button>
             :<div style={{ display:"flex", gap:3 }}>
-              {["Q1","Q2","Q3","Q4"].map(function(q){var qt=getQTargets(uid);var v=qt[q]||0;return <span key={q} style={{ fontSize:9, padding:"1px 4px", borderRadius:3, background:"#F1F5F9", color:C.textLight }}>{q}:{v>0?(v/1000000).toFixed(1)+"M":"—"}</span>;})}
+              {["Q1","Q2","Q3","Q4"].map(function(q,i){var qt=getQTargets(uid);var v=readQTargetClient(qt, new Date().getFullYear(), i+1);return <span key={q} style={{ fontSize:9, padding:"1px 4px", borderRadius:3, background:"#F1F5F9", color:C.textLight }}>{q}:{v>0?(v/1000000).toFixed(1)+"M":"—"}</span>;})}
             </div>}
         </td>
         <td style={{ padding:"11px 12px" }}>
@@ -10453,10 +10498,37 @@ var UsersPage = function(p) {
       <div style={{ fontSize:12, color:C.textLight, marginBottom:14, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>
         تارجت كل Quarter بالمليون — بيتحسب من Deals Done Deal
       </div>
+      {/* Year selector — switch between years; other years stay persisted in allTargets. */}
+      <div style={{ marginBottom:14 }}>
+        <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.textLight, marginBottom:4 }}>Year</label>
+        <select value={qtModal.year}
+          onChange={function(e){
+            var newYear = Number(e.target.value);
+            setQtModal(function(prev){
+              return Object.assign({}, prev, {
+                year: newYear,
+                targets: {
+                  Q1: readQTargetClient(prev.allTargets, newYear, 1),
+                  Q2: readQTargetClient(prev.allTargets, newYear, 2),
+                  Q3: readQTargetClient(prev.allTargets, newYear, 3),
+                  Q4: readQTargetClient(prev.allTargets, newYear, 4)
+                }
+              });
+            });
+          }}
+          style={{ width:140, padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}>
+          {(function(){
+            var nowYear = new Date().getFullYear();
+            return [nowYear - 1, nowYear, nowYear + 1].map(function(y){
+              return <option key={y} value={y}>{y}{y === nowYear ? " (current)" : ""}</option>;
+            });
+          })()}
+        </select>
+      </div>
       {["Q1","Q2","Q3","Q4"].map(function(q,i){
         var labels=["Jan — Mar","Apr — Jun","Jul — Sep","Oct — Dec"];
         return <div key={q} style={{ marginBottom:11 }}>
-          <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:4 }}>{q} <span style={{ fontSize:11, color:C.textLight, fontWeight:400 }}>({labels[i]})</span></label>
+          <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:4 }}>{q} {qtModal.year} <span style={{ fontSize:11, color:C.textLight, fontWeight:400 }}>({labels[i]})</span></label>
           <input type="text" placeholder="e.g. 5,000,000"
             value={qtModal.targets[q]?Number(qtModal.targets[q]).toLocaleString():""}
             onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setQtModal(function(prev){return Object.assign({},prev,{targets:Object.assign({},prev.targets,{[q]:r?Number(r):0})});});}}
@@ -10465,7 +10537,20 @@ var UsersPage = function(p) {
       })}
       <div style={{ display:"flex", gap:10, marginTop:4 }}>
         <Btn outline onClick={function(){setQtModal(null);}} style={{ flex:1 }}>Cancel</Btn>
-        <Btn onClick={function(){saveQTargets(gid(qtModal.user),qtModal.targets).then(function(){setQtModal(null);});}} style={{ flex:1 }}>✅ Save</Btn>
+        <Btn onClick={function(){
+          // Merge year's targets into allTargets using year-aware keys.
+          // If saving the CURRENT year, also drop legacy bare keys so the
+          // server's backward-compat fallback doesn't return stale legacy data.
+          var nowYear = new Date().getFullYear();
+          var merged = Object.assign({}, qtModal.allTargets);
+          ["Q1","Q2","Q3","Q4"].forEach(function(q){
+            var k = qtModal.year + "-" + q;
+            var v = Number(qtModal.targets[q]) || 0;
+            if (v > 0) merged[k] = v; else delete merged[k];
+            if (qtModal.year === nowYear) delete merged[q];
+          });
+          saveQTargets(gid(qtModal.user), merged).then(function(){setQtModal(null);});
+        }} style={{ flex:1 }}>✅ Save</Btn>
       </div>
     </Modal>}
     {editModal&&<Modal show={true} onClose={function(){setEditModal(null);}} title={"✏️ Edit User — "+editModal.userName}>
@@ -10738,7 +10823,21 @@ var TeamPage = function(p) {
       </div>
       {/* Bottom — white panel */}
       <div style={{ background:"#fff", padding:"14px 14px 16px" }}>
-        {isAdmin && <button onClick={function(){var qt=getQTargets(uid);setEditQModal({user:a,targets:{Q1:qt.Q1||0,Q2:qt.Q2||0,Q3:qt.Q3||0,Q4:qt.Q4||0}});}}
+        {isAdmin && <button onClick={function(){
+          var qt=getQTargets(uid);
+          var yr=new Date().getFullYear();
+          setEditQModal({
+            user:a,
+            year:yr,
+            allTargets:Object.assign({},qt),
+            targets:{
+              Q1: readQTargetClient(qt, yr, 1),
+              Q2: readQTargetClient(qt, yr, 2),
+              Q3: readQTargetClient(qt, yr, 3),
+              Q4: readQTargetClient(qt, yr, 4)
+            }
+          });
+        }}
           style={{ width:"100%", padding:"8px 0", borderRadius:8, border:"none", background:"#f1f5f9", color:"#1e3a5f", fontSize:10, fontWeight:700, cursor:"pointer", marginBottom:8 }}>🎯 Edit Targets</button>}
         {/* Hide-all — admin / sales_admin only, sales agent cards only.
             Backend computes the actual count after applying the EOI/DoneDeal
@@ -10902,10 +11001,36 @@ var TeamPage = function(p) {
 
     {editQModal&&<Modal show={true} onClose={function(){setEditQModal(null);}} title={"🎯 Quarterly Targets — "+editQModal.user.name}>
       <div style={{ fontSize:12, color:C.textLight, marginBottom:14, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>Quarterly target in EGP</div>
+      <div style={{ marginBottom:14 }}>
+        <label style={{ display:"block", fontSize:12, fontWeight:600, color:C.textLight, marginBottom:4 }}>Year</label>
+        <select value={editQModal.year}
+          onChange={function(e){
+            var newYear = Number(e.target.value);
+            setEditQModal(function(prev){
+              return Object.assign({}, prev, {
+                year: newYear,
+                targets: {
+                  Q1: readQTargetClient(prev.allTargets, newYear, 1),
+                  Q2: readQTargetClient(prev.allTargets, newYear, 2),
+                  Q3: readQTargetClient(prev.allTargets, newYear, 3),
+                  Q4: readQTargetClient(prev.allTargets, newYear, 4)
+                }
+              });
+            });
+          }}
+          style={{ width:140, padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}>
+          {(function(){
+            var nowYear = new Date().getFullYear();
+            return [nowYear - 1, nowYear, nowYear + 1].map(function(y){
+              return <option key={y} value={y}>{y}{y === nowYear ? " (current)" : ""}</option>;
+            });
+          })()}
+        </select>
+      </div>
       {["Q1","Q2","Q3","Q4"].map(function(q,i){
         var labels=["Jan — Mar","Apr — Jun","Jul — Sep","Oct — Dec"];
         return <div key={q} style={{ marginBottom:11 }}>
-          <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:4 }}>{q} <span style={{ fontSize:11, color:C.textLight }}>({labels[i]})</span></label>
+          <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:4 }}>{q} {editQModal.year} <span style={{ fontSize:11, color:C.textLight }}>({labels[i]})</span></label>
           <input type="text" placeholder="e.g. 5,000,000"
             value={editQModal.targets[q]?Number(editQModal.targets[q]).toLocaleString():""}
             onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setEditQModal(function(prev){return Object.assign({},prev,{targets:Object.assign({},prev.targets,{[q]:r?Number(r):0})});});}}
@@ -10914,7 +11039,18 @@ var TeamPage = function(p) {
       })}
       <div style={{ display:"flex", gap:10 }}>
         <Btn outline onClick={function(){setEditQModal(null);}} style={{ flex:1 }}>Cancel</Btn>
-        <Btn onClick={function(){saveQTargets(gid(editQModal.user),editQModal.targets);setEditQModal(null);}} style={{ flex:1 }}>✅ Save</Btn>
+        <Btn onClick={function(){
+          var nowYear = new Date().getFullYear();
+          var merged = Object.assign({}, editQModal.allTargets);
+          ["Q1","Q2","Q3","Q4"].forEach(function(q){
+            var k = editQModal.year + "-" + q;
+            var v = Number(editQModal.targets[q]) || 0;
+            if (v > 0) merged[k] = v; else delete merged[k];
+            if (editQModal.year === nowYear) delete merged[q];
+          });
+          saveQTargets(gid(editQModal.user), merged);
+          setEditQModal(null);
+        }} style={{ flex:1 }}>✅ Save</Btn>
       </div>
     </Modal>}
 

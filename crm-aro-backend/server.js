@@ -982,6 +982,35 @@ function ownerProtected(target, requesterId) {
 // in sync with the User schema enum at the top of the file.
 var ALLOWED_CREATE_ROLES = ["sales_admin","hr","director","manager","team_leader","sales","viewer"];
 
+// ===== qTargets year-aware key helpers (Phase R-0) =====
+// User.qTargets keys are now "<YYYY>-Q<n>" (e.g. "2026-Q2"). Old data may
+// still hold bare "Q1".."Q4" keys (representing whatever year the admin last
+// edited them in — most recently the current calendar year).
+//
+// readQTargetServer is the single read site. It honors the year-aware key
+// first; if absent AND year is the CURRENT calendar year, falls back to the
+// legacy bare key. This keeps live KPIs identical during the deploy window
+// between code-deploy and migration-script run. Once migrated, the legacy
+// branch becomes dead code and can be removed in a follow-up.
+function qKeyFor(date) {
+  var d = (date instanceof Date) ? date : new Date(date);
+  if (isNaN(d.getTime())) return null;
+  var y = d.getUTCFullYear();
+  var q = Math.floor(d.getUTCMonth() / 3) + 1;
+  return y + "-Q" + q;
+}
+function readQTargetServer(user, year, qNum) {
+  if (!user || !user.qTargets) return 0;
+  var newKey = year + "-Q" + qNum;
+  if (user.qTargets[newKey] !== undefined) return Number(user.qTargets[newKey]) || 0;
+  var currentYear = new Date().getUTCFullYear();
+  if (year === currentYear) {
+    var legacyKey = "Q" + qNum;
+    if (user.qTargets[legacyKey] !== undefined) return Number(user.qTargets[legacyKey]) || 0;
+  }
+  return 0;
+}
+
 // Vacation admin gate — tighter than adminOnly. Managers/TLs intentionally
 // excluded; only full Admin or Sales Admin can create/delete vacations.
 function vacationAdmin(req, res, next) {
@@ -4281,6 +4310,9 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     //   we honour that so Target lines up with the selected period.
     var qParam = String(req.query.quarter||"").match(/^Q([1-4])$/);
     var curQNum = qParam ? parseInt(qParam[1]) : (Math.floor(new Date().getMonth()/3) + 1);
+    // year-aware: ?year= optional; falls back to current calendar year.
+    var curYearNum = parseInt(req.query.year, 10);
+    if (!isFinite(curYearNum) || curYearNum < 2000) curYearNum = new Date().getUTCFullYear();
     var qKey = "Q" + curQNum;
 
     // Target: for TL, sum quarterly targets across self + direct sales so the
@@ -4343,7 +4375,7 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     }, 0);
 
     var target = scopeUsers.reduce(function(s,u){
-      return s + ((u.qTargets && Number(u.qTargets[qKey])) || 0);
+      return s + readQTargetServer(u, curYearNum, curQNum);
     }, 0);
     var targetProgress = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
 
@@ -10981,13 +11013,14 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
 
     var qNum = Math.floor(new Date().getMonth()/3) + 1;
     var qKey = "Q" + qNum;
+    var curYearNum = new Date().getUTCFullYear();
 
     var rows = [];
     Object.keys(byAgent).forEach(function(k){
       var u = userMap[k];
       if (!u) return;
       var a = byAgent[k];
-      var qTarget = (u.qTargets && Number(u.qTargets[qKey])) || 0;
+      var qTarget = readQTargetServer(u, curYearNum, qNum);
       var convPct = a.leads > 0 ? Math.round((a.deals / a.leads) * 1000) / 10 : null;
       var progress = qTarget > 0 ? Math.min(100, Math.round((a.revenue / qTarget) * 1000) / 10) : 0;
       rows.push({
@@ -11496,7 +11529,7 @@ app.get("/api/reports/overview/alerts", auth, reportsAuth, async function(req, r
     drDealsArr.forEach(function(g){   if (g && g._id) revByAgent[String(g._id)] = (revByAgent[String(g._id)] || 0) + (Number(g.revenue) || 0); });
     var underTargetCount = 0;
     users.forEach(function(u){
-      var qTarget = (u.qTargets && Number(u.qTargets[qKey])) || 0;
+      var qTarget = readQTargetServer(u, qYear, qNum);
       if (qTarget <= 0) return; // skip agents without a target set
       var rev = revByAgent[String(u._id)] || 0;
       var progress = (rev / qTarget) * 100;
@@ -11680,7 +11713,7 @@ app.get("/api/reports/overview/forecast", auth, reportsAuth, async function(req,
     var midRev   = pipelineValue * winRate;
     var midDeals = pipelineCount * winRate;
 
-    var qTarget = users.reduce(function(s, u){ return s + ((u.qTargets && Number(u.qTargets[qKey])) || 0); }, 0);
+    var qTarget = users.reduce(function(s, u){ return s + readQTargetServer(u, qYear, qNum); }, 0);
     var qAchieved = Math.round(Number(qDeals.revenue) || 0);
     var qProgressPct = qTarget > 0 ? Math.min(100, Math.round((qAchieved / qTarget) * 1000) / 10) : 0;
     var daysRemaining = Math.max(0, Math.ceil((qEnd.getTime() - nowDate.getTime()) / DAY_MS));
