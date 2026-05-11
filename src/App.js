@@ -1066,6 +1066,8 @@ var SidebarIcon = function(id, active){
       return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M9 3c-3.3 0-6 2.7-6 6c0 1.5.5 2.8 1.3 3.8M9 5c-2.2 0-4 1.8-4 4c0 1 .4 2 1 2.7M9 7c-1.1 0-2 .9-2 2c0 .5.2 1 .5 1.4M9 9v3M11 7c.6.6 1 1.4 1 2.4c0 1.8-.5 3.5-1.4 5M14 5.3c1 1 1.5 2.4 1.5 4c0 .7-.1 1.4-.3 2" stroke={col} strokeWidth={sw} strokeLinecap="round" fill="none"/></svg>;
     case "settings":
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="2.5" stroke={col} strokeWidth={sw}/><path d="M9 2v1.5M9 14.5V16M2 9h1.5M14.5 9H16M4.1 4.1l1.1 1.1M12.8 12.8l1.1 1.1M4.1 13.9l1.1-1.1M12.8 5.2l1.1-1.1" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
+    case "assets":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M9 1.5L2 5v8l7 3.5L16 13V5L9 1.5z" stroke={col} strokeWidth={sw} strokeLinejoin="round" strokeLinecap="round"/><path d="M2 5l7 3.5L16 5M9 8.5V16" stroke={col} strokeWidth={sw} strokeLinejoin="round" strokeLinecap="round"/></svg>;
     default:
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="3" stroke={col} strokeWidth={sw}/></svg>;
   }
@@ -1097,6 +1099,9 @@ var Sidebar = function(p) {
       || hasAttendancePerm(p.cu.role, "manageCompanyOffDays",   p.attendanceSettings)
     ) && {id:"attendance",label:"Attendance",adminSection:true},
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
+    // AssetTracker — admin role OR isOwner=true flag. Sales_admin and others
+    // never see this item even if they pass other admin gates elsewhere.
+    (p.cu.role==="admin"||p.cu.isOwner===true)&&{id:"assets",label:t.dir==="rtl"?"الأصول":"Assets",adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
   var leadsCount = Array.isArray(p.leads) ? p.leads.filter(function(l){return !l.archived;}).length : 0;
@@ -15781,6 +15786,517 @@ var SettingsPage = function(p) {
   </div>;
 };
 
+// ===== ASSET TRACKER PAGE (admin / isOwner only) =====
+// Single page id "assets" with three internal sub-views: list, new (also used
+// for edit), and detail. Custody actions (transfer/return/mark-status) ship
+// in S3 and surface as buttons on the detail view; QR rendering ships in S4.
+// Sub-view nav is state-only — no URL routing today; QR deep-links land in S4.
+var AssetTrackerPage = function(p) {
+  var t = p.t;
+  var isRTL = t && t.dir === "rtl";
+
+  // ===== Hooks — all declared up-front, never below a return. =====
+  var [subPage, setSubPage] = useState("list");
+  var [selectedAssetCode, setSelectedAssetCode] = useState(null);
+  var [assets, setAssets] = useState([]);
+  var [categories, setCategories] = useState([]);
+  var [branches, setBranches] = useState([]);
+  var [loaded, setLoaded] = useState(false);
+  var [loadError, setLoadError] = useState("");
+
+  var [groupFilter, setGroupFilter] = useState("");
+  var [statusFilter, setStatusFilter] = useState("");
+  var [branchFilter, setBranchFilter] = useState("");
+  var [searchQuery, setSearchQuery] = useState("");
+
+  var emptyForm = { name:"", categoryId:"", branchId:"", purchasePrice:"", purchaseDate:"", supplier:"", serialNumber:"", assignmentType:"personal", currentCustodian:"", notes:"" };
+  var [form, setForm] = useState(emptyForm);
+  var [formMode, setFormMode] = useState("create"); // "create" | "edit"
+  var [formEditId, setFormEditId] = useState(null);
+  var [formSaving, setFormSaving] = useState(false);
+  var [formError, setFormError] = useState("");
+
+  var [detailAsset, setDetailAsset] = useState(null);
+  var [detailLoading, setDetailLoading] = useState(false);
+  var [detailError, setDetailError] = useState("");
+  var [deleting, setDeleting] = useState(false);
+
+  useEffect(function() {
+    var cancelled = false;
+    setLoadError("");
+    Promise.all([
+      apiFetch("/api/assets",            "GET", null, p.token).catch(function(err){ if (!cancelled) setLoadError((err && err.message) || "Failed to load assets"); return []; }),
+      apiFetch("/api/asset-categories",  "GET", null, p.token).catch(function(){ return []; }),
+      apiFetch("/api/branches?active=true", "GET", null, p.token).catch(function(){ return []; })
+    ]).then(function(results) {
+      if (cancelled) return;
+      setAssets(    Array.isArray(results[0]) ? results[0] : []);
+      setCategories(Array.isArray(results[1]) ? results[1] : []);
+      setBranches(  Array.isArray(results[2]) ? results[2] : []);
+      setLoaded(true);
+    });
+    return function() { cancelled = true; };
+  }, [p.token]);
+
+  useEffect(function() {
+    if (subPage !== "detail" || !selectedAssetCode) return;
+    var cancelled = false;
+    setDetailLoading(true); setDetailError(""); setDetailAsset(null);
+    apiFetch("/api/assets/" + encodeURIComponent(selectedAssetCode), "GET", null, p.token)
+      .then(function(d){ if (!cancelled) setDetailAsset(d); })
+      .catch(function(err){ if (!cancelled) setDetailError((err && err.message) || "Failed to load asset"); })
+      .finally(function(){ if (!cancelled) setDetailLoading(false); });
+    return function() { cancelled = true; };
+  }, [subPage, selectedAssetCode, p.token]);
+
+  // ===== Navigation + handlers =====
+  var goList = function() {
+    setSubPage("list"); setSelectedAssetCode(null); setDetailAsset(null);
+    setForm(emptyForm); setFormMode("create"); setFormEditId(null); setFormError("");
+  };
+  var openNew = function() {
+    setForm(emptyForm); setFormMode("create"); setFormEditId(null); setFormError(""); setSubPage("new");
+  };
+  var openDetail = function(asset) {
+    setSelectedAssetCode(asset.assetCode); setSubPage("detail");
+  };
+  var openEdit = function(asset) {
+    setForm({
+      name: asset.name || "",
+      categoryId: (asset.categoryId && (asset.categoryId._id || asset.categoryId)) || "",
+      branchId:   (asset.branchId   && (asset.branchId._id   || asset.branchId))   || "",
+      purchasePrice: asset.purchasePrice != null ? String(asset.purchasePrice) : "",
+      purchaseDate:  asset.purchaseDate  ? new Date(asset.purchaseDate).toISOString().slice(0,10) : "",
+      supplier:      asset.supplier || "",
+      serialNumber:  asset.serialNumber || "",
+      assignmentType: asset.assignmentType || "personal",
+      currentCustodian: "", // not editable via PATCH; custody flows live in S3
+      notes: asset.notes || ""
+    });
+    setFormMode("edit"); setFormEditId(asset._id); setFormError(""); setSubPage("new");
+  };
+  var saveForm = async function() {
+    setFormError("");
+    if (!form.name.trim())  { setFormError("الاسم مطلوب"); return; }
+    if (!form.categoryId)   { setFormError("اختار التصنيف"); return; }
+    if (!form.branchId)     { setFormError("اختار الفرع"); return; }
+    setFormSaving(true);
+    try {
+      var payload = {
+        name: form.name.trim(),
+        categoryId: form.categoryId,
+        branchId: form.branchId,
+        purchasePrice: form.purchasePrice ? Number(form.purchasePrice) : 0,
+        purchaseDate: form.purchaseDate || null,
+        supplier: form.supplier.trim(),
+        serialNumber: form.serialNumber.trim(),
+        assignmentType: form.assignmentType,
+        notes: form.notes.trim()
+      };
+      var saved;
+      if (formMode === "edit" && formEditId) {
+        saved = await apiFetch("/api/assets/" + formEditId, "PATCH", payload, p.token, p.csrfToken);
+        setAssets(assets.map(function(a){ return String(a._id) === String(saved._id) ? saved : a; }));
+        setSelectedAssetCode(saved.assetCode); setSubPage("detail"); setDetailAsset(saved);
+      } else {
+        if (form.currentCustodian) payload.currentCustodian = form.currentCustodian;
+        saved = await apiFetch("/api/assets", "POST", payload, p.token, p.csrfToken);
+        setAssets([saved].concat(assets));
+        setSelectedAssetCode(saved.assetCode); setSubPage("detail"); setDetailAsset(saved);
+      }
+      setForm(emptyForm); setFormMode("create"); setFormEditId(null);
+    } catch (err) {
+      setFormError((err && err.message) || "Save failed");
+    } finally {
+      setFormSaving(false);
+    }
+  };
+  var doDelete = async function() {
+    if (!detailAsset || !detailAsset._id) return;
+    if (!window.confirm("Retire this asset? Status becomes 'retired' and the custodian is cleared. Audit trail is kept.")) return;
+    setDeleting(true);
+    try {
+      await apiFetch("/api/assets/" + detailAsset._id, "DELETE", null, p.token, p.csrfToken);
+      // Refresh list so the row reflects the retired status
+      var fresh = await apiFetch("/api/assets", "GET", null, p.token).catch(function(){ return assets; });
+      if (Array.isArray(fresh)) setAssets(fresh);
+      goList();
+    } catch (err) {
+      alert((err && err.message) || "Delete failed");
+    }
+    setDeleting(false);
+  };
+
+  // ===== Style helpers =====
+  var btnPrimary = { padding:"8px 16px", border:"0.5px solid rgba(24,95,165,0.3)", background:"#185FA5", color:"#fff",     borderRadius:8, fontSize:13, cursor:"pointer", fontWeight:500, fontFamily:"inherit" };
+  var btnGhost   = { padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.1)",     background:"#fff",   color:"#1a1a1a",  borderRadius:8, fontSize:13, cursor:"pointer", fontWeight:500, fontFamily:"inherit" };
+  var btnDanger  = { padding:"8px 14px", border:"0.5px solid rgba(163,45,45,0.3)", background:"#FCEBEB",color:"#A32D2D",  borderRadius:8, fontSize:13, cursor:"pointer", fontWeight:500, fontFamily:"inherit" };
+  var inputStyle = { padding:"8px 12px", border:"0.5px solid rgba(0,0,0,0.1)",     borderRadius:8, fontSize:13, background:"#fff", fontFamily:"inherit", width:"100%", boxSizing:"border-box" };
+  var fieldLabel = { fontSize:12, color:"#666", display:"block", marginBottom:6 };
+  var cardWrap   = { background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)" };
+  var fmtEGP = function(n) {
+    var v = Number(n) || 0;
+    return v.toLocaleString("en-EG") + " EGP";
+  };
+  var statusBadge = function(s) {
+    var palette = {
+      active:      { bg:"#EAF6F0", color:"#0F6E56", label:"Active" },
+      maintenance: { bg:"#FFF4E5", color:"#B45309", label:"Maintenance" },
+      lost:        { bg:"#FCEBEB", color:"#A32D2D", label:"Lost" },
+      retired:     { bg:"#F4F4F4", color:"#666",    label:"Retired" }
+    };
+    var pal = palette[s] || palette.retired;
+    return <span style={{ fontSize:11, padding:"3px 8px", borderRadius:6, fontWeight:500, background:pal.bg, color:pal.color }}>{pal.label}</span>;
+  };
+  var rowHighlight = function(s) {
+    if (s === "maintenance") return { background:"#FFFBEB" };
+    if (s === "lost")        return { background:"#FEF2F2" };
+    return null;
+  };
+  var prefixBadge = function(cat) {
+    var code = (cat && cat.codePrefix) || "??";
+    return <div style={{ width:30, height:30, background:"#E6F1FB", color:"#185FA5", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:11, flexShrink:0, fontFamily:"ui-monospace, SFMono-Regular, monospace" }}>{code}</div>;
+  };
+
+  // ===== Derived data =====
+  var groupBuckets = (function() {
+    var b = { all:0, it:0, furniture:0, appliance:0 };
+    assets.forEach(function(a) {
+      b.all += 1;
+      var g = a.categoryId && a.categoryId.group;
+      if (g && b[g] != null) b[g] += 1;
+    });
+    return b;
+  })();
+  var filteredAssets = (function() {
+    var q = (searchQuery || "").trim().toLowerCase();
+    return assets.filter(function(a) {
+      if (groupFilter  && (!a.categoryId || a.categoryId.group !== groupFilter)) return false;
+      if (statusFilter && a.status !== statusFilter) return false;
+      if (branchFilter && String(a.branchId && (a.branchId._id || a.branchId)) !== String(branchFilter)) return false;
+      if (!q) return true;
+      var hayParts = [a.assetCode, a.name, a.serialNumber, a.currentCustodian && a.currentCustodian.name].filter(Boolean);
+      return hayParts.join(" ").toLowerCase().indexOf(q) !== -1;
+    });
+  })();
+  var stats = (function() {
+    var total = assets.length;
+    var totalValue = assets.reduce(function(s,a){ return s + (Number(a.purchasePrice)||0); }, 0);
+    var activeCustodies = assets.filter(function(a){ return a.status==="active" && a.currentCustodian; }).length;
+    var attention = assets.filter(function(a){ return a.status==="lost" || a.status==="maintenance"; }).length;
+    return { total:total, totalValue:totalValue, activeCustodies:activeCustodies, attention:attention };
+  })();
+
+  // ===== Render =====
+  return <div style={{padding:"24px 16px 40px",fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", direction:isRTL?"rtl":"ltr"}}>
+    <div style={{maxWidth:1200,margin:"0 auto"}}>
+
+      {/* ---------- LIST VIEW ---------- */}
+      {subPage === "list" && (function() {
+        var statCard = function(label, value) {
+          return <div style={Object.assign({}, cardWrap, { padding:"14px 16px", minWidth:160, flex:"1 1 200px" })}>
+            <div style={{fontSize:11, color:"#666", textTransform:"uppercase", letterSpacing:"0.4px", marginBottom:6}}>{label}</div>
+            <div style={{fontSize:20, fontWeight:600, color:"#1a1a1a"}}>{value}</div>
+          </div>;
+        };
+        var pill = function(id, label, count) {
+          var act = groupFilter === id;
+          return <button key={id||"all"} type="button" onClick={function(){ setGroupFilter(id); }}
+            style={{
+              padding:"6px 14px", fontSize:13, borderRadius:999, cursor:"pointer", whiteSpace:"nowrap",
+              border:"0.5px solid "+(act?"#185FA5":"rgba(0,0,0,0.1)"),
+              background:act?"#185FA5":"#fff", color:act?"#fff":"#1a1a1a", fontWeight:500, fontFamily:"inherit"
+            }}>
+            {label} <span style={{opacity:0.6, marginLeft:4}}>({count})</span>
+          </button>;
+        };
+        return <div>
+          {/* Header */}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:16}}>
+            <div>
+              <div style={{fontSize:18,fontWeight:500,color:"#1a1a1a"}}>{isRTL ? "الأصول" : "Assets"}</div>
+              <div style={{fontSize:12,color:"#666",marginTop:2}}>{isRTL ? "كل الأجهزة والأثاث المملوكة للشركة" : "All company-owned equipment, furniture, and appliances"}</div>
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button type="button" disabled title={isRTL?"قريباً — Slice 4":"Coming in Slice 4"} style={Object.assign({}, btnGhost, {opacity:0.55, cursor:"not-allowed"})}>{isRTL?"مسح QR":"Scan QR"}</button>
+              <button type="button" onClick={openNew} style={btnPrimary}>{isRTL?"إضافة أصل":"+ New Asset"}</button>
+            </div>
+          </div>
+
+          {/* Stat cards */}
+          <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:16}}>
+            {statCard(isRTL?"إجمالي الأصول":"Total assets",   stats.total)}
+            {statCard(isRTL?"إجمالي قيمة الشراء":"Total purchase value", fmtEGP(stats.totalValue))}
+            {statCard(isRTL?"عُهد نشطة":"Active custodies",  stats.activeCustodies)}
+            {statCard(isRTL?"تحتاج انتباه":"Needs attention", stats.attention)}
+          </div>
+
+          {/* Filter pills */}
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}}>
+            {pill("",          isRTL?"الكل":"All",          groupBuckets.all)}
+            {pill("it",        isRTL?"IT":"IT",             groupBuckets.it)}
+            {pill("furniture", isRTL?"أثاث":"Furniture",    groupBuckets.furniture)}
+            {pill("appliance", isRTL?"أجهزة":"Appliances",  groupBuckets.appliance)}
+          </div>
+
+          {/* Search + dropdowns */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 160px 200px",gap:8,marginBottom:14,maxWidth:900}}>
+            <input style={inputStyle} placeholder={isRTL?"بحث بالكود، الاسم، أو حامل العهدة…":"Search code, name, or custodian…"} value={searchQuery} onChange={function(e){setSearchQuery(e.target.value);}}/>
+            <select style={inputStyle} value={statusFilter} onChange={function(e){setStatusFilter(e.target.value);}}>
+              <option value="">{isRTL?"كل الحالات":"All statuses"}</option>
+              <option value="active">{isRTL?"نشط":"Active"}</option>
+              <option value="maintenance">{isRTL?"صيانة":"Maintenance"}</option>
+              <option value="lost">{isRTL?"مفقود":"Lost"}</option>
+              <option value="retired">{isRTL?"مُنسحب":"Retired"}</option>
+            </select>
+            <select style={inputStyle} value={branchFilter} onChange={function(e){setBranchFilter(e.target.value);}}>
+              <option value="">{isRTL?"كل الفروع":"All branches"}</option>
+              {branches.map(function(b){ return <option key={b._id} value={b._id}>{b.name} ({b.code})</option>; })}
+            </select>
+          </div>
+
+          {/* Errors */}
+          {loadError && <div style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"8px 12px",borderRadius:8,marginBottom:12}}>{loadError}</div>}
+
+          {/* Table */}
+          <div style={Object.assign({}, cardWrap, { overflow:"hidden" })}>
+            <div style={{display:"grid",gridTemplateColumns:"2fr 1.5fr 1fr 120px 130px",gap:10,padding:"12px 16px",borderBottom:"0.5px solid rgba(0,0,0,0.08)",fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",background:"#FAFAF9"}}>
+              <div>{isRTL?"الأصل":"Asset"}</div>
+              <div>{isRTL?"حامل العهدة":"Custodian"}</div>
+              <div>{isRTL?"الفرع":"Branch"}</div>
+              <div style={{textAlign:"center"}}>{isRTL?"الحالة":"Status"}</div>
+              <div style={{textAlign:isRTL?"left":"right"}}>{isRTL?"قيمة الشراء":"Value"}</div>
+            </div>
+            {!loaded
+              ? <div style={{padding:24,textAlign:"center",fontSize:13,color:"#666"}}>{isRTL?"جاري التحميل…":"Loading…"}</div>
+              : filteredAssets.length === 0
+                ? <div style={{padding:32,textAlign:"center",fontSize:13,color:"#666"}}>{isRTL?"لا توجد أصول مطابقة":"No matching assets"}</div>
+                : filteredAssets.map(function(a) {
+                    var rowStyle = Object.assign({
+                      display:"grid",gridTemplateColumns:"2fr 1.5fr 1fr 120px 130px",gap:10,
+                      padding:"12px 16px",borderBottom:"0.5px solid rgba(0,0,0,0.05)",
+                      fontSize:13,alignItems:"center",cursor:"pointer"
+                    }, rowHighlight(a.status) || {});
+                    return <div key={a._id} onClick={function(){ openDetail(a); }}
+                      onMouseEnter={function(e){ if (!rowHighlight(a.status)) e.currentTarget.style.background = "#F7F7F5"; }}
+                      onMouseLeave={function(e){ if (!rowHighlight(a.status)) e.currentTarget.style.background = "#fff"; }}
+                      style={rowStyle}>
+                      <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
+                        {prefixBadge(a.categoryId)}
+                        <div style={{minWidth:0}}>
+                          <div style={{fontWeight:500,color:"#1a1a1a",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.name}</div>
+                          <div style={{fontSize:11,color:"#666",fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>{a.assetCode}</div>
+                        </div>
+                      </div>
+                      <div style={{color:"#1a1a1a"}}>
+                        {a.currentCustodian
+                          ? a.currentCustodian.name
+                          : (a.assignmentType === "shared"
+                              ? <span style={{color:"#666",fontStyle:"italic"}}>{isRTL?"مُشترك":"Shared"}</span>
+                              : <span style={{color:"#A32D2D"}}>{isRTL?"غير مُسند":"Unassigned"}</span>)
+                        }
+                      </div>
+                      <div style={{color:"#666"}}>{a.branchId ? a.branchId.name : "—"}</div>
+                      <div style={{textAlign:"center"}}>{statusBadge(a.status)}</div>
+                      <div style={{textAlign:isRTL?"left":"right",color:"#1a1a1a",fontFamily:"ui-monospace, SFMono-Regular, monospace",fontSize:12}}>{fmtEGP(a.purchasePrice)}</div>
+                    </div>;
+                  })
+            }
+          </div>
+        </div>;
+      })()}
+
+      {/* ---------- FORM VIEW (create + edit) ---------- */}
+      {subPage === "new" && (function() {
+        var setF = function(k, v) { setForm(Object.assign({}, form, k.constructor === Object ? k : (function(){var o={}; o[k]=v; return o;})())); };
+        var pickedCat = categories.find(function(c){ return String(c._id) === String(form.categoryId); });
+        // Auto-set assignment type when category changes (only in create mode)
+        var onCategoryChange = function(e) {
+          var newId = e.target.value;
+          var cat = categories.find(function(c){ return String(c._id) === String(newId); });
+          var next = Object.assign({}, form, { categoryId:newId });
+          if (formMode === "create" && cat) next.assignmentType = cat.defaultAssignmentType || "personal";
+          setForm(next);
+        };
+        var custodianCandidates = (p.users || []).filter(function(u){ return u && u.active !== false; });
+        return <div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+            <button type="button" onClick={goList} style={btnGhost}>{isRTL?"← رجوع":"← Back"}</button>
+            <div style={{fontSize:18,fontWeight:500,color:"#1a1a1a"}}>
+              {formMode === "edit" ? (isRTL?"تعديل الأصل":"Edit asset") : (isRTL?"أصل جديد":"New asset")}
+            </div>
+          </div>
+
+          <div style={Object.assign({}, cardWrap, { padding:22, maxWidth:760 })}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+              <div>
+                <label style={fieldLabel}>{isRTL?"اسم الأصل":"Name"} *</label>
+                <input style={inputStyle} value={form.name} onChange={function(e){setForm(Object.assign({},form,{name:e.target.value}));}} placeholder="Dell Latitude 5540"/>
+              </div>
+              <div>
+                <label style={fieldLabel}>{isRTL?"التصنيف":"Category"} *</label>
+                <select style={inputStyle} value={form.categoryId} onChange={onCategoryChange}>
+                  <option value="">{isRTL?"اختار…":"Choose…"}</option>
+                  {categories.map(function(c){ return <option key={c._id} value={c._id}>{c.nameAr || c.name} ({c.codePrefix})</option>; })}
+                </select>
+              </div>
+              <div>
+                <label style={fieldLabel}>{isRTL?"الفرع":"Branch"} *</label>
+                <select style={inputStyle} value={form.branchId} onChange={function(e){setForm(Object.assign({},form,{branchId:e.target.value}));}}>
+                  <option value="">{isRTL?"اختار…":"Choose…"}</option>
+                  {branches.map(function(b){ return <option key={b._id} value={b._id}>{b.name} ({b.code})</option>; })}
+                </select>
+              </div>
+              <div>
+                <label style={fieldLabel}>{isRTL?"نوع العهدة":"Assignment type"}</label>
+                <select style={inputStyle} value={form.assignmentType} onChange={function(e){setForm(Object.assign({},form,{assignmentType:e.target.value}));}}>
+                  <option value="personal">{isRTL?"شخصي":"Personal"}</option>
+                  <option value="shared">{isRTL?"مُشترك":"Shared"}</option>
+                </select>
+              </div>
+              <div>
+                <label style={fieldLabel}>{isRTL?"سعر الشراء":"Purchase price"} (EGP)</label>
+                <input style={inputStyle} type="number" min="0" step="1" value={form.purchasePrice} onChange={function(e){setForm(Object.assign({},form,{purchasePrice:e.target.value}));}}/>
+              </div>
+              <div>
+                <label style={fieldLabel}>{isRTL?"تاريخ الشراء":"Purchase date"}</label>
+                <input style={inputStyle} type="date" value={form.purchaseDate} onChange={function(e){setForm(Object.assign({},form,{purchaseDate:e.target.value}));}}/>
+              </div>
+              <div>
+                <label style={fieldLabel}>{isRTL?"المورّد":"Supplier"} <span style={{color:"#888"}}>{isRTL?"(اختياري)":"(optional)"}</span></label>
+                <input style={inputStyle} value={form.supplier} onChange={function(e){setForm(Object.assign({},form,{supplier:e.target.value}));}} placeholder="B.TECH"/>
+              </div>
+              <div>
+                <label style={fieldLabel}>{isRTL?"الرقم التسلسلي":"Serial number"} <span style={{color:"#888"}}>{isRTL?"(اختياري)":"(optional)"}</span></label>
+                <input style={inputStyle} value={form.serialNumber} onChange={function(e){setForm(Object.assign({},form,{serialNumber:e.target.value}));}}/>
+              </div>
+              {/* Initial custodian — only on create + when assignmentType is personal. */}
+              {formMode === "create" && form.assignmentType === "personal" && <div style={{gridColumn:"1 / -1"}}>
+                <label style={fieldLabel}>{isRTL?"حامل العهدة الأولي":"Initial custodian"} {formMode==="create" ? "*" : ""}</label>
+                <select style={inputStyle} value={form.currentCustodian} onChange={function(e){setForm(Object.assign({},form,{currentCustodian:e.target.value}));}}>
+                  <option value="">{isRTL?"اختار موظف…":"Choose a user…"}</option>
+                  {custodianCandidates.map(function(u){ return <option key={u._id} value={u._id}>{u.name} ({u.username})</option>; })}
+                </select>
+                <div style={{fontSize:11,color:"#888",marginTop:4}}>{isRTL?"الأصول الشخصية النشطة لازمها حامل عهدة.":"Personal active assets require a custodian."}</div>
+              </div>}
+              <div style={{gridColumn:"1 / -1"}}>
+                <label style={fieldLabel}>{isRTL?"ملاحظات":"Notes"} <span style={{color:"#888"}}>{isRTL?"(اختياري)":"(optional)"}</span></label>
+                <textarea style={Object.assign({}, inputStyle, { minHeight:70, resize:"vertical" })} value={form.notes} onChange={function(e){setForm(Object.assign({},form,{notes:e.target.value}));}}/>
+              </div>
+            </div>
+
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+              <button type="button" onClick={saveForm} disabled={formSaving} style={Object.assign({}, btnPrimary, {opacity:formSaving?0.6:1, cursor:formSaving?"not-allowed":"pointer"})}>
+                {formSaving ? (isRTL?"جاري الحفظ…":"Saving…") : (formMode === "edit" ? (isRTL?"حفظ التغييرات":"Save changes") : (isRTL?"إضافة الأصل":"Create asset"))}
+              </button>
+              <button type="button" onClick={goList} style={btnGhost}>{isRTL?"إلغاء":"Cancel"}</button>
+              {formError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{formError}</span>}
+              {pickedCat && formMode === "create" && <span style={{fontSize:11,color:"#666"}}>{isRTL?"الكود سيتولّد تلقائياً":"Code will be auto-generated"} (ARO-{pickedCat.codePrefix}-####)</span>}
+            </div>
+          </div>
+        </div>;
+      })()}
+
+      {/* ---------- DETAIL VIEW ---------- */}
+      {subPage === "detail" && (function() {
+        if (detailLoading || (!detailAsset && !detailError)) {
+          return <div>
+            <button type="button" onClick={goList} style={Object.assign({}, btnGhost, {marginBottom:16})}>{isRTL?"← رجوع":"← Back"}</button>
+            <div style={{fontSize:13,color:"#666"}}>{isRTL?"جاري التحميل…":"Loading…"}</div>
+          </div>;
+        }
+        if (detailError) {
+          return <div>
+            <button type="button" onClick={goList} style={Object.assign({}, btnGhost, {marginBottom:16})}>{isRTL?"← رجوع":"← Back"}</button>
+            <div style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"10px 14px",borderRadius:8}}>{detailError}</div>
+          </div>;
+        }
+        var a = detailAsset;
+        var cat = a.categoryId || {};
+        var br  = a.branchId   || {};
+        var cust= a.currentCustodian;
+        var dt  = a.purchaseDate ? new Date(a.purchaseDate).toLocaleDateString("en-GB") : "—";
+        var label = function(k){ return <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:4}}>{k}</div>; };
+        var value = function(v){ return <div style={{fontSize:13,color:"#1a1a1a",marginBottom:14}}>{v || "—"}</div>; };
+        var canEdit = a.status !== "retired";
+        return <div>
+          {/* Header */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
+              <button type="button" onClick={goList} style={btnGhost}>{isRTL?"← رجوع":"← Back"}</button>
+              <div style={{minWidth:0}}>
+                <div style={{fontSize:18,fontWeight:500,color:"#1a1a1a",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.name}</div>
+                <div style={{fontSize:12,color:"#666",fontFamily:"ui-monospace, SFMono-Regular, monospace",marginTop:2}}>{a.assetCode}</div>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              {statusBadge(a.status)}
+              {canEdit && <button type="button" onClick={function(){ openEdit(a); }} style={btnGhost}>{isRTL?"تعديل":"Edit"}</button>}
+              {canEdit && <button type="button" onClick={doDelete} disabled={deleting} style={Object.assign({}, btnDanger, {opacity:deleting?0.6:1, cursor:deleting?"not-allowed":"pointer"})}>{deleting ? (isRTL?"...":"...") : (isRTL?"إنهاء (Retire)":"Retire")}</button>}
+            </div>
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"260px 1fr",gap:16,alignItems:"start"}}>
+            {/* Left: QR placeholder (rendering ships in S4) */}
+            <div style={Object.assign({}, cardWrap, { padding:18 })}>
+              <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:10}}>{isRTL?"كود QR":"QR Code"}</div>
+              <div style={{aspectRatio:"1/1", background:"#F4F4F4", border:"0.5px dashed rgba(0,0,0,0.15)", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:6, color:"#888", fontSize:12, textAlign:"center", padding:14}}>
+                <div style={{fontSize:24}}>▦</div>
+                <div>{isRTL?"التصيير في Slice 4":"Rendering in Slice 4"}</div>
+              </div>
+              <div style={{fontSize:10,color:"#888",marginTop:10,wordBreak:"break-all",fontFamily:"ui-monospace, SFMono-Regular, monospace",lineHeight:1.4}}>{a.qrCodeData}</div>
+            </div>
+
+            {/* Right: Fields + custodian card */}
+            <div style={Object.assign({}, cardWrap, { padding:20 })}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18}}>
+                <div>
+                  {label(isRTL?"التصنيف":"Category")}
+                  {value((cat.nameAr || cat.name || "—") + (cat.codePrefix ? " ("+cat.codePrefix+")" : ""))}
+                  {label(isRTL?"الفرع":"Branch")}
+                  {value(br.name ? br.name + " ("+br.code+")" : "—")}
+                  {label(isRTL?"نوع العهدة":"Assignment type")}
+                  {value(a.assignmentType === "shared" ? (isRTL?"مُشترك":"Shared") : (isRTL?"شخصي":"Personal"))}
+                  {label(isRTL?"سعر الشراء":"Purchase price")}
+                  {value(fmtEGP(a.purchasePrice))}
+                </div>
+                <div>
+                  {label(isRTL?"تاريخ الشراء":"Purchase date")}
+                  {value(dt)}
+                  {label(isRTL?"المورّد":"Supplier")}
+                  {value(a.supplier)}
+                  {label(isRTL?"الرقم التسلسلي":"Serial number")}
+                  {value(a.serialNumber)}
+                  {label(isRTL?"الملاحظات":"Notes")}
+                  {value(a.notes)}
+                </div>
+              </div>
+
+              {/* Custodian card */}
+              <div style={{marginTop:10,padding:14,background:"#FAFAF9",border:"0.5px solid rgba(0,0,0,0.06)",borderRadius:10}}>
+                <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:8}}>{isRTL?"حامل العهدة الحالي":"Current custodian"}</div>
+                {cust ? <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{width:36,height:36,borderRadius:"50%",background:"#E6F1FB",color:"#185FA5",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:14}}>{(cust.name||"?")[0]}</div>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:500,color:"#1a1a1a"}}>{cust.name}</div>
+                    <div style={{fontSize:11,color:"#666"}}>{cust.username} · {cust.role}</div>
+                  </div>
+                </div> : <div style={{fontSize:13,color:"#666",fontStyle:"italic"}}>{a.assignmentType === "shared" ? (isRTL?"أصل مُشترك — مفيش حامل عهدة شخصي":"Shared asset — no personal custodian") : (isRTL?"غير مُسند":"Unassigned")}</div>}
+              </div>
+
+              {/* Custody action stubs (S3) */}
+              <div style={{marginTop:14,paddingTop:14,borderTop:"0.5px dashed rgba(0,0,0,0.1)"}}>
+                <div style={{fontSize:11,color:"#888",fontStyle:"italic"}}>{isRTL?"نقل العهدة، الإرجاع، تعديل الحالة، طباعة QR — في Slices 3-4":"Transfer custody · Return · Mark status · Print QR — in slices 3–4"}</div>
+              </div>
+            </div>
+          </div>
+        </div>;
+      })()}
+
+    </div>
+  </div>;
+};
+
 // ===== KPIs PAGE (Sales only) =====
 var KPIsPage = function(p) {
   var uid = String(p.cu.id);
@@ -17888,7 +18404,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings};
+  var titles={dashboard:t.dashboard,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings,assets:t.dir==="rtl"?"الأصول":"Assets"};
   // Server already filters users by role — p.users IS the team
   var myId = String(currentUser.id||currentUser._id||"");
 
@@ -17947,6 +18463,7 @@ export default function CRMApp() {
       case "offsiteRequests": return <AttendancePage {...sp} initTab="offsiteRequests"/>;
       case "companyOffDays":  return <AttendancePage {...sp} initTab="companyOffDays"/>;
       case "settings": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
+      case "assets":   return (currentUser.role==="admin"||currentUser.isOwner===true) ? <AssetTrackerPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
       default: return <DashboardPage {...sp}/>;
     }
   };

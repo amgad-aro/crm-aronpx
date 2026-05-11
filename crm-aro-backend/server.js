@@ -15751,6 +15751,157 @@ app.patch("/api/branches/:id", auth, requireAssetAccess, async function(req, res
   }
 });
 
+// ===== ASSET TRACKER — Asset CRUD (S2) =====
+// Read/create/update/soft-delete for the Asset model. Custody transfer +
+// return + status flips live in /transfer, /return, /mark-status (S3). PATCH
+// here deliberately rejects currentCustodian changes — that path is custody.
+
+var ASSET_POPULATE = [
+  { path: "categoryId",       select: "name nameAr group codePrefix icon defaultAssignmentType" },
+  { path: "branchId",         select: "name code address" },
+  { path: "currentCustodian", select: "name username role" }
+];
+
+app.get("/api/assets", auth, requireAssetAccess, async function(req, res) {
+  try {
+    var q = {};
+    if (req.query.status) q.status = String(req.query.status);
+    if (req.query.branch && mongoose.Types.ObjectId.isValid(req.query.branch)) q.branchId = req.query.branch;
+    if (req.query.categoryId && mongoose.Types.ObjectId.isValid(req.query.categoryId)) q.categoryId = req.query.categoryId;
+    if (req.query.custodian && mongoose.Types.ObjectId.isValid(req.query.custodian)) q.currentCustodian = req.query.custodian;
+    if (req.query.group) {
+      var cats = await AssetCategory.find({ group: String(req.query.group) }).select("_id").lean();
+      q.categoryId = { $in: cats.map(function(c){ return c._id; }) };
+    }
+    if (req.query.search) {
+      var s = String(req.query.search).trim();
+      if (s) {
+        var rx = new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+        q.$or = [{ assetCode: rx }, { name: rx }, { serialNumber: rx }];
+      }
+    }
+    var rows = await Asset.find(q).populate(ASSET_POPULATE).sort({ createdAt: -1 }).lean();
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/assets/:assetCode", auth, requireAssetAccess, async function(req, res) {
+  try {
+    var doc = await Asset.findOne({ assetCode: req.params.assetCode }).populate(ASSET_POPULATE).lean();
+    if (!doc) return res.status(404).json({ error: "Asset not found" });
+    res.json(doc);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/assets", auth, requireAssetAccess, async function(req, res) {
+  try {
+    var b = req.body || {};
+    if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: "Name is required" });
+    if (!b.categoryId || !mongoose.Types.ObjectId.isValid(b.categoryId)) return res.status(400).json({ error: "Category is required" });
+    if (!b.branchId || !mongoose.Types.ObjectId.isValid(b.branchId)) return res.status(400).json({ error: "Branch is required" });
+    var cat = await AssetCategory.findById(b.categoryId).lean();
+    if (!cat) return res.status(400).json({ error: "Category not found" });
+    var assignmentType = (b.assignmentType === "personal" || b.assignmentType === "shared") ? b.assignmentType : cat.defaultAssignmentType;
+    var status = b.status || "active";
+    var custodian = (b.currentCustodian && mongoose.Types.ObjectId.isValid(b.currentCustodian)) ? b.currentCustodian : null;
+    if (assignmentType === "shared") custodian = null; // shared assets never carry a personal custodian
+    if (assignmentType === "personal" && status === "active" && !custodian) {
+      return res.status(400).json({ error: "Personal active assets need a custodian. Pick a user, set the asset to shared, or change status." });
+    }
+    var doc = await Asset.create({
+      name:             String(b.name).trim(),
+      categoryId:       b.categoryId,
+      branchId:         b.branchId,
+      purchasePrice:    Number(b.purchasePrice) || 0,
+      purchaseDate:     b.purchaseDate ? new Date(b.purchaseDate) : null,
+      supplier:         String(b.supplier || "").trim(),
+      serialNumber:     String(b.serialNumber || "").trim(),
+      assignmentType:   assignmentType,
+      currentCustodian: custodian,
+      status:           status,
+      notes:            String(b.notes || "").trim()
+      // assetCode + qrCodeData are auto-minted by the pre-save hook.
+    });
+    // Spec: detail-page timeline must always open with a "registered" event.
+    // If the asset is created already assigned to someone, log that as a
+    // separate "assigned" row so the audit trail shows the initial custody.
+    await CustodyHistory.create({
+      assetId:      doc._id,
+      fromUserId:   null,
+      toUserId:     custodian,
+      fromBranchId: null,
+      toBranchId:   doc.branchId,
+      action:       custodian ? "assigned" : "registered",
+      notes:        custodian ? "Registered and assigned on creation" : "Registered",
+      performedBy:  req.user.id,
+      performedAt:  new Date()
+    });
+    var full = await Asset.findById(doc._id).populate(ASSET_POPULATE).lean();
+    res.json(full);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch("/api/assets/:id", auth, requireAssetAccess, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var b = req.body || {};
+    var patch = {};
+    if (typeof b.name === "string") {
+      var nm = b.name.trim();
+      if (!nm) return res.status(400).json({ error: "Name cannot be empty" });
+      patch.name = nm;
+    }
+    if (b.branchId && mongoose.Types.ObjectId.isValid(b.branchId))         patch.branchId   = b.branchId;
+    if (b.categoryId && mongoose.Types.ObjectId.isValid(b.categoryId))     patch.categoryId = b.categoryId;
+    if (b.purchasePrice !== undefined)                                     patch.purchasePrice = Number(b.purchasePrice) || 0;
+    if (b.purchaseDate !== undefined)                                      patch.purchaseDate  = b.purchaseDate ? new Date(b.purchaseDate) : null;
+    if (typeof b.supplier === "string")                                    patch.supplier     = b.supplier.trim();
+    if (typeof b.serialNumber === "string")                                patch.serialNumber = b.serialNumber.trim();
+    if (typeof b.notes === "string")                                       patch.notes        = b.notes.trim();
+    if (b.assignmentType === "personal" || b.assignmentType === "shared")  patch.assignmentType = b.assignmentType;
+    // currentCustodian + status + assetCode + qrCodeData are deliberately not editable here.
+    // currentCustodian → /transfer + /return. status → /mark-status. The other two are server-generated.
+    if (Object.keys(patch).length === 0) return res.status(400).json({ error: "No fields to update" });
+    var doc = await Asset.findByIdAndUpdate(req.params.id, { $set: patch }, { new: true }).populate(ASSET_POPULATE).lean();
+    if (!doc) return res.status(404).json({ error: "Asset not found" });
+    res.json(doc);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/assets/:id", auth, requireAssetAccess, async function(req, res) {
+  // Soft delete only — set status=retired and clear current custodian. Writes
+  // a "retired" CustodyHistory row so the timeline keeps the trail intact.
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var current = await Asset.findById(req.params.id).lean();
+    if (!current) return res.status(404).json({ error: "Asset not found" });
+    if (current.status === "retired") return res.status(400).json({ error: "Asset is already retired" });
+    var doc = await Asset.findByIdAndUpdate(req.params.id, { $set: { status: "retired", currentCustodian: null } }, { new: true });
+    await CustodyHistory.create({
+      assetId:      current._id,
+      fromUserId:   current.currentCustodian || null,
+      toUserId:     null,
+      fromBranchId: current.branchId,
+      toBranchId:   current.branchId,
+      action:       "retired",
+      notes:        (req.body && req.body.notes) ? String(req.body.notes).trim() : "",
+      performedBy:  req.user.id,
+      performedAt:  new Date()
+    });
+    res.json({ ok: true, asset: doc });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);
