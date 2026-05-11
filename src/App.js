@@ -9605,6 +9605,11 @@ var DailyRequestsPage = function(p) {
   var [selected2,setSelected2]=useState([]);
   var [showBulk,setShowBulk]=useState(false);
   var [bulkAgent,setBulkAgent]=useState("");
+  // Admin-only DR edit modal (mirrors LeadsPage side-panel edit). Owner role
+  // only — gated on p.cu.role === "admin" at the side-panel button below.
+  var [editReq,setEditReq]=useState(null);
+  var [editForm,setEditForm]=useState({name:"",phone:"",phone2:"",propertyType:"",area:"",budget:"",agentId:"",callbackTime:"",status:"NewLead",notes:""});
+  var [editSaving,setEditSaving]=useState(false);
 
   useEffect(function(){
     apiFetch("/api/daily-requests","GET",null,p.token)
@@ -9745,6 +9750,53 @@ var DailyRequestsPage = function(p) {
       var acts=await apiFetch("/api/daily-requests/"+rid+"/history","GET",null,p.token);
       setDrHistory(function(prev){var upd={};upd[rid]=acts||[];return Object.assign({},prev,upd);});
     }catch(e){}
+  };
+
+  // Admin-only edit flow. Mirrors LeadsPage side-panel edit (App.js ~L4170 + L4449).
+  // Backend: PUT /api/daily-requests/:id — handles agentId normalization,
+  // lastActivityTime stamping, and EOI/DoneDeal transition side-effects
+  // (preEoiStatus / preDealStatus stamping at server.js:8657-8664).
+  var openEditReq=function(r){
+    if(!r) return;
+    var aid = r.agentId && r.agentId._id ? String(r.agentId._id) : (r.agentId ? String(r.agentId) : "");
+    setEditForm({
+      name: r.name||"",
+      phone: r.phone||"",
+      phone2: r.phone2||"",
+      propertyType: r.propertyType||"",
+      area: r.area||"",
+      budget: r.budget||"",
+      agentId: aid,
+      callbackTime: r.callbackTime||"",
+      status: r.status||"NewLead",
+      notes: r.notes||""
+    });
+    setEditReq(r);
+  };
+  var saveEditReq=async function(){
+    if(!editReq) return;
+    if(!editForm.name||!editForm.name.trim()){alert("Name is required");return;}
+    if(!editForm.phone||!editForm.phone.trim()){alert("Phone is required");return;}
+    setEditSaving(true);
+    try{
+      var payload={
+        name: editForm.name||"",
+        phone: editForm.phone||"",
+        phone2: editForm.phone2||"",
+        propertyType: editForm.propertyType||"",
+        area: editForm.area||"",
+        budget: editForm.budget||"",
+        agentId: editForm.agentId||"",
+        callbackTime: editForm.callbackTime||"",
+        status: editForm.status||"NewLead",
+        notes: editForm.notes||""
+      };
+      var updated=await apiFetch("/api/daily-requests/"+gid(editReq),"PUT",payload,p.token);
+      setRequests(function(prev){return prev.map(function(x){return gid(x)===gid(updated)?updated:x;});});
+      if(selected && gid(selected)===gid(updated)) setSelected(updated);
+      setEditReq(null);
+    }catch(e){alert(e.message||"Failed to save");}
+    setEditSaving(false);
   };
 
   var logActivity=async function(){
@@ -10116,7 +10168,10 @@ var DailyRequestsPage = function(p) {
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
-            <button onClick={function(){openDrHistory(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title="History">📋</button>
+            <div style={{ display:"flex", gap:5 }}>
+              {p.cu&&p.cu.role==="admin"&&<button onClick={function(){openEditReq(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.edit}><Edit size={11}/></button>}
+              <button onClick={function(){openDrHistory(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title="History">📋</button>
+            </div>
           </div>
           <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selected.name}</div>
           <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}><PhoneCell phone={selected.phone}/>{selected.phone2?<>{" / "}<PhoneCell phone={selected.phone2}/></>:""}</div>
@@ -10214,6 +10269,27 @@ var DailyRequestsPage = function(p) {
         : <Inp label={"Feedback *"} req type="textarea" value={form.notes} onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/>}
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addReq} loading={saving} style={{ flex:1 }}>Add Number</Btn></div>
     </Modal>
+
+    {/* Admin-only edit modal (Owner role only — gated at the side-panel button) */}
+    {editReq&&<Modal show={true} onClose={function(){if(!editSaving)setEditReq(null);}} title={"✏️ Edit Request"}>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={"Name *"} req value={editForm.name} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{name:e.target.value});})}}/></div>
+        <Inp label={"Phone *"} req value={editForm.phone} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{phone:e.target.value});})}}/>
+        <Inp label={"Alt. Phone"} value={editForm.phone2} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{phone2:e.target.value});})}}/>
+        <Inp label={"Property Type"} type="select" value={editForm.propertyType} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{propertyType:e.target.value});})}} options={[""].concat(PROP_TYPES).map(function(x){return{value:x,label:x||"- Select -"};})}/>
+        <Inp label={"Location"} value={editForm.area} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{area:e.target.value});})}}/>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={"Budget"} value={editForm.budget} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{budget:(function(){var rb=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return rb?Number(rb).toLocaleString():"";})()});})}}/></div>
+      </div>
+      <Inp label={t.agent} type="select" value={editForm.agentId} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>
+      <Inp label={t.callbackTime} type="datetime-local" value={editForm.callbackTime?String(editForm.callbackTime).slice(0,16):""} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/>
+      <Inp label={t.status} type="select" value={editForm.status||"NewLead"} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{status:e.target.value});})}} options={sc.map(function(s){return{value:s.value,label:s.label};})}/>
+      <Inp label={"Feedback"} type="textarea" value={editForm.notes} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/>
+      <div style={{ display:"flex", gap:10 }}>
+        <Btn outline onClick={function(){setEditReq(null);}} disabled={editSaving} style={{ flex:1 }}>{t.cancel}</Btn>
+        <Btn onClick={saveEditReq} loading={editSaving} style={{ flex:1 }}>💾 Save Changes</Btn>
+      </div>
+    </Modal>}
+
     <Modal show={showBulk} onClose={function(){setShowBulk(false);}} title={"Bulk Reassign"}>
       {selected2.length===0
         ?<div style={{ padding:"16px", textAlign:"center", color:C.danger, fontSize:13 }}>⚠️ Please select leads first using the checkboxes</div>
