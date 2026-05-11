@@ -1197,7 +1197,12 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
 // cascadeCommissionCancel — flips active commission for a lead to cancelled,
 // closes any open cycles, leaves paid_to_team cycles untouched (history must
 // survive). Used by the deal-cancel hook.
-async function cascadeCommissionCancel(leadId, reason) {
+//
+// actingUser is required to write a valid Activity row (Activity.userId is
+// required: true). When called from a non-request context (cron, sweeper),
+// pass null and the Activity write is skipped — the console log is the
+// audit trail in that case.
+async function cascadeCommissionCancel(leadId, reason, actingUser) {
   try {
     var commissions = await Commission.find({ leadId: leadId, status: "active" });
     if (!commissions.length) return 0;
@@ -1218,14 +1223,20 @@ async function cascadeCommissionCancel(leadId, reason) {
       }
       await c.save();
     }
-    try {
-      await Activity.create({
-        userId: null,
-        leadId: leadId,
-        type: "status_change",
-        note: "[Commission] " + (reason || "Deal cancelled — cascaded to commission")
-      });
-    } catch(e){}
+    if (actingUser && actingUser.id) {
+      try {
+        await Activity.create({
+          userId: actingUser.id,
+          leadId: leadId,
+          type: "status_change",
+          note: "[Commission] " + (reason || "Deal cancelled — cascaded to commission")
+        });
+      } catch(e){
+        console.error("[cascadeCommissionCancel activity]", e && e.message ? e.message : e);
+      }
+    } else {
+      console.log("[cascadeCommissionCancel] no actingUser — skipped Activity row for lead " + String(leadId));
+    }
     return commissions.length;
   } catch (e) {
     console.error("[cascadeCommissionCancel]", e && e.message ? e.message : e);
@@ -6208,7 +6219,7 @@ app.post("/api/leads/:id/deal-cancel", auth, async function(req, res) {
       catch(syncErr){ console.error("DR sync (deal-cancel) error:", syncErr.message); }
     }
     try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[HotCase] Deal cancelled — returned to Hot Case" }); } catch(e){}
-    try { await cascadeCommissionCancel(req.params.id, "Deal cancelled by " + (req.user && req.user.name ? req.user.name : "admin")); } catch(e){ console.error("[commission hook deal-cancel]", e && e.message); }
+    try { await cascadeCommissionCancel(req.params.id, "Deal cancelled by " + (req.user && req.user.name ? req.user.name : "admin"), req.user); } catch(e){ console.error("[commission hook deal-cancel]", e && e.message); }
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(lead);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -6228,7 +6239,7 @@ app.post("/api/daily-requests/:id/deal-cancel", auth, async function(req, res) {
         var mirror = await Lead.findOne({ phone: existing.phone, source: "Daily Request" });
         if (mirror) {
           await Lead.findByIdAndUpdate(mirror._id, { status: restored, dealStatus: "Deal Cancelled", dealApproved: false, preDealStatus: "", lastActivityTime: new Date() });
-          try { await cascadeCommissionCancel(mirror._id, "Deal cancelled (DR side) by " + (req.user && req.user.name ? req.user.name : "admin")); } catch(e){ console.error("[commission hook dr-deal-cancel]", e && e.message); }
+          try { await cascadeCommissionCancel(mirror._id, "Deal cancelled (DR side) by " + (req.user && req.user.name ? req.user.name : "admin"), req.user); } catch(e){ console.error("[commission hook dr-deal-cancel]", e && e.message); }
         }
       } catch(syncErr){ console.error("Lead mirror (deal-cancel) error:", syncErr.message); }
     }
@@ -14026,6 +14037,449 @@ app.get("/api/commissions/:id", auth, salesAdminOnly, async function(req, res) {
     res.status(500).json({ error: e && e.message ? e.message : "commission_get_failed" });
   }
 });
+
+// ===== COMMISSIONS — Phase D write endpoints (admin / sales_admin only) =====
+
+// Helper: log a commission Activity row. Activity.userId is required, so we
+// silently skip when actingUser is missing (cron path) and console.log instead.
+async function logCommissionActivity(actingUser, leadId, type, note) {
+  if (!actingUser || !actingUser.id) {
+    console.log("[commission activity] no actingUser — skipped (" + type + ", lead " + String(leadId) + ")");
+    return;
+  }
+  try {
+    await Activity.create({
+      userId: actingUser.id,
+      leadId: leadId || null,
+      type: type,
+      note: note || ""
+    });
+  } catch(e){
+    console.error("[commission activity " + type + "]", e && e.message ? e.message : e);
+  }
+}
+
+// Helper: validate a recipient distribution payload. Returns null on success
+// or a string error message.
+function validateDistributionPayload(d) {
+  if (!d || typeof d !== "object") return null; // partial — skip
+  if (d.distributionType !== undefined &&
+      d.distributionType !== "percentage" && d.distributionType !== "fixed_egp") {
+    return "distributionType must be 'percentage' or 'fixed_egp'";
+  }
+  if (d.value !== undefined) {
+    var v = Number(d.value);
+    if (!isFinite(v) || v < 0) return "value must be a non-negative number";
+  }
+  return null;
+}
+
+// Helper: compute payoutBreakdown for a cycle hitting "received" state.
+// Walks the snapshot recipient roles in order (sales, TL, mgr, dir + split
+// chain when present), applies % or fixed_egp rules per the Phase D spec,
+// then merges entries with the same userName so a person who appears in both
+// chains (split deal) shows up as a single summed line.
+function computeCyclePayoutBreakdown(snapshot, amount) {
+  if (!snapshot || !(amount > 0)) return [];
+  var ordered = [];
+  function push(r) {
+    if (r && Number(r.value || 0) > 0) ordered.push(r);
+  }
+  push(snapshot.salesAgent);
+  push(snapshot.teamLeader);
+  push(snapshot.manager);
+  push(snapshot.director);
+  if (snapshot.isSplitDeal && snapshot.splitChain) {
+    push(snapshot.splitChain.salesAgent2);
+    push(snapshot.splitChain.teamLeader2);
+    push(snapshot.splitChain.manager2);
+    push(snapshot.splitChain.director2);
+  }
+  var remaining = Number(amount);
+  var rows = [];
+  for (var i = 0; i < ordered.length; i++) {
+    var r = ordered[i];
+    var payout = 0;
+    if (r.distributionType === "fixed_egp") {
+      payout = Math.min(Number(r.value), Math.max(0, remaining));
+    } else {
+      payout = Number(amount) * (Number(r.value) / 100);
+    }
+    if (payout <= 0) continue;
+    remaining -= payout;
+    rows.push({
+      userName: r.userName,
+      userId: r.userId || null,
+      role: r.role,
+      amount: payout
+    });
+  }
+  // Merge by userName — same person appearing in both chains sums up.
+  var merged = {};
+  var order = [];
+  rows.forEach(function(r){
+    var key = r.userName || "(unknown)";
+    if (merged[key]) {
+      merged[key].amount += r.amount;
+    } else {
+      merged[key] = { userName: r.userName, userId: r.userId, role: r.role, amount: r.amount };
+      order.push(key);
+    }
+  });
+  return order.map(function(k){ return merged[k]; });
+}
+
+// PATCH snapshot — partial edit of snapshot fields + per-role distribution.
+app.patch("/api/commissions/:id/snapshot", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+
+    var body = req.body || {};
+    var changed = [];
+    // Snapshot-side fields live under c.snapshot.*; expectedTotal +
+    // expectedCollectionDate live at the top level of the Commission doc.
+    var snapshotFields = ["developer","unitDetails","dealTotal"];
+    var topFields      = ["expectedTotal","expectedCollectionDate"];
+    for (var si = 0; si < snapshotFields.length; si++) {
+      var sf = snapshotFields[si];
+      if (body[sf] === undefined) continue;
+      if (sf === "dealTotal") {
+        var n = Number(body[sf]);
+        if (!isFinite(n) || n < 0) return res.status(400).json({ error: sf + " must be a non-negative number" });
+        c.snapshot[sf] = n;
+      } else {
+        c.snapshot[sf] = String(body[sf] || "");
+      }
+      changed.push(sf);
+    }
+    for (var ti = 0; ti < topFields.length; ti++) {
+      var tf = topFields[ti];
+      if (body[tf] === undefined) continue;
+      if (tf === "expectedTotal") {
+        var en = Number(body[tf]);
+        if (!isFinite(en) || en < 0) return res.status(400).json({ error: tf + " must be a non-negative number" });
+        c[tf] = en;
+      } else {
+        c[tf] = String(body[tf] || "");
+      }
+      changed.push(tf);
+    }
+
+    var primaryRoles = ["salesAgent","teamLeader","manager","director"];
+    var splitRoles   = ["salesAgent2","teamLeader2","manager2","director2"];
+    function applyDistribution(target, payload, label) {
+      if (!payload || typeof payload !== "object") return null;
+      if (!target) return "no recipient at " + label + " to update";
+      var err = validateDistributionPayload(payload);
+      if (err) return err;
+      if (payload.distributionType !== undefined) target.distributionType = payload.distributionType;
+      if (payload.value !== undefined) target.value = Number(payload.value);
+      changed.push(label);
+      return null;
+    }
+    for (var k = 0; k < primaryRoles.length; k++) {
+      var pr = primaryRoles[k];
+      if (body[pr]) {
+        var err = applyDistribution(c.snapshot[pr], body[pr], pr);
+        if (err) return res.status(400).json({ error: err });
+      }
+    }
+    if (c.snapshot.splitChain) {
+      for (var s = 0; s < splitRoles.length; s++) {
+        var sr = splitRoles[s];
+        if (body[sr]) {
+          var err2 = applyDistribution(c.snapshot.splitChain[sr], body[sr], "splitChain." + sr);
+          if (err2) return res.status(400).json({ error: err2 });
+        }
+      }
+    }
+
+    if (changed.length === 0) return res.status(400).json({ error: "no editable fields supplied" });
+
+    c.markModified("snapshot");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_snapshot_edit", "[Commission] snapshot edit: " + changed.join(", "));
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PATCH /api/commissions/:id/snapshot]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "snapshot_edit_failed" });
+  }
+});
+
+// POST cycle — auto-numbered, state defaults to pending_claim.
+app.post("/api/commissions/:id/cycles", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (c.status === "cancelled") return res.status(400).json({ error: "cannot add a cycle to a cancelled commission" });
+
+    var expected = Number((req.body && req.body.expectedAmount) || 0);
+    if (!isFinite(expected) || expected < 0) return res.status(400).json({ error: "expectedAmount must be a non-negative number" });
+
+    var maxN = 0;
+    (c.cycles || []).forEach(function(cy){ if (cy.cycleNumber > maxN) maxN = cy.cycleNumber; });
+    c.cycles.push({
+      cycleNumber: maxN + 1,
+      state: "pending_claim",
+      expectedAmount: expected,
+      receivedAmount: 0,
+      payoutBreakdown: []
+    });
+    await c.save();
+    var newCycle = c.cycles[c.cycles.length - 1];
+    await logCommissionActivity(req.user, c.leadId, "commission_cycle_created", "[Commission] cycle " + newCycle.cycleNumber + " created (expected " + expected + " EGP)");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[POST /api/commissions/:id/cycles]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "cycle_create_failed" });
+  }
+});
+
+// PATCH cycle stage — server-enforced state machine. When stage="received",
+// computes payoutBreakdown and fires the immediate ready-for-payout
+// notification (Phase D.3).
+var CYCLE_STAGE_NEXT = {
+  pending_claim:     "claim_submitted",
+  claim_submitted:   "invoice_submitted",
+  invoice_submitted: "received",
+  received:          "paid_to_team"
+};
+app.patch("/api/commissions/:id/cycles/:cycleId/stage", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (c.status === "cancelled") return res.status(400).json({ error: "cannot advance a cancelled commission" });
+
+    var cyc = c.cycles.id(req.params.cycleId);
+    if (!cyc) return res.status(404).json({ error: "Cycle not found" });
+
+    var body = req.body || {};
+    var stage = String(body.stage || "");
+    var expectedNext = CYCLE_STAGE_NEXT[cyc.state];
+    if (!expectedNext) return res.status(400).json({ error: "cycle state '" + cyc.state + "' is terminal" });
+    if (stage !== expectedNext) {
+      return res.status(400).json({
+        error: "stage out of order: cycle is in '" + cyc.state + "', next allowed is '" + expectedNext + "', got '" + stage + "'"
+      });
+    }
+
+    var date = String(body.date || new Date().toISOString().slice(0,10));
+    var notes = String(body.notes || "");
+    var byUser = (req.user && req.user.name) || "";
+
+    cyc[stage] = { date: date, notes: notes, byUser: byUser };
+
+    var notifPayload = null;
+    if (stage === "received") {
+      var amount = Number(body.amount);
+      if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: "amount required (>0) when advancing to received" });
+      cyc.receivedAmount = amount;
+      cyc.payoutBreakdown = computeCyclePayoutBreakdown(c.snapshot, amount);
+      cyc.state = "received";
+      notifPayload = {
+        type: "commission_received_payout_ready",
+        leadId: String(c.leadId),
+        leadName: (c.snapshot && c.snapshot.customerName) || "",
+        reason: "Cycle " + cyc.cycleNumber + " received " + Math.round(amount).toLocaleString() + " EGP — ready to pay team",
+        fromName: String(c._id),
+        budget: String(amount)
+      };
+    } else if (stage === "paid_to_team") {
+      cyc.state = "paid_to_team";
+      cyc.closedAt = new Date();
+      // Roll the parent commission to fully_paid only when ALL cycles are
+      // paid_to_team or cancelled, AND received total >= expectedTotal.
+      var allClosed = (c.cycles || []).every(function(x){ return x.state === "paid_to_team" || x.state === "cancelled"; });
+      var receivedTotal = (c.cycles || []).reduce(function(s, x){ return s + Number(x.receivedAmount || 0); }, 0);
+      if (allClosed && Number(c.expectedTotal || 0) > 0 && receivedTotal >= Number(c.expectedTotal)) {
+        c.status = "fully_paid";
+      }
+    } else {
+      cyc.state = stage;
+    }
+
+    c.markModified("cycles");
+    await c.save();
+
+    // Audit row
+    var noteSuffix = stage === "received"
+      ? " (amount " + Number(body.amount).toLocaleString() + " EGP)"
+      : "";
+    await logCommissionActivity(req.user, c.leadId, "commission_stage_advance",
+      "[Commission] cycle " + cyc.cycleNumber + " → " + stage + " on " + date + noteSuffix);
+
+    // Notification (immediate fire; idempotency not required because each
+    // stage transition is a discrete, admin-initiated event)
+    if (notifPayload) {
+      try {
+        await Notification.create(notifPayload);
+        try { broadcast("notification_updated", {}); } catch(e){}
+      } catch(notifErr) {
+        console.error("[notification commission_received_payout_ready]", notifErr && notifErr.message);
+      }
+    }
+
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PATCH cycle stage]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "cycle_stage_failed" });
+  }
+});
+
+// DELETE cycle — only allowed in early states (pending_claim or
+// claim_submitted). Anything past invoice_submitted has financial
+// consequences and must not be silently removed.
+app.delete("/api/commissions/:id/cycles/:cycleId", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    var cyc = c.cycles.id(req.params.cycleId);
+    if (!cyc) return res.status(404).json({ error: "Cycle not found" });
+    if (cyc.state !== "pending_claim" && cyc.state !== "claim_submitted") {
+      return res.status(400).json({ error: "cannot delete cycle in state '" + cyc.state + "' — only pending_claim or claim_submitted are removable" });
+    }
+    var num = cyc.cycleNumber;
+    cyc.deleteOne();
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_cycle_delete", "[Commission] cycle " + num + " deleted");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[DELETE cycle]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "cycle_delete_failed" });
+  }
+});
+
+// PUT incentive — full replacement of recipients[].
+app.put("/api/commissions/:id/incentive", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    var body = req.body || {};
+    var recipients = Array.isArray(body.recipients) ? body.recipients : null;
+    if (!recipients) return res.status(400).json({ error: "recipients[] required" });
+    var ALLOWED_ROLES = ["sales","team_leader","manager","director"];
+    var clean = [];
+    for (var i = 0; i < recipients.length; i++) {
+      var r = recipients[i] || {};
+      if (!r.userName || !String(r.userName).trim()) return res.status(400).json({ error: "recipient[" + i + "].userName required" });
+      if (ALLOWED_ROLES.indexOf(r.role) < 0) return res.status(400).json({ error: "recipient[" + i + "].role must be one of " + ALLOWED_ROLES.join(",") });
+      var amt = Number(r.amount || 0);
+      if (!isFinite(amt) || amt < 0) return res.status(400).json({ error: "recipient[" + i + "].amount must be a non-negative number" });
+      var status = (r.status === "received") ? "received" : "pending";
+      var receivedDate = String(r.receivedDate || "");
+      var userId = null;
+      if (r.userId && mongoose.Types.ObjectId.isValid(r.userId)) {
+        userId = new mongoose.Types.ObjectId(r.userId);
+      }
+      clean.push({
+        userName: String(r.userName).trim(),
+        userId: userId,
+        role: r.role,
+        amount: amt,
+        status: status,
+        receivedDate: receivedDate
+      });
+    }
+    c.incentive = { recipients: clean };
+    c.markModified("incentive");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_incentive_replace", "[Commission] incentive replaced (" + clean.length + " recipient" + (clean.length === 1 ? "" : "s") + ")");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PUT incentive]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "incentive_replace_failed" });
+  }
+});
+
+// PATCH single incentive recipient — used by the quick mark-received toggle.
+app.patch("/api/commissions/:id/incentive/:index", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    var idx = parseInt(req.params.index, 10);
+    var recipients = (c.incentive && c.incentive.recipients) || [];
+    if (!isFinite(idx) || idx < 0 || idx >= recipients.length) return res.status(404).json({ error: "Recipient index out of range" });
+    var body = req.body || {};
+    if (body.status !== undefined) {
+      if (body.status !== "pending" && body.status !== "received") {
+        return res.status(400).json({ error: "status must be 'pending' or 'received'" });
+      }
+      c.incentive.recipients[idx].status = body.status;
+    }
+    if (body.receivedDate !== undefined) {
+      c.incentive.recipients[idx].receivedDate = String(body.receivedDate || "");
+    }
+    c.markModified("incentive");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_incentive_mark", "[Commission] incentive recipient " + idx + " → " + (c.incentive.recipients[idx].status));
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PATCH incentive idx]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "incentive_mark_failed" });
+  }
+});
+
+// ===== COMMISSIONS — Phase D.3 cron sweeper =====
+// Daily-ish (every 6h) check for active commissions with imminent expected
+// collection (≤7 days) AND an open cycle missing stages. One notification
+// per commission per UTC day, deduped via Commission.lastAlertedAt.
+async function sweepCommissionAlerts() {
+  if (mongoose.connection.readyState !== 1) return;
+  try {
+    var today = new Date();
+    var sevenDaysFromNow = new Date(today.getTime() + 7*24*60*60*1000);
+    var todayISO = today.toISOString().slice(0,10);
+
+    var candidates = await Commission.find({
+      status: "active",
+      expectedCollectionDate: { $ne: "" }
+    }).lean();
+
+    for (var i = 0; i < candidates.length; i++) {
+      var c = candidates[i];
+      var exp = new Date(c.expectedCollectionDate);
+      if (isNaN(exp.getTime())) continue;
+      if (exp > sevenDaysFromNow) continue;
+
+      var openCycle = (c.cycles || []).find(function(cy){
+        return cy.state === "pending_claim" || cy.state === "claim_submitted" || cy.state === "invoice_submitted";
+      });
+      if (!openCycle) continue;
+
+      if (c.lastAlertedAt) {
+        var lastISO = new Date(c.lastAlertedAt).toISOString().slice(0,10);
+        if (lastISO === todayISO) continue;
+      }
+
+      var daysLeft = Math.max(0, Math.ceil((exp.getTime() - today.getTime()) / (1000*60*60*24)));
+      try {
+        await Notification.create({
+          type: "commission_stage_missing",
+          leadId: String(c.leadId),
+          leadName: (c.snapshot && c.snapshot.customerName) || "",
+          reason: "Collection in " + daysLeft + " day" + (daysLeft === 1 ? "" : "s") + ", missing stages",
+          fromName: String(c._id),
+          budget: String(c.expectedTotal || 0)
+        });
+        await Commission.updateOne({ _id: c._id }, { $set: { lastAlertedAt: new Date() } });
+        try { broadcast("notification_updated", {}); } catch(e){}
+      } catch(notifErr) {
+        console.error("[sweepCommissionAlerts notify]", notifErr && notifErr.message);
+      }
+    }
+  } catch(e) {
+    console.error("[sweepCommissionAlerts]", e && e.message);
+  }
+}
+setInterval(sweepCommissionAlerts, 6 * 60 * 60 * 1000); // every 6h
+setTimeout(sweepCommissionAlerts, 60 * 1000);            // first run 60s after boot
 
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
