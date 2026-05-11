@@ -1056,6 +1056,10 @@ var SidebarIcon = function(id, active){
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="5.5" cy="6" r="2.5" stroke={col} strokeWidth={sw}/><circle cx="12.5" cy="6" r="2.5" stroke={col} strokeWidth={sw}/><path d="M1 15c0-2.5 2-4.5 4.5-4.5M17 15c0-2.5-2-4.5-4.5-4.5M9 15c0-2.5 2-4.5 4.5-4.5" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     case "archive":
       return <svg style={base} viewBox="0 0 18 18" fill="none"><rect x="2" y="2" width="14" height="14" rx="3" stroke={col} strokeWidth={sw}/><path d="M6 9h6" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
+    case "commissions":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M9 2v14M12.5 5.5C12 4.2 10.7 3.5 9 3.5S6 4.2 6 5.5c0 1.3 1 2 3 2.5s3 1.2 3 2.5-1.3 2-3 2-3-.7-3.5-2" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
+    case "attendance":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M9 3c-3.3 0-6 2.7-6 6c0 1.5.5 2.8 1.3 3.8M9 5c-2.2 0-4 1.8-4 4c0 1 .4 2 1 2.7M9 7c-1.1 0-2 .9-2 2c0 .5.2 1 .5 1.4M9 9v3M11 7c.6.6 1 1.4 1 2.4c0 1.8-.5 3.5-1.4 5M14 5.3c1 1 1.5 2.4 1.5 4c0 .7-.1 1.4-.3 2" stroke={col} strokeWidth={sw} strokeLinecap="round" fill="none"/></svg>;
     case "settings":
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="2.5" stroke={col} strokeWidth={sw}/><path d="M9 2v1.5M9 14.5V16M2 9h1.5M14.5 9H16M4.1 4.1l1.1 1.1M12.8 12.8l1.1 1.1M4.1 13.9l1.1-1.1M12.8 5.2l1.1-1.1" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     default:
@@ -1071,8 +1075,8 @@ var Sidebar = function(p) {
     {id:"dashboard",label:t.dashboard},
     {id:"leads",label:t.leads},
     {id:"dailyReq",label:t.dailyReq},
-    {id:"deals",label:t.deals},
     {id:"eoi",label:"EOI"},
+    {id:"deals",label:t.deals},
     isOnlyAdmin&&{id:"commissions",label:"Commissions",adminSection:true},
     {id:"tasks",label:t.tasks},
     isSalesOrTL&&{id:"kpis",label:"KPIs"},
@@ -1114,7 +1118,7 @@ var Sidebar = function(p) {
     return <button key={item.id} onClick={onClick}
       onMouseEnter={function(e){ if(!act) e.currentTarget.style.background="rgba(255,255,255,0.05)"; }}
       onMouseLeave={function(e){ if(!act) e.currentTarget.style.background="transparent"; }}
-      style={{ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:12, border:"none", cursor:"pointer",
+      style={{ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"7px 12px", borderRadius:12, border:"none", cursor:"pointer",
         background: act ? "rgba(255,255,255,0.1)" : "transparent",
         color: act ? "#fff" : "rgba(255,255,255,0.4)",
         fontSize:13, fontWeight: act?500:400, marginBottom:2, textAlign:isRTL?"right":"left",
@@ -1175,7 +1179,7 @@ var Sidebar = function(p) {
         <button onClick={p.onLogout}
           onMouseEnter={function(e){ e.currentTarget.style.background="rgba(239,68,68,0.08)"; }}
           onMouseLeave={function(e){ e.currentTarget.style.background="transparent"; }}
-          style={{ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"10px 12px", background:"transparent", border:"none", borderRadius:12, color:"#EF4444", fontSize:13, fontWeight:500, cursor:"pointer", textAlign:isRTL?"right":"left", fontFamily:"inherit" }}>
+          style={{ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"7px 12px", background:"transparent", border:"none", borderRadius:12, color:"#EF4444", fontSize:13, fontWeight:500, cursor:"pointer", textAlign:isRTL?"right":"left", fontFamily:"inherit" }}>
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{display:"block"}}><path d="M7 3H3a1 1 0 00-1 1v10a1 1 0 001 1h4M12 13l4-4-4-4M16 9H7" stroke="#EF4444" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
           <span>{t.logout}</span>
         </button>
