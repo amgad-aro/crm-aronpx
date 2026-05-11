@@ -1703,7 +1703,11 @@ var ROTATION_DEFAULTS = {
   // Phase Q — days of inactivity by the holding agent after which a lead
   // disappears from sales / manager / team_leader views. Admin / sales_admin
   // are exempt. Visibility filter only — does NOT trigger rotation.
-  staleLeadDays: 7
+  staleLeadDays: 7,
+  // Separate (longer) threshold for managerial roles (team_leader, manager,
+  // director) so supervisors see leads for longer than the holding sales
+  // agent would. Sales role continues to use staleLeadDays above.
+  staleLeadDaysManagers: 30
 };
 async function getRotationSettings() {
   var doc = await AppSetting.findOne({ key: "rotation" }).lean();
@@ -1749,7 +1753,8 @@ async function getRotationSettings() {
     rotationStopAfterDays:   Number(v.rotationStopAfterDays != null ? v.rotationStopAfterDays : D.rotationStopAfterDays),
     maxRotationsPerLead:     Number(v.maxRotationsPerLead   != null ? v.maxRotationsPerLead   : D.maxRotationsPerLead),
     manualAssignmentWindowMinutes: Number(v.manualAssignmentWindowMinutes != null ? v.manualAssignmentWindowMinutes : D.manualAssignmentWindowMinutes),
-    staleLeadDays: Number(v.staleLeadDays != null ? v.staleLeadDays : D.staleLeadDays)
+    staleLeadDays: Number(v.staleLeadDays != null ? v.staleLeadDays : D.staleLeadDays),
+    staleLeadDaysManagers: Number(v.staleLeadDaysManagers != null ? v.staleLeadDaysManagers : D.staleLeadDaysManagers)
   };
 }
 
@@ -1841,7 +1846,8 @@ app.put("/api/settings/rotation", auth, async function(req, res) {
       manualAssignmentWindowMinutes: clamp(b.manualAssignmentWindowMinutes, D.manualAssignmentWindowMinutes, 0, 120),
       // Phase Q — fall back to previously stored value when input is missing
       // or invalid (clamp returns its `def` arg on NaN / out-of-range).
-      staleLeadDays: clamp(b.staleLeadDays, (typeof prevValue.staleLeadDays === "number" ? prevValue.staleLeadDays : D.staleLeadDays), 1, 365)
+      staleLeadDays: clamp(b.staleLeadDays, (typeof prevValue.staleLeadDays === "number" ? prevValue.staleLeadDays : D.staleLeadDays), 1, 365),
+      staleLeadDaysManagers: clamp(b.staleLeadDaysManagers, (typeof prevValue.staleLeadDaysManagers === "number" ? prevValue.staleLeadDaysManagers : D.staleLeadDaysManagers), 1, 365)
     };
     await AppSetting.findOneAndUpdate({ key: "rotation" }, { $set: { value: value } }, { upsert: true, new: true });
     try {
@@ -4670,10 +4676,16 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
 // streaks, callback overdue, etc. — separate code paths) the lead rotates
 // normally; until then it stays technically assigned to the same agent,
 // just invisible to them.
-async function getStaleLeadMs() {
+async function getStaleLeadMs(role) {
   var s = await getRotationSettings();
-  var days = s && s.staleLeadDays ? Number(s.staleLeadDays) : 7;
-  if (!days || days < 1) days = 7;
+  // Managerial roles get a separate (typically longer) threshold so supervisors
+  // can see leads for longer than the holding sales agent would. Sales (and
+  // any other role passing through here) use the original staleLeadDays.
+  var isManagerial = role === "manager" || role === "team_leader" || role === "director";
+  var defaultDays = isManagerial ? 30 : 7;
+  var raw = isManagerial ? (s && s.staleLeadDaysManagers) : (s && s.staleLeadDays);
+  var days = raw ? Number(raw) : defaultDays;
+  if (!days || days < 1) days = defaultDays;
   if (days > 365) days = 365;
   return days * 24 * 60 * 60 * 1000;
 }
@@ -4747,7 +4759,7 @@ app.get("/api/leads", auth, async function(req, res) {
     var query = {};
     var role = req.user.role;
     var uid = req.user.id;
-    var STALE_LEAD_MS = await getStaleLeadMs();
+    var STALE_LEAD_MS = await getStaleLeadMs(role);
 
     if (role === "sales") {
       // Match by per-agent assignments[] slice, NOT the top-level agentId.
@@ -5170,7 +5182,7 @@ app.get("/api/leads/:id", auth, async function(req, res) {
     if (!lead) return res.status(404).json({ error: "Not found" });
     var role = req.user.role;
     var uid = String(req.user.id);
-    var STALE_LEAD_MS = await getStaleLeadMs();
+    var STALE_LEAD_MS = await getStaleLeadMs(role);
     if (role === "sales") {
       // Access is granted by presence of an assignments[] entry for the caller,
       // NOT by top-level agentId (which moves to the new owner on rotation).

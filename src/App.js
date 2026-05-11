@@ -13521,6 +13521,9 @@ var SettingsPage = function(p) {
   // Phase Q — days of inactivity by holding sales after which a lead disappears
   // from sales / manager / team_leader views. Admin / sales_admin always see all.
   var [staleLeadDays,setStaleLeadDays]=useState(7);
+  // Separate (typically longer) threshold for managerial roles (team_leader,
+  // manager, director). Sales role keeps using staleLeadDays above.
+  var [staleLeadDaysManagers,setStaleLeadDaysManagers]=useState(30);
   var [simulateOpen,setSimulateOpen]=useState(false);
   var [redistBusy,setRedistBusy]=useState(false);
   var [redistResult,setRedistResult]=useState(null); // {total,distributed,skipped,perAgent}
@@ -13636,6 +13639,7 @@ var SettingsPage = function(p) {
       if(s.maxRotationsPerLead!=null) setMaxRotationsPerLead(Number(s.maxRotationsPerLead)||0);
       if(s.manualAssignmentWindowMinutes!=null) setManualWindowMin(Number(s.manualAssignmentWindowMinutes)||0);
       if(s.staleLeadDays!=null) setStaleLeadDays(Number(s.staleLeadDays)||7);
+      if(s.staleLeadDaysManagers!=null) setStaleLeadDaysManagers(Number(s.staleLeadDaysManagers)||30);
       setAutoRotEnabled(s.autoRotationEnabled!==false);
       setPausedUntil(s.autoRotationPausedUntil||null);
       var w=s.workingHours||{};
@@ -13850,6 +13854,7 @@ var SettingsPage = function(p) {
         maxRotationsPerLead: Number(maxRotationsPerLead)||0,
         manualAssignmentWindowMinutes: Number(manualWindowMin)||0,
         staleLeadDays: Number(staleLeadDays)||7,
+        staleLeadDaysManagers: Number(staleLeadDaysManagers)||30,
         autoRotationEnabled: autoRotEnabled,
         autoRotationPausedUntil: pausedUntil,
         workingHours: { days: whDays, from: whFrom, to: whTo, afterHoursBehavior: whAfter },
@@ -14442,12 +14447,18 @@ var SettingsPage = function(p) {
           {/* ══ Stale lead visibility (Phase Q) ══ */}
           <div style={{background:"#F1ECF7",border:"0.5px solid rgba(95,55,160,0.3)",borderRadius:12,padding:"14px 16px",marginBottom:18}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-              <div style={{fontSize:13,fontWeight:500,color:"#5F37A0"}}>Stale Lead Threshold (days)</div>
+              <div style={{fontSize:13,fontWeight:500,color:"#5F37A0"}}>Stale Lead Threshold — Sales (days)</div>
               <input type="number" min={1} max={365} step={1} value={staleLeadDays}
                 onChange={function(e){var v=Math.floor(Number(e.target.value)); if(!isFinite(v)||v<1)v=1; if(v>365)v=365; setStaleLeadDays(v);}}
                 style={{width:60,padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",textAlign:"center",fontFamily:"inherit"}}/>
             </div>
-            <div style={{fontSize:11,color:"#5F37A0",opacity:0.85,lineHeight:1.5}}>Leads with no action by the holding sales for more than this many days are hidden from sales, manager, and team leader views. Admin and sales_admin always see all leads. The rotation system is not affected.</div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10,marginBottom:6}}>
+              <div style={{fontSize:13,fontWeight:500,color:"#5F37A0"}}>Stale Lead Threshold — Managers (days)</div>
+              <input type="number" min={1} max={365} step={1} value={staleLeadDaysManagers}
+                onChange={function(e){var v=Math.floor(Number(e.target.value)); if(!isFinite(v)||v<1)v=1; if(v>365)v=365; setStaleLeadDaysManagers(v);}}
+                style={{width:60,padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",textAlign:"center",fontFamily:"inherit"}}/>
+            </div>
+            <div style={{fontSize:11,color:"#5F37A0",opacity:0.85,lineHeight:1.5}}>Sales threshold hides leads from the holding sales agent's own view. Managers threshold (team_leader / manager / director) is independent so supervisors can keep visibility for longer. Admin and sales_admin always see all leads. The rotation system is not affected.</div>
           </div>
 
           {/* ══ Smart skip rules ══ */}
