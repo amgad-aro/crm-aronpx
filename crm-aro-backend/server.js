@@ -5810,19 +5810,27 @@ app.get("/api/leads", auth, async function(req, res) {
       query.locked = true;
     }
 
-    // Pagination
+    // Pagination. If no ?limit= is provided (or limit=0), return all leads
+    // unbounded — the bootstrap path uses this to avoid silent truncation when
+    // total leads exceed any fixed cap. Explicit ?limit=N is still honored for
+    // callers that want pagination.
+    var hasLimit = req.query.limit !== undefined && parseInt(req.query.limit) > 0;
     var page = parseInt(req.query.page) || 1;
-    var limit = parseInt(req.query.limit) || 1000;
-    var skip = (page - 1) * limit;
+    var limit = hasLimit ? parseInt(req.query.limit) : 0;
+    var skip = hasLimit ? (page - 1) * limit : 0;
 
-    var leads = await Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+    var leadsQuery = Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").sort({ createdAt: -1 });
+    if (hasLimit) leadsQuery = leadsQuery.skip(skip).limit(limit);
+    var leads = await leadsQuery.lean();
     // Skip the second round-trip when the page already contains the entire
     // result set — the common case for sales/team_leader/manager whose visible
-    // slice is well under the default limit (1000). Pagination semantics
-    // preserved for callers that exceed the page.
-    var total = (page === 1 && leads.length < limit)
+    // slice is well under the page limit. Also skips countDocuments when no
+    // limit is set (the unbounded result IS the total).
+    var total = !hasLimit
       ? leads.length
-      : await Lead.countDocuments(query);
+      : (page === 1 && leads.length < limit)
+        ? leads.length
+        : await Lead.countDocuments(query);
 
     // Phase P — drop leads whose holding slice is stale for the requesting
     // role. Admin / sales_admin (and any other non-listed role) are exempt.
@@ -5981,7 +5989,7 @@ app.get("/api/leads", auth, async function(req, res) {
       data: data,
       total: total,
       page: page,
-      totalPages: Math.ceil(total / limit)
+      totalPages: hasLimit ? Math.ceil(total / limit) : 1
     });
   } catch (e) {
     res.status(500).json({ error: e.message });

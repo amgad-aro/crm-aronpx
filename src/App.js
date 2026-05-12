@@ -8,6 +8,11 @@ import {
   ClipboardList, Edit, Archive, Award, Zap, RotateCcw, ExternalLink, KeyRound, FileSpreadsheet, MapPin
 } from "lucide-react";
 
+// QR code generation for AssetTracker. Static import is fine — ~10 kB
+// gzipped and used on every asset detail view. The heavier scanner library
+// (html5-qrcode, ~50 kB gz) is dynamic-imported inside the scan sub-view.
+import QRCode from "qrcode";
+
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
 const API = process.env.REACT_APP_API_URL || "https://crm-aro-backend-production.up.railway.app";
@@ -8353,7 +8358,7 @@ var EOIPage = function(p) {
       // Belt-and-suspenders refresh — make absolutely sure the Deals page sees
       // the new state even if an outer component holds a stale reference.
       try {
-        var refreshed = await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);
+        var refreshed = await apiFetch("/api/leads","GET",null,p.token);
         if (refreshed && Array.isArray(refreshed.data)) p.setLeads(refreshed.data);
       } catch(refreshErr) { console.error("[convertToDeal] leads refresh failed (non-fatal)", refreshErr); }
       // Navigate to the Deals page so the freshly-converted deal is visible.
@@ -9833,7 +9838,7 @@ var DailyRequestsPage = function(p) {
       // The backend creates/updates a Lead mirror for DR→EOI/DoneDeal, but the
       // mirror isn't in p.leads yet. Refetch so the EOI/Deals page sees it.
       if(pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI"){
-        try{var freshLeads=await apiFetch("/api/leads?page=1&limit=1000","GET",null,p.token);if(freshLeads&&freshLeads.data)p.setLeads(freshLeads.data);}catch(e){}
+        try{var freshLeads=await apiFetch("/api/leads","GET",null,p.token);if(freshLeads&&freshLeads.data)p.setLeads(freshLeads.data);}catch(e){}
       }
       if(pendingStatus.newStatus==="DoneDeal") p.nav("deals");
       else if(pendingStatus.newStatus==="EOI") p.nav("eoi");
@@ -15859,6 +15864,21 @@ var SettingsPage = function(p) {
   </div>;
 };
 
+// Parses a scanned payload (URL OR bare code) into an assetCode string. Lives
+// at module scope so the scan-mount effect can use it without triggering the
+// exhaustive-deps rule. Accepts both shapes the QR symbol may carry:
+//   https://<host>/assets/ARO-LT-0001  →  "ARO-LT-0001"
+//   ARO-LT-0001                        →  "ARO-LT-0001"
+// Returns null when the payload doesn't match either shape (so the caller can
+// show "That doesn't look like an asset code").
+function parseAssetScanPayload(raw) {
+  var s = String(raw || "").trim();
+  if (!s) return null;
+  var m = s.match(/^(?:https?:\/\/[^/]+)?\/?assets\/([A-Za-z0-9-]+)\/?$/i);
+  if (m) return m[1];
+  return s.match(/^[A-Za-z0-9-]+$/) ? s : null;
+}
+
 // ===== ASSET TRACKER PAGE (admin / isOwner only) =====
 // Single page id "assets" with three internal sub-views: list, new (also used
 // for edit), and detail. Custody actions (transfer/return/mark-status) ship
@@ -15910,6 +15930,15 @@ var AssetTrackerPage = function(p) {
   var [statusBusy, setStatusBusy] = useState(false);
   var [statusError, setStatusError] = useState("");
 
+  // QR (S4): data URL is generated client-side from the asset's qrCodeData
+  // string whenever the detail view loads. Empty until the asset is fetched.
+  var [qrDataUrl, setQrDataUrl] = useState("");
+  // Scanner (S4): manual code fallback + scanner error surface. The scanner
+  // library itself is lazy-imported inside the scan sub-view to keep it out
+  // of the main bundle.
+  var [scanManualCode, setScanManualCode] = useState("");
+  var [scanError, setScanError] = useState("");
+
   useEffect(function() {
     var cancelled = false;
     setLoadError("");
@@ -15926,6 +15955,17 @@ var AssetTrackerPage = function(p) {
     });
     return function() { cancelled = true; };
   }, [p.token]);
+
+  // Generate the QR image (data URL) whenever the detail asset changes.
+  // Margin:1 keeps the symbol close to the edge for the 40x30mm thermal label.
+  useEffect(function() {
+    if (!detailAsset || !detailAsset.qrCodeData) { setQrDataUrl(""); return; }
+    var cancelled = false;
+    QRCode.toDataURL(detailAsset.qrCodeData, { errorCorrectionLevel: "M", margin: 1, width: 320 })
+      .then(function(url){ if (!cancelled) setQrDataUrl(url); })
+      .catch(function(){ if (!cancelled) setQrDataUrl(""); });
+    return function() { cancelled = true; };
+  }, [detailAsset]);
 
   useEffect(function() {
     if (subPage !== "detail" || !selectedAssetCode) return;
@@ -16091,6 +16131,49 @@ var AssetTrackerPage = function(p) {
     setStatusBusy(false);
   };
 
+  // Print the current asset's QR + label as a 40x30mm card sized for the
+  // Phomemo M108. Uses a popup window so the rest of the CRM doesn't fight
+  // the print styles. The popup waits for the QR image to load before
+  // triggering window.print() — otherwise Firefox/Safari sometimes print a
+  // blank page because the data URL hasn't decoded yet.
+  var printQR = function() {
+    if (!detailAsset || !qrDataUrl) return;
+    var w = window.open("", "_blank", "width=420,height=340");
+    if (!w) { alert("Couldn't open the print window. Allow pop-ups for this site and try again."); return; }
+    var safeName = String(detailAsset.name || "").replace(/[<>&"]/g, function(c){ return ({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"})[c]; });
+    var html = '<!doctype html><html><head><meta charset="utf-8"><title>' + detailAsset.assetCode + '</title>'
+      + '<style>'
+      + '  @page { size: 40mm 30mm; margin: 0; }'
+      + '  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }'
+      + '  .card { width: 40mm; height: 30mm; box-sizing: border-box; padding: 1.5mm; display: flex; align-items: center; justify-content: center; gap: 2mm; }'
+      + '  .qr { width: 25mm; height: 25mm; flex-shrink: 0; }'
+      + '  .qr img { width: 100%; height: 100%; display: block; }'
+      + '  .meta { font-size: 7pt; line-height: 1.15; overflow: hidden; }'
+      + '  .meta .name { font-weight: 600; }'
+      + '  .meta .code { font-family: ui-monospace, SFMono-Regular, monospace; margin-top: 1mm; }'
+      + '  @media screen { body { background: #eee; padding: 12px; } .card { background: #fff; border: 1px dashed #999; } }'
+      + '</style></head><body><div class="card">'
+      + '<div class="qr"><img id="qrimg" src="' + qrDataUrl + '" alt="QR"/></div>'
+      + '<div class="meta"><div class="name">' + safeName + '</div><div class="code">' + detailAsset.assetCode + '</div></div>'
+      + '</div><script>'
+      + 'var img = document.getElementById("qrimg");'
+      + 'function go(){ try { window.focus(); window.print(); } catch(e){} }'
+      + 'if (img.complete) setTimeout(go, 50); else img.onload = function(){ setTimeout(go, 50); };'
+      + '</' + 'script></body></html>';
+    w.document.open(); w.document.write(html); w.document.close();
+  };
+
+  var openScan = function() {
+    setScanManualCode(""); setScanError(""); setSubPage("scan");
+  };
+  // Manual fallback when the camera path is blocked (desktop, denied perms).
+  // Accepts the same shapes as a real QR scan via parseAssetScanPayload.
+  var goManualScan = function() {
+    var code = parseAssetScanPayload(scanManualCode);
+    if (!code) { setScanError("Enter a valid asset code like ARO-LT-0001"); return; }
+    setSelectedAssetCode(code); setSubPage("detail"); setScanManualCode(""); setScanError("");
+  };
+
   // ===== Style helpers =====
   var btnPrimary = { padding:"8px 16px", border:"0.5px solid rgba(24,95,165,0.3)", background:"#185FA5", color:"#fff",     borderRadius:8, fontSize:13, cursor:"pointer", fontWeight:500, fontFamily:"inherit" };
   var btnGhost   = { padding:"8px 14px", border:"0.5px solid rgba(0,0,0,0.1)",     background:"#fff",   color:"#1a1a1a",  borderRadius:8, fontSize:13, cursor:"pointer", fontWeight:500, fontFamily:"inherit" };
@@ -16182,7 +16265,7 @@ var AssetTrackerPage = function(p) {
               <div style={{fontSize:12,color:"#666",marginTop:2}}>All company-owned equipment, furniture, and appliances</div>
             </div>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-              <button type="button" disabled title="Coming in Slice 4" style={Object.assign({}, btnGhost, {opacity:0.55, cursor:"not-allowed"})}>Scan QR</button>
+              <button type="button" onClick={openScan} style={btnGhost}>Scan QR</button>
               <button type="button" onClick={openNew} style={btnPrimary}>+ New Asset</button>
             </div>
           </div>
@@ -16402,12 +16485,18 @@ var AssetTrackerPage = function(p) {
           </div>
 
           <div style={{display:"grid",gridTemplateColumns:"260px 1fr",gap:16,alignItems:"start"}}>
-            {/* Left: QR placeholder (rendering ships in S4) */}
+            {/* Left: QR card */}
             <div style={Object.assign({}, cardWrap, { padding:18 })}>
               <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:10}}>QR Code</div>
-              <div style={{aspectRatio:"1/1", background:"#F4F4F4", border:"0.5px dashed rgba(0,0,0,0.15)", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:6, color:"#888", fontSize:12, textAlign:"center", padding:14}}>
-                <div style={{fontSize:24}}>▦</div>
-                <div>Rendering in Slice 4</div>
+              <div style={{aspectRatio:"1/1", background:"#fff", border:"0.5px solid rgba(0,0,0,0.08)", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", padding:10}}>
+                {qrDataUrl
+                  ? <img src={qrDataUrl} alt={"QR for " + a.assetCode} style={{width:"100%", height:"100%", display:"block", imageRendering:"pixelated"}}/>
+                  : <div style={{fontSize:12,color:"#888"}}>Generating…</div>
+                }
+              </div>
+              <div style={{display:"flex",gap:6,marginTop:10}}>
+                <button type="button" onClick={printQR} disabled={!qrDataUrl} style={Object.assign({}, btnPrimary, {flex:1, padding:"7px 12px", opacity:qrDataUrl?1:0.55, cursor:qrDataUrl?"pointer":"not-allowed"})}>Print 40×30mm</button>
+                <a href={qrDataUrl || "#"} download={a.assetCode + ".png"} onClick={function(e){ if (!qrDataUrl) e.preventDefault(); }} style={Object.assign({}, btnGhost, {padding:"7px 12px", textDecoration:"none", textAlign:"center", display:"inline-flex", alignItems:"center", justifyContent:"center", opacity:qrDataUrl?1:0.55, pointerEvents:qrDataUrl?"auto":"none"})}>PNG</a>
               </div>
               <div style={{fontSize:10,color:"#888",marginTop:10,wordBreak:"break-all",fontFamily:"ui-monospace, SFMono-Regular, monospace",lineHeight:1.4}}>{a.qrCodeData}</div>
             </div>
@@ -16481,7 +16570,6 @@ var AssetTrackerPage = function(p) {
                       Mark lost
                     </button>
                   }
-                  <button type="button" disabled title="Coming in Slice 4" style={Object.assign({}, btnGhost, {opacity:0.55, cursor:"not-allowed"})}>Print QR</button>
                   {statusError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{statusError}</span>}
                 </div>
               </div>
@@ -18134,7 +18222,7 @@ export default function CRMApp() {
     setDataError(null);
     try {
       var results=await Promise.all([
-        apiFetch("/api/leads?page="+leadsPage+"&limit=1000","GET",null,tok),
+        apiFetch("/api/leads","GET",null,tok),
         apiFetch("/api/users","GET",null,tok),
         apiFetch("/api/activities?page="+activitiesPage+"&limit=1000","GET",null,tok),
         apiFetch("/api/tasks","GET",null,tok),
@@ -18182,7 +18270,7 @@ export default function CRMApp() {
         });
       }
     }catch(e){}
-  },[leadsPage, activitiesPage]);
+  },[activitiesPage]);
 
   // Phase 2 Slice 3 — hydrate the projectWeights module cache once auth is
   // available, then bump rev so children re-render and read the new values.
@@ -18242,7 +18330,7 @@ export default function CRMApp() {
     // mirror Lead in p.leads — which surfaces as ghost rows on DealsPage,
     // EOIPage, and the dashboard KPI strip.
     var fetchLeadsLight = function(){
-      apiFetch("/api/leads?page=1&limit=1000","GET",null,token).then(function(r){
+      apiFetch("/api/leads","GET",null,token).then(function(r){
         if (r && Array.isArray(r.data)) setLeads(r.data);
       }).catch(function(){});
     };
