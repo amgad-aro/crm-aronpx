@@ -15919,6 +15919,127 @@ app.delete("/api/assets/:id", auth, requireAssetAccess, async function(req, res)
   }
 });
 
+// ===== ASSET TRACKER — Custody endpoints (S3) =====
+// All four routes write to CustodyHistory before mutating the Asset row, so an
+// audit row exists even if the post-mutation populate fails. The personal-
+// active-needs-a-custodian invariant from S2 only kicks in at create time and
+// on /mark-status active transitions — return + transfer can leave the asset
+// "Unassigned" intentionally (admin then fixes it via transfer or status).
+
+app.post("/api/assets/:id/transfer", auth, requireAssetAccess, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var toUserId = req.body && req.body.toUserId;
+    if (!toUserId || !mongoose.Types.ObjectId.isValid(toUserId)) return res.status(400).json({ error: "toUserId is required" });
+    var asset = await Asset.findById(req.params.id).lean();
+    if (!asset) return res.status(404).json({ error: "Asset not found" });
+    if (asset.status === "retired") return res.status(400).json({ error: "Can't transfer a retired asset. Reactivate it first." });
+    if (asset.status === "lost")    return res.status(400).json({ error: "Can't transfer a lost asset. Mark it active first." });
+    if (asset.assignmentType !== "personal") return res.status(400).json({ error: "Shared assets don't carry a personal custodian. Edit the asset and set assignmentType to personal first." });
+    if (String(asset.currentCustodian || "") === String(toUserId)) return res.status(400).json({ error: "This asset is already assigned to that user." });
+    var target = await User.findById(toUserId).select("_id active name").lean();
+    if (!target || target.active === false) return res.status(400).json({ error: "Target user is inactive or not found." });
+    await CustodyHistory.create({
+      assetId:      asset._id,
+      fromUserId:   asset.currentCustodian || null,
+      toUserId:     toUserId,
+      fromBranchId: asset.branchId,
+      toBranchId:   asset.branchId,
+      action:       asset.currentCustodian ? "transferred" : "assigned",
+      notes:        (req.body && req.body.notes) ? String(req.body.notes).trim() : "",
+      performedBy:  req.user.id,
+      performedAt:  new Date()
+    });
+    var doc = await Asset.findByIdAndUpdate(req.params.id, { $set: { currentCustodian: toUserId } }, { new: true }).populate(ASSET_POPULATE).lean();
+    res.json(doc);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/assets/:id/return", auth, requireAssetAccess, async function(req, res) {
+  // Clears currentCustodian. Status is left alone — admin can then mark
+  // maintenance or transfer to a new custodian. Personal+active+no-custodian
+  // is allowed mid-life (only the create path enforces the invariant).
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var asset = await Asset.findById(req.params.id).lean();
+    if (!asset) return res.status(404).json({ error: "Asset not found" });
+    if (!asset.currentCustodian) return res.status(400).json({ error: "Asset has no current custodian to return from." });
+    await CustodyHistory.create({
+      assetId:      asset._id,
+      fromUserId:   asset.currentCustodian,
+      toUserId:     null,
+      fromBranchId: asset.branchId,
+      toBranchId:   asset.branchId,
+      action:       "returned",
+      notes:        (req.body && req.body.notes) ? String(req.body.notes).trim() : "",
+      performedBy:  req.user.id,
+      performedAt:  new Date()
+    });
+    var doc = await Asset.findByIdAndUpdate(req.params.id, { $set: { currentCustodian: null } }, { new: true }).populate(ASSET_POPULATE).lean();
+    res.json(doc);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/assets/:id/mark-status", auth, requireAssetAccess, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var newStatus = req.body && req.body.status;
+    var ALLOWED = ["active", "maintenance", "lost", "retired"];
+    if (ALLOWED.indexOf(newStatus) === -1) return res.status(400).json({ error: "Invalid status. Use active/maintenance/lost/retired." });
+    var asset = await Asset.findById(req.params.id).lean();
+    if (!asset) return res.status(404).json({ error: "Asset not found" });
+    if (asset.status === newStatus) return res.status(400).json({ error: "Asset is already in that status." });
+    // Reactivating a personal asset needs a custodian — if there's none, force
+    // admin to transfer first. This is the only mid-life enforcement of the
+    // personal+active+custodian invariant.
+    if (newStatus === "active" && asset.assignmentType === "personal" && !asset.currentCustodian) {
+      return res.status(400).json({ error: "Personal active assets need a custodian. Transfer the asset first, or change assignmentType to shared." });
+    }
+    var update = { status: newStatus };
+    // Lost / retired clear the custodian; the history row records who they were.
+    if (newStatus === "lost" || newStatus === "retired") update.currentCustodian = null;
+    var action = newStatus === "lost" ? "marked_lost"
+               : newStatus === "retired" ? "retired"
+               : "status_changed";
+    await CustodyHistory.create({
+      assetId:      asset._id,
+      fromUserId:   (newStatus === "lost" || newStatus === "retired") ? (asset.currentCustodian || null) : null,
+      toUserId:     null,
+      fromBranchId: asset.branchId,
+      toBranchId:   asset.branchId,
+      action:       action,
+      notes:        ((req.body && req.body.notes) ? String(req.body.notes).trim() : "") || ("Status: " + asset.status + " → " + newStatus),
+      performedBy:  req.user.id,
+      performedAt:  new Date()
+    });
+    var doc = await Asset.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate(ASSET_POPULATE).lean();
+    res.json(doc);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/assets/:id/history", auth, requireAssetAccess, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var rows = await CustodyHistory.find({ assetId: req.params.id })
+      .populate("fromUserId",   "name username role")
+      .populate("toUserId",     "name username role")
+      .populate("fromBranchId", "name code")
+      .populate("toBranchId",   "name code")
+      .populate("performedBy",  "name username role")
+      .sort({ performedAt: 1, createdAt: 1 })
+      .lean();
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);

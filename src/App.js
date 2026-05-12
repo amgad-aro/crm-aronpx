@@ -10,7 +10,7 @@ import {
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
-const API = "https://crm-aro-backend-production.up.railway.app";
+const API = "http://localhost:5000"; // TEST-ONLY — REVERT BEFORE PUSH
 
 async function apiFetch(path, method, body, token, csrfToken) {
   var opts = { method: method || "GET", headers: { "Content-Type": "application/json" } };
@@ -15823,6 +15823,21 @@ var AssetTrackerPage = function(p) {
   var [detailError, setDetailError] = useState("");
   var [deleting, setDeleting] = useState(false);
 
+  // Custody (S3): timeline rows + transfer modal + per-action busy flag.
+  // History loads in parallel with the asset detail; transfer modal opens on
+  // demand from the detail view; statusBusy disables all custody buttons
+  // simultaneously to prevent double-clicks across the small button cluster.
+  var [historyRows, setHistoryRows] = useState([]);
+  var [historyLoading, setHistoryLoading] = useState(false);
+  var [historyError, setHistoryError] = useState("");
+  var [showTransferModal, setShowTransferModal] = useState(false);
+  var [transferToUserId, setTransferToUserId] = useState("");
+  var [transferNotes, setTransferNotes] = useState("");
+  var [transferSaving, setTransferSaving] = useState(false);
+  var [transferError, setTransferError] = useState("");
+  var [statusBusy, setStatusBusy] = useState(false);
+  var [statusError, setStatusError] = useState("");
+
   useEffect(function() {
     var cancelled = false;
     setLoadError("");
@@ -15844,8 +15859,22 @@ var AssetTrackerPage = function(p) {
     if (subPage !== "detail" || !selectedAssetCode) return;
     var cancelled = false;
     setDetailLoading(true); setDetailError(""); setDetailAsset(null);
+    setHistoryRows([]); setHistoryError(""); setStatusError("");
     apiFetch("/api/assets/" + encodeURIComponent(selectedAssetCode), "GET", null, p.token)
-      .then(function(d){ if (!cancelled) setDetailAsset(d); })
+      .then(function(d){
+        if (cancelled) return;
+        setDetailAsset(d);
+        // Now that we have the asset id, fan out for the history. Sequential
+        // (not parallel with the asset fetch) because the assetCode→id mapping
+        // lives on the asset doc.
+        if (d && d._id) {
+          setHistoryLoading(true);
+          apiFetch("/api/assets/" + d._id + "/history", "GET", null, p.token)
+            .then(function(rows){ if (!cancelled) setHistoryRows(Array.isArray(rows) ? rows : []); })
+            .catch(function(err){ if (!cancelled) setHistoryError((err && err.message) || "Failed to load custody history"); })
+            .finally(function(){ if (!cancelled) setHistoryLoading(false); });
+        }
+      })
       .catch(function(err){ if (!cancelled) setDetailError((err && err.message) || "Failed to load asset"); })
       .finally(function(){ if (!cancelled) setDetailLoading(false); });
     return function() { cancelled = true; };
@@ -15927,6 +15956,67 @@ var AssetTrackerPage = function(p) {
       alert((err && err.message) || "Delete failed");
     }
     setDeleting(false);
+  };
+
+  // After any custody mutation, sync three things in order: the asset shown on
+  // the detail view, the row in the cached list, and the history timeline.
+  // Centralised here so /transfer, /return, /mark-status all behave the same.
+  var refreshAfterMutation = async function(updatedAsset) {
+    if (updatedAsset && updatedAsset._id) {
+      setDetailAsset(updatedAsset);
+      setAssets(assets.map(function(a){ return String(a._id) === String(updatedAsset._id) ? updatedAsset : a; }));
+      try {
+        var rows = await apiFetch("/api/assets/" + updatedAsset._id + "/history", "GET", null, p.token);
+        if (Array.isArray(rows)) setHistoryRows(rows);
+      } catch (e) { /* keep stale timeline rather than blow up */ }
+    }
+  };
+
+  var openTransferModal = function() {
+    setTransferToUserId(""); setTransferNotes(""); setTransferError(""); setShowTransferModal(true);
+  };
+  var closeTransferModal = function() {
+    if (transferSaving) return;
+    setShowTransferModal(false);
+  };
+  var doTransfer = async function() {
+    if (!detailAsset || !detailAsset._id) return;
+    setTransferError("");
+    if (!transferToUserId) { setTransferError("Pick a user"); return; }
+    setTransferSaving(true);
+    try {
+      var updated = await apiFetch("/api/assets/" + detailAsset._id + "/transfer", "POST",
+        { toUserId: transferToUserId, notes: transferNotes }, p.token, p.csrfToken);
+      await refreshAfterMutation(updated);
+      setShowTransferModal(false);
+    } catch (err) {
+      setTransferError((err && err.message) || "Transfer failed");
+    }
+    setTransferSaving(false);
+  };
+  var doReturn = async function() {
+    if (!detailAsset || !detailAsset._id) return;
+    if (!window.confirm("Return this asset to the warehouse? The current custodian will be cleared.")) return;
+    setStatusBusy(true); setStatusError("");
+    try {
+      var updated = await apiFetch("/api/assets/" + detailAsset._id + "/return", "POST", { notes: "" }, p.token, p.csrfToken);
+      await refreshAfterMutation(updated);
+    } catch (err) {
+      setStatusError((err && err.message) || "Return failed");
+    }
+    setStatusBusy(false);
+  };
+  var doMarkStatus = async function(newStatus) {
+    if (!detailAsset || !detailAsset._id) return;
+    setStatusBusy(true); setStatusError("");
+    try {
+      var updated = await apiFetch("/api/assets/" + detailAsset._id + "/mark-status", "POST",
+        { status: newStatus, notes: "" }, p.token, p.csrfToken);
+      await refreshAfterMutation(updated);
+    } catch (err) {
+      setStatusError((err && err.message) || "Status change failed");
+    }
+    setStatusBusy(false);
   };
 
   // ===== Style helpers =====
@@ -16287,12 +16377,124 @@ var AssetTrackerPage = function(p) {
                 </div> : <div style={{fontSize:13,color:"#666",fontStyle:"italic"}}>{a.assignmentType === "shared" ? "Shared asset — no personal custodian" : "Unassigned"}</div>}
               </div>
 
-              {/* Custody action stubs (S3) */}
+              {/* Custody actions */}
               <div style={{marginTop:14,paddingTop:14,borderTop:"0.5px dashed rgba(0,0,0,0.1)"}}>
-                <div style={{fontSize:11,color:"#888",fontStyle:"italic"}}>Transfer custody · Return · Mark status · Print QR — in slices 3–4</div>
+                <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:10}}>Custody actions</div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                  {/* Transfer — only for personal assets that aren't lost/retired */}
+                  {a.status !== "retired" && a.status !== "lost" && a.assignmentType === "personal" &&
+                    <button type="button" onClick={openTransferModal} disabled={statusBusy} style={Object.assign({}, btnPrimary, {opacity:statusBusy?0.6:1, cursor:statusBusy?"not-allowed":"pointer"})}>
+                      Transfer custody
+                    </button>
+                  }
+                  {/* Return — only when someone holds custody */}
+                  {cust && a.status !== "retired" &&
+                    <button type="button" onClick={doReturn} disabled={statusBusy} style={Object.assign({}, btnGhost, {opacity:statusBusy?0.6:1, cursor:statusBusy?"not-allowed":"pointer"})}>
+                      Return to warehouse
+                    </button>
+                  }
+                  {/* Status flips — gated by current status */}
+                  {a.status !== "active" && a.status !== "retired" &&
+                    <button type="button" onClick={function(){doMarkStatus("active");}} disabled={statusBusy} style={Object.assign({}, btnGhost, {opacity:statusBusy?0.6:1, cursor:statusBusy?"not-allowed":"pointer"})}>
+                      Mark active
+                    </button>
+                  }
+                  {a.status !== "maintenance" && a.status !== "retired" &&
+                    <button type="button" onClick={function(){doMarkStatus("maintenance");}} disabled={statusBusy} style={Object.assign({}, btnGhost, {opacity:statusBusy?0.6:1, cursor:statusBusy?"not-allowed":"pointer"})}>
+                      Mark maintenance
+                    </button>
+                  }
+                  {a.status !== "lost" && a.status !== "retired" &&
+                    <button type="button" onClick={function(){if(window.confirm("Mark this asset as lost? The custodian will be cleared.")){doMarkStatus("lost");}}} disabled={statusBusy} style={Object.assign({}, btnDanger, {opacity:statusBusy?0.6:1, cursor:statusBusy?"not-allowed":"pointer"})}>
+                      Mark lost
+                    </button>
+                  }
+                  <button type="button" disabled title="Coming in Slice 4" style={Object.assign({}, btnGhost, {opacity:0.55, cursor:"not-allowed"})}>Print QR</button>
+                  {statusError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{statusError}</span>}
+                </div>
               </div>
             </div>
           </div>
+
+          {/* ---------- Custody History timeline ---------- */}
+          <div style={Object.assign({}, cardWrap, { padding:20, marginTop:16 })}>
+            <div style={{fontSize:13,fontWeight:500,color:"#1a1a1a",marginBottom:14}}>Custody history</div>
+            {historyLoading
+              ? <div style={{fontSize:12,color:"#666"}}>Loading…</div>
+              : historyError
+                ? <div style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"8px 12px",borderRadius:8}}>{historyError}</div>
+                : historyRows.length === 0
+                  ? <div style={{fontSize:12,color:"#666",fontStyle:"italic"}}>No events recorded.</div>
+                  : <div>{historyRows.map(function(h, idx) {
+                      var ACTION_LABELS = {
+                        registered:     { label:"Registered",     color:"#185FA5", bg:"#E6F1FB" },
+                        assigned:       { label:"Assigned",       color:"#0F6E56", bg:"#EAF6F0" },
+                        transferred:    { label:"Transferred",    color:"#185FA5", bg:"#E6F1FB" },
+                        returned:       { label:"Returned",       color:"#7A4FB4", bg:"#F2EBFB" },
+                        marked_lost:    { label:"Marked lost",    color:"#A32D2D", bg:"#FCEBEB" },
+                        retired:        { label:"Retired",        color:"#666",    bg:"#F4F4F4" },
+                        status_changed: { label:"Status changed", color:"#B45309", bg:"#FFF4E5" }
+                      };
+                      var meta = ACTION_LABELS[h.action] || { label:h.action, color:"#666", bg:"#F4F4F4" };
+                      var when = new Date(h.performedAt || h.createdAt);
+                      var whenStr = when.toLocaleString("en-GB", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" });
+                      var byName = (h.performedBy && h.performedBy.name) || "System";
+                      var from = h.fromUserId && h.fromUserId.name;
+                      var to   = h.toUserId   && h.toUserId.name;
+                      var fromTo;
+                      if (from && to)      fromTo = from + " → " + to;
+                      else if (to)         fromTo = "Warehouse → " + to;
+                      else if (from)       fromTo = from + " → Warehouse";
+                      else                 fromTo = null;
+                      return <div key={h._id} style={{display:"flex",gap:12,padding:"12px 0",borderBottom: idx === historyRows.length-1 ? "none" : "0.5px solid rgba(0,0,0,0.05)"}}>
+                        <div style={{flexShrink:0,width:10,marginTop:6}}>
+                          <div style={{width:10,height:10,borderRadius:"50%",background:meta.color}}/>
+                        </div>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:"flex",gap:8,alignItems:"baseline",flexWrap:"wrap"}}>
+                            <span style={{fontSize:12,padding:"3px 8px",borderRadius:6,fontWeight:500,background:meta.bg,color:meta.color}}>{meta.label}</span>
+                            {fromTo && <span style={{fontSize:13,color:"#1a1a1a"}}>{fromTo}</span>}
+                          </div>
+                          {h.notes && <div style={{fontSize:12,color:"#666",marginTop:4,lineHeight:1.4}}>{h.notes}</div>}
+                          <div style={{fontSize:11,color:"#888",marginTop:4}}>by {byName} · {whenStr}</div>
+                        </div>
+                      </div>;
+                    })}</div>
+            }
+          </div>
+
+          {/* ---------- Transfer custody modal ---------- */}
+          {showTransferModal && <div className="crm-modal" style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20}} onClick={closeTransferModal}>
+            <div onClick={function(e){e.stopPropagation();}} style={{background:"#fff",borderRadius:12,padding:22,width:460,maxWidth:"100%",border:"0.5px solid rgba(0,0,0,0.1)"}}>
+              <div style={{fontSize:16,fontWeight:500,color:"#1a1a1a",marginBottom:6}}>Transfer custody</div>
+              <div style={{fontSize:12,color:"#666",marginBottom:16}}>{a.name} · <span style={{fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>{a.assetCode}</span></div>
+              <div style={{marginBottom:12}}>
+                <label style={fieldLabel}>Transfer to *</label>
+                <select style={inputStyle} value={transferToUserId} onChange={function(e){setTransferToUserId(e.target.value);}}>
+                  <option value="">Choose a user…</option>
+                  {(p.users || []).filter(function(u){
+                    if (!u || u.active === false) return false;
+                    // Hide the current custodian from the list — transferring to themself isn't a transfer.
+                    if (cust && String(u._id) === String(cust._id)) return false;
+                    return true;
+                  }).map(function(u){
+                    return <option key={u._id} value={u._id}>{u.name} ({u.username} · {u.role})</option>;
+                  })}
+                </select>
+              </div>
+              <div style={{marginBottom:18}}>
+                <label style={fieldLabel}>Notes <span style={{color:"#888"}}>(optional)</span></label>
+                <textarea style={Object.assign({}, inputStyle, { minHeight:60, resize:"vertical" })} value={transferNotes} onChange={function(e){setTransferNotes(e.target.value);}} placeholder="Reason for the transfer, condition of the asset, etc."/>
+              </div>
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap",alignItems:"center"}}>
+                {transferError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500,marginRight:"auto"}}>{transferError}</span>}
+                <button type="button" onClick={closeTransferModal} disabled={transferSaving} style={btnGhost}>Cancel</button>
+                <button type="button" onClick={doTransfer} disabled={transferSaving} style={Object.assign({}, btnPrimary, {opacity:transferSaving?0.6:1, cursor:transferSaving?"not-allowed":"pointer"})}>
+                  {transferSaving ? "Transferring…" : "Transfer"}
+                </button>
+              </div>
+            </div>
+          </div>}
         </div>;
       })()}
 
@@ -17134,12 +17336,38 @@ var CommissionsPage = function(p) {
   }
 
   // Shared write helper — wraps apiFetch with savingFlag + toast on error.
+  // After save, splice the updated commission into `rows` IN PLACE so the
+  // page doesn't unmount/remount the whole list (preserves scroll position
+  // and expanded-card state). Stats + cash-flow refresh in the background
+  // because they don't reset rows. Falls back to a full refetch only when
+  // the API response doesn't look like a commission doc.
   var writeCommission = async function(method, path, body, successMsg){
     setSavingFlag(true);
     try {
       var d = await apiFetch(path, method, body, p.token);
       setSavingFlag(false);
-      setReloadTick(function(v){ return v + 1; });
+      if (d && d._id && d.snapshot) {
+        // In-place splice — swap the matching commission, leave everything else.
+        setRows(function(prev){
+          if (!Array.isArray(prev)) return prev;
+          var idx = prev.findIndex(function(c){ return String(c._id) === String(d._id); });
+          if (idx >= 0) {
+            var next = prev.slice();
+            next[idx] = d;
+            return next;
+          }
+          // Not in current filter (e.g. status changed and the new state
+          // doesn't match the active pill) — leave rows untouched. The
+          // freshly-edited card is no longer visible; toast confirms the save.
+          return prev;
+        });
+        // Refresh stats + cash-flow lightly. These setters don't reset rows.
+        apiFetch("/api/commissions/stats", "GET", null, p.token).then(function(s){ setStats(s || {}); }).catch(function(){});
+        apiFetch("/api/commissions/cash-flow", "GET", null, p.token).then(function(s){ setCashFlow(s || {}); }).catch(function(){});
+      } else {
+        // Unknown response shape — fall back to full refetch.
+        setReloadTick(function(v){ return v + 1; });
+      }
       setToast({ kind: "ok", msg: successMsg || "Saved" });
       return d;
     } catch(e) {
