@@ -15906,19 +15906,17 @@ var AssetTrackerPage = function(p) {
   // we force LTR on the root and skip translation ternaries throughout.
 
   // ===== Hooks — all declared up-front, never below a return. =====
-  // Initial subPage/selectedAssetCode seed from /assets/<code> if the user
-  // landed via a scanned QR. The matching deep-link branch in the App
-  // component above forces page="assets" so this component is what mounts.
-  // The URL is cleared once below so a refresh doesn't re-trigger.
-  var deepLinkCode = (function() {
-    try {
-      if (typeof window === "undefined" || !window.location) return null;
-      var m = window.location.pathname.match(/^\/assets\/([A-Za-z0-9-]+)\/?$/);
-      return m ? m[1] : null;
-    } catch (e) { return null; }
-  })();
-  var [subPage, setSubPage] = useState(deepLinkCode ? "detail" : "list");
-  var [selectedAssetCode, setSelectedAssetCode] = useState(deepLinkCode);
+  // QR deep-link: App captured the code from the URL into its own state
+  // before mounting us; we read it once via the prop to seed the detail
+  // sub-view. This replaces an earlier window.location-reading IIFE that
+  // raced with the URL-clearing effect — by the time AssetTrackerPage
+  // mounted for users with a saved session, the URL was already cleared.
+  // The onInitialConsumed callback fires once on first mount (see effect
+  // below) so navigating away and back doesn't re-pin the detail view.
+  // TODO(remove after AT-S4 verification): diagnostic per user request.
+  if (p.initialAssetCode) console.log("[AT-S4 deep-link] AssetTrackerPage mounted with initialAssetCode:", p.initialAssetCode);
+  var [subPage, setSubPage] = useState(p.initialAssetCode ? "detail" : "list");
+  var [selectedAssetCode, setSelectedAssetCode] = useState(p.initialAssetCode || null);
   var [assets, setAssets] = useState([]);
   var [categories, setCategories] = useState([]);
   var [branches, setBranches] = useState([]);
@@ -15983,12 +15981,40 @@ var AssetTrackerPage = function(p) {
     return function() { cancelled = true; };
   }, [p.token]);
 
+  // One-shot deep-link consumer. We've already seeded subPage + selectedAssetCode
+  // from p.initialAssetCode in the state initializers above; now we tell the
+  // parent it's safe to clear App-level deepLinkAssetCode so a subsequent
+  // navigation to the assets page (e.g. via the sidebar) doesn't re-pin the
+  // detail view. Empty deps array on purpose — fires exactly once on first
+  // mount; later changes to p.initialAssetCode (it goes null right after
+  // consumption) must NOT re-fire this effect.
+  useEffect(function() {
+    if (p.initialAssetCode && typeof p.onInitialConsumed === "function") {
+      p.onInitialConsumed();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Generate the QR image (data URL) whenever the detail asset changes.
-  // Margin:1 keeps the symbol close to the edge for the 40x30mm thermal label.
+  // Styling rationale:
+  //   - errorCorrectionLevel "H": ~30% damage recovery, important for thermal
+  //     labels that scuff or peel; M-level (~15%) was too fragile in testing.
+  //   - color #0F172A (slate-900) instead of pure black — slightly softer on
+  //     screen and prints just as crisp on a thermal head.
+  //   - margin 2 (was 1): wider quiet zone gives phone cameras a real edge
+  //     to lock onto, especially in low light or at angles.
+  //   - width 320 px is enough for the on-screen card and for the popup print
+  //     preview to scale to 30mm without aliasing.
+  // Same data URL is consumed by both the on-screen QR and the print popup,
+  // so any tweak here propagates to printed labels automatically.
   useEffect(function() {
     if (!detailAsset || !detailAsset.qrCodeData) { setQrDataUrl(""); return; }
     var cancelled = false;
-    QRCode.toDataURL(detailAsset.qrCodeData, { errorCorrectionLevel: "M", margin: 1, width: 320 })
+    QRCode.toDataURL(detailAsset.qrCodeData, {
+      errorCorrectionLevel: "H",
+      margin: 2,
+      width: 320,
+      color: { dark: "#0F172A", light: "#FFFFFF" }
+    })
       .then(function(url){ if (!cancelled) setQrDataUrl(url); })
       .catch(function(){ if (!cancelled) setQrDataUrl(""); });
     return function() { cancelled = true; };
@@ -18186,21 +18212,36 @@ export default function CRMApp() {
   // — we just need a state value to trigger re-renders when the cache moves.
   var [projectWeightsRev,setProjectWeightsRev]=useState(0);
   var bumpProjectWeightsRev=useCallback(function(){ setProjectWeightsRev(function(v){return v+1;}); },[]);
-  // QR deep-link: if the user landed on /assets/<code> (e.g. from scanning a
-  // printed QR with their phone camera), force the page to "assets" before
-  // falling back to the saved page. The actual code is read again inside
-  // AssetTrackerPage to seed its detail sub-view. URL is cleared by an
-  // effect below so a normal browser refresh doesn't loop on the deep-link.
+  // QR deep-link: when the user lands on /assets/<code> (e.g. from scanning
+  // a printed QR with their phone camera) we capture the code into App state
+  // ONCE, then pass it as a prop to AssetTrackerPage. Earlier versions of
+  // this code re-read window.location.pathname inside AssetTrackerPage's
+  // own state initializer, which raced badly with the URL-clearing effect
+  // below — for users with a saved session, the URL got cleared before
+  // AssetTrackerPage mounted, and the user landed on the list view instead
+  // of the detail view. Capturing in App state makes the value survive both
+  // the URL clear and the asynchronous saved-session-load round-trip.
+  var [deepLinkAssetCode, setDeepLinkAssetCode] = useState(function() {
+    try {
+      if (typeof window === "undefined" || !window.location) return null;
+      var m = (window.location.pathname || "").match(/^\/assets\/([A-Za-z0-9-]+)\/?$/);
+      var code = m ? m[1] : null;
+      // TODO(remove after AT-S4 verification): diagnostic per user request.
+      if (code) console.log("[AT-S4 deep-link] captured code:", code, "from path:", window.location.pathname);
+      return code;
+    } catch(e) { return null; }
+  });
   var [page,setPage]=useState((function(){
     try {
-      if (typeof window !== "undefined" && window.location && /^\/assets\/[A-Za-z0-9-]+\/?$/.test(window.location.pathname)) return "assets";
+      if (deepLinkAssetCode) return "assets";
       return localStorage.getItem("crm_page") || null;
     } catch(e) { return null; }
   })());
-  // Clear the QR deep-link URL once both App and AssetTrackerPage have read
-  // it (state initializers run before any effect, so we're safely past both
-  // reads here). Without this, refreshing the browser would forever bounce
-  // back to the scanned asset even after the user navigates elsewhere.
+  // Clear the QR deep-link URL once both initializers above have captured
+  // their values into state. Without this, a browser refresh after the
+  // initial scan would forever bounce back to the asset detail view. Safe
+  // to run before AssetTrackerPage mounts because the deep-link code now
+  // lives in App state (passed as a prop), not the URL itself.
   useEffect(function() {
     try {
       if (typeof window !== "undefined" && window.location && /^\/assets\/[A-Za-z0-9-]+\/?$/.test(window.location.pathname)) {
@@ -18706,7 +18747,12 @@ export default function CRMApp() {
 
   var handleLogin=function(user,tok,csrfTok){
     setCurrentUser(user); setToken(tok); setCsrfToken(csrfTok); loadData(tok, user); loadNotifications(tok);
-    var defaultPage = "dashboard";
+    // Honour a pending QR deep-link instead of forcing dashboard. Only admins
+    // and the Owner can actually see the assets page; non-admins fall through
+    // to the dashboard default below via the renderPage guard.
+    var defaultPage = deepLinkAssetCode ? "assets" : "dashboard";
+    // TODO(remove after AT-S4 verification): diagnostic per user request.
+    if (deepLinkAssetCode) console.log("[AT-S4 deep-link] handleLogin routing to assets for code:", deepLinkAssetCode);
     setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok,csrfToken:csrfTok})); } catch(e){}
   };
@@ -18961,7 +19007,9 @@ export default function CRMApp() {
       case "offsiteRequests": return <AttendancePage {...sp} initTab="offsiteRequests"/>;
       case "companyOffDays":  return <AttendancePage {...sp} initTab="companyOffDays"/>;
       case "settings": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
-      case "assets":   return (currentUser.role==="admin"||currentUser.isOwner===true) ? <AssetTrackerPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
+      case "assets":   return (currentUser.role==="admin"||currentUser.isOwner===true)
+        ? <AssetTrackerPage {...sp} users={users} initialAssetCode={deepLinkAssetCode} onInitialConsumed={function(){ setDeepLinkAssetCode(null); }}/>
+        : <DashboardPage {...sp}/>;
       default: return <DashboardPage {...sp}/>;
     }
   };
