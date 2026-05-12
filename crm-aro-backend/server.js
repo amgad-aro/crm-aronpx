@@ -16149,6 +16149,236 @@ app.get("/api/assets/:id/history", auth, requireAssetAccess, async function(req,
   }
 });
 
+// ===== ASSET TRACKER — Reports + Excel export (S5) =====
+// Five JSON report endpoints (summary, by-category, by-branch, by-employee,
+// history) plus a single export endpoint that re-runs the same aggregation
+// and streams an .xlsx workbook. All aggregation runs in JS over the result
+// of a single populated Asset.find — comfortable at this scale (hundreds of
+// assets) and keeps the code path identical between on-screen rendering and
+// the exported worksheet.
+
+var XLSX = require("xlsx");
+
+var STATUS_KEYS = ["active", "maintenance", "lost", "retired"];
+
+function emptyStatusBuckets() {
+  var b = {}; STATUS_KEYS.forEach(function(s){ b[s] = 0; }); return b;
+}
+
+// Pull every asset with category + branch + custodian populated. This is the
+// one shared fetch every aggregation builds on, so each report endpoint pays
+// for at most one DB round trip plus an in-memory reduce.
+async function loadAssetsForReports() {
+  return Asset.find({}).populate(ASSET_POPULATE).lean();
+}
+
+async function buildSummary() {
+  var rows = await loadAssetsForReports();
+  var totals = { count: rows.length, value: 0 };
+  var byStatus = STATUS_KEYS.map(function(s){ return { status: s, count: 0, value: 0 }; });
+  var byStatusIdx = {}; byStatus.forEach(function(b, i){ byStatusIdx[b.status] = i; });
+  var byGroup = {}; var byAssignment = { personal: { count: 0, value: 0 }, shared: { count: 0, value: 0 } };
+  rows.forEach(function(a) {
+    var v = Number(a.purchasePrice) || 0;
+    totals.value += v;
+    if (byStatusIdx[a.status] != null) {
+      byStatus[byStatusIdx[a.status]].count += 1;
+      byStatus[byStatusIdx[a.status]].value += v;
+    }
+    var g = a.categoryId && a.categoryId.group;
+    if (g) {
+      if (!byGroup[g]) byGroup[g] = { group: g, count: 0, value: 0 };
+      byGroup[g].count += 1;
+      byGroup[g].value += v;
+    }
+    if (a.assignmentType === "personal" || a.assignmentType === "shared") {
+      byAssignment[a.assignmentType].count += 1;
+      byAssignment[a.assignmentType].value += v;
+    }
+  });
+  return { totals: totals, byStatus: byStatus, byGroup: Object.values(byGroup), byAssignment: byAssignment };
+}
+
+async function buildByCategory() {
+  var rows = await loadAssetsForReports();
+  var buckets = {};
+  rows.forEach(function(a) {
+    var c = a.categoryId; if (!c) return;
+    var id = String(c._id);
+    if (!buckets[id]) buckets[id] = { categoryId: id, name: c.name, group: c.group, codePrefix: c.codePrefix, count: 0, value: 0, byStatus: emptyStatusBuckets() };
+    buckets[id].count += 1;
+    buckets[id].value += Number(a.purchasePrice) || 0;
+    if (a.status in buckets[id].byStatus) buckets[id].byStatus[a.status] += 1;
+  });
+  return Object.values(buckets).sort(function(a, b){
+    if (a.group !== b.group) return a.group < b.group ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+async function buildByBranch() {
+  var rows = await loadAssetsForReports();
+  var buckets = {};
+  rows.forEach(function(a) {
+    var br = a.branchId; if (!br) return;
+    var id = String(br._id);
+    if (!buckets[id]) buckets[id] = { branchId: id, name: br.name, code: br.code, count: 0, value: 0, byStatus: emptyStatusBuckets() };
+    buckets[id].count += 1;
+    buckets[id].value += Number(a.purchasePrice) || 0;
+    if (a.status in buckets[id].byStatus) buckets[id].byStatus[a.status] += 1;
+  });
+  return Object.values(buckets).sort(function(a, b){ return a.name.localeCompare(b.name); });
+}
+
+async function buildByEmployee() {
+  // Counts only ACTIVE PERSONAL custodies — i.e. what someone is currently
+  // accountable for. Shared assets and retired/lost items don't contribute
+  // because they're not "in someone's hands right now". An additional
+  // synthetic row tallies personal+active assets with no current custodian
+  // so admins can spot accountability gaps.
+  var rows = await loadAssetsForReports();
+  var buckets = {};
+  var unassigned = { userId: null, name: "(Unassigned)", role: "—", count: 0, value: 0 };
+  rows.forEach(function(a) {
+    if (a.assignmentType !== "personal" || a.status !== "active") return;
+    var v = Number(a.purchasePrice) || 0;
+    if (!a.currentCustodian) { unassigned.count += 1; unassigned.value += v; return; }
+    var u = a.currentCustodian; var id = String(u._id);
+    if (!buckets[id]) buckets[id] = { userId: id, name: u.name, username: u.username, role: u.role, count: 0, value: 0 };
+    buckets[id].count += 1;
+    buckets[id].value += v;
+  });
+  var out = Object.values(buckets).sort(function(a, b){ return b.count - a.count || a.name.localeCompare(b.name); });
+  if (unassigned.count > 0) out.push(unassigned);
+  return out;
+}
+
+// Cross-asset CustodyHistory. Differs from /api/assets/:id/history (which is
+// per-asset) by joining the asset record so each row carries its assetCode
+// + name without a second lookup on the client. Filterable by date range,
+// action, and assetId — all three are honoured by both the JSON and Excel
+// paths so the export matches whatever the user has narrowed to on-screen.
+async function buildCustodyHistory(query) {
+  var q = {};
+  if (query && query.assetId && mongoose.Types.ObjectId.isValid(query.assetId)) q.assetId = query.assetId;
+  if (query && query.action) q.action = String(query.action);
+  if (query && (query.from || query.to)) {
+    q.performedAt = {};
+    if (query.from) { var d1 = new Date(String(query.from)); if (!isNaN(d1)) q.performedAt.$gte = d1; }
+    if (query.to)   { var d2 = new Date(String(query.to));   if (!isNaN(d2)) q.performedAt.$lte = d2; }
+    if (!Object.keys(q.performedAt).length) delete q.performedAt;
+  }
+  var rows = await CustodyHistory.find(q)
+    .populate("assetId",     "assetCode name")
+    .populate("fromUserId",  "name username role")
+    .populate("toUserId",    "name username role")
+    .populate("fromBranchId","name code")
+    .populate("toBranchId",  "name code")
+    .populate("performedBy", "name username role")
+    .sort({ performedAt: -1, createdAt: -1 })
+    .lean();
+  return rows;
+}
+
+app.get("/api/assets/reports/summary",     auth, requireAssetAccess, async function(req, res) {
+  try { res.json(await buildSummary()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/assets/reports/by-category", auth, requireAssetAccess, async function(req, res) {
+  try { res.json(await buildByCategory()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/assets/reports/by-branch",   auth, requireAssetAccess, async function(req, res) {
+  try { res.json(await buildByBranch()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/assets/reports/by-employee", auth, requireAssetAccess, async function(req, res) {
+  try { res.json(await buildByEmployee()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/assets/reports/history",     auth, requireAssetAccess, async function(req, res) {
+  try { res.json(await buildCustodyHistory(req.query)); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Excel export — single endpoint, dispatch on ?type. Returns the same
+// aggregation as the matching JSON endpoint, shaped into rows that read
+// well in a spreadsheet (currency in own column, status counts spread
+// across separate cells, etc.). Filename: assets_report_{type}_{YYYY-MM-DD}.xlsx
+function toSheetRows(type, data) {
+  if (type === "summary") {
+    var rows = [];
+    rows.push({ Section: "TOTALS", Label: "Asset count", Count: data.totals.count, "Value (EGP)": data.totals.value });
+    data.byStatus.forEach(function(s){ rows.push({ Section: "BY STATUS", Label: s.status, Count: s.count, "Value (EGP)": s.value }); });
+    (data.byGroup || []).forEach(function(g){ rows.push({ Section: "BY GROUP",  Label: g.group, Count: g.count, "Value (EGP)": g.value }); });
+    ["personal","shared"].forEach(function(k){
+      var b = data.byAssignment && data.byAssignment[k]; if (!b) return;
+      rows.push({ Section: "BY ASSIGNMENT", Label: k, Count: b.count, "Value (EGP)": b.value });
+    });
+    return rows;
+  }
+  if (type === "by-category") {
+    return data.map(function(r) {
+      return {
+        Category: r.name, Group: r.group, "Code prefix": r.codePrefix,
+        Count: r.count, "Value (EGP)": r.value,
+        Active: r.byStatus.active, Maintenance: r.byStatus.maintenance, Lost: r.byStatus.lost, Retired: r.byStatus.retired
+      };
+    });
+  }
+  if (type === "by-branch") {
+    return data.map(function(r) {
+      return {
+        Branch: r.name, Code: r.code,
+        Count: r.count, "Value (EGP)": r.value,
+        Active: r.byStatus.active, Maintenance: r.byStatus.maintenance, Lost: r.byStatus.lost, Retired: r.byStatus.retired
+      };
+    });
+  }
+  if (type === "by-employee") {
+    return data.map(function(r) {
+      return { Employee: r.name, Username: r.username || "", Role: r.role, "Active personal assets": r.count, "Value (EGP)": r.value };
+    });
+  }
+  if (type === "history") {
+    return data.map(function(r) {
+      return {
+        "Asset code":   r.assetId && r.assetId.assetCode || "",
+        "Asset name":   r.assetId && r.assetId.name || "",
+        Action:         r.action,
+        From:           r.fromUserId && r.fromUserId.name || "",
+        To:             r.toUserId   && r.toUserId.name   || "",
+        Notes:          r.notes || "",
+        "Performed by": r.performedBy && r.performedBy.name || "",
+        "Performed at": r.performedAt ? new Date(r.performedAt).toISOString() : ""
+      };
+    });
+  }
+  return [];
+}
+
+app.get("/api/assets/reports/export", auth, requireAssetAccess, async function(req, res) {
+  try {
+    var type = String((req.query && req.query.type) || "");
+    var data;
+    if      (type === "summary")     data = await buildSummary();
+    else if (type === "by-category") data = await buildByCategory();
+    else if (type === "by-branch")   data = await buildByBranch();
+    else if (type === "by-employee") data = await buildByEmployee();
+    else if (type === "history")     data = await buildCustodyHistory(req.query);
+    else return res.status(400).json({ error: "Unknown report type. Use summary | by-category | by-branch | by-employee | history." });
+
+    var rows = toSheetRows(type, data);
+    var sheet = XLSX.utils.json_to_sheet(rows);
+    var book = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(book, sheet, type.slice(0, 31));
+    var buf = XLSX.write(book, { type: "buffer", bookType: "xlsx" });
+    var today = new Date().toISOString().slice(0, 10);
+    var fname = "assets_report_" + type + "_" + today + ".xlsx";
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", 'attachment; filename="' + fname + '"');
+    res.setHeader("Content-Length", buf.length);
+    res.send(buf);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== START SERVER + WEBSOCKET =====
 var PORT = process.env.PORT || 5000;
 var httpServer = http.createServer(app);

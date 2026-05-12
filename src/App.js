@@ -15969,6 +15969,16 @@ var AssetTrackerPage = function(p) {
   // of the main bundle.
   var [scanManualCode, setScanManualCode] = useState("");
   var [scanError, setScanError] = useState("");
+  // Reports (S5): a lazy-loaded dict keyed by tab name. Each tab fetches its
+  // own data the first time it's opened and caches the result for the
+  // remainder of the AssetTrackerPage instance. historyFilters apply only
+  // to the history tab and are also forwarded to the Excel export.
+  var [reportsTab, setReportsTab] = useState("summary");
+  var [reportsData, setReportsData] = useState({});
+  var [reportsLoading, setReportsLoading] = useState({});
+  var [reportsError, setReportsError] = useState({});
+  var [historyFilters, setHistoryFilters] = useState({ from: "", to: "", action: "" });
+  var [exporting, setExporting] = useState(false);
 
   useEffect(function() {
     var cancelled = false;
@@ -16302,6 +16312,82 @@ var AssetTrackerPage = function(p) {
   var openScan = function() {
     setScanManualCode(""); setScanError(""); setSubPage("scan");
   };
+  var openReports = function() {
+    setSubPage("reports");
+  };
+
+  // Loads the active reports tab on demand. Cached per-tab in reportsData so
+  // re-opening a tab is instant; the History tab re-fetches whenever its
+  // filters change so the visible rows always match the filter inputs.
+  var loadReport = useCallback(function(tab, filters) {
+    setReportsLoading(function(prev){ var n = Object.assign({}, prev); n[tab] = true; return n; });
+    setReportsError(function(prev){ var n = Object.assign({}, prev); n[tab] = ""; return n; });
+    var url = "/api/assets/reports/" + tab;
+    if (tab === "history") {
+      var qs = [];
+      if (filters && filters.from)   qs.push("from="   + encodeURIComponent(filters.from));
+      if (filters && filters.to)     qs.push("to="     + encodeURIComponent(filters.to));
+      if (filters && filters.action) qs.push("action=" + encodeURIComponent(filters.action));
+      if (qs.length) url += "?" + qs.join("&");
+    }
+    return apiFetch(url, "GET", null, p.token)
+      .then(function(d){
+        setReportsData(function(prev){ var n = Object.assign({}, prev); n[tab] = d; return n; });
+      })
+      .catch(function(err){
+        setReportsError(function(prev){ var n = Object.assign({}, prev); n[tab] = (err && err.message) || "Failed to load"; return n; });
+      })
+      .finally(function(){
+        setReportsLoading(function(prev){ var n = Object.assign({}, prev); n[tab] = false; return n; });
+      });
+  }, [p.token]);
+
+  // Trigger a load when the reports view opens and again when the tab or
+  // history filters change. Static tabs cache after the first load; history
+  // re-fetches because its filters are part of the request.
+  useEffect(function() {
+    if (subPage !== "reports") return;
+    if (reportsTab === "history") { loadReport("history", historyFilters); return; }
+    if (reportsData[reportsTab]) return; // cached
+    loadReport(reportsTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subPage, reportsTab, historyFilters, loadReport]);
+
+  // Download an .xlsx for the named report. fetch() with the Authorization
+  // header (anchor <a download> can't carry headers), then trigger download
+  // via a temporary <a> + object URL. Filename also set on the anchor as a
+  // belt-and-braces measure alongside the server's Content-Disposition.
+  var exportReport = async function(type) {
+    setExporting(true);
+    try {
+      var qs = "";
+      if (type === "history") {
+        var parts = [];
+        if (historyFilters.from)   parts.push("from="   + encodeURIComponent(historyFilters.from));
+        if (historyFilters.to)     parts.push("to="     + encodeURIComponent(historyFilters.to));
+        if (historyFilters.action) parts.push("action=" + encodeURIComponent(historyFilters.action));
+        if (parts.length) qs = "&" + parts.join("&");
+      }
+      var res = await fetch(API + "/api/assets/reports/export?type=" + encodeURIComponent(type) + qs, {
+        headers: { "Authorization": "Bearer " + p.token }
+      });
+      if (!res.ok) {
+        var msg = "Export failed (" + res.status + ")";
+        try { var body = await res.json(); if (body && body.error) msg = body.error; } catch(e){}
+        throw new Error(msg);
+      }
+      var blob = await res.blob();
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "assets_report_" + type + "_" + new Date().toISOString().slice(0,10) + ".xlsx";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert((err && err.message) || "Export failed");
+    }
+    setExporting(false);
+  };
   // Manual fallback when the camera path is blocked (desktop, denied perms).
   // Accepts the same shapes as a real QR scan via parseAssetScanPayload.
   var goManualScan = function() {
@@ -16401,6 +16487,7 @@ var AssetTrackerPage = function(p) {
               <div style={{fontSize:12,color:"#666",marginTop:2}}>All company-owned equipment, furniture, and appliances</div>
             </div>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button type="button" onClick={openReports} style={btnGhost}>Reports</button>
               <button type="button" onClick={openScan} style={btnGhost}>Scan QR</button>
               <button type="button" onClick={openNew} style={btnPrimary}>+ New Asset</button>
             </div>
@@ -16822,6 +16909,247 @@ var AssetTrackerPage = function(p) {
               </div>
             </div>
           </div>}
+        </div>;
+      })()}
+
+      {/* ---------- REPORTS VIEW (5 tabs + Excel export) ---------- */}
+      {subPage === "reports" && (function() {
+        var TABS = [
+          { id: "summary",     label: "Summary" },
+          { id: "by-category", label: "By Category" },
+          { id: "by-branch",   label: "By Branch" },
+          { id: "by-employee", label: "By Employee" },
+          { id: "history",     label: "Custody History" }
+        ];
+        var ACTION_LABELS = {
+          registered:     "Registered",
+          assigned:       "Assigned",
+          transferred:    "Transferred",
+          returned:       "Returned",
+          marked_lost:    "Marked lost",
+          retired:        "Retired",
+          status_changed: "Status changed"
+        };
+        var tabBtn = function(t) {
+          var act = reportsTab === t.id;
+          return <button key={t.id} type="button" onClick={function(){ setReportsTab(t.id); }}
+            style={{ padding:"8px 14px", fontSize:13, cursor:"pointer", borderRadius:8, whiteSpace:"nowrap", flexShrink:0,
+              color: act ? "#1a1a1a" : "#666", fontWeight: act ? 500 : 400,
+              background: act ? "#fff" : "transparent",
+              border: "0.5px solid " + (act ? "rgba(0,0,0,0.1)" : "transparent"), fontFamily:"inherit"
+            }}>{t.label}</button>;
+        };
+        var current = reportsData[reportsTab];
+        var loading = !!reportsLoading[reportsTab];
+        var error = reportsError[reportsTab] || "";
+        var thStyle = {fontSize:11, color:"#666", textTransform:"uppercase", letterSpacing:"0.3px", textAlign:"left", padding:"10px 12px", borderBottom:"0.5px solid rgba(0,0,0,0.08)", background:"#FAFAF9", fontWeight:500};
+        var tdStyle = {fontSize:13, padding:"10px 12px", borderBottom:"0.5px solid rgba(0,0,0,0.05)", color:"#1a1a1a"};
+        var tdNum   = Object.assign({}, tdStyle, {textAlign:"right", fontFamily:"ui-monospace, SFMono-Regular, monospace", fontSize:12});
+
+        var renderSummary = function() {
+          if (!current) return null;
+          var s = current;
+          var section = function(title, rows) {
+            return <div style={{marginBottom:18}}>
+              <div style={{fontSize:11, color:"#666", textTransform:"uppercase", letterSpacing:"0.3px", marginBottom:8}}>{title}</div>
+              <table style={{width:"100%", borderCollapse:"collapse"}}>
+                <tbody>
+                  {rows.map(function(r, i){
+                    return <tr key={i}>
+                      <td style={Object.assign({}, tdStyle, {width:"55%"})}>{r.label}</td>
+                      <td style={tdNum}>{(r.count != null) ? r.count.toLocaleString("en-EG") : ""}</td>
+                      <td style={Object.assign({}, tdNum, {width:"30%"})}>{(r.value != null) ? fmtEGP(r.value) : ""}</td>
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>;
+          };
+          return <div>
+            {section("Totals", [{ label: "All assets", count: s.totals.count, value: s.totals.value }])}
+            {section("By status", s.byStatus.map(function(r){ return { label: r.status, count: r.count, value: r.value }; }))}
+            {section("By group",  (s.byGroup || []).map(function(r){ return { label: r.group, count: r.count, value: r.value }; }))}
+            {section("By assignment type", ["personal","shared"].map(function(k){
+              var b = (s.byAssignment && s.byAssignment[k]) || { count: 0, value: 0 };
+              return { label: k, count: b.count, value: b.value };
+            }))}
+          </div>;
+        };
+
+        var renderByCategory = function() {
+          if (!current) return null;
+          return <table style={{width:"100%", borderCollapse:"collapse"}}>
+            <thead><tr>
+              <th style={thStyle}>Category</th>
+              <th style={thStyle}>Group</th>
+              <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Count</th>
+              <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Value</th>
+              <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Active</th>
+              <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Maint.</th>
+              <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Lost</th>
+              <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Retired</th>
+            </tr></thead>
+            <tbody>
+              {current.map(function(r){
+                return <tr key={r.categoryId}>
+                  <td style={tdStyle}>{r.name} <span style={{color:"#888"}}>({r.codePrefix})</span></td>
+                  <td style={Object.assign({}, tdStyle, {color:"#666"})}>{r.group}</td>
+                  <td style={tdNum}>{r.count}</td>
+                  <td style={tdNum}>{fmtEGP(r.value)}</td>
+                  <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.active}</td>
+                  <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.maintenance}</td>
+                  <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.lost}</td>
+                  <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.retired}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>;
+        };
+
+        var renderByBranch = function() {
+          if (!current) return null;
+          return <table style={{width:"100%", borderCollapse:"collapse"}}>
+            <thead><tr>
+              <th style={thStyle}>Branch</th>
+              <th style={thStyle}>Code</th>
+              <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Count</th>
+              <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Value</th>
+              <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Active</th>
+              <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Maint.</th>
+              <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Lost</th>
+              <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Retired</th>
+            </tr></thead>
+            <tbody>
+              {current.map(function(r){
+                return <tr key={r.branchId}>
+                  <td style={tdStyle}>{r.name}</td>
+                  <td style={Object.assign({}, tdStyle, {fontFamily:"ui-monospace, SFMono-Regular, monospace", fontSize:12, color:"#444"})}>{r.code}</td>
+                  <td style={tdNum}>{r.count}</td>
+                  <td style={tdNum}>{fmtEGP(r.value)}</td>
+                  <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.active}</td>
+                  <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.maintenance}</td>
+                  <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.lost}</td>
+                  <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.retired}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>;
+        };
+
+        var renderByEmployee = function() {
+          if (!current) return null;
+          return <div>
+            <div style={{fontSize:11, color:"#666", marginBottom:8, fontStyle:"italic"}}>Counts cover personal + active assets only (current accountability).</div>
+            <table style={{width:"100%", borderCollapse:"collapse"}}>
+              <thead><tr>
+                <th style={thStyle}>Employee</th>
+                <th style={thStyle}>Role</th>
+                <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Count</th>
+                <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Value (EGP)</th>
+              </tr></thead>
+              <tbody>
+                {current.map(function(r, i){
+                  return <tr key={r.userId || "unassigned-" + i}>
+                    <td style={tdStyle}>{r.name}{r.username ? <span style={{color:"#888"}}> ({r.username})</span> : null}</td>
+                    <td style={Object.assign({}, tdStyle, {color:"#666"})}>{r.role}</td>
+                    <td style={tdNum}>{r.count}</td>
+                    <td style={tdNum}>{fmtEGP(r.value)}</td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </div>;
+        };
+
+        var renderHistory = function() {
+          return <div>
+            {/* Filters bar */}
+            <div style={{display:"grid", gridTemplateColumns:"160px 160px 180px 1fr", gap:8, marginBottom:14, alignItems:"end"}}>
+              <div>
+                <label style={fieldLabel}>From</label>
+                <input style={inputStyle} type="date" value={historyFilters.from} onChange={function(e){ setHistoryFilters(Object.assign({}, historyFilters, {from:e.target.value})); }}/>
+              </div>
+              <div>
+                <label style={fieldLabel}>To</label>
+                <input style={inputStyle} type="date" value={historyFilters.to} onChange={function(e){ setHistoryFilters(Object.assign({}, historyFilters, {to:e.target.value})); }}/>
+              </div>
+              <div>
+                <label style={fieldLabel}>Action</label>
+                <select style={inputStyle} value={historyFilters.action} onChange={function(e){ setHistoryFilters(Object.assign({}, historyFilters, {action:e.target.value})); }}>
+                  <option value="">All actions</option>
+                  {Object.keys(ACTION_LABELS).map(function(k){ return <option key={k} value={k}>{ACTION_LABELS[k]}</option>; })}
+                </select>
+              </div>
+              <div style={{textAlign:"right"}}>
+                {historyFilters.from || historyFilters.to || historyFilters.action
+                  ? <button type="button" onClick={function(){ setHistoryFilters({ from:"", to:"", action:"" }); }} style={btnGhost}>Clear filters</button>
+                  : null}
+              </div>
+            </div>
+            {!current ? null : current.length === 0
+              ? <div style={{fontSize:13, color:"#666", padding:24, textAlign:"center"}}>No events match these filters.</div>
+              : <table style={{width:"100%", borderCollapse:"collapse"}}>
+                  <thead><tr>
+                    <th style={thStyle}>When</th>
+                    <th style={thStyle}>Asset</th>
+                    <th style={thStyle}>Action</th>
+                    <th style={thStyle}>From → To</th>
+                    <th style={thStyle}>By</th>
+                    <th style={thStyle}>Notes</th>
+                  </tr></thead>
+                  <tbody>
+                    {current.map(function(r){
+                      var fromN = r.fromUserId && r.fromUserId.name;
+                      var toN   = r.toUserId   && r.toUserId.name;
+                      var arrow = fromN && toN ? (fromN + " → " + toN) : (toN ? "Warehouse → " + toN : (fromN ? fromN + " → Warehouse" : "—"));
+                      return <tr key={r._id}>
+                        <td style={Object.assign({}, tdStyle, {fontSize:12, color:"#666", whiteSpace:"nowrap"})}>{new Date(r.performedAt || r.createdAt).toLocaleString("en-GB", {day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}</td>
+                        <td style={tdStyle}>{r.assetId ? <span><span style={{fontWeight:500}}>{r.assetId.name}</span> <span style={{fontFamily:"ui-monospace, SFMono-Regular, monospace", fontSize:11, color:"#888"}}>{r.assetId.assetCode}</span></span> : "—"}</td>
+                        <td style={tdStyle}>{ACTION_LABELS[r.action] || r.action}</td>
+                        <td style={Object.assign({}, tdStyle, {color:"#666"})}>{arrow}</td>
+                        <td style={Object.assign({}, tdStyle, {color:"#666"})}>{r.performedBy && r.performedBy.name || "System"}</td>
+                        <td style={Object.assign({}, tdStyle, {color:"#666"})}>{r.notes || ""}</td>
+                      </tr>;
+                    })}
+                  </tbody>
+                </table>
+            }
+          </div>;
+        };
+
+        var renderActiveTab = function() {
+          if (reportsTab === "summary")     return renderSummary();
+          if (reportsTab === "by-category") return renderByCategory();
+          if (reportsTab === "by-branch")   return renderByBranch();
+          if (reportsTab === "by-employee") return renderByEmployee();
+          if (reportsTab === "history")     return renderHistory();
+          return null;
+        };
+
+        return <div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap",marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
+              <button type="button" onClick={goList} style={btnGhost}>← Back</button>
+              <div style={{fontSize:18,fontWeight:500,color:"#1a1a1a"}}>Asset reports</div>
+            </div>
+            <button type="button" onClick={function(){ exportReport(reportsTab); }} disabled={exporting || loading || !current} style={Object.assign({}, btnPrimary, {opacity:(exporting || loading || !current) ? 0.55 : 1, cursor:(exporting || loading || !current) ? "not-allowed" : "pointer"})}>
+              {exporting ? "Preparing…" : "Download Excel"}
+            </button>
+          </div>
+
+          {/* Tabs */}
+          <div style={Object.assign({}, cardWrap, { overflow:"hidden" })}>
+            <div style={{display:"flex", gap:4, padding:"10px 14px", borderBottom:"0.5px solid rgba(0,0,0,0.1)", background:"#F7F7F5", overflowX:"auto"}}>
+              {TABS.map(tabBtn)}
+            </div>
+            <div style={{padding:18}}>
+              {error && <div style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"8px 12px",borderRadius:8,marginBottom:12}}>{error}</div>}
+              {loading && !current
+                ? <div style={{fontSize:13, color:"#666", padding:24, textAlign:"center"}}>Loading…</div>
+                : renderActiveTab()
+              }
+            </div>
+          </div>
         </div>;
       })()}
 
