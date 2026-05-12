@@ -15918,17 +15918,10 @@ var AssetTrackerPage = function(p) {
   // with the props as they are at that moment. If we'd already cleared
   // deepLinkAssetCode in App state during the first short-lived mount,
   // the remount would see initialAssetCode=null and re-init subPage to
-  // "list", which is exactly the symptom users reported. Instead we
-  // keep the App-level deep-link intact until the user explicitly
+  // "list" (the symptom that broke deep-links before this fix). Instead
+  // we keep the App-level deep-link intact until the user explicitly
   // navigates away from the detail view (see the [subPage] effect below).
-  // TODO(remove after AT-S4 verification): diagnostics per user request.
-  if (p.initialAssetCode) console.log("[AT-S4 deep-link] AssetTrackerPage rendering with initialAssetCode:", p.initialAssetCode, "@", new Date().toISOString());
-  var [subPage, setSubPage] = useState(function() {
-    var initial = p.initialAssetCode ? "detail" : "list";
-    // TODO(remove after AT-S4 verification): diagnostic per user request.
-    console.log("[AT-S4 subPage] state initializer set to:", initial, "(prop initialAssetCode =", p.initialAssetCode, ")");
-    return initial;
-  });
+  var [subPage, setSubPage] = useState(p.initialAssetCode ? "detail" : "list");
   var [selectedAssetCode, setSelectedAssetCode] = useState(p.initialAssetCode || null);
   var [assets, setAssets] = useState([]);
   var [categories, setCategories] = useState([]);
@@ -16004,11 +15997,7 @@ var AssetTrackerPage = function(p) {
   // re-pin to "detail" — and once the user clicks Back / New Asset / Scan,
   // we clear so future fresh navigations land on the list view.
   useEffect(function() {
-    // TODO(remove after AT-S4 verification): diagnostic per user request.
-    console.log("[AT-S4 subPage] changed to:", subPage, "@", new Date().toISOString());
     if (subPage !== "detail" && p.initialAssetCode && typeof p.onInitialConsumed === "function") {
-      // TODO(remove after AT-S4 verification): diagnostic per user request.
-      console.log("[AT-S4 deep-link] subPage left detail — calling onInitialConsumed");
       p.onInitialConsumed();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -18228,11 +18217,7 @@ export default function CRMApp() {
       var raw = (typeof window !== "undefined" && window.localStorage) ? localStorage.getItem('crm_aro_session') : null;
       if (raw) {
         var s = JSON.parse(raw);
-        if (s && s.user && s.token) {
-          // TODO(remove after AT-S4 verification): diagnostic per user request.
-          console.log("[AT-S4 session] restored synchronously for user:", s.user.username || s.user.name || "(unknown)");
-          return s;
-        }
+        if (s && s.user && s.token) return s;
       }
     } catch(e) {}
     return null;
@@ -18268,10 +18253,7 @@ export default function CRMApp() {
     try {
       if (typeof window === "undefined" || !window.location) return null;
       var m = (window.location.pathname || "").match(/^\/assets\/([A-Za-z0-9-]+)\/?$/);
-      var code = m ? m[1] : null;
-      // TODO(remove after AT-S4 verification): diagnostic per user request.
-      if (code) console.log("[AT-S4 deep-link] captured code:", code, "from path:", window.location.pathname);
-      return code;
+      return m ? m[1] : null;
     } catch(e) { return null; }
   });
   var [page,setPage]=useState((function(){
@@ -18797,8 +18779,6 @@ export default function CRMApp() {
     // and the Owner can actually see the assets page; non-admins fall through
     // to the dashboard default below via the renderPage guard.
     var defaultPage = deepLinkAssetCode ? "assets" : "dashboard";
-    // TODO(remove after AT-S4 verification): diagnostic per user request.
-    if (deepLinkAssetCode) console.log("[AT-S4 deep-link] handleLogin routing to assets for code:", deepLinkAssetCode);
     setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok,csrfToken:csrfTok})); } catch(e){}
   };

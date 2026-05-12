@@ -2218,7 +2218,7 @@ app.post("/api/login", loginLimiter, async function(req, res) {
       id: user._id,
       role: user.role,
       name: user.name
-    }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    }, process.env.JWT_SECRET, { expiresIn: "30d" });
 
     await User.findByIdAndUpdate(user._id, { lastSeen: new Date() });
     res.json({
