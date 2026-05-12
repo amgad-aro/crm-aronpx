@@ -15908,14 +15908,27 @@ var AssetTrackerPage = function(p) {
   // ===== Hooks — all declared up-front, never below a return. =====
   // QR deep-link: App captured the code from the URL into its own state
   // before mounting us; we read it once via the prop to seed the detail
-  // sub-view. This replaces an earlier window.location-reading IIFE that
-  // raced with the URL-clearing effect — by the time AssetTrackerPage
-  // mounted for users with a saved session, the URL was already cleared.
-  // The onInitialConsumed callback fires once on first mount (see effect
-  // below) so navigating away and back doesn't re-pin the detail view.
-  // TODO(remove after AT-S4 verification): diagnostic per user request.
-  if (p.initialAssetCode) console.log("[AT-S4 deep-link] AssetTrackerPage mounted with initialAssetCode:", p.initialAssetCode);
-  var [subPage, setSubPage] = useState(p.initialAssetCode ? "detail" : "list");
+  // sub-view.
+  //
+  // SUBTLE: we deliberately do NOT consume the prop (call onInitialConsumed)
+  // from a mount effect. The App-level loading flag flips true while
+  // loadData fetches /api/leads etc., which forces App's `if(loading)
+  // return spinner` to unmount this component mid-flight. When loading
+  // flips back to false, we REMOUNT — useState initializers run again
+  // with the props as they are at that moment. If we'd already cleared
+  // deepLinkAssetCode in App state during the first short-lived mount,
+  // the remount would see initialAssetCode=null and re-init subPage to
+  // "list", which is exactly the symptom users reported. Instead we
+  // keep the App-level deep-link intact until the user explicitly
+  // navigates away from the detail view (see the [subPage] effect below).
+  // TODO(remove after AT-S4 verification): diagnostics per user request.
+  if (p.initialAssetCode) console.log("[AT-S4 deep-link] AssetTrackerPage rendering with initialAssetCode:", p.initialAssetCode, "@", new Date().toISOString());
+  var [subPage, setSubPage] = useState(function() {
+    var initial = p.initialAssetCode ? "detail" : "list";
+    // TODO(remove after AT-S4 verification): diagnostic per user request.
+    console.log("[AT-S4 subPage] state initializer set to:", initial, "(prop initialAssetCode =", p.initialAssetCode, ")");
+    return initial;
+  });
   var [selectedAssetCode, setSelectedAssetCode] = useState(p.initialAssetCode || null);
   var [assets, setAssets] = useState([]);
   var [categories, setCategories] = useState([]);
@@ -15981,18 +15994,25 @@ var AssetTrackerPage = function(p) {
     return function() { cancelled = true; };
   }, [p.token]);
 
-  // One-shot deep-link consumer. We've already seeded subPage + selectedAssetCode
-  // from p.initialAssetCode in the state initializers above; now we tell the
-  // parent it's safe to clear App-level deepLinkAssetCode so a subsequent
-  // navigation to the assets page (e.g. via the sidebar) doesn't re-pin the
-  // detail view. Empty deps array on purpose — fires exactly once on first
-  // mount; later changes to p.initialAssetCode (it goes null right after
-  // consumption) must NOT re-fire this effect.
+  // Deep-link consumer — fires when subPage moves AWAY from "detail" (not on
+  // mount). Reason: a loading-state flicker in App can unmount this component
+  // briefly during the initial data fetch; if we'd consumed the prop on
+  // mount, the App state would be cleared by the time we remount, and the
+  // remount would init subPage="list" because the prop is now null. By
+  // keeping the App-level state intact until the user navigates AWAY,
+  // remounts during loading flickers still see the deep-link prop and
+  // re-pin to "detail" — and once the user clicks Back / New Asset / Scan,
+  // we clear so future fresh navigations land on the list view.
   useEffect(function() {
-    if (p.initialAssetCode && typeof p.onInitialConsumed === "function") {
+    // TODO(remove after AT-S4 verification): diagnostic per user request.
+    console.log("[AT-S4 subPage] changed to:", subPage, "@", new Date().toISOString());
+    if (subPage !== "detail" && p.initialAssetCode && typeof p.onInitialConsumed === "function") {
+      // TODO(remove after AT-S4 verification): diagnostic per user request.
+      console.log("[AT-S4 deep-link] subPage left detail — calling onInitialConsumed");
       p.onInitialConsumed();
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subPage]);
 
   // Generate the QR image (data URL) whenever the detail asset changes.
   // Styling rationale:
