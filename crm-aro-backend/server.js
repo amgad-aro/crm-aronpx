@@ -16164,9 +16164,324 @@ app.get("/api/assets/:id([0-9a-fA-F]{24})/history", auth, requireAssetAccess, as
 // assets) and keeps the code path identical between on-screen rendering and
 // the exported worksheet.
 
-var XLSX = require("xlsx");
+var ExcelJS = require("exceljs");
 
 var STATUS_KEYS = ["active", "maintenance", "lost", "retired"];
+
+// Human-readable action labels for the custody-history export. Same shape as
+// the ACTION_LABELS object on the frontend so the Excel matches what the
+// admin sees on screen.
+var HISTORY_ACTION_LABELS = {
+  registered:     "Registered",
+  assigned:       "Assigned",
+  transferred:    "Transferred",
+  returned:       "Returned",
+  marked_lost:    "Marked lost",
+  retired:        "Retired",
+  status_changed: "Status changed"
+};
+
+// Cairo-timezone date formatters. Backend runs in UTC on Railway, but the
+// users live in Egypt — formatting in Africa/Cairo so the printed timestamps
+// match what they saw in the UI. sv-SE locale gives ISO-like output
+// (YYYY-MM-DD / HH:MM:SS) which is the format the user requested.
+function fmtCairoDateTime(d) {
+  if (!d) return "";
+  var date = new Date(d); if (isNaN(date)) return "";
+  return date.toLocaleString("sv-SE", {
+    timeZone: "Africa/Cairo",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false
+  });
+}
+function fmtCairoDate(d) {
+  if (!d) return "";
+  var date = new Date(d); if (isNaN(date)) return "";
+  return date.toLocaleDateString("sv-SE", { timeZone: "Africa/Cairo" });
+}
+function fmtCairoTime(d) {
+  if (!d) return "";
+  var date = new Date(d); if (isNaN(date)) return "";
+  return date.toLocaleTimeString("sv-SE", {
+    timeZone: "Africa/Cairo",
+    hour: "2-digit", minute: "2-digit", hour12: false
+  });
+}
+
+// Same as loadAssetsForReports but extends the currentCustodian populate to
+// include email — only the export needs it, so we keep the global
+// ASSET_POPULATE used by the JSON endpoints lean.
+async function loadAssetsForExport() {
+  return Asset.find({})
+    .populate({ path: "categoryId", select: "name group codePrefix" })
+    .populate({ path: "branchId",   select: "name code address" })
+    .populate({ path: "currentCustodian", select: "name username role email" })
+    .lean();
+}
+
+// Convert a populated Asset doc into the wide row used by every "full asset
+// list" style detail sheet. Numbers stay numeric (Excel sums them); dates
+// are pre-formatted in Cairo time as YYYY-MM-DD HH:MM.
+function toAssetDetailRow(a) {
+  var cat  = a.categoryId       || {};
+  var br   = a.branchId         || {};
+  var cust = a.currentCustodian || {};
+  return {
+    assetCode:      a.assetCode || "",
+    name:           a.name      || "",
+    category:       cat.name    || "",
+    group:          cat.group   || "",
+    branch:         br.name     || "",
+    assignmentType: a.assignmentType || "",
+    status:         a.status    || "",
+    custodianName:  cust.name   || "",
+    custodianEmail: cust.email  || "",
+    purchasePrice:  Number(a.purchasePrice) || 0,
+    purchaseDate:   fmtCairoDate(a.purchaseDate),
+    supplier:       a.supplier || "",
+    serialNumber:   a.serialNumber || "",
+    notes:          a.notes || "",
+    qrUrl:          a.qrCodeData || "",
+    createdAt:      fmtCairoDateTime(a.createdAt)
+  };
+}
+
+var ASSET_DETAIL_COLUMNS = [
+  { header: "Asset Code",           key: "assetCode" },
+  { header: "Name",                 key: "name" },
+  { header: "Category",             key: "category" },
+  { header: "Group",                key: "group" },
+  { header: "Branch",               key: "branch" },
+  { header: "Assignment Type",      key: "assignmentType" },
+  { header: "Status",               key: "status" },
+  { header: "Custodian Name",       key: "custodianName" },
+  { header: "Custodian Email",      key: "custodianEmail" },
+  { header: "Purchase Price (EGP)", key: "purchasePrice" },
+  { header: "Purchase Date",        key: "purchaseDate" },
+  { header: "Supplier",             key: "supplier" },
+  { header: "Serial Number",        key: "serialNumber" },
+  { header: "Notes",                key: "notes" },
+  { header: "QR URL",               key: "qrUrl" },
+  { header: "Created At",           key: "createdAt" }
+];
+
+// Add a styled worksheet: bold + filled header row, content-aware column
+// widths (10–60 char clamp so a long note doesn't blow the layout), and
+// numeric formatting for monetary columns. Returns the sheet so callers
+// can layer extra styling if needed.
+function addStyledSheet(wb, name, columns, rows) {
+  var sheet = wb.addWorksheet(name);
+  sheet.columns = columns;
+  sheet.addRows(rows);
+
+  var header = sheet.getRow(1);
+  header.font = { bold: true, color: { argb: "FF1A1A1A" }, size: 11 };
+  header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF7F7F5" } };
+  header.alignment = { vertical: "middle" };
+  header.height = 22;
+  header.border = { bottom: { style: "thin", color: { argb: "FFD0D0D0" } } };
+
+  // Apply Excel number format to columns named like "Value (EGP)" or
+  // "Purchase Price (EGP)" or "Count" so they sum cleanly and render as
+  // numbers, not strings. Detected by the column header text.
+  sheet.columns.forEach(function(col) {
+    var h = String(col.header || "");
+    if (/EGP/i.test(h))       col.numFmt = "#,##0";
+    else if (h === "Count" || /^Active$|^Maintenance$|^Lost$|^Retired$|Active Personal Assets/i.test(h)) col.numFmt = "#,##0";
+  });
+
+  // Auto-size columns by scanning cell contents (header included). Clamp to
+  // [10, 60] so notes/URLs don't stretch the sheet absurdly wide.
+  sheet.columns.forEach(function(col) {
+    var maxLen = col.header ? String(col.header).length : 10;
+    col.eachCell({ includeEmpty: false }, function(cell) {
+      var len = cell.value == null ? 0 : String(cell.value).length;
+      if (len > maxLen) maxLen = len;
+    });
+    col.width = Math.min(Math.max(maxLen + 2, 10), 60);
+  });
+
+  // Freeze the header so it stays visible while scrolling long sheets.
+  sheet.views = [{ state: "frozen", ySplit: 1 }];
+
+  return sheet;
+}
+
+// One workbook builder per report type. Each returns a Buffer ready to
+// stream. Summary / category / branch / employee all carry a second
+// "detail" sheet — admins routinely need to pivot or sort the full asset
+// list offline. History is single-sheet but with expanded columns.
+async function buildSummaryWorkbook() {
+  var wb = new ExcelJS.Workbook();
+  wb.creator = "ARO CRM"; wb.created = new Date();
+  var s = await buildSummary();
+
+  var summaryRows = [];
+  summaryRows.push({ section: "Totals", label: "All assets", count: s.totals.count, value: s.totals.value });
+  s.byStatus.forEach(function(r){ summaryRows.push({ section: "By Status", label: r.status, count: r.count, value: r.value }); });
+  (s.byGroup || []).forEach(function(r){ summaryRows.push({ section: "By Group",  label: r.group, count: r.count, value: r.value }); });
+  ["personal","shared"].forEach(function(k){
+    var b = (s.byAssignment && s.byAssignment[k]) || { count: 0, value: 0 };
+    summaryRows.push({ section: "By Assignment Type", label: k, count: b.count, value: b.value });
+  });
+  addStyledSheet(wb, "Summary", [
+    { header: "Section",     key: "section" },
+    { header: "Label",       key: "label" },
+    { header: "Count",       key: "count" },
+    { header: "Value (EGP)", key: "value" }
+  ], summaryRows);
+
+  var assets = await loadAssetsForExport();
+  assets.sort(function(a, b){ return String(a.assetCode).localeCompare(String(b.assetCode)); });
+  addStyledSheet(wb, "Full Asset List", ASSET_DETAIL_COLUMNS, assets.map(toAssetDetailRow));
+
+  return await wb.xlsx.writeBuffer();
+}
+
+async function buildByCategoryWorkbook() {
+  var wb = new ExcelJS.Workbook(); wb.creator = "ARO CRM"; wb.created = new Date();
+  var cats = await buildByCategory();
+  addStyledSheet(wb, "By Category", [
+    { header: "Category",    key: "name" },
+    { header: "Group",       key: "group" },
+    { header: "Code Prefix", key: "codePrefix" },
+    { header: "Count",       key: "count" },
+    { header: "Value (EGP)", key: "value" },
+    { header: "Active",      key: "active" },
+    { header: "Maintenance", key: "maintenance" },
+    { header: "Lost",        key: "lost" },
+    { header: "Retired",     key: "retired" }
+  ], cats.map(function(c) {
+    return { name: c.name, group: c.group, codePrefix: c.codePrefix, count: c.count, value: c.value,
+      active: c.byStatus.active, maintenance: c.byStatus.maintenance, lost: c.byStatus.lost, retired: c.byStatus.retired };
+  }));
+
+  var assets = await loadAssetsForExport();
+  assets.sort(function(a, b){
+    var ag = (a.categoryId && a.categoryId.group) || ""; var bg = (b.categoryId && b.categoryId.group) || "";
+    if (ag !== bg) return ag.localeCompare(bg);
+    var an = (a.categoryId && a.categoryId.name) || ""; var bn = (b.categoryId && b.categoryId.name) || "";
+    if (an !== bn) return an.localeCompare(bn);
+    return String(a.assetCode).localeCompare(String(b.assetCode));
+  });
+  addStyledSheet(wb, "Assets", ASSET_DETAIL_COLUMNS, assets.map(toAssetDetailRow));
+
+  return await wb.xlsx.writeBuffer();
+}
+
+async function buildByBranchWorkbook() {
+  var wb = new ExcelJS.Workbook(); wb.creator = "ARO CRM"; wb.created = new Date();
+  var brs = await buildByBranch();
+  addStyledSheet(wb, "By Branch", [
+    { header: "Branch",      key: "name" },
+    { header: "Code",        key: "code" },
+    { header: "Count",       key: "count" },
+    { header: "Value (EGP)", key: "value" },
+    { header: "Active",      key: "active" },
+    { header: "Maintenance", key: "maintenance" },
+    { header: "Lost",        key: "lost" },
+    { header: "Retired",     key: "retired" }
+  ], brs.map(function(b) {
+    return { name: b.name, code: b.code, count: b.count, value: b.value,
+      active: b.byStatus.active, maintenance: b.byStatus.maintenance, lost: b.byStatus.lost, retired: b.byStatus.retired };
+  }));
+
+  var assets = await loadAssetsForExport();
+  assets.sort(function(a, b){
+    var an = (a.branchId && a.branchId.name) || ""; var bn = (b.branchId && b.branchId.name) || "";
+    if (an !== bn) return an.localeCompare(bn);
+    return String(a.assetCode).localeCompare(String(b.assetCode));
+  });
+  addStyledSheet(wb, "Assets", ASSET_DETAIL_COLUMNS, assets.map(toAssetDetailRow));
+
+  return await wb.xlsx.writeBuffer();
+}
+
+async function buildByEmployeeWorkbook() {
+  var wb = new ExcelJS.Workbook(); wb.creator = "ARO CRM"; wb.created = new Date();
+  var emps = await buildByEmployee();
+  addStyledSheet(wb, "By Employee", [
+    { header: "Employee",                key: "name" },
+    { header: "Username",                key: "username" },
+    { header: "Role",                    key: "role" },
+    { header: "Active Personal Assets",  key: "count" },
+    { header: "Value (EGP)",             key: "value" }
+  ], emps.map(function(e) {
+    return { name: e.name, username: e.username || "", role: e.role, count: e.count, value: e.value };
+  }));
+
+  // Personal Custodies: one row per personal+active asset, sorted by
+  // custodian then asset code. Unassigned (no current custodian) bucket
+  // appears under the "(Unassigned)" label so admins can spot the gaps.
+  var assets = await loadAssetsForExport();
+  var personal = assets.filter(function(a){ return a.assignmentType === "personal" && a.status === "active"; });
+  personal.sort(function(a, b){
+    var an = (a.currentCustodian && a.currentCustodian.name) || "(Unassigned)";
+    var bn = (b.currentCustodian && b.currentCustodian.name) || "(Unassigned)";
+    if (an !== bn) return an.localeCompare(bn);
+    return String(a.assetCode).localeCompare(String(b.assetCode));
+  });
+  addStyledSheet(wb, "Personal Custodies", [
+    { header: "Custodian Name",       key: "custodianName" },
+    { header: "Custodian Email",      key: "custodianEmail" },
+    { header: "Asset Code",           key: "assetCode" },
+    { header: "Asset Name",           key: "assetName" },
+    { header: "Category",             key: "category" },
+    { header: "Branch",               key: "branch" },
+    { header: "Purchase Price (EGP)", key: "purchasePrice" },
+    { header: "Purchase Date",        key: "purchaseDate" },
+    { header: "Status",               key: "status" }
+  ], personal.map(function(a) {
+    var c = a.currentCustodian || {};
+    return {
+      custodianName:  c.name  || "(Unassigned)",
+      custodianEmail: c.email || "",
+      assetCode:      a.assetCode,
+      assetName:      a.name,
+      category:       (a.categoryId && a.categoryId.name) || "",
+      branch:         (a.branchId   && a.branchId.name)   || "",
+      purchasePrice:  Number(a.purchasePrice) || 0,
+      purchaseDate:   fmtCairoDate(a.purchaseDate),
+      status:         a.status
+    };
+  }));
+
+  return await wb.xlsx.writeBuffer();
+}
+
+async function buildHistoryWorkbook(query) {
+  var wb = new ExcelJS.Workbook(); wb.creator = "ARO CRM"; wb.created = new Date();
+  var rows = await buildCustodyHistory(query);
+  addStyledSheet(wb, "Custody History", [
+    { header: "Date",         key: "date" },
+    { header: "Time",         key: "time" },
+    { header: "Action",       key: "action" },
+    { header: "Asset Code",   key: "assetCode" },
+    { header: "Asset Name",   key: "assetName" },
+    { header: "From User",    key: "fromUser" },
+    { header: "To User",      key: "toUser" },
+    { header: "From Branch",  key: "fromBranch" },
+    { header: "To Branch",    key: "toBranch" },
+    { header: "Notes",        key: "notes" },
+    { header: "Performed By", key: "performedBy" }
+  ], rows.map(function(r) {
+    var when = r.performedAt || r.createdAt;
+    return {
+      date:        fmtCairoDate(when),
+      time:        fmtCairoTime(when),
+      action:      HISTORY_ACTION_LABELS[r.action] || r.action,
+      assetCode:   (r.assetId   && r.assetId.assetCode) || "",
+      assetName:   (r.assetId   && r.assetId.name)      || "",
+      fromUser:    (r.fromUserId   && r.fromUserId.name) || "",
+      toUser:      (r.toUserId     && r.toUserId.name)   || "",
+      fromBranch:  (r.fromBranchId && r.fromBranchId.name) || "",
+      toBranch:    (r.toBranchId   && r.toBranchId.name)   || "",
+      notes:       r.notes || "",
+      performedBy: (r.performedBy && r.performedBy.name) || "System"
+    };
+  }));
+  return await wb.xlsx.writeBuffer();
+}
 
 function emptyStatusBuckets() {
   var b = {}; STATUS_KEYS.forEach(function(s){ b[s] = 0; }); return b;
@@ -16303,84 +16618,27 @@ app.get("/api/assets/reports/history",     auth, requireAssetAccess, async funct
   try { res.json(await buildCustodyHistory(req.query)); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Excel export — single endpoint, dispatch on ?type. Returns the same
-// aggregation as the matching JSON endpoint, shaped into rows that read
-// well in a spreadsheet (currency in own column, status counts spread
-// across separate cells, etc.). Filename: assets_report_{type}_{YYYY-MM-DD}.xlsx
-function toSheetRows(type, data) {
-  if (type === "summary") {
-    var rows = [];
-    rows.push({ Section: "TOTALS", Label: "Asset count", Count: data.totals.count, "Value (EGP)": data.totals.value });
-    data.byStatus.forEach(function(s){ rows.push({ Section: "BY STATUS", Label: s.status, Count: s.count, "Value (EGP)": s.value }); });
-    (data.byGroup || []).forEach(function(g){ rows.push({ Section: "BY GROUP",  Label: g.group, Count: g.count, "Value (EGP)": g.value }); });
-    ["personal","shared"].forEach(function(k){
-      var b = data.byAssignment && data.byAssignment[k]; if (!b) return;
-      rows.push({ Section: "BY ASSIGNMENT", Label: k, Count: b.count, "Value (EGP)": b.value });
-    });
-    return rows;
-  }
-  if (type === "by-category") {
-    return data.map(function(r) {
-      return {
-        Category: r.name, Group: r.group, "Code prefix": r.codePrefix,
-        Count: r.count, "Value (EGP)": r.value,
-        Active: r.byStatus.active, Maintenance: r.byStatus.maintenance, Lost: r.byStatus.lost, Retired: r.byStatus.retired
-      };
-    });
-  }
-  if (type === "by-branch") {
-    return data.map(function(r) {
-      return {
-        Branch: r.name, Code: r.code,
-        Count: r.count, "Value (EGP)": r.value,
-        Active: r.byStatus.active, Maintenance: r.byStatus.maintenance, Lost: r.byStatus.lost, Retired: r.byStatus.retired
-      };
-    });
-  }
-  if (type === "by-employee") {
-    return data.map(function(r) {
-      return { Employee: r.name, Username: r.username || "", Role: r.role, "Active personal assets": r.count, "Value (EGP)": r.value };
-    });
-  }
-  if (type === "history") {
-    return data.map(function(r) {
-      return {
-        "Asset code":   r.assetId && r.assetId.assetCode || "",
-        "Asset name":   r.assetId && r.assetId.name || "",
-        Action:         r.action,
-        From:           r.fromUserId && r.fromUserId.name || "",
-        To:             r.toUserId   && r.toUserId.name   || "",
-        Notes:          r.notes || "",
-        "Performed by": r.performedBy && r.performedBy.name || "",
-        "Performed at": r.performedAt ? new Date(r.performedAt).toISOString() : ""
-      };
-    });
-  }
-  return [];
-}
-
+// Excel export — single endpoint, dispatch on ?type. Each report type has a
+// dedicated builder above (build<Type>Workbook) that wires a summary sheet
+// plus a per-row detail sheet so admins can analyse the data offline.
+// Filename: assets_report_{type}_{YYYY-MM-DD}.xlsx
 app.get("/api/assets/reports/export", auth, requireAssetAccess, async function(req, res) {
   try {
     var type = String((req.query && req.query.type) || "");
-    var data;
-    if      (type === "summary")     data = await buildSummary();
-    else if (type === "by-category") data = await buildByCategory();
-    else if (type === "by-branch")   data = await buildByBranch();
-    else if (type === "by-employee") data = await buildByEmployee();
-    else if (type === "history")     data = await buildCustodyHistory(req.query);
+    var buf;
+    if      (type === "summary")     buf = await buildSummaryWorkbook();
+    else if (type === "by-category") buf = await buildByCategoryWorkbook();
+    else if (type === "by-branch")   buf = await buildByBranchWorkbook();
+    else if (type === "by-employee") buf = await buildByEmployeeWorkbook();
+    else if (type === "history")     buf = await buildHistoryWorkbook(req.query);
     else return res.status(400).json({ error: "Unknown report type. Use summary | by-category | by-branch | by-employee | history." });
 
-    var rows = toSheetRows(type, data);
-    var sheet = XLSX.utils.json_to_sheet(rows);
-    var book = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(book, sheet, type.slice(0, 31));
-    var buf = XLSX.write(book, { type: "buffer", bookType: "xlsx" });
     var today = new Date().toISOString().slice(0, 10);
     var fname = "assets_report_" + type + "_" + today + ".xlsx";
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", 'attachment; filename="' + fname + '"');
     res.setHeader("Content-Length", buf.length);
-    res.send(buf);
+    res.send(Buffer.from(buf));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
