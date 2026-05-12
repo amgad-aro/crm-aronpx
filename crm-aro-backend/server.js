@@ -4239,6 +4239,50 @@ async function computeMonthlySalary(user, year, month) {
   };
 }
 
+// Sync variant of computeMonthlySalary that takes prefetched CompanyOffDay
+// rows and the user's attendance docs. Used by /api/salary/list where the
+// caller bulk-prefetches both collections once and groups per-user, killing
+// the N+1 the async per-user version would otherwise create. Output shape is
+// identical to computeMonthlySalary so the route response stays unchanged.
+function computeMonthlySalaryFromPrefetched(user, year, month, companyOffDays, attendances) {
+  if (!user || user.role === "admin") return null;
+  var baseSalary = Number(user.baseSalary) || 0;
+  var atts = attendances || [];
+
+  var overrideOff = atts.filter(function(a){
+    return a.override && a.override.action === "mark_off_day";
+  }).length;
+  var calendarWorking = computeCalendarWorkingDays(user, year, month, companyOffDays);
+  var workingDays = Math.max(0, calendarWorking - overrideOff);
+
+  var absences = computeMonthlyAbsences(user, year, month, companyOffDays, atts);
+
+  var fractionSum = atts.reduce(function(s, a){
+    return s + (Number(a.deductionFraction) || 0);
+  }, 0);
+
+  var deductionDays = fractionSum + absences;
+  var dailyRate = workingDays > 0 ? (baseSalary / workingDays) : 0;
+  var totalDeductions = deductionDays * dailyRate;
+  var netSalary = baseSalary - totalDeductions;
+
+  return {
+    userId: user._id,
+    year: year,
+    month: month,
+    baseSalary: baseSalary,
+    workingDays: workingDays,
+    dailyRate: dailyRate,
+    deductionDays: deductionDays,
+    totalDeductions: totalDeductions,
+    netSalary: netSalary,
+    finalized: false,
+    finalizedBy: null,
+    finalizedAt: null,
+    computedAt: new Date()
+  };
+}
+
 // Permission decision — combined view + edit eligibility for one (requester,
 // target) pair. Returns { canView, canEdit }. Logic per doc §8/§14:
 //   - Owner can view + edit anyone (except other admins which don't have salary)
@@ -4339,20 +4383,39 @@ app.get("/api/salary/list/:year/:month", auth, async function(req, res) {
       query.role = { $nin: ["admin", "sales_admin", "hr"] };
     }
     var users = await User.find(query).lean();
+    var userIds = users.map(function(u){ return u._id; });
 
-    // Pre-fetch finalized snapshots for the period in one query (avoids N+1).
-    var snaps = await SalaryRecord.find({
-      year: year, month: month,
-      userId: { $in: users.map(function(u){ return u._id; }) }
-    }).lean();
+    var start = new Date(Date.UTC(year, month - 1, 1));
+    var end   = new Date(Date.UTC(year, month, 1));
+
+    // Bulk prefetch — mirrors the /api/attendance/today/all pattern (commit
+    // adb828b). Three parallel reads replace what used to be 1 snapshot query
+    // PLUS one CompanyOffDay + one Attendance query per non-finalized user
+    // inside computeMonthlySalary. Kills the N+1.
+    var prefetched = await Promise.all([
+      SalaryRecord.find({ year: year, month: month, userId: { $in: userIds } }).lean(),
+      CompanyOffDay.find({ date: { $gte: start, $lt: end } }).lean(),
+      Attendance.find({ userId: { $in: userIds }, date: { $gte: start, $lt: end } }).lean()
+    ]);
+    var snaps = prefetched[0];
+    var companyOffDays = prefetched[1];
+    var allAttendances = prefetched[2];
+
     var snapByUser = {};
     snaps.forEach(function(s){ snapByUser[String(s.userId)] = s; });
+    var attsByUser = {};
+    allAttendances.forEach(function(a){
+      var k = String(a.userId);
+      (attsByUser[k] = attsByUser[k] || []).push(a);
+    });
 
     var rows = [];
     for (var i = 0; i < users.length; i++) {
       var u = users[i];
       var snap = snapByUser[String(u._id)];
-      var salary = snap && snap.finalized ? snap : await computeMonthlySalary(u, year, month);
+      var salary = snap && snap.finalized
+        ? snap
+        : computeMonthlySalaryFromPrefetched(u, year, month, companyOffDays, attsByUser[String(u._id)]);
       if (!salary) continue;
       rows.push({
         user: { _id: u._id, name: u.name, role: u.role, title: u.title, teamId: u.teamId, teamName: u.teamName },

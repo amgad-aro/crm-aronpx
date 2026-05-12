@@ -18164,7 +18164,10 @@ export default function CRMApp() {
     } catch(e){setDataError(e.message);}
     setLoading(false);
     isInitialLoadRef.current = false;
-    // Backfill lastFeedback for existing leads (once per browser, admin only)
+    // Backfill lastFeedback for existing leads (once per browser, admin only).
+    // No post-backfill leads reload — WS lead_updated keeps p.leads fresh, and
+    // a second 7.8 MB /api/leads pull was the dominant cost on every admin
+    // page (incl. Attendance) where leads aren't even displayed.
     try{
       var bfKey="crm_feedback_backfilled";
       var u = userOverride || currentUser;
@@ -18172,8 +18175,6 @@ export default function CRMApp() {
       if(!localStorage.getItem(bfKey) && isAdminUser){
         apiFetch("/api/leads/backfill-feedback","GET",null,tok).then(function(){
           localStorage.setItem(bfKey,"1");
-          // Reload leads to pick up backfilled data
-          apiFetch("/api/leads?page=1&limit=1000","GET",null,tok).then(function(r){if(r&&r.data)setLeads(r.data);}).catch(function(e){ console.error("Leads reload after backfill failed:", e); });
         }).catch(function(e){
           console.error("Backfill-feedback fetch failed:", e);
           // Set the gate even on failure so we don't retry every page load
