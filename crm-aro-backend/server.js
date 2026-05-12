@@ -16836,20 +16836,43 @@ var clientShouldReceive = function(client, type, data){
   if (role === "admin" || role === "sales_admin") return true;
 
   if (role === "sales") {
+    // rotation_updated stays suppressed for sales — the accompanying
+    // lead_updated event carries the actual payload sales needs, and the
+    // rotation bell scoping in getVisibleNotifications already hides
+    // rotation rows from sales independently.
     if (type === "rotation_updated") return false;
     if (type === "lead_updated") {
       var sLead = data && data.lead;
-      if (!sLead) return false; // id-only — sales never refetches cross-team leads
+      if (!sLead) return true; // id-only — frontend fetchSingleLead/fetchLeadsLight fallback runs; REST GET is scope-gated by BATCH 1-2.7
       var sAids = getLeadOwnerIds(sLead);
       return sAids.indexOf(client.userId) !== -1;
     }
     if (type === "dr_updated") {
       var sDr = data && data.dr;
-      if (!sDr) return false;
-      var sDid = getDrOwnerId(sDr);
-      return !!sDid && sDid === client.userId;
+      if (sDr) {
+        var sDid = getDrOwnerId(sDr);
+        return !!sDid && sDid === client.userId;
+      }
+      // Bulk shape from middleware L904: { drs: [...] }. Forward when any
+      // element is owned by the sales user — the frontend handler upserts
+      // per-DR and ignores ones it can't see (App.js:19038-19059).
+      if (data && Array.isArray(data.drs)) {
+        return data.drs.some(function(d){
+          var dOwn = getDrOwnerId(d);
+          return !!dOwn && dOwn === client.userId;
+        });
+      }
+      return true; // empty payload — frontend fetchDRs fallback runs
     }
     if (type === "activity_created") {
+      // broadcast() pre-resolves the activity's leadId → current agentId so
+      // notes/status changes by admin/manager on a sales user's lead reach
+      // that user (regressed by BATCH 4 — was author-only). Author-match
+      // fallback keeps self-authored activities flowing when the activity
+      // has no leadId or the referenced lead has been deleted.
+      if (data && data._leadAgentId) {
+        return data._leadAgentId === client.userId;
+      }
       var sAOwn = getActivityOwnerId(data && data.activity);
       return !!sAOwn && sAOwn === client.userId;
     }
@@ -16916,27 +16939,50 @@ var clientShouldReceive = function(client, type, data){
 
 // Replace the placeholder broadcaster with the real one.
 broadcast = function(type, data){
-  var payload;
-  try { payload = JSON.stringify({ type: type, data: data || {}, ts: Date.now() }); } catch(e){ return; }
-  wss.clients.forEach(function(client){
-    if (client.readyState !== WebSocketLib.OPEN) return;
-    if (!clientShouldReceive(client, type, data)) return;
-    try { client.send(payload); } catch(e){}
-  });
-  // BATCH 4 — refresh per-socket scope when the user graph mutates so newly
-  // added/removed reports start/stop being delivered. The current event uses
-  // the pre-mutation cache (one-event staleness window — acceptable per the
-  // approved plan). attendance_settings_updated triggers HR permission
-  // recompute too.
-  if (type === "user_updated" || type === "user_deleted" || type === "attendance_settings_updated") {
+  // Wire payload is the original data; the per-client filter may receive
+  // an enriched copy (e.g. _leadAgentId resolved upstream for activity_
+  // created so the sync sales filter can gate on lead owner rather than
+  // activity author).
+  var dispatch = function(filterData, wireData){
+    var payload;
+    try { payload = JSON.stringify({ type: type, data: wireData || {}, ts: Date.now() }); } catch(e){ return; }
     wss.clients.forEach(function(client){
-      if (!client.userId || !client.role) return;
-      if (client.role === "admin" || client.role === "sales_admin") return;
-      computeScopeForSocket(client)
-        .then(function(s){ client.scopeCache = s; })
-        .catch(function(){});
+      if (client.readyState !== WebSocketLib.OPEN) return;
+      if (!clientShouldReceive(client, type, filterData)) return;
+      try { client.send(payload); } catch(e){}
     });
+    // BATCH 4 — refresh per-socket scope when the user graph mutates so newly
+    // added/removed reports start/stop being delivered. The current event uses
+    // the pre-mutation cache (one-event staleness window — acceptable per the
+    // approved plan). attendance_settings_updated triggers HR permission
+    // recompute too.
+    if (type === "user_updated" || type === "user_deleted" || type === "attendance_settings_updated") {
+      wss.clients.forEach(function(client){
+        if (!client.userId || !client.role) return;
+        if (client.role === "admin" || client.role === "sales_admin") return;
+        computeScopeForSocket(client)
+          .then(function(s){ client.scopeCache = s; })
+          .catch(function(){});
+      });
+    }
+  };
+
+  // activity_created with a leadId: pre-resolve the lead's current agentId
+  // and stash on the filter payload as _leadAgentId. Lets the sync sales
+  // filter route by lead-owner rather than activity-author so admin/manager
+  // notes on a sales user's lead reach that user in real time. Lookup
+  // failures dispatch without enrichment; the filter falls back to author-
+  // match. The internal _leadAgentId field is never put on the wire.
+  if (type === "activity_created" && data && data.activity && data.activity.leadId) {
+    Lead.findById(data.activity.leadId).select("agentId").lean()
+      .then(function(lead){
+        var enriched = Object.assign({}, data, { _leadAgentId: lead && lead.agentId ? String(lead.agentId) : null });
+        dispatch(enriched, data);
+      })
+      .catch(function(){ dispatch(data, data); });
+    return;
   }
+  dispatch(data, data);
 };
 httpServer.listen(PORT, function() {
   console.log("CRM ARO Server + WebSocket running on port " + PORT);

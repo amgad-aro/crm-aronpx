@@ -18983,9 +18983,18 @@ export default function CRMApp() {
         // Authenticate the socket so the server can scope per-client broadcasts
         // (sales must only receive events for leads/DRs they own).
         try { ws.send(JSON.stringify({ type: "auth", token: token })); } catch(e){}
-        // On reconnect (not the first connect), only refresh lightweight notifications.
-        // Lead/DR/activity/user state is kept as-is and will update via subsequent WS events.
-        if (hasConnectedBefore) { try{ loadNotifications(token); }catch(e){} }
+        // On reconnect, refetch the data slices that WS events would have
+        // updated during the disconnect window. Any events that fired while
+        // the socket was down are otherwise lost permanently. Each slice is
+        // wrapped so one failure doesn't block the others. First connection
+        // is unchanged — loadData populated initial state already.
+        if (hasConnectedBefore) {
+          console.log("[ws] reconnected, refetching state");
+          try{ loadNotifications(token); }catch(e){}
+          try{ fetchLeadsLight(); }catch(e){}
+          try{ fetchDRs(); }catch(e){}
+          try{ fetchActivitiesLatest(); }catch(e){}
+        }
         hasConnectedBefore = true;
       };
       ws.onmessage = function(e){
