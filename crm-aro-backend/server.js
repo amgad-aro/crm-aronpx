@@ -795,7 +795,12 @@ var assetSchema = new mongoose.Schema({
 // atomically via findOneAndUpdate($inc) so concurrent creates of the same
 // category can't collide on the resulting "ARO-XX-NNNN" code. APP_URL drives
 // the QR target — falls back to the Vercel production URL if unset.
-assetSchema.pre("save", async function(next) {
+//
+// Must run pre('validate'), not pre('save'): Mongoose checks `required:true`
+// during validation, which happens BEFORE pre('save') hooks fire. The original
+// pre('save') version threw "Path `assetCode` is required" because the hook
+// never got a chance to populate the field before validation rejected it.
+assetSchema.pre("validate", async function(next) {
   if (!this.isNew || this.assetCode) {
     if (this.assetCode && !this.qrCodeData) {
       this.qrCodeData = (process.env.APP_URL || "https://crm-aronpx.vercel.app").replace(/\/$/, "") + "/assets/" + this.assetCode;
