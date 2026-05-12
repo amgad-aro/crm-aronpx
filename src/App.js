@@ -8884,6 +8884,13 @@ var DealsPage = function(p) {
   var [selectedDeal,setSelectedDeal]=useState(null);
   // Click-outside closes the Deal side panel (docked drawer).
   var dealPanelRef = useOutsideClose(!!selectedDeal, function(){ setSelectedDeal(null); });
+  // Side-panel hydration tracker. The /api/leads bootstrap strips dealImages
+  // to keep the payload small; we refetch the full doc when the panel opens.
+  // panelHydratedDealId === selectedDeal._id once the refetch has populated
+  // the panel, so mutation responses (already full docs) don't trigger a
+  // redundant fetch. Same pattern as EOIPage.
+  var [panelHydratedDealId,setPanelHydratedDealId]=useState(null);
+  var isDealHydrated = !!(selectedDeal && selectedDeal._id && panelHydratedDealId === String(selectedDeal._id));
   // Deep-link: open the side panel when navigated here with a lead (e.g. from the Deals & EOI notifications bell).
   useEffect(function(){
     if (!p.initSelected) return;
@@ -8894,6 +8901,28 @@ var DealsPage = function(p) {
     if (p.setInitSelected) p.setInitSelected(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.initSelected]);
+
+  // Refetch full lead doc on panel open so dealImages hydrate from
+  // /api/leads/:id even when the bootstrap stripped them. Gated by
+  // panelHydratedDealId so mutation handlers (which already setSelectedDeal
+  // to the full response) don't loop. Failures are silent — the panel stays
+  // on the stripped row and the user can retry by reopening.
+  useEffect(function(){
+    if (!selectedDeal || !selectedDeal._id) return;
+    var sid = String(selectedDeal._id);
+    if (panelHydratedDealId === sid) return;
+    apiFetch("/api/leads/"+sid,"GET",null,p.token).then(function(full){
+      if (full && full._id && String(full._id) === sid) {
+        setSelectedDeal(full);
+        setPanelHydratedDealId(sid);
+      }
+    }).catch(function(){});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[selectedDeal && selectedDeal._id]);
+
+  // Reset hydration tracker when the panel closes so the next open re-hydrates.
+  useEffect(function(){ if (!selectedDeal) setPanelHydratedDealId(null); },[selectedDeal]);
+
   var [stagesModal,setStagesModal]=useState(null);
   var [splitModal,setSplitModal]=useState(null); // lead for split
   var [splitAgent2,setSplitAgent2]=useState("");
@@ -9450,7 +9479,9 @@ var DealsPage = function(p) {
         {/* Deal Images */}
         <div style={{ marginTop:12 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 Contract Images</div>
-          {(function(){
+          {!isDealHydrated
+            ? <div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
+            : (function(){
             var imgs=selectedDeal.dealImages&&selectedDeal.dealImages.length?selectedDeal.dealImages:selectedDeal.dealImage?[selectedDeal.dealImage]:[];
             var uploadHandler=function(e){
               var file=e.target.files[0]; if(!file)return; e.target.value="";
