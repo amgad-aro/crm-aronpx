@@ -525,6 +525,9 @@ var Attendance = mongoose.model("Attendance", new mongoose.Schema({
   computedAt: { type: Date, default: Date.now }
 }, { timestamps: true }));
 Attendance.collection.createIndex({ userId: 1, date: 1 }, { unique: true }).catch(function(){});
+// Date-only index — added Phase R-attendance for the team-view range query
+// (single shared $gte/$lt scan when no userId filter is set).
+Attendance.collection.createIndex({ date: 1 }).catch(function(){});
 
 // OffSiteRequest — submitted when an employee is outside the geofence and needs
 // a remote check-in/out approved. Created in "pending" state; an attendance
@@ -3639,32 +3642,109 @@ app.get("/api/attendance/my-month", auth, async function(req, res) {
 
 // ----- Admin endpoint: today's team view -----
 
+// Phase R-attendance: accepts ?date=YYYY-MM-DD (single day) OR
+// ?from=YYYY-MM-DD&to=YYYY-MM-DD (range). Defaults to today.
+// Range queries are capped at 500 rows; capped:true in response when hit.
+//
+// Response shape: { data: [...rows], mode, totalRows, capped }
+// (Was a flat array — the new wrapper makes mode + cap discoverable on the
+// client. Frontend reads r.data with an Array.isArray fallback for safety.)
+//
+// Each row now includes `date` so the range mode can render rows grouped
+// per day. Single-day mode rows all carry the same date.
+//
+// Performance: a single CompanyOffDay query covers the whole range, killing
+// the prior N+1 (one CompanyOffDay.findOne per user-day before this fix).
 app.get("/api/attendance/today/all", auth, requireAttendancePermission("manageAttendance"),
 async function(req, res) {
   try {
-    var dateKey = getCairoStartOfDay(new Date());
+    function parseISO(s){
+      if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(String(s))) return null;
+      var d = new Date(String(s) + "T00:00:00.000Z");
+      return isNaN(d.getTime()) ? null : d;
+    }
+    var fromDate, toDate, mode;
+    var dParam = req.query.date;
+    var fParam = req.query.from;
+    var tParam = req.query.to;
+    if (dParam) {
+      mode = "single";
+      var dParsed = parseISO(dParam);
+      if (!dParsed) return res.status(400).json({ error: "Invalid ?date — use YYYY-MM-DD" });
+      fromDate = getCairoStartOfDay(dParsed);
+      toDate = new Date(fromDate.getTime() + 86400000);
+    } else if (fParam || tParam) {
+      mode = "range";
+      var fParsed = parseISO(fParam);
+      var tParsed = parseISO(tParam);
+      if (!fParsed || !tParsed) return res.status(400).json({ error: "Invalid ?from/?to — use YYYY-MM-DD" });
+      if (fParsed > tParsed) return res.status(400).json({ error: "from must be <= to" });
+      fromDate = getCairoStartOfDay(fParsed);
+      toDate = new Date(getCairoStartOfDay(tParsed).getTime() + 86400000); // inclusive of `to` day
+    } else {
+      mode = "single";
+      fromDate = getCairoStartOfDay(new Date());
+      toDate = new Date(fromDate.getTime() + 86400000);
+    }
+
     var users = await User.find({ role: { $ne: "admin" }, active: true })
       .select("name role title teamId teamName saturdaySchedule saturdayPatternStartDate")
       .lean();
-    var atts = await Attendance.find({ date: dateKey }).lean();
-    var attByUser = {};
-    atts.forEach(function(a){ attByUser[String(a.userId)] = a; });
 
-    // Hydrate off-status per user — Friday is a single shared check, but
-    // Saturday + company off-days vary, so resolve once per row.
-    var rows = [];
-    for (var i = 0; i < users.length; i++) {
-      var u = users[i];
-      var off = await getOffStatus(u, new Date());
-      rows.push({
-        user: { _id: u._id, name: u.name, role: u.role, title: u.title, teamId: u.teamId, teamName: u.teamName },
-        attendance: attByUser[String(u._id)] || null,
-        isOffDay: off.off,
-        offReason: off.reason,
-        workShift: getRoleWorkShift(u.role)
-      });
+    // ONE attendance query for the whole window.
+    var atts = await Attendance.find({ date: { $gte: fromDate, $lt: toDate } }).lean();
+    var attByKey = {};
+    atts.forEach(function(a){
+      var d = (a.date instanceof Date) ? a.date : new Date(a.date);
+      var dayIso = d.toISOString().slice(0,10);
+      attByKey[String(a.userId) + "|" + dayIso] = a;
+    });
+
+    // BATCH PREFETCH for company off-days — single query for the whole range
+    // instead of CompanyOffDay.findOne per (user, date). Kills the N+1.
+    var offRows = await CompanyOffDay.find({ date: { $gte: fromDate, $lt: toDate } }).lean();
+    var offDayMap = {};
+    offRows.forEach(function(o){
+      var d = (o.date instanceof Date) ? o.date : new Date(o.date);
+      offDayMap[d.toISOString().slice(0,10)] = o.name || "Off Day";
+    });
+
+    // Sync off-status helper using prefetched maps.
+    function getOffStatusFromMap(user, dateAtMidnight) {
+      if (user.role === "admin") return { off: true, reason: "owner_no_tracking" };
+      var parts = getCairoDateParts(dateAtMidnight);
+      if (parts.weekday === "Fri") return { off: true, reason: "friday" };
+      if (parts.weekday === "Sat" && !isSaturdayWorkday(user, parts)) {
+        return { off: true, reason: "saturday" };
+      }
+      var iso = dateAtMidnight.toISOString().slice(0,10);
+      if (offDayMap[iso]) return { off: true, reason: "company:" + offDayMap[iso] };
+      return { off: false, reason: null };
     }
-    res.json(rows);
+
+    var ROW_CAP = 500;
+    var rows = [];
+    var totalRows = 0;
+    var capped = false;
+    for (var t = fromDate.getTime(); t < toDate.getTime(); t += 86400000) {
+      var dayMidnight = new Date(t);
+      var dayIso = dayMidnight.toISOString().slice(0,10);
+      for (var i = 0; i < users.length; i++) {
+        totalRows++;
+        if (rows.length >= ROW_CAP) { capped = true; continue; }
+        var u = users[i];
+        var off = getOffStatusFromMap(u, dayMidnight);
+        rows.push({
+          user: { _id: u._id, name: u.name, role: u.role, title: u.title, teamId: u.teamId, teamName: u.teamName },
+          date: dayIso,
+          attendance: attByKey[String(u._id) + "|" + dayIso] || null,
+          isOffDay: off.off,
+          offReason: off.reason,
+          workShift: getRoleWorkShift(u.role)
+        });
+      }
+    }
+    res.json({ data: rows, mode: mode, totalRows: totalRows, capped: capped, rowCap: ROW_CAP });
   } catch (e) {
     console.error("[GET /attendance/today/all]", e);
     res.status(500).json({ error: e.message });

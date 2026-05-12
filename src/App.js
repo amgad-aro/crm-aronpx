@@ -4889,16 +4889,23 @@ var AttendancePage = function(p) {
   var canApproveOffSite= hasAttendancePerm(p.cu && p.cu.role, "approveOffSiteRequests", p.attendanceSettings);
   var canManageOffDays = hasAttendancePerm(p.cu && p.cu.role, "manageCompanyOffDays",   p.attendanceSettings);
 
-  // Default tab: non-Owner lands on "mine"; Owner lands on the first available
-  // admin tab. p.initTab honors deep-link intents (e.g. 5-lates click → salaries).
+  // Default tab — landings (in priority order):
+  //   1. p.initTab (deep-link intent, e.g. 5-lates click → salaries)
+  //   2. canManage → team    (admin / sales_admin / hr if granted manageAttendance)
+  //   3. canViewSalaries → salaries
+  //   4. canApproveOffSite → offsiteRequests
+  //   5. canManageOffDays → companyOffDays
+  //   6. fallback: mine (employee personal view)
+  // Order changed Phase R-attendance so non-admin roles with manageAttendance
+  // (sales_admin / hr) also default to the Team tab when they have access,
+  // matching admin behavior. Was: !isOwner gate forced everyone to "mine".
   var defaultTab = (function(){
     if (p.initTab) return p.initTab;
-    if (!isOwner) return "mine";
     if (canManage)         return "team";
     if (canViewSalaries)   return "salaries";
     if (canApproveOffSite) return "offsiteRequests";
     if (canManageOffDays)  return "companyOffDays";
-    return "team";
+    return "mine";
   })();
   var [activeTab, setActiveTab] = useState(defaultTab);
 
@@ -4913,11 +4920,11 @@ var AttendancePage = function(p) {
       (activeTab === "companyOffDays"   && canManageOffDays)
     );
     if (allowed) return;
-    if (!isOwner) { setActiveTab("mine"); return; }
     if (canManage)         { setActiveTab("team");            return; }
     if (canViewSalaries)   { setActiveTab("salaries");        return; }
     if (canApproveOffSite) { setActiveTab("offsiteRequests"); return; }
     if (canManageOffDays)  { setActiveTab("companyOffDays");  return; }
+    if (!isOwner)          { setActiveTab("mine");            return; }
   }, [activeTab, isOwner, canManage, canViewSalaries, canApproveOffSite, canManageOffDays]);
 
   // ----- "My" tab: monthly history below the widget -----
@@ -4938,9 +4945,18 @@ var AttendancePage = function(p) {
     return function(){ cancelled = true; };
   }, [activeTab, year, month, p.token, isOwner]);
 
-  // ----- "Team" tab: today's roster -----
+  // ----- "Team" tab: roster — Phase R-attendance: now date-picker driven.
+  // dateMode = "single" (default, today) or "range" (from + to).
+  // Each row carries `date` from the backend so range mode can group per day.
   var [team,setTeam] = useState([]);
+  var [teamMeta,setTeamMeta] = useState({ totalRows: 0, capped: false, mode: "single" });
   var [loadingTeam,setLoadingTeam] = useState(false);
+  var todayIsoLocal = (function(){ var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); })();
+  var weekAgoIsoLocal = (function(){ var d = new Date(Date.now() - 6*86400000); return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); })();
+  var [dateMode, setDateMode] = useState("single");
+  var [singleDate, setSingleDate] = useState(todayIsoLocal);
+  var [rangeFrom, setRangeFrom] = useState(weekAgoIsoLocal);
+  var [rangeTo, setRangeTo]     = useState(todayIsoLocal);
   // Phase 6 — 5-lates notifications surfaced above the roster.
   var [lateAlerts,setLateAlerts] = useState([]);
   useEffect(function(){
@@ -4948,9 +4964,24 @@ var AttendancePage = function(p) {
     if (!canManage) return;
     var cancelled = false;
     setLoadingTeam(true);
-    apiFetch("/api/attendance/today/all", "GET", null, p.token).then(function(r){
-      if (!cancelled) setTeam(Array.isArray(r) ? r : []);
-    }).catch(function(){ if (!cancelled) setTeam([]); })
+    var qs;
+    if (dateMode === "range") {
+      qs = "from=" + encodeURIComponent(rangeFrom) + "&to=" + encodeURIComponent(rangeTo);
+    } else {
+      qs = "date=" + encodeURIComponent(singleDate);
+    }
+    apiFetch("/api/attendance/today/all?" + qs, "GET", null, p.token).then(function(r){
+      if (cancelled) return;
+      // Backend now returns { data, mode, totalRows, capped, rowCap }. Old
+      // (pre-Phase-R-attendance) shape was a flat array — fallback for safety.
+      var rows = (r && Array.isArray(r.data)) ? r.data : (Array.isArray(r) ? r : []);
+      setTeam(rows);
+      setTeamMeta({
+        totalRows: (r && typeof r.totalRows === "number") ? r.totalRows : rows.length,
+        capped: !!(r && r.capped),
+        mode: (r && r.mode) || dateMode
+      });
+    }).catch(function(){ if (!cancelled) { setTeam([]); setTeamMeta({ totalRows: 0, capped: false, mode: dateMode }); } })
       .finally(function(){ if (!cancelled) setLoadingTeam(false); });
     // Fetch this month's 5-lates notifications. Backend filters by createdAt
     // implicitly via the once-per-month creation rule.
@@ -4971,7 +5002,7 @@ var AttendancePage = function(p) {
     };
     window.addEventListener("crm:notification_updated", refreshAlerts);
     return function(){ cancelled = true; window.removeEventListener("crm:notification_updated", refreshAlerts); };
-  }, [activeTab, canManage, p.token]);
+  }, [activeTab, canManage, p.token, dateMode, singleDate, rangeFrom, rangeTo]);
 
   // Real-time team updates — patches the matching row when any employee
   // checks in/out anywhere. Doesn't add new rows (the roster set is fixed
@@ -4984,13 +5015,18 @@ var AttendancePage = function(p) {
       setTeam(function(prev){
         return prev.map(function(row){
           if (String(row.user._id) !== uid) return row;
+          // In range mode the same user appears multiple times (one row per
+          // day). The live check-in/out event only describes today's record,
+          // so only patch the row whose date is today (or the row with no
+          // explicit date in single-day mode).
+          if (row.date && row.date !== todayIsoLocal) return row;
           return Object.assign({}, row, { attendance: e.detail.attendance || row.attendance });
         });
       });
     };
     window.addEventListener("crm:attendance_updated", handler);
     return function(){ window.removeEventListener("crm:attendance_updated", handler); };
-  }, [activeTab]);
+  }, [activeTab, todayIsoLocal]);
 
   var tabBtn = function(id, label){
     var act = activeTab === id;
@@ -5110,15 +5146,48 @@ var AttendancePage = function(p) {
           </div>
         </div>}
         <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
-        <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)"}}>
-          <div style={{fontSize:14, fontWeight:600, color:C.text}}>Team — today</div>
-          <div style={{fontSize:12, color:C.textLight, marginTop:2}}>{fmtCairoDate(new Date())} · live status of every employee</div>
+        <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap"}}>
+          <div>
+            <div style={{fontSize:14, fontWeight:600, color:C.text}}>
+              {dateMode === "single"
+                ? "Team — " + (singleDate === todayIsoLocal ? "today" : singleDate)
+                : "Team — " + rangeFrom + " to " + rangeTo}
+            </div>
+            <div style={{fontSize:12, color:C.textLight, marginTop:2}}>
+              {teamMeta.totalRows.toLocaleString()} row{teamMeta.totalRows === 1 ? "" : "s"}
+              {teamMeta.capped ? " (capped at 500 — narrow the range to see more)" : ""}
+            </div>
+          </div>
+          {/* Date picker — segmented mode toggle + date inputs. Mirrors the
+              ReportsPage filter style to stay visually consistent. */}
+          <div style={{display:"flex", gap:6, alignItems:"center", flexWrap:"wrap"}}>
+            <div style={{display:"inline-flex", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden"}}>
+              {[{id:"single", label:"Single Day"}, {id:"range", label:"Date Range"}].map(function(opt){
+                var active = dateMode === opt.id;
+                return <button key={opt.id} onClick={function(){ setDateMode(opt.id); }}
+                  style={{ padding:"5px 12px", border:"none", background: active ? C.accent + "12" : "#fff",
+                    color: active ? C.accent : C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
+                >{opt.label}</button>;
+              })}
+            </div>
+            {dateMode === "single"
+              ? <input type="date" value={singleDate} onChange={function(e){ setSingleDate(e.target.value || todayIsoLocal); }}
+                  style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}/>
+              : <span style={{display:"inline-flex", gap:6, alignItems:"center"}}>
+                  <input type="date" value={rangeFrom} onChange={function(e){ setRangeFrom(e.target.value || weekAgoIsoLocal); }}
+                    style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}/>
+                  <span style={{ fontSize:12, color:C.textLight }}>→</span>
+                  <input type="date" value={rangeTo} onChange={function(e){ setRangeTo(e.target.value || todayIsoLocal); }}
+                    style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}/>
+                </span>}
+          </div>
         </div>
         {loadingTeam ? <div style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
           : <div style={{overflowX:"auto"}}>
             <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
               <thead>
                 <tr style={{background:"#F7F7F5"}}>
+                  {dateMode === "range" && <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Date</th>}
                   <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Employee</th>
                   <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Role</th>
                   <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-in</th>
@@ -5127,11 +5196,14 @@ var AttendancePage = function(p) {
                 </tr>
               </thead>
               <tbody>
-                {team.map(function(row){
+                {team.map(function(row, i){
                   var a = row.attendance;
                   var off = row.isOffDay ? row.offReason : null;
                   var badge = attStatusBadge(a && a.status, off);
-                  return <tr key={String(row.user._id)} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
+                  // Key by user+date in range mode (multiple rows per user); user-only in single.
+                  var rowKey = dateMode === "range" ? (String(row.user._id) + "|" + (row.date || i)) : String(row.user._id);
+                  return <tr key={rowKey} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
+                    {dateMode === "range" && <td style={{padding:"10px 16px", color:C.textLight, whiteSpace:"nowrap"}}>{row.date || "—"}</td>}
                     <td style={{padding:"10px 16px"}}>{row.user.name}</td>
                     <td style={{padding:"10px 16px", color:C.textLight}}>{row.user.role}</td>
                     <td style={{padding:"10px 16px"}}>{a && a.checkIn ? fmtCairoTime(a.checkIn.timestamp) : "—"}</td>
@@ -5141,7 +5213,7 @@ var AttendancePage = function(p) {
                     </td>
                   </tr>;
                 })}
-                {team.length === 0 && <tr><td colSpan={5} style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13}}>No employees</td></tr>}
+                {team.length === 0 && <tr><td colSpan={dateMode === "range" ? 6 : 5} style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13}}>No rows for this {dateMode === "range" ? "range" : "date"}</td></tr>}
               </tbody>
             </table>
           </div>}
