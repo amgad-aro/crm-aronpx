@@ -8156,6 +8156,23 @@ async function autoRotateLead(leadId, byName, opts) {
         }
         await AppSetting.updateOne({ key: "rotation" }, { $set: pUpd });
       } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
+      // Rotation notification — server-side write so the bell shows auto
+      // rotations (regressed in 72a5a23 when the frontend cron was removed,
+      // since the cron was the only writer of these rows). Best-effort: a
+      // failed notification must never roll back the rotation itself.
+      try {
+        await Notification.create({
+          type: "rotation",
+          leadName: lead.name || "",
+          leadId: String(leadId),
+          fromName: "",
+          toName: targetUser.name,
+          reason: firedRule || reason || "auto"
+        });
+        broadcast("notification_updated", {});
+      } catch (notifErr) {
+        console.error("[rotation] notification write failed:", notifErr && notifErr.message);
+      }
       var firstPopulated = await Lead.findById(leadId).populate("agentId", "name title").populate("assignments.agentId", "name title");
       return { ok: true, status: 200, body: { success: true, firstAssignment: true, targetAgentId: targetAgentId, lead: firstPopulated } };
     }
@@ -8259,6 +8276,23 @@ async function autoRotateLead(leadId, byName, opts) {
       }
       await AppSetting.updateOne({ key: "rotation" }, { $set: pUpd2 });
     } catch(pErr){ console.error("[rotation pointer]", pErr && pErr.message ? pErr.message : pErr); }
+    // Rotation notification — server-side write so the bell shows auto
+    // rotations (regressed in 72a5a23 when the frontend cron was removed,
+    // since the cron was the only writer of these rows). Best-effort: a
+    // failed notification must never roll back the rotation itself.
+    try {
+      await Notification.create({
+        type: "rotation",
+        leadName: lead.name || "",
+        leadId: String(leadId),
+        fromName: oldAgentName,
+        toName: targetUser.name,
+        reason: firedRule || reason || "auto"
+      });
+      broadcast("notification_updated", {});
+    } catch (notifErr) {
+      console.error("[rotation] notification write failed:", notifErr && notifErr.message);
+    }
     var updated = await Lead.findById(leadId).populate("agentId", "name title").populate("assignments.agentId", "name title");
     return { ok: true, status: 200, body: { success: true, targetAgentId: targetAgentId, lead: updated } };
   } catch (e) {
