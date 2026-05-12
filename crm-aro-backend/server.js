@@ -16000,6 +16000,11 @@ app.patch("/api/assets/:id([0-9a-fA-F]{24})", auth, requireAssetAccess, async fu
     if (b.assignmentType === "personal" || b.assignmentType === "shared")  patch.assignmentType = b.assignmentType;
     // currentCustodian + status + assetCode + qrCodeData are deliberately not editable here.
     // currentCustodian → /transfer + /return. status → /mark-status. The other two are server-generated.
+    // Exception: flipping assignmentType to "shared" forces currentCustodian
+    // to null, since a shared asset by definition has no personal custodian.
+    // Without this, the detail-view custodian card would stay populated even
+    // after the admin changed the asset to shared.
+    if (patch.assignmentType === "shared") patch.currentCustodian = null;
     if (Object.keys(patch).length === 0) return res.status(400).json({ error: "No fields to update" });
     var doc = await Asset.findByIdAndUpdate(req.params.id, { $set: patch }, { new: true }).populate(ASSET_POPULATE).lean();
     if (!doc) return res.status(404).json({ error: "Asset not found" });

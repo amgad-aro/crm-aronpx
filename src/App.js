@@ -16087,6 +16087,7 @@ var AssetTrackerPage = function(p) {
     var cancelled = false;
     setDetailLoading(true); setDetailError(""); setDetailAsset(null);
     setHistoryRows([]); setHistoryError(""); setStatusError("");
+    var requestedCode = selectedAssetCode; // capture for the error message — see catch below
     apiFetch("/api/assets/" + encodeURIComponent(selectedAssetCode), "GET", null, p.token)
       .then(function(d){
         if (cancelled) return;
@@ -16102,7 +16103,15 @@ var AssetTrackerPage = function(p) {
             .finally(function(){ if (!cancelled) setHistoryLoading(false); });
         }
       })
-      .catch(function(err){ if (!cancelled) setDetailError((err && err.message) || "Failed to load asset"); })
+      .catch(function(err){
+        if (cancelled) return;
+        // Surface the requested code when the asset doesn't exist (e.g. a stale
+        // QR was scanned or a deep-link to a typo'd code was followed) — the
+        // generic "Failed to load asset" wasn't actionable.
+        var raw = (err && err.message) || "";
+        if (/not found/i.test(raw)) setDetailError("Asset " + requestedCode + " was not found. The code may be invalid or the asset was deleted.");
+        else                        setDetailError(raw || "Failed to load asset");
+      })
       .finally(function(){ if (!cancelled) setDetailLoading(false); });
     return function() { cancelled = true; };
   }, [subPage, selectedAssetCode, p.token]);
@@ -16946,8 +16955,12 @@ var AssetTrackerPage = function(p) {
         var tdStyle = {fontSize:13, padding:"10px 12px", borderBottom:"0.5px solid rgba(0,0,0,0.05)", color:"#1a1a1a"};
         var tdNum   = Object.assign({}, tdStyle, {textAlign:"right", fontFamily:"ui-monospace, SFMono-Regular, monospace", fontSize:12});
 
+        var emptyState = function(msg) {
+          return <div style={{fontSize:13, color:"#666", padding:"32px 24px", textAlign:"center", fontStyle:"italic"}}>{msg}</div>;
+        };
         var renderSummary = function() {
           if (!current) return null;
+          if (current.totals && current.totals.count === 0) return emptyState("No assets yet — create one to see the summary populate.");
           var s = current;
           var section = function(title, rows) {
             return <div style={{marginBottom:18}}>
@@ -16978,6 +16991,7 @@ var AssetTrackerPage = function(p) {
 
         var renderByCategory = function() {
           if (!current) return null;
+          if (!current.length) return emptyState("No assets yet — every category will appear once it has at least one asset.");
           return <table style={{width:"100%", borderCollapse:"collapse"}}>
             <thead><tr>
               <th style={thStyle}>Category</th>
@@ -17008,6 +17022,7 @@ var AssetTrackerPage = function(p) {
 
         var renderByBranch = function() {
           if (!current) return null;
+          if (!current.length) return emptyState("No assets yet — every branch will appear once it has at least one asset.");
           return <table style={{width:"100%", borderCollapse:"collapse"}}>
             <thead><tr>
               <th style={thStyle}>Branch</th>
@@ -17038,6 +17053,7 @@ var AssetTrackerPage = function(p) {
 
         var renderByEmployee = function() {
           if (!current) return null;
+          if (!current.length) return emptyState("No personal + active assets to report — everything is shared, retired, or unassigned.");
           return <div>
             <div style={{fontSize:11, color:"#666", marginBottom:8, fontStyle:"italic"}}>Counts cover personal + active assets only (current accountability).</div>
             <table style={{width:"100%", borderCollapse:"collapse"}}>
@@ -17107,7 +17123,7 @@ var AssetTrackerPage = function(p) {
                         <td style={tdStyle}>{r.assetId ? <span><span style={{fontWeight:500}}>{r.assetId.name}</span> <span style={{fontFamily:"ui-monospace, SFMono-Regular, monospace", fontSize:11, color:"#888"}}>{r.assetId.assetCode}</span></span> : "—"}</td>
                         <td style={tdStyle}>{ACTION_LABELS[r.action] || r.action}</td>
                         <td style={Object.assign({}, tdStyle, {color:"#666"})}>{arrow}</td>
-                        <td style={Object.assign({}, tdStyle, {color:"#666"})}>{r.performedBy && r.performedBy.name || "System"}</td>
+                        <td style={Object.assign({}, tdStyle, {color:"#666"})}>{(r.performedBy && r.performedBy.name) || "System"}</td>
                         <td style={Object.assign({}, tdStyle, {color:"#666"})}>{r.notes || ""}</td>
                       </tr>;
                     })}

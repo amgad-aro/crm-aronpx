@@ -88,3 +88,20 @@ PORT=5000
 4. Body parser limit is 10MB (for base64 image uploads)
 5. After backend changes: commit to GitHub and push — Railway auto-deploys from main branch
 6. After frontend changes: commit to GitHub, Vercel auto-deploys
+
+## AssetTracker Module (shipped 2026-05-12)
+Inventory tracking for company-owned equipment, furniture, and appliances.
+
+- **Access gate**: admin role OR `isOwner` flag. Sales_admin and other admin-adjacent roles never see it. Middleware: `requireAssetAccess` (server.js around line 1140).
+- **Sidebar entry**: "Assets" — sits above Settings in the admin block.
+- **Module is English-only** (the rest of the CRM follows global lang). AssetTracker root div forces `direction:"ltr"` and no `isRTL` ternaries inside the page.
+- **Models** (inline in server.js near the existing schema block):
+  - `Branch` — office locations. Seeded once with "New Cairo / NC".
+  - `AssetCategory` — 12 seeded categories across 4 groups (it / furniture / appliance / other). The seeder upserts on `codePrefix`; safe to add new categories to the array. `nameAr` field stays in the schema but is NOT rendered in the UI.
+  - `Asset` — auto-mints `assetCode` (`ARO-{prefix}-{4-digit-seq}`) and `qrCodeData` (`${APP_URL}/assets/{code}`) via a `pre('validate')` hook. Per-category sequence bumped atomically via `$inc`. Personal+active assets MUST have a custodian (enforced at create time only).
+  - `CustodyHistory` — append-only audit log. Actions: `registered | assigned | transferred | returned | marked_lost | retired | status_changed`.
+- **Routes** — all under `/api/assets/...`, all gated by `auth, requireAssetAccess`. The `:id` param uses an explicit `([0-9a-fA-F]{24})` regex constraint so it doesn't shadow `/api/assets/reports/*` routes.
+- **QR scan deep-link**: scanning a printed QR opens `${APP_URL}/assets/{code}`. The Vercel SPA fallback returns index.html; App captures the code into state, AssetTrackerPage seeds `subPage="detail"` from it, and the URL is cleared via `replaceState`. The deep-link is consumed (cleared from App state) when the user navigates AWAY from the detail view, not on mount — otherwise a render race during loadData unmounts the page and the remount loses the prop.
+- **Excel exports**: uses `exceljs` (not `xlsx` — needed cell styling). Single endpoint `GET /api/assets/reports/export?type=<type>`; each type produces a multi-sheet workbook (summary + detail). Date columns formatted in Cairo time via `Africa/Cairo` + `sv-SE` locale.
+- **Required env var**: `APP_URL` on Railway must match the Vercel domain so QR codes point to the right host. Falls back to `https://crm-aronpx.vercel.app` if unset.
+- **JWT lifetime**: bumped to 30d during the rebuild (was 7d). Existing tokens keep their original 7d window until they expire.
