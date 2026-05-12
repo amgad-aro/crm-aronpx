@@ -18196,7 +18196,30 @@ var CommissionsPage = function(p) {
 // ===== MAIN APP =====
 export default function CRMApp() {
   var [lang,setLang]=useState((function(){try{return "en";}catch(e){return "ar";}})());
-  var [currentUser,setCurrentUser]=useState(null); var [token,setToken]=useState(null); var [csrfToken,setCsrfToken]=useState(null);
+  // Session is restored synchronously from localStorage so the first render
+  // already has currentUser/token populated. The previous useEffect-based
+  // restore caused a one-render flash of the login screen on every page load,
+  // and worse — for deep-link tabs (e.g. /assets/<code>) the chained loadData
+  // call could 401 on an expired token and trigger window.location.reload()
+  // before the user saw the asset, dropping them at a real login screen on
+  // the deep-link URL. Reading synchronously avoids both problems.
+  var savedSession = (function() {
+    try {
+      var raw = (typeof window !== "undefined" && window.localStorage) ? localStorage.getItem('crm_aro_session') : null;
+      if (raw) {
+        var s = JSON.parse(raw);
+        if (s && s.user && s.token) {
+          // TODO(remove after AT-S4 verification): diagnostic per user request.
+          console.log("[AT-S4 session] restored synchronously for user:", s.user.username || s.user.name || "(unknown)");
+          return s;
+        }
+      }
+    } catch(e) {}
+    return null;
+  })();
+  var [currentUser,setCurrentUser]=useState(savedSession ? savedSession.user : null);
+  var [token,setToken]=useState(savedSession ? savedSession.token : null);
+  var [csrfToken,setCsrfToken]=useState(savedSession && savedSession.csrfToken ? savedSession.csrfToken : null);
   // Path-based routing for the unauthenticated reset flow. We don't pull in
   // react-router; just observe popstate + a manual dispatch from in-page nav.
   var [authPath,setAuthPath]=useState(function(){ try { return window.location.pathname; } catch(e){ return "/"; } });
@@ -18734,15 +18757,18 @@ export default function CRMApp() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  // Load saved session on startup
+  // Boot-time data fetch when the page loads with an existing session.
+  // currentUser/token are already seeded synchronously up above; this effect
+  // only fires the async loadData + loadNotifications calls that drive the
+  // initial population. Fresh logins go through handleLogin which calls these
+  // directly, so this effect runs at most once per app mount and never races
+  // with the login path.
   useEffect(function(){
-    try {
-      var saved = localStorage.getItem('crm_aro_session');
-      if (saved) {
-        var s = JSON.parse(saved);
-        if (s.user && s.token) { setCurrentUser(s.user); setToken(s.token); if(s.csrfToken) setCsrfToken(s.csrfToken); loadData(s.token, s.user); loadNotifications(s.token); }
-      }
-    } catch(e) {}
+    if (savedSession && savedSession.token && savedSession.user) {
+      loadData(savedSession.token, savedSession.user);
+      loadNotifications(savedSession.token);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   var handleLogin=function(user,tok,csrfTok){
