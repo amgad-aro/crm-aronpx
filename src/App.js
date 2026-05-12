@@ -16545,29 +16545,33 @@ var AssetTrackerPage = function(p) {
 
   // ===== Render =====
   return <div style={{padding:"24px 16px 40px",fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", direction:"ltr"}}>
-    {/* Mobile layout rules for AssetTracker. Classes are namespaced .at-*
-        so they can't collide with the rest of the CRM. Inline styles win
-        over class styles, so the overrides use !important — matches the
-        global App style block's convention (see the @media block in the
-        main App.js return). Desktop layout is untouched. */}
+    {/* Mobile layout rules for AssetTracker.
+        CRITICAL: do NOT put JS block comments between the + operators in
+        the style string below. The JS expression "+ comment + 'str'"
+        parses the second + as unary plus on the next string, yielding NaN
+        that poisons the CSS. CSS comments (inside the strings themselves)
+        are fine.
+        Classes are namespaced .at-* so they can't collide. Inline styles
+        win over class styles, so each override uses !important. Desktop
+        layout is untouched. */}
     <style>{""
 + "@media (max-width: 768px) {"
-+ /* List view — header stacks vertically, actions become full-width vertical pills */
++ "  /* List view header stacks vertically. */"
 + "  .at-list-header { flex-direction: column !important; align-items: stretch !important; }"
-+ "  .at-list-actions { flex-direction: column !important; align-items: stretch !important; gap: 6px !important; }"
-+ "  .at-list-actions > button, .at-list-actions > a { width: 100% !important; }"
-+ /* Stat cards become a 2-up grid (full-row was making them feel oversized) */
++ "  /* Action buttons stay inline (3-up) by default mobile; only stack below 380px (see narrow block at the bottom). */"
++ "  .at-list-actions { flex-wrap: nowrap !important; gap: 6px !important; }"
++ "  .at-list-actions > button { flex: 1 1 0 !important; min-width: 0 !important; padding: 9px 6px !important; font-size: 12px !important; white-space: nowrap; }"
++ "  /* Stat cards: 2-up grid with reduced typography. */"
 + "  .at-stat-cards { display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 8px !important; }"
 + "  .at-stat-card { min-width: 0 !important; flex: unset !important; padding: 10px 12px !important; }"
 + "  .at-stat-card .at-stat-label { font-size: 10px !important; margin-bottom: 4px !important; }"
 + "  .at-stat-card .at-stat-value { font-size: 16px !important; }"
-+ /* Search + filter dropdowns stack 1-col */
++ "  /* Search + status + branch dropdowns stack 1-col. */"
 + "  .at-list-controls { grid-template-columns: 1fr !important; gap: 6px !important; }"
-+ /* Filter pills wrap naturally; nothing forced */
-+ /* Table gets horizontal scroll instead of collapsing columns */
-+ "  .at-table-card { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }"
-+ "  .at-table-inner { min-width: 680px; }"
-+ /* Detail view — flatten the 2-column grid */
++ "  /* Mobile asset cards visible; desktop table hidden. */"
++ "  .at-list-mobile-cards { display: block !important; }"
++ "  .at-list-desktop-table { display: none !important; }"
++ "  /* Detail view: collapse the 2-col grid + flex the actions vertically. */"
 + "  .at-detail-header { flex-direction: column !important; align-items: stretch !important; gap: 10px !important; }"
 + "  .at-detail-header-actions { justify-content: flex-start !important; flex-wrap: wrap !important; }"
 + "  .at-detail-grid { grid-template-columns: 1fr !important; }"
@@ -16575,23 +16579,30 @@ var AssetTrackerPage = function(p) {
 + "  .at-fields-grid { grid-template-columns: 1fr !important; gap: 10px !important; }"
 + "  .at-custody-actions { flex-direction: column !important; align-items: stretch !important; }"
 + "  .at-custody-actions > button { width: 100% !important; }"
-+ /* Form view — fields stack */
++ "  /* Form view: fields stack, save/cancel full-width. */"
 + "  .at-form-grid { grid-template-columns: 1fr !important; gap: 10px !important; }"
 + "  .at-form-card { padding: 16px !important; }"
 + "  .at-form-actions { flex-direction: column !important; align-items: stretch !important; }"
 + "  .at-form-actions > button { width: 100% !important; }"
-+ /* Scan view stays single-column already; just constrain the camera preview width */
++ "  /* Scan card unbounded to viewport. */"
 + "  .at-scan-card { max-width: 100% !important; }"
-+ /* Reports view */
++ "  /* Reports header stacks; tab strip already scrolls horizontally, just pin tab widths. */"
 + "  .at-reports-header { flex-direction: column !important; align-items: stretch !important; gap: 10px !important; }"
 + "  .at-reports-header > button { width: 100% !important; }"
 + "  .at-reports-tabs > button { flex-shrink: 0 !important; }"
 + "  .at-history-filters { grid-template-columns: 1fr !important; gap: 8px !important; }"
-+ /* Report tables (by-category/branch/employee + history) get horizontal
-+    scroll. Min-width keeps the per-column widths sensible while scrolling. */
++ "  /* Report content tables get horizontal-scroll containers. */"
 + "  .at-report-content { overflow-x: auto; -webkit-overflow-scrolling: touch; }"
 + "  .at-report-content table { min-width: 560px; }"
-+ /* Custody history timeline doesn't need much — already vertical */
++ "}"
++ "@media (max-width: 379px) {"
++ "  /* Very narrow phones: action buttons stack instead of fighting for the width. */"
++ "  .at-list-actions { flex-direction: column !important; align-items: stretch !important; flex-wrap: wrap !important; }"
++ "  .at-list-actions > button { flex: unset !important; width: 100% !important; padding: 9px 12px !important; font-size: 13px !important; }"
++ "}"
++ "@media (min-width: 769px) {"
++ "  /* Desktop: hide the mobile cards entirely. */"
++ "  .at-list-mobile-cards { display: none !important; }"
 + "}"
 }</style>
     <div style={{maxWidth:1200,margin:"0 auto"}}>
@@ -16665,12 +16676,8 @@ var AssetTrackerPage = function(p) {
           {/* Errors */}
           {loadError && <div style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"8px 12px",borderRadius:8,marginBottom:12}}>{loadError}</div>}
 
-          {/* Table — wrapped in a horizontal-scroll container; the inner div
-              gets a min-width on mobile (see .at-table-inner CSS) so the
-              grid columns keep their proportions and the user scrolls
-              sideways instead of seeing collapsed cells. */}
-          <div className="at-table-card" style={Object.assign({}, cardWrap, { overflow:"hidden" })}>
-           <div className="at-table-inner">
+          {/* Desktop table — hidden via display:none on mobile (see CSS). */}
+          <div className="at-list-desktop-table" style={Object.assign({}, cardWrap, { overflow:"hidden" })}>
             <div style={{display:"grid",gridTemplateColumns:"2fr 1.5fr 1fr 120px 130px",gap:10,padding:"12px 16px",borderBottom:"0.5px solid rgba(0,0,0,0.08)",fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",background:"#FAFAF9"}}>
               <div>Asset</div>
               <div>Custodian</div>
@@ -16713,7 +16720,46 @@ var AssetTrackerPage = function(p) {
                     </div>;
                   })
             }
-           </div>
+          </div>
+
+          {/* Mobile card list — hidden on desktop via CSS. Same data shaped as
+              tap-friendly cards: three rows per card (asset+code, custodian+
+              status, branch+value). Spec calls out horizontal-scroll as the
+              alternative; the card form was the cleaner choice for phone UX. */}
+          <div className="at-list-mobile-cards" style={{ display: "none", flexDirection: "column", gap: 8 }}>
+            {!loaded
+              ? <div style={Object.assign({}, cardWrap, {padding:20, textAlign:"center", fontSize:13, color:"#666"})}>Loading…</div>
+              : filteredAssets.length === 0
+                ? <div style={Object.assign({}, cardWrap, {padding:24, textAlign:"center", fontSize:13, color:"#666"})}>No matching assets</div>
+                : filteredAssets.map(function(a) {
+                    var cardStyle = Object.assign({}, cardWrap, {
+                      padding: "12px 14px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 8
+                    }, rowHighlight(a.status) || {});
+                    var rowFlex = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, minWidth: 0 };
+                    var custodianBit = a.currentCustodian
+                      ? <span style={{fontSize:12, color:"#1a1a1a", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{a.currentCustodian.name}</span>
+                      : (a.assignmentType === "shared"
+                          ? <span style={{fontSize:12, color:"#666", fontStyle:"italic"}}>Shared</span>
+                          : <span style={{fontSize:12, color:"#A32D2D"}}>Unassigned</span>);
+                    return <div key={a._id} onClick={function(){ openDetail(a); }} style={cardStyle}>
+                      <div style={{display:"flex", alignItems:"center", gap:10, minWidth:0}}>
+                        {prefixBadge(a.categoryId)}
+                        <div style={{minWidth:0, flex:1}}>
+                          <div style={{fontSize:14, fontWeight:500, color:"#1a1a1a", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{a.name}</div>
+                          <div style={{fontSize:11, color:"#666", fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>{a.assetCode}</div>
+                        </div>
+                      </div>
+                      <div style={rowFlex}>
+                        {custodianBit}
+                        {statusBadge(a.status)}
+                      </div>
+                      <div style={rowFlex}>
+                        <span style={{fontSize:12, color:"#666", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{a.branchId ? a.branchId.name : "—"}</span>
+                        <span style={{fontSize:12, color:"#1a1a1a", fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>{fmtEGP(a.purchasePrice)}</span>
+                      </div>
+                    </div>;
+                  })
+            }
           </div>
         </div>;
       })()}
