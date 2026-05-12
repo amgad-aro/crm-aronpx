@@ -15879,6 +15879,22 @@ function parseAssetScanPayload(raw) {
   return s.match(/^[A-Za-z0-9-]+$/) ? s : null;
 }
 
+// Build a download-filename prefix from an asset name. Returns "" when the
+// name is empty/unusable so the caller can just concatenate with assetCode
+// to get e.g. "dell-latitude-ARO-LT-0001.png" (or "ARO-LT-0001.png" when no
+// useful name exists). Strips non-ASCII (so Arabic names don't end up
+// percent-encoded across browsers), lowercases, collapses dashes, trims.
+function slugifyAssetName(name) {
+  var s = String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return s ? s + "-" : "";
+}
+
 // ===== ASSET TRACKER PAGE (admin / isOwner only) =====
 // Single page id "assets" with three internal sub-views: list, new (also used
 // for edit), and detail. Custody actions (transfer/return/mark-status) ship
@@ -15890,8 +15906,19 @@ var AssetTrackerPage = function(p) {
   // we force LTR on the root and skip translation ternaries throughout.
 
   // ===== Hooks — all declared up-front, never below a return. =====
-  var [subPage, setSubPage] = useState("list");
-  var [selectedAssetCode, setSelectedAssetCode] = useState(null);
+  // Initial subPage/selectedAssetCode seed from /assets/<code> if the user
+  // landed via a scanned QR. The matching deep-link branch in the App
+  // component above forces page="assets" so this component is what mounts.
+  // The URL is cleared once below so a refresh doesn't re-trigger.
+  var deepLinkCode = (function() {
+    try {
+      if (typeof window === "undefined" || !window.location) return null;
+      var m = window.location.pathname.match(/^\/assets\/([A-Za-z0-9-]+)\/?$/);
+      return m ? m[1] : null;
+    } catch (e) { return null; }
+  })();
+  var [subPage, setSubPage] = useState(deepLinkCode ? "detail" : "list");
+  var [selectedAssetCode, setSelectedAssetCode] = useState(deepLinkCode);
   var [assets, setAssets] = useState([]);
   var [categories, setCategories] = useState([]);
   var [branches, setBranches] = useState([]);
@@ -15966,6 +15993,49 @@ var AssetTrackerPage = function(p) {
       .catch(function(){ if (!cancelled) setQrDataUrl(""); });
     return function() { cancelled = true; };
   }, [detailAsset]);
+
+  // Mount + tear down the html5-qrcode scanner when subPage flips to "scan".
+  // Library is lazy-imported so it never lands in the main bundle. Browser
+  // camera perms are requested by the library itself; we surface any error
+  // through scanError so the manual-entry fallback stays visible. The
+  // first successful decode stops the camera before navigating, so the
+  // light + stream don't linger on the user's device.
+  useEffect(function() {
+    if (subPage !== "scan") return;
+    var stopped = false;
+    var scanner = null;
+    setScanError("");
+    import("html5-qrcode").then(function(mod) {
+      if (stopped) return;
+      var Html5Qrcode = mod.Html5Qrcode;
+      if (!document.getElementById("asset-scanner-region")) return;
+      scanner = new Html5Qrcode("asset-scanner-region");
+      scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 240, height: 240 } },
+        function(decoded) {
+          var afterStop = function() {
+            var code = parseAssetScanPayload(decoded);
+            if (code) { setSelectedAssetCode(code); setSubPage("detail"); }
+            else      { setScanError("That QR doesn't look like an asset code — try again or use manual entry below."); }
+          };
+          try {
+            if (scanner && scanner.isScanning) scanner.stop().then(afterStop).catch(afterStop);
+            else afterStop();
+          } catch (e) { afterStop(); }
+        },
+        function() { /* per-frame decode misses are constant noise — silent */ }
+      ).catch(function(err) {
+        setScanError((err && err.message) || "Couldn't access the camera. Use manual entry below.");
+      });
+    }).catch(function() {
+      setScanError("Couldn't load the scanner library.");
+    });
+    return function() {
+      stopped = true;
+      try { if (scanner && scanner.isScanning) scanner.stop().catch(function(){}); } catch (e) {}
+    };
+  }, [subPage]);
 
   useEffect(function() {
     if (subPage !== "detail" || !selectedAssetCode) return;
@@ -16131,34 +16201,65 @@ var AssetTrackerPage = function(p) {
     setStatusBusy(false);
   };
 
-  // Print the current asset's QR + label as a 40x30mm card sized for the
-  // Phomemo M108. Uses a popup window so the rest of the CRM doesn't fight
-  // the print styles. The popup waits for the QR image to load before
-  // triggering window.print() — otherwise Firefox/Safari sometimes print a
+  // Print the current asset's QR + label as a Phomemo M108 thermal card.
+  // Opens a popup with a size toggle (40×30 default, 40×40 alt roll) and a
+  // live preview. The size radio swaps the @page CSS rule and the card
+  // layout in one go — 40×30 uses a horizontal QR-left/text-right layout;
+  // 40×40 uses a vertical stack so the symbol can be ~30mm instead of 25mm.
+  //
+  // Uses a popup window so the rest of the CRM doesn't fight the print
+  // styles. The popup waits for the QR image to load before auto-triggering
+  // the first window.print() — otherwise Firefox/Safari sometimes print a
   // blank page because the data URL hasn't decoded yet.
   var printQR = function() {
     if (!detailAsset || !qrDataUrl) return;
-    var w = window.open("", "_blank", "width=420,height=340");
+    var w = window.open("", "_blank", "width=420,height=480");
     if (!w) { alert("Couldn't open the print window. Allow pop-ups for this site and try again."); return; }
     var safeName = String(detailAsset.name || "").replace(/[<>&"]/g, function(c){ return ({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"})[c]; });
     var html = '<!doctype html><html><head><meta charset="utf-8"><title>' + detailAsset.assetCode + '</title>'
       + '<style>'
-      + '  @page { size: 40mm 30mm; margin: 0; }'
       + '  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }'
-      + '  .card { width: 40mm; height: 30mm; box-sizing: border-box; padding: 1.5mm; display: flex; align-items: center; justify-content: center; gap: 2mm; }'
-      + '  .qr { width: 25mm; height: 25mm; flex-shrink: 0; }'
       + '  .qr img { width: 100%; height: 100%; display: block; }'
-      + '  .meta { font-size: 7pt; line-height: 1.15; overflow: hidden; }'
       + '  .meta .name { font-weight: 600; }'
       + '  .meta .code { font-family: ui-monospace, SFMono-Regular, monospace; margin-top: 1mm; }'
-      + '  @media screen { body { background: #eee; padding: 12px; } .card { background: #fff; border: 1px dashed #999; } }'
-      + '</style></head><body><div class="card">'
+      + '  @media screen {'
+      + '    body { background: #eee; padding: 16px; }'
+      + '    .controls { background: #fff; padding: 12px 14px; border-radius: 8px; margin-bottom: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }'
+      + '    .controls label { font-size: 13px; cursor: pointer; padding: 4px 10px; border-radius: 6px; border: 0.5px solid rgba(0,0,0,0.1); background: #fff; }'
+      + '    .controls input[type=radio]:checked + span { color: #185FA5; font-weight: 600; }'
+      + '    .controls label:has(input:checked) { border-color: #185FA5; background: #E6F1FB; }'
+      + '    .print-btn { margin-left: auto; padding: 6px 14px; border: 0.5px solid rgba(24,95,165,0.3); background: #185FA5; color: #fff; border-radius: 6px; font-size: 13px; cursor: pointer; font-family: inherit; }'
+      + '    .card { background: #fff; border: 1px dashed #999; }'
+      + '  }'
+      + '  @media print { .controls { display: none; } }'
+      + '  /* Layout variants — toggled by adding/removing the .size-40 class on body. */'
+      + '  body.size-30 .card { width: 40mm; height: 30mm; box-sizing: border-box; padding: 1.5mm; display: flex; align-items: center; justify-content: center; gap: 2mm; }'
+      + '  body.size-30 .qr { width: 25mm; height: 25mm; flex-shrink: 0; }'
+      + '  body.size-30 .meta { font-size: 7pt; line-height: 1.15; overflow: hidden; }'
+      + '  body.size-40 .card { width: 40mm; height: 40mm; box-sizing: border-box; padding: 2mm 1.5mm 1.5mm; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1mm; }'
+      + '  body.size-40 .qr { width: 30mm; height: 30mm; }'
+      + '  body.size-40 .meta { font-size: 7pt; line-height: 1.15; text-align: center; }'
+      + '</style>'
+      // <style> tag whose @page rule we swap from JS — Chrome/Firefox both
+      // honour live @page changes if they sit in their own sheet.
+      + '<style id="page-style">@page { size: 40mm 30mm; margin: 0; }</style>'
+      + '</head><body class="size-30">'
+      + '<div class="controls">'
+      + '  <span style="font-size:13px;color:#666;">Label size:</span>'
+      + '  <label><input type="radio" name="sz" value="30" checked onchange="setSize(this.value)"/> <span>40 × 30 mm</span></label>'
+      + '  <label><input type="radio" name="sz" value="40" onchange="setSize(this.value)"/> <span>40 × 40 mm</span></label>'
+      + '  <button type="button" class="print-btn" onclick="doPrint()">Print</button>'
+      + '</div>'
+      + '<div class="card">'
       + '<div class="qr"><img id="qrimg" src="' + qrDataUrl + '" alt="QR"/></div>'
       + '<div class="meta"><div class="name">' + safeName + '</div><div class="code">' + detailAsset.assetCode + '</div></div>'
-      + '</div><script>'
+      + '</div>'
+      + '<script>'
+      + 'function setSize(s){ document.body.className = "size-" + s; document.getElementById("page-style").textContent = "@page { size: 40mm " + s + "mm; margin: 0; }"; }'
+      + 'function doPrint(){ try { window.focus(); window.print(); } catch(e){} }'
       + 'var img = document.getElementById("qrimg");'
-      + 'function go(){ try { window.focus(); window.print(); } catch(e){} }'
-      + 'if (img.complete) setTimeout(go, 50); else img.onload = function(){ setTimeout(go, 50); };'
+      + 'if (img.complete) setTimeout(doPrint, 80); else img.onload = function(){ setTimeout(doPrint, 80); };'
+      // eslint-disable-next-line no-useless-concat -- intentional split to keep the literal </script> from terminating any enclosing script tag a bundler may parse
       + '</' + 'script></body></html>';
     w.document.open(); w.document.write(html); w.document.close();
   };
@@ -16356,7 +16457,6 @@ var AssetTrackerPage = function(p) {
 
       {/* ---------- FORM VIEW (create + edit) ---------- */}
       {subPage === "new" && (function() {
-        var setF = function(k, v) { setForm(Object.assign({}, form, k.constructor === Object ? k : (function(){var o={}; o[k]=v; return o;})())); };
         var pickedCat = categories.find(function(c){ return String(c._id) === String(form.categoryId); });
         // Auto-set assignment type when category changes (only in create mode)
         var onCategoryChange = function(e) {
@@ -16445,6 +16545,34 @@ var AssetTrackerPage = function(p) {
         </div>;
       })()}
 
+      {/* ---------- SCAN VIEW ---------- */}
+      {subPage === "scan" && (function() {
+        return <div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+            <button type="button" onClick={goList} style={btnGhost}>← Back</button>
+            <div style={{fontSize:18,fontWeight:500,color:"#1a1a1a"}}>Scan asset QR</div>
+          </div>
+          <div style={Object.assign({}, cardWrap, { padding:18, maxWidth:520 })}>
+            <div style={{fontSize:12,color:"#666",marginBottom:12,lineHeight:1.5}}>
+              Point your camera at an asset's QR label. The app jumps to that asset on the first read and turns the camera off. On desktop or if camera access is denied, type or paste the code manually below.
+            </div>
+            {/* html5-qrcode mounts its <video> inside this div by id. The
+                element must exist before the dynamic import resolves, hence
+                rendering it whenever subPage==="scan" even before the lib
+                lands. Square aspect keeps the framing reticle centred. */}
+            <div id="asset-scanner-region" style={{ width:"100%", aspectRatio:"1/1", maxWidth:360, margin:"0 auto", background:"#0d0d0d", borderRadius:8, overflow:"hidden" }}/>
+            {scanError && <div style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"8px 12px",borderRadius:8,marginTop:12}}>{scanError}</div>}
+            <div style={{marginTop:18,paddingTop:14,borderTop:"0.5px dashed rgba(0,0,0,0.1)"}}>
+              <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:8}}>Manual entry</div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <input style={Object.assign({}, inputStyle, {flex:1, minWidth:200, fontFamily:"ui-monospace, SFMono-Regular, monospace"})} value={scanManualCode} onChange={function(e){setScanManualCode(e.target.value);}} placeholder="ARO-LT-0001" onKeyDown={function(e){ if (e.key === "Enter") goManualScan(); }}/>
+                <button type="button" onClick={goManualScan} style={btnPrimary}>Go</button>
+              </div>
+            </div>
+          </div>
+        </div>;
+      })()}
+
       {/* ---------- DETAIL VIEW ---------- */}
       {subPage === "detail" && (function() {
         if (detailLoading || (!detailAsset && !detailError)) {
@@ -16494,9 +16622,13 @@ var AssetTrackerPage = function(p) {
                   : <div style={{fontSize:12,color:"#888"}}>Generating…</div>
                 }
               </div>
+              {/* Print opens a popup with the size toggle (40×30 default,
+                  40×40 alt) and a live preview. PNG filename uses the
+                  slugified asset name as a prefix so a folder of downloaded
+                  labels is human-readable, not just code-soup. */}
               <div style={{display:"flex",gap:6,marginTop:10}}>
-                <button type="button" onClick={printQR} disabled={!qrDataUrl} style={Object.assign({}, btnPrimary, {flex:1, padding:"7px 12px", opacity:qrDataUrl?1:0.55, cursor:qrDataUrl?"pointer":"not-allowed"})}>Print 40×30mm</button>
-                <a href={qrDataUrl || "#"} download={a.assetCode + ".png"} onClick={function(e){ if (!qrDataUrl) e.preventDefault(); }} style={Object.assign({}, btnGhost, {padding:"7px 12px", textDecoration:"none", textAlign:"center", display:"inline-flex", alignItems:"center", justifyContent:"center", opacity:qrDataUrl?1:0.55, pointerEvents:qrDataUrl?"auto":"none"})}>PNG</a>
+                <button type="button" onClick={printQR} disabled={!qrDataUrl} style={Object.assign({}, btnPrimary, {flex:1, padding:"7px 12px", opacity:qrDataUrl?1:0.55, cursor:qrDataUrl?"pointer":"not-allowed"})}>Print QR</button>
+                <a href={qrDataUrl || "#"} download={slugifyAssetName(a.name) + a.assetCode + ".png"} onClick={function(e){ if (!qrDataUrl) e.preventDefault(); }} style={Object.assign({}, btnGhost, {padding:"7px 12px", textDecoration:"none", textAlign:"center", display:"inline-flex", alignItems:"center", justifyContent:"center", opacity:qrDataUrl?1:0.55, pointerEvents:qrDataUrl?"auto":"none"})}>PNG</a>
               </div>
               <div style={{fontSize:10,color:"#888",marginTop:10,wordBreak:"break-all",fontFamily:"ui-monospace, SFMono-Regular, monospace",lineHeight:1.4}}>{a.qrCodeData}</div>
             </div>
@@ -18054,7 +18186,28 @@ export default function CRMApp() {
   // — we just need a state value to trigger re-renders when the cache moves.
   var [projectWeightsRev,setProjectWeightsRev]=useState(0);
   var bumpProjectWeightsRev=useCallback(function(){ setProjectWeightsRev(function(v){return v+1;}); },[]);
-  var [page,setPage]=useState((function(){try{return localStorage.getItem("crm_page")||null;}catch(e){return null;}})());
+  // QR deep-link: if the user landed on /assets/<code> (e.g. from scanning a
+  // printed QR with their phone camera), force the page to "assets" before
+  // falling back to the saved page. The actual code is read again inside
+  // AssetTrackerPage to seed its detail sub-view. URL is cleared by an
+  // effect below so a normal browser refresh doesn't loop on the deep-link.
+  var [page,setPage]=useState((function(){
+    try {
+      if (typeof window !== "undefined" && window.location && /^\/assets\/[A-Za-z0-9-]+\/?$/.test(window.location.pathname)) return "assets";
+      return localStorage.getItem("crm_page") || null;
+    } catch(e) { return null; }
+  })());
+  // Clear the QR deep-link URL once both App and AssetTrackerPage have read
+  // it (state initializers run before any effect, so we're safely past both
+  // reads here). Without this, refreshing the browser would forever bounce
+  // back to the scanned asset even after the user navigates elsewhere.
+  useEffect(function() {
+    try {
+      if (typeof window !== "undefined" && window.location && /^\/assets\/[A-Za-z0-9-]+\/?$/.test(window.location.pathname)) {
+        window.history.replaceState(null, "", "/");
+      }
+    } catch(e) {}
+  }, []);
   var [leads,setLeads]=useState([]); var [users,setUsers]=useState([]);
   var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
   var [dailyReqs,setDailyReqs]=useState([]);
