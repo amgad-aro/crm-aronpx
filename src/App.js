@@ -10,7 +10,7 @@ import {
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
-const API = "http://localhost:5000"; // TEST-ONLY — REVERT BEFORE PUSH
+const API = process.env.REACT_APP_API_URL || "https://crm-aro-backend-production.up.railway.app";
 
 async function apiFetch(path, method, body, token, csrfToken) {
   var opts = { method: method || "GET", headers: { "Content-Type": "application/json" } };
