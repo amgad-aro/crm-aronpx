@@ -5953,6 +5953,16 @@ app.get("/api/leads", auth, async function(req, res) {
           if (salesSelfName && String(h.byUser || "") !== salesSelfName) return false;
           return true;
         });
+        // Strip heavy fields (eoiImage/eoiDocuments/dealImages are base64
+        // payloads — collectively the bulk of the bootstrap response). Side
+        // panels refetch the full doc via GET /api/leads/:id when opened, so
+        // these aren't needed in the list response. hasEoiArtifacts is the
+        // surviving boolean that the client's wasEOI helper consults to keep
+        // the EOIPage "Cancelled" tab classifier correct without the raw fields.
+        obj.hasEoiArtifacts = !!(obj.eoiImage || (obj.eoiDocuments || []).length);
+        delete obj.eoiImage;
+        delete obj.eoiDocuments;
+        delete obj.dealImages;
         return obj;
       });
     } else {
@@ -5981,6 +5991,14 @@ app.get("/api/leads", auth, async function(req, res) {
           var aid = n && n.authorId && n.authorId._id ? n.authorId._id : (n && n.authorId);
           return String(aid || "") === String(uid);
         });
+        // Strip heavy fields — same rationale as the sales branch above.
+        // See that comment for the rollout story (Path 1 Commits C2/C3 added
+        // refetch-on-open for the EOI/Deal side panels). hasEoiArtifacts is
+        // the surviving boolean that the client's wasEOI helper consults.
+        obj.hasEoiArtifacts = !!(obj.eoiImage || (obj.eoiDocuments || []).length);
+        delete obj.eoiImage;
+        delete obj.eoiDocuments;
+        delete obj.dealImages;
         return obj;
       });
     }
