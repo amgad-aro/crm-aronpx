@@ -15231,20 +15231,16 @@ app.post("/api/commissions/:id/cycles", auth, salesAdminOnly, async function(req
     if (!c) return res.status(404).json({ error: "Commission not found" });
     if (c.status === "cancelled") return res.status(400).json({ error: "cannot add a cycle to a cancelled commission" });
 
-    var expected = Number((req.body && req.body.expectedAmount) || 0);
-    if (!isFinite(expected) || expected < 0) return res.status(400).json({ error: "expectedAmount must be a non-negative number" });
-
     var maxN = 0;
     (c.cycles || []).forEach(function(cy){ if (cy.cycleNumber > maxN) maxN = cy.cycleNumber; });
     c.cycles.push({
       cycleNumber: maxN + 1,
       state: "pending_claim",
-      expectedAmount: expected,
       receivedAmount: 0
     });
     await c.save();
     var newCycle = c.cycles[c.cycles.length - 1];
-    await logCommissionActivity(req.user, c.leadId, "commission_cycle_created", "[Commission] cycle " + newCycle.cycleNumber + " created (expected " + expected + " EGP)");
+    await logCommissionActivity(req.user, c.leadId, "commission_cycle_created", "[Commission] cycle " + newCycle.cycleNumber + " created");
     res.json(c.toObject());
   } catch(e) {
     console.error("[POST /api/commissions/:id/cycles]", e && e.message);
@@ -15385,49 +15381,6 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage/:stageName", auth, salesAd
   } catch(e) {
     console.error("[PATCH cycle stage edit]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "cycle_stage_edit_failed" });
-  }
-});
-
-// PATCH cycle metadata — currently just expectedAmount. Allowed only while
-// the cycle hasn't received money yet (state ∈ {pending_claim,
-// claim_submitted, invoice_submitted}).
-app.patch("/api/commissions/:id/cycles/:cycleId", auth, salesAdminOnly, async function(req, res) {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
-    var c = await Commission.findById(req.params.id);
-    if (!c) return res.status(404).json({ error: "Commission not found" });
-    if (c.status === "cancelled") return res.status(400).json({ error: "cannot edit a cancelled commission" });
-
-    var cyc = c.cycles.id(req.params.cycleId);
-    if (!cyc) return res.status(404).json({ error: "Cycle not found" });
-
-    var earlyStates = ["pending_claim","claim_submitted","invoice_submitted"];
-    if (earlyStates.indexOf(cyc.state) < 0) {
-      return res.status(400).json({
-        error: "cannot edit cycle metadata in state '" + cyc.state + "' — only " + earlyStates.join(", ") + " are editable"
-      });
-    }
-
-    var body = req.body || {};
-    if (body.expectedAmount === undefined) {
-      return res.status(400).json({ error: "expectedAmount required" });
-    }
-    var n = Number(body.expectedAmount);
-    if (!isFinite(n) || n < 0) {
-      return res.status(400).json({ error: "expectedAmount must be a non-negative number" });
-    }
-    var prev = Number(cyc.expectedAmount || 0);
-    cyc.expectedAmount = n;
-    c.markModified("cycles");
-    await c.save();
-
-    await logCommissionActivity(req.user, c.leadId, "commission_cycle_edit",
-      "[Commission] cycle " + cyc.cycleNumber + " — expectedAmount " + prev.toLocaleString() + " → " + n.toLocaleString() + " EGP");
-
-    res.json(c.toObject());
-  } catch(e) {
-    console.error("[PATCH cycle meta]", e && e.message);
-    res.status(500).json({ error: e && e.message ? e.message : "cycle_edit_failed" });
   }
 });
 

@@ -17069,47 +17069,6 @@ var CommissionCycleStageModal = function(p) {
   </Modal>;
 };
 
-// Add or edit a cycle — single field (expectedAmount). The same modal serves
-// both flows via target.mode: "add" (POST) or "edit" (PATCH metadata).
-var CommissionCycleAddModal = function(p) {
-  var mode = (p.target && p.target.mode) || "add";
-  var c = (p.target && p.target.commission) || p.target;
-  var cyc = p.target && p.target.cycle;
-  var initialExpected = mode === "edit" && cyc && Number(cyc.expectedAmount || 0) > 0
-    ? Number(cyc.expectedAmount).toLocaleString() : "";
-  var [expected, setExpected] = useState(initialExpected);
-  var save = async function(){
-    var n = parseMoney(expected);
-    if (!isFinite(n) || n < 0) { alert("expectedAmount must be a non-negative number"); return; }
-    try {
-      var path, method, msg;
-      if (mode === "edit") {
-        path = "/api/commissions/" + c._id + "/cycles/" + cyc._id;
-        method = "PATCH";
-        msg = "Cycle updated";
-      } else {
-        path = "/api/commissions/" + c._id + "/cycles";
-        method = "POST";
-        msg = "Cycle added";
-      }
-      await p.writeCommission(method, path, { expectedAmount: n }, msg);
-      p.onClose();
-    } catch(e){}
-  };
-  var title = mode === "edit"
-    ? "Edit Cycle " + (cyc && cyc.cycleNumber) + " — expected amount"
-    : "Add Cycle";
-  return <Modal show={true} onClose={p.onClose} title={title} w={420}>
-    <FormRow label="Expected amount (EGP) for this cycle">
-      <MoneyInput value={expected} onChange={setExpected} autoFocus={true}/>
-    </FormRow>
-    <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
-      <button onClick={p.onClose} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
-      <button onClick={save} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{p.savingFlag ? "Saving…" : (mode === "edit" ? "Save" : "Add")}</button>
-    </div>
-  </Modal>;
-};
-
 // Phase R-1 — record a payout to a team recipient. The system auto-deducts
 // any outstanding debt from the gross amount; netPaid = amount - appliedToDebt
 // is the actual cash that flows to the recipient.
@@ -17320,7 +17279,6 @@ var CommissionsPage = function(p) {
   // Phase D — modal state. Each holds the target commission/cycle or null.
   var [editingSnapshot, setEditingSnapshot] = useState(null);   // commission obj
   var [editingCycleStage, setEditingCycleStage] = useState(null); // {commission, cycle, nextStage}
-  var [addingCycleFor, setAddingCycleFor] = useState(null);     // commission obj
   var [editingIncentive, setEditingIncentive] = useState(null); // commission obj
   var [addingPayoutFor, setAddingPayoutFor] = useState(null);   // {commission}
   var [cashFlow, setCashFlow] = useState(null);                 // {totalReceived, totalPaid, ..., byRecipient}
@@ -17576,7 +17534,6 @@ var CommissionsPage = function(p) {
     if (cycle.state === "paid_to_team") { pillBg = "#DCFCE7"; pillFg = "#15803D"; }
     else if (cycle.state === "cancelled") { pillBg = "#FEE2E2"; pillFg = "#B91C1C"; }
     else if (cycle.state === "received") { pillBg = "#DBEAFE"; pillFg = "#1D4ED8"; }
-    var canEditExpected = ["pending_claim","claim_submitted","invoice_submitted"].indexOf(cycle.state) >= 0 && c.status !== "cancelled";
     return <div key={String(cycle._id || cycle.cycleNumber)} style={{ border:"1px solid #E2E8F0", borderRadius:10, padding:"10px 12px", marginBottom:8, background: isActiveCycle ? "#FAFBFF" : "#fff" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: isActiveCycle ? 12 : 0 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
@@ -17586,12 +17543,7 @@ var CommissionsPage = function(p) {
           </span>
         </div>
         <div style={{ fontSize:11, color:C.textLight, display:"flex", alignItems:"center", gap:6 }}>
-          {Number(cycle.expectedAmount || 0) > 0 && <span>Expected: <b>{fmtMoney(cycle.expectedAmount)}</b></span>}
-          {canEditExpected && <button onClick={function(){ setAddingCycleFor({ commission: c, cycle: cycle, mode: "edit" }); }} disabled={savingFlag} title="Edit expected amount"
-            style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, width:18, height:18, padding:0, cursor: savingFlag ? "wait" : "pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-            {PencilIcon(C.textLight)}
-          </button>}
-          {Number(cycle.receivedAmount || 0) > 0 && <span style={{ marginLeft:6 }}>Received: <b>{fmtMoney(cycle.receivedAmount)}</b></span>}
+          {Number(cycle.receivedAmount || 0) > 0 && <span>Received: <b>{fmtMoney(cycle.receivedAmount)}</b></span>}
         </div>
       </div>
       {isActiveCycle && <div style={{ display:"flex", alignItems:"flex-start", gap:8, marginTop:6 }}>
@@ -17822,7 +17774,9 @@ var CommissionsPage = function(p) {
           style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #FCA5A5", background:"#fff", color:"#B91C1C", fontSize:12, fontWeight:600, cursor: savingFlag ? "wait" : "pointer" }}
         >Delete cycle</button>}
         <button
-          onClick={function(){ setAddingCycleFor(c); }}
+          onClick={async function(){
+            try { await writeCommission("POST", "/api/commissions/" + c._id + "/cycles", {}, "Cycle added"); } catch(_e){}
+          }}
           disabled={savingFlag}
           style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", color:C.textLight, fontSize:12, fontWeight:600, cursor: savingFlag ? "wait" : "pointer" }}
         >+ Add Cycle</button>
@@ -17976,7 +17930,6 @@ var CommissionsPage = function(p) {
     {/* Phase D modals — rendered when their state is set. */}
     {editingSnapshot && <CommissionSnapshotEditModal target={editingSnapshot} onClose={function(){ setEditingSnapshot(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
     {editingCycleStage && <CommissionCycleStageModal target={editingCycleStage} onClose={function(){ setEditingCycleStage(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
-    {addingCycleFor && <CommissionCycleAddModal target={addingCycleFor} onClose={function(){ setAddingCycleFor(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
     {editingIncentive && <CommissionIncentiveEditModal target={editingIncentive} onClose={function(){ setEditingIncentive(null); }} writeCommission={writeCommission} savingFlag={savingFlag} users={p.users}/>}
     {addingPayoutFor && <CommissionPayoutAddModal target={addingPayoutFor} onClose={function(){ setAddingPayoutFor(null); }} writeCommission={writeCommission} savingFlag={savingFlag} cashFlow={cashFlow}/>}
 
