@@ -15973,7 +15973,14 @@ app.post("/api/assets", auth, requireAssetAccess, async function(req, res) {
   }
 });
 
-app.patch("/api/assets/:id", auth, requireAssetAccess, async function(req, res) {
+// Constrain :id to a 24-hex-char ObjectId on every /api/assets/:id route. Why:
+// /api/assets/reports/<type> (S5) and /api/assets/:id/<subpath> (S3) both have
+// the shape /api/assets/<something>/<something>, so without the constraint
+// Express's first-match-wins routing sent /api/assets/reports/history to the
+// /:id/history handler with :id="reports". The handler then 400'd on the
+// ObjectId check, even though the request was for the reports endpoint. The
+// per-handler isValid guards stay as defense in depth.
+app.patch("/api/assets/:id([0-9a-fA-F]{24})", auth, requireAssetAccess, async function(req, res) {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
     var b = req.body || {};
@@ -16002,7 +16009,7 @@ app.patch("/api/assets/:id", auth, requireAssetAccess, async function(req, res) 
   }
 });
 
-app.delete("/api/assets/:id", auth, requireAssetAccess, async function(req, res) {
+app.delete("/api/assets/:id([0-9a-fA-F]{24})", auth, requireAssetAccess, async function(req, res) {
   // Soft delete only — set status=retired and clear current custodian. Writes
   // a "retired" CustodyHistory row so the timeline keeps the trail intact.
   try {
@@ -16035,7 +16042,7 @@ app.delete("/api/assets/:id", auth, requireAssetAccess, async function(req, res)
 // on /mark-status active transitions — return + transfer can leave the asset
 // "Unassigned" intentionally (admin then fixes it via transfer or status).
 
-app.post("/api/assets/:id/transfer", auth, requireAssetAccess, async function(req, res) {
+app.post("/api/assets/:id([0-9a-fA-F]{24})/transfer", auth, requireAssetAccess, async function(req, res) {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
     var toUserId = req.body && req.body.toUserId;
@@ -16066,7 +16073,7 @@ app.post("/api/assets/:id/transfer", auth, requireAssetAccess, async function(re
   }
 });
 
-app.post("/api/assets/:id/return", auth, requireAssetAccess, async function(req, res) {
+app.post("/api/assets/:id([0-9a-fA-F]{24})/return", auth, requireAssetAccess, async function(req, res) {
   // Clears currentCustodian. Status is left alone — admin can then mark
   // maintenance or transfer to a new custodian. Personal+active+no-custodian
   // is allowed mid-life (only the create path enforces the invariant).
@@ -16093,7 +16100,7 @@ app.post("/api/assets/:id/return", auth, requireAssetAccess, async function(req,
   }
 });
 
-app.post("/api/assets/:id/mark-status", auth, requireAssetAccess, async function(req, res) {
+app.post("/api/assets/:id([0-9a-fA-F]{24})/mark-status", auth, requireAssetAccess, async function(req, res) {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
     var newStatus = req.body && req.body.status;
@@ -16132,7 +16139,7 @@ app.post("/api/assets/:id/mark-status", auth, requireAssetAccess, async function
   }
 });
 
-app.get("/api/assets/:id/history", auth, requireAssetAccess, async function(req, res) {
+app.get("/api/assets/:id([0-9a-fA-F]{24})/history", auth, requireAssetAccess, async function(req, res) {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
     var rows = await CustodyHistory.find({ assetId: req.params.id })
