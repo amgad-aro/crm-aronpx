@@ -1098,10 +1098,11 @@ var Sidebar = function(p) {
       || hasAttendancePerm(p.cu.role, "approveOffSiteRequests", p.attendanceSettings)
       || hasAttendancePerm(p.cu.role, "manageCompanyOffDays",   p.attendanceSettings)
     ) && {id:"attendance",label:"Attendance",adminSection:true},
+    // AssetTracker — admin role OR isOwner=true flag. Placed above Settings so
+    // the admin block reads inventory → settings, not the other way around.
+    // Sales_admin and other admin-adjacent roles never see this item.
+    (p.cu.role==="admin"||p.cu.isOwner===true)&&{id:"assets",label:"Assets",adminSection:true},
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
-    // AssetTracker — admin role OR isOwner=true flag. Sales_admin and others
-    // never see this item even if they pass other admin gates elsewhere.
-    (p.cu.role==="admin"||p.cu.isOwner===true)&&{id:"assets",label:t.dir==="rtl"?"الأصول":"Assets",adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
   var leadsCount = Array.isArray(p.leads) ? p.leads.filter(function(l){return !l.archived;}).length : 0;
@@ -15690,8 +15691,8 @@ var SettingsPage = function(p) {
           setBranchError(""); setBranchMsg("");
           var nm = (branchForm.name||"").trim();
           var cd = (branchForm.code||"").trim().toUpperCase();
-          if (!nm) { setBranchError("الاسم مطلوب"); return; }
-          if (!cd) { setBranchError("الكود مطلوب"); return; }
+          if (!nm) { setBranchError("Name is required"); return; }
+          if (!cd) { setBranchError("Code is required"); return; }
           setBranchSaving(true);
           try {
             var payload = { name:nm, code:cd, address:(branchForm.address||"").trim(), isActive:branchForm.isActive };
@@ -15723,7 +15724,7 @@ var SettingsPage = function(p) {
             <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:12,marginBottom:10}}>
               <div>
                 <label style={fieldLabel}>Name</label>
-                <input style={inputStyle} value={branchForm.name} onChange={function(e){setBranchForm(Object.assign({},branchForm,{name:e.target.value}));}} placeholder="التجمع الخامس"/>
+                <input style={inputStyle} value={branchForm.name} onChange={function(e){setBranchForm(Object.assign({},branchForm,{name:e.target.value}));}} placeholder="New Cairo"/>
               </div>
               <div>
                 <label style={fieldLabel}>Code (uppercase)</label>
@@ -15792,8 +15793,9 @@ var SettingsPage = function(p) {
 // in S3 and surface as buttons on the detail view; QR rendering ships in S4.
 // Sub-view nav is state-only — no URL routing today; QR deep-links land in S4.
 var AssetTrackerPage = function(p) {
-  var t = p.t;
-  var isRTL = t && t.dir === "rtl";
+  // English-only LTR module — the rest of the CRM follows the global lang
+  // direction, but inventory copy is owner-facing and stays in English so
+  // we force LTR on the root and skip translation ternaries throughout.
 
   // ===== Hooks — all declared up-front, never below a return. =====
   var [subPage, setSubPage] = useState("list");
@@ -15877,9 +15879,9 @@ var AssetTrackerPage = function(p) {
   };
   var saveForm = async function() {
     setFormError("");
-    if (!form.name.trim())  { setFormError("الاسم مطلوب"); return; }
-    if (!form.categoryId)   { setFormError("اختار التصنيف"); return; }
-    if (!form.branchId)     { setFormError("اختار الفرع"); return; }
+    if (!form.name.trim())  { setFormError("Name is required"); return; }
+    if (!form.categoryId)   { setFormError("Pick a category"); return; }
+    if (!form.branchId)     { setFormError("Pick a branch"); return; }
     setFormSaving(true);
     try {
       var payload = {
@@ -15960,7 +15962,7 @@ var AssetTrackerPage = function(p) {
 
   // ===== Derived data =====
   var groupBuckets = (function() {
-    var b = { all:0, it:0, furniture:0, appliance:0 };
+    var b = { all:0, it:0, furniture:0, appliance:0, other:0 };
     assets.forEach(function(a) {
       b.all += 1;
       var g = a.categoryId && a.categoryId.group;
@@ -15988,7 +15990,7 @@ var AssetTrackerPage = function(p) {
   })();
 
   // ===== Render =====
-  return <div style={{padding:"24px 16px 40px",fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", direction:isRTL?"rtl":"ltr"}}>
+  return <div style={{padding:"24px 16px 40px",fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", direction:"ltr"}}>
     <div style={{maxWidth:1200,margin:"0 auto"}}>
 
       {/* ---------- LIST VIEW ---------- */}
@@ -16014,43 +16016,44 @@ var AssetTrackerPage = function(p) {
           {/* Header */}
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:16}}>
             <div>
-              <div style={{fontSize:18,fontWeight:500,color:"#1a1a1a"}}>{isRTL ? "الأصول" : "Assets"}</div>
-              <div style={{fontSize:12,color:"#666",marginTop:2}}>{isRTL ? "كل الأجهزة والأثاث المملوكة للشركة" : "All company-owned equipment, furniture, and appliances"}</div>
+              <div style={{fontSize:18,fontWeight:500,color:"#1a1a1a"}}>Assets</div>
+              <div style={{fontSize:12,color:"#666",marginTop:2}}>All company-owned equipment, furniture, and appliances</div>
             </div>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-              <button type="button" disabled title={isRTL?"قريباً — Slice 4":"Coming in Slice 4"} style={Object.assign({}, btnGhost, {opacity:0.55, cursor:"not-allowed"})}>{isRTL?"مسح QR":"Scan QR"}</button>
-              <button type="button" onClick={openNew} style={btnPrimary}>{isRTL?"إضافة أصل":"+ New Asset"}</button>
+              <button type="button" disabled title="Coming in Slice 4" style={Object.assign({}, btnGhost, {opacity:0.55, cursor:"not-allowed"})}>Scan QR</button>
+              <button type="button" onClick={openNew} style={btnPrimary}>+ New Asset</button>
             </div>
           </div>
 
           {/* Stat cards */}
           <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:16}}>
-            {statCard(isRTL?"إجمالي الأصول":"Total assets",   stats.total)}
-            {statCard(isRTL?"إجمالي قيمة الشراء":"Total purchase value", fmtEGP(stats.totalValue))}
-            {statCard(isRTL?"عُهد نشطة":"Active custodies",  stats.activeCustodies)}
-            {statCard(isRTL?"تحتاج انتباه":"Needs attention", stats.attention)}
+            {statCard("Total assets",         stats.total)}
+            {statCard("Total purchase value", fmtEGP(stats.totalValue))}
+            {statCard("Active custodies",     stats.activeCustodies)}
+            {statCard("Needs attention",      stats.attention)}
           </div>
 
           {/* Filter pills */}
           <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}}>
-            {pill("",          isRTL?"الكل":"All",          groupBuckets.all)}
-            {pill("it",        isRTL?"IT":"IT",             groupBuckets.it)}
-            {pill("furniture", isRTL?"أثاث":"Furniture",    groupBuckets.furniture)}
-            {pill("appliance", isRTL?"أجهزة":"Appliances",  groupBuckets.appliance)}
+            {pill("",          "All",         groupBuckets.all)}
+            {pill("it",        "IT",          groupBuckets.it)}
+            {pill("furniture", "Furniture",   groupBuckets.furniture)}
+            {pill("appliance", "Appliances",  groupBuckets.appliance)}
+            {pill("other",     "Other",       groupBuckets.other)}
           </div>
 
           {/* Search + dropdowns */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 160px 200px",gap:8,marginBottom:14,maxWidth:900}}>
-            <input style={inputStyle} placeholder={isRTL?"بحث بالكود، الاسم، أو حامل العهدة…":"Search code, name, or custodian…"} value={searchQuery} onChange={function(e){setSearchQuery(e.target.value);}}/>
+            <input style={inputStyle} placeholder="Search code, name, or custodian…" value={searchQuery} onChange={function(e){setSearchQuery(e.target.value);}}/>
             <select style={inputStyle} value={statusFilter} onChange={function(e){setStatusFilter(e.target.value);}}>
-              <option value="">{isRTL?"كل الحالات":"All statuses"}</option>
-              <option value="active">{isRTL?"نشط":"Active"}</option>
-              <option value="maintenance">{isRTL?"صيانة":"Maintenance"}</option>
-              <option value="lost">{isRTL?"مفقود":"Lost"}</option>
-              <option value="retired">{isRTL?"مُنسحب":"Retired"}</option>
+              <option value="">All statuses</option>
+              <option value="active">Active</option>
+              <option value="maintenance">Maintenance</option>
+              <option value="lost">Lost</option>
+              <option value="retired">Retired</option>
             </select>
             <select style={inputStyle} value={branchFilter} onChange={function(e){setBranchFilter(e.target.value);}}>
-              <option value="">{isRTL?"كل الفروع":"All branches"}</option>
+              <option value="">All branches</option>
               {branches.map(function(b){ return <option key={b._id} value={b._id}>{b.name} ({b.code})</option>; })}
             </select>
           </div>
@@ -16061,16 +16064,16 @@ var AssetTrackerPage = function(p) {
           {/* Table */}
           <div style={Object.assign({}, cardWrap, { overflow:"hidden" })}>
             <div style={{display:"grid",gridTemplateColumns:"2fr 1.5fr 1fr 120px 130px",gap:10,padding:"12px 16px",borderBottom:"0.5px solid rgba(0,0,0,0.08)",fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",background:"#FAFAF9"}}>
-              <div>{isRTL?"الأصل":"Asset"}</div>
-              <div>{isRTL?"حامل العهدة":"Custodian"}</div>
-              <div>{isRTL?"الفرع":"Branch"}</div>
-              <div style={{textAlign:"center"}}>{isRTL?"الحالة":"Status"}</div>
-              <div style={{textAlign:isRTL?"left":"right"}}>{isRTL?"قيمة الشراء":"Value"}</div>
+              <div>Asset</div>
+              <div>Custodian</div>
+              <div>Branch</div>
+              <div style={{textAlign:"center"}}>Status</div>
+              <div style={{textAlign:"right"}}>Value</div>
             </div>
             {!loaded
-              ? <div style={{padding:24,textAlign:"center",fontSize:13,color:"#666"}}>{isRTL?"جاري التحميل…":"Loading…"}</div>
+              ? <div style={{padding:24,textAlign:"center",fontSize:13,color:"#666"}}>Loading…</div>
               : filteredAssets.length === 0
-                ? <div style={{padding:32,textAlign:"center",fontSize:13,color:"#666"}}>{isRTL?"لا توجد أصول مطابقة":"No matching assets"}</div>
+                ? <div style={{padding:32,textAlign:"center",fontSize:13,color:"#666"}}>No matching assets</div>
                 : filteredAssets.map(function(a) {
                     var rowStyle = Object.assign({
                       display:"grid",gridTemplateColumns:"2fr 1.5fr 1fr 120px 130px",gap:10,
@@ -16092,13 +16095,13 @@ var AssetTrackerPage = function(p) {
                         {a.currentCustodian
                           ? a.currentCustodian.name
                           : (a.assignmentType === "shared"
-                              ? <span style={{color:"#666",fontStyle:"italic"}}>{isRTL?"مُشترك":"Shared"}</span>
-                              : <span style={{color:"#A32D2D"}}>{isRTL?"غير مُسند":"Unassigned"}</span>)
+                              ? <span style={{color:"#666",fontStyle:"italic"}}>Shared</span>
+                              : <span style={{color:"#A32D2D"}}>Unassigned</span>)
                         }
                       </div>
                       <div style={{color:"#666"}}>{a.branchId ? a.branchId.name : "—"}</div>
                       <div style={{textAlign:"center"}}>{statusBadge(a.status)}</div>
-                      <div style={{textAlign:isRTL?"left":"right",color:"#1a1a1a",fontFamily:"ui-monospace, SFMono-Regular, monospace",fontSize:12}}>{fmtEGP(a.purchasePrice)}</div>
+                      <div style={{textAlign:"right",color:"#1a1a1a",fontFamily:"ui-monospace, SFMono-Regular, monospace",fontSize:12}}>{fmtEGP(a.purchasePrice)}</div>
                     </div>;
                   })
             }
@@ -16121,77 +16124,77 @@ var AssetTrackerPage = function(p) {
         var custodianCandidates = (p.users || []).filter(function(u){ return u && u.active !== false; });
         return <div>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
-            <button type="button" onClick={goList} style={btnGhost}>{isRTL?"← رجوع":"← Back"}</button>
+            <button type="button" onClick={goList} style={btnGhost}>← Back</button>
             <div style={{fontSize:18,fontWeight:500,color:"#1a1a1a"}}>
-              {formMode === "edit" ? (isRTL?"تعديل الأصل":"Edit asset") : (isRTL?"أصل جديد":"New asset")}
+              {formMode === "edit" ? "Edit asset" : "New asset"}
             </div>
           </div>
 
           <div style={Object.assign({}, cardWrap, { padding:22, maxWidth:760 })}>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
               <div>
-                <label style={fieldLabel}>{isRTL?"اسم الأصل":"Name"} *</label>
+                <label style={fieldLabel}>Name *</label>
                 <input style={inputStyle} value={form.name} onChange={function(e){setForm(Object.assign({},form,{name:e.target.value}));}} placeholder="Dell Latitude 5540"/>
               </div>
               <div>
-                <label style={fieldLabel}>{isRTL?"التصنيف":"Category"} *</label>
+                <label style={fieldLabel}>Category *</label>
                 <select style={inputStyle} value={form.categoryId} onChange={onCategoryChange}>
-                  <option value="">{isRTL?"اختار…":"Choose…"}</option>
-                  {categories.map(function(c){ return <option key={c._id} value={c._id}>{c.nameAr || c.name} ({c.codePrefix})</option>; })}
+                  <option value="">Choose…</option>
+                  {categories.map(function(c){ return <option key={c._id} value={c._id}>{c.name} ({c.codePrefix})</option>; })}
                 </select>
               </div>
               <div>
-                <label style={fieldLabel}>{isRTL?"الفرع":"Branch"} *</label>
+                <label style={fieldLabel}>Branch *</label>
                 <select style={inputStyle} value={form.branchId} onChange={function(e){setForm(Object.assign({},form,{branchId:e.target.value}));}}>
-                  <option value="">{isRTL?"اختار…":"Choose…"}</option>
+                  <option value="">Choose…</option>
                   {branches.map(function(b){ return <option key={b._id} value={b._id}>{b.name} ({b.code})</option>; })}
                 </select>
               </div>
               <div>
-                <label style={fieldLabel}>{isRTL?"نوع العهدة":"Assignment type"}</label>
+                <label style={fieldLabel}>Assignment type</label>
                 <select style={inputStyle} value={form.assignmentType} onChange={function(e){setForm(Object.assign({},form,{assignmentType:e.target.value}));}}>
-                  <option value="personal">{isRTL?"شخصي":"Personal"}</option>
-                  <option value="shared">{isRTL?"مُشترك":"Shared"}</option>
+                  <option value="personal">Personal</option>
+                  <option value="shared">Shared</option>
                 </select>
               </div>
               <div>
-                <label style={fieldLabel}>{isRTL?"سعر الشراء":"Purchase price"} (EGP)</label>
+                <label style={fieldLabel}>Purchase price (EGP)</label>
                 <input style={inputStyle} type="number" min="0" step="1" value={form.purchasePrice} onChange={function(e){setForm(Object.assign({},form,{purchasePrice:e.target.value}));}}/>
               </div>
               <div>
-                <label style={fieldLabel}>{isRTL?"تاريخ الشراء":"Purchase date"}</label>
+                <label style={fieldLabel}>Purchase date</label>
                 <input style={inputStyle} type="date" value={form.purchaseDate} onChange={function(e){setForm(Object.assign({},form,{purchaseDate:e.target.value}));}}/>
               </div>
               <div>
-                <label style={fieldLabel}>{isRTL?"المورّد":"Supplier"} <span style={{color:"#888"}}>{isRTL?"(اختياري)":"(optional)"}</span></label>
+                <label style={fieldLabel}>Supplier <span style={{color:"#888"}}>(optional)</span></label>
                 <input style={inputStyle} value={form.supplier} onChange={function(e){setForm(Object.assign({},form,{supplier:e.target.value}));}} placeholder="B.TECH"/>
               </div>
               <div>
-                <label style={fieldLabel}>{isRTL?"الرقم التسلسلي":"Serial number"} <span style={{color:"#888"}}>{isRTL?"(اختياري)":"(optional)"}</span></label>
+                <label style={fieldLabel}>Serial number <span style={{color:"#888"}}>(optional)</span></label>
                 <input style={inputStyle} value={form.serialNumber} onChange={function(e){setForm(Object.assign({},form,{serialNumber:e.target.value}));}}/>
               </div>
               {/* Initial custodian — only on create + when assignmentType is personal. */}
               {formMode === "create" && form.assignmentType === "personal" && <div style={{gridColumn:"1 / -1"}}>
-                <label style={fieldLabel}>{isRTL?"حامل العهدة الأولي":"Initial custodian"} {formMode==="create" ? "*" : ""}</label>
+                <label style={fieldLabel}>Initial custodian *</label>
                 <select style={inputStyle} value={form.currentCustodian} onChange={function(e){setForm(Object.assign({},form,{currentCustodian:e.target.value}));}}>
-                  <option value="">{isRTL?"اختار موظف…":"Choose a user…"}</option>
+                  <option value="">Choose a user…</option>
                   {custodianCandidates.map(function(u){ return <option key={u._id} value={u._id}>{u.name} ({u.username})</option>; })}
                 </select>
-                <div style={{fontSize:11,color:"#888",marginTop:4}}>{isRTL?"الأصول الشخصية النشطة لازمها حامل عهدة.":"Personal active assets require a custodian."}</div>
+                <div style={{fontSize:11,color:"#888",marginTop:4}}>Personal active assets require a custodian.</div>
               </div>}
               <div style={{gridColumn:"1 / -1"}}>
-                <label style={fieldLabel}>{isRTL?"ملاحظات":"Notes"} <span style={{color:"#888"}}>{isRTL?"(اختياري)":"(optional)"}</span></label>
+                <label style={fieldLabel}>Notes <span style={{color:"#888"}}>(optional)</span></label>
                 <textarea style={Object.assign({}, inputStyle, { minHeight:70, resize:"vertical" })} value={form.notes} onChange={function(e){setForm(Object.assign({},form,{notes:e.target.value}));}}/>
               </div>
             </div>
 
             <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
               <button type="button" onClick={saveForm} disabled={formSaving} style={Object.assign({}, btnPrimary, {opacity:formSaving?0.6:1, cursor:formSaving?"not-allowed":"pointer"})}>
-                {formSaving ? (isRTL?"جاري الحفظ…":"Saving…") : (formMode === "edit" ? (isRTL?"حفظ التغييرات":"Save changes") : (isRTL?"إضافة الأصل":"Create asset"))}
+                {formSaving ? "Saving…" : (formMode === "edit" ? "Save changes" : "Create asset")}
               </button>
-              <button type="button" onClick={goList} style={btnGhost}>{isRTL?"إلغاء":"Cancel"}</button>
+              <button type="button" onClick={goList} style={btnGhost}>Cancel</button>
               {formError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{formError}</span>}
-              {pickedCat && formMode === "create" && <span style={{fontSize:11,color:"#666"}}>{isRTL?"الكود سيتولّد تلقائياً":"Code will be auto-generated"} (ARO-{pickedCat.codePrefix}-####)</span>}
+              {pickedCat && formMode === "create" && <span style={{fontSize:11,color:"#666"}}>Code will be auto-generated (ARO-{pickedCat.codePrefix}-####)</span>}
             </div>
           </div>
         </div>;
@@ -16201,13 +16204,13 @@ var AssetTrackerPage = function(p) {
       {subPage === "detail" && (function() {
         if (detailLoading || (!detailAsset && !detailError)) {
           return <div>
-            <button type="button" onClick={goList} style={Object.assign({}, btnGhost, {marginBottom:16})}>{isRTL?"← رجوع":"← Back"}</button>
-            <div style={{fontSize:13,color:"#666"}}>{isRTL?"جاري التحميل…":"Loading…"}</div>
+            <button type="button" onClick={goList} style={Object.assign({}, btnGhost, {marginBottom:16})}>← Back</button>
+            <div style={{fontSize:13,color:"#666"}}>Loading…</div>
           </div>;
         }
         if (detailError) {
           return <div>
-            <button type="button" onClick={goList} style={Object.assign({}, btnGhost, {marginBottom:16})}>{isRTL?"← رجوع":"← Back"}</button>
+            <button type="button" onClick={goList} style={Object.assign({}, btnGhost, {marginBottom:16})}>← Back</button>
             <div style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"10px 14px",borderRadius:8}}>{detailError}</div>
           </div>;
         }
@@ -16223,7 +16226,7 @@ var AssetTrackerPage = function(p) {
           {/* Header */}
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:16}}>
             <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
-              <button type="button" onClick={goList} style={btnGhost}>{isRTL?"← رجوع":"← Back"}</button>
+              <button type="button" onClick={goList} style={btnGhost}>← Back</button>
               <div style={{minWidth:0}}>
                 <div style={{fontSize:18,fontWeight:500,color:"#1a1a1a",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.name}</div>
                 <div style={{fontSize:12,color:"#666",fontFamily:"ui-monospace, SFMono-Regular, monospace",marginTop:2}}>{a.assetCode}</div>
@@ -16231,18 +16234,18 @@ var AssetTrackerPage = function(p) {
             </div>
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
               {statusBadge(a.status)}
-              {canEdit && <button type="button" onClick={function(){ openEdit(a); }} style={btnGhost}>{isRTL?"تعديل":"Edit"}</button>}
-              {canEdit && <button type="button" onClick={doDelete} disabled={deleting} style={Object.assign({}, btnDanger, {opacity:deleting?0.6:1, cursor:deleting?"not-allowed":"pointer"})}>{deleting ? (isRTL?"...":"...") : (isRTL?"إنهاء (Retire)":"Retire")}</button>}
+              {canEdit && <button type="button" onClick={function(){ openEdit(a); }} style={btnGhost}>Edit</button>}
+              {canEdit && <button type="button" onClick={doDelete} disabled={deleting} style={Object.assign({}, btnDanger, {opacity:deleting?0.6:1, cursor:deleting?"not-allowed":"pointer"})}>{deleting ? "..." : "Retire"}</button>}
             </div>
           </div>
 
           <div style={{display:"grid",gridTemplateColumns:"260px 1fr",gap:16,alignItems:"start"}}>
             {/* Left: QR placeholder (rendering ships in S4) */}
             <div style={Object.assign({}, cardWrap, { padding:18 })}>
-              <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:10}}>{isRTL?"كود QR":"QR Code"}</div>
+              <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:10}}>QR Code</div>
               <div style={{aspectRatio:"1/1", background:"#F4F4F4", border:"0.5px dashed rgba(0,0,0,0.15)", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:6, color:"#888", fontSize:12, textAlign:"center", padding:14}}>
                 <div style={{fontSize:24}}>▦</div>
-                <div>{isRTL?"التصيير في Slice 4":"Rendering in Slice 4"}</div>
+                <div>Rendering in Slice 4</div>
               </div>
               <div style={{fontSize:10,color:"#888",marginTop:10,wordBreak:"break-all",fontFamily:"ui-monospace, SFMono-Regular, monospace",lineHeight:1.4}}>{a.qrCodeData}</div>
             </div>
@@ -16251,42 +16254,42 @@ var AssetTrackerPage = function(p) {
             <div style={Object.assign({}, cardWrap, { padding:20 })}>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18}}>
                 <div>
-                  {label(isRTL?"التصنيف":"Category")}
-                  {value((cat.nameAr || cat.name || "—") + (cat.codePrefix ? " ("+cat.codePrefix+")" : ""))}
-                  {label(isRTL?"الفرع":"Branch")}
+                  {label("Category")}
+                  {value((cat.name || "—") + (cat.codePrefix ? " ("+cat.codePrefix+")" : ""))}
+                  {label("Branch")}
                   {value(br.name ? br.name + " ("+br.code+")" : "—")}
-                  {label(isRTL?"نوع العهدة":"Assignment type")}
-                  {value(a.assignmentType === "shared" ? (isRTL?"مُشترك":"Shared") : (isRTL?"شخصي":"Personal"))}
-                  {label(isRTL?"سعر الشراء":"Purchase price")}
+                  {label("Assignment type")}
+                  {value(a.assignmentType === "shared" ? "Shared" : "Personal")}
+                  {label("Purchase price")}
                   {value(fmtEGP(a.purchasePrice))}
                 </div>
                 <div>
-                  {label(isRTL?"تاريخ الشراء":"Purchase date")}
+                  {label("Purchase date")}
                   {value(dt)}
-                  {label(isRTL?"المورّد":"Supplier")}
+                  {label("Supplier")}
                   {value(a.supplier)}
-                  {label(isRTL?"الرقم التسلسلي":"Serial number")}
+                  {label("Serial number")}
                   {value(a.serialNumber)}
-                  {label(isRTL?"الملاحظات":"Notes")}
+                  {label("Notes")}
                   {value(a.notes)}
                 </div>
               </div>
 
               {/* Custodian card */}
               <div style={{marginTop:10,padding:14,background:"#FAFAF9",border:"0.5px solid rgba(0,0,0,0.06)",borderRadius:10}}>
-                <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:8}}>{isRTL?"حامل العهدة الحالي":"Current custodian"}</div>
+                <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:8}}>Current custodian</div>
                 {cust ? <div style={{display:"flex",alignItems:"center",gap:10}}>
                   <div style={{width:36,height:36,borderRadius:"50%",background:"#E6F1FB",color:"#185FA5",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:14}}>{(cust.name||"?")[0]}</div>
                   <div>
                     <div style={{fontSize:13,fontWeight:500,color:"#1a1a1a"}}>{cust.name}</div>
                     <div style={{fontSize:11,color:"#666"}}>{cust.username} · {cust.role}</div>
                   </div>
-                </div> : <div style={{fontSize:13,color:"#666",fontStyle:"italic"}}>{a.assignmentType === "shared" ? (isRTL?"أصل مُشترك — مفيش حامل عهدة شخصي":"Shared asset — no personal custodian") : (isRTL?"غير مُسند":"Unassigned")}</div>}
+                </div> : <div style={{fontSize:13,color:"#666",fontStyle:"italic"}}>{a.assignmentType === "shared" ? "Shared asset — no personal custodian" : "Unassigned"}</div>}
               </div>
 
               {/* Custody action stubs (S3) */}
               <div style={{marginTop:14,paddingTop:14,borderTop:"0.5px dashed rgba(0,0,0,0.1)"}}>
-                <div style={{fontSize:11,color:"#888",fontStyle:"italic"}}>{isRTL?"نقل العهدة، الإرجاع، تعديل الحالة، طباعة QR — في Slices 3-4":"Transfer custody · Return · Mark status · Print QR — in slices 3–4"}</div>
+                <div style={{fontSize:11,color:"#888",fontStyle:"italic"}}>Transfer custody · Return · Mark status · Print QR — in slices 3–4</div>
               </div>
             </div>
           </div>
@@ -18404,7 +18407,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings,assets:t.dir==="rtl"?"الأصول":"Assets"};
+  var titles={dashboard:t.dashboard,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings,assets:"Assets"};
   // Server already filters users by role — p.users IS the team
   var myId = String(currentUser.id||currentUser._id||"");
 

@@ -764,7 +764,7 @@ Branch.collection.createIndex({ code: 1 }, { unique: true }).catch(function(){})
 var AssetCategory = mongoose.model("AssetCategory", new mongoose.Schema({
   name:                  { type: String, required: true },
   nameAr:                { type: String, default: "" },
-  group:                 { type: String, enum: ["it", "furniture", "appliance"], required: true },
+  group:                 { type: String, enum: ["it", "furniture", "appliance", "other"], required: true },
   codePrefix:            { type: String, required: true, uppercase: true, trim: true },
   icon:                  { type: String, default: "ti-box" },
   defaultAssignmentType: { type: String, enum: ["personal", "shared"], default: "personal" },
@@ -1013,16 +1013,32 @@ async function backfillLeadHistory() {
 }
 
 // ===== ASSET TRACKER SEEDERS =====
-// Both are idempotent. seedFirstBranch only creates the row when zero branches
-// exist (so admins who later rename/disable it don't get it re-created), while
-// seedAssetCategories upserts each row keyed on codePrefix so re-runs are no-ops
-// and new categories can be added to the array safely.
+// Both are idempotent. seedFirstBranch first runs a one-time rename of the
+// legacy "التجمع الخامس / TGM" seed to "New Cairo / NC" (and bails out cleanly
+// if a NC branch already exists separately), then seeds New Cairo as the
+// default if no branches exist at all. seedAssetCategories upserts each row
+// keyed on codePrefix so re-runs are no-ops and new categories can be added
+// safely.
 
 async function seedFirstBranch() {
+  try {
+    var legacy = await Branch.findOne({ $or: [{ code: "TGM" }, { name: "التجمع الخامس" }] }).lean();
+    if (legacy && legacy.code !== "NC") {
+      var clash = await Branch.findOne({ code: "NC", _id: { $ne: legacy._id } }).lean();
+      if (!clash) {
+        await Branch.updateOne({ _id: legacy._id }, { $set: { name: "New Cairo", code: "NC" } });
+        console.log("[seed] Renamed legacy branch to New Cairo (NC)");
+      } else {
+        console.log("[seed] Skip rename: a separate NC branch already exists");
+      }
+    }
+  } catch (e) {
+    console.error("[seed branch rename]", e && e.message);
+  }
   var count = await Branch.countDocuments();
   if (count > 0) return;
-  await Branch.create({ name: "التجمع الخامس", code: "TGM", isActive: true });
-  console.log("[seed] First branch created: التجمع الخامس (TGM)");
+  await Branch.create({ name: "New Cairo", code: "NC", isActive: true });
+  console.log("[seed] First branch created: New Cairo (NC)");
 }
 
 var ASSET_CATEGORY_SEED = [
@@ -1036,7 +1052,8 @@ var ASSET_CATEGORY_SEED = [
   { name: "Microwave",       nameAr: "ميكرويف", group: "appliance", codePrefix: "MW", icon: "ti-microwave",       defaultAssignmentType: "shared"   },
   { name: "Water Dispenser", nameAr: "كولدير",    group: "appliance", codePrefix: "WD", icon: "ti-droplet",          defaultAssignmentType: "shared"   },
   { name: "AC",              nameAr: "تكييف",          group: "appliance", codePrefix: "AC", icon: "ti-air-conditioning", defaultAssignmentType: "shared"   },
-  { name: "Fridge",          nameAr: "ثلاجة",          group: "appliance", codePrefix: "FR", icon: "ti-fridge",           defaultAssignmentType: "shared"   }
+  { name: "Fridge",          nameAr: "ثلاجة",          group: "appliance", codePrefix: "FR", icon: "ti-fridge",           defaultAssignmentType: "shared"   },
+  { name: "Other",           nameAr: "أخرى",                group: "other",     codePrefix: "OT", icon: "ti-package",          defaultAssignmentType: "shared"   }
 ];
 
 async function seedAssetCategories() {
