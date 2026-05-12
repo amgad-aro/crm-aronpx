@@ -15861,13 +15861,22 @@ var SettingsPage = function(p) {
           }
         };
         return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          {/* Mobile rules for the Branches tab — same .at-* convention as
+              AssetTrackerPage so the namespace stays consistent. */}
+          <style>{""
++ "@media (max-width: 768px) {"
++ "  .at-branch-form-grid { grid-template-columns: 1fr !important; gap: 10px !important; }"
++ "  .at-branch-list { overflow-x: auto; -webkit-overflow-scrolling: touch; }"
++ "  .at-branch-list > div { min-width: 520px; }"
++ "}"
+}</style>
           <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Branches</div>
           <div style={{fontSize:12,color:"#666",marginBottom:18}}>Office branches used by AssetTracker. Code is used inside asset codes — short, uppercase, three or four letters works best.</div>
 
           {/* Add / edit form */}
           <div style={{background:"#F7F7F5",border:"0.5px solid rgba(0,0,0,0.08)",borderRadius:10,padding:14,marginBottom:18}}>
             <div style={{fontSize:13,fontWeight:500,marginBottom:10}}>{branchForm.id ? "Edit branch" : "Add branch"}</div>
-            <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:12,marginBottom:10}}>
+            <div className="at-branch-form-grid" style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:12,marginBottom:10}}>
               <div>
                 <label style={fieldLabel}>Name</label>
                 <input style={inputStyle} value={branchForm.name} onChange={function(e){setBranchForm(Object.assign({},branchForm,{name:e.target.value}));}} placeholder="New Cairo"/>
@@ -15899,7 +15908,7 @@ var SettingsPage = function(p) {
           {!branchesLoaded ? <div style={{fontSize:12,color:"#666"}}>Loading…</div> : (
             branches.length === 0
               ? <div style={{fontSize:12,color:"#666",padding:"12px 0"}}>No branches yet.</div>
-              : <div>
+              : <div className="at-branch-list">
                   <div style={{display:"grid",gridTemplateColumns:"1.5fr 90px 1.5fr 80px 80px",gap:10,padding:"10px 0",borderBottom:"0.5px solid rgba(0,0,0,0.1)",fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px"}}>
                     <div>Name</div>
                     <div>Code</div>
@@ -16536,14 +16545,63 @@ var AssetTrackerPage = function(p) {
 
   // ===== Render =====
   return <div style={{padding:"24px 16px 40px",fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", direction:"ltr"}}>
+    {/* Mobile layout rules for AssetTracker. Classes are namespaced .at-*
+        so they can't collide with the rest of the CRM. Inline styles win
+        over class styles, so the overrides use !important — matches the
+        global App style block's convention (see the @media block in the
+        main App.js return). Desktop layout is untouched. */}
+    <style>{""
++ "@media (max-width: 768px) {"
++ /* List view — header stacks vertically, actions become full-width vertical pills */
++ "  .at-list-header { flex-direction: column !important; align-items: stretch !important; }"
++ "  .at-list-actions { flex-direction: column !important; align-items: stretch !important; gap: 6px !important; }"
++ "  .at-list-actions > button, .at-list-actions > a { width: 100% !important; }"
++ /* Stat cards become a 2-up grid (full-row was making them feel oversized) */
++ "  .at-stat-cards { display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 8px !important; }"
++ "  .at-stat-card { min-width: 0 !important; flex: unset !important; padding: 10px 12px !important; }"
++ "  .at-stat-card .at-stat-label { font-size: 10px !important; margin-bottom: 4px !important; }"
++ "  .at-stat-card .at-stat-value { font-size: 16px !important; }"
++ /* Search + filter dropdowns stack 1-col */
++ "  .at-list-controls { grid-template-columns: 1fr !important; gap: 6px !important; }"
++ /* Filter pills wrap naturally; nothing forced */
++ /* Table gets horizontal scroll instead of collapsing columns */
++ "  .at-table-card { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }"
++ "  .at-table-inner { min-width: 680px; }"
++ /* Detail view — flatten the 2-column grid */
++ "  .at-detail-header { flex-direction: column !important; align-items: stretch !important; gap: 10px !important; }"
++ "  .at-detail-header-actions { justify-content: flex-start !important; flex-wrap: wrap !important; }"
++ "  .at-detail-grid { grid-template-columns: 1fr !important; }"
++ "  .at-qr-card { max-width: 320px; margin: 0 auto; }"
++ "  .at-fields-grid { grid-template-columns: 1fr !important; gap: 10px !important; }"
++ "  .at-custody-actions { flex-direction: column !important; align-items: stretch !important; }"
++ "  .at-custody-actions > button { width: 100% !important; }"
++ /* Form view — fields stack */
++ "  .at-form-grid { grid-template-columns: 1fr !important; gap: 10px !important; }"
++ "  .at-form-card { padding: 16px !important; }"
++ "  .at-form-actions { flex-direction: column !important; align-items: stretch !important; }"
++ "  .at-form-actions > button { width: 100% !important; }"
++ /* Scan view stays single-column already; just constrain the camera preview width */
++ "  .at-scan-card { max-width: 100% !important; }"
++ /* Reports view */
++ "  .at-reports-header { flex-direction: column !important; align-items: stretch !important; gap: 10px !important; }"
++ "  .at-reports-header > button { width: 100% !important; }"
++ "  .at-reports-tabs > button { flex-shrink: 0 !important; }"
++ "  .at-history-filters { grid-template-columns: 1fr !important; gap: 8px !important; }"
++ /* Report tables (by-category/branch/employee + history) get horizontal
++    scroll. Min-width keeps the per-column widths sensible while scrolling. */
++ "  .at-report-content { overflow-x: auto; -webkit-overflow-scrolling: touch; }"
++ "  .at-report-content table { min-width: 560px; }"
++ /* Custody history timeline doesn't need much — already vertical */
++ "}"
+}</style>
     <div style={{maxWidth:1200,margin:"0 auto"}}>
 
       {/* ---------- LIST VIEW ---------- */}
       {subPage === "list" && (function() {
         var statCard = function(label, value) {
-          return <div style={Object.assign({}, cardWrap, { padding:"14px 16px", minWidth:160, flex:"1 1 200px" })}>
-            <div style={{fontSize:11, color:"#666", textTransform:"uppercase", letterSpacing:"0.4px", marginBottom:6}}>{label}</div>
-            <div style={{fontSize:20, fontWeight:600, color:"#1a1a1a"}}>{value}</div>
+          return <div className="at-stat-card" style={Object.assign({}, cardWrap, { padding:"14px 16px", minWidth:160, flex:"1 1 200px" })}>
+            <div className="at-stat-label" style={{fontSize:11, color:"#666", textTransform:"uppercase", letterSpacing:"0.4px", marginBottom:6}}>{label}</div>
+            <div className="at-stat-value" style={{fontSize:20, fontWeight:600, color:"#1a1a1a"}}>{value}</div>
           </div>;
         };
         var pill = function(id, label, count) {
@@ -16559,12 +16617,12 @@ var AssetTrackerPage = function(p) {
         };
         return <div>
           {/* Header */}
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:16}}>
+          <div className="at-list-header" style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:16}}>
             <div>
               <div style={{fontSize:18,fontWeight:500,color:"#1a1a1a"}}>Assets</div>
               <div style={{fontSize:12,color:"#666",marginTop:2}}>All company-owned equipment, furniture, and appliances</div>
             </div>
-            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <div className="at-list-actions" style={{display:"flex",gap:8,flexWrap:"wrap"}}>
               <button type="button" onClick={openReports} style={btnGhost}>Reports</button>
               <button type="button" onClick={openScan} style={btnGhost}>Scan QR</button>
               <button type="button" onClick={openNew} style={btnPrimary}>+ New Asset</button>
@@ -16572,7 +16630,7 @@ var AssetTrackerPage = function(p) {
           </div>
 
           {/* Stat cards */}
-          <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:16}}>
+          <div className="at-stat-cards" style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:16}}>
             {statCard("Total assets",         stats.total)}
             {statCard("Total purchase value", fmtEGP(stats.totalValue))}
             {statCard("Active custodies",     stats.activeCustodies)}
@@ -16589,7 +16647,7 @@ var AssetTrackerPage = function(p) {
           </div>
 
           {/* Search + dropdowns */}
-          <div style={{display:"grid",gridTemplateColumns:"1fr 160px 200px",gap:8,marginBottom:14,maxWidth:900}}>
+          <div className="at-list-controls" style={{display:"grid",gridTemplateColumns:"1fr 160px 200px",gap:8,marginBottom:14,maxWidth:900}}>
             <input style={inputStyle} placeholder="Search code, name, or custodian…" value={searchQuery} onChange={function(e){setSearchQuery(e.target.value);}}/>
             <select style={inputStyle} value={statusFilter} onChange={function(e){setStatusFilter(e.target.value);}}>
               <option value="">All statuses</option>
@@ -16607,8 +16665,12 @@ var AssetTrackerPage = function(p) {
           {/* Errors */}
           {loadError && <div style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"8px 12px",borderRadius:8,marginBottom:12}}>{loadError}</div>}
 
-          {/* Table */}
-          <div style={Object.assign({}, cardWrap, { overflow:"hidden" })}>
+          {/* Table — wrapped in a horizontal-scroll container; the inner div
+              gets a min-width on mobile (see .at-table-inner CSS) so the
+              grid columns keep their proportions and the user scrolls
+              sideways instead of seeing collapsed cells. */}
+          <div className="at-table-card" style={Object.assign({}, cardWrap, { overflow:"hidden" })}>
+           <div className="at-table-inner">
             <div style={{display:"grid",gridTemplateColumns:"2fr 1.5fr 1fr 120px 130px",gap:10,padding:"12px 16px",borderBottom:"0.5px solid rgba(0,0,0,0.08)",fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",background:"#FAFAF9"}}>
               <div>Asset</div>
               <div>Custodian</div>
@@ -16651,6 +16713,7 @@ var AssetTrackerPage = function(p) {
                     </div>;
                   })
             }
+           </div>
           </div>
         </div>;
       })()}
@@ -16675,8 +16738,8 @@ var AssetTrackerPage = function(p) {
             </div>
           </div>
 
-          <div style={Object.assign({}, cardWrap, { padding:22, maxWidth:760 })}>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+          <div className="at-form-card" style={Object.assign({}, cardWrap, { padding:22, maxWidth:760 })}>
+            <div className="at-form-grid" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
               <div>
                 <label style={fieldLabel}>Name *</label>
                 <input style={inputStyle} value={form.name} onChange={function(e){setForm(Object.assign({},form,{name:e.target.value}));}} placeholder="Dell Latitude 5540"/>
@@ -16733,7 +16796,7 @@ var AssetTrackerPage = function(p) {
               </div>
             </div>
 
-            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+            <div className="at-form-actions" style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
               <button type="button" onClick={saveForm} disabled={formSaving} style={Object.assign({}, btnPrimary, {opacity:formSaving?0.6:1, cursor:formSaving?"not-allowed":"pointer"})}>
                 {formSaving ? "Saving…" : (formMode === "edit" ? "Save changes" : "Create asset")}
               </button>
@@ -16752,7 +16815,7 @@ var AssetTrackerPage = function(p) {
             <button type="button" onClick={goList} style={btnGhost}>← Back</button>
             <div style={{fontSize:18,fontWeight:500,color:"#1a1a1a"}}>Scan asset QR</div>
           </div>
-          <div style={Object.assign({}, cardWrap, { padding:18, maxWidth:520 })}>
+          <div className="at-scan-card" style={Object.assign({}, cardWrap, { padding:18, maxWidth:520 })}>
             <div style={{fontSize:12,color:"#666",marginBottom:12,lineHeight:1.5}}>
               Point your camera at an asset's QR label. The app jumps to that asset on the first read and turns the camera off. On desktop or if camera access is denied, type or paste the code manually below.
             </div>
@@ -16797,7 +16860,7 @@ var AssetTrackerPage = function(p) {
         var canEdit = a.status !== "retired";
         return <div>
           {/* Header */}
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:16}}>
+          <div className="at-detail-header" style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:16}}>
             <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
               <button type="button" onClick={goList} style={btnGhost}>← Back</button>
               <div style={{minWidth:0}}>
@@ -16805,16 +16868,16 @@ var AssetTrackerPage = function(p) {
                 <div style={{fontSize:12,color:"#666",fontFamily:"ui-monospace, SFMono-Regular, monospace",marginTop:2}}>{a.assetCode}</div>
               </div>
             </div>
-            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <div className="at-detail-header-actions" style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
               {statusBadge(a.status)}
               {canEdit && <button type="button" onClick={function(){ openEdit(a); }} style={btnGhost}>Edit</button>}
               {canEdit && <button type="button" onClick={doDelete} disabled={deleting} style={Object.assign({}, btnDanger, {opacity:deleting?0.6:1, cursor:deleting?"not-allowed":"pointer"})}>{deleting ? "..." : "Retire"}</button>}
             </div>
           </div>
 
-          <div style={{display:"grid",gridTemplateColumns:"260px 1fr",gap:16,alignItems:"start"}}>
+          <div className="at-detail-grid" style={{display:"grid",gridTemplateColumns:"260px 1fr",gap:16,alignItems:"start"}}>
             {/* Left: QR card */}
-            <div style={Object.assign({}, cardWrap, { padding:18 })}>
+            <div className="at-qr-card" style={Object.assign({}, cardWrap, { padding:18 })}>
               <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:10}}>QR Code</div>
               <div style={{aspectRatio:"1/1", background:"#fff", border:"0.5px solid rgba(0,0,0,0.08)", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", padding:10}}>
                 {qrDataUrl
@@ -16835,7 +16898,7 @@ var AssetTrackerPage = function(p) {
 
             {/* Right: Fields + custodian card */}
             <div style={Object.assign({}, cardWrap, { padding:20 })}>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18}}>
+              <div className="at-fields-grid" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18}}>
                 <div>
                   {label("Category")}
                   {value((cat.name || "—") + (cat.codePrefix ? " ("+cat.codePrefix+")" : ""))}
@@ -16873,7 +16936,7 @@ var AssetTrackerPage = function(p) {
               {/* Custody actions */}
               <div style={{marginTop:14,paddingTop:14,borderTop:"0.5px dashed rgba(0,0,0,0.1)"}}>
                 <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:10}}>Custody actions</div>
-                <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <div className="at-custody-actions" style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
                   {/* Transfer — only for personal assets that aren't lost/retired */}
                   {a.status !== "retired" && a.status !== "lost" && a.assignmentType === "personal" &&
                     <button type="button" onClick={openTransferModal} disabled={statusBusy} style={Object.assign({}, btnPrimary, {opacity:statusBusy?0.6:1, cursor:statusBusy?"not-allowed":"pointer"})}>
@@ -17149,7 +17212,7 @@ var AssetTrackerPage = function(p) {
         var renderHistory = function() {
           return <div>
             {/* Filters bar */}
-            <div style={{display:"grid", gridTemplateColumns:"160px 160px 180px 1fr", gap:8, marginBottom:14, alignItems:"end"}}>
+            <div className="at-history-filters" style={{display:"grid", gridTemplateColumns:"160px 160px 180px 1fr", gap:8, marginBottom:14, alignItems:"end"}}>
               <div>
                 <label style={fieldLabel}>From</label>
                 <input style={inputStyle} type="date" value={historyFilters.from} onChange={function(e){ setHistoryFilters(Object.assign({}, historyFilters, {from:e.target.value})); }}/>
@@ -17212,7 +17275,7 @@ var AssetTrackerPage = function(p) {
         };
 
         return <div>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap",marginBottom:16}}>
+          <div className="at-reports-header" style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap",marginBottom:16}}>
             <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
               <button type="button" onClick={goList} style={btnGhost}>← Back</button>
               <div style={{fontSize:18,fontWeight:500,color:"#1a1a1a"}}>Asset reports</div>
@@ -17224,10 +17287,10 @@ var AssetTrackerPage = function(p) {
 
           {/* Tabs */}
           <div style={Object.assign({}, cardWrap, { overflow:"hidden" })}>
-            <div style={{display:"flex", gap:4, padding:"10px 14px", borderBottom:"0.5px solid rgba(0,0,0,0.1)", background:"#F7F7F5", overflowX:"auto"}}>
+            <div className="at-reports-tabs" style={{display:"flex", gap:4, padding:"10px 14px", borderBottom:"0.5px solid rgba(0,0,0,0.1)", background:"#F7F7F5", overflowX:"auto"}}>
               {TABS.map(tabBtn)}
             </div>
-            <div style={{padding:18}}>
+            <div className="at-report-content" style={{padding:18}}>
               {error && <div style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"8px 12px",borderRadius:8,marginBottom:12}}>{error}</div>}
               {loading && !current
                 ? <div style={{fontSize:13, color:"#666", padding:24, textAlign:"center"}}>Loading…</div>
