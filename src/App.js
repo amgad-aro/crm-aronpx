@@ -8223,7 +8223,11 @@ var EOIPage = function(p) {
   var [eoiTab,setEoiTab]=useState("approved");
   // Scope: anything that has an eoiStatus (Pending / Approved / Deal Cancelled)
   // OR is currently status=EOI (legacy rows without eoiStatus set yet).
-  var wasEOI = function(l){return l.eoiDate || l.eoiImage || l.eoiApproved || (l.eoiDocuments||[]).length>0;};
+  // Hybrid: works before AND after the backend strips eoiImage/eoiDocuments
+  // from the /api/leads bootstrap. After the strip, l.hasEoiArtifacts (server-
+  // computed) covers the doc-only-no-eoiDate case; before the strip, the raw
+  // fields are still truthy. Either way, correct.
+  var wasEOI = function(l){return l.eoiDate || l.eoiApproved || l.hasEoiArtifacts || l.eoiImage || (l.eoiDocuments||[]).length>0;};
   var eoiScope=p.leads.filter(function(l){return !l.archived && ((l.eoiStatus && l.eoiStatus.length>0) || l.status==="EOI" || (l.status==="Deal Cancelled" && wasEOI(l)));});
   var eoiPending = eoiScope.filter(function(l){ return l.eoiStatus ? l.eoiStatus==="Pending" : (l.status==="EOI" && !l.eoiApproved); });
   var eoiApprovedList = eoiScope.filter(function(l){ return l.eoiStatus ? l.eoiStatus==="Approved" : (l.status==="EOI" && l.eoiApproved); });
@@ -8241,6 +8245,13 @@ var EOIPage = function(p) {
   var [docUploading,setDocUploading]=useState(false);
   var [cancelling,setCancelling]=useState(false);
   var [convertingDeal,setConvertingDeal]=useState(false);
+  // Side-panel hydration tracker. The /api/leads bootstrap strips heavy fields
+  // (eoiImage, eoiDocuments) to keep the payload small; we refetch the full
+  // doc when the panel opens. panelHydratedEoiId === selectedEOI._id once the
+  // refetch has populated the panel, so mutation responses (already full docs)
+  // don't trigger a redundant fetch.
+  var [panelHydratedEoiId,setPanelHydratedEoiId]=useState(null);
+  var isEoiHydrated = !!(selectedEOI && selectedEOI._id && panelHydratedEoiId === String(selectedEOI._id));
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
 
   // Deep-link: open the side panel when a caller (e.g. the Deals & EOI notifications bell) navigated here with a lead.
@@ -8256,6 +8267,27 @@ var EOIPage = function(p) {
     if (p.setInitSelected) p.setInitSelected(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.initSelected]);
+
+  // Refetch full lead doc on panel open so heavy fields (eoiImage, eoiDocuments)
+  // hydrate from /api/leads/:id even when the bootstrap stripped them. Gated by
+  // panelHydratedEoiId so mutation handlers (which already setSelectedEOI to a
+  // full doc) don't loop. Failures are silent — the panel stays on the stripped
+  // row and the user can retry by reopening.
+  useEffect(function(){
+    if (!selectedEOI || !selectedEOI._id) return;
+    var sid = String(selectedEOI._id);
+    if (panelHydratedEoiId === sid) return;
+    apiFetch("/api/leads/"+sid,"GET",null,p.token).then(function(full){
+      if (full && full._id && String(full._id) === sid) {
+        setSelectedEOI(full);
+        setPanelHydratedEoiId(sid);
+      }
+    }).catch(function(){});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[selectedEOI && selectedEOI._id]);
+
+  // Reset hydration tracker when the panel closes so the next open re-hydrates.
+  useEffect(function(){ if (!selectedEOI) setPanelHydratedEoiId(null); },[selectedEOI]);
 
   var archiveLead=async function(lid){
     if(!window.confirm(t.archiveConfirm))return;
@@ -8553,7 +8585,9 @@ var EOIPage = function(p) {
         {/* EOI Image */}
         <div style={{ marginTop:12 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 EOI Image</div>
-          {selectedEOI.eoiImage
+          {!isEoiHydrated
+            ?<div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
+            :selectedEOI.eoiImage
             ?<div>
               <img src={selectedEOI.eoiImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedEOI.eoiImage+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, marginBottom:6, cursor:"zoom-in" }} alt="EOI" title="Click to view full size"/>
               <label style={{ display:"block", padding:"6px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
@@ -8569,24 +8603,28 @@ var EOIPage = function(p) {
 
         {/* EOI Documents (images + PDFs) */}
         <div style={{ marginTop:12 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📄 EOI Documents ({(selectedEOI.eoiDocuments||[]).length})</div>
-          {(selectedEOI.eoiDocuments||[]).length>0&&<div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:6, marginBottom:8 }}>
-            {(selectedEOI.eoiDocuments||[]).map(function(doc,idx){
-              var url = typeof doc==="string" ? doc : (doc && doc.url) || "";
-              var name = typeof doc==="object" && doc && doc.name ? doc.name : ("Document "+(idx+1));
-              var isPdf = typeof url==="string" && url.indexOf("application/pdf")>=0;
-              return <div key={idx} style={{ position:"relative", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#F8FAFC", aspectRatio:"1/1" }} title={name}>
-                {isPdf
-                  ? <a href={url} target="_blank" rel="noreferrer" download={name} style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", textDecoration:"none", color:"#DC2626", fontSize:10, fontWeight:700, padding:4, textAlign:"center" }}><span style={{ fontSize:22 }}>📕</span><span style={{ maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name}</span></a>
-                  : <img src={url} alt={name} onClick={function(){var w=window.open();w.document.write("<img src='"+url+"' style='max-width:100%;'>");}} style={{ width:"100%", height:"100%", objectFit:"cover", cursor:"zoom-in" }}/>}
-                {isOnlyAdmin&&<button onClick={function(){deleteDoc(selectedEOI,idx);}} title="Remove" style={{ position:"absolute", top:2, right:2, width:18, height:18, borderRadius:"50%", border:"none", background:"rgba(220,38,38,0.9)", color:"#fff", fontSize:10, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>×</button>}
-              </div>;
-            })}
-          </div>}
-          <label style={{ display:"block", padding:"8px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
-            {docUploading?"Uploading…":"📎 Upload EOI Document (image or PDF)"}
-            <input type="file" accept="image/*,application/pdf" style={{ display:"none" }} onChange={function(e){handleDocUpload(e,selectedEOI);}}/>
-          </label>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📄 EOI Documents {isEoiHydrated ? "("+(selectedEOI.eoiDocuments||[]).length+")" : ""}</div>
+          {!isEoiHydrated
+            ?<div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
+            :<>
+              {(selectedEOI.eoiDocuments||[]).length>0&&<div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:6, marginBottom:8 }}>
+                {(selectedEOI.eoiDocuments||[]).map(function(doc,idx){
+                  var url = typeof doc==="string" ? doc : (doc && doc.url) || "";
+                  var name = typeof doc==="object" && doc && doc.name ? doc.name : ("Document "+(idx+1));
+                  var isPdf = typeof url==="string" && url.indexOf("application/pdf")>=0;
+                  return <div key={idx} style={{ position:"relative", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#F8FAFC", aspectRatio:"1/1" }} title={name}>
+                    {isPdf
+                      ? <a href={url} target="_blank" rel="noreferrer" download={name} style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", textDecoration:"none", color:"#DC2626", fontSize:10, fontWeight:700, padding:4, textAlign:"center" }}><span style={{ fontSize:22 }}>📕</span><span style={{ maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name}</span></a>
+                      : <img src={url} alt={name} onClick={function(){var w=window.open();w.document.write("<img src='"+url+"' style='max-width:100%;'>");}} style={{ width:"100%", height:"100%", objectFit:"cover", cursor:"zoom-in" }}/>}
+                    {isOnlyAdmin&&<button onClick={function(){deleteDoc(selectedEOI,idx);}} title="Remove" style={{ position:"absolute", top:2, right:2, width:18, height:18, borderRadius:"50%", border:"none", background:"rgba(220,38,38,0.9)", color:"#fff", fontSize:10, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>×</button>}
+                  </div>;
+                })}
+              </div>}
+              <label style={{ display:"block", padding:"8px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+                {docUploading?"Uploading…":"📎 Upload EOI Document (image or PDF)"}
+                <input type="file" accept="image/*,application/pdf" style={{ display:"none" }} onChange={function(e){handleDocUpload(e,selectedEOI);}}/>
+              </label>
+            </>}
         </div>
       </div>
     </div>}
