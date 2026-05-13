@@ -15583,6 +15583,9 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage/:stageName", auth, salesAd
     }
 
     var body = req.body || {};
+    // Snapshot old values before overwrite so the audit log can record before→after.
+    var oldStage = (cyc[stageName] && cyc[stageName].toObject) ? cyc[stageName].toObject() : Object.assign({}, cyc[stageName] || {});
+    var oldAmount = Number(cyc.receivedAmount || 0);
     var date = String(body.date || (cyc[stageName] && cyc[stageName].date) || "");
     var notes = body.notes !== undefined ? String(body.notes) : (cyc[stageName] && cyc[stageName].notes) || "";
     var byUser = (req.user && req.user.name) || "";
@@ -15602,8 +15605,15 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage/:stageName", auth, salesAd
     c.markModified("cycles");
     await c.save();
 
+    var changes = [];
+    if ((oldStage.date || "") !== date) changes.push("date " + (oldStage.date || "—") + " → " + (date || "—"));
+    if ((oldStage.notes || "") !== notes) changes.push("notes changed");
+    if (stageName === "received" && oldAmount !== Number(cyc.receivedAmount || 0)) {
+      changes.push("amount " + Math.round(oldAmount).toLocaleString() + " → " + Math.round(Number(cyc.receivedAmount)).toLocaleString() + " EGP");
+    }
+    var changeStr = changes.length > 0 ? " — " + changes.join(", ") : " (no changes)";
     await logCommissionActivity(req.user, c.leadId, "commission_stage_edit",
-      "[Commission] cycle " + cyc.cycleNumber + " — edited " + stageName + " (date=" + date + (stageName === "received" ? ", amount=" + Number(cyc.receivedAmount).toLocaleString() + " EGP" : "") + ")");
+      "[Commission] cycle " + cyc.cycleNumber + " — edited " + stageName + changeStr);
 
     res.json(c.toObject());
   } catch(e) {
@@ -15638,9 +15648,38 @@ app.delete("/api/commissions/:id/cycles/:cycleId", auth, salesAdminOnly, async f
       return res.status(400).json({ error: "cannot delete cycle in state '" + cyc.state + "'" });
     }
     var num = cyc.cycleNumber;
+    var stateAtDelete = cyc.state;
+    var receivedAtDelete = Number(cyc.receivedAmount || 0);
+    var payoutCount = Array.isArray(c.payouts) ? c.payouts.length : 0;
+    var prevStatus = c.status;
     cyc.deleteOne();
+
+    // Status revert — if commission was fully_paid and criteria no longer hold
+    // after removing this cycle, flip back to active. Mirror of the forward
+    // roll-up logic in the stage-advance handler above.
+    var statusFlipped = false;
+    if (c.status === "fully_paid") {
+      var remaining = c.cycles || [];
+      var allClosed = remaining.length > 0 && remaining.every(function(x){ return x.state === "paid_to_team" || x.state === "cancelled"; });
+      var receivedTotal = remaining.reduce(function(s, x){ return s + Number(x.receivedAmount || 0); }, 0);
+      var meetsTotal = Number(c.expectedTotal || 0) > 0 && receivedTotal >= Number(c.expectedTotal);
+      if (!(allClosed && meetsTotal)) {
+        c.status = "active";
+        statusFlipped = true;
+      }
+    }
+
     await c.save();
-    await logCommissionActivity(req.user, c.leadId, "commission_cycle_delete", "[Commission] cycle " + num + " deleted");
+
+    var payoutNote = (destructiveStates.indexOf(stateAtDelete) >= 0 && payoutCount > 0)
+      ? ", " + payoutCount + " payout" + (payoutCount === 1 ? "" : "s") + " unchanged — recipients may show overpaid"
+      : "";
+    await logCommissionActivity(req.user, c.leadId, "commission_cycle_delete",
+      "[Commission] cycle " + num + " deleted (state=" + stateAtDelete + ", receivedAmount=" + Math.round(receivedAtDelete).toLocaleString() + " EGP" + payoutNote + ")");
+    if (statusFlipped) {
+      await logCommissionActivity(req.user, c.leadId, "commission_status_revert",
+        "[Commission] status reverted " + prevStatus + " → active (cycle " + num + " deletion dropped totals below fully-paid criteria)");
+    }
     res.json(c.toObject());
   } catch(e) {
     console.error("[DELETE cycle]", e && e.message);

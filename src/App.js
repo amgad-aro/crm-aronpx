@@ -18399,29 +18399,58 @@ var CommissionsPage = function(p) {
     </div>;
   };
 
+  // Per-cycle delete. Early states get a lightweight confirm; received /
+  // paid_to_team get the full destructive copy + cycle-number entry (backend
+  // requires confirmCycleNumber match for those states).
+  var handleDeleteCycle = async function(c, cycle){
+    if (!c || !cycle) return;
+    var early = ["pending_claim","claim_submitted","invoice_submitted"].indexOf(cycle.state) >= 0;
+    if (early) {
+      if (!window.confirm("Delete cycle " + cycle.cycleNumber + "? This cannot be undone.")) return;
+      try { await writeCommission("DELETE", "/api/commissions/" + c._id + "/cycles/" + cycle._id, null, "Cycle deleted"); } catch(_e){}
+      return;
+    }
+    var typed = window.prompt(
+      "Delete Cycle #" + cycle.cycleNumber + "? This will remove the cycle and its received amount. Payouts on this commission will remain unchanged — recipients may appear overpaid. The commission status may revert to active. This action is logged. Continue?\n\nTo confirm, type the cycle number (" + cycle.cycleNumber + ") below:"
+    );
+    if (typed == null) return;
+    var n = Number(String(typed).trim());
+    if (!isFinite(n) || n !== Number(cycle.cycleNumber)) {
+      alert("Cycle number didn't match — delete cancelled.");
+      return;
+    }
+    try { await writeCommission("DELETE", "/api/commissions/" + c._id + "/cycles/" + cycle._id, { confirmCycleNumber: n }, "Cycle deleted"); } catch(_e){}
+  };
+
   var renderCycle = function(c, cycle, isActiveCycle){
     var pillBg = "#F1F5F9", pillFg = C.textLight;
     if (cycle.state === "paid_to_team") { pillBg = "#DCFCE7"; pillFg = "#15803D"; }
     else if (cycle.state === "cancelled") { pillBg = "#FEE2E2"; pillFg = "#B91C1C"; }
     else if (cycle.state === "received") { pillBg = "#DBEAFE"; pillFg = "#1D4ED8"; }
+    var isCancelledCommission = c && c.status === "cancelled";
+    var canDelete = !isCancelledCommission && ["pending_claim","claim_submitted","invoice_submitted","received","paid_to_team"].indexOf(cycle.state) >= 0;
     return <div key={String(cycle._id || cycle.cycleNumber)} style={{ border:"1px solid #E2E8F0", borderRadius:10, padding:"10px 12px", marginBottom:8, background: isActiveCycle ? "#FAFBFF" : "#fff" }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: isActiveCycle ? 12 : 0 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: 12 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           <span style={{ fontSize:13, fontWeight:700, color:C.text }}>Cycle #{cycle.cycleNumber}</span>
           <span style={{ fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:10, background: pillBg, color: pillFg }}>
             {String(cycle.state || "").replace(/_/g, " ")}
           </span>
         </div>
-        <div style={{ fontSize:11, color:C.textLight, display:"flex", alignItems:"center", gap:6 }}>
+        <div style={{ fontSize:11, color:C.textLight, display:"flex", alignItems:"center", gap:8 }}>
           {Number(cycle.receivedAmount || 0) > 0 && <span>Received: <b>{fmtMoney(cycle.receivedAmount)}</b></span>}
+          {canDelete && <button onClick={function(){ handleDeleteCycle(c, cycle); }} disabled={savingFlag} title={"Delete cycle " + cycle.cycleNumber}
+            style={{ padding:"3px 8px", borderRadius:6, border:"1px solid #FCA5A5", background:"#fff", color:"#B91C1C", fontSize:10, fontWeight:600, cursor: savingFlag ? "wait" : "pointer" }}>
+            ✕ Delete
+          </button>}
         </div>
       </div>
-      {isActiveCycle && <div style={{ display:"flex", alignItems:"flex-start", gap:8, marginTop:6 }}>
+      <div style={{ display:"flex", alignItems:"flex-start", gap:8, marginTop:6 }}>
         {renderStageDot(c, cycle, "claim_submitted")}
         {renderStageDot(c, cycle, "invoice_submitted")}
         {renderStageDot(c, cycle, "received")}
         {renderStageDot(c, cycle, "paid_to_team")}
-      </div>}
+      </div>
     </div>;
   };
 
@@ -18505,7 +18534,6 @@ var CommissionsPage = function(p) {
     var isCancelled = c.status === "cancelled";
     var isFullyPaid = c.status === "fully_paid";
     var snap = c.snapshot || {};
-    var isExpanded = expandedId === String(c._id);
     var activeCycle = (c.cycles || []).filter(function(cy){ return cy.state !== "paid_to_team" && cy.state !== "cancelled"; }).slice(-1)[0] || null;
     var paidCycles = (c.cycles || []).filter(function(cy){ return cy.state === "paid_to_team" || cy.state === "cancelled"; });
     var totalReceived = (c.cycles || []).reduce(function(s, cy){ return s + Number(cy.receivedAmount || 0); }, 0);
@@ -18604,7 +18632,7 @@ var CommissionsPage = function(p) {
 
       {/* Active cycle (always expanded if not paid/cancelled) */}
       {activeCycle && renderCycle(c, activeCycle, true)}
-      {/* Cycle action row — Advance Stage on active cycle, Add Cycle (always), Delete on early states */}
+      {/* Cycle action row — Advance Stage on active cycle, Add Cycle (always). Delete moved to per-cycle. */}
       {!isCancelled && <div style={{ display:"flex", gap:6, marginTop:6, marginBottom:8, flexWrap:"wrap" }}>
         {activeCycle && (activeCycle.state === "pending_claim" || activeCycle.state === "claim_submitted" || activeCycle.state === "invoice_submitted" || activeCycle.state === "received") && <button
           onClick={function(){
@@ -18617,32 +18645,6 @@ var CommissionsPage = function(p) {
           disabled={savingFlag}
           style={{ padding:"5px 12px", borderRadius:8, border:"1px solid " + C.accent, background: C.accent + "12", color: C.accent, fontSize:12, fontWeight:600, cursor: savingFlag ? "wait" : "pointer" }}
         >▶ Advance Stage</button>}
-        {activeCycle && ["pending_claim","claim_submitted","invoice_submitted","received","paid_to_team"].indexOf(activeCycle.state) >= 0 && <button
-          onClick={async function(){
-            var early = ["pending_claim","claim_submitted","invoice_submitted"].indexOf(activeCycle.state) >= 0;
-            if (early) {
-              if (!window.confirm("Delete cycle " + activeCycle.cycleNumber + "? This cannot be undone.")) return;
-              try { await writeCommission("DELETE", "/api/commissions/" + c._id + "/cycles/" + activeCycle._id, null, "Cycle deleted"); } catch(_e){}
-            } else {
-              // Destructive: prompt the admin to type the cycle number. Backend
-              // also enforces this match via body.confirmCycleNumber.
-              var typed = window.prompt(
-                "⚠ DESTRUCTIVE — cycle " + activeCycle.cycleNumber + " is in state '" + activeCycle.state + "'.\n" +
-                "This will reverse the recorded payouts in audit logs (no money is actually refunded).\n\n" +
-                "To confirm, type the cycle number (" + activeCycle.cycleNumber + ") below:"
-              );
-              if (typed == null) return;
-              var n = Number(String(typed).trim());
-              if (!isFinite(n) || n !== Number(activeCycle.cycleNumber)) {
-                alert("Cycle number didn't match — delete cancelled.");
-                return;
-              }
-              try { await writeCommission("DELETE", "/api/commissions/" + c._id + "/cycles/" + activeCycle._id, { confirmCycleNumber: n }, "Cycle deleted"); } catch(_e){}
-            }
-          }}
-          disabled={savingFlag}
-          style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #FCA5A5", background:"#fff", color:"#B91C1C", fontSize:12, fontWeight:600, cursor: savingFlag ? "wait" : "pointer" }}
-        >Delete cycle</button>}
         <button
           onClick={async function(){
             try { await writeCommission("POST", "/api/commissions/" + c._id + "/cycles", {}, "Cycle added"); } catch(_e){}
@@ -18652,16 +18654,13 @@ var CommissionsPage = function(p) {
         >+ Add Cycle</button>
       </div>}
 
-      {/* Other cycles — collapsible */}
+      {/* Previous cycles — always rendered (paid_to_team / cancelled). Each carries
+          its own Delete button + stage dots via renderCycle. */}
       {paidCycles.length > 0 && <div style={{ marginTop:8 }}>
-        <button onClick={function(){ setExpandedId(isExpanded ? null : String(c._id)); }} style={{
-          background:"none", border:"none", color:C.textLight, fontSize:11, fontWeight:700, cursor:"pointer",
-          padding:"4px 0", display:"flex", alignItems:"center", gap:4
-        }}>
-          <ChevronRight size={12} style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition:"transform 0.15s" }}/>
-          {isExpanded ? "Hide" : "Show"} {paidCycles.length} previous cycle{paidCycles.length === 1 ? "" : "s"}
-        </button>
-        {isExpanded && paidCycles.map(function(cy){ return renderCycle(c, cy, false); })}
+        <div style={{ fontSize:11, fontWeight:700, color:C.textLight, padding:"4px 0", marginBottom:4 }}>
+          {paidCycles.length} previous cycle{paidCycles.length === 1 ? "" : "s"}
+        </div>
+        {paidCycles.map(function(cy){ return renderCycle(c, cy, false); })}
       </div>}
 
       {/* Incentive */}
