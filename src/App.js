@@ -1612,7 +1612,7 @@ var Header = function(p) {
                   <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{n.leadName}</div>
                   <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.fromName} → {n.toName}</div>
                   <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:2 }}>
-                    <span style={{ fontSize:10, color:"#EA580C", fontWeight:600, background:"#FFF7ED", padding:"1px 6px", borderRadius:4 }}>{n.reason==="Manual reassign"?"Manual reassign":"Auto rotation — "+(n.reason||"auto")}</span>
+                    <span style={{ fontSize:10, color:"#EA580C", fontWeight:600, background:"#FFF7ED", padding:"1px 6px", borderRadius:4 }}>{n.reason==="Manual reassign"?"Manual reassign":"Auto rotation — "+((n.reason==="no_answer_streak"?"no_answer":n.reason)||"auto")}</span>
                     <span style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.createdAt||n.time,p.t)}</span>
                   </div>
                 </div>
