@@ -1103,10 +1103,11 @@ var Sidebar = function(p) {
       || hasAttendancePerm(p.cu.role, "approveOffSiteRequests", p.attendanceSettings)
       || hasAttendancePerm(p.cu.role, "manageCompanyOffDays",   p.attendanceSettings)
     ) && {id:"attendance",label:"Attendance",adminSection:true},
-    // AssetTracker — admin role OR isOwner=true flag. Placed above Settings so
-    // the admin block reads inventory → settings, not the other way around.
-    // Sales_admin and other admin-adjacent roles never see this item.
-    (p.cu.role==="admin"||p.cu.isOwner===true)&&{id:"assets",label:"Assets",adminSection:true},
+    // AssetTracker — admin OR sales_admin OR isOwner=true flag. Placed above
+    // Settings so the admin block reads inventory → settings. All other
+    // roles (manager, team_leader, sales, hr, director, viewer) are blocked
+    // here AND at the page-switch gate AND on the backend (requireAssetAccess).
+    (p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.isOwner===true)&&{id:"assets",label:"Assets",adminSection:true},
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
@@ -4174,7 +4175,7 @@ var LeadsPage = function(p) {
             </div>
           </div>
           <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selected.name}</div>
-          {selected.rotationStopped&&<div style={{ marginTop:4, display:"inline-block", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:5, background:"rgba(255,255,255,0.95)", color:"#991B1B" }} title="Rotation permanently stopped — 3 consecutive Not Interested">🛑 Rotation Stopped</div>}
+          {isOnlyAdmin&&selected.rotationStopped&&<div style={{ marginTop:4, display:"inline-block", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:5, background:"rgba(255,255,255,0.95)", color:"#991B1B" }} title="Rotation permanently stopped — 3 consecutive Not Interested">🛑 Rotation Stopped</div>}
           <div style={{ color:"rgba(255,255,255,0.6)", fontSize:11, marginTop:2 }}>
             <PhoneCell phone={selected.phone}/>{selected.phone2?<>{" / "}<PhoneCell phone={selected.phone2}/></>:""}
           </div>
@@ -16725,10 +16726,11 @@ var AssetTrackerPage = function(p) {
             </div>
           </div>
 
-          {/* Stat cards */}
+          {/* Stat cards. Total purchase value is an aggregate — Owner-only
+              per the access spec. Sales_admin sees the remaining three cards. */}
           <div className="at-stat-cards" style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:16}}>
             {statCard("Total assets",         stats.total)}
-            {statCard("Total purchase value", fmtEGP(stats.totalValue))}
+            {p.cu && p.cu.isOwner === true && statCard("Total purchase value", fmtEGP(stats.totalValue))}
             {statCard("Active custodies",     stats.activeCustodies)}
             {statCard("Needs attention",      stats.attention)}
           </div>
@@ -17186,6 +17188,12 @@ var AssetTrackerPage = function(p) {
 
       {/* ---------- REPORTS VIEW (5 tabs + Excel export) ---------- */}
       {subPage === "reports" && (function() {
+        // Aggregated company-wide totals are Owner-only. Backend already
+        // strips them from JSON responses for non-owners; the frontend
+        // mirrors that by hiding the corresponding columns/cells. Belt-
+        // and-braces: even if the backend ever leaks the values, the UI
+        // won't render them for non-owners.
+        var canSeeAggregates = !!(p.cu && p.cu.isOwner === true);
         var TABS = [
           { id: "summary",     label: "Summary" },
           { id: "by-category", label: "By Category" },
@@ -17232,9 +17240,9 @@ var AssetTrackerPage = function(p) {
                 <tbody>
                   {rows.map(function(r, i){
                     return <tr key={i}>
-                      <td style={Object.assign({}, tdStyle, {width:"55%"})}>{r.label}</td>
+                      <td style={Object.assign({}, tdStyle, {width: canSeeAggregates ? "55%" : "70%"})}>{r.label}</td>
                       <td style={tdNum}>{(r.count != null) ? r.count.toLocaleString("en-EG") : ""}</td>
-                      <td style={Object.assign({}, tdNum, {width:"30%"})}>{(r.value != null) ? fmtEGP(r.value) : ""}</td>
+                      {canSeeAggregates && <td style={Object.assign({}, tdNum, {width:"30%"})}>{(r.value != null) ? fmtEGP(r.value) : ""}</td>}
                     </tr>;
                   })}
                 </tbody>
@@ -17260,7 +17268,7 @@ var AssetTrackerPage = function(p) {
               <th style={thStyle}>Category</th>
               <th style={thStyle}>Group</th>
               <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Count</th>
-              <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Value</th>
+              {canSeeAggregates && <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Value</th>}
               <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Active</th>
               <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Maint.</th>
               <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Lost</th>
@@ -17272,7 +17280,7 @@ var AssetTrackerPage = function(p) {
                   <td style={tdStyle}>{r.name} <span style={{color:"#888"}}>({r.codePrefix})</span></td>
                   <td style={Object.assign({}, tdStyle, {color:"#666"})}>{r.group}</td>
                   <td style={tdNum}>{r.count}</td>
-                  <td style={tdNum}>{fmtEGP(r.value)}</td>
+                  {canSeeAggregates && <td style={tdNum}>{fmtEGP(r.value)}</td>}
                   <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.active}</td>
                   <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.maintenance}</td>
                   <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.lost}</td>
@@ -17291,7 +17299,7 @@ var AssetTrackerPage = function(p) {
               <th style={thStyle}>Branch</th>
               <th style={thStyle}>Code</th>
               <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Count</th>
-              <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Value</th>
+              {canSeeAggregates && <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Value</th>}
               <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Active</th>
               <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Maint.</th>
               <th style={Object.assign({}, thStyle, {textAlign:"center"})}>Lost</th>
@@ -17303,7 +17311,7 @@ var AssetTrackerPage = function(p) {
                   <td style={tdStyle}>{r.name}</td>
                   <td style={Object.assign({}, tdStyle, {fontFamily:"ui-monospace, SFMono-Regular, monospace", fontSize:12, color:"#444"})}>{r.code}</td>
                   <td style={tdNum}>{r.count}</td>
-                  <td style={tdNum}>{fmtEGP(r.value)}</td>
+                  {canSeeAggregates && <td style={tdNum}>{fmtEGP(r.value)}</td>}
                   <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.active}</td>
                   <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.maintenance}</td>
                   <td style={Object.assign({}, tdStyle, {textAlign:"center"})}>{r.byStatus.lost}</td>
@@ -17324,7 +17332,7 @@ var AssetTrackerPage = function(p) {
                 <th style={thStyle}>Employee</th>
                 <th style={thStyle}>Role</th>
                 <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Count</th>
-                <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Value (EGP)</th>
+                {canSeeAggregates && <th style={Object.assign({}, thStyle, {textAlign:"right"})}>Value (EGP)</th>}
               </tr></thead>
               <tbody>
                 {current.map(function(r, i){
@@ -17332,7 +17340,7 @@ var AssetTrackerPage = function(p) {
                     <td style={tdStyle}>{r.name}{r.username ? <span style={{color:"#888"}}> ({r.username})</span> : null}</td>
                     <td style={Object.assign({}, tdStyle, {color:"#666"})}>{r.role}</td>
                     <td style={tdNum}>{r.count}</td>
-                    <td style={tdNum}>{fmtEGP(r.value)}</td>
+                    {canSeeAggregates && <td style={tdNum}>{fmtEGP(r.value)}</td>}
                   </tr>;
                 })}
               </tbody>
@@ -19649,7 +19657,7 @@ export default function CRMApp() {
       case "offsiteRequests": return <AttendancePage {...sp} initTab="offsiteRequests"/>;
       case "companyOffDays":  return <AttendancePage {...sp} initTab="companyOffDays"/>;
       case "settings": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
-      case "assets":   return (currentUser.role==="admin"||currentUser.isOwner===true)
+      case "assets":   return (currentUser.role==="admin"||currentUser.role==="sales_admin"||currentUser.isOwner===true)
         ? <AssetTrackerPage {...sp} users={users} initialAssetCode={deepLinkAssetCode} onInitialConsumed={function(){ setDeepLinkAssetCode(null); }}/>
         : <DashboardPage {...sp}/>;
       default: return <DashboardPage {...sp}/>;

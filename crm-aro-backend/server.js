@@ -1170,16 +1170,23 @@ function adminOnly(req, res, next) {
   next();
 }
 
-// AssetTracker gate: admin role OR isOwner=true. JWT only carries role, so the
-// Owner case needs one DB read; admins pass without a lookup.
+// AssetTracker gate: admin OR sales_admin OR isOwner=true flag. Always loads
+// the user record because downstream report handlers need req.isOwnerLevel to
+// decide whether to expose aggregated company-wide totals (Owner only) vs
+// per-asset prices (everyone gated through here). One indexed lookup per
+// request — acceptable for the small admin-tier audience.
 async function requireAssetAccess(req, res, next) {
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
-  if (req.user.role === "admin") return next();
   try {
-    var u = await User.findById(req.user.id).select("isOwner active").lean();
-    if (u && u.active !== false && u.isOwner === true) return next();
-  } catch(e) { /* fall through to 403 */ }
-  return res.status(403).json({ error: "Forbidden" });
+    var u = await User.findById(req.user.id).select("role isOwner active").lean();
+    if (!u || u.active === false) return res.status(403).json({ error: "Forbidden" });
+    var allowed = u.role === "admin" || u.role === "sales_admin" || u.isOwner === true;
+    if (!allowed) return res.status(403).json({ error: "Forbidden" });
+    req.isOwnerLevel = u.isOwner === true;
+    return next();
+  } catch(e) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
 }
 
 // ===== OWNER LOCKDOWN HELPERS =====
@@ -16461,11 +16468,12 @@ function addStyledSheet(wb, name, columns, rows) {
 // stream. Summary / category / branch / employee all carry a second
 // "detail" sheet — admins routinely need to pivot or sort the full asset
 // list offline. History is single-sheet but with expanded columns.
-async function buildSummaryWorkbook() {
+async function buildSummaryWorkbook(isOwner) {
   var wb = new ExcelJS.Workbook();
   wb.creator = "ARO CRM"; wb.created = new Date();
   var s = await buildSummary();
 
+  // Summary sheet: aggregate value column drops for non-owners. Counts stay.
   var summaryRows = [];
   summaryRows.push({ section: "Totals", label: "All assets", count: s.totals.count, value: s.totals.value });
   s.byStatus.forEach(function(r){ summaryRows.push({ section: "By Status", label: r.status, count: r.count, value: r.value }); });
@@ -16474,13 +16482,16 @@ async function buildSummaryWorkbook() {
     var b = (s.byAssignment && s.byAssignment[k]) || { count: 0, value: 0 };
     summaryRows.push({ section: "By Assignment Type", label: k, count: b.count, value: b.value });
   });
-  addStyledSheet(wb, "Summary", [
-    { header: "Section",     key: "section" },
-    { header: "Label",       key: "label" },
-    { header: "Count",       key: "count" },
-    { header: "Value (EGP)", key: "value" }
-  ], summaryRows);
+  var summaryCols = [
+    { header: "Section", key: "section" },
+    { header: "Label",   key: "label" },
+    { header: "Count",   key: "count" }
+  ];
+  if (isOwner) summaryCols.push({ header: "Value (EGP)", key: "value" });
+  addStyledSheet(wb, "Summary", summaryCols, summaryRows);
 
+  // Full Asset List: per-asset prices stay regardless of role — they're not
+  // aggregates and sales_admin is explicitly allowed to see them per spec.
   var assets = await loadAssetsForExport();
   assets.sort(function(a, b){ return String(a.assetCode).localeCompare(String(b.assetCode)); });
   addStyledSheet(wb, "Full Asset List", ASSET_DETAIL_COLUMNS, assets.map(toAssetDetailRow));
@@ -16488,20 +16499,24 @@ async function buildSummaryWorkbook() {
   return await wb.xlsx.writeBuffer();
 }
 
-async function buildByCategoryWorkbook() {
+async function buildByCategoryWorkbook(isOwner) {
   var wb = new ExcelJS.Workbook(); wb.creator = "ARO CRM"; wb.created = new Date();
   var cats = await buildByCategory();
-  addStyledSheet(wb, "By Category", [
+  // Aggregate per-category total drops for non-owners. Per-status counts stay.
+  var cols = [
     { header: "Category",    key: "name" },
     { header: "Group",       key: "group" },
     { header: "Code Prefix", key: "codePrefix" },
-    { header: "Count",       key: "count" },
-    { header: "Value (EGP)", key: "value" },
+    { header: "Count",       key: "count" }
+  ];
+  if (isOwner) cols.push({ header: "Value (EGP)", key: "value" });
+  cols.push(
     { header: "Active",      key: "active" },
     { header: "Maintenance", key: "maintenance" },
     { header: "Lost",        key: "lost" },
     { header: "Retired",     key: "retired" }
-  ], cats.map(function(c) {
+  );
+  addStyledSheet(wb, "By Category", cols, cats.map(function(c) {
     return { name: c.name, group: c.group, codePrefix: c.codePrefix, count: c.count, value: c.value,
       active: c.byStatus.active, maintenance: c.byStatus.maintenance, lost: c.byStatus.lost, retired: c.byStatus.retired };
   }));
@@ -16519,19 +16534,22 @@ async function buildByCategoryWorkbook() {
   return await wb.xlsx.writeBuffer();
 }
 
-async function buildByBranchWorkbook() {
+async function buildByBranchWorkbook(isOwner) {
   var wb = new ExcelJS.Workbook(); wb.creator = "ARO CRM"; wb.created = new Date();
   var brs = await buildByBranch();
-  addStyledSheet(wb, "By Branch", [
-    { header: "Branch",      key: "name" },
-    { header: "Code",        key: "code" },
-    { header: "Count",       key: "count" },
-    { header: "Value (EGP)", key: "value" },
+  var cols = [
+    { header: "Branch", key: "name" },
+    { header: "Code",   key: "code" },
+    { header: "Count",  key: "count" }
+  ];
+  if (isOwner) cols.push({ header: "Value (EGP)", key: "value" });
+  cols.push(
     { header: "Active",      key: "active" },
     { header: "Maintenance", key: "maintenance" },
     { header: "Lost",        key: "lost" },
     { header: "Retired",     key: "retired" }
-  ], brs.map(function(b) {
+  );
+  addStyledSheet(wb, "By Branch", cols, brs.map(function(b) {
     return { name: b.name, code: b.code, count: b.count, value: b.value,
       active: b.byStatus.active, maintenance: b.byStatus.maintenance, lost: b.byStatus.lost, retired: b.byStatus.retired };
   }));
@@ -16547,16 +16565,17 @@ async function buildByBranchWorkbook() {
   return await wb.xlsx.writeBuffer();
 }
 
-async function buildByEmployeeWorkbook() {
+async function buildByEmployeeWorkbook(isOwner) {
   var wb = new ExcelJS.Workbook(); wb.creator = "ARO CRM"; wb.created = new Date();
   var emps = await buildByEmployee();
-  addStyledSheet(wb, "By Employee", [
-    { header: "Employee",                key: "name" },
-    { header: "Username",                key: "username" },
-    { header: "Role",                    key: "role" },
-    { header: "Active Personal Assets",  key: "count" },
-    { header: "Value (EGP)",             key: "value" }
-  ], emps.map(function(e) {
+  var cols = [
+    { header: "Employee",               key: "name" },
+    { header: "Username",               key: "username" },
+    { header: "Role",                   key: "role" },
+    { header: "Active Personal Assets", key: "count" }
+  ];
+  if (isOwner) cols.push({ header: "Value (EGP)", key: "value" });
+  addStyledSheet(wb, "By Employee", cols, emps.map(function(e) {
     return { name: e.name, username: e.username || "", role: e.role, count: e.count, value: e.value };
   }));
 
@@ -16752,19 +16771,66 @@ async function buildCustodyHistory(query) {
   return rows;
 }
 
+// Strip aggregated value totals for non-Owner callers. Per-asset prices on
+// individual records (handled separately in /api/assets and the Excel detail
+// sheets) stay visible — only the COMPANY-WIDE / GROUP / PER-CATEGORY /
+// PER-BRANCH / PER-EMPLOYEE sums are Owner-only. Counts always pass through.
+function stripReportAggregates(type, data) {
+  if (type === "summary") {
+    return {
+      totals:   { count: data.totals.count },
+      byStatus: (data.byStatus || []).map(function(r){ return { status: r.status, count: r.count }; }),
+      byGroup:  (data.byGroup  || []).map(function(r){ return { group:  r.group,  count: r.count }; }),
+      byAssignment: {
+        personal: { count: (data.byAssignment && data.byAssignment.personal && data.byAssignment.personal.count) || 0 },
+        shared:   { count: (data.byAssignment && data.byAssignment.shared   && data.byAssignment.shared.count)   || 0 }
+      }
+    };
+  }
+  if (type === "by-category") {
+    return data.map(function(r){
+      return { categoryId: r.categoryId, name: r.name, group: r.group, codePrefix: r.codePrefix, count: r.count, byStatus: r.byStatus };
+    });
+  }
+  if (type === "by-branch") {
+    return data.map(function(r){
+      return { branchId: r.branchId, name: r.name, code: r.code, count: r.count, byStatus: r.byStatus };
+    });
+  }
+  if (type === "by-employee") {
+    return data.map(function(r){
+      return { userId: r.userId, name: r.name, username: r.username, role: r.role, count: r.count };
+    });
+  }
+  return data;
+}
+
 app.get("/api/assets/reports/summary",     auth, requireAssetAccess, async function(req, res) {
-  try { res.json(await buildSummary()); } catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    var d = await buildSummary();
+    res.json(req.isOwnerLevel ? d : stripReportAggregates("summary", d));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.get("/api/assets/reports/by-category", auth, requireAssetAccess, async function(req, res) {
-  try { res.json(await buildByCategory()); } catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    var d = await buildByCategory();
+    res.json(req.isOwnerLevel ? d : stripReportAggregates("by-category", d));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.get("/api/assets/reports/by-branch",   auth, requireAssetAccess, async function(req, res) {
-  try { res.json(await buildByBranch()); } catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    var d = await buildByBranch();
+    res.json(req.isOwnerLevel ? d : stripReportAggregates("by-branch", d));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.get("/api/assets/reports/by-employee", auth, requireAssetAccess, async function(req, res) {
-  try { res.json(await buildByEmployee()); } catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    var d = await buildByEmployee();
+    res.json(req.isOwnerLevel ? d : stripReportAggregates("by-employee", d));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.get("/api/assets/reports/history",     auth, requireAssetAccess, async function(req, res) {
+  // History has no aggregate values — same payload for all callers.
   try { res.json(await buildCustodyHistory(req.query)); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -16775,11 +16841,12 @@ app.get("/api/assets/reports/history",     auth, requireAssetAccess, async funct
 app.get("/api/assets/reports/export", auth, requireAssetAccess, async function(req, res) {
   try {
     var type = String((req.query && req.query.type) || "");
+    var owner = req.isOwnerLevel === true;
     var buf;
-    if      (type === "summary")     buf = await buildSummaryWorkbook();
-    else if (type === "by-category") buf = await buildByCategoryWorkbook();
-    else if (type === "by-branch")   buf = await buildByBranchWorkbook();
-    else if (type === "by-employee") buf = await buildByEmployeeWorkbook();
+    if      (type === "summary")     buf = await buildSummaryWorkbook(owner);
+    else if (type === "by-category") buf = await buildByCategoryWorkbook(owner);
+    else if (type === "by-branch")   buf = await buildByBranchWorkbook(owner);
+    else if (type === "by-employee") buf = await buildByEmployeeWorkbook(owner);
     else if (type === "history")     buf = await buildHistoryWorkbook(req.query);
     else return res.status(400).json({ error: "Unknown report type. Use summary | by-category | by-branch | by-employee | history." });
 
