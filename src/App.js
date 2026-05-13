@@ -14427,6 +14427,66 @@ var SettingsPage = function(p) {
         var activeFor  = function(uid){return allLeads.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return String(a)===String(uid)&&!l.archived;}).length;};
         var isOnlineNow = function(u){return u && u.lastSeen && (nowMs-new Date(u.lastSeen).getTime()) < 3*60*1000;};
 
+        // Per-agent rotations received today — derived client-side from
+        // p.leads.agentHistory[] entries (already in the bootstrap). Day
+        // boundary is local-browser 00:00, which on the deployed setup
+        // matches the server's Africa/Cairo midnight. Cap-edit gated to
+        // admin only per spec (settings page is already admin-routed; this
+        // is a defensive belt-and-suspenders).
+        var canEditCap = p.cu && p.cu.role === "admin";
+        var startOfTodayMs = (function(){ var d=new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+        var todayRotByName = {};
+        var todayRotById = {};
+        allLeads.forEach(function(l){
+          (l.agentHistory||[]).forEach(function(h){
+            if (!h || h.action !== "Rotation") return;
+            var t = h.date ? new Date(h.date).getTime() : 0;
+            if (!t || t < startOfTodayMs) return;
+            if (h.agentId) {
+              var k = String(h.agentId);
+              todayRotById[k] = (todayRotById[k]||0) + 1;
+            } else if (h.toAgent) {
+              todayRotByName[h.toAgent] = (todayRotByName[h.toAgent]||0) + 1;
+            }
+          });
+        });
+        var todayRotFor = function(u){
+          if (!u) return 0;
+          // Prefer id-keyed count (post-deploy entries). Name-keyed count
+          // covers legacy entries from earlier today that pre-date the
+          // schema change — used only when there's no id-keyed match.
+          var byId = todayRotById[String(u._id || u.id || "")] || 0;
+          var byName = todayRotByName[u.name || ""] || 0;
+          return byId > 0 ? byId : byName;
+        };
+        // Save handler — admin-only, fires on blur/Enter. "" → null (clear
+        // cap). Optimistic local update via p.setUsers; on failure we re-
+        // throw via alert so the row reverts on next render.
+        var saveDailyCap = async function(u, rawVal){
+          if (!canEditCap || !u) return;
+          var uid = String(u._id || u.id || "");
+          if (!uid) return;
+          var payload;
+          var newVal;
+          var s = String(rawVal == null ? "" : rawVal).trim();
+          if (s === "") { payload = null; newVal = null; }
+          else {
+            var n = Number(s);
+            if (!isFinite(n) || n < 0) { alert("Daily cap must be 0 or a positive integer."); return; }
+            payload = Math.floor(n);
+            newVal = payload;
+          }
+          // No-op if unchanged.
+          var prevVal = (u.dailyLeadCap == null) ? null : Number(u.dailyLeadCap);
+          if (prevVal === newVal) return;
+          try {
+            await apiFetch("/api/users/"+uid, "PUT", { dailyLeadCap: payload }, p.token);
+            p.setUsers(function(prev){ return prev.map(function(x){ return String(x._id||x.id)===uid ? Object.assign({}, x, { dailyLeadCap: newVal }) : x; }); });
+          } catch(e) {
+            alert("Failed to save daily cap: " + ((e && e.message) || "Unknown error"));
+          }
+        };
+
         var tierMeta = {
           tier1:{label:"Top — first priority",  sub:"First 2 rotations go here",                      bg:"#EAF6F0", border:"rgba(15,110,86,0.3)", num:"#0F6E56", text:"#0F6E56"},
           tier2:{label:"Regular",                sub:"Joins Tier 3 after Tier 1 is exhausted",         bg:"#E6F1FB", border:"rgba(24,95,165,0.3)", num:"#185FA5", text:"#185FA5"},
@@ -14485,6 +14545,31 @@ var SettingsPage = function(p) {
                 {infoParts.join(" · ")}
               </div>
             </div>
+            {/* Daily lead cap — admin-only; empty = unlimited. The under-
+                line shows today's received-via-rotation count, either as
+                "N/cap today" when a cap is set or "N today" when unlimited. */}
+            {(function(){
+              var capVal = (u.dailyLeadCap == null || u.dailyLeadCap === "") ? "" : String(u.dailyLeadCap);
+              var received = todayRotFor(u);
+              var hint = (capVal === "") ? (received + " today") : (received + "/" + capVal + " today");
+              var atCap = (capVal !== "" && received >= Number(capVal));
+              return <div title={canEditCap ? "Daily lead cap (auto-rotation). Blank = unlimited." : "Daily lead cap — admin only"}
+                style={{display:"flex",flexDirection:"column",alignItems:"flex-end",flexShrink:0,gap:2}}
+                onClick={function(e){e.stopPropagation();}}
+                onMouseDown={function(e){e.stopPropagation();}}>
+                <input type="number" min="0" step="1"
+                  disabled={!canEditCap}
+                  defaultValue={capVal}
+                  placeholder={"∞"}
+                  draggable={false}
+                  onDragStart={function(e){e.preventDefault(); e.stopPropagation();}}
+                  onClick={function(e){e.stopPropagation();}}
+                  onKeyDown={function(e){ if(e.key==="Enter"){ e.preventDefault(); e.target.blur(); } }}
+                  onBlur={function(e){ saveDailyCap(u, e.target.value); }}
+                  style={{width:60,fontSize:11,padding:"3px 6px",borderRadius:6,border:"0.5px solid rgba(0,0,0,0.15)",background:canEditCap?"#fff":"#F7F7F5",color:"#1a1a1a",fontFamily:"inherit",textAlign:"center"}}/>
+                <span style={{fontSize:9,color:atCap?"#A32D2D":"#999",lineHeight:1,whiteSpace:"nowrap"}}>{hint}</span>
+              </div>;
+            })()}
             {canManageVacations
               ? <button type="button"
                   title="Schedule vacation"

@@ -77,7 +77,14 @@ var User = mongoose.model("User", new mongoose.Schema({
   isOwner:{type:Boolean,default:false},
   resetToken:{type:String,default:null,index:true},
   resetTokenExpiry:{type:Date,default:null},
-  passwordChangedAt:{type:Date,default:null}
+  passwordChangedAt:{type:Date,default:null},
+  // Per-agent daily lead cap for auto-rotation. null = unlimited (no cap).
+  // 0 = effectively paused (every rotation skips this agent). Positive int
+  // = max number of leads they can receive via auto-rotation in a single
+  // calendar day (server time / Africa/Cairo). Counted from agentHistory[]
+  // Rotation entries where date >= start of today. Manual /rotate ignores
+  // this cap entirely (admin override).
+  dailyLeadCap:{type:Number,default:null,min:0}
 },{timestamps:true}));
 
 var Lead = mongoose.model("Lead", new mongoose.Schema({
@@ -5555,6 +5562,21 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     if (req.body.title) update.title = req.body.title;
     if (req.body.active !== undefined) update.active = req.body.active;
     if (req.body.monthlyTarget !== undefined) update.monthlyTarget = Number(req.body.monthlyTarget);
+    if (req.body.dailyLeadCap !== undefined) {
+      // null/empty/"" clears the cap (unlimited). Otherwise coerce to a
+      // non-negative integer; reject NaN or negatives so the schema's min:0
+      // guard isn't bypassed via direct $set.
+      var rawCap = req.body.dailyLeadCap;
+      if (rawCap === null || rawCap === "") {
+        update.dailyLeadCap = null;
+      } else {
+        var capN = Number(rawCap);
+        if (!isFinite(capN) || capN < 0) {
+          return res.status(400).json({ error: "Invalid dailyLeadCap" });
+        }
+        update.dailyLeadCap = Math.floor(capN);
+      }
+    }
     if (req.body.password) update.password = await bcrypt.hash(req.body.password, 10);
     if (req.body.qTargets !== undefined) update["qTargets"] = req.body.qTargets;
     if (req.body.reportsTo !== undefined) update.reportsTo = req.body.reportsTo || null;
@@ -6648,6 +6670,10 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
           action: "Rotation",
           fromAgent: oldAgentName,
           toAgent: newAgentName,
+          // agentId is the rotation TARGET (receiver) — see daily-cap notes
+          // in autoRotateLead. Bulk-reassign is a manual admin action and
+          // doesn't gate on the cap, but its receivers still tally for it.
+          agentId: agentObjId,
           reason: "manual",
           by: byName,
           date: new Date()
@@ -7759,6 +7785,10 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
       action: "Rotation",
       fromAgent: oldAgentName,
       toAgent: newAgentName,
+      // agentId is the rotation TARGET (receiver). Added for the per-agent
+      // daily cap aggregation — manual reassign bypasses the cap CHECK but
+      // still counts toward the receiver's daily tally for future ticks.
+      agentId: new mongoose.Types.ObjectId(targetAgentId),
       reason: rotationReason,
       by: req.user.name || "System",
       date: new Date()
@@ -8047,7 +8077,7 @@ async function autoRotateLead(leadId, byName, opts) {
     // All candidate ids across tiers (one query).
     var allTierIds = [].concat(settings.tiers.tier1.agents, settings.tiers.tier2.agents, settings.tiers.tier3.agents);
     if (!allTierIds.length) return { ok: false, status: 409, error: "no_rotation_order", message: "No rotation order configured" };
-    var candidateDocs = await User.find({ _id: { $in: allTierIds } }).select("_id name title role active lastSeen").lean();
+    var candidateDocs = await User.find({ _id: { $in: allTierIds } }).select("_id name title role active lastSeen dailyLeadCap").lean();
     var byId = {};
     candidateDocs.forEach(function(u){ byId[String(u._id)] = u; });
 
@@ -8062,6 +8092,38 @@ async function autoRotateLead(leadId, byName, opts) {
       endDate:   { $gte: nowVac }
     }).select("agentId").lean();
     var onVacationIds = new Set(vacRows.map(function(r){ return String(r.agentId); }));
+
+    // Per-agent daily lead cap — count today's Rotation receipts per candidate
+    // in ONE aggregation, then look up the running count by id in the filter
+    // loop. Day boundary is 00:00 server time. agentHistory[].action is set to
+    // "Rotation" by every path that writes a rotation event (manual /rotate,
+    // bulk reassign, auto-rotate regular, auto-rotate first-assignment).
+    // Bulk redistribution uses "Bulk redistribution" and is intentionally
+    // excluded from the cap count.
+    var startOfToday = new Date(); startOfToday.setHours(0,0,0,0);
+    var todayCountMap = new Map();
+    try {
+      var allCandObjIds = allTierIds.map(function(id){ return new mongoose.Types.ObjectId(String(id)); });
+      var counts = await Lead.aggregate([
+        { $match: { "agentHistory.date": { $gte: startOfToday } } },
+        { $unwind: "$agentHistory" },
+        { $match: {
+            "agentHistory.action": "Rotation",
+            "agentHistory.date": { $gte: startOfToday },
+            "agentHistory.agentId": { $in: allCandObjIds }
+        } },
+        { $group: { _id: "$agentHistory.agentId", count: { $sum: 1 } } }
+      ]);
+      counts.forEach(function(c){ todayCountMap.set(String(c._id), c.count); });
+    } catch (aggErr) {
+      // Fail-open: an aggregation failure must not block rotation. Empty map
+      // means no one is at cap, which preserves the pre-cap behavior.
+      console.error("[rotation cap aggregation]", aggErr && aggErr.message ? aggErr.message : aggErr);
+    }
+    // Track whether anyone was filtered out for cap reasons — used below to
+    // distinguish "exhausted" (no one ever eligible) from "all_capped" (some
+    // would have been eligible but all hit their daily cap).
+    var capExcludedAny = false;
 
     // Tier cascade: try Tier 1, then 2, then 3. Each tier has its own
     // round-robin pointer. Skip rules are applied per-candidate; "skipped"
@@ -8083,6 +8145,14 @@ async function autoRotateLead(leadId, byName, opts) {
         if (!u || u.active === false) continue;
         if (["sales","team_leader"].indexOf(u.role) < 0) continue; // managers/directors excluded per spec
         if (onVacationIds.has(uid)) continue;                       // active vacation — re-enters automatically once endDate passes
+        // Per-agent daily cap. null/undefined = unlimited. 0 = effectively
+        // paused. Counted from today's Rotation entries in agentHistory[]
+        // (auto + manual + bulk-reassign; bulk-redistribute uses a different
+        // action label and isn't counted).
+        if (u.dailyLeadCap != null) {
+          var received = todayCountMap.get(uid) || 0;
+          if (received >= u.dailyLeadCap) { capExcludedAny = true; continue; }
+        }
         return { user: u, idx: idx };
       }
       return null;
@@ -8108,7 +8178,12 @@ async function autoRotateLead(leadId, byName, opts) {
       pick = tryPool(combined23, settings.combined23LastIdx);
       if (pick) poolKey = "combined23";
     }
-    if (!pick) return { ok: false, status: 409, error: "exhausted", message: "No eligible agent — all tier agents have already handled this lead" };
+    if (!pick) {
+      if (capExcludedAny) {
+        return { ok: false, status: 409, error: "all_capped", message: "All eligible agents have hit their daily lead cap" };
+      }
+      return { ok: false, status: 409, error: "exhausted", message: "No eligible agent — all tier agents have already handled this lead" };
+    }
     var targetUser = pick.user;
     var foundIdx   = pick.idx;
 
@@ -8127,11 +8202,26 @@ async function autoRotateLead(leadId, byName, opts) {
         assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(),
         noRotation: false
       };
+      // First-assignment rotation log — counts toward the receiving agent's
+      // daily cap on the next rotation tick. Mirrors the regular-rotation
+      // entry shape so the aggregation in autoRotateLead sees both paths.
+      // fromAgent is empty (no prior holder); existing dashboard metrics
+      // already key off non-empty fromAgent for "rotated OUT" counts, so this
+      // entry only registers as an inbound rotation for the target agent.
+      var firstRotationLog = {
+        action: "Rotation",
+        fromAgent: "",
+        toAgent: targetUser.name,
+        agentId: new mongoose.Types.ObjectId(targetAgentId),
+        reason: "first_assignment",
+        by: byName,
+        date: new Date()
+      };
       var firstResult = await Lead.findOneAndUpdate(
         { _id: leadId, agentId: null },
         {
           $set: { agentId: new mongoose.Types.ObjectId(targetAgentId), lastRotationAt: new Date() },
-          $push: { assignments: firstAssignment }
+          $push: { assignments: firstAssignment, agentHistory: firstRotationLog }
         },
         { new: true }
       );
@@ -8234,6 +8324,9 @@ async function autoRotateLead(leadId, byName, opts) {
       action: "Rotation",
       fromAgent: oldAgentName,
       toAgent: targetUser.name,
+      // agentId is the rotation TARGET (receiver). Added for the per-agent
+      // daily cap aggregation — counts incoming rotations per user/day.
+      agentId: new mongoose.Types.ObjectId(targetAgentId),
       reason: reason,
       by: byName,
       date: new Date()
@@ -8314,7 +8407,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
   // handles each case via the `result.targetAgentId` check at App.js:15965.
   // Only no_rotation_order and no_agents are real config errors that admins
   // should notice — those keep their 409.
-  var SOFT_SKIPS = ["rotation_stopped","noRotation","rotation_disabled","rotation_paused","max_rotations","cooldown","not_eligible","exhausted","concurrent_rotation"];
+  var SOFT_SKIPS = ["rotation_stopped","noRotation","rotation_disabled","rotation_paused","max_rotations","cooldown","not_eligible","exhausted","concurrent_rotation","all_capped"];
   if (r.status === 409 && SOFT_SKIPS.indexOf(r.error) !== -1) {
     return res.json({ rotated: false, reason: r.error, message: r.message });
   }
