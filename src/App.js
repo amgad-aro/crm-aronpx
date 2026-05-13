@@ -18141,6 +18141,7 @@ var CommissionsPage = function(p) {
   var [statusFilter, setStatusFilter] = useState("all");
   var [search, setSearch] = useState("");
   var [agentFilter, setAgentFilter] = useState("");
+  var [yearFilter, setYearFilter] = useState("");
   var [rows, setRows] = useState(null);
   var [stats, setStats] = useState(null);
   var [loadErr, setLoadErr] = useState("");
@@ -18162,19 +18163,21 @@ var CommissionsPage = function(p) {
     if (statusFilter && statusFilter !== "all") qs.push("status=" + encodeURIComponent(statusFilter));
     if (search.trim()) qs.push("q=" + encodeURIComponent(search.trim()));
     if (agentFilter) qs.push("agentId=" + encodeURIComponent(agentFilter));
+    if (yearFilter) qs.push("year=" + encodeURIComponent(yearFilter));
     var url = "/api/commissions" + (qs.length ? "?" + qs.join("&") : "");
+    var statsUrl = "/api/commissions/stats" + (yearFilter ? "?year=" + encodeURIComponent(yearFilter) : "");
     setRows(null); setLoadErr("");
     apiFetch(url, "GET", null, p.token)
       .then(function(d){ if(!cancelled) setRows((d && d.data) || []); })
       .catch(function(e){ if(!cancelled){ setRows([]); setLoadErr(e && e.message ? e.message : "Failed to load commissions"); } });
-    apiFetch("/api/commissions/stats", "GET", null, p.token)
+    apiFetch(statsUrl, "GET", null, p.token)
       .then(function(d){ if(!cancelled) setStats(d || {}); })
       .catch(function(){ if(!cancelled) setStats({}); });
     apiFetch("/api/commissions/cash-flow", "GET", null, p.token)
       .then(function(d){ if(!cancelled) setCashFlow(d || {}); })
       .catch(function(){ if(!cancelled) setCashFlow({}); });
     return function(){ cancelled = true; };
-  }, [statusFilter, search, agentFilter, p.token, reloadTick]);
+  }, [statusFilter, search, agentFilter, yearFilter, p.token, reloadTick]);
 
   // One-shot consume of selectedCommissionLeadId from CRMApp state.
   // Hits /by-lead/:leadId, expands the matching card, then clears the cue.
@@ -18262,7 +18265,8 @@ var CommissionsPage = function(p) {
           return prev;
         });
         // Refresh stats + cash-flow lightly. These setters don't reset rows.
-        apiFetch("/api/commissions/stats", "GET", null, p.token).then(function(s){ setStats(s || {}); }).catch(function(){});
+        var statsRefreshUrl = "/api/commissions/stats" + (yearFilter ? "?year=" + encodeURIComponent(yearFilter) : "");
+        apiFetch(statsRefreshUrl, "GET", null, p.token).then(function(s){ setStats(s || {}); }).catch(function(){});
         apiFetch("/api/commissions/cash-flow", "GET", null, p.token).then(function(s){ setCashFlow(s || {}); }).catch(function(){});
       } else {
         // Unknown response shape — fall back to full refetch.
@@ -18534,9 +18538,12 @@ var CommissionsPage = function(p) {
     var isCancelled = c.status === "cancelled";
     var isFullyPaid = c.status === "fully_paid";
     var snap = c.snapshot || {};
-    var activeCycle = (c.cycles || []).filter(function(cy){ return cy.state !== "paid_to_team" && cy.state !== "cancelled"; }).slice(-1)[0] || null;
-    var paidCycles = (c.cycles || []).filter(function(cy){ return cy.state === "paid_to_team" || cy.state === "cancelled"; });
-    var totalReceived = (c.cycles || []).reduce(function(s, cy){ return s + Number(cy.receivedAmount || 0); }, 0);
+    var sortedCycles = (c.cycles || []).slice().sort(function(a, b){
+      return (Number(a.cycleNumber) || 0) - (Number(b.cycleNumber) || 0);
+    });
+    var activeCycle = sortedCycles.filter(function(cy){ return cy.state !== "paid_to_team" && cy.state !== "cancelled"; }).slice(-1)[0] || null;
+    var otherCycles = sortedCycles.filter(function(cy){ return !activeCycle || String(cy._id) !== String(activeCycle._id); });
+    var totalReceived = sortedCycles.reduce(function(s, cy){ return s + Number(cy.receivedAmount || 0); }, 0);
     var imminent = isImminentMissing(c);
 
     // Phase R-1 ctx: paid-by-recipient-on-this-commission + global net positions
@@ -18586,19 +18593,15 @@ var CommissionsPage = function(p) {
 
       {/* Overview row */}
       <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:12 }}>
-        <div style={{ flex:1, minWidth:120, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
-          <div style={{ fontSize:10, color:C.textLight }}>Expected commission</div>
-          <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{fmtMoney(c.expectedTotal)}</div>
-        </div>
-        <div style={{ flex:1, minWidth:120, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
+        <div style={{ flex:1, minWidth:140, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
           <div style={{ fontSize:10, color:C.textLight }}>Received so far</div>
           <div style={{ fontSize:13, fontWeight:700, color:C.success }}>{fmtMoney(totalReceived)}</div>
         </div>
-        <div style={{ flex:1, minWidth:120, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
+        <div style={{ flex:1, minWidth:140, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
           <div style={{ fontSize:10, color:C.textLight }}>Expected collection</div>
           <div style={{ fontSize:13, fontWeight:700, color: imminent ? "#B91C1C" : C.text }}>{fmtDate(c.expectedCollectionDate)}</div>
         </div>
-        <div style={{ flex:1, minWidth:120, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
+        <div style={{ flex:1, minWidth:140, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
           <div style={{ fontSize:10, color:C.textLight }}>Cycles</div>
           <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{(c.cycles || []).length}</div>
         </div>
@@ -18654,13 +18657,15 @@ var CommissionsPage = function(p) {
         >+ Add Cycle</button>
       </div>}
 
-      {/* Previous cycles — always rendered (paid_to_team / cancelled). Each carries
-          its own Delete button + stage dots via renderCycle. */}
-      {paidCycles.length > 0 && <div style={{ marginTop:8 }}>
+      {/* Other cycles — every cycle that isn't the active one, sorted ascending by
+          cycleNumber. Includes received/paid_to_team/cancelled and any prior
+          non-terminal cycle that's no longer the latest. Each carries its own
+          Delete button + stage dots via renderCycle. */}
+      {otherCycles.length > 0 && <div style={{ marginTop:8 }}>
         <div style={{ fontSize:11, fontWeight:700, color:C.textLight, padding:"4px 0", marginBottom:4 }}>
-          {paidCycles.length} previous cycle{paidCycles.length === 1 ? "" : "s"}
+          {otherCycles.length} other cycle{otherCycles.length === 1 ? "" : "s"}
         </div>
-        {paidCycles.map(function(cy){ return renderCycle(c, cy, false); })}
+        {otherCycles.map(function(cy){ return renderCycle(c, cy, false); })}
       </div>}
 
       {/* Incentive */}
@@ -18696,11 +18701,10 @@ var CommissionsPage = function(p) {
       <div style={{ fontSize:11, color:C.textLight }}>admin / sales_admin only</div>
     </div>
 
-    {/* Stats row */}
+    {/* Stats row — admin sees 3 cards (incl. Received Commission), sales_admin sees 2 (no money totals). */}
     <div style={{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" }}>
       <StatCard label="Active Deals"          value={(stats && stats.dealsCount) != null ? stats.dealsCount : "—"} icon={Briefcase} c={C.info}/>
-      <StatCard label="Remaining Commission"  value={(stats && stats.remainingTotal) != null ? fmtMoney(stats.remainingTotal) : "—"} icon={DollarSign} c={C.warning}/>
-      <StatCard label="Received Commission"   value={(stats && stats.receivedTotal) != null ? fmtMoney(stats.receivedTotal) : "—"} icon={CheckCircle} c={C.success}/>
+      {p.cu && p.cu.role === "admin" && <StatCard label="Received Commission"   value={(stats && stats.receivedTotal) != null ? fmtMoney(stats.receivedTotal) : "—"} icon={CheckCircle} c={C.success}/>}
       <StatCard label="Active Cycles"         value={(stats && stats.activeCycles) != null ? stats.activeCycles : "—"} icon={Activity} c={C.accent}/>
     </div>
 
@@ -18770,11 +18774,19 @@ var CommissionsPage = function(p) {
       })}
     </div>
 
-    {/* Search + agent filter */}
+    {/* Search + agent + year filters */}
     <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
       <input type="text" placeholder="Search customer / project / developer…" value={search} onChange={function(e){ setSearch(e.target.value); }} style={{
         flex:1, minWidth:200, padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, outline:"none"
       }}/>
+      <select value={yearFilter} onChange={function(e){ setYearFilter(e.target.value); }} style={{
+        padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff", minWidth:120
+      }} title="Filter by year money was received">
+        <option value="">All years</option>
+        {(stats && Array.isArray(stats.availableYears) ? stats.availableYears : []).map(function(y){
+          return <option key={y} value={y}>{y}</option>;
+        })}
+      </select>
       <select value={agentFilter} onChange={function(e){ setAgentFilter(e.target.value); }} style={{
         padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff", minWidth:160
       }}>
@@ -18783,7 +18795,7 @@ var CommissionsPage = function(p) {
           return <option key={String(u._id)} value={String(u._id)}>{u.name}</option>;
         })}
       </select>
-      {(search || agentFilter || statusFilter !== "all") && <button onClick={function(){ setSearch(""); setAgentFilter(""); setStatusFilter("all"); }} style={{
+      {(search || agentFilter || yearFilter || statusFilter !== "all") && <button onClick={function(){ setSearch(""); setAgentFilter(""); setYearFilter(""); setStatusFilter("all"); }} style={{
         padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:12, color:C.textLight
       }}>Clear</button>}
     </div>

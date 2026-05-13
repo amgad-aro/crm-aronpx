@@ -15140,6 +15140,15 @@ app.get("/api/commissions", auth, salesAdminOnly, async function(req, res) {
       if (from) q["snapshot.dealDate"].$gte = from;
       if (to)   q["snapshot.dealDate"].$lte = to;
     }
+    // Year filter — matches the YEAR money was received, i.e. cycle.received.date
+    // prefix. received.date is the admin-entered ISO yyyy-mm-dd written by the
+    // PATCH /stage endpoint when a cycle advances to "received"; it persists
+    // when the cycle later advances to paid_to_team. yyyy-mm-dd string prefix
+    // match is safe because the field is always written in that exact format.
+    var year = String(req.query.year || "").trim();
+    if (/^\d{4}$/.test(year)) {
+      q.cycles = { $elemMatch: { "received.date": { $regex: "^" + year } } };
+    }
     var rows = await Commission.find(q).sort({ createdAt: -1 }).limit(100).lean();
     res.json({ data: rows });
   } catch (e) {
@@ -15150,7 +15159,27 @@ app.get("/api/commissions", auth, salesAdminOnly, async function(req, res) {
 
 app.get("/api/commissions/stats", auth, salesAdminOnly, async function(req, res) {
   try {
-    var active = await Commission.find({ status: "active" }).select("expectedTotal cycles").lean();
+    var year = String(req.query.year || "").trim();
+    var yearMatch = /^\d{4}$/.test(year) ? year : "";
+
+    // availableYears — distinct years that appear in any cycle.received.date
+    // across ALL commissions (not just active). Used by the year-filter dropdown
+    // so the user always sees the full year range, regardless of current filter.
+    var allDocs = await Commission.find({}).select("cycles.received.date").lean();
+    var yearSet = Object.create(null);
+    for (var ai = 0; ai < allDocs.length; ai++) {
+      var ac = allDocs[ai];
+      if (!Array.isArray(ac.cycles)) continue;
+      for (var aj = 0; aj < ac.cycles.length; aj++) {
+        var rd = ac.cycles[aj] && ac.cycles[aj].received && ac.cycles[aj].received.date;
+        if (typeof rd === "string" && /^\d{4}/.test(rd)) yearSet[rd.slice(0,4)] = true;
+      }
+    }
+    var availableYears = Object.keys(yearSet).sort(function(a,b){ return Number(b) - Number(a); });
+
+    var activeQ = { status: "active" };
+    if (yearMatch) activeQ.cycles = { $elemMatch: { "received.date": { $regex: "^" + yearMatch } } };
+    var active = await Commission.find(activeQ).select("expectedTotal cycles").lean();
     var cancelledCount = await Commission.countDocuments({ status: "cancelled" });
     var dealsCount = active.length;
     var receivedTotal = 0;
@@ -15162,8 +15191,19 @@ app.get("/api/commissions/stats", auth, salesAdminOnly, async function(req, res)
       if (Array.isArray(c.cycles)) {
         for (var j = 0; j < c.cycles.length; j++) {
           var cy = c.cycles[j];
-          receivedTotal += Number(cy.receivedAmount || 0);
-          if (cy.state !== "cancelled" && cy.state !== "paid_to_team") activeCycles++;
+          if (yearMatch) {
+            // Year mode: count only cycles whose received.date falls in the year.
+            var rdY = cy && cy.received && cy.received.date;
+            if (typeof rdY === "string" && rdY.slice(0,4) === yearMatch) {
+              receivedTotal += Number(cy.receivedAmount || 0);
+              activeCycles++;
+            }
+          } else {
+            // All-years mode: preserve original semantics (total cash flow in,
+            // count of non-terminal cycles).
+            receivedTotal += Number(cy.receivedAmount || 0);
+            if (cy.state !== "cancelled" && cy.state !== "paid_to_team") activeCycles++;
+          }
         }
       }
     }
@@ -15173,7 +15213,9 @@ app.get("/api/commissions/stats", auth, salesAdminOnly, async function(req, res)
       remainingTotal: remainingTotal,
       receivedTotal: receivedTotal,
       activeCycles: activeCycles,
-      cancelledCount: cancelledCount
+      cancelledCount: cancelledCount,
+      availableYears: availableYears,
+      year: yearMatch || ""
     });
   } catch (e) {
     console.error("[GET /api/commissions/stats]", e && e.message);
