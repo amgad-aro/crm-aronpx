@@ -19959,6 +19959,9 @@ var DiagnosticsPage = function(p) {
   var [err, setErr] = useState("");
   var [busyId, setBusyId] = useState(null); // leadId currently being created
   var [toast, setToast] = useState(null);   // {kind:"ok"|"err", msg}
+  // Bulk-backfill state (admin HTTP triggers — same logic as the script files).
+  var [bulkRunning, setBulkRunning] = useState(null); // "zombies" | "missing" | null
+  var [bulkResult,  setBulkResult]  = useState(null); // { type, summary } or { type, error }
 
   var refresh = function(){
     setRows(null); setErr("");
@@ -19986,6 +19989,28 @@ var DiagnosticsPage = function(p) {
     setBusyId(null);
   };
 
+  // Bulk backfill — calls POST /api/admin/run-backfill?type=<type>. Sync
+  // request: the FE waits for the server to finish the entire backfill.
+  // After completion: refetch the missing-commissions list (only relevant
+  // for type="missing", but cheap to do for both — the list reflects the
+  // new state either way).
+  var runBulk = async function(type){
+    setBulkRunning(type); setBulkResult(null);
+    try {
+      var summary = await apiFetch("/api/admin/run-backfill?type=" + encodeURIComponent(type), "POST", {}, p.token);
+      setBulkResult({ type: type, summary: summary });
+      setToast({ kind:"ok", msg: type === "zombies"
+        ? ("Zombie cleanup done — " + (summary.updated || 0) + " flipped to fully_paid")
+        : ("Missing-commission backfill done — " + (summary.created || 0) + " created, " + ((summary.noAgent && summary.noAgent.length) || 0) + " skipped (no agent)")
+      });
+      refresh();
+    } catch(e) {
+      setBulkResult({ type: type, error: (e && e.message) || "Backfill failed" });
+      setToast({ kind:"err", msg:(e && e.message) || "Backfill failed" });
+    }
+    setBulkRunning(null);
+  };
+
   var fmtDate = function(d){ if (!d) return "—"; try { return new Date(d).toLocaleDateString("en-GB"); } catch(_){ return String(d); } };
 
   return <div style={{ padding:"24px 16px", maxWidth:1100, margin:"0 auto" }}>
@@ -19995,6 +20020,54 @@ var DiagnosticsPage = function(p) {
         padding:"6px 14px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff",
         cursor: rows === null ? "wait" : "pointer", fontSize:12, fontWeight:600, color:C.textLight
       }}>Refresh</button>
+    </div>
+
+    {/* Bulk operations — same logic as the backfill-*.js scripts, exposed
+        as admin HTTP triggers since Railway shell access was removed. */}
+    <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:14, padding:"16px 18px", marginBottom:14 }}>
+      <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:6 }}>Bulk operations</div>
+      <div style={{ fontSize:11, color:C.textLight, marginBottom:12 }}>
+        Both operations are idempotent — running again finds no work because the previous run already cleared the targets. Spinner runs while the server processes the request; do not navigate away mid-run.
+      </div>
+      <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+        <button onClick={function(){ runBulk("zombies"); }} disabled={!!bulkRunning}
+          title="Flip status=active → fully_paid on commissions whose cycles are all terminal (paid_to_team or cancelled)"
+          style={{
+            padding:"8px 14px", borderRadius:8, fontSize:12, fontWeight:600,
+            border: "1px solid " + C.accent,
+            background: bulkRunning === "zombies" ? C.accent + "30" : C.accent + "12",
+            color: C.accent,
+            cursor: bulkRunning ? "wait" : "pointer"
+          }}>
+          {bulkRunning === "zombies" ? "Running zombie cleanup…" : "Run zombie cleanup"}
+        </button>
+        <button onClick={function(){ runBulk("missing"); }} disabled={!!bulkRunning}
+          title="Create active commissions for DoneDeal leads that don't have one (skipping leads with no agent)"
+          style={{
+            padding:"8px 14px", borderRadius:8, fontSize:12, fontWeight:600,
+            border: "1px solid " + C.accent,
+            background: bulkRunning === "missing" ? C.accent + "30" : C.accent + "12",
+            color: C.accent,
+            cursor: bulkRunning ? "wait" : "pointer"
+          }}>
+          {bulkRunning === "missing" ? "Running missing-commission backfill…" : "Run missing-commission backfill"}
+        </button>
+      </div>
+      {bulkResult && <div style={{ marginTop:12, paddingTop:12, borderTop:"1px solid #F1F5F9" }}>
+        <div style={{ fontSize:11, color:C.textLight, marginBottom:6 }}>
+          Last run · type=<b style={{ color:C.text }}>{bulkResult.type}</b>
+        </div>
+        {bulkResult.error && <div style={{ padding:"10px 12px", background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8, color:"#B91C1C", fontSize:12 }}>
+          Error: {bulkResult.error}
+        </div>}
+        {bulkResult.summary && <pre style={{
+          margin:0, padding:"10px 12px",
+          background:"#0F172A", color:"#E2E8F0", borderRadius:8,
+          fontSize:11, lineHeight:1.55, overflow:"auto", maxHeight:360,
+          fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace",
+          whiteSpace:"pre-wrap", wordBreak:"break-word"
+        }}>{JSON.stringify(bulkResult.summary, null, 2)}</pre>}
+      </div>}
     </div>
 
     <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:14, padding:"16px 18px", marginBottom:14 }}>

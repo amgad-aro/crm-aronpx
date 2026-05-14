@@ -1953,6 +1953,149 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
   }
 }
 
+// =====================================================================
+// Phase R-6 polish #2 — shared backfill helpers. Single implementation
+// consumed by BOTH the one-shot scripts (backfill-{zombies,missing}.js)
+// AND the admin HTTP trigger (POST /api/admin/run-backfill). Each returns
+// a structured summary the FE can render directly; scripts can also
+// console.log the same object.
+// =====================================================================
+
+// Find active commissions whose cycles are all terminal + non-empty and
+// flip status="active" → status="fully_paid". Idempotent — re-runs find
+// nothing because the targets no longer have status="active".
+async function runZombieBackfill() {
+  var summary = {
+    type: "zombies",
+    startedAt: new Date().toISOString(),
+    scanned: 0,
+    candidates: [],
+    skipped: { emptyCycles: 0, hasNonTerminal: 0 },
+    updated: 0,
+    notUpdated: 0,
+    completedAt: null
+  };
+  var actives = await Commission.find({ status: "active" })
+    .select("snapshot.customerName snapshot.projectName cycles status")
+    .lean();
+  summary.scanned = actives.length;
+  for (var i = 0; i < actives.length; i++) {
+    var c = actives[i];
+    var cycles = Array.isArray(c.cycles) ? c.cycles : [];
+    if (cycles.length === 0) { summary.skipped.emptyCycles++; continue; }
+    var allTerminal = cycles.every(function(cy){
+      return cy && (cy.state === "paid_to_team" || cy.state === "cancelled");
+    });
+    if (!allTerminal) { summary.skipped.hasNonTerminal++; continue; }
+    summary.candidates.push({
+      commissionId: String(c._id),
+      customerName: (c.snapshot && c.snapshot.customerName) || "(unknown)",
+      projectName:  (c.snapshot && c.snapshot.projectName)  || "",
+      cycleCount:   cycles.length,
+      cycleStates:  cycles.map(function(cy){ return cy && cy.state; })
+    });
+  }
+  for (var k = 0; k < summary.candidates.length; k++) {
+    var cand = summary.candidates[k];
+    var r = await Commission.updateOne(
+      { _id: cand.commissionId, status: "active" },
+      { $set: { status: "fully_paid" } }
+    );
+    var modCount = r && (r.modifiedCount != null ? r.modifiedCount : r.nModified);
+    if (modCount === 1) { summary.updated++; cand.flipped = true; }
+    else                { summary.notUpdated++; cand.flipped = false; }
+  }
+  summary.completedAt = new Date().toISOString();
+  return summary;
+}
+
+// Find DoneDeal leads with no active commission and auto-create one via
+// ensureCommissionForLead. Leads without agentId are NOT touched — caller
+// surfaces them so admin can assign an agent and retry. Idempotent —
+// re-runs find no work because the auto-created commissions now exist.
+async function runMissingBackfill(actingUser) {
+  var summary = {
+    type: "missing",
+    startedAt: new Date().toISOString(),
+    scannedLeads: 0,
+    missingCount: 0,
+    withAgent: [],
+    noAgent: [],
+    created: 0,
+    failed: 0,
+    completedAt: null
+  };
+  var leads = await Lead.find({
+    archived: { $ne: true },
+    $and: [
+      { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] },
+      { dealStatus: { $ne: "Deal Cancelled" } },
+      { status:     { $ne: "Deal Cancelled" } }
+    ]
+  })
+    .select("name phone status globalStatus dealStatus dealDate project agentId")
+    .populate("agentId", "name username")
+    .lean();
+  summary.scannedLeads = leads.length;
+  if (leads.length === 0) { summary.completedAt = new Date().toISOString(); return summary; }
+
+  var leadIds = leads.map(function(l){ return l._id; });
+  var commissions = await Commission.find({ leadId: { $in: leadIds } }).select("leadId status").lean();
+  var byLead = Object.create(null);
+  commissions.forEach(function(c){
+    var k = String(c.leadId);
+    if (!byLead[k]) byLead[k] = [];
+    byLead[k].push(c);
+  });
+
+  var missing = leads.filter(function(l){
+    var lst = byLead[String(l._id)] || [];
+    return !lst.some(function(c){ return c.status === "active"; });
+  });
+  summary.missingCount = missing.length;
+
+  for (var i = 0; i < missing.length; i++) {
+    var l = missing[i];
+    var agent = l.agentId && typeof l.agentId === "object" ? l.agentId : null;
+    var agentLabel = agent ? (agent.name || agent.username || "(unknown)") : null;
+    if (!l.agentId) {
+      summary.noAgent.push({
+        leadId:       String(l._id),
+        customerName: l.name || "(unknown)",
+        projectName:  l.project || ""
+      });
+      continue;
+    }
+    try {
+      var result = await ensureCommissionForLead(l, actingUser);
+      if (!result) {
+        summary.withAgent.push({
+          leadId: String(l._id), customerName: l.name || "(unknown)",
+          projectName: l.project || "", agentName: agentLabel,
+          result: "failed", error: "ensureCommissionForLead returned null"
+        });
+        summary.failed++;
+      } else {
+        summary.withAgent.push({
+          leadId: String(l._id), customerName: l.name || "(unknown)",
+          projectName: l.project || "", agentName: agentLabel,
+          result: "ok", commissionId: String(result._id)
+        });
+        summary.created++;
+      }
+    } catch(e) {
+      summary.withAgent.push({
+        leadId: String(l._id), customerName: l.name || "(unknown)",
+        projectName: l.project || "", agentName: agentLabel,
+        result: "failed", error: e && e.message ? e.message : String(e)
+      });
+      summary.failed++;
+    }
+  }
+  summary.completedAt = new Date().toISOString();
+  return summary;
+}
+
 // cascadeCommissionCancel — flips active commission for a lead to cancelled,
 // closes any open cycles, leaves paid_to_team cycles untouched (history must
 // survive). Used by the deal-cancel hook.
@@ -15957,6 +16100,33 @@ app.post("/api/diagnose/create-commission", auth, strictAdminOnly, async functio
   }
 });
 
+// POST /api/admin/run-backfill?type=zombies|missing — HTTP trigger for the
+// one-shot backfills. Same implementation as backfill-{zombies,missing}.js
+// (shared functions in this file). Used when Railway shell access is gone
+// and the FE needs to drive the cleanup. Idempotent: re-running finds no
+// work because the previous run already moved the targets out of scope.
+// Note: runs synchronously — for small datasets (<100 leads) this is fine,
+// and the FE button shows a spinner while waiting. If it grows, switch to
+// a job-queue pattern.
+app.post("/api/admin/run-backfill", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var type = String(req.query.type || "").trim();
+    if (type !== "zombies" && type !== "missing") {
+      return res.status(400).json({ error: "type must be 'zombies' or 'missing'" });
+    }
+    var summary;
+    if (type === "zombies") {
+      summary = await runZombieBackfill();
+    } else {
+      summary = await runMissingBackfill(req.user);
+    }
+    res.json(summary);
+  } catch(e) {
+    console.error("[POST /api/admin/run-backfill]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "backfill_failed" });
+  }
+});
+
 app.get("/api/commissions/by-lead/:leadId", auth, salesAdminOnly, async function(req, res) {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.leadId)) return res.status(400).json({ error: "Invalid leadId" });
@@ -18017,5 +18187,7 @@ if (require.main === module) {
 // invoke. Keep this list minimal so the require-mode surface stays narrow.
 module.exports = {
   ensureCommissionForLead: ensureCommissionForLead,
-  buildSnapshotForLead:    buildSnapshotForLead
+  buildSnapshotForLead:    buildSnapshotForLead,
+  runZombieBackfill:       runZombieBackfill,
+  runMissingBackfill:      runMissingBackfill
 };
