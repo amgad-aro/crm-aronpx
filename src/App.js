@@ -13864,7 +13864,7 @@ var SettingsPage = function(p) {
   var [rotNoAnswerHours,setRotNoAnswerHours]=useState(1);
   var [rotNotIntDays,setRotNotIntDays]=useState(1);
   var [rotNoActDays,setRotNoActDays]=useState(2);
-  var [rotCbDays,setRotCbDays]=useState(1);
+  var [rotCbHours,setRotCbHours]=useState("");
   var [rotHotDays,setRotHotDays]=useState(2);
   var [rotStopDays,setRotStopDays]=useState(45);
   // Master switch + pause
@@ -14044,7 +14044,7 @@ var SettingsPage = function(p) {
       setRotNoAnswerHours(Number(s.naHours)||1);
       setRotNotIntDays(Number(s.niDays)||1);
       setRotNoActDays(Number(s.noActDays)||2);
-      setRotCbDays(Number(s.cbDays)||1);
+      setRotCbHours(s.cbHours!=null && s.cbHours!==""?Number(s.cbHours):"");
       setRotHotDays(Number(s.hotDays)||2);
       setRotStopDays(Number(s.rotationStopAfterDays)||45);
       if(s.maxRotationsPerLead!=null) setMaxRotationsPerLead(Number(s.maxRotationsPerLead)||0);
@@ -14259,7 +14259,7 @@ var SettingsPage = function(p) {
         naHours: Number(rotNoAnswerHours),
         niDays:  Number(rotNotIntDays),
         noActDays: Number(rotNoActDays),
-        cbDays:  Number(rotCbDays),
+        cbHours: rotCbHours===""||rotCbHours==null?undefined:Number(rotCbHours),
         hotDays: Number(rotHotDays),
         rotationStopAfterDays: Number(rotStopDays),
         maxRotationsPerLead: Number(maxRotationsPerLead)||0,
@@ -14719,7 +14719,7 @@ var SettingsPage = function(p) {
                   <div style={kvBox}>
                     {kvRow("NewLead (noActDays)", diag.eligible.byRule.newLead, 0)}
                     {kvRow("NotInterested (niDays)", diag.eligible.byRule.notInt, 1)}
-                    {kvRow("CallBack (cbDays)", diag.eligible.byRule.callBack, 1)}
+                    {kvRow("CallBack (cbHours)", diag.eligible.byRule.callBack, 1)}
                     {kvRow("Hot/Potential/MeetingDone (hotDays)", diag.eligible.byRule.hot, 1)}
                     {kvRow("NoAnswer (naCount/naHours)", diag.eligible.byRule.noAns, 1)}
                     {kvRow("TOTAL eligible", diag.eligible.total, 1, true)}
@@ -14926,11 +14926,11 @@ var SettingsPage = function(p) {
                 {label:"No Answer — wait after last (hrs)",val:rotNoAnswerHours,set:setRotNoAnswerHours,max:720},
                 {label:"Not Interested — return after (days)",val:rotNotIntDays,set:setRotNotIntDays,max:365},
                 {label:"No Contact — rotate after (days)",val:rotNoActDays,set:setRotNoActDays,max:365},
-                {label:"CallBack overdue — rotate after (days)",val:rotCbDays,set:setRotCbDays,max:365},
+                {label:"CallBack overdue — rotate after (hrs)",val:rotCbHours,set:setRotCbHours,max:8760,emptyOk:true},
                 {label:"Hot / Potential / Meeting no action (days)",val:rotHotDays,set:setRotHotDays,max:365,bold:true}
               ].map(function(row){return <div key={row.label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"#F7F7F5",padding:"8px 10px",borderRadius:8,color:"#666",gap:8,fontSize:12}}>
                 <span style={{fontWeight:row.bold?500:400,color:row.bold?"#1a1a1a":"#666"}}>{row.label}</span>
-                <input type="number" min={1} max={row.max} value={row.val} onChange={function(e){row.set(Number(e.target.value));}}
+                <input type="number" min={1} max={row.max} value={row.val} onChange={function(e){var raw=e.target.value; if(row.emptyOk && raw===""){row.set(""); return;} row.set(Number(raw));}}
                   style={{width:56,padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",textAlign:"center",fontFamily:"inherit"}}/>
               </div>;})}
               {/* 45-day row spans 2 cols, highlighted yellow */}

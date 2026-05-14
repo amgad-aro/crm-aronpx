@@ -2423,7 +2423,7 @@ app.get("/api/me", auth, async function(req, res) {
 var ROTATION_DEFAULTS = {
   reassignAgents: [],
   naCount: 2, naHours: 1,
-  niDays: 1, noActDays: 2, cbDays: 1, hotDays: 2,
+  niDays: 1, noActDays: 2, cbHours: 24, hotDays: 2,
   tiers: {
     tier1: { agents: [], lastIdx: -1 },
     tier2: { agents: [], lastIdx: -1 },
@@ -2499,7 +2499,7 @@ async function getRotationSettings() {
     naHours:   Number(v.naHours   != null ? v.naHours   : D.naHours),
     niDays:    Number(v.niDays    != null ? v.niDays    : D.niDays),
     noActDays: Number(v.noActDays != null ? v.noActDays : D.noActDays),
-    cbDays:    Number(v.cbDays    != null ? v.cbDays    : D.cbDays),
+    cbHours:   Number(v.cbHours   != null ? v.cbHours   : (v.cbDays != null ? v.cbDays * 24 : D.cbHours)),
     hotDays:   Number(v.hotDays   != null ? v.hotDays   : D.hotDays),
     lastAssignedIdx: (typeof v.lastAssignedIdx === "number") ? v.lastAssignedIdx : -1,
     combined23LastIdx: (typeof v.combined23LastIdx === "number") ? v.combined23LastIdx : -1,
@@ -2589,7 +2589,7 @@ app.put("/api/settings/rotation", auth, async function(req, res) {
       naHours:   clamp(b.naHours,   D.naHours,   1, 720),
       niDays:    clamp(b.niDays,    D.niDays,    1, 365),
       noActDays: clamp(b.noActDays, D.noActDays, 1, 365),
-      cbDays:    clamp(b.cbDays,    D.cbDays,    1, 365),
+      cbHours:   clamp(b.cbHours,   D.cbHours,   1, 8760),
       hotDays:   clamp(b.hotDays,   D.hotDays,   1, 365),
       lastAssignedIdx: tiers.tier1.lastIdx,
       // Server-managed pointer; never sent from UI. Preserve across writes.
@@ -7988,7 +7988,7 @@ async function autoRotateLead(leadId, byName, opts) {
       var naHoursThreshold = Number(settings.naHours) || 1;
       var niDays    = Number(settings.niDays)   || 1;
       var noActDays = Number(settings.noActDays)|| 2;
-      var cbDays    = Number(settings.cbDays)   || 1;
+      var cbHours   = Number(settings.cbHours)  || 24;
       var hotDays   = Number(settings.hotDays)  || 2;
 
       var lastActMs = leadWideLastActionMs(lead, curSlice);
@@ -8066,7 +8066,7 @@ async function autoRotateLead(leadId, byName, opts) {
           else {
             var cbMs = new Date(effectiveCb).getTime();
             if (!cbMs)                                         notEligibleReason = "CallBack: callbackTime unparseable";
-            else if ((nowTs.getTime() - cbMs) < cbDays*DAY_MS) notEligibleReason = "CallBack: not yet overdue";
+            else if ((nowTs.getTime() - cbMs) < cbHours*HOUR_MS) notEligibleReason = "CallBack: not yet overdue";
             else { eligible = true; firedRule = "callback_overdue"; }
           }
           break;
@@ -8574,7 +8574,7 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
     var naHoursThreshold = Number(settings.naHours) || 1;
     var niDays   = Number(settings.niDays)   || 1;
     var noActDays= Number(settings.noActDays)|| 2;
-    var cbDays   = Number(settings.cbDays)   || 1;
+    var cbHours  = Number(settings.cbHours)  || 24;
     var hotDays  = Number(settings.hotDays)  || 2;
 
     var byRule = { newLead: 0, notInt: 0, callBack: 0, hot: 0, noAns: 0 };
@@ -8612,7 +8612,7 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
           if (!cur.callbackTime)                  { bumpReason("CallBack: callbackTime not set"); return; }
           var cb = new Date(cur.callbackTime).getTime();
           if (!cb)                                { bumpReason("CallBack: callbackTime unparseable"); return; }
-          if ((now.getTime() - cb) < cbDays*DAY)  { bumpReason("CallBack: not yet cbDays overdue"); return; }
+          if ((now.getTime() - cb) < cbHours*HOUR)  { bumpReason("CallBack: not yet cbHours overdue"); return; }
           byRule.callBack++; eligibleLeads.push(l); break;
         }
         case "HotCase":
@@ -8637,7 +8637,7 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
       notEligibleReasons: notEligibleReasons,
       thresholds: {
         naCount: naCountThreshold, naHours: naHoursThreshold,
-        niDays: niDays, noActDays: noActDays, cbDays: cbDays, hotDays: hotDays,
+        niDays: niDays, noActDays: noActDays, cbHours: cbHours, hotDays: hotDays,
         rotationStopAfterDays: stopDays
       }
     };
