@@ -1108,10 +1108,10 @@ var Sidebar = function(p) {
     // roles (manager, team_leader, sales, hr, director, viewer) are blocked
     // here AND at the page-switch gate AND on the backend (requireAssetAccess).
     (p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.isOwner===true)&&{id:"assets",label:"Assets",adminSection:true},
-    // Phase R-6 polish #2 — admin-only data-integrity diagnostics. Lists Leads
-    // that should have an active commission but don't, with a self-service
-    // create button. strictAdminOnly server-side; admin role-only here.
-    (p.cu.role==="admin")&&{id:"diagnostics",label:"Diagnostics",adminSection:true},
+    // Phase R-6 polish #2 — admin-only data-integrity diagnostics. Sidebar
+    // entry removed (admin tool, not daily-use); URL route + strictAdminOnly
+    // gate kept. Navigate to /#/diagnostics or whatever the deep-link pattern
+    // is. The page-switch case in renderPage() still resolves DiagnosticsPage.
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
@@ -19992,17 +19992,26 @@ var DiagnosticsPage = function(p) {
   // Bulk backfill — calls POST /api/admin/run-backfill?type=<type>. Sync
   // request: the FE waits for the server to finish the entire backfill.
   // After completion: refetch the missing-commissions list (only relevant
-  // for type="missing", but cheap to do for both — the list reflects the
-  // new state either way).
+  // for type="missing", but cheap to do for the others — the list reflects
+  // the new state either way).
   var runBulk = async function(type){
     setBulkRunning(type); setBulkResult(null);
     try {
       var summary = await apiFetch("/api/admin/run-backfill?type=" + encodeURIComponent(type), "POST", {}, p.token);
       setBulkResult({ type: type, summary: summary });
-      setToast({ kind:"ok", msg: type === "zombies"
-        ? ("Zombie cleanup done — " + (summary.updated || 0) + " flipped to fully_paid")
-        : ("Missing-commission backfill done — " + (summary.created || 0) + " created, " + ((summary.noAgent && summary.noAgent.length) || 0) + " skipped (no agent)")
-      });
+      var msg;
+      if (type === "zombies") {
+        msg = "Zombie cleanup done — " + (summary.updated || 0) + " flipped to fully_paid";
+      } else if (type === "missing") {
+        msg = "Missing-commission backfill done — " + (summary.created || 0) + " created, " + ((summary.noAgent && summary.noAgent.length) || 0) + " skipped (no agent)";
+      } else if (type === "fully_paid_with_active_cycles") {
+        msg = "Fully-paid revert done — " + (summary.updated || 0) + " flipped back to active";
+      } else if (type === "active_with_no_workable_cycle") {
+        msg = "Revive-broken backfill done — " + (summary.updated || 0) + " fresh cycle(s) added";
+      } else {
+        msg = "Backfill done";
+      }
+      setToast({ kind:"ok", msg: msg });
       refresh();
     } catch(e) {
       setBulkResult({ type: type, error: (e && e.message) || "Backfill failed" });
@@ -20051,6 +20060,28 @@ var DiagnosticsPage = function(p) {
             cursor: bulkRunning ? "wait" : "pointer"
           }}>
           {bulkRunning === "missing" ? "Running missing-commission backfill…" : "Run missing-commission backfill"}
+        </button>
+        <button onClick={function(){ runBulk("fully_paid_with_active_cycles"); }} disabled={!!bulkRunning}
+          title="Revert status=fully_paid → active on commissions that have a non-terminal cycle (admin clicked Add Cycle on a fully-paid deal before the forward fix)"
+          style={{
+            padding:"8px 14px", borderRadius:8, fontSize:12, fontWeight:600,
+            border: "1px solid " + C.accent,
+            background: bulkRunning === "fully_paid_with_active_cycles" ? C.accent + "30" : C.accent + "12",
+            color: C.accent,
+            cursor: bulkRunning ? "wait" : "pointer"
+          }}>
+          {bulkRunning === "fully_paid_with_active_cycles" ? "Running fully-paid revert…" : "Run fully-paid revert"}
+        </button>
+        <button onClick={function(){ runBulk("active_with_no_workable_cycle"); }} disabled={!!bulkRunning}
+          title="Add a fresh pending_claim cycle to active commissions whose cycles are all terminal — typically revived commissions where cascadeCommissionCancel left the cycles cancelled"
+          style={{
+            padding:"8px 14px", borderRadius:8, fontSize:12, fontWeight:600,
+            border: "1px solid " + C.accent,
+            background: bulkRunning === "active_with_no_workable_cycle" ? C.accent + "30" : C.accent + "12",
+            color: C.accent,
+            cursor: bulkRunning ? "wait" : "pointer"
+          }}>
+          {bulkRunning === "active_with_no_workable_cycle" ? "Running revive-broken backfill…" : "Run revive-broken backfill"}
         </button>
       </div>
       {bulkResult && <div style={{ marginTop:12, paddingTop:12, borderTop:"1px solid #F1F5F9" }}>

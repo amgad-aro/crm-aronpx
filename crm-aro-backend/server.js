@@ -1886,6 +1886,30 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
         try {
           var revived = await Commission.findById(lastCancelled._id);
           if (revived) {
+            // Phase R-6 polish #3 — when reviving, the cycles array still
+            // contains whatever cascadeCommissionCancel left behind (all
+            // non-terminal cycles flipped to "cancelled"). Status is now
+            // "active" again, but if every cycle is terminal there's no
+            // workable cycle for admin to advance — and activeCycles in
+            // /api/commissions/stats reads 0 incorrectly. Push a fresh
+            // pending_claim cycle when none exists. Idempotent: if a
+            // non-terminal cycle is somehow already present, skip.
+            var hasNonTerminal = (revived.cycles || []).some(function(cy){
+              return cy.state !== "paid_to_team" && cy.state !== "cancelled";
+            });
+            if (!hasNonTerminal) {
+              var maxN = 0;
+              (revived.cycles || []).forEach(function(cy){
+                if (cy.cycleNumber > maxN) maxN = cy.cycleNumber;
+              });
+              revived.cycles.push({
+                cycleNumber: maxN + 1,
+                state: "pending_claim",
+                expectedAmount: 0,
+                receivedAmount: 0
+              });
+              revived.markModified("cycles");
+            }
             await computeAllRecipientShares(revived);
             revived.markModified("snapshot");
             revived.markModified("ratesSnapshot");
@@ -2091,6 +2115,103 @@ async function runMissingBackfill(actingUser) {
       });
       summary.failed++;
     }
+  }
+  summary.completedAt = new Date().toISOString();
+  return summary;
+}
+
+// Phase R-6 polish #3 — fix the legacy bug where admin clicked "+ Add Cycle"
+// on a fully_paid commission. Before the forward-fix in this same commit,
+// the Add Cycle handler appended a pending_claim cycle without flipping
+// status back to "active", leaving commissions stuck in fully_paid with
+// non-terminal cycles (invisible to /api/commissions/stats). This sweeper
+// retroactively reverts any such broken record back to "active". Idempotent.
+async function runFullyPaidRevertBackfill() {
+  var summary = {
+    type: "fully_paid_with_active_cycles",
+    startedAt: new Date().toISOString(),
+    scanned: 0,
+    candidates: [],
+    updated: 0,
+    completedAt: null
+  };
+  // Surface the candidate rows so admin sees what was touched.
+  var docs = await Commission.find({
+    status: "fully_paid",
+    cycles: { $elemMatch: { state: { $nin: ["paid_to_team", "cancelled"] } } }
+  })
+    .select("snapshot.customerName snapshot.projectName cycles")
+    .lean();
+  summary.scanned = docs.length;
+  for (var i = 0; i < docs.length; i++) {
+    var d = docs[i];
+    summary.candidates.push({
+      commissionId: String(d._id),
+      customerName: (d.snapshot && d.snapshot.customerName) || "(unknown)",
+      projectName:  (d.snapshot && d.snapshot.projectName)  || "",
+      cycleCount:   (d.cycles || []).length,
+      cycleStates:  (d.cycles || []).map(function(cy){ return cy && cy.state; })
+    });
+  }
+  if (summary.candidates.length === 0) {
+    summary.completedAt = new Date().toISOString();
+    return summary;
+  }
+  // Single updateMany — same predicate as the find above, so the rowcount
+  // matches the candidate list (modulo unlikely concurrent writes).
+  var r = await Commission.updateMany(
+    { status: "fully_paid", cycles: { $elemMatch: { state: { $nin: ["paid_to_team", "cancelled"] } } } },
+    { $set: { status: "active" } }
+  );
+  summary.updated = (r && (r.modifiedCount != null ? r.modifiedCount : r.nModified)) || 0;
+  summary.completedAt = new Date().toISOString();
+  return summary;
+}
+
+// Phase R-6 polish #3 — sweep "revive broken" records: active commissions
+// where every cycle is terminal (paid_to_team or cancelled) or the cycles
+// array is empty. Created by the legacy revive path in ensureCommissionForLead
+// (fixed forward by the cycle-push at L1888 in this same commit) — the old
+// behavior flipped status to active but left cycles in their cancelled state.
+// Symmetric counterpart to runFullyPaidRevertBackfill above. Per-doc save
+// (not updateMany) because we need to compute maxN + push a new subdoc.
+async function runReviveBrokenBackfill() {
+  var summary = {
+    type: "active_with_no_workable_cycle",
+    startedAt: new Date().toISOString(),
+    scanned: 0,
+    candidates: [],
+    updated: 0,
+    completedAt: null
+  };
+  // Predicate: active AND no cycle is non-terminal. Matches commissions
+  // where every cycle is in {cancelled, paid_to_team} OR cycles is empty.
+  var docs = await Commission.find({
+    status: "active",
+    cycles: { $not: { $elemMatch: { state: { $nin: ["cancelled", "paid_to_team"] } } } }
+  }).select("snapshot.customerName snapshot.projectName cycles");
+  summary.scanned = docs.length;
+  for (var i = 0; i < docs.length; i++) {
+    var c = docs[i];
+    var maxN = 0;
+    (c.cycles || []).forEach(function(cy){ if (cy.cycleNumber > maxN) maxN = cy.cycleNumber; });
+    var newCycle = {
+      cycleNumber: maxN + 1,
+      state: "pending_claim",
+      expectedAmount: 0,
+      receivedAmount: 0
+    };
+    c.cycles.push(newCycle);
+    c.markModified("cycles");
+    await c.save();
+    summary.candidates.push({
+      commissionId:    String(c._id),
+      customerName:    (c.snapshot && c.snapshot.customerName) || "(unknown)",
+      projectName:     (c.snapshot && c.snapshot.projectName)  || "",
+      previousCycles:  (c.cycles || []).length - 1,
+      addedCycleNumber: newCycle.cycleNumber
+    });
+    summary.updated++;
   }
   summary.completedAt = new Date().toISOString();
   return summary;
@@ -16111,14 +16232,17 @@ app.post("/api/diagnose/create-commission", auth, strictAdminOnly, async functio
 app.post("/api/admin/run-backfill", auth, strictAdminOnly, async function(req, res) {
   try {
     var type = String(req.query.type || "").trim();
-    if (type !== "zombies" && type !== "missing") {
-      return res.status(400).json({ error: "type must be 'zombies' or 'missing'" });
-    }
     var summary;
     if (type === "zombies") {
       summary = await runZombieBackfill();
-    } else {
+    } else if (type === "missing") {
       summary = await runMissingBackfill(req.user);
+    } else if (type === "fully_paid_with_active_cycles") {
+      summary = await runFullyPaidRevertBackfill();
+    } else if (type === "active_with_no_workable_cycle") {
+      summary = await runReviveBrokenBackfill();
+    } else {
+      return res.status(400).json({ error: "type must be one of: zombies, missing, fully_paid_with_active_cycles, active_with_no_workable_cycle" });
     }
     res.json(summary);
   } catch(e) {
@@ -16366,6 +16490,13 @@ app.post("/api/commissions/:id/cycles", auth, salesAdminOnly, async function(req
     var c = await Commission.findById(req.params.id);
     if (!c) return res.status(404).json({ error: "Commission not found" });
     if (c.status === "cancelled") return res.status(400).json({ error: "cannot add a cycle to a cancelled commission" });
+    // Phase R-6 polish #3 — re-activate fully_paid commissions when admin
+    // adds a new cycle. The new cycle starts in pending_claim; by definition
+    // the commission is no longer fully paid. Mirrors the cycle-DELETE
+    // status-revert at ~L16646. Without this, the commission stays stuck in
+    // "fully_paid" and is invisible to /api/commissions/stats (which filters
+    // on status="active") until the new cycle eventually reaches paid_to_team.
+    if (c.status === "fully_paid") c.status = "active";
 
     var maxN = 0;
     (c.cycles || []).forEach(function(cy){ if (cy.cycleNumber > maxN) maxN = cy.cycleNumber; });
@@ -18186,8 +18317,10 @@ if (require.main === module) {
 // Phase R-6 polish #2 — export functions that maintenance scripts need to
 // invoke. Keep this list minimal so the require-mode surface stays narrow.
 module.exports = {
-  ensureCommissionForLead: ensureCommissionForLead,
-  buildSnapshotForLead:    buildSnapshotForLead,
-  runZombieBackfill:       runZombieBackfill,
-  runMissingBackfill:      runMissingBackfill
+  ensureCommissionForLead:        ensureCommissionForLead,
+  buildSnapshotForLead:           buildSnapshotForLead,
+  runZombieBackfill:              runZombieBackfill,
+  runMissingBackfill:             runMissingBackfill,
+  runFullyPaidRevertBackfill:     runFullyPaidRevertBackfill,
+  runReviveBrokenBackfill:        runReviveBrokenBackfill
 };
