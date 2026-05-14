@@ -18234,9 +18234,14 @@ var CommissionsPage = function(p) {
   var [statusFilter, setStatusFilter] = useState("all");
   var [search, setSearch] = useState("");
   var [agentFilter, setAgentFilter] = useState("");
-  var [yearFilter, setYearFilter] = useState("");
+  // Phase R-5: each tab owns its own year state so the Annual Summary
+  // auto-select doesn't leak into Claims. claimsYearFilter defaults to ""
+  // ("All years"); annualYear auto-fills to the most recent available year
+  // when the user first lands on the Annual Summary tab.
+  var [claimsYearFilter, setClaimsYearFilter] = useState("");
+  var [annualYear, setAnnualYear] = useState("");
   // Phase R-5: "deals" (default) shows the existing list/cards UI; "annual"
-  // shows the new tax-tracking summary tab. Tabs share the page-level year filter.
+  // shows the new tax-tracking summary tab.
   var [activeTab, setActiveTab] = useState("deals");
   var [annualSummary, setAnnualSummary] = useState(null);
   var [annualLoading, setAnnualLoading] = useState(false);
@@ -18266,9 +18271,9 @@ var CommissionsPage = function(p) {
     if (statusFilter && statusFilter !== "all") qs.push("status=" + encodeURIComponent(statusFilter));
     if (search.trim()) qs.push("q=" + encodeURIComponent(search.trim()));
     if (agentFilter) qs.push("agentId=" + encodeURIComponent(agentFilter));
-    if (yearFilter) qs.push("year=" + encodeURIComponent(yearFilter));
+    if (claimsYearFilter) qs.push("year=" + encodeURIComponent(claimsYearFilter));
     var url = "/api/commissions" + (qs.length ? "?" + qs.join("&") : "");
-    var statsUrl = "/api/commissions/stats" + (yearFilter ? "?year=" + encodeURIComponent(yearFilter) : "");
+    var statsUrl = "/api/commissions/stats" + (claimsYearFilter ? "?year=" + encodeURIComponent(claimsYearFilter) : "");
     setRows(null); setLoadErr("");
     apiFetch(url, "GET", null, p.token)
       .then(function(d){ if(!cancelled) setRows((d && d.data) || []); })
@@ -18280,21 +18285,21 @@ var CommissionsPage = function(p) {
       .then(function(d){ if(!cancelled) setCashFlow(d || {}); })
       .catch(function(){ if(!cancelled) setCashFlow({}); });
     return function(){ cancelled = true; };
-  }, [statusFilter, search, agentFilter, yearFilter, p.token, reloadTick]);
+  }, [statusFilter, search, agentFilter, claimsYearFilter, p.token, reloadTick]);
 
   // Phase R-5 — annual summary fetcher. Fires when the user is on the Annual
-  // Summary tab; the year follows the page-level yearFilter, defaulting to
-  // the current Cairo calendar year when "All years" is selected.
+  // Summary tab; the year follows annualYear, defaulting to the current Cairo
+  // calendar year when annualYear is empty (no data yet — see auto-select below).
   useEffect(function(){
     if (activeTab !== "annual") return;
     var cancelled = false;
-    var effYear = yearFilter || String(new Date(Date.now() + 3 * 3600 * 1000).getUTCFullYear());
+    var effYear = annualYear || String(new Date(Date.now() + 3 * 3600 * 1000).getUTCFullYear());
     setAnnualLoading(true);
     apiFetch("/api/commissions/annual-summary?year=" + encodeURIComponent(effYear), "GET", null, p.token)
       .then(function(d){ if (!cancelled) { setAnnualSummary(d || null); setAnnualLoading(false); } })
       .catch(function(){ if (!cancelled) { setAnnualSummary(null); setAnnualLoading(false); } });
     return function(){ cancelled = true; };
-  }, [activeTab, yearFilter, p.token, reloadTick]);
+  }, [activeTab, annualYear, p.token, reloadTick]);
 
   // One-shot consume of selectedCommissionLeadId from CRMApp state.
   // Hits /by-lead/:leadId, expands the matching card, then clears the cue.
@@ -18339,6 +18344,20 @@ var CommissionsPage = function(p) {
       setActiveTab("deals");
     }
   }, [activeTab, p.cu]);
+
+  // Annual Summary tab: auto-select the most recent available year when the
+  // user lands on the tab with no year set. Prevents the dropdown from showing
+  // a "Default (YYYY)" placeholder that duplicates the real year option below
+  // it. Falls back gracefully when stats haven't loaded yet (no-op) or when
+  // there's no data at all (leave annualYear empty so the disabled "—" option
+  // stays selected). Scoped to annualYear — does NOT touch claimsYearFilter.
+  useEffect(function(){
+    if (activeTab !== "annual") return;
+    if (annualYear) return;
+    var avail = stats && Array.isArray(stats.availableYears) ? stats.availableYears : [];
+    if (avail.length === 0) return;
+    setAnnualYear(avail[0]);
+  }, [activeTab, annualYear, stats]);
 
   // Phase R-4: commission notifications banner — fetch on mount + on every
   // websocket notification_updated event (server broadcasts this on create,
@@ -18392,7 +18411,7 @@ var CommissionsPage = function(p) {
           return prev;
         });
         // Refresh stats + cash-flow lightly. These setters don't reset rows.
-        var statsRefreshUrl = "/api/commissions/stats" + (yearFilter ? "?year=" + encodeURIComponent(yearFilter) : "");
+        var statsRefreshUrl = "/api/commissions/stats" + (claimsYearFilter ? "?year=" + encodeURIComponent(claimsYearFilter) : "");
         apiFetch(statsRefreshUrl, "GET", null, p.token).then(function(s){ setStats(s || {}); }).catch(function(){});
         apiFetch("/api/commissions/cash-flow", "GET", null, p.token).then(function(s){ setCashFlow(s || {}); }).catch(function(){});
       } else {
@@ -18862,9 +18881,10 @@ var CommissionsPage = function(p) {
     }
   };
 
-  // Phase R-5 — tab strip. Sentence case, thin underline on active. The two
-  // tabs share the page-level yearFilter; Deals tab keeps the search/agent/
-  // status filters in its own filter row, Annual Summary uses only the year.
+  // Phase R-5 — tab strip. Sentence case, thin underline on active. Each tab
+  // owns its own year state (claimsYearFilter / annualYear); Claims keeps the
+  // search/agent/status filters in its own filter row, Annual Summary uses
+  // only the year. Switching tabs leaves the other tab's filter untouched.
   var TabBtn = function(props){
     var active = activeTab === props.id;
     return <button onClick={function(){ setActiveTab(props.id); }} style={{
@@ -18966,7 +18986,7 @@ var CommissionsPage = function(p) {
       <input type="text" placeholder="Search customer / project / developer…" value={search} onChange={function(e){ setSearch(e.target.value); }} style={{
         flex:1, minWidth:200, padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, outline:"none"
       }}/>
-      <select value={yearFilter} onChange={function(e){ setYearFilter(e.target.value); }} style={{
+      <select value={claimsYearFilter} onChange={function(e){ setClaimsYearFilter(e.target.value); }} style={{
         padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff", minWidth:120
       }} title="Filter by year money was received">
         <option value="">All years</option>
@@ -18982,7 +19002,7 @@ var CommissionsPage = function(p) {
           return <option key={String(u._id)} value={String(u._id)}>{u.name}</option>;
         })}
       </select>
-      {(search || agentFilter || yearFilter || statusFilter !== "all") && <button onClick={function(){ setSearch(""); setAgentFilter(""); setYearFilter(""); setStatusFilter("all"); }} style={{
+      {(search || agentFilter || claimsYearFilter || statusFilter !== "all") && <button onClick={function(){ setSearch(""); setAgentFilter(""); setClaimsYearFilter(""); setStatusFilter("all"); }} style={{
         padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:12, color:C.textLight
       }}>Clear</button>}
     </div>
@@ -19033,9 +19053,9 @@ var CommissionsPage = function(p) {
     })()}
 
     {activeTab === "annual" && (function(){
-      // Effective year — yearFilter when set, else current Cairo year. Mirrors
+      // Effective year — annualYear when set, else current Cairo year. Mirrors
       // the backend default so the UI always shows what the endpoint returned.
-      var effYear = yearFilter || String(new Date(Date.now() + 3 * 3600 * 1000).getUTCFullYear());
+      var effYear = annualYear || String(new Date(Date.now() + 3 * 3600 * 1000).getUTCFullYear());
       var ay = (annualSummary && annualSummary.year) || effYear;
       var totals = (annualSummary && annualSummary.totals) || { grossClaim:0, netOfVat:0, vat:0, withholding5pct:0, netReceived:0 };
       var byMonth = (annualSummary && annualSummary.vatByMonth) || [];
@@ -19055,17 +19075,19 @@ var CommissionsPage = function(p) {
       };
 
       return <div>
-        {/* Year selector — same yearFilter state as the Deals tab. */}
+        {/* Year selector — bound to annualYear (independent from claimsYearFilter
+            on the Claims tab). Auto-fills to availableYears[0] on first entry. */}
         <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
           <span style={{ fontSize:12, color:C.textLight }}>Year</span>
-          <select value={yearFilter} onChange={function(e){ setYearFilter(e.target.value); }} style={{
-            padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff", minWidth:120
-          }}>
-            <option value="">{"Default (" + effYear + ")"}</option>
-            {(stats && Array.isArray(stats.availableYears) ? stats.availableYears : []).map(function(y){
-              return <option key={y} value={y}>{y}</option>;
-            })}
-          </select>
+          {(function(){
+            var avail = stats && Array.isArray(stats.availableYears) ? stats.availableYears : [];
+            return <select value={annualYear} onChange={function(e){ setAnnualYear(e.target.value); }} style={{
+              padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff", minWidth:120
+            }}>
+              {avail.length === 0 && <option value="" disabled>—</option>}
+              {avail.map(function(y){ return <option key={y} value={y}>{y}</option>; })}
+            </select>;
+          })()}
           <div style={{ fontSize:11, color:C.textLight }}>Annual summary for {ay}</div>
         </div>
 
