@@ -4,7 +4,7 @@ import {
   Search, Bell, Plus, Phone, Building, Users, BarChart3,
   Settings, Home, Briefcase, Target, TrendingUp, UserPlus, CheckCircle,
   Activity, Layers, DollarSign, X, Lock, Globe, LogOut, Eye, EyeOff,
-  Trash2, AlertCircle, Menu, Upload, MessageSquare, ChevronRight,
+  Trash2, AlertCircle, Menu, Upload, MessageSquare, ChevronRight, ChevronDown,
   ClipboardList, Edit, Archive, Award, Zap, RotateCcw, ExternalLink, KeyRound, FileSpreadsheet, MapPin
 } from "lucide-react";
 
@@ -18987,6 +18987,10 @@ var CommissionsPage = function(p) {
   // Phase R-8 — per-card collapse state for the Recipients block. Default is
   // collapsed; keyed by commission _id so each card remembers its own toggle.
   var [expandedRecipients, setExpandedRecipients] = useState({}); // {commissionId: true}
+  // Phase R-10 — hover state for the Recipients header so the row reads as
+  // clearly clickable. Keyed by commission _id; only one row hovers at a time
+  // in practice, but a map keeps the logic per-card.
+  var [hoveredRecipientHeader, setHoveredRecipientHeader] = useState(null);
   // Phase R-9 — cashFlow state removed; the new Recipients breakdown computes
   // paid totals straight from c.payouts, so the global cash-flow endpoint is no
   // longer needed for card rendering.
@@ -19533,12 +19537,29 @@ var CommissionsPage = function(p) {
           return Math.round(num).toLocaleString();
         };
 
+        var headerHovered = hoveredRecipientHeader === String(c._id);
         return <div style={{ marginBottom:10 }}>
-          <div onClick={toggle} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0", cursor:"pointer", userSelect:"none" }}>
-            <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase" }}>
+          <div onClick={toggle}
+            onMouseEnter={function(){ setHoveredRecipientHeader(String(c._id)); }}
+            onMouseLeave={function(){ setHoveredRecipientHeader(null); }}
+            style={{
+              display:"flex", justifyContent:"space-between", alignItems:"center",
+              padding:"8px 10px", margin:"0 -10px",
+              borderRadius:8,
+              cursor:"pointer", userSelect:"none",
+              background: headerHovered ? "#F1F5F9" : (expanded ? "#F9FAFB" : "transparent"),
+              transition:"background 0.15s ease"
+            }}>
+            <div style={{ fontSize:12, fontWeight:700, color:C.text, textTransform:"uppercase", letterSpacing:0.3 }}>
               Recipients ({recipientCount}){incentiveCount > 0 && <span> · Incentives ({incentiveCount})</span>}
             </div>
-            <span style={{ fontSize:11, color:C.textLight }}>{expanded ? "▾" : "▸"}</span>
+            <div style={{ display:"flex", alignItems:"center", gap:6, color:C.text }}>
+              <span style={{ fontSize:11, fontWeight:600 }}>{expanded ? "Hide" : "Show"}</span>
+              <ChevronDown size={18} style={{
+                transform: expanded ? "rotate(0deg)" : "rotate(-90deg)",
+                transition:"transform 0.2s ease"
+              }}/>
+            </div>
           </div>
           <div style={{ overflow:"hidden", transition:"max-height 0.25s ease", maxHeight: expanded ? 1400 : 0 }}>
             <div style={{ paddingTop:6 }}>
@@ -20174,8 +20195,12 @@ var CommissionsPage = function(p) {
                               <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:hasEntries ? 700 : 400, color: hasEntries ? C.text : C.textLight }}>
                                 {hasEntries ? fmtMoneyAr(monthTotal) : "—"}
                               </td>
-                              <td style={{ padding:"10px 12px", textAlign:"end", color:C.textLight }}>
-                                {hasEntries ? (expanded ? "▾" : "▸") : ""}
+                              <td style={{ padding:"10px 12px", textAlign:"end", color:C.text, width:32 }}>
+                                {hasEntries && <ChevronDown size={16} style={{
+                                  display:"inline-block", verticalAlign:"middle",
+                                  transform: expanded ? "rotate(0deg)" : "rotate(-90deg)",
+                                  transition:"transform 0.2s ease"
+                                }}/>}
                               </td>
                             </tr>
                           ];
@@ -20442,7 +20467,13 @@ var CommissionsPage = function(p) {
                           return next;
                         });
                       }}>
-                    <td className="no-print" style={{ padding:"10px 12px", color:C.textLight, fontSize:14 }}>{expanded ? "▾" : "▸"}</td>
+                    <td className="no-print" style={{ padding:"10px 12px", color:C.text, width:32 }}>
+                      <ChevronDown size={16} style={{
+                        display:"inline-block", verticalAlign:"middle",
+                        transform: expanded ? "rotate(0deg)" : "rotate(-90deg)",
+                        transition:"transform 0.2s ease"
+                      }}/>
+                    </td>
                     <td style={{ padding:"10px 12px", fontWeight:600 }}>{a.userName}</td>
                     <td style={{ padding:"10px 12px", color:C.textLight }}>{a.role}</td>
                     <td style={{ padding:"10px 12px", textAlign:"end" }}>{a.deals.length}</td>
