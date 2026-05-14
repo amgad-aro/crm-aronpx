@@ -18987,7 +18987,9 @@ var CommissionsPage = function(p) {
   // Phase R-8 — per-card collapse state for the Recipients block. Default is
   // collapsed; keyed by commission _id so each card remembers its own toggle.
   var [expandedRecipients, setExpandedRecipients] = useState({}); // {commissionId: true}
-  var [cashFlow, setCashFlow] = useState(null);                 // {totalReceived, totalPaid, ..., byRecipient}
+  // Phase R-9 — cashFlow state removed; the new Recipients breakdown computes
+  // paid totals straight from c.payouts, so the global cash-flow endpoint is no
+  // longer needed for card rendering.
   var [commissionNotifs, setCommissionNotifs] = useState([]);   // Phase R-4: in-page banner items
   var [savingFlag, setSavingFlag] = useState(false);
   var [toast, setToast] = useState(null);                       // {kind, msg}
@@ -19008,9 +19010,6 @@ var CommissionsPage = function(p) {
     apiFetch(statsUrl, "GET", null, p.token)
       .then(function(d){ if(!cancelled) setStats(d || {}); })
       .catch(function(){ if(!cancelled) setStats({}); });
-    apiFetch("/api/commissions/cash-flow", "GET", null, p.token)
-      .then(function(d){ if(!cancelled) setCashFlow(d || {}); })
-      .catch(function(){ if(!cancelled) setCashFlow({}); });
     return function(){ cancelled = true; };
   }, [statusFilter, search, agentFilter, claimsYearFilter, p.token, reloadTick]);
 
@@ -19197,10 +19196,9 @@ var CommissionsPage = function(p) {
           // freshly-edited card is no longer visible; toast confirms the save.
           return prev;
         });
-        // Refresh stats + cash-flow lightly. These setters don't reset rows.
+        // Refresh stats lightly. setStats doesn't reset rows.
         var statsRefreshUrl = "/api/commissions/stats" + (claimsYearFilter ? "?year=" + encodeURIComponent(claimsYearFilter) : "");
         apiFetch(statsRefreshUrl, "GET", null, p.token).then(function(s){ setStats(s || {}); }).catch(function(){});
-        apiFetch("/api/commissions/cash-flow", "GET", null, p.token).then(function(s){ setCashFlow(s || {}); }).catch(function(){});
       } else {
         // Unknown response shape — fall back to full refetch.
         setReloadTick(function(v){ return v + 1; });
@@ -19261,46 +19259,8 @@ var CommissionsPage = function(p) {
     paid_to_team: "Paid"
   };
 
-  // Phase R-1 recipient row — shows computedShare, rate badge, bucket badge,
-  // half-weight badge, override (when set), and the recipient's paid/owed
-  // totals across this commission. payoutsByName + netPositions are computed
-  // once per render from the commission doc + the cash-flow nets prop.
-  var renderRecipient = function(label, r, ctx){
-    if (!r) return null;
-    var inactive = r.userActiveAtClose === false;
-    var hasOverride = r.overrideAmount != null && Number(r.overrideAmount) > 0;
-    var effOwed = hasOverride ? Number(r.overrideAmount) : Number(r.computedShare || 0);
-    var bucketLabel = r.rateBucket === "double_target" ? "double target"
-                    : r.rateBucket === "target_met"    ? "target met"
-                    : r.rateBucket === "base"          ? "base"
-                    : r.rateBucket === "fixed"         ? "fixed"
-                    : "";
-    var bucketBg = r.rateBucket === "double_target" ? "#DCFCE7"
-                 : r.rateBucket === "target_met"    ? "#DBEAFE"
-                 : "#F1F5F9";
-    var bucketFg = r.rateBucket === "double_target" ? "#15803D"
-                 : r.rateBucket === "target_met"    ? "#1D4ED8"
-                 : "#64748B";
-    var paidThisCommission = (ctx && ctx.paidByName && ctx.paidByName[r.userName]) || 0;
-    var netPos = ctx && ctx.netByName && ctx.netByName[r.userName];
-    var debtGlobal = netPos ? Number(netPos.debt || 0) : 0;
-    return <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 10px", background:"#F8FAFC", borderRadius:6, marginBottom:4 }}>
-      <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
-        <span style={{ fontSize:11, fontWeight:700, color:C.textLight, minWidth:80, textTransform:"capitalize" }}>{label}</span>
-        <span style={{ fontSize:12, fontWeight:600, color:C.text }}>{r.userName || "(unknown)"}</span>
-        {inactive && <span title="User deactivated" style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:"#FEE2E2", color:"#B91C1C" }}>⊘ inactive</span>}
-        {r.isHalfWeight && <span title="Project weight < 1" style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:"#FEF3C7", color:"#92400E" }}>½×</span>}
-        {Number(r.rate) > 0 && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:"#EEF2FF", color:"#3730A3" }}>{r.rate}/1000</span>}
-        {bucketLabel && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:bucketBg, color:bucketFg }}>{bucketLabel}</span>}
-        {hasOverride && <span title={"Override: " + (r.overrideReason || "no reason")} style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:"#FDF4FF", color:"#86198F" }}>override</span>}
-        {debtGlobal > 0 && <span title="This recipient has outstanding debt across commissions" style={{ fontSize:10, padding:"1px 6px", borderRadius:8, background:"#FEE2E2", color:"#B91C1C" }}>debt {Math.round(debtGlobal).toLocaleString()}</span>}
-      </div>
-      <div style={{ textAlign:"right", minWidth:140 }}>
-        <div style={{ fontSize:12, fontWeight:600, color:C.success }}>{fmtMoney(effOwed)}{hasOverride && <span style={{ fontSize:10, color:C.textLight, marginLeft:4, textDecoration:"line-through" }}>{fmtMoney(r.computedShare)}</span>}</div>
-        <div style={{ fontSize:10, color:C.textLight }}>Paid {fmtMoney(paidThisCommission)} / Owed {fmtMoney(effOwed)}</div>
-      </div>
-    </div>;
-  };
+  // Phase R-9 — renderRecipient helper removed. The new Recipients block in
+  // renderCard renders a richer Owed / Paid / Remaining breakdown inline.
 
   // Tiny pencil SVG — 10px, matches the design tokens of the existing buttons.
   var PencilIcon = function(col){
@@ -19443,14 +19403,14 @@ var CommissionsPage = function(p) {
     var totalReceived = sortedCycles.reduce(function(s, cy){ return s + Number(cy.receivedAmount || 0); }, 0);
     var imminent = isImminentMissing(c);
 
-    // Phase R-1 ctx: paid-by-recipient-on-this-commission + global net positions
+    // Per-recipient cash-out totals on this commission. Keyed by userName
+    // (the only recipient identifier on the payout subdoc). Uses netPaid so
+    // debt-deducted amounts don't inflate the breakdown.
     var paidByName = (c.payouts || []).reduce(function(acc, po){
       var k = po.recipientUserName || "(unknown)";
       acc[k] = (acc[k] || 0) + Number(po.netPaid || 0);
       return acc;
     }, {});
-    var netByName = (cashFlow && cashFlow.byRecipient) || {};
-    var ctx = { paidByName: paidByName, netByName: netByName };
 
     return <div id={"commission-card-" + String(c._id)} key={String(c._id)} style={{
       background:"#fff", borderRadius:14, border:"1px solid " + (imminent ? "#FCA5A5" : "#E8ECF1"),
@@ -19512,12 +19472,50 @@ var CommissionsPage = function(p) {
         </div>
       </div>
 
-      {/* Phase R-8 — collapsible Recipients block. Defaults to collapsed;
-          clicking the header row toggles expand. Action buttons live in the
-          Edit Collection modal now — this block is display-only. */}
+      {/* Phase R-9 — Recipients block with per-recipient Owed / Paid /
+          Remaining breakdown + Incentive sub-section. Defaults to collapsed;
+          clicking the header toggles BOTH sub-sections together. Header label
+          shows both counts when incentives exist.
+          Match key for "Paid" is payouts[].recipientUserName (the only
+          recipient identifier on the payout subdoc); sum uses netPaid (gross
+          minus appliedToDebt) to match the existing paidByName convention. */}
       {(function(){
-        var recipientCount = ["salesAgent","teamLeader","manager","director"].filter(function(k){ return !!snap[k]; }).length
-          + (snap.isSplitDeal && snap.splitChain ? ["salesAgent2","teamLeader2","manager2","director2"].filter(function(k){ return !!snap.splitChain[k]; }).length : 0);
+        var primarySlots = [
+          ["salesAgent", "Sales",       snap.salesAgent],
+          ["teamLeader", "Team Lead",   snap.teamLeader],
+          ["manager",    "Manager",     snap.manager],
+          ["director",   "Director",    snap.director]
+        ];
+        if (snap.isSplitDeal && snap.splitChain) {
+          primarySlots.push(["salesAgent2", "Sales 2",     snap.splitChain.salesAgent2]);
+          primarySlots.push(["teamLeader2", "Team Lead 2", snap.splitChain.teamLeader2]);
+          primarySlots.push(["manager2",    "Manager 2",   snap.splitChain.manager2]);
+          primarySlots.push(["director2",   "Director 2",  snap.splitChain.director2]);
+        }
+        var rows = primarySlots.filter(function(t){ return !!t[2]; }).map(function(t){
+          var r = t[2];
+          var hasOverride = r.overrideAmount != null && Number(r.overrideAmount) > 0;
+          var owed = hasOverride ? Number(r.overrideAmount) : Number(r.computedShare || 0);
+          var paid = Number(paidByName[r.userName] || 0);
+          var remaining = Math.max(0, owed - paid);
+          var overpaid = paid > owed && owed > 0;
+          var fullyPaid = !overpaid && owed > 0 && remaining === 0;
+          var notStarted = paid === 0 && owed > 0;
+          return {
+            key: t[0], label: t[1], r: r,
+            owed: owed, paid: paid, remaining: remaining,
+            overpaid: overpaid, fullyPaid: fullyPaid, notStarted: notStarted,
+            isSplit: t[0].indexOf("2") > -1
+          };
+        });
+        var totals = rows.reduce(function(acc, x){
+          acc.owed += x.owed; acc.paid += x.paid; acc.remaining += x.remaining;
+          return acc;
+        }, { owed:0, paid:0, remaining:0 });
+        var incentives = (c.incentive && Array.isArray(c.incentive.recipients)) ? c.incentive.recipients : [];
+
+        var recipientCount = rows.length;
+        var incentiveCount = incentives.length;
         var expanded = !!expandedRecipients[String(c._id)];
         var toggle = function(){
           setExpandedRecipients(function(prev){
@@ -19526,27 +19524,122 @@ var CommissionsPage = function(p) {
             return next;
           });
         };
+
+        // Inline number formatter — strips " EGP" suffix from the page-level
+        // fmtMoney since we render the breakdown numbers without per-cell units.
+        var n2 = function(v){
+          var num = Number(v || 0);
+          if (!isFinite(num) || num === 0) return "0";
+          return Math.round(num).toLocaleString();
+        };
+
         return <div style={{ marginBottom:10 }}>
           <div onClick={toggle} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0", cursor:"pointer", userSelect:"none" }}>
-            <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase" }}>Recipients ({recipientCount})</div>
+            <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase" }}>
+              Recipients ({recipientCount}){incentiveCount > 0 && <span> · Incentives ({incentiveCount})</span>}
+            </div>
             <span style={{ fontSize:11, color:C.textLight }}>{expanded ? "▾" : "▸"}</span>
           </div>
-          <div style={{
-            overflow:"hidden",
-            transition:"max-height 0.2s ease",
-            maxHeight: expanded ? 600 : 0
-          }}>
+          <div style={{ overflow:"hidden", transition:"max-height 0.25s ease", maxHeight: expanded ? 1400 : 0 }}>
             <div style={{ paddingTop:6 }}>
-              {renderRecipient("Sales", snap.salesAgent, ctx)}
-              {renderRecipient("Team Lead", snap.teamLeader, ctx)}
-              {renderRecipient("Manager", snap.manager, ctx)}
-              {renderRecipient("Director", snap.director, ctx)}
-              {snap.isSplitDeal && snap.splitChain && (snap.splitChain.salesAgent2 || snap.splitChain.teamLeader2 || snap.splitChain.manager2 || snap.splitChain.director2) && <div style={{ marginTop:6, paddingTop:6, borderTop:"1px dashed #E2E8F0" }}>
-                <div style={{ fontSize:10, fontWeight:700, color:"#7C3AED", marginBottom:4, textTransform:"uppercase" }}>Split chain</div>
-                {renderRecipient("Sales 2", snap.splitChain.salesAgent2, ctx)}
-                {renderRecipient("Team Lead 2", snap.splitChain.teamLeader2, ctx)}
-                {renderRecipient("Manager 2", snap.splitChain.manager2, ctx)}
-                {renderRecipient("Director 2", snap.splitChain.director2, ctx)}
+              {/* Primary recipients table */}
+              {rows.length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 0" }}>No recipients on snapshot.</div>}
+              {rows.length > 0 && <div style={{ border:"1px solid #E2E8F0", borderRadius:10, overflow:"hidden", background:"#fff" }}>
+                {rows.map(function(x, idx){
+                  var rowBg = x.fullyPaid ? "#F0FDF4" : x.notStarted ? "#FFFBEB" : "#fff";
+                  var statusIcon = x.overpaid ? "⚠️" : x.fullyPaid ? "✅" : "🔴";
+                  var remColor   = x.overpaid ? "#B91C1C" : x.fullyPaid ? "#15803D" : C.text;
+                  var remValue   = x.overpaid ? ("+" + n2(x.paid - x.owed)) : n2(x.remaining);
+                  return <div key={x.key} style={{
+                    padding:"8px 12px",
+                    borderTop: idx > 0 ? "1px solid #F1F5F9" : "none",
+                    background: rowBg
+                  }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:4, gap:8 }}>
+                      <div style={{ display:"flex", gap:8, alignItems:"baseline", minWidth:0, flexWrap:"wrap" }}>
+                        <span style={{ fontSize:10, fontWeight:700, color:C.textLight, textTransform:"capitalize", minWidth:72 }}>{x.label}</span>
+                        <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{x.r.userName || "(unknown)"}</span>
+                        {x.r.userActiveAtClose === false && <span title="User deactivated" style={{ fontSize:9, padding:"1px 5px", borderRadius:6, background:"#FEE2E2", color:"#B91C1C", fontWeight:700 }}>⊘ inactive</span>}
+                        {x.r.overrideAmount != null && Number(x.r.overrideAmount) > 0 && <span title={"Override: " + (x.r.overrideReason || "no reason")} style={{ fontSize:9, padding:"1px 5px", borderRadius:6, background:"#FDF4FF", color:"#86198F", fontWeight:700 }}>override</span>}
+                        {x.isSplit && <span style={{ fontSize:9, padding:"1px 5px", borderRadius:6, background:"#F5F3FF", color:"#7C3AED", fontWeight:700 }}>split</span>}
+                      </div>
+                      <span style={{ fontSize:12 }}>{statusIcon}</span>
+                    </div>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, fontSize:11, marginInlineStart:80 }}>
+                      <div style={{ textAlign:"right" }}>
+                        <span style={{ color:C.textLight }}>Owed:&nbsp;</span>
+                        <span style={{ color:C.text }}>{n2(x.owed)}</span>
+                      </div>
+                      <div style={{ textAlign:"right" }}>
+                        <span style={{ color:C.textLight }}>Paid:&nbsp;</span>
+                        <span style={{ color:C.text }}>{n2(x.paid)}</span>
+                      </div>
+                      <div style={{ textAlign:"right" }}>
+                        <span style={{ color:C.textLight }}>Rem:&nbsp;</span>
+                        <span style={{ color:remColor, fontWeight:700 }}>{remValue}</span>
+                      </div>
+                    </div>
+                  </div>;
+                })}
+                {/* Totals row */}
+                <div style={{
+                  padding:"8px 12px",
+                  borderTop:"2px solid #CBD5E1",
+                  background:"#F8FAFC",
+                  display:"grid",
+                  gridTemplateColumns:"80px 1fr 1fr 1fr",
+                  gap:6,
+                  fontSize:11,
+                  alignItems:"baseline"
+                }}>
+                  <span style={{ fontSize:10, fontWeight:700, color:C.textLight, textTransform:"uppercase" }}>Total</span>
+                  <span style={{ textAlign:"right" }}>
+                    <span style={{ color:C.textLight }}>Owed:&nbsp;</span>
+                    <span style={{ color:C.text, fontWeight:700 }}>{n2(totals.owed)}</span>
+                  </span>
+                  <span style={{ textAlign:"right" }}>
+                    <span style={{ color:C.textLight }}>Paid:&nbsp;</span>
+                    <span style={{ color:C.text, fontWeight:700 }}>{n2(totals.paid)}</span>
+                  </span>
+                  <span style={{ textAlign:"right" }}>
+                    <span style={{ color:C.textLight }}>Rem:&nbsp;</span>
+                    <span style={{ color: totals.remaining === 0 ? "#15803D" : C.text, fontWeight:700 }}>{n2(totals.remaining)}</span>
+                  </span>
+                </div>
+              </div>}
+
+              {/* Incentive sub-section */}
+              {incentiveCount > 0 && <div style={{ marginTop:8 }}>
+                <div style={{ fontSize:10, fontWeight:700, color:C.textLight, textTransform:"uppercase", padding:"4px 0", marginBottom:4 }}>
+                  Incentive Recipients ({incentiveCount})
+                </div>
+                <div style={{ border:"1px solid #E2E8F0", borderRadius:10, overflow:"hidden", background:"#fff" }}>
+                  {incentives.map(function(ir, i){
+                    var isPaid = ir.status === "received";
+                    var rowBg  = isPaid ? "#F0FDF4" : "#FFFBEB";
+                    var statusBg = isPaid ? "#DCFCE7" : "#FEF9C3";
+                    var statusFg = isPaid ? "#15803D" : "#B45309";
+                    var statusLabel = isPaid ? ("Paid · " + (ir.receivedDate ? new Date(ir.receivedDate).toLocaleDateString("en-GB") : "—")) : "Pending";
+                    var roleLabel = String(ir.role || "").replace(/_/g, " ");
+                    return <div key={i} style={{
+                      padding:"8px 12px",
+                      borderTop: i > 0 ? "1px solid #F1F5F9" : "none",
+                      background: rowBg,
+                      display:"flex",
+                      justifyContent:"space-between",
+                      alignItems:"center",
+                      gap:8,
+                      flexWrap:"wrap"
+                    }}>
+                      <div style={{ display:"flex", gap:8, alignItems:"baseline", minWidth:0, flexWrap:"wrap" }}>
+                        <span style={{ fontSize:10, fontWeight:700, color:C.textLight, textTransform:"capitalize", minWidth:72 }}>{roleLabel || "—"}</span>
+                        <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{ir.userName || "(unknown)"}</span>
+                        <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:statusBg, color:statusFg, fontWeight:700 }}>{statusLabel}</span>
+                      </div>
+                      <span style={{ fontSize:12, fontWeight:700, color:C.success }}>{n2(ir.amount)} EGP</span>
+                    </div>;
+                  })}
+                </div>
               </div>}
             </div>
           </div>
@@ -20419,7 +20512,6 @@ var CommissionsPage = function(p) {
           });
           var statsUrl = "/api/commissions/stats" + (claimsYearFilter ? "?year=" + encodeURIComponent(claimsYearFilter) : "");
           apiFetch(statsUrl, "GET", null, p.token).then(function(s){ setStats(s || {}); }).catch(function(){});
-          apiFetch("/api/commissions/cash-flow", "GET", null, p.token).then(function(s){ setCashFlow(s || {}); }).catch(function(){});
         }
         if (didAnything !== false) setToast({ kind: "ok", msg: "Deal saved" });
       }}
