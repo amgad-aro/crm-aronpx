@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, memo, Fragment } from "react";
 
 import {
   Search, Bell, Plus, Phone, Building, Users, BarChart3,
@@ -10566,6 +10566,23 @@ var UsersPage = function(p) {
   var toggleActive=async function(u){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid,"PUT",{active:!u.active},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?upd:x;});});}catch(e){}};
   var del=async function(uid){if(!window.confirm(t.deleteConfirm))return;try{await apiFetch("/api/users/"+uid,"DELETE",null,p.token);p.setUsers(function(prev){return prev.filter(function(x){return gid(x)!==uid;});});}catch(e){alert(e.message);}};
   var updateTarget=async function(u,val){var uid=gid(u);try{await apiFetch("/api/users/"+uid,"PUT",{monthlyTarget:Number(val)},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?Object.assign({},x,{monthlyTarget:Number(val)}):x;});});}catch(e){}};
+  // Phase R-7 — bank-account inline edit. Saves on blur if changed. Backend
+  // enforces (a) admin/sales_admin only, (b) never on own record. Errors
+  // bubble as alerts; the local state revert restores the prior value.
+  var updateBankAccount=async function(u,val){
+    var uid=gid(u);
+    var v=String(val||"").trim();
+    var prev=String(u.bankAccountNumber||"");
+    if (v === prev) return;
+    try {
+      await apiFetch("/api/users/"+uid, "PUT", { bankAccountNumber: v }, p.token);
+      p.setUsers(function(prev){ return prev.map(function(x){ return gid(x)===uid ? Object.assign({}, x, { bankAccountNumber: v }) : x; }); });
+    } catch(e) {
+      alert((e && e.message) || "Failed to update bank account");
+      // Force re-render to revert the input back to its previous value.
+      p.setUsers(function(prev){ return prev.slice(); });
+    }
+  };
   var getQTargets=function(uid){
     var u=p.users.find(function(x){return gid(x)===uid;});
     if(u&&u.qTargets&&Object.keys(u.qTargets).length>0) return u.qTargets;
@@ -10585,7 +10602,13 @@ var UsersPage = function(p) {
     </div>
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:580 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,t.username,t.title,t.role,t.phone,"Quarterly Target","Last Seen","Starting Date",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {(function(){
+          // Phase R-7 — bank-account column only visible to admin/sales_admin.
+          var hs=[t.name,t.username,t.title,t.role,t.phone,"Quarterly Target","Last Seen","Starting Date"];
+          if (isOnlyAdmin) hs.push("Bank Account");
+          hs.push(t.status); hs.push("");
+          return hs.map(function(h,i){return <th key={(h||"x")+i} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;});
+        })()}
       </tr></thead>
       <tbody>{p.users.map(function(u){
         var uid=gid(u);
@@ -10642,6 +10665,27 @@ var UsersPage = function(p) {
             return d.toLocaleDateString("en-GB");
           })()}
         </td>
+        {isOnlyAdmin && <td style={{ padding:"6px 12px" }}>
+          {/* Phase R-7 — inline edit. Disabled on self (security: prevents an
+              agent from redirecting their own commission payouts). Backend
+              enforces the same rule + the admin/sales_admin role check. */}
+          <input
+            type="text"
+            defaultValue={u.bankAccountNumber || ""}
+            disabled={isSelf || ownerLocked}
+            placeholder={isSelf ? "(your own — not editable)" : "—"}
+            title={isSelf ? "You cannot edit your own bank account" : (ownerLocked ? "Owner account locked" : "Bank account for monthly payouts")}
+            onBlur={function(e){ if (!isSelf && !ownerLocked) updateBankAccount(u, e.target.value); }}
+            style={{
+              width: 160, padding:"5px 8px", borderRadius:6,
+              border:"1px solid "+(isSelf || ownerLocked ? "#E2E8F0" : C.border),
+              background: (isSelf || ownerLocked) ? "#F8FAFC" : "#fff",
+              fontSize:11, fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace",
+              color: (isSelf || ownerLocked) ? C.textLight : C.text,
+              cursor: (isSelf || ownerLocked) ? "not-allowed" : "text"
+            }}
+          />
+        </td>}
         <td style={{ padding:"11px 12px" }}>{isOwnerRow
           ? <span style={{ fontSize:11, color:C.textLight }}>—</span>
           : <Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge>}</td>
@@ -18324,46 +18368,88 @@ var CommissionClaimBackfillModal = function(p) {
 var AddExpenseModal = function(p) {
   var editing = p.target || null;
   var isEdit  = !!editing;
-  var [date, setDate] = useState(function(){
-    if (editing && editing.date) {
-      try { return new Date(editing.date).toISOString().slice(0, 10); } catch(_){ return new Date().toISOString().slice(0,10); }
+  // Phase R-7 — add mode is now multi-row. The rows[] state holds an array of
+  // draft expense rows; edit mode collapses to a single row that the existing
+  // PATCH endpoint handles. Each row carries date / categoryId / amount /
+  // description / invoiceNumber. Today's date is the default for new rows.
+  var todayIso = new Date().toISOString().slice(0, 10);
+  var initialRow = function(){
+    if (editing) {
+      var dateStr = todayIso;
+      try { if (editing.date) dateStr = new Date(editing.date).toISOString().slice(0, 10); } catch(_){}
+      var n = Number(editing.amount || 0);
+      var amtStr = (isFinite(n) && n > 0)
+        ? round2(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : "";
+      return {
+        date: dateStr,
+        categoryId: editing.categoryId ? String(editing.categoryId) : "",
+        amount: amtStr,
+        description: editing.description || "",
+        invoiceNumber: editing.invoiceNumber || ""
+      };
     }
-    return new Date().toISOString().slice(0, 10);
-  });
-  var [categoryId, setCategoryId] = useState(editing && editing.categoryId ? String(editing.categoryId) : "");
-  var [amount, setAmount] = useState(function(){
-    if (!editing) return "";
-    var n = Number(editing.amount || 0);
-    if (!isFinite(n) || n <= 0) return "";
-    return round2(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  });
-  var [description, setDescription] = useState(editing && editing.description ? editing.description : "");
+    return { date: todayIso, categoryId: "", amount: "", description: "", invoiceNumber: "" };
+  };
+  var [rows, setRows] = useState([initialRow()]);
   var [saving, setSaving] = useState(false);
 
   // Active categories only in the dropdown — archived stays selectable when
   // editing an existing expense that points to it (so we don't silently lose
   // the row's tag), but doesn't appear for new entries.
   var activeCats = (p.categories || []).filter(function(c){ return !c.archived; });
-  var dropdownCats = activeCats.slice();
-  if (isEdit && editing.categoryId) {
-    var alreadyIn = activeCats.some(function(c){ return String(c._id) === String(editing.categoryId); });
-    if (!alreadyIn) {
-      var arch = (p.categories || []).find(function(c){ return String(c._id) === String(editing.categoryId); });
-      if (arch) dropdownCats.push(arch);
+  var buildDropdown = function(currentCategoryId) {
+    var out = activeCats.slice();
+    if (isEdit && currentCategoryId) {
+      var alreadyIn = activeCats.some(function(c){ return String(c._id) === String(currentCategoryId); });
+      if (!alreadyIn) {
+        var arch = (p.categories || []).find(function(c){ return String(c._id) === String(currentCategoryId); });
+        if (arch) out.push(arch);
+      }
     }
-  }
+    return out;
+  };
+
+  var setRowField = function(idx, field, value) {
+    setRows(function(prev){
+      var next = prev.slice();
+      next[idx] = Object.assign({}, next[idx], (function(){ var o = {}; o[field] = value; return o; })());
+      return next;
+    });
+  };
+  var addRow = function(){ setRows(function(prev){ return prev.concat([{ date: todayIso, categoryId: "", amount: "", description: "", invoiceNumber: "" }]); }); };
+  var removeRow = function(idx){ setRows(function(prev){ return prev.filter(function(_, i){ return i !== idx; }); }); };
 
   var save = async function(){
-    if (!categoryId) { alert("Pick a category"); return; }
-    var amt = parseMoney(amount);
-    if (!isFinite(amt) || amt <= 0) { alert("Amount must be > 0"); return; }
+    // Validate every row before any network call — atomic UX.
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (!r.date)               { alert("Row " + (i+1) + ": date required"); return; }
+      if (!r.categoryId)         { alert("Row " + (i+1) + ": pick a category"); return; }
+      var amtN = parseMoney(r.amount);
+      if (!isFinite(amtN) || amtN <= 0) { alert("Row " + (i+1) + ": amount must be > 0"); return; }
+    }
     setSaving(true);
     try {
-      var body = { date: date, categoryId: categoryId, amount: amt, description: description };
       if (isEdit) {
+        var r0 = rows[0];
+        var body = {
+          date: r0.date, categoryId: r0.categoryId, amount: parseMoney(r0.amount),
+          description: r0.description || "",
+          invoiceNumber: r0.invoiceNumber || ""
+        };
         await apiFetch("/api/expenses/" + editing._id, "PATCH", body, p.token);
       } else {
-        await apiFetch("/api/expenses", "POST", body, p.token);
+        var payload = {
+          rows: rows.map(function(r){
+            return {
+              date: r.date, categoryId: r.categoryId, amount: parseMoney(r.amount),
+              description: r.description || "",
+              invoiceNumber: r.invoiceNumber || ""
+            };
+          })
+        };
+        await apiFetch("/api/expenses/bulk", "POST", payload, p.token);
       }
       setSaving(false);
       if (p.onSaved) p.onSaved();
@@ -18374,28 +18460,60 @@ var AddExpenseModal = function(p) {
     }
   };
 
-  return <Modal show={true} onClose={p.onClose} title={isEdit ? "Edit Expense" : "Add Expense"} w={460}>
-    <FormRow label="Date">
-      <input type="date" value={date} onChange={function(e){ setDate(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
-    </FormRow>
-    <FormRow label="Category">
-      <select value={categoryId} onChange={function(e){ setCategoryId(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff" }}>
-        <option value="">— select —</option>
-        {dropdownCats.map(function(c){
-          return <option key={c._id} value={c._id}>{c.name}{c.archived ? " (archived)" : ""}</option>;
-        })}
-      </select>
-    </FormRow>
-    <FormRow label="Amount (EGP)">
-      <MoneyInput value={amount} onChange={setAmount} autoFocus={!isEdit}/>
-    </FormRow>
-    <FormRow label="Description (optional)">
-      <textarea rows={2} value={description} onChange={function(e){ setDescription(e.target.value); }}
-        style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/>
-    </FormRow>
+  return <Modal show={true} onClose={p.onClose} title={isEdit ? "Edit Expense" : ("Add Expense" + (rows.length > 1 ? " (" + rows.length + " rows)" : ""))} w={isEdit ? 460 : 820}>
+    {rows.map(function(r, idx){
+      return <div key={"row-" + idx} style={{
+        border: rows.length > 1 ? "1px solid #E8ECF1" : "none",
+        borderRadius: rows.length > 1 ? 10 : 0,
+        padding: rows.length > 1 ? "10px 12px" : 0,
+        marginBottom: rows.length > 1 ? 10 : 0,
+        background: rows.length > 1 ? "#FAFBFC" : "transparent"
+      }}>
+        {rows.length > 1 && <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+          <span style={{ fontSize:11, fontWeight:700, color:C.textLight }}>Row {idx + 1}</span>
+          <button onClick={function(){ removeRow(idx); }} disabled={saving} style={{
+            padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:600,
+            border:"1px solid "+C.border, background:"#fff", color:C.danger,
+            cursor: saving ? "wait" : "pointer"
+          }}>Remove</button>
+        </div>}
+        <FormRow label="Date">
+          <input type="date" value={r.date} onChange={function(e){ setRowField(idx, "date", e.target.value); }}
+            style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
+        </FormRow>
+        <FormRow label="Category">
+          <select value={r.categoryId} onChange={function(e){ setRowField(idx, "categoryId", e.target.value); }}
+            style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff" }}>
+            <option value="">— select —</option>
+            {buildDropdown(r.categoryId).map(function(c){
+              return <option key={c._id} value={c._id}>{c.name}{c.archived ? " (archived)" : ""}</option>;
+            })}
+          </select>
+        </FormRow>
+        <FormRow label="Amount (EGP)">
+          <MoneyInput value={r.amount} onChange={function(v){ setRowField(idx, "amount", v); }} autoFocus={!isEdit && idx === 0}/>
+        </FormRow>
+        <FormRow label="Invoice Number (optional)">
+          <input type="text" value={r.invoiceNumber} placeholder="e.g. INV-2026-0042"
+            onChange={function(e){ setRowField(idx, "invoiceNumber", e.target.value); }}
+            style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace" }}/>
+        </FormRow>
+        <FormRow label="Description (optional)">
+          <textarea rows={2} value={r.description} onChange={function(e){ setRowField(idx, "description", e.target.value); }}
+            style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/>
+        </FormRow>
+      </div>;
+    })}
+    {!isEdit && <div style={{ marginBottom:12 }}>
+      <button onClick={addRow} disabled={saving} style={{
+        padding:"6px 14px", borderRadius:8, fontSize:12, fontWeight:600,
+        border:"1px dashed "+C.accent, background:"#fff", color:C.accent,
+        cursor: saving ? "wait" : "pointer"
+      }}>+ Add row</button>
+    </div>}
     <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
       <button onClick={p.onClose} disabled={saving} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: saving ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
-      <button onClick={save} disabled={saving} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: saving ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{saving ? "Saving…" : "Save"}</button>
+      <button onClick={save} disabled={saving} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: saving ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{saving ? "Saving…" : (isEdit ? "Save" : ("Save " + rows.length + " expense" + (rows.length === 1 ? "" : "s")))}</button>
     </div>
   </Modal>;
 };
@@ -18656,6 +18774,20 @@ var CommissionsPage = function(p) {
   // Phase R-6 polish — claim-data backfill modal target. Holds the cycle +
   // commission pair when admin clicks "Add claim data" on a pre-R-5 cycle.
   var [backfillTarget, setBackfillTarget] = useState(null); // { commission, cycle }
+  // Phase R-7 — manual revert modal target. Holds the commission to be
+  // reverted from fully_paid back to active. Two-step CONFIRM gate.
+  var [revertTarget, setRevertTarget] = useState(null);   // commission obj
+  var [revertConfirm, setRevertConfirm] = useState("");
+  var [revertBusy, setRevertBusy] = useState(false);
+  // Phase R-7 — Payout Report tab state. monthKey "YYYY-MM" defaults to
+  // current Cairo month; expandedAgents is a Set-as-object for per-agent
+  // drill-down.
+  var nowCairoR7 = new Date(Date.now() + 3 * 3600 * 1000);
+  var defaultMonthKeyR7 = nowCairoR7.getUTCFullYear() + "-" + String(nowCairoR7.getUTCMonth() + 1).padStart(2, "0");
+  var [payoutMonth, setPayoutMonth] = useState(defaultMonthKeyR7);
+  var [payoutReport, setPayoutReport] = useState(null);
+  var [payoutLoading, setPayoutLoading] = useState(false);
+  var [expandedPayoutAgents, setExpandedPayoutAgents] = useState({});
   var [rows, setRows] = useState(null);
   var [stats, setStats] = useState(null);
   var [loadErr, setLoadErr] = useState("");
@@ -18728,6 +18860,23 @@ var CommissionsPage = function(p) {
       .catch(function(){ if (!cancelled) setExpenseCategories([]); });
     return function(){ cancelled = true; };
   }, [activeTab, annualYear, p.cu, p.token, pnlReloadTick]);
+
+  // Phase R-7 — Payout Report fetcher. payoutMonth is "YYYY-MM"; backend
+  // accepts year/month numeric params.
+  useEffect(function(){
+    if (activeTab !== "payout") return;
+    var cancelled = false;
+    var parts = String(payoutMonth || "").split("-");
+    if (parts.length !== 2) return;
+    var y = parseInt(parts[0], 10);
+    var m = parseInt(parts[1], 10);
+    if (!isFinite(y) || !isFinite(m)) return;
+    setPayoutLoading(true);
+    apiFetch("/api/commissions/payout-report?year=" + y + "&month=" + m, "GET", null, p.token)
+      .then(function(d){ if (!cancelled) { setPayoutReport(d || null); setPayoutLoading(false); } })
+      .catch(function(){ if (!cancelled) { setPayoutReport(null); setPayoutLoading(false); } });
+    return function(){ cancelled = true; };
+  }, [activeTab, payoutMonth, p.token, reloadTick]);
 
   // One-shot consume of selectedCommissionLeadId from CRMApp state.
   // Hits /by-lead/:leadId, expands the matching card, then clears the cue.
@@ -19190,8 +19339,22 @@ var CommissionsPage = function(p) {
             </span>
             {snap.developer && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontWeight:700 }}>{snap.developer}</span>}
             {snap.isSplitDeal && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#F5F3FF", color:"#7C3AED", fontWeight:700 }}>🤝 Split</span>}
+            {/* Phase R-7 — commission status badges. Active = amber (in-progress
+                book), Fully paid = green (closed), Cancelled = gray (dead).
+                The Revert button only shows for status=fully_paid AND admin role. */}
+            {c.status === "active" && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#FEF3C7", color:"#B45309", fontWeight:700 }}>Active</span>}
             {isFullyPaid && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontWeight:700 }}>Fully paid</span>}
-            {isCancelled && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#FEE2E2", color:"#B91C1C", fontWeight:700 }}>Cancelled</span>}
+            {isFullyPaid && p.cu && p.cu.role === "admin" && <button
+              onClick={function(){ setRevertTarget(c); setRevertConfirm(""); }}
+              disabled={savingFlag}
+              title="Manually revert this commission back to Active (admin-only correction tool)"
+              style={{
+                fontSize:10, padding:"2px 8px", borderRadius:10,
+                border:"1px solid #FCA5A5", background:"#FFF", color:"#B91C1C",
+                fontWeight:700, cursor: savingFlag ? "wait" : "pointer"
+              }}
+            >↺ Revert to Active</button>}
+            {isCancelled && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#E5E7EB", color:"#4B5563", fontWeight:700 }}>Cancelled</span>}
             {imminent && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#FEE2E2", color:"#B91C1C", fontWeight:700 }}>⏰ collection due</span>}
           </div>
           <div style={{ fontSize:12, color:C.textLight }}>
@@ -19390,6 +19553,7 @@ var CommissionsPage = function(p) {
       <TabBtn id="deals"      label="Claims"/>
       <TabBtn id="calculator" label="Calculator"/>
       {p.cu && p.cu.role === "admin" && <TabBtn id="annual" label="Annual Summary"/>}
+      <TabBtn id="payout"     label="Payout Report"/>
     </div>
 
     {activeTab === "deals" && <>
@@ -19408,6 +19572,9 @@ var CommissionsPage = function(p) {
       if (unseen.length === 0) return null;
       var style = function(type){
         if (type === "commission_cancellation_impact") return { bg:"#FEF2F2", border:"#FCA5A5", fg:"#B91C1C", chip:"#FEE2E2" };
+        // Phase R-7 — payout reminders use a green/money palette so they're
+        // visually distinct from the amber "missing stage" alerts.
+        if (type === "commission_payout_reminder") return { bg:"#F0FDF4", border:"#86EFAC", fg:"#15803D", chip:"#DCFCE7" };
         // commission_stage_missing + any future type → amber
         return { bg:"#FFFBEB", border:"#FCD34D", fg:"#B45309", chip:"#FEF3C7" };
       };
@@ -19429,17 +19596,29 @@ var CommissionsPage = function(p) {
           try { setTimeout(function(){ var el = document.getElementById("commission-card-" + String(match._id)); if (el && el.scrollIntoView) el.scrollIntoView({ behavior:"smooth", block:"center" }); }, 50); } catch(_e){}
         }
       };
+      // Phase R-7 — for commission_payout_reminder: jump to Payout Report tab.
+      // The notification carries fromName="<userId>:<YYYY-MM>"; we parse the
+      // month suffix and pre-select it so the admin lands on the right view.
+      var goToPayoutReport = function(n){
+        var parts = String(n.fromName || "").split(":");
+        if (parts.length === 2 && /^\d{4}-\d{2}$/.test(parts[1])) {
+          setPayoutMonth(parts[1]);
+        }
+        setActiveTab("payout");
+      };
       return <div style={{ marginBottom:14, display:"flex", flexDirection:"column", gap:8 }}>
         {unseen.map(function(n){
           var s = style(n.type);
+          var isPayout = n.type === "commission_payout_reminder";
           return <div key={String(n._id)} style={{ background:s.bg, border:"1px solid "+s.border, color:s.fg, padding:"10px 14px", borderRadius:10, display:"flex", alignItems:"center", gap:10, fontSize:13 }}>
-            <span style={{ fontSize:18, lineHeight:1 }}>💰</span>
+            <span style={{ fontSize:18, lineHeight:1 }}>{isPayout ? "💸" : "💰"}</span>
             <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontWeight:700 }}>{n.leadName || "Commission"}</div>
+              <div style={{ fontWeight:700 }}>{isPayout ? ("Payout reminder · " + (n.leadName || "Agent")) : (n.leadName || "Commission")}</div>
               <div style={{ fontSize:12, marginTop:2 }}>{n.reason || ""}</div>
               <div style={{ fontSize:10, marginTop:2, opacity:0.75 }}>{timeAgo(n.createdAt, p.t)}</div>
             </div>
-            {n.leadId && <button onClick={function(){ goToDeal(n); }} style={{ padding:"4px 10px", borderRadius:6, border:"1px solid "+s.border, background:s.chip, color:s.fg, fontSize:11, fontWeight:600, cursor:"pointer" }}>Go to deal</button>}
+            {isPayout && <button onClick={function(){ goToPayoutReport(n); }} style={{ padding:"4px 10px", borderRadius:6, border:"1px solid "+s.border, background:s.chip, color:s.fg, fontSize:11, fontWeight:600, cursor:"pointer" }}>View payout report</button>}
+            {!isPayout && n.leadId && <button onClick={function(){ goToDeal(n); }} style={{ padding:"4px 10px", borderRadius:6, border:"1px solid "+s.border, background:s.chip, color:s.fg, fontSize:11, fontWeight:600, cursor:"pointer" }}>Go to deal</button>}
             <button onClick={function(){ dismiss(n._id); }} title="Dismiss" style={{ padding:"4px 8px", borderRadius:6, border:"1px solid "+s.border, background:"#fff", color:s.fg, fontSize:11, fontWeight:600, cursor:"pointer" }}>✕</button>
           </div>;
         })}
@@ -19789,6 +19968,7 @@ var CommissionsPage = function(p) {
                                     <tr>
                                       <th style={{ textAlign:"start", padding:"6px 12px 6px 32px", fontWeight:600, color:C.textLight, width:90 }}>Date</th>
                                       <th style={{ textAlign:"start", padding:"6px 12px", fontWeight:600, color:C.textLight, width:140 }}>Category</th>
+                                      <th style={{ textAlign:"start", padding:"6px 12px", fontWeight:600, color:C.textLight, width:140 }}>Invoice Number</th>
                                       <th style={{ textAlign:"start", padding:"6px 12px", fontWeight:600, color:C.textLight }}>Description</th>
                                       <th style={{ textAlign:"end",   padding:"6px 12px", fontWeight:600, color:C.textLight, width:120 }}>Amount</th>
                                       <th style={{ textAlign:"end",   padding:"6px 12px", fontWeight:600, color:C.textLight, width:80 }}></th>
@@ -19802,6 +19982,7 @@ var CommissionsPage = function(p) {
                                           {r.categoryName}
                                           {r.categoryArchived && <span style={{ marginInlineStart:6, fontSize:9, color:"#B45309", background:"#FEF3C7", padding:"1px 6px", borderRadius:10, fontWeight:700 }}>archived</span>}
                                         </td>
+                                        <td style={{ padding:"6px 12px", fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace", color: r.invoiceNumber ? C.text : C.textLight }}>{r.invoiceNumber || "—"}</td>
                                         <td style={{ padding:"6px 12px", color:C.textLight }}>{r.description || "—"}</td>
                                         <td style={{ padding:"6px 12px", textAlign:"end", fontWeight:600 }}>{fmtMoneyAr(r.amount)}</td>
                                         <td style={{ padding:"6px 12px", textAlign:"end" }}>
@@ -19902,6 +20083,200 @@ var CommissionsPage = function(p) {
       </div>;
     })()}
 
+    {activeTab === "payout" && (function(){
+      // Phase R-7 — Payout Report. Aggregated view of what we owe the team
+      // for the selected month. Month dropdown shows the last 24 months
+      // descending; current month is the default. Grouped by agent;
+      // each agent row expands to show contributing deals.
+      var months = (function(){
+        var arr = [];
+        var d0 = new Date(Date.now() + 3 * 3600 * 1000);
+        for (var i = 0; i < 24; i++) {
+          var d = new Date(Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth() - i, 1));
+          var y = d.getUTCFullYear();
+          var m = d.getUTCMonth() + 1;
+          var key = y + "-" + String(m).padStart(2, "0");
+          var label = d.toLocaleString("en-GB", { month:"long", year:"numeric", timeZone:"UTC" });
+          arr.push({ key: key, label: label });
+        }
+        return arr;
+      })();
+      var agents = (payoutReport && payoutReport.agents) || [];
+      var summary = (payoutReport && payoutReport.summary) || { totalPayout:0, agentCount:0, dealCount:0 };
+      var currentMonthLabel = (months.find(function(m){ return m.key === payoutMonth; }) || { label: payoutMonth }).label;
+      // Phase R-7 — Print to PDF. Expand all agents first so every drill-down
+      // row renders into the DOM, then call window.print() on the next tick
+      // so React has a chance to commit. The browser's "Save as PDF" sink
+      // produces the file — no PDF library dependency. @media print CSS in
+      // the inline <style> block below hides everything outside
+      // #payout-print-area and forces A4 portrait.
+      var printPayoutReport = function(){
+        var allExpanded = {};
+        agents.forEach(function(a){ allExpanded[a.userId] = true; });
+        setExpandedPayoutAgents(allExpanded);
+        // Two rAFs to be safe — first commits the expand, second is the
+        // post-commit paint. window.print is synchronous and blocks; on
+        // return, leave the expand state as-is (admin can collapse manually).
+        if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+          window.requestAnimationFrame(function(){
+            window.requestAnimationFrame(function(){
+              try { window.print(); } catch(_){}
+            });
+          });
+        } else {
+          setTimeout(function(){ try { window.print(); } catch(_){} }, 80);
+        }
+      };
+      return <div id="payout-print-area">
+        {/* Print-only CSS — hides everything outside the report when printing,
+            forces A4 portrait, expands all expansion rows, hides interactive
+            chrome. Lives inline so it ships with the report and nothing else
+            on the page bleeds into the PDF. */}
+        <style>{`
+          @media print {
+            @page { size: A4 portrait; margin: 14mm; }
+            html, body { background: #fff !important; }
+            body * { visibility: hidden !important; }
+            #payout-print-area, #payout-print-area * { visibility: visible !important; }
+            #payout-print-area {
+              position: absolute !important;
+              left: 0 !important; top: 0 !important;
+              width: 100% !important; padding: 0 !important;
+            }
+            #payout-print-area .no-print { display: none !important; }
+            #payout-print-area .print-only { display: block !important; }
+            #payout-print-area table { page-break-inside: auto; }
+            #payout-print-area tr { page-break-inside: avoid; page-break-after: auto; }
+            #payout-print-area thead { display: table-header-group; }
+            #payout-print-area tfoot { display: table-footer-group; }
+          }
+          .print-only { display: none; }
+        `}</style>
+        {/* Print-only header — appears at the top of the PDF, hidden on screen. */}
+        <div className="print-only" style={{ marginBottom:14, paddingBottom:10, borderBottom:"2px solid #1E293B" }}>
+          <div style={{ fontSize:20, fontWeight:700, color:"#1E293B" }}>ARO — Commission Payout Report</div>
+          <div style={{ fontSize:13, color:"#475569", marginTop:4 }}>{currentMonthLabel}</div>
+          <div style={{ fontSize:11, color:"#64748B", marginTop:2 }}>Generated {new Date().toLocaleString("en-GB")}</div>
+        </div>
+
+        {/* Top filter row */}
+        <div className="no-print" style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
+          <span style={{ fontSize:12, color:C.textLight }}>Payout month</span>
+          <select value={payoutMonth} onChange={function(e){ setPayoutMonth(e.target.value); setExpandedPayoutAgents({}); }}
+            style={{ padding:"7px 10px", borderRadius:8, border:"1px solid "+C.border, fontSize:12, background:"#fff" }}>
+            {months.map(function(m){ return <option key={m.key} value={m.key}>{m.label}</option>; })}
+          </select>
+          {payoutLoading && <span style={{ fontSize:11, color:C.textLight }}>Loading payout report…</span>}
+          <span style={{ flex:1 }}/>
+          <button onClick={printPayoutReport} disabled={agents.length === 0 || payoutLoading} title="Open the browser print dialog — pick 'Save as PDF' to file the report"
+            style={{
+              padding:"7px 14px", borderRadius:8, fontSize:12, fontWeight:600,
+              border:"1px solid "+C.accent,
+              background: agents.length === 0 ? "#F8FAFC" : C.accent + "12",
+              color: agents.length === 0 ? C.textLight : C.accent,
+              cursor: agents.length === 0 || payoutLoading ? "not-allowed" : "pointer"
+            }}>🖨️ Print to PDF</button>
+        </div>
+
+        {/* Stats row */}
+        <div style={{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" }}>
+          <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Total payout</div>
+            <div style={{ fontSize:18, fontWeight:700, color:C.success }}>{fmtMoney(summary.totalPayout)} EGP</div>
+          </div>
+          <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Agents to pay</div>
+            <div style={{ fontSize:18, fontWeight:700, color:C.text }}>{summary.agentCount}</div>
+          </div>
+          <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Deals contributing</div>
+            <div style={{ fontSize:18, fontWeight:700, color:C.text }}>{summary.dealCount}</div>
+          </div>
+        </div>
+
+        {/* Per-agent table — expandable rows. Each agent shows totalOwed,
+            bank account, and their list of contributing deals. */}
+        {agents.length === 0 && !payoutLoading && <div style={{
+          padding:"30px 16px", textAlign:"center", color:C.textLight,
+          background:"#fff", border:"1px solid #E8ECF1", borderRadius:10
+        }}>No payouts owed for this month.</div>}
+
+        {agents.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+            <thead>
+              <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
+                <th className="no-print" style={{ width:32 }}></th>
+                <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Agent</th>
+                <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Role</th>
+                <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Bank account</th>
+                <th style={{ textAlign:"end",   padding:"10px 12px", fontWeight:700, color:C.textLight }}>Deals</th>
+                <th style={{ textAlign:"end",   padding:"10px 12px", fontWeight:700, color:C.textLight }}>Total owed (EGP)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {agents.map(function(a){
+                var expanded = !!expandedPayoutAgents[a.userId];
+                return <Fragment key={a.userId}>
+                  <tr style={{ borderTop:"1px solid #F1F5F9", cursor:"pointer" }}
+                      onClick={function(){
+                        setExpandedPayoutAgents(function(prev){
+                          var next = Object.assign({}, prev);
+                          if (next[a.userId]) delete next[a.userId]; else next[a.userId] = true;
+                          return next;
+                        });
+                      }}>
+                    <td className="no-print" style={{ padding:"10px 12px", color:C.textLight, fontSize:14 }}>{expanded ? "▾" : "▸"}</td>
+                    <td style={{ padding:"10px 12px", fontWeight:600 }}>{a.userName}</td>
+                    <td style={{ padding:"10px 12px", color:C.textLight }}>{a.role}</td>
+                    <td style={{ padding:"10px 12px", fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace", fontSize:11, color: a.bankAccountNumber ? C.text : C.textLight }}>{a.bankAccountNumber || "— not set —"}</td>
+                    <td style={{ padding:"10px 12px", textAlign:"end" }}>{a.deals.length}</td>
+                    <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.success }}>{fmtMoney(a.totalOwed)}</td>
+                  </tr>
+                  {expanded && <tr style={{ background:"#F8FAFC" }}>
+                    <td colSpan={6} style={{ padding:"6px 12px 12px 44px" }}>
+                      <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+                        <thead>
+                          <tr style={{ color:C.textLight }}>
+                            <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Customer</th>
+                            <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Project</th>
+                            <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Deal date</th>
+                            <th style={{ textAlign:"end",   padding:"6px 8px", fontWeight:700 }}>Deal total</th>
+                            <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Split</th>
+                            <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Cycle</th>
+                            <th style={{ textAlign:"end",   padding:"6px 8px", fontWeight:700 }}>Owed (EGP)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {a.deals.map(function(d, idx){
+                            return <tr key={d.commissionId + ":" + idx} style={{ borderTop:"1px solid #E2E8F0" }}>
+                              <td style={{ padding:"6px 8px", color:C.text }}>{d.customerName || "(unknown)"}</td>
+                              <td style={{ padding:"6px 8px", color:C.text }}>{d.projectName || "—"}</td>
+                              <td style={{ padding:"6px 8px", color:C.textLight }}>{fmtDate(d.dealDate)}</td>
+                              <td style={{ padding:"6px 8px", textAlign:"end", color:C.textLight }}>{fmtMoney(d.dealTotal)}</td>
+                              <td style={{ padding:"6px 8px", color: d.isSplit ? "#7C3AED" : C.textLight, fontWeight: d.isSplit ? 600 : 400 }}>{d.splitLabel || "Full deal"}</td>
+                              <td style={{ padding:"6px 8px", color:C.textLight }}>{d.cycleRef ? "#" + d.cycleRef : "—"}</td>
+                              <td style={{ padding:"6px 8px", textAlign:"end", fontWeight:700, color:C.success }}>{fmtMoney(d.owedNet)}</td>
+                            </tr>;
+                          })}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>}
+                </Fragment>;
+              })}
+            </tbody>
+            <tfoot>
+              <tr style={{ background:"#F8FAFC", borderTop:"2px solid #CBD5E1" }}>
+                <td colSpan={4} style={{ padding:"10px 12px", fontWeight:700, color:C.text }}>Total</td>
+                <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text }}>{summary.dealCount}</td>
+                <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.success }}>{fmtMoney(summary.totalPayout)} EGP</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>}
+      </div>;
+    })()}
+
     {/* Phase D modals — rendered when their state is set. */}
     {editingSnapshot && <CommissionSnapshotEditModal target={editingSnapshot} onClose={function(){ setEditingSnapshot(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
     {editingCycleStage && <CommissionCycleStageModal target={editingCycleStage} onClose={function(){ setEditingCycleStage(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
@@ -19931,6 +20306,58 @@ var CommissionsPage = function(p) {
         // Refetch P&L so any rename/archive reflects in the table category column.
         triggerPnlReload();
       }}/>}
+
+    {/* Phase R-7 — manual revert confirm modal. Type CONFIRM to unlock. Admin
+        only; the parent button is gated on role+status already. */}
+    {revertTarget && <div className="crm-modal" style={{
+      position:"fixed", inset:0, background:"rgba(0,0,0,0.52)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:16
+    }} onClick={function(){ if (!revertBusy) { setRevertTarget(null); setRevertConfirm(""); } }}>
+      <div onClick={function(e){ e.stopPropagation(); }} style={{
+        background:"#fff", borderRadius:14, padding:"22px 22px",
+        width:"100%", maxWidth:480, boxShadow:"0 24px 64px rgba(0,0,0,0.2)"
+      }}>
+        <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:8 }}>Revert to Active</div>
+        <div style={{ fontSize:13, color:C.text, marginBottom:14, lineHeight:1.55 }}>
+          Revert <b>{(revertTarget.snapshot && revertTarget.snapshot.customerName) || "this commission"}</b> from <b>Fully paid</b> back to <b>Active</b>?
+          Cycles are NOT modified — only the commission's status. Use only if data was entered incorrectly.
+        </div>
+        <div style={{ fontSize:12, color:C.textLight, marginBottom:6 }}>Type <b style={{ color:C.danger }}>CONFIRM</b> to enable:</div>
+        <input
+          type="text"
+          value={revertConfirm}
+          onChange={function(e){ setRevertConfirm(e.target.value); }}
+          autoFocus
+          disabled={revertBusy}
+          style={{ width:"100%", padding:"10px 12px", border:"1px solid "+C.border, borderRadius:8, fontSize:13, fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace", boxSizing:"border-box" }}
+        />
+        <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:16 }}>
+          <button onClick={function(){ setRevertTarget(null); setRevertConfirm(""); }} disabled={revertBusy} style={{
+            padding:"8px 16px", borderRadius:8, fontSize:12, fontWeight:600,
+            border:"1px solid "+C.border, background:"#fff", color:C.textLight,
+            cursor: revertBusy ? "wait" : "pointer"
+          }}>Cancel</button>
+          <button
+            onClick={async function(){
+              if (revertConfirm !== "CONFIRM" || revertBusy) return;
+              setRevertBusy(true);
+              try {
+                await writeCommission("PATCH", "/api/commissions/" + revertTarget._id + "/revert-to-active", {}, "Reverted to Active");
+                setRevertTarget(null); setRevertConfirm("");
+              } catch(_){ /* writeCommission already toasts */ }
+              setRevertBusy(false);
+            }}
+            disabled={revertConfirm !== "CONFIRM" || revertBusy}
+            style={{
+              padding:"8px 16px", borderRadius:8, fontSize:12, fontWeight:700,
+              border:"1px solid "+C.warning,
+              background: (revertConfirm === "CONFIRM" && !revertBusy) ? C.warning : "#F8FAFC",
+              color: (revertConfirm === "CONFIRM" && !revertBusy) ? "#FFF" : C.textLight,
+              cursor: (revertConfirm !== "CONFIRM" || revertBusy) ? "not-allowed" : "pointer"
+            }}>{revertBusy ? "Reverting…" : "Revert to Active"}</button>
+        </div>
+      </div>
+    </div>}
 
     {/* Toast — top-right transient feedback. Auto-dismisses via useEffect. */}
     {toast && <div style={{

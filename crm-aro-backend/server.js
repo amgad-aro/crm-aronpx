@@ -84,7 +84,13 @@ var User = mongoose.model("User", new mongoose.Schema({
   // calendar day (server time / Africa/Cairo). Counted from agentHistory[]
   // Rotation entries where date >= start of today. Manual /rotate ignores
   // this cap entirely (admin override).
-  dailyLeadCap:{type:Number,default:null,min:0}
+  dailyLeadCap:{type:Number,default:null,min:0},
+  // Phase R-7 — bank account for monthly commission payouts. Editable by
+  // admin + sales_admin ONLY, and never by the user themselves (prevents an
+  // agent from redirecting their own payments). Free-text on purpose: Egyptian
+  // bank accounts vary in shape (IBAN / domestic / wallet IDs) and the field
+  // is for human-readable transfer instructions, not API integration.
+  bankAccountNumber:{type:String,default:""}
 },{timestamps:true}));
 
 var Lead = mongoose.model("Lead", new mongoose.Schema({
@@ -508,6 +514,10 @@ var expenseSchema = new mongoose.Schema({
   categoryId:      { type: mongoose.Schema.Types.ObjectId, ref: "ExpenseCategory", required: true },
   amount:          { type: Number, required: true, min: 0 }, // > 0 enforced at write site
   description:     { type: String, default: "" },
+  // Phase R-7 — optional invoice number. Applies to ANY expense (not just the
+  // "Invoices" category). Free-text — Egyptian tax invoices are alphanumeric
+  // and vary in format. Displayed in the ledger table as its own column.
+  invoiceNumber:   { type: String, default: "" },
   createdByUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }
 }, { timestamps: true });
 expenseSchema.index({ date: -1 });
@@ -1148,13 +1158,22 @@ async function seedAssetCategories() {
 // Only fires when ExpenseCategory is empty; safe to ship as a permanent seeder
 // because subsequent boots find rows and no-op.
 async function seedExpenseCategories() {
-  var existing = await ExpenseCategory.countDocuments();
-  if (existing > 0) return;
-  var seeds = ["Salaries", "Rent", "Utilities", "Internet", "Other"];
+  // Phase R-7 — per-name idempotent insert. The previous all-or-nothing
+  // guard (`existing > 0 → return`) prevented new seed names (like "Invoices")
+  // from landing on databases that were seeded under the original R-6 list.
+  // Now we check each name individually and create only the missing ones.
+  var seeds = ["Salaries", "Rent", "Utilities", "Internet", "Invoices", "Other"];
+  var created = 0;
   for (var i = 0; i < seeds.length; i++) {
-    try { await ExpenseCategory.create({ name: seeds[i] }); } catch(_e){ /* dup unique — ignore */ }
+    var name = seeds[i];
+    try {
+      var hit = await ExpenseCategory.findOne({ name: name }).lean();
+      if (hit) continue;
+      await ExpenseCategory.create({ name: name });
+      created++;
+    } catch(_e){ /* dup unique — ignore */ }
   }
-  console.log("[seed] expense categories: " + seeds.length + " created");
+  if (created > 0) console.log("[seed] expense categories: " + created + " created (idempotent)");
 }
 
 // ===== CREATE DEFAULT ADMIN =====
@@ -6031,6 +6050,19 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     }
     if (req.body.saturdayPatternStartDate !== undefined) {
       update.saturdayPatternStartDate = req.body.saturdayPatternStartDate || null;
+    }
+    // Phase R-7 — bankAccountNumber. Edit only by admin/sales_admin, and
+    // never on one's own record (an agent must not be able to redirect their
+    // own commission payouts). Free-text — see User schema comment.
+    if (req.body.bankAccountNumber !== undefined) {
+      var callerRole = req.user && req.user.role;
+      if (callerRole !== "admin" && callerRole !== "sales_admin") {
+        return res.status(403).json({ error: "bankAccountNumber edit requires admin or sales_admin" });
+      }
+      if (String(req.user.id) === String(req.params.id)) {
+        return res.status(403).json({ error: "Cannot edit your own bankAccountNumber" });
+      }
+      update.bankAccountNumber = String(req.body.bankAccountNumber || "").trim();
     }
     var user = await User.findByIdAndUpdate(req.params.id, { $set: update }, { new: true, strict: false }).select("-password");
     // Bust the active-flag cache so a just-toggled user is rejected on their
@@ -15662,6 +15694,221 @@ app.get("/api/commissions/cash-flow", auth, salesAdminOnly, async function(req, 
   }
 });
 
+// Phase R-7 — Commission Payout Report. Per-agent aggregated view of what
+// the company owes the team for a given calendar month.
+//
+// SCOPE: "deals whose collection arrived this month" = commissions with at
+// least one cycle whose `received.date` prefix matches the target month.
+// status: { $ne: "cancelled" } — cancelled commissions don't owe payouts.
+//
+// PER-RECIPIENT OWED MATH (judgment call, flagged to user):
+//   owed = (overrideAmount || computedShare) − sum(payouts[].amount for that recipient)
+// Full commission becomes owed on the first received cycle. The data model
+// doesn't carry per-cycle share allocations, so pro-rata across cycles would
+// be a guess; full-on-first-collection is the consistent rule.
+//
+// Excludes recipients with non-positive owed (already paid or never owed).
+// Used by both the GET endpoint below AND the sweepPayoutReminders cron.
+async function computePayoutsForMonth(year, month) {
+  // monthKey is "YYYY-MM" — used for received.date prefix match.
+  var monthKey = String(year) + "-" + String(month).padStart(2, "0");
+  var docs = await Commission.find({
+    status: { $ne: "cancelled" },
+    cycles: { $elemMatch: { "received.date": { $regex: "^" + monthKey } } }
+  })
+    .select("leadId status snapshot cycles payouts")
+    .lean();
+
+  // byAgent: { userIdStr -> { userId, userName, role, totalOwed, deals: [...] } }
+  var byAgent = Object.create(null);
+
+  function ensureAgent(rec) {
+    if (!rec || !rec.userId) return null;
+    var key = String(rec.userId);
+    if (!byAgent[key]) {
+      byAgent[key] = {
+        userId:    key,
+        userName:  rec.userName || "(unknown)",
+        role:      rec.role || "sales",
+        totalOwed: 0,
+        deals:     []
+      };
+    }
+    return byAgent[key];
+  }
+
+  function paidToRecipient(payouts, userId) {
+    if (!Array.isArray(payouts) || !userId) return 0;
+    var key = String(userId);
+    var s = 0;
+    for (var i = 0; i < payouts.length; i++) {
+      var p = payouts[i];
+      if (p && p.recipientUserId && String(p.recipientUserId) === key) {
+        s += Number(p.amount || 0);
+      }
+    }
+    return s;
+  }
+
+  function effectiveOwed(rec) {
+    if (!rec) return 0;
+    var override = rec.overrideAmount != null && Number(rec.overrideAmount) > 0
+      ? Number(rec.overrideAmount) : null;
+    return override != null ? override : Number(rec.computedShare || 0);
+  }
+
+  function pushDeal(rec, doc, splitLabel, cycleNumberRef) {
+    if (!rec || !rec.userId) return;
+    var owed = effectiveOwed(rec);
+    if (!(owed > 0)) return;
+    var paid = paidToRecipient(doc.payouts, rec.userId);
+    var net = owed - paid;
+    if (!(net > 0)) return;
+    var bucket = ensureAgent(rec);
+    if (!bucket) return;
+    var snap = doc.snapshot || {};
+    bucket.totalOwed += net;
+    bucket.deals.push({
+      commissionId:  String(doc._id),
+      leadId:        String(doc.leadId || ""),
+      customerName:  snap.customerName || "",
+      projectName:   snap.projectName  || "",
+      dealDate:      snap.dealDate     || "",
+      dealTotal:     Number(snap.dealTotal || 0),
+      isSplit:       !!snap.isSplitDeal,
+      splitLabel:    splitLabel,                       // "Full deal" | "Split 50%"
+      role:          rec.role,
+      computedShare: Number(rec.computedShare || 0),
+      overrideAmount: rec.overrideAmount != null ? Number(rec.overrideAmount) : null,
+      paidToDate:    paid,
+      owedTotal:     owed,
+      owedNet:       net,
+      cycleRef:      cycleNumberRef                   // first matching cycle # for display
+    });
+  }
+
+  for (var di = 0; di < docs.length; di++) {
+    var doc = docs[di];
+    var snap = doc.snapshot || {};
+    // Find the first cycle that triggered match (display reference).
+    var cycleRef = null;
+    if (Array.isArray(doc.cycles)) {
+      for (var ci = 0; ci < doc.cycles.length; ci++) {
+        var cy = doc.cycles[ci];
+        var rd = cy && cy.received && cy.received.date;
+        if (typeof rd === "string" && rd.slice(0, 7) === monthKey) {
+          cycleRef = cy.cycleNumber;
+          break;
+        }
+      }
+    }
+    var isSplit  = !!snap.isSplitDeal;
+    var splitLab = isSplit ? "Split 50%" : "Full deal";
+
+    pushDeal(snap.salesAgent, doc, splitLab, cycleRef);
+    pushDeal(snap.teamLeader, doc, splitLab, cycleRef);
+    pushDeal(snap.manager,    doc, splitLab, cycleRef);
+    pushDeal(snap.director,   doc, splitLab, cycleRef);
+    if (isSplit && snap.splitChain) {
+      pushDeal(snap.splitChain.salesAgent2, doc, "Split 50%", cycleRef);
+      pushDeal(snap.splitChain.teamLeader2, doc, "Split 50%", cycleRef);
+      pushDeal(snap.splitChain.manager2,    doc, "Split 50%", cycleRef);
+      pushDeal(snap.splitChain.director2,   doc, "Split 50%", cycleRef);
+    }
+  }
+
+  // Sort agents by totalOwed desc, and within each agent sort deals by
+  // dealDate desc (most recent first — matches admin's expected scan order).
+  var agentList = Object.keys(byAgent).map(function(k){ return byAgent[k]; });
+  agentList.sort(function(a, b){ return b.totalOwed - a.totalOwed; });
+  agentList.forEach(function(a){
+    a.deals.sort(function(x, y){
+      if (x.dealDate !== y.dealDate) return x.dealDate < y.dealDate ? 1 : -1;
+      return 0;
+    });
+  });
+
+  // Hydrate bank account from User collection (one query). The snapshot
+  // doesn't carry bankAccountNumber by design — bank info is profile-level
+  // and may change; reading at report time keeps it fresh.
+  var agentIds = agentList
+    .map(function(a){ try { return new mongoose.Types.ObjectId(a.userId); } catch(_){ return null; } })
+    .filter(Boolean);
+  var users = agentIds.length > 0
+    ? await User.find({ _id: { $in: agentIds } }).select("bankAccountNumber").lean()
+    : [];
+  var bankByUid = Object.create(null);
+  users.forEach(function(u){ bankByUid[String(u._id)] = u.bankAccountNumber || ""; });
+  agentList.forEach(function(a){
+    a.bankAccountNumber = bankByUid[a.userId] || "";
+  });
+
+  var totalPayout = 0, totalDeals = 0;
+  agentList.forEach(function(a){
+    totalPayout += a.totalOwed;
+    totalDeals  += a.deals.length;
+  });
+
+  return {
+    monthKey: monthKey,
+    agents:   agentList,
+    summary: {
+      totalPayout: totalPayout,
+      agentCount:  agentList.length,
+      dealCount:   totalDeals
+    }
+  };
+}
+
+app.get("/api/commissions/payout-report", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var nowCairo = new Date(Date.now() + 3 * 3600 * 1000);
+    var defaultYear  = nowCairo.getUTCFullYear();
+    var defaultMonth = nowCairo.getUTCMonth() + 1;
+    var year  = Number(req.query.year)  || defaultYear;
+    var month = Number(req.query.month) || defaultMonth;
+    if (year < 2020 || year > 2100) return res.status(400).json({ error: "year out of range" });
+    if (month < 1 || month > 12)    return res.status(400).json({ error: "month out of range (1-12)" });
+    var result = await computePayoutsForMonth(year, month);
+    function round2(n){ return Math.round(Number(n||0) * 100) / 100; }
+    // Round all money values at the response boundary so the FE doesn't have
+    // to repeat the rounding logic for every cell.
+    var rounded = {
+      year:     year,
+      month:    month,
+      monthKey: result.monthKey,
+      agents: result.agents.map(function(a){
+        return {
+          userId:            a.userId,
+          userName:          a.userName,
+          role:              a.role,
+          bankAccountNumber: a.bankAccountNumber,
+          totalOwed:         round2(a.totalOwed),
+          deals: a.deals.map(function(d){
+            return Object.assign({}, d, {
+              dealTotal:      round2(d.dealTotal),
+              computedShare:  round2(d.computedShare),
+              overrideAmount: d.overrideAmount != null ? round2(d.overrideAmount) : null,
+              paidToDate:     round2(d.paidToDate),
+              owedTotal:      round2(d.owedTotal),
+              owedNet:        round2(d.owedNet)
+            });
+          })
+        };
+      }),
+      summary: {
+        totalPayout: round2(result.summary.totalPayout),
+        agentCount:  result.summary.agentCount,
+        dealCount:   result.summary.dealCount
+      }
+    };
+    res.json(rounded);
+  } catch(e) {
+    console.error("[GET /api/commissions/payout-report]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "payout_report_failed" });
+  }
+});
+
 // ===== Phase R-5 annual summary + VAT payments =====
 // Annual summary aggregates ALL cycles (regardless of commission status)
 // whose claim_submitted.date falls in the selected year and which have
@@ -15964,12 +16211,56 @@ app.post("/api/expenses", auth, strictAdminOnly, async function(req, res) {
       categoryId:      body.categoryId,
       amount:          amount,
       description:     String(body.description || ""),
+      invoiceNumber:   String(body.invoiceNumber || "").trim(),
       createdByUserId: req.user && req.user.id ? req.user.id : null
     });
     res.json(doc.toObject());
   } catch(e) {
     console.error("[POST /api/expenses]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "expense_create_failed" });
+  }
+});
+
+// Phase R-7 — bulk expense create. Accepts { rows: [{ date, categoryId,
+// amount, description?, invoiceNumber? }, ...] }, validates every row, and
+// only persists if all pass. Validation is identical to POST /api/expenses
+// above (single source of truth would be a helper, but the dup is small and
+// the row-level error messages need the index to be useful). Returns
+// { created: N, expenses: [...] } on success.
+app.post("/api/expenses/bulk", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var rows = (req.body && Array.isArray(req.body.rows)) ? req.body.rows : null;
+    if (!rows || rows.length === 0) return res.status(400).json({ error: "rows array required" });
+    if (rows.length > 100) return res.status(400).json({ error: "bulk limit is 100 rows per request" });
+    var prepared = [];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i] || {};
+      if (!r.date) return res.status(400).json({ error: "row " + (i+1) + ": date required" });
+      var d = new Date(r.date);
+      if (isNaN(d.getTime())) return res.status(400).json({ error: "row " + (i+1) + ": invalid date" });
+      if (!r.categoryId || !mongoose.Types.ObjectId.isValid(r.categoryId)) {
+        return res.status(400).json({ error: "row " + (i+1) + ": valid categoryId required" });
+      }
+      var amt = Number(r.amount);
+      if (!isFinite(amt) || amt <= 0) return res.status(400).json({ error: "row " + (i+1) + ": amount must be > 0" });
+      prepared.push({
+        date:            d,
+        categoryId:      r.categoryId,
+        amount:          amt,
+        description:     String(r.description || ""),
+        invoiceNumber:   String(r.invoiceNumber || "").trim(),
+        createdByUserId: req.user && req.user.id ? req.user.id : null
+      });
+    }
+    // insertMany is atomic per-document with ordered:true (stops at first
+    // failure). Since we've already validated every row above, ordered:true
+    // is fine — any DB-level error (e.g. categoryId references a deleted
+    // category) bubbles up before partial commits matter.
+    var created = await Expense.insertMany(prepared, { ordered: true });
+    res.json({ created: created.length, expenses: created.map(function(c){ return c.toObject(); }) });
+  } catch(e) {
+    console.error("[POST /api/expenses/bulk]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "expense_bulk_create_failed" });
   }
 });
 
@@ -15993,6 +16284,7 @@ app.patch("/api/expenses/:id", auth, strictAdminOnly, async function(req, res) {
       update.amount = amt;
     }
     if (body.description !== undefined) update.description = String(body.description || "");
+    if (body.invoiceNumber !== undefined) update.invoiceNumber = String(body.invoiceNumber || "").trim();
     if (Object.keys(update).length === 0) return res.status(400).json({ error: "no fields to update" });
     var doc = await Expense.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
     if (!doc) return res.status(404).json({ error: "not found" });
@@ -16173,6 +16465,7 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
         date:             r.date,
         amount:           round2(r.amount),
         description:      r.description || "",
+        invoiceNumber:    r.invoiceNumber || "",
         categoryId:       r.categoryId && r.categoryId._id ? String(r.categoryId._id) : null,
         categoryName:     r.categoryId && r.categoryId.name ? r.categoryId.name : "(unknown)",
         categoryArchived: !!(r.categoryId && r.categoryId.archived === true),
@@ -16670,6 +16963,34 @@ app.post("/api/commissions/:id/cycles", auth, salesAdminOnly, async function(req
   } catch(e) {
     console.error("[POST /api/commissions/:id/cycles]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "cycle_create_failed" });
+  }
+});
+
+// Phase R-7 — admin-only manual revert from fully_paid back to active.
+// Correction tool for the case where sales_admin marked a cycle paid_to_team
+// with bad data and the commission rolled over to fully_paid. Unlike the
+// /cycles delete + auto-revert path, this leaves cycles untouched — the admin
+// is asserting "the cycles are fine, the status is wrong". Audit row records
+// the flip; no recompute (status doesn't influence computedShare).
+app.patch("/api/commissions/:id/revert-to-active", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (c.status !== "fully_paid") {
+      return res.status(400).json({ error: "Revert only applies to fully_paid commissions (current: " + c.status + ")" });
+    }
+    c.status = "active";
+    await c.save();
+    var snap = c.snapshot || {};
+    var adminName = (req.user && req.user.name) || "(unknown admin)";
+    await logCommissionActivity(req.user, c.leadId, "commission_status_revert",
+      "[Commission] manually reverted from fully_paid to active by " + adminName +
+      " — customer=" + (snap.customerName || "(unknown)"));
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PATCH /api/commissions/:id/revert-to-active]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "revert_to_active_failed" });
   }
 });
 
@@ -17270,6 +17591,80 @@ async function sweepCommissionAlerts() {
 }
 setInterval(sweepCommissionAlerts, 6 * 60 * 60 * 1000); // every 6h
 setTimeout(sweepCommissionAlerts, 60 * 1000);            // first run 60s after boot
+
+// Phase R-7 — Monthly Commission Payout Reminder.
+// Fires on the 13th, 14th, and 15th of each Cairo calendar month, at the
+// hourly tick that falls inside the 09:00–09:59 Cairo window. Idempotent
+// per (agent, month): the first firing in the month creates one notification
+// per agent; subsequent firings find the existing rows and skip. The
+// notification type is `commission_payout_reminder` — surfaced via the
+// existing /api/notifications/commission banner (salesAdminOnly), not the
+// general bell. Click handler on the FE switches the Commissions page tab
+// to "Payout Report".
+//
+// IDEMPOTENCY: lookup is by (type, fromName = `<userId>:<YYYY-MM>`). The
+// payout date is always the 15th, so within a single month the same
+// notification doc covers all three reminder days.
+async function sweepPayoutReminders() {
+  try {
+    var nowCairo = new Date(Date.now() + 3 * 3600 * 1000);
+    var cairoDay  = nowCairo.getUTCDate();
+    var cairoHour = nowCairo.getUTCHours();
+    // 13/14/15 at 09:xx Cairo.
+    if (cairoDay < 13 || cairoDay > 15) return;
+    if (cairoHour !== 9) return;
+    var year  = nowCairo.getUTCFullYear();
+    var month = nowCairo.getUTCMonth() + 1;
+    var monthKey = String(year) + "-" + String(month).padStart(2, "0");
+    var report = await computePayoutsForMonth(year, month);
+    if (!report.agents || report.agents.length === 0) return;
+    var created = 0;
+    for (var i = 0; i < report.agents.length; i++) {
+      var a = report.agents[i];
+      if (!(a.totalOwed > 0)) continue;
+      var idemKey = a.userId + ":" + monthKey;
+      // Idempotency check — note the type+fromName composite index already
+      // exists on Notification (createdAt secondary), so this is one lookup.
+      var existing = await Notification.findOne({
+        type: "commission_payout_reminder",
+        fromName: idemKey
+      }).lean();
+      if (existing) continue;
+      try {
+        var totalRounded = Math.round(a.totalOwed);
+        await Notification.create({
+          type:      "commission_payout_reminder",
+          leadName:  a.userName,                 // agent name, surfaced as "lead" in the banner row
+          agentName: a.userName,
+          fromName:  idemKey,                    // composite key for idempotency
+          toName:    a.userId,                   // FE can use this to deep-link if needed
+          status:    a.role,
+          budget:    String(totalRounded),       // total owed EGP (rounded)
+          reason:    "Pay " + a.userName + " " + totalRounded.toLocaleString() +
+                     " EGP this month — from " + a.deals.length +
+                     " deal" + (a.deals.length === 1 ? "" : "s") +
+                     ". Click to view breakdown."
+        });
+        created++;
+      } catch(notifErr) {
+        console.error("[sweepPayoutReminders notify]", notifErr && notifErr.message);
+      }
+    }
+    if (created > 0) {
+      try { broadcast("notification_updated", {}); } catch(_){}
+      console.log("[sweepPayoutReminders] " + monthKey + " — " + created + " reminder(s) created");
+    }
+  } catch(e) {
+    console.error("[sweepPayoutReminders]", e && e.message);
+  }
+}
+// Hourly tick. The gate inside the function is the actual scheduling — we
+// don't try to schedule a precise 9am Cairo job because Railway's host clock
+// is UTC and Cairo is UTC+3 (no DST). Boot-time warm-up runs 60s after start
+// so a deploy on day 13/14/15 doesn't miss the window if Railway restarted
+// at 09:30 Cairo.
+setInterval(sweepPayoutReminders, 60 * 60 * 1000);
+setTimeout(sweepPayoutReminders, 60 * 1000);
 
 // ===== ASSET TRACKER — read/setup endpoints (S1) =====
 // Admin/owner only. Models + middleware + seeders live near the top of this
