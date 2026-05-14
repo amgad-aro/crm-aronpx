@@ -18330,6 +18330,16 @@ var CommissionsPage = function(p) {
     return function(){ clearTimeout(h); };
   }, [toast]);
 
+  // Defensive: the Annual Summary tab is admin-only (financial totals). If a
+  // sales_admin somehow lands on activeTab === "annual" (was admin then demoted,
+  // or stale state), bounce them back to Deals. The tab button itself is also
+  // hidden for non-admins below, so this is belt-and-braces.
+  useEffect(function(){
+    if (activeTab === "annual" && p.cu && p.cu.role !== "admin") {
+      setActiveTab("deals");
+    }
+  }, [activeTab, p.cu]);
+
   // Phase R-4: commission notifications banner — fetch on mount + on every
   // websocket notification_updated event (server broadcasts this on create,
   // dismiss, cancel cascade, and the cron sweeper).
@@ -18872,8 +18882,9 @@ var CommissionsPage = function(p) {
     </div>
 
     <div style={{ borderBottom:"1px solid #E8ECF1", marginBottom:14, display:"flex" }}>
-      <TabBtn id="deals"  label="الديلز — Deals"/>
-      <TabBtn id="annual" label="الملخص السنوي — Annual summary"/>
+      <TabBtn id="deals"      label="الديلز — Deals"/>
+      <TabBtn id="calculator" label="حاسبة العمولة — Calculator"/>
+      {p.cu && p.cu.role === "admin" && <TabBtn id="annual" label="الملخص السنوي — Annual summary"/>}
     </div>
 
     {activeTab === "deals" && <>
@@ -18985,6 +18996,42 @@ var CommissionsPage = function(p) {
     {!loading && rows && rows.length > 0 && rows.map(renderCard)}
     </>}
 
+    {activeTab === "calculator" && (function(){
+      // Standalone calculator — pure UI scratchpad. Visible to admin + sales_admin.
+      // State (calcUnit/calcRate) lives on CommissionsPage so it survives tab
+      // switches; resets on page reload. Same round2/fmtMoney2 helpers + formulas
+      // as the claim_submitted modal so the two breakdowns stay in lockstep.
+      var calcUnitNum = parseMoney(calcUnit) || 0;
+      var calcRateRaw = parseFloat(calcRate);
+      var calcRateDec = isFinite(calcRateRaw) ? calcRateRaw / 100 : 0;
+      var calcGross    = calcUnitNum > 0 && calcRateDec > 0 ? calcUnitNum * calcRateDec : 0;
+      var calcNetOfVat = calcGross > 0 ? calcGross / 1.14 : 0;
+      var calcVat      = calcGross - calcNetOfVat;
+      var calcWith5    = calcNetOfVat * 0.05;
+      var calcNetDue   = calcGross > 0 ? calcGross - calcWith5 : 0;
+
+      return <div style={{ maxWidth:600, marginBottom:18, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"14px 16px" }}>
+        <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:10, direction:"rtl", textAlign:"right" }}>حاسبة العمولة — Commission calculator</div>
+        <div style={{ direction:"rtl" }}>
+          <FormRow label="قيمه الوحده — Unit value (EGP)">
+            <MoneyInput value={calcUnit} onChange={setCalcUnit}/>
+          </FormRow>
+          <FormRow label="نسبه العموله — Commission rate (%)">
+            <input type="number" step="0.01" min="0" max="100" value={calcRate} placeholder="3"
+              onChange={function(e){ setCalcRate(e.target.value); }}
+              style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
+          </FormRow>
+        </div>
+        <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginTop:6, fontSize:12, color:C.text, direction:"rtl", textAlign:"right" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>إجمالي قيمة العمولة (شامل VAT)</span><b>{fmtMoney2(calcGross)}</b></div>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>أصل المبلغ (قبل VAT)</span><span>{fmtMoney2(calcNetOfVat)}</span></div>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>VAT 14%</span><span>{fmtMoney2(calcVat)}</span></div>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>ضريبة الخصم 5%</span><span>{fmtMoney2(calcWith5)}</span></div>
+          <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #CBD5E1", color:C.success, fontWeight:700 }}><span>صافي المستحق</span><span>{fmtMoney2(calcNetDue)}</span></div>
+        </div>
+      </div>;
+    })()}
+
     {activeTab === "annual" && (function(){
       // Effective year — yearFilter when set, else current Cairo year. Mirrors
       // the backend default so the UI always shows what the endpoint returned.
@@ -19007,18 +19054,6 @@ var CommissionsPage = function(p) {
         </div>;
       };
 
-      // Standalone calculator math — pure UI, never persisted. Uses the same
-      // round2/fmtMoney2 helpers + formulas as the claim_submitted modal so
-      // the two breakdowns stay in lockstep.
-      var calcUnitNum = parseMoney(calcUnit) || 0;
-      var calcRateRaw = parseFloat(calcRate);
-      var calcRateDec = isFinite(calcRateRaw) ? calcRateRaw / 100 : 0;
-      var calcGross    = calcUnitNum > 0 && calcRateDec > 0 ? calcUnitNum * calcRateDec : 0;
-      var calcNetOfVat = calcGross > 0 ? calcGross / 1.14 : 0;
-      var calcVat      = calcGross - calcNetOfVat;
-      var calcWith5    = calcNetOfVat * 0.05;
-      var calcNetDue   = calcGross > 0 ? calcGross - calcWith5 : 0;
-
       return <div>
         {/* Year selector — same yearFilter state as the Deals tab. */}
         <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
@@ -19032,30 +19067,6 @@ var CommissionsPage = function(p) {
             })}
           </select>
           <div style={{ fontSize:11, color:C.textLight }}>الملخص السنوي لعام {ay}</div>
-        </div>
-
-        {/* Phase R-5 standalone calculator — digital twin of the user's Excel
-            sheet. Pure UI, no save, no link to any deal/cycle. Same math +
-            helpers as the claim_submitted modal breakdown. */}
-        <div style={{ maxWidth:600, marginBottom:18, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"14px 16px" }}>
-          <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:10, direction:"rtl", textAlign:"right" }}>حاسبة العمولة — Commission calculator</div>
-          <div style={{ direction:"rtl" }}>
-            <FormRow label="قيمه الوحده — Unit value (EGP)">
-              <MoneyInput value={calcUnit} onChange={setCalcUnit}/>
-            </FormRow>
-            <FormRow label="نسبه العموله — Commission rate (%)">
-              <input type="number" step="0.01" min="0" max="100" value={calcRate} placeholder="3"
-                onChange={function(e){ setCalcRate(e.target.value); }}
-                style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
-            </FormRow>
-          </div>
-          <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginTop:6, fontSize:12, color:C.text, direction:"rtl", textAlign:"right" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>إجمالي قيمة العمولة (شامل VAT)</span><b>{fmtMoney2(calcGross)}</b></div>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>أصل المبلغ (قبل VAT)</span><span>{fmtMoney2(calcNetOfVat)}</span></div>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>VAT 14%</span><span>{fmtMoney2(calcVat)}</span></div>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>ضريبة الخصم 5%</span><span>{fmtMoney2(calcWith5)}</span></div>
-            <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #CBD5E1", color:C.success, fontWeight:700 }}><span>صافي المستحق</span><span>{fmtMoney2(calcNetDue)}</span></div>
-          </div>
         </div>
 
         {annualLoading && <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight }}>Loading…</div>}
