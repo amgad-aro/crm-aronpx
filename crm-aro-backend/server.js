@@ -15593,11 +15593,19 @@ app.get("/api/commissions/stats", auth, salesAdminOnly, async function(req, res)
     var year = String(req.query.year || "").trim();
     var yearMatch = /^\d{4}$/.test(year) ? year : "";
 
-    // availableYears — distinct years that appear in any cycle.received.date
-    // across ALL commissions (not just active). Used by the year-filter dropdown
-    // so the user always sees the full year range, regardless of current filter.
-    var allDocs = await Commission.find({}).select("cycles.received.date").lean();
+    // availableYears — union of every year the user might want to inspect on
+    // the Annual Summary / Claims tabs. Sources, all merged into one Set:
+    //   1. cycle.received.date across ALL commissions (claims/cash-in history)
+    //   2. Expense.date (Cairo-local) — so expense-only years still appear
+    //   3. ProfitTaxConfig.year — admin-planned tax rates for future years
+    //   4. The current Cairo year, always — so the dropdown is never empty
+    //      and admins can plan a year before any data exists.
+    // Cairo conversion uses the existing fixed UTC+3 convention (matches
+    // /annual-summary + /annual-pnl); DST drift is accepted to keep year
+    // assignment consistent with how those endpoints scope their data.
     var yearSet = Object.create(null);
+    // 1. commission cycles (received.date)
+    var allDocs = await Commission.find({}).select("cycles.received.date").lean();
     for (var ai = 0; ai < allDocs.length; ai++) {
       var ac = allDocs[ai];
       if (!Array.isArray(ac.cycles)) continue;
@@ -15606,6 +15614,24 @@ app.get("/api/commissions/stats", auth, salesAdminOnly, async function(req, res)
         if (typeof rd === "string" && /^\d{4}/.test(rd)) yearSet[rd.slice(0,4)] = true;
       }
     }
+    // 2. expenses (Cairo-local year)
+    var expenseDates = await Expense.find({}).select("date").lean();
+    for (var ei = 0; ei < expenseDates.length; ei++) {
+      var ed = expenseDates[ei] && expenseDates[ei].date;
+      if (!ed) continue;
+      var localE = new Date(new Date(ed).getTime() + 3 * 3600 * 1000);
+      var yE = localE.getUTCFullYear();
+      if (isFinite(yE)) yearSet[String(yE)] = true;
+    }
+    // 3. profit-tax configs
+    var taxYears = await ProfitTaxConfig.find({}).select("year").lean();
+    for (var ti = 0; ti < taxYears.length; ti++) {
+      var ty = taxYears[ti] && taxYears[ti].year;
+      if (typeof ty === "number" && isFinite(ty)) yearSet[String(ty)] = true;
+    }
+    // 4. current Cairo year — guarantees a non-empty dropdown
+    var nowCairoYears = new Date(Date.now() + 3 * 3600 * 1000);
+    yearSet[String(nowCairoYears.getUTCFullYear())] = true;
     var availableYears = Object.keys(yearSet).sort(function(a,b){ return Number(b) - Number(a); });
 
     var activeQ = { status: "active" };
