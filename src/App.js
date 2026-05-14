@@ -1108,6 +1108,10 @@ var Sidebar = function(p) {
     // roles (manager, team_leader, sales, hr, director, viewer) are blocked
     // here AND at the page-switch gate AND on the backend (requireAssetAccess).
     (p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.isOwner===true)&&{id:"assets",label:"Assets",adminSection:true},
+    // Phase R-6 polish #2 — admin-only data-integrity diagnostics. Lists Leads
+    // that should have an active commission but don't, with a self-service
+    // create button. strictAdminOnly server-side; admin role-only here.
+    (p.cu.role==="admin")&&{id:"diagnostics",label:"Diagnostics",adminSection:true},
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
@@ -19942,6 +19946,130 @@ var CommissionsPage = function(p) {
 };
 
 
+// =====================================================================
+// Phase R-6 polish #2 — Diagnostics page (admin only). Surfaces Leads that
+// should have an active commission but don't (auto-create likely failed at
+// the DoneDeal transition because the lead had no agentId, OR a hook
+// exception silently dropped the write). Self-service "Create commission"
+// button calls POST /api/diagnose/create-commission per row.
+// Server-side gate: strictAdminOnly. Client-side gate at the page-switch.
+// =====================================================================
+var DiagnosticsPage = function(p) {
+  var [rows, setRows] = useState(null);     // null=loading, []=empty, [...]=data
+  var [err, setErr] = useState("");
+  var [busyId, setBusyId] = useState(null); // leadId currently being created
+  var [toast, setToast] = useState(null);   // {kind:"ok"|"err", msg}
+
+  var refresh = function(){
+    setRows(null); setErr("");
+    apiFetch("/api/diagnose/missing-commissions", "GET", null, p.token)
+      .then(function(d){ setRows((d && d.data) || []); })
+      .catch(function(e){ setRows([]); setErr((e && e.message) || "Load failed"); });
+  };
+  useEffect(refresh, [p.token]);
+
+  useEffect(function(){
+    if (!toast) return;
+    var h = setTimeout(function(){ setToast(null); }, 3000);
+    return function(){ clearTimeout(h); };
+  }, [toast]);
+
+  var createOne = async function(row){
+    setBusyId(row.leadId);
+    try {
+      var r = await apiFetch("/api/diagnose/create-commission", "POST", { leadId: row.leadId }, p.token);
+      setRows(function(prev){ return (prev || []).filter(function(x){ return x.leadId !== row.leadId; }); });
+      setToast({ kind:"ok", msg:"Commission created for " + (row.customerName || row.leadId) + " (" + String(r.commissionId).slice(-6) + ")" });
+    } catch(e) {
+      setToast({ kind:"err", msg:(e && e.message) || "Create failed" });
+    }
+    setBusyId(null);
+  };
+
+  var fmtDate = function(d){ if (!d) return "—"; try { return new Date(d).toLocaleDateString("en-GB"); } catch(_){ return String(d); } };
+
+  return <div style={{ padding:"24px 16px", maxWidth:1100, margin:"0 auto" }}>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+      <h1 style={{ margin:0, fontSize:22, fontWeight:700, color:C.text }}>Diagnostics</h1>
+      <button onClick={refresh} disabled={rows === null} style={{
+        padding:"6px 14px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff",
+        cursor: rows === null ? "wait" : "pointer", fontSize:12, fontWeight:600, color:C.textLight
+      }}>Refresh</button>
+    </div>
+
+    <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:14, padding:"16px 18px", marginBottom:14 }}>
+      <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:4 }}>Missing commissions</div>
+      <div style={{ fontSize:11, color:C.textLight }}>
+        Active DoneDeal leads that have no commission with <b>status="active"</b>. Most common cause: lead had no agent when it transitioned to DoneDeal, so <code>ensureCommissionForLead</code> silently no-op'd. Assign an agent on the lead, then click Create here. Lead-side Active Deals count − this list count = Commissions-side Active Deals count.
+      </div>
+    </div>
+
+    {rows === null && <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight }}>Loading…</div>}
+    {rows !== null && err && <div style={{ padding:"14px", background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:10, color:"#B91C1C", fontSize:13, marginBottom:14 }}>{err}</div>}
+    {rows !== null && !err && rows.length === 0 && <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight, background:"#fff", borderRadius:14, border:"1px solid #E8ECF1" }}>
+      ✓ No missing commissions — every active DoneDeal lead has an active commission.
+    </div>}
+    {rows !== null && rows.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
+      <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+        <thead>
+          <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
+            <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Customer</th>
+            <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Project</th>
+            <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Deal date</th>
+            <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Agent</th>
+            <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Prior commissions</th>
+            <th style={{ textAlign:"end",   padding:"10px 12px", fontWeight:700, color:C.textLight, width:160 }}>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(function(row){
+            var blocked = !!row.agentMissing;
+            var prior = (row.existingCommissionStatuses && row.existingCommissionStatuses.length > 0)
+              ? row.existingCommissionStatuses.join(", ")
+              : "—";
+            return <tr key={row.leadId} style={{ borderTop:"1px solid #F1F5F9" }}>
+              <td style={{ padding:"10px 12px" }}>
+                <div style={{ fontWeight:600 }}>{row.customerName || "(unknown)"}</div>
+                {row.customerPhone && <div style={{ fontSize:10, color:C.textLight }}>{row.customerPhone}</div>}
+              </td>
+              <td style={{ padding:"10px 12px", color:C.text }}>{row.projectName || "—"}</td>
+              <td style={{ padding:"10px 12px" }}>{fmtDate(row.dealDate)}</td>
+              <td style={{ padding:"10px 12px", color: blocked ? "#B91C1C" : C.text }}>
+                {blocked ? <span title="No agent assigned"><b>—</b> <span style={{ fontSize:10 }}>(missing)</span></span> : (row.agentName || "(unknown)")}
+              </td>
+              <td style={{ padding:"10px 12px", color:C.textLight, fontStyle:"italic" }}>{prior}</td>
+              <td style={{ padding:"10px 12px", textAlign:"end" }}>
+                <button onClick={function(){ createOne(row); }}
+                  disabled={blocked || busyId === row.leadId}
+                  title={blocked ? "Assign an agent on this lead first, then retry" : "Create active commission"}
+                  style={{
+                    padding:"5px 12px", borderRadius:8, fontSize:11, fontWeight:600,
+                    border: blocked ? "1px solid #E2E8F0" : "1px solid " + C.accent,
+                    background: blocked ? "#F8FAFC" : (busyId === row.leadId ? C.accent + "30" : C.accent + "12"),
+                    color: blocked ? C.textLight : C.accent,
+                    cursor: blocked ? "not-allowed" : (busyId === row.leadId ? "wait" : "pointer")
+                  }}>
+                  {busyId === row.leadId ? "Creating…" : "Create commission"}
+                </button>
+              </td>
+            </tr>;
+          })}
+        </tbody>
+      </table>
+    </div>}
+
+    {toast && <div style={{
+      position:"fixed", top:80, right:16, zIndex:800,
+      padding:"10px 18px", borderRadius:10,
+      background: toast.kind === "err" ? "#FEF2F2" : "#F0FDF4",
+      color: toast.kind === "err" ? "#B91C1C" : "#15803D",
+      border:"1px solid " + (toast.kind === "err" ? "#FCA5A5" : "#86EFAC"),
+      fontSize:13, fontWeight:600,
+      boxShadow:"0 8px 24px rgba(0,0,0,0.08)"
+    }}>{toast.msg}</div>}
+  </div>;
+};
+
 // ===== MAIN APP =====
 export default function CRMApp() {
   var [lang,setLang]=useState((function(){try{return "en";}catch(e){return "ar";}})());
@@ -20785,6 +20913,7 @@ export default function CRMApp() {
       case "assets":   return (currentUser.role==="admin"||currentUser.role==="sales_admin"||currentUser.isOwner===true)
         ? <AssetTrackerPage {...sp} users={users} initialAssetCode={deepLinkAssetCode} onInitialConsumed={function(){ setDeepLinkAssetCode(null); }}/>
         : <DashboardPage {...sp}/>;
+      case "diagnostics": return currentUser.role === "admin" ? <DiagnosticsPage {...sp}/> : <DashboardPage {...sp}/>;
       default: return <DashboardPage {...sp}/>;
     }
   };

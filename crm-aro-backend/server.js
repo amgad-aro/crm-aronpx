@@ -15856,6 +15856,107 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
   }
 });
 
+// =====================================================================
+// Phase R-6 polish #2 — data-integrity diagnostics (admin only).
+// Surface Leads that should have an active Commission but don't, and give
+// admin a self-service "Create commission" action to fix the gap. The most
+// common cause is ensureCommissionForLead returning null when the Lead had
+// no agentId at the time of the DoneDeal transition.
+// =====================================================================
+
+// GET /api/diagnose/missing-commissions — list of leads with no active
+// commission. Predicate mirrors the Deals page's activeDeals filter.
+app.get("/api/diagnose/missing-commissions", auth, strictAdminOnly, async function(req, res) {
+  try {
+    // Active-Deal predicate, matches frontend at src/App.js:8861 and the
+    // funnel endpoint comment block (server.js:11459-11461).
+    var activeDealQ = {
+      archived: { $ne: true },
+      $and: [
+        { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] },
+        { dealStatus: { $ne: "Deal Cancelled" } },
+        { status:     { $ne: "Deal Cancelled" } }
+      ]
+    };
+    var leads = await Lead.find(activeDealQ)
+      .select("name phone status globalStatus dealStatus dealDate project agentId archived createdAt updatedAt")
+      .populate("agentId", "name username role")
+      .lean();
+    if (leads.length === 0) return res.json({ data: [], missingCount: 0 });
+
+    var leadIds = leads.map(function(l){ return l._id; });
+    var commissions = await Commission.find({ leadId: { $in: leadIds } })
+      .select("leadId status snapshot.customerName createdAt")
+      .lean();
+    var byLead = Object.create(null);
+    commissions.forEach(function(c){
+      var k = String(c.leadId);
+      if (!byLead[k]) byLead[k] = [];
+      byLead[k].push(c);
+    });
+
+    var missing = [];
+    for (var i = 0; i < leads.length; i++) {
+      var l = leads[i];
+      var lst = byLead[String(l._id)] || [];
+      var hasActive = lst.some(function(c){ return c.status === "active"; });
+      if (hasActive) continue;
+      var agent = l.agentId && typeof l.agentId === "object" ? l.agentId : null;
+      missing.push({
+        leadId:                   String(l._id),
+        customerName:             l.name || "",
+        customerPhone:            l.phone || "",
+        projectName:              l.project || "",
+        dealDate:                 l.dealDate || null,
+        leadStatus:               l.status || "",
+        leadGlobalStatus:         l.globalStatus || "",
+        agentId:                  agent ? String(agent._id) : (l.agentId ? String(l.agentId) : null),
+        agentName:                agent ? (agent.name || agent.username || "(unknown)") : null,
+        agentMissing:             !agent && !l.agentId,
+        existingCommissionStatuses: lst.map(function(c){ return c.status; }),
+        createdAt:                l.createdAt,
+        updatedAt:                l.updatedAt
+      });
+    }
+    res.json({ data: missing, missingCount: missing.length, scannedLeads: leads.length });
+  } catch(e) {
+    console.error("[GET /api/diagnose/missing-commissions]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "missing_commissions_diagnose_failed" });
+  }
+});
+
+// POST /api/diagnose/create-commission — admin-triggered self-service create.
+// Wraps ensureCommissionForLead and surfaces a clear error when agentId is
+// missing (the most common reason auto-create silently no-op'd). Validates
+// that the lead is still an active-Deal before invoking.
+app.post("/api/diagnose/create-commission", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var leadId = String((req.body && req.body.leadId) || "").trim();
+    if (!mongoose.Types.ObjectId.isValid(leadId)) return res.status(400).json({ error: "valid leadId required" });
+    var lead = await Lead.findById(leadId);
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    if (lead.archived) return res.status(400).json({ error: "Lead is archived" });
+    var isDeal = lead.status === "DoneDeal" || lead.globalStatus === "donedeal";
+    if (!isDeal) return res.status(400).json({ error: "Lead is not a DoneDeal" });
+    if (lead.dealStatus === "Deal Cancelled" || lead.status === "Deal Cancelled") {
+      return res.status(400).json({ error: "Deal is cancelled" });
+    }
+    var existingActive = await Commission.findOne({ leadId: lead._id, status: "active" }).lean();
+    if (existingActive) return res.status(400).json({ error: "Lead already has an active commission", commissionId: String(existingActive._id) });
+    if (!lead.agentId) {
+      return res.status(400).json({ error: "Lead has no agentId — assign an agent first, then retry" });
+    }
+    var created = await ensureCommissionForLead(lead, req.user);
+    if (!created) {
+      return res.status(500).json({ error: "ensureCommissionForLead returned null — check server logs" });
+    }
+    res.json({ ok: true, commissionId: String(created._id) });
+  } catch(e) {
+    console.error("[POST /api/diagnose/create-commission]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "create_commission_failed" });
+  }
+});
+
 app.get("/api/commissions/by-lead/:leadId", auth, salesAdminOnly, async function(req, res) {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.leadId)) return res.status(400).json({ error: "Invalid leadId" });
@@ -16173,10 +16274,16 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage", auth, salesAdminOnly, as
       cyc.state = "paid_to_team";
       cyc.closedAt = new Date();
       // Roll the parent commission to fully_paid only when ALL cycles are
-      // paid_to_team or cancelled, AND received total >= expectedTotal.
-      var allClosed = (c.cycles || []).every(function(x){ return x.state === "paid_to_team" || x.state === "cancelled"; });
-      var receivedTotal = (c.cycles || []).reduce(function(s, x){ return s + Number(x.receivedAmount || 0); }, 0);
-      if (allClosed && Number(c.expectedTotal || 0) > 0 && receivedTotal >= Number(c.expectedTotal)) {
+      // paid_to_team or cancelled. Post-R-5 the old "expectedTotal > 0 AND
+      // receivedTotal >= expectedTotal" gates were dropped — expectedTotal is
+      // no longer admin-maintained, so those gates trapped every commission in
+      // "active" forever. allClosed alone is the right rollover condition: if
+      // every cycle is terminal, there is nothing more to do on this commission.
+      // The cycle-DELETE path at ~L16523 keeps its own (allClosed-aware)
+      // status-revert that flips fully_paid → active when an empty cycles array
+      // results (allClosed is false on an empty array).
+      var allClosed = (c.cycles || []).length > 0 && (c.cycles || []).every(function(x){ return x.state === "paid_to_team" || x.state === "cancelled"; });
+      if (allClosed) {
         c.status = "fully_paid";
       }
     } else {
