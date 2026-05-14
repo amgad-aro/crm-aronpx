@@ -15936,16 +15936,21 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
     // client rounds via round2 so tax filings reconcile against Excel exactly.
     function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
 
-    // Pull every commission with at least one R-5 cycle whose claim was filed
-    // in the target year. The $elemMatch keeps the query selective; the loop
-    // below still re-filters per cycle since a commission may have a mix of
-    // R-5 and pre-R-5 cycles.
+    // Phase R-11 — VAT becomes due when the formal INVOICE is issued, not when
+    // the informal claim is sent to the developer. Egyptian tax law treats the
+    // invoice as the taxable event; the claim is a "please pay us" notice with
+    // no government implications. We therefore drive every number in this
+    // endpoint (the 5 summary cards, the Monthly VAT table, and the
+    // Withholding-by-deal table) off cycle.invoice_submitted.date. Cycles in
+    // claim_submitted state with no invoice yet are invisible to this view —
+    // they reappear once invoice_submitted is advanced. The same predicate is
+    // mirrored on /api/annual-pnl Revenue so the two views never diverge.
     // status filter: exclude cancelled. Cancelled commissions are not part of
     // the active book and must not be reflected in tax filings or the YoY
     // totals the admin reconciles against Excel.
     var docs = await Commission.find({
       status: { $ne: "cancelled" },
-      cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "claim_submitted.date": { $regex: "^" + year } } }
+      cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "invoice_submitted.date": { $regex: "^" + year } } }
     }).select("snapshot.customerName snapshot.projectName cycles").lean();
 
     var grossClaim = 0, netOfVatTotal = 0, vatTotal = 0, withholdingTotal = 0, netReceivedTotal = 0;
@@ -15960,7 +15965,11 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
         var cy = doc.cycles[j];
         var ca = Number(cy.claimAmount || 0);
         if (!(ca > 0)) continue;
-        var cd = cy.claim_submitted && cy.claim_submitted.date;
+        // Phase R-11 — invoice date is the taxable event; cd holds it for both
+        // the year-membership check and the month-key + table row below. The
+        // response field is still called `claimDate` to avoid a frontend
+        // rename, but it semantically carries the invoice date now.
+        var cd = cy.invoice_submitted && cy.invoice_submitted.date;
         if (typeof cd !== "string" || cd.slice(0, 4) !== year) continue;
 
         var nv = ca / 1.14;
@@ -16365,9 +16374,12 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
     // --- Revenue: identical filter as R-5 annual-summary ----------------
     // status filter: exclude cancelled — must match annual-summary or the
     // two views diverge on the same year.
+    // Phase R-11 — predicate moved from claim_submitted.date to
+    // invoice_submitted.date so revenue recognition lines up with the
+    // taxable event (the issued invoice). Mirrored on /annual-summary.
     var commDocs = await Commission.find({
       status: { $ne: "cancelled" },
-      cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "claim_submitted.date": { $regex: "^" + year } } }
+      cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "invoice_submitted.date": { $regex: "^" + year } } }
     }).select("cycles").lean();
     var grossClaim = 0, netOfVatTotal = 0, vatTotal = 0, withholdingTotal = 0, netDueTotal = 0;
     for (var i = 0; i < commDocs.length; i++) {
@@ -16377,7 +16389,7 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
         var cy = doc.cycles[j];
         var ca = Number(cy.claimAmount || 0);
         if (!(ca > 0)) continue;
-        var cd = cy.claim_submitted && cy.claim_submitted.date;
+        var cd = cy.invoice_submitted && cy.invoice_submitted.date;
         if (typeof cd !== "string" || cd.slice(0, 4) !== year) continue;
         var nv = ca / 1.14;
         var vt = ca - nv;
