@@ -17771,25 +17771,41 @@ function fmtMoney2(n) {
 // Snapshot edit (Phase R-1) — partial PATCH of {developer, unitDetails, dealTotal,
 // expectedTotal, expectedCollectionDate} plus per-recipient overrideAmount/
 // overrideReason. Computed shares are read-only here (server recomputes on save).
-var CommissionSnapshotEditModal = function(p) {
+// Phase R-8 — Unified "Edit Collection" modal. Replaces the three separate
+// editors (Snapshot, Payout-Add, Incentive) with a single 720px modal that
+// manages the developer-side collection flow: claims, payouts, and incentives.
+// Four stacked sections — snapshot (Deal Total + read-only Project Name),
+// recipients/overrides, payouts (list + inline add), incentive (list + inline
+// add). One "Save All Changes" button runs every dirty mutation in sequence,
+// then calls onSaved() with the final commission.
+//
+// Project Name is read-only — the PATCH /snapshot endpoint only whitelists
+// developer/unitDetails/dealTotal (and the top-level expectedTotal /
+// expectedCollectionDate which we intentionally hide here per user spec:
+// those stats are gone from the card and the modal too). Making projectName
+// editable would require a backend whitelist expansion — flagged for the user.
+var CommissionEditCollectionModal = function(p) {
   var c = p.target;
   var snap = (c && c.snapshot) || {};
-  var [developer, setDeveloper]               = useState(snap.developer || "");
-  var [unitDetails, setUnitDetails]           = useState(snap.unitDetails || "");
-  // Money fields hold the formatted string ("1,500,000"); parsed on submit.
-  var [dealTotal, setDealTotal]               = useState(Number(snap.dealTotal || 0) > 0 ? Number(snap.dealTotal).toLocaleString() : "");
-  var [expectedTotal, setExpectedTotal]       = useState(c && Number(c.expectedTotal || 0) > 0 ? Number(c.expectedTotal).toLocaleString() : "");
-  var [expectedDate, setExpectedDate]         = useState((c && c.expectedCollectionDate) || "");
+  var token = p.token;
+  var users = p.users || [];
 
-  // Override edits — one entry per recipient slot. value is the comma-formatted
-  // amount string ("" = clear override). reason is free text.
+  // ---------- SECTION 1 — snapshot ----------
+  var [dealTotal, setDealTotal] = useState(Number(snap.dealTotal || 0) > 0 ? Number(snap.dealTotal).toLocaleString() : "");
+  // Read-only display value for projectName (server doesn't accept it on the
+  // snapshot PATCH today — see component comment). Closed Date used to render
+  // here too but was dropped to slim Section 1; the card itself still shows
+  // "closed <date>" in its header.
+  var projectNameDisplay = snap.projectName || "";
+
+  // ---------- SECTION 2 — recipients/overrides ----------
   var initOverrides = function(){
     var out = {};
     var roles = [
       ["salesAgent", snap.salesAgent],
       ["teamLeader", snap.teamLeader],
-      ["manager", snap.manager],
-      ["director", snap.director]
+      ["manager",    snap.manager],
+      ["director",   snap.director]
     ];
     if (snap.isSplitDeal && snap.splitChain) {
       roles.push(["salesAgent2", snap.splitChain.salesAgent2]);
@@ -17801,12 +17817,12 @@ var CommissionSnapshotEditModal = function(p) {
       if (!pair[1]) return;
       var ov = pair[1].overrideAmount;
       out[pair[0]] = {
-        userName: pair[1].userName,
-        role: pair[1].role,
-        computedShare: Number(pair[1].computedShare || 0),
-        rate: Number(pair[1].rate || 0),
-        rateBucket: pair[1].rateBucket || "",
-        isHalfWeight: !!pair[1].isHalfWeight,
+        userName:       pair[1].userName,
+        role:           pair[1].role,
+        computedShare:  Number(pair[1].computedShare || 0),
+        rate:           Number(pair[1].rate || 0),
+        rateBucket:     pair[1].rateBucket || "",
+        isHalfWeight:   !!pair[1].isHalfWeight,
         overrideAmount: ov != null && Number(ov) > 0 ? Number(ov).toLocaleString() : "",
         overrideReason: pair[1].overrideReason || ""
       };
@@ -17815,18 +17831,104 @@ var CommissionSnapshotEditModal = function(p) {
   };
   var [overrides, setOverrides] = useState(initOverrides);
 
-  var save = async function(){
+  // ---------- SECTION 3 — payouts ----------
+  // existingPayouts: stable copies of payouts already on the commission.
+  // payoutsToDelete: Set of _ids to DELETE on save.
+  // newPayouts: draft rows the admin added via "+ Add Payout".
+  // Stable snapshot of payouts already on the commission. We never mutate the
+  // list itself — additions go into newPayouts; removals are queued in
+  // payoutsToDelete and flushed on Save. Hence no setter is needed.
+  var [existingPayouts] = useState(function(){
+    return (c.payouts || []).slice();
+  });
+  var [payoutsToDelete, setPayoutsToDelete] = useState({});  // {payoutId: true}
+  var [newPayouts, setNewPayouts] = useState([]);            // each: {recipientUserName, recipientRole, amount, date, notes}
+
+  // Build the recipient dropdown from snapshot slots (matches the old
+  // CommissionPayoutAddModal logic).
+  var recipientOptions = (function(){
+    var opts = [];
+    function add(r){
+      if (!r || !r.userName) return;
+      var owed = (r.overrideAmount != null && Number(r.overrideAmount) > 0)
+        ? Number(r.overrideAmount) : Number(r.computedShare || 0);
+      opts.push({ userName: r.userName, role: r.role, owed: owed });
+    }
+    add(snap.salesAgent);
+    add(snap.teamLeader);
+    add(snap.manager);
+    add(snap.director);
+    if (snap.isSplitDeal && snap.splitChain) {
+      add(snap.splitChain.salesAgent2);
+      add(snap.splitChain.teamLeader2);
+      add(snap.splitChain.manager2);
+      add(snap.splitChain.director2);
+    }
+    return opts;
+  })();
+  var todayIso = new Date().toISOString().slice(0, 10);
+  var addPayoutDraft = function(){
+    if (recipientOptions.length === 0) { alert("No recipients on this commission's snapshot."); return; }
+    var first = recipientOptions[0];
+    setNewPayouts(function(prev){
+      return prev.concat([{
+        recipientUserName: first.userName,
+        recipientRole:     first.role,
+        amount:            "",
+        date:              todayIso,
+        notes:             ""
+      }]);
+    });
+  };
+  var setNewPayoutField = function(idx, patch){
+    setNewPayouts(function(prev){ return prev.map(function(r, i){ return i === idx ? Object.assign({}, r, patch) : r; }); });
+  };
+  var removeNewPayout = function(idx){
+    setNewPayouts(function(prev){ return prev.filter(function(_, i){ return i !== idx; }); });
+  };
+  var togglePayoutDelete = function(id){
+    setPayoutsToDelete(function(prev){
+      var next = Object.assign({}, prev);
+      if (next[id]) delete next[id]; else next[id] = true;
+      return next;
+    });
+  };
+
+  // ---------- SECTION 4 — incentive (full replacement) ----------
+  var [incentiveRows, setIncentiveRows] = useState(function(){
+    return ((c.incentive && Array.isArray(c.incentive.recipients)) ? c.incentive.recipients : []).map(function(r){
+      return {
+        userName:     r.userName || "",
+        userId:       r.userId || "",
+        role:         r.role || "sales",
+        amount:       Number(r.amount || 0) > 0 ? Number(r.amount).toLocaleString() : "",
+        status:       r.status || "pending",
+        receivedDate: r.receivedDate || ""
+      };
+    });
+  });
+  var initialIncentiveSnapshot = JSON.stringify(((c.incentive && c.incentive.recipients) || []).map(function(r){
+    return { userName: r.userName||"", role: r.role||"", amount: Number(r.amount||0), status: r.status||"pending", receivedDate: r.receivedDate||"" };
+  }));
+  var setIncRow = function(idx, patch){
+    setIncentiveRows(function(prev){ return prev.map(function(r, i){ return i === idx ? Object.assign({}, r, patch) : r; }); });
+  };
+  var addIncRow = function(){
+    setIncentiveRows(function(prev){ return prev.concat([{ userName:"", userId:"", role:"sales", amount:"0", status:"pending", receivedDate:"" }]); });
+  };
+  var removeIncRow = function(idx){
+    setIncentiveRows(function(prev){ return prev.filter(function(_, i){ return i !== idx; }); });
+  };
+
+  // ---------- save-all flow ----------
+  var [saving, setSaving] = useState(false);
+
+  var buildSnapshotBody = function(){
     var body = {};
-    if (developer !== (snap.developer || "")) body.developer = developer;
-    if (unitDetails !== (snap.unitDetails || "")) body.unitDetails = unitDetails;
     var parsedDeal = parseMoney(dealTotal);
     if (isFinite(parsedDeal) && parsedDeal !== Number(snap.dealTotal || 0)) body.dealTotal = parsedDeal;
-    var parsedExp = parseMoney(expectedTotal);
-    if (isFinite(parsedExp) && parsedExp !== Number(c.expectedTotal || 0)) body.expectedTotal = parsedExp;
-    if (expectedDate !== (c.expectedCollectionDate || "")) body.expectedCollectionDate = expectedDate;
     Object.keys(overrides).forEach(function(k){
       var o = overrides[k];
-      // Diff against original snapshot — only send changed overrides.
       var origSlot = (k.indexOf("2") > -1 && snap.splitChain) ? snap.splitChain[k] : snap[k];
       var origAmt = origSlot && origSlot.overrideAmount != null ? Number(origSlot.overrideAmount) : null;
       var origReason = (origSlot && origSlot.overrideReason) || "";
@@ -17835,71 +17937,293 @@ var CommissionSnapshotEditModal = function(p) {
       var amtChanged = (origAmt || 0) !== (newAmt || 0);
       var reasonChanged = origReason !== (o.overrideReason || "");
       if (amtChanged || reasonChanged) {
-        body[k] = {
-          overrideAmount: newAmt == null ? "" : newAmt,
-          overrideReason: o.overrideReason || ""
-        };
+        body[k] = { overrideAmount: newAmt == null ? "" : newAmt, overrideReason: o.overrideReason || "" };
       }
     });
+    return body;
+  };
+  var buildIncentiveBody = function(){
+    var rec = incentiveRows.map(function(r){
+      var parsedAmt = parseMoney(r.amount);
+      var out = {
+        userName: String(r.userName || "").trim(),
+        role:     r.role,
+        amount:   isFinite(parsedAmt) ? parsedAmt : 0,
+        status:   r.status,
+        receivedDate: r.receivedDate || ""
+      };
+      if (r.userId) out.userId = r.userId;
+      return out;
+    });
+    return { recipients: rec };
+  };
+  var incentiveChanged = (function(){
+    var current = JSON.stringify(incentiveRows.map(function(r){
+      var parsedAmt = parseMoney(r.amount);
+      return { userName: String(r.userName||"").trim(), role: r.role||"", amount: isFinite(parsedAmt)?parsedAmt:0, status: r.status||"pending", receivedDate: r.receivedDate||"" };
+    }));
+    return current !== initialIncentiveSnapshot;
+  })();
+
+  var saveAll = async function(){
+    // ---- pre-flight validation ----
+    var parsedDeal = parseMoney(dealTotal);
+    if (dealTotal && (!isFinite(parsedDeal) || parsedDeal < 0)) {
+      alert("Deal total must be a non-negative number."); return;
+    }
+    for (var i = 0; i < newPayouts.length; i++) {
+      var np = newPayouts[i];
+      var an = parseMoney(np.amount);
+      if (!isFinite(an) || an <= 0) { alert("New payout row " + (i+1) + ": amount must be > 0"); return; }
+      if (!np.date) { alert("New payout row " + (i+1) + ": date required"); return; }
+      if (!np.recipientUserName) { alert("New payout row " + (i+1) + ": recipient required"); return; }
+    }
+    for (var ii = 0; ii < incentiveRows.length; ii++) {
+      var ir = incentiveRows[ii];
+      if (!String(ir.userName || "").trim()) { alert("Incentive row " + (ii+1) + ": name required"); return; }
+    }
+
+    setSaving(true);
+    var snapshotBody = buildSnapshotBody();
+    var deletions = Object.keys(payoutsToDelete);
+    var hadSnapshotEdit  = Object.keys(snapshotBody).length > 0;
+    var hadPayoutDel     = deletions.length > 0;
+    var hadNewPayouts    = newPayouts.length > 0;
+    var hadIncentiveEdit = incentiveChanged;
+    var didAnything      = hadSnapshotEdit || hadPayoutDel || hadNewPayouts || hadIncentiveEdit;
+
     try {
-      await p.writeCommission("PATCH", "/api/commissions/" + c._id + "/snapshot", body, "Snapshot saved");
+      // 1. Snapshot + overrides (single PATCH)
+      if (hadSnapshotEdit) {
+        await apiFetch("/api/commissions/" + c._id + "/snapshot", "PATCH", snapshotBody, token);
+      }
+      // 2. Delete payouts (parallel — independent debt math)
+      if (hadPayoutDel) {
+        await Promise.all(deletions.map(function(pid){
+          return apiFetch("/api/commissions/" + c._id + "/payouts/" + pid, "DELETE", null, token);
+        }));
+      }
+      // 3. Create new payouts (sequential — debt accumulates across them)
+      for (var n = 0; n < newPayouts.length; n++) {
+        var npRow = newPayouts[n];
+        await apiFetch("/api/commissions/" + c._id + "/payouts", "POST", {
+          recipientUserName: npRow.recipientUserName,
+          recipientRole:     npRow.recipientRole,
+          amount:            parseMoney(npRow.amount),
+          date:              npRow.date,
+          notes:             npRow.notes || ""
+        }, token);
+      }
+      // 4. Incentive PUT (full replacement, only if changed)
+      if (hadIncentiveEdit) {
+        await apiFetch("/api/commissions/" + c._id + "/incentive", "PUT", buildIncentiveBody(), token);
+      }
+      // 5. Pull fresh commission so the caller can swap rows[] in place.
+      var fresh = await apiFetch("/api/commissions/" + c._id, "GET", null, token);
+      setSaving(false);
+      if (p.onSaved) p.onSaved(fresh, didAnything);
       p.onClose();
-    } catch(e){}
+    } catch(e) {
+      setSaving(false);
+      // Some sub-calls may have committed before the failure. Trigger a parent
+      // reload so the user sees the actual current state, then surface the
+      // error.
+      if (p.onPartialFailure) p.onPartialFailure();
+      alert("Save partially failed: " + ((e && e.message) || "unknown error") + ". The view has been refreshed — please re-check and retry any unsaved changes.");
+    }
   };
 
-  var rows = Object.keys(overrides).map(function(k){
-    var o = overrides[k];
-    var rateStr = o.rate > 0 ? o.rate + "/1000" : "—";
+  // ---------- render helpers ----------
+  var sectionHeaderStyle = { fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.4, marginBottom:8 };
+  var dividerStyle = { height:1, background:"#F1F5F9", margin:"14px 0" };
+  var roSubLabel = { fontSize:10, color:C.textLight, marginTop:3, fontStyle:"italic" };
+  var roFieldStyle = { width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#F8FAFC", color:C.textLight };
+
+  // Section 2 row — same visual shape as the existing recipient card row,
+  // plus override + reason inputs at the right edge.
+  var renderOverrideRow = function(key){
+    var o = overrides[key];
+    if (!o) return null;
     var bucketLabel = o.rateBucket === "double_target" ? "double target"
                     : o.rateBucket === "target_met"    ? "target met"
                     : o.rateBucket === "base"          ? "base"
-                    : o.rateBucket || "—";
-    return Object.assign({ key: k, rateStr: rateStr, bucketLabel: bucketLabel }, o);
-  });
+                    : o.rateBucket === "fixed"         ? "fixed" : "";
+    return <div key={key} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", borderBottom:"1px solid #E2E8F0" }}>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{key}</div>
+        <div style={{ fontSize:10, color:C.textLight }}>{o.userName} ({o.role}) · {Math.round(o.computedShare).toLocaleString()} EGP computed{o.rate > 0 ? " · " + o.rate + "/1000" : ""}{bucketLabel ? " · " + bucketLabel : ""}{o.isHalfWeight ? " · ½×" : ""}</div>
+      </div>
+      <input type="text" inputMode="numeric" placeholder="override EGP" value={o.overrideAmount || ""}
+        onChange={function(e){
+          var raw = e.target.value.replace(/,/g, "").replace(/[^0-9]/g, "");
+          var fmt = raw === "" ? "" : Number(raw).toLocaleString();
+          setOverrides(function(prev){ var n = Object.assign({}, prev); n[key] = Object.assign({}, prev[key], { overrideAmount: fmt }); return n; });
+        }}
+        style={{ width:110, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>
+      <input type="text" placeholder="reason" value={o.overrideReason || ""}
+        onChange={function(e){
+          var v = e.target.value;
+          setOverrides(function(prev){ var n = Object.assign({}, prev); n[key] = Object.assign({}, prev[key], { overrideReason: v }); return n; });
+        }}
+        style={{ width:140, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>
+    </div>;
+  };
 
-  return <Modal show={true} onClose={p.onClose} title="Edit Commission Snapshot" w={680}>
-    <FormRow label="Developer"><input type="text" value={developer} onChange={function(e){ setDeveloper(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
-    <FormRow label="Unit details"><textarea rows={2} value={unitDetails} onChange={function(e){ setUnitDetails(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/></FormRow>
-    <div style={{ display:"flex", gap:10 }}>
-      <FormRow label="Deal total (EGP)"><MoneyInput value={dealTotal} onChange={setDealTotal}/></FormRow>
-      <FormRow label="Expected commission (EGP)"><MoneyInput value={expectedTotal} onChange={setExpectedTotal}/></FormRow>
-      <FormRow label="Expected collection"><input type="date" value={expectedDate} onChange={function(e){ setExpectedDate(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
+  // Section 3 — existing payouts (with strike-through if queued for delete)
+  // + draft new-payout rows + "+ Add Payout" trigger.
+  var visibleExisting = existingPayouts;
+  var totalPayoutsCount = visibleExisting.length + newPayouts.length;
+
+  // Section 4 incentive — reuse the role/name/amount/status row pattern.
+  var renderIncentiveRow = function(r, idx){
+    var matching = users.filter(function(u){ return u && u.role === r.role; });
+    return <div key={idx} style={{ display:"flex", gap:6, alignItems:"center", marginBottom:6, padding:"6px 8px", background:"#F8FAFC", borderRadius:6 }}>
+      <select value={r.role} onChange={function(e){ setIncRow(idx, { role: e.target.value, userId: "" }); }}
+        style={{ padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12, width:100 }}>
+        <option value="sales">Sales</option>
+        <option value="team_leader">Team Lead</option>
+        <option value="manager">Manager</option>
+        <option value="director">Director</option>
+      </select>
+      <select value={r.userId} onChange={function(e){
+        var uid = e.target.value;
+        var u = matching.find(function(x){ return String(x._id) === uid; });
+        setIncRow(idx, { userId: uid, userName: u ? u.name : r.userName });
+      }} style={{ padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12, width:140 }}>
+        <option value="">— pick / free text —</option>
+        {matching.map(function(u){ return <option key={String(u._id)} value={String(u._id)}>{u.name}</option>; })}
+      </select>
+      <input type="text" placeholder="Or type name" value={r.userName}
+        onChange={function(e){ setIncRow(idx, { userName: e.target.value, userId: "" }); }}
+        style={{ flex:1, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>
+      <input type="text" inputMode="numeric" placeholder="Amount" value={r.amount}
+        onChange={function(e){
+          var raw = e.target.value.replace(/,/g, "").replace(/[^0-9]/g, "");
+          var fmt = raw === "" ? "" : Number(raw).toLocaleString();
+          setIncRow(idx, { amount: fmt });
+        }}
+        style={{ width:100, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>
+      <select value={r.status} onChange={function(e){
+        setIncRow(idx, { status: e.target.value, receivedDate: e.target.value === "received" ? (r.receivedDate || todayIso) : "" });
+      }} style={{ padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12, width:100 }}>
+        <option value="pending">Pending</option>
+        <option value="received">Received</option>
+      </select>
+      {r.status === "received" && <input type="date" value={r.receivedDate}
+        onChange={function(e){ setIncRow(idx, { receivedDate: e.target.value }); }}
+        style={{ width:120, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>}
+      <button onClick={function(){ removeIncRow(idx); }} title="Remove"
+        style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:6, color:"#B91C1C", padding:"4px 8px", cursor:"pointer", fontSize:11 }}>×</button>
+    </div>;
+  };
+
+  return <Modal show={true} onClose={p.onClose} title={"Edit Collection — " + (snap.customerName || "(unknown)")} w={720}>
+    {/* SECTION 1 — Snapshot */}
+    <div style={sectionHeaderStyle}>Deal Snapshot</div>
+    <FormRow label="Deal Total (EGP)"><MoneyInput value={dealTotal} onChange={setDealTotal} autoFocus={true}/></FormRow>
+    <FormRow label="Project Name">
+      <input type="text" value={projectNameDisplay} readOnly disabled style={roFieldStyle}/>
+      <div style={roSubLabel}>Snapshotted at deal close. Edit on the lead page to change.</div>
+    </FormRow>
+
+    <div style={dividerStyle}/>
+
+    {/* SECTION 2 — Recipients */}
+    <div style={sectionHeaderStyle}>Recipients & Overrides</div>
+    <div style={{ fontSize:10, color:C.textLight, marginBottom:8, lineHeight:1.5 }}>
+      Computed share + rate are derived from the agent's quarterly bucket — they recompute on save. Type an override amount (EGP) to pin a custom value; clear it to revert.
     </div>
-    <div style={{ marginTop:6, marginBottom:8, fontSize:12, fontWeight:700, color:"#475569" }}>Recipient shares (computed) and overrides</div>
-    <div style={{ fontSize:10, color:C.textLight, marginBottom:6, lineHeight:1.4 }}>
-      Computed share + rate are read-only and recompute on save. Override amount lets admin pin a custom EGP value; clear it to revert to computed.
+    <div style={{ background:"#F8FAFC", borderRadius:8, padding:"6px 12px" }}>
+      {Object.keys(overrides).length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>No recipients on snapshot.</div>}
+      {Object.keys(overrides).map(function(k){ return renderOverrideRow(k); })}
     </div>
-    <div style={{ background:"#F8FAFC", borderRadius:8, padding:"8px 10px", marginBottom:12 }}>
-      {rows.length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>No recipients on snapshot.</div>}
-      {rows.map(function(r){
-        return <div key={r.key} style={{ display:"flex", alignItems:"center", gap:8, padding:"5px 0", borderBottom:"1px solid #E2E8F0" }}>
-          <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ fontSize:12, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.key}</div>
-            <div style={{ fontSize:10, color:C.textLight }}>{r.userName} ({r.role})</div>
+
+    <div style={dividerStyle}/>
+
+    {/* SECTION 3 — Payouts */}
+    <div style={Object.assign({}, sectionHeaderStyle, { display:"flex", justifyContent:"space-between", alignItems:"center" })}>
+      <span>Payouts ({totalPayoutsCount})</span>
+      {recipientOptions.length > 0 && <button onClick={addPayoutDraft} disabled={saving}
+        style={{ padding:"3px 10px", borderRadius:6, border:"1px solid "+C.accent, background:C.accent+"12", color:C.accent, fontSize:11, fontWeight:600, cursor: saving ? "wait" : "pointer", textTransform:"none", letterSpacing:0 }}>+ Add Payout</button>}
+    </div>
+    {totalPayoutsCount === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 10px" }}>No payouts recorded yet.</div>}
+    {visibleExisting.map(function(po){
+      var marked = !!payoutsToDelete[String(po._id)];
+      return <div key={String(po._id)} style={{
+        display:"flex", justifyContent:"space-between", alignItems:"center",
+        padding:"6px 10px", background: marked ? "#FEF2F2" : "#F8FAFC",
+        borderRadius:6, marginBottom:4,
+        textDecoration: marked ? "line-through" : "none",
+        opacity: marked ? 0.7 : 1
+      }}>
+        <div style={{ minWidth:0, flex:1 }}>
+          <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{po.recipientUserName} <span style={{ fontSize:10, color:C.textLight, textTransform:"capitalize" }}>({po.recipientRole})</span></div>
+          <div style={{ fontSize:10, color:C.textLight }}>{po.date ? new Date(po.date).toLocaleDateString("en-GB") : "—"}{po.notes ? " · " + po.notes : ""}{Number(po.appliedToDebt || 0) > 0 ? " · " + Math.round(po.appliedToDebt).toLocaleString() + " applied to debt" : ""}</div>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <div style={{ textAlign:"right" }}>
+            <div style={{ fontSize:12, fontWeight:600, color:C.success }}>{Math.round(Number(po.netPaid || 0)).toLocaleString() + " EGP"}</div>
+            {Number(po.amount) !== Number(po.netPaid) && <div style={{ fontSize:9, color:C.textLight }}>gross {Math.round(Number(po.amount || 0)).toLocaleString() + " EGP"}</div>}
           </div>
-          <div style={{ minWidth:130, textAlign:"right" }}>
-            <div style={{ fontSize:11, color:C.success, fontWeight:600 }}>= {Math.round(r.computedShare).toLocaleString()} EGP</div>
-            <div style={{ fontSize:9, color:C.textLight }}>{r.rateStr} · {r.bucketLabel}{r.isHalfWeight ? " · ½×" : ""}</div>
-          </div>
-          <input type="text" inputMode="numeric" placeholder="override EGP" value={r.overrideAmount || ""}
-            onChange={function(e){
-              var raw = e.target.value.replace(/,/g, "").replace(/[^0-9]/g, "");
-              var fmt = raw === "" ? "" : Number(raw).toLocaleString();
-              setOverrides(function(prev){ var n = Object.assign({}, prev); n[r.key] = Object.assign({}, prev[r.key], { overrideAmount: fmt }); return n; });
-            }}
-            style={{ width:110, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
-          <input type="text" placeholder="reason" value={r.overrideReason || ""}
-            onChange={function(e){
-              var v = e.target.value;
-              setOverrides(function(prev){ var n = Object.assign({}, prev); n[r.key] = Object.assign({}, prev[r.key], { overrideReason: v }); return n; });
-            }}
-            style={{ width:130, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
-        </div>;
-      })}
+          <button onClick={function(){ togglePayoutDelete(String(po._id)); }} disabled={saving}
+            title={marked ? "Undo delete" : "Mark for deletion"}
+            style={{ background:"#fff", border:"1px solid "+(marked ? C.textLight : "#FCA5A5"), borderRadius:4, padding:"2px 6px", fontSize:10, color: marked ? C.textLight : "#B91C1C", cursor: saving ? "wait" : "pointer" }}>
+            {marked ? "undo" : "✕"}
+          </button>
+        </div>
+      </div>;
+    })}
+    {newPayouts.map(function(np, idx){
+      return <div key={"np-" + idx} style={{ display:"flex", gap:6, alignItems:"center", marginBottom:4, padding:"6px 10px", background:"#F0FDF4", borderRadius:6, border:"1px dashed #86EFAC" }}>
+        <select value={np.recipientUserName + "::" + np.recipientRole}
+          onChange={function(e){
+            var parts = String(e.target.value).split("::");
+            setNewPayoutField(idx, { recipientUserName: parts[0], recipientRole: parts[1] });
+          }}
+          style={{ padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11, width:170 }}>
+          {recipientOptions.map(function(o, i){
+            return <option key={i} value={o.userName + "::" + o.role}>{o.userName} ({o.role})</option>;
+          })}
+        </select>
+        <input type="date" value={np.date}
+          onChange={function(e){ setNewPayoutField(idx, { date: e.target.value }); }}
+          style={{ width:130, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
+        <input type="text" inputMode="numeric" placeholder="Amount" value={np.amount}
+          onChange={function(e){
+            var raw = e.target.value.replace(/,/g, "").replace(/[^0-9]/g, "");
+            var fmt = raw === "" ? "" : Number(raw).toLocaleString();
+            setNewPayoutField(idx, { amount: fmt });
+          }}
+          style={{ width:100, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
+        <input type="text" placeholder="Notes" value={np.notes}
+          onChange={function(e){ setNewPayoutField(idx, { notes: e.target.value }); }}
+          style={{ flex:1, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
+        <button onClick={function(){ removeNewPayout(idx); }} disabled={saving} title="Discard draft"
+          style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:4, padding:"3px 7px", fontSize:10, color:"#B91C1C", cursor: saving ? "wait" : "pointer" }}>×</button>
+      </div>;
+    })}
+
+    <div style={dividerStyle}/>
+
+    {/* SECTION 4 — Incentive */}
+    <div style={Object.assign({}, sectionHeaderStyle, { display:"flex", justifyContent:"space-between", alignItems:"center" })}>
+      <span>Incentive (Developer-Direct) — {incentiveRows.length}</span>
+      <button onClick={addIncRow} disabled={saving}
+        style={{ padding:"3px 10px", borderRadius:6, border:"1px solid "+C.accent, background:C.accent+"12", color:C.accent, fontSize:11, fontWeight:600, cursor: saving ? "wait" : "pointer", textTransform:"none", letterSpacing:0 }}>+ Add Incentive Recipient</button>
     </div>
-    <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
-      <button onClick={p.onClose} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
-      <button onClick={save} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{p.savingFlag ? "Saving…" : "Save"}</button>
+    <div style={{ fontSize:10, color:C.textLight, marginBottom:6, lineHeight:1.5 }}>
+      Incentives are paid directly by the developer to the recipient. This page only tracks who is owed what.
+    </div>
+    {incentiveRows.length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 10px" }}>No incentive recipients recorded.</div>}
+    {incentiveRows.map(renderIncentiveRow)}
+
+    {/* FOOTER */}
+    <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:16, paddingTop:14, borderTop:"1px solid "+C.border }}>
+      <button onClick={p.onClose} disabled={saving} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: saving ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
+      <button onClick={saveAll} disabled={saving}
+        style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: saving ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>
+        {saving ? "Saving…" : "Save All Changes"}
+      </button>
     </div>
   </Modal>;
 };
@@ -18032,200 +18356,6 @@ var CommissionCycleStageModal = function(p) {
     <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
       <button onClick={p.onClose} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
       <button onClick={save} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{p.savingFlag ? "Saving…" : (mode === "edit" ? "Save" : "Advance")}</button>
-    </div>
-  </Modal>;
-};
-
-// Phase R-1 — record a payout to a team recipient. The system auto-deducts
-// any outstanding debt from the gross amount; netPaid = amount - appliedToDebt
-// is the actual cash that flows to the recipient.
-var CommissionPayoutAddModal = function(p) {
-  var c = p.target && p.target.commission;
-  var snap = (c && c.snapshot) || {};
-
-  // Build the recipient dropdown from snapshot slots, including split chain.
-  var recipientOptions = [];
-  function add(slotKey, r) {
-    if (!r || !r.userName) return;
-    var owed = (r.overrideAmount != null && Number(r.overrideAmount) > 0)
-      ? Number(r.overrideAmount) : Number(r.computedShare || 0);
-    recipientOptions.push({
-      slotKey: slotKey, userName: r.userName, role: r.role,
-      owed: owed
-    });
-  }
-  add("salesAgent", snap.salesAgent);
-  add("teamLeader", snap.teamLeader);
-  add("manager",    snap.manager);
-  add("director",   snap.director);
-  if (snap.isSplitDeal && snap.splitChain) {
-    add("salesAgent2", snap.splitChain.salesAgent2);
-    add("teamLeader2", snap.splitChain.teamLeader2);
-    add("manager2",    snap.splitChain.manager2);
-    add("director2",   snap.splitChain.director2);
-  }
-
-  var [pickIdx, setPickIdx] = useState(0);
-  var [amount, setAmount]   = useState("");
-  var [date, setDate]       = useState(new Date().toISOString().slice(0,10));
-  var [notes, setNotes]     = useState("");
-
-  var sel = recipientOptions[pickIdx] || null;
-  // Already paid (net) to this recipient on THIS commission.
-  var paidThis = (c.payouts || []).reduce(function(s, po){
-    return s + (sel && po.recipientUserName === sel.userName ? Number(po.netPaid || 0) : 0);
-  }, 0);
-  var remaining = sel ? Math.max(0, sel.owed - paidThis) : 0;
-  // Predicted debt deduction from cashFlow.byRecipient.
-  var byRecipient = (p.cashFlow && p.cashFlow.byRecipient) || {};
-  var rec = sel ? byRecipient[sel.userName] : null;
-  var predictedDebt = rec ? Math.max(0, Number(rec.debt || 0)) : 0;
-  var amtNum = parseMoney(amount) || 0;
-  var predictedAppliedToDebt = Math.min(predictedDebt, amtNum);
-  var predictedNetPaid = Math.max(0, amtNum - predictedAppliedToDebt);
-
-  var save = async function(){
-    if (!sel) return;
-    var n = parseMoney(amount);
-    if (!isFinite(n) || n <= 0) { alert("Amount must be > 0"); return; }
-    try {
-      await p.writeCommission("POST", "/api/commissions/" + c._id + "/payouts", {
-        recipientUserName: sel.userName, recipientRole: sel.role,
-        amount: n, date: date, notes: notes
-      }, "Payout recorded");
-      p.onClose();
-    } catch(e){}
-  };
-
-  return <Modal show={true} onClose={p.onClose} title="Record Payout" w={520}>
-    {recipientOptions.length === 0 && <div style={{ padding:"8px 10px", background:"#FEF3C7", color:"#92400E", borderRadius:8, marginBottom:10, fontSize:12 }}>
-      No recipients on this commission's snapshot.
-    </div>}
-    {recipientOptions.length > 0 && <div>
-      <FormRow label="Recipient">
-        <select value={pickIdx} onChange={function(e){ setPickIdx(Number(e.target.value)); }}
-          style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}>
-          {recipientOptions.map(function(o, i){
-            return <option key={i} value={i}>{o.userName} ({o.role}) — owed {Math.round(o.owed).toLocaleString()} EGP</option>;
-          })}
-        </select>
-      </FormRow>
-      <div style={{ fontSize:11, color:C.textLight, marginBottom:8 }}>
-        Remaining for this recipient on this commission: <b style={{ color:C.text }}>{Math.round(remaining).toLocaleString()} EGP</b>.
-        {predictedDebt > 0 && <span style={{ color:"#B91C1C" }}> Outstanding debt globally: {Math.round(predictedDebt).toLocaleString()} EGP.</span>}
-      </div>
-      <FormRow label="Gross amount (EGP)"><MoneyInput value={amount} onChange={setAmount} autoFocus={true}/></FormRow>
-      {amtNum > 0 && predictedDebt > 0 && <div style={{ background:"#FEF3C7", borderRadius:8, padding:"6px 10px", marginBottom:10, fontSize:11, color:"#92400E" }}>
-        Debt deduction preview: {Math.round(predictedAppliedToDebt).toLocaleString()} EGP applied to debt, net cash to recipient = <b>{Math.round(predictedNetPaid).toLocaleString()} EGP</b>.
-      </div>}
-      <FormRow label="Date"><input type="date" value={date} onChange={function(e){ setDate(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
-      <FormRow label="Notes (optional)"><textarea rows={2} value={notes} onChange={function(e){ setNotes(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/></FormRow>
-    </div>}
-    <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:6 }}>
-      <button onClick={p.onClose} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
-      <button onClick={save} disabled={p.savingFlag || recipientOptions.length === 0} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{p.savingFlag ? "Saving…" : "Record"}</button>
-    </div>
-  </Modal>;
-};
-
-// Incentive editor — full replacement of recipients[]. Each row is editable.
-var CommissionIncentiveEditModal = function(p) {
-  var c = p.target;
-  // amount is held as the formatted-money string ("1,500") to match the
-  // codebase convention; parsed on submit via parseMoney().
-  var initial = (c && c.incentive && Array.isArray(c.incentive.recipients))
-    ? c.incentive.recipients.map(function(r){
-        return {
-          userName: r.userName || "",
-          userId: r.userId || "",
-          role: r.role || "sales",
-          amount: Number(r.amount || 0) > 0 ? Number(r.amount).toLocaleString() : "",
-          status: r.status || "pending",
-          receivedDate: r.receivedDate || ""
-        };
-      })
-    : [];
-  var [rows, setRows] = useState(initial);
-
-  var setRow = function(idx, patch){
-    setRows(function(prev){
-      return prev.map(function(r, i){ return i === idx ? Object.assign({}, r, patch) : r; });
-    });
-  };
-  var addRow = function(){
-    setRows(function(prev){ return prev.concat([{ userName: "", userId: "", role: "sales", amount: "0", status: "pending", receivedDate: "" }]); });
-  };
-  var removeRow = function(idx){
-    setRows(function(prev){ return prev.filter(function(_, i){ return i !== idx; }); });
-  };
-
-  var save = async function(){
-    var body = { recipients: rows.map(function(r){
-      var parsedAmt = parseMoney(r.amount);
-      var rec = {
-        userName: String(r.userName || "").trim(),
-        role: r.role,
-        amount: isFinite(parsedAmt) ? parsedAmt : 0,
-        status: r.status,
-        receivedDate: r.receivedDate
-      };
-      if (r.userId) rec.userId = r.userId;
-      return rec;
-    }) };
-    for (var i = 0; i < body.recipients.length; i++) {
-      if (!body.recipients[i].userName) { alert("Row " + (i+1) + ": name required"); return; }
-    }
-    try {
-      await p.writeCommission("PUT", "/api/commissions/" + c._id + "/incentive", body, "Incentive saved");
-      p.onClose();
-    } catch(e){}
-  };
-
-  var users = p.users || [];
-  return <Modal show={true} onClose={p.onClose} title="Edit Incentive Recipients" w={700}>
-    <div style={{ marginBottom:10, fontSize:11, color:C.textLight }}>
-      Incentives are paid directly by the developer to the recipient. This page only tracks who is owed what.
-    </div>
-    {rows.length === 0 && <div style={{ fontSize:13, color:C.textLight, fontStyle:"italic", marginBottom:12 }}>No recipients. Click "Add recipient" to start.</div>}
-    {rows.map(function(r, idx){
-      var matching = users.filter(function(u){ return u && u.role === r.role; });
-      return <div key={idx} style={{ display:"flex", gap:6, alignItems:"center", marginBottom:8, padding:"8px 10px", background:"#F8FAFC", borderRadius:8 }}>
-        <select value={r.role} onChange={function(e){ setRow(idx, { role: e.target.value, userId: "" }); }} style={{ padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12, width:110 }}>
-          <option value="sales">Sales</option>
-          <option value="team_leader">Team Lead</option>
-          <option value="manager">Manager</option>
-          <option value="director">Director</option>
-        </select>
-        <select value={r.userId} onChange={function(e){
-          var uid = e.target.value;
-          var u = matching.find(function(x){ return String(x._id) === uid; });
-          setRow(idx, { userId: uid, userName: u ? u.name : r.userName });
-        }} style={{ padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12, width:160 }}>
-          <option value="">— pick / free text —</option>
-          {matching.map(function(u){ return <option key={String(u._id)} value={String(u._id)}>{u.name}</option>; })}
-        </select>
-        <input type="text" placeholder="Or type name" value={r.userName} onChange={function(e){ setRow(idx, { userName: e.target.value, userId: "" }); }} style={{ flex:1, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>
-        <input type="text" inputMode="numeric" placeholder="Amount" value={r.amount}
-          onChange={function(e){
-            var raw = e.target.value.replace(/,/g, "").replace(/[^0-9]/g, "");
-            var fmt = raw === "" ? "" : Number(raw).toLocaleString();
-            setRow(idx, { amount: fmt });
-          }}
-          style={{ width:100, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>
-        <select value={r.status} onChange={function(e){ setRow(idx, { status: e.target.value, receivedDate: e.target.value === "received" ? (r.receivedDate || new Date().toISOString().slice(0,10)) : "" }); }} style={{ padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12, width:100 }}>
-          <option value="pending">Pending</option>
-          <option value="received">Received</option>
-        </select>
-        {r.status === "received" && <input type="date" value={r.receivedDate} onChange={function(e){ setRow(idx, { receivedDate: e.target.value }); }} style={{ width:120, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>}
-        <button onClick={function(){ removeRow(idx); }} title="Remove" style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:6, color:"#B91C1C", padding:"5px 8px", cursor:"pointer", fontSize:11 }}>×</button>
-      </div>;
-    })}
-    <div style={{ marginBottom:14 }}>
-      <button onClick={addRow} disabled={p.savingFlag} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", color:C.textLight, fontSize:12, fontWeight:600, cursor: p.savingFlag ? "wait" : "pointer" }}>+ Add recipient</button>
-    </div>
-    <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
-      <button onClick={p.onClose} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
-      <button onClick={save} disabled={p.savingFlag} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: p.savingFlag ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{p.savingFlag ? "Saving…" : "Save"}</button>
     </div>
   </Modal>;
 };
@@ -18849,11 +18979,14 @@ var CommissionsPage = function(p) {
   var [loadErr, setLoadErr] = useState("");
   var [expandedId, setExpandedId] = useState(null);
   var [reloadTick, setReloadTick] = useState(0);
-  // Phase D — modal state. Each holds the target commission/cycle or null.
-  var [editingSnapshot, setEditingSnapshot] = useState(null);   // commission obj
+  // Phase R-8 — single unified Edit Collection modal replaces the old trio
+  // (editingSnapshot / editingIncentive / addingPayoutFor). Triggered by the
+  // pencil icon next to the deal total on each card.
+  var [editingCollection, setEditingCollection] = useState(null); // commission obj
   var [editingCycleStage, setEditingCycleStage] = useState(null); // {commission, cycle, nextStage}
-  var [editingIncentive, setEditingIncentive] = useState(null); // commission obj
-  var [addingPayoutFor, setAddingPayoutFor] = useState(null);   // {commission}
+  // Phase R-8 — per-card collapse state for the Recipients block. Default is
+  // collapsed; keyed by commission _id so each card remembers its own toggle.
+  var [expandedRecipients, setExpandedRecipients] = useState({}); // {commissionId: true}
   var [cashFlow, setCashFlow] = useState(null);                 // {totalReceived, totalPaid, ..., byRecipient}
   var [commissionNotifs, setCommissionNotifs] = useState([]);   // Phase R-4: in-page banner items
   var [savingFlag, setSavingFlag] = useState(false);
@@ -19284,70 +19417,8 @@ var CommissionsPage = function(p) {
     </div>;
   };
 
-  // Phase R-1: per-commission payouts list. Replaces the per-cycle payoutBreakdown
-  // — payouts are now first-class records on the commission, tracking cash flow
-  // OUT (to recipients) separately from cash flow IN (cycle.receivedAmount).
-  var renderPayouts = function(c){
-    var payouts = (c && Array.isArray(c.payouts)) ? c.payouts : [];
-    var isCancelled = c.status === "cancelled";
-    return <div style={{ marginTop:8 }}>
-      {payouts.length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 0" }}>No payouts recorded.</div>}
-      {payouts.map(function(po){
-        return <div key={String(po._id)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 10px", background:"#F8FAFC", borderRadius:6, marginBottom:4 }}>
-          <div style={{ minWidth:0, flex:1 }}>
-            <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{po.recipientUserName} <span style={{ fontSize:10, color:C.textLight, textTransform:"capitalize" }}>({po.recipientRole})</span></div>
-            <div style={{ fontSize:10, color:C.textLight }}>{fmtDate(po.date)}{po.notes ? " · " + po.notes : ""}{Number(po.appliedToDebt || 0) > 0 ? " · " + Math.round(po.appliedToDebt).toLocaleString() + " applied to debt" : ""}</div>
-          </div>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <div style={{ textAlign:"right" }}>
-              <div style={{ fontSize:12, fontWeight:600, color:C.success }}>{fmtMoney(po.netPaid)}</div>
-              {Number(po.amount) !== Number(po.netPaid) && <div style={{ fontSize:9, color:C.textLight }}>gross {fmtMoney(po.amount)}</div>}
-            </div>
-            {!isCancelled && <button onClick={async function(){
-              if (!window.confirm("Delete this payout? Debt accounting will recompute.")) return;
-              try { await writeCommission("DELETE", "/api/commissions/" + c._id + "/payouts/" + po._id, null, "Payout deleted"); } catch(_e){}
-            }} disabled={savingFlag} title="Delete payout" style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:4, padding:"2px 6px", fontSize:10, color:"#B91C1C", cursor: savingFlag ? "wait" : "pointer" }}>✕</button>}
-          </div>
-        </div>;
-      })}
-    </div>;
-  };
-
-  var renderIncentive = function(c){
-    var inc = c && c.incentive;
-    var recipients = (inc && Array.isArray(inc.recipients)) ? inc.recipients : [];
-    if (recipients.length === 0) {
-      return <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"8px 0" }}>No incentive recipients recorded.</div>;
-    }
-    var isCancelled = c.status === "cancelled";
-    return <div>
-      {recipients.map(function(r, i){
-        var pillBg = r.status === "received" ? "#DCFCE7" : "#FEF9C3";
-        var pillFg = r.status === "received" ? "#15803D" : "#B45309";
-        var onQuickToggle = isCancelled ? null : async function(e){
-          if (e && e.stopPropagation) e.stopPropagation();
-          var todayIso = new Date().toISOString().slice(0,10);
-          var nextStatus = r.status === "received" ? "pending" : "received";
-          try {
-            await writeCommission("PATCH", "/api/commissions/" + c._id + "/incentive/" + i, { status: nextStatus, receivedDate: nextStatus === "received" ? todayIso : "" }, "Updated");
-          } catch(_e){}
-        };
-        return <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 10px", background:"#F8FAFC", borderRadius:6, marginBottom:4 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-            {onQuickToggle && <input type="checkbox" checked={r.status === "received"} onChange={onQuickToggle} disabled={savingFlag} title={r.status === "received" ? "Mark pending" : "Mark received (today)"} style={{ cursor: savingFlag ? "wait" : "pointer", width:14, height:14 }}/>}
-            <span style={{ fontSize:12, fontWeight:600, color:C.text }}>{r.userName}</span>
-            <span style={{ fontSize:10, color:C.textLight, textTransform:"capitalize" }}>({r.role})</span>
-          </div>
-          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-            <span style={{ fontSize:12, fontWeight:600, color:C.success }}>{fmtMoney(r.amount)}</span>
-            <span style={{ fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:10, background: pillBg, color: pillFg }}>
-              {r.status === "received" ? "✅ " + fmtDate(r.receivedDate) : "⏳ pending"}
-            </span>
-          </div>
-        </div>;
-      })}
-    </div>;
-  };
+  // Phase R-8 — renderPayouts / renderIncentive removed. Payouts and incentive
+  // recipients are now displayed and edited inside the unified Edit Collection modal.
 
   var goToDeal = function(c){
     var leadId = c && c.leadId;
@@ -19420,26 +19491,20 @@ var CommissionsPage = function(p) {
           </div>
         </div>
         <div style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
-          <div style={{ textAlign:"right" }}>
-            <div style={{ fontSize:18, fontWeight:700, color:C.success }}>{fmtMoney(snap.dealTotal)}</div>
-            <div style={{ fontSize:10, color:C.textLight }}>deal total</div>
-          </div>
-          {!isCancelled && <button onClick={function(){ setEditingSnapshot(c); }} disabled={savingFlag} title="Edit snapshot" style={{
+          <div style={{ fontSize:18, fontWeight:700, color:C.success }}>{fmtMoney(snap.dealTotal)}</div>
+          {!isCancelled && <button onClick={function(){ setEditingCollection(c); }} disabled={savingFlag} title="Edit Collection" style={{
             width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff",
             cursor: savingFlag ? "wait" : "pointer", display:"flex", alignItems:"center", justifyContent:"center"
           }}><Edit size={13} color={C.info}/></button>}
         </div>
       </div>
 
-      {/* Overview row */}
-      <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:12 }}>
+      {/* Phase R-8 — compact two-card stats row. Expected collection removed
+          per spec; only Received-so-far + Cycle count remain. */}
+      <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:10 }}>
         <div style={{ flex:1, minWidth:140, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
           <div style={{ fontSize:10, color:C.textLight }}>Received so far</div>
           <div style={{ fontSize:13, fontWeight:700, color:C.success }}>{fmtMoney(totalReceived)}</div>
-        </div>
-        <div style={{ flex:1, minWidth:140, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
-          <div style={{ fontSize:10, color:C.textLight }}>Expected collection</div>
-          <div style={{ fontSize:13, fontWeight:700, color: imminent ? "#B91C1C" : C.text }}>{fmtDate(c.expectedCollectionDate)}</div>
         </div>
         <div style={{ flex:1, minWidth:140, background:"#F8FAFC", padding:"8px 10px", borderRadius:8 }}>
           <div style={{ fontSize:10, color:C.textLight }}>Cycles</div>
@@ -19447,31 +19512,46 @@ var CommissionsPage = function(p) {
         </div>
       </div>
 
-      {/* Team chain (always shown) */}
-      <div style={{ marginBottom:10 }}>
-        <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase", marginBottom:6 }}>Recipients</div>
-        {renderRecipient("Sales", snap.salesAgent, ctx)}
-        {renderRecipient("Team Lead", snap.teamLeader, ctx)}
-        {renderRecipient("Manager", snap.manager, ctx)}
-        {renderRecipient("Director", snap.director, ctx)}
-        {snap.isSplitDeal && snap.splitChain && (snap.splitChain.salesAgent2 || snap.splitChain.teamLeader2 || snap.splitChain.manager2 || snap.splitChain.director2) && <div style={{ marginTop:6, paddingTop:6, borderTop:"1px dashed #E2E8F0" }}>
-          <div style={{ fontSize:10, fontWeight:700, color:"#7C3AED", marginBottom:4, textTransform:"uppercase" }}>Split chain</div>
-          {renderRecipient("Sales 2", snap.splitChain.salesAgent2, ctx)}
-          {renderRecipient("Team Lead 2", snap.splitChain.teamLeader2, ctx)}
-          {renderRecipient("Manager 2", snap.splitChain.manager2, ctx)}
-          {renderRecipient("Director 2", snap.splitChain.director2, ctx)}
-        </div>}
-      </div>
-
-      {/* Payouts to team (Phase R-1) */}
-      <div style={{ marginTop:6, marginBottom:12, paddingTop:6, borderTop:"1px solid #F1F5F9" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
-          <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase" }}>Payouts</div>
-          {!isCancelled && <button onClick={function(){ setAddingPayoutFor({ commission: c }); }} disabled={savingFlag} title="Record a payout to a team member"
-            style={{ padding:"3px 10px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor: savingFlag ? "wait" : "pointer", fontSize:11, color:C.textLight }}>+ Add Payout</button>}
-        </div>
-        {renderPayouts(c)}
-      </div>
+      {/* Phase R-8 — collapsible Recipients block. Defaults to collapsed;
+          clicking the header row toggles expand. Action buttons live in the
+          Edit Collection modal now — this block is display-only. */}
+      {(function(){
+        var recipientCount = ["salesAgent","teamLeader","manager","director"].filter(function(k){ return !!snap[k]; }).length
+          + (snap.isSplitDeal && snap.splitChain ? ["salesAgent2","teamLeader2","manager2","director2"].filter(function(k){ return !!snap.splitChain[k]; }).length : 0);
+        var expanded = !!expandedRecipients[String(c._id)];
+        var toggle = function(){
+          setExpandedRecipients(function(prev){
+            var next = Object.assign({}, prev);
+            if (next[String(c._id)]) delete next[String(c._id)]; else next[String(c._id)] = true;
+            return next;
+          });
+        };
+        return <div style={{ marginBottom:10 }}>
+          <div onClick={toggle} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0", cursor:"pointer", userSelect:"none" }}>
+            <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase" }}>Recipients ({recipientCount})</div>
+            <span style={{ fontSize:11, color:C.textLight }}>{expanded ? "▾" : "▸"}</span>
+          </div>
+          <div style={{
+            overflow:"hidden",
+            transition:"max-height 0.2s ease",
+            maxHeight: expanded ? 600 : 0
+          }}>
+            <div style={{ paddingTop:6 }}>
+              {renderRecipient("Sales", snap.salesAgent, ctx)}
+              {renderRecipient("Team Lead", snap.teamLeader, ctx)}
+              {renderRecipient("Manager", snap.manager, ctx)}
+              {renderRecipient("Director", snap.director, ctx)}
+              {snap.isSplitDeal && snap.splitChain && (snap.splitChain.salesAgent2 || snap.splitChain.teamLeader2 || snap.splitChain.manager2 || snap.splitChain.director2) && <div style={{ marginTop:6, paddingTop:6, borderTop:"1px dashed #E2E8F0" }}>
+                <div style={{ fontSize:10, fontWeight:700, color:"#7C3AED", marginBottom:4, textTransform:"uppercase" }}>Split chain</div>
+                {renderRecipient("Sales 2", snap.splitChain.salesAgent2, ctx)}
+                {renderRecipient("Team Lead 2", snap.splitChain.teamLeader2, ctx)}
+                {renderRecipient("Manager 2", snap.splitChain.manager2, ctx)}
+                {renderRecipient("Director 2", snap.splitChain.director2, ctx)}
+              </div>}
+            </div>
+          </div>
+        </div>;
+      })()}
 
       {/* Active cycle (always expanded if not paid/cancelled) */}
       {activeCycle && renderCycle(c, activeCycle, true)}
@@ -19508,17 +19588,8 @@ var CommissionsPage = function(p) {
         {otherCycles.map(function(cy){ return renderCycle(c, cy, false); })}
       </div>}
 
-      {/* Incentive */}
-      <div style={{ marginTop:12, paddingTop:10, borderTop:"1px solid #F1F5F9" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
-          <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase" }}>Incentive (developer-direct)</div>
-          {!isCancelled && <button onClick={function(){ setEditingIncentive(c); }} disabled={savingFlag} title="Edit incentive recipients" style={{
-            padding:"3px 10px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff",
-            cursor: savingFlag ? "wait" : "pointer", fontSize:11, color:C.textLight
-          }}>Edit incentive</button>}
-        </div>
-        {renderIncentive(c)}
-      </div>
+      {/* Phase R-8 — Payouts + Incentive blocks moved into the unified Edit
+          Deal modal. They no longer appear on the card. */}
 
       {/* Footer */}
       <div style={{ marginTop:12, paddingTop:10, borderTop:"1px solid #F1F5F9", display:"flex", justifyContent:"flex-end", gap:8 }}>
@@ -20329,11 +20400,32 @@ var CommissionsPage = function(p) {
       </div>;
     })()}
 
-    {/* Phase D modals — rendered when their state is set. */}
-    {editingSnapshot && <CommissionSnapshotEditModal target={editingSnapshot} onClose={function(){ setEditingSnapshot(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
+    {/* Phase R-8 — single unified Edit Collection modal. Sub-API calls inside
+        the modal flush sequentially; onSaved swaps the updated commission into
+        rows[] in place and refreshes ancillary stats + cash-flow. */}
+    {editingCollection && <CommissionEditCollectionModal
+      target={editingCollection}
+      token={p.token}
+      users={p.users}
+      savingFlag={savingFlag}
+      onClose={function(){ setEditingCollection(null); }}
+      onSaved={function(doc, didAnything){
+        if (doc && doc._id) {
+          setRows(function(prev){
+            if (!Array.isArray(prev)) return prev;
+            var idx = prev.findIndex(function(x){ return String(x._id) === String(doc._id); });
+            if (idx >= 0) { var next = prev.slice(); next[idx] = doc; return next; }
+            return prev;
+          });
+          var statsUrl = "/api/commissions/stats" + (claimsYearFilter ? "?year=" + encodeURIComponent(claimsYearFilter) : "");
+          apiFetch(statsUrl, "GET", null, p.token).then(function(s){ setStats(s || {}); }).catch(function(){});
+          apiFetch("/api/commissions/cash-flow", "GET", null, p.token).then(function(s){ setCashFlow(s || {}); }).catch(function(){});
+        }
+        if (didAnything !== false) setToast({ kind: "ok", msg: "Deal saved" });
+      }}
+      onPartialFailure={function(){ setReloadTick(function(v){ return v + 1; }); }}
+    />}
     {editingCycleStage && <CommissionCycleStageModal target={editingCycleStage} onClose={function(){ setEditingCycleStage(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
-    {editingIncentive && <CommissionIncentiveEditModal target={editingIncentive} onClose={function(){ setEditingIncentive(null); }} writeCommission={writeCommission} savingFlag={savingFlag} users={p.users}/>}
-    {addingPayoutFor && <CommissionPayoutAddModal target={addingPayoutFor} onClose={function(){ setAddingPayoutFor(null); }} writeCommission={writeCommission} savingFlag={savingFlag} cashFlow={cashFlow}/>}
     {/* Phase R-6 polish — claim-data backfill modal for pre-R-5 cycles. */}
     {backfillTarget && <CommissionClaimBackfillModal
       commission={backfillTarget.commission}
