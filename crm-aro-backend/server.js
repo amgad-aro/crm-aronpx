@@ -16290,6 +16290,50 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage/:stageName", auth, salesAd
   }
 });
 
+// PATCH cycle claim-data — Phase R-6 polish. Backfill (or overwrite) the
+// claimUnitValue + commissionRate + claimAmount triple on cycles created
+// before R-5 that have already passed the claim_submitted stage but never
+// captured the numerics. Distinct from the stage-EDIT endpoint above: this
+// one does NOT touch the stage subdoc (claim_submitted.date/notes/byUser
+// stay as historically recorded), only the three claim numerics. Idempotent
+// — accepts the call regardless of whether the cycle already has values.
+// Gated by salesAdminOnly to match the existing PATCH /stage and PATCH
+// /stage/:stageName endpoints (admin + sales_admin only — no manager/TL).
+app.patch("/api/commissions/:id/cycles/:cycleId/claim-data", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (c.status === "cancelled") return res.status(400).json({ error: "cannot edit a cancelled commission" });
+    var cyc = c.cycles.id(req.params.cycleId);
+    if (!cyc) return res.status(404).json({ error: "Cycle not found" });
+    var allowed = ["claim_submitted", "invoice_submitted", "received", "paid_to_team"];
+    if (allowed.indexOf(cyc.state) < 0) {
+      return res.status(400).json({ error: "cycle has not reached claim_submitted — advance the stage instead" });
+    }
+    var body = req.body || {};
+    var cuv = Number(body.claimUnitValue);
+    var rate = Number(body.commissionRate);
+    if (!isFinite(cuv) || cuv <= 0) return res.status(400).json({ error: "claimUnitValue must be > 0" });
+    if (!isFinite(rate) || rate <= 0) return res.status(400).json({ error: "commissionRate must be > 0" });
+    var oldUnit = Number(cyc.claimUnitValue || 0);
+    var oldRate = Number(cyc.commissionRate || 0);
+    cyc.claimUnitValue = cuv;
+    cyc.commissionRate = rate;
+    cyc.claimAmount    = cuv * rate;
+    c.markModified("cycles");
+    await c.save();
+    var note = (oldUnit === 0 && oldRate === 0)
+      ? "[Commission] cycle " + cyc.cycleNumber + " — backfilled claim data: unit " + Math.round(cuv).toLocaleString() + " × " + (rate * 100).toFixed(2) + "% = " + Math.round(cuv * rate).toLocaleString() + " EGP"
+      : "[Commission] cycle " + cyc.cycleNumber + " — claim data updated: unit " + Math.round(oldUnit).toLocaleString() + " → " + Math.round(cuv).toLocaleString() + ", rate " + (oldRate * 100).toFixed(2) + "% → " + (rate * 100).toFixed(2) + "%";
+    await logCommissionActivity(req.user, c.leadId, "commission_claim_backfill", note);
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PATCH /api/commissions/:id/cycles/:cycleId/claim-data]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "claim_backfill_failed" });
+  }
+});
+
 // DELETE cycle — pending_claim / claim_submitted / invoice_submitted: free
 // delete. received / paid_to_team: require body.confirmCycleNumber matching
 // cyc.cycleNumber (admin types the cycle number to confirm — destructive).

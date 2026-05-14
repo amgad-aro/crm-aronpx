@@ -18226,6 +18226,93 @@ var CommissionIncentiveEditModal = function(p) {
   </Modal>;
 };
 
+// Phase R-6 polish — CommissionClaimBackfillModal. Focused modal for filling
+// in claimUnitValue + commissionRate on cycles that passed claim_submitted
+// before R-5 shipped (so claimAmount was never captured). Distinct from the
+// stage-advance/edit modal: doesn't touch the stage subdoc (date/notes stay
+// as recorded historically). Reuses the live tax breakdown layout from the
+// R-5 modal for visual consistency. Idempotent on the backend — same endpoint
+// handles both first-time backfill and overwrite of existing values.
+var CommissionClaimBackfillModal = function(p) {
+  var c   = p.commission;
+  var cyc = p.cycle;
+  var [unit, setUnit] = useState(function(){
+    if (cyc && Number(cyc.claimUnitValue || 0) > 0) {
+      return round2(cyc.claimUnitValue).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    return "";
+  });
+  var [ratePct, setRatePct] = useState(function(){
+    if (cyc && Number(cyc.commissionRate || 0) > 0) {
+      return String(Number((Number(cyc.commissionRate) * 100).toFixed(4)));
+    }
+    return "";
+  });
+  var [saving, setSaving] = useState(false);
+
+  var unitNum  = parseMoney(unit) || 0;
+  var rateNum  = parseFloat(ratePct);
+  var rateDec  = isFinite(rateNum) ? rateNum / 100 : 0;
+  var gross    = unitNum > 0 && rateDec > 0 ? unitNum * rateDec : 0;
+  var netOfVat = gross > 0 ? gross / 1.14 : 0;
+  var vat      = gross - netOfVat;
+  var with5    = netOfVat * 0.05;
+  var netRcv   = gross > 0 ? gross - with5 : 0;
+
+  var claimDateStr = "—";
+  try {
+    if (cyc && cyc.claim_submitted && cyc.claim_submitted.date) {
+      claimDateStr = new Date(cyc.claim_submitted.date).toLocaleDateString("en-GB");
+    }
+  } catch(_){}
+
+  var save = async function(){
+    var u = parseMoney(unit);
+    var r = parseFloat(ratePct);
+    if (!isFinite(u) || u <= 0) { alert("Unit Value is required (> 0)"); return; }
+    if (!isFinite(r) || r <= 0) { alert("Commission Rate is required (> 0)"); return; }
+    setSaving(true);
+    try {
+      // Reuse writeCommission so the parent's rows array gets the updated
+      // commission spliced in place (no full refetch flicker).
+      await p.writeCommission("PATCH",
+        "/api/commissions/" + c._id + "/cycles/" + cyc._id + "/claim-data",
+        { claimUnitValue: u, commissionRate: r / 100 },
+        "Claim data saved"
+      );
+      setSaving(false);
+      p.onClose();
+    } catch(_e) {
+      setSaving(false);
+    }
+  };
+
+  return <Modal show={true} onClose={p.onClose} title={"Add Claim Data — Cycle #" + (cyc && cyc.cycleNumber)} w={520}>
+    <div style={{ fontSize:11, color:C.textLight, marginBottom:10, padding:"6px 10px", background:"#F8FAFC", borderRadius:6 }}>
+      Claim date <b style={{ color:C.text }}>{claimDateStr}</b> (preserved from the original claim_submitted stage; not editable here).
+    </div>
+    <FormRow label="Unit Value (EGP)">
+      <MoneyInput value={unit} onChange={setUnit} autoFocus={true}/>
+    </FormRow>
+    <FormRow label="Commission Rate (%)">
+      <input type="number" step="0.01" min="0" value={ratePct} placeholder="e.g. 3"
+        onChange={function(e){ setRatePct(e.target.value); }}
+        style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
+    </FormRow>
+    {gross > 0 && <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:C.text }}>
+      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Claim Total (incl. VAT)</span><b>{fmtMoney2(gross)}</b></div>
+      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Net of VAT</span><span>{fmtMoney2(netOfVat)}</span></div>
+      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>VAT 14%</span><span>{fmtMoney2(vat)}</span></div>
+      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Withholding 5%</span><span>{fmtMoney2(with5)}</span></div>
+      <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #CBD5E1", color:C.success, fontWeight:700 }}><span>Expected Net Received</span><span>{fmtMoney2(netRcv)}</span></div>
+    </div>}
+    <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+      <button onClick={p.onClose} disabled={saving} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: saving ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
+      <button onClick={save} disabled={saving} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: saving ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{saving ? "Saving…" : "Save"}</button>
+    </div>
+  </Modal>;
+};
+
 // Phase R-6 — AddExpenseModal. Dual-purpose: create when target is falsy,
 // edit when target carries an existing expense row. Passes the result back
 // via onSaved (caller refetches the P&L). MoneyInput is decimal-aware
@@ -18544,12 +18631,27 @@ var CommissionsPage = function(p) {
   var [editingExpense, setEditingExpense] = useState(null); // expense row or null
   var [managingCategories, setManagingCategories] = useState(false);
   var [expCatFilter, setExpCatFilter] = useState(""); // "" = all
+  // Phase R-6 polish — month grouping on the expenses table. Map keyed by
+  // yyyy-mm; presence === expanded. Multiple months can be expanded at once.
+  var [expandedExpMonths, setExpandedExpMonths] = useState({});
   var [chartMode, setChartMode] = useState("total"); // "total" | "byCategory"
   var [pnlReloadTick, setPnlReloadTick] = useState(0);
+  // Silent-reload ref: when an in-tab mutation refetches the P&L, this flag
+  // suppresses the "Loading P&L…" spinner so numbers update in place without
+  // a visible flicker. Ref (not state) — setting it does NOT trigger another
+  // effect run. Cleared by the fetch effect on completion.
+  var pnlSilentReloadRef = useRef(false);
+  var triggerPnlReload = function(){
+    pnlSilentReloadRef.current = true;
+    setPnlReloadTick(function(x){ return x + 1; });
+  };
   // Inline profit-tax editor (always visible per judgment #6). Drafts sync
   // from pnl.profitTax when the response loads/changes; admin edits + Saves.
   var [taxModeDraft, setTaxModeDraft] = useState("percent");
   var [taxValueDraft, setTaxValueDraft] = useState("");
+  // Phase R-6 polish — claim-data backfill modal target. Holds the cycle +
+  // commission pair when admin clicks "Add claim data" on a pre-R-5 cycle.
+  var [backfillTarget, setBackfillTarget] = useState(null); // { commission, cycle }
   var [rows, setRows] = useState(null);
   var [stats, setStats] = useState(null);
   var [loadErr, setLoadErr] = useState("");
@@ -18612,10 +18714,11 @@ var CommissionsPage = function(p) {
     if (!p.cu || p.cu.role !== "admin") return;
     var cancelled = false;
     var effYear = annualYear || String(new Date(Date.now() + 3 * 3600 * 1000).getUTCFullYear());
-    setPnlLoading(true);
+    var silent = pnlSilentReloadRef.current;
+    if (!silent) setPnlLoading(true);
     apiFetch("/api/annual-pnl?year=" + encodeURIComponent(effYear), "GET", null, p.token)
-      .then(function(d){ if (!cancelled) { setPnl(d || null); setPnlLoading(false); } })
-      .catch(function(){ if (!cancelled) { setPnl(null); setPnlLoading(false); } });
+      .then(function(d){ if (!cancelled) { setPnl(d || null); setPnlLoading(false); pnlSilentReloadRef.current = false; } })
+      .catch(function(){ if (!cancelled) { setPnl(null); setPnlLoading(false); pnlSilentReloadRef.current = false; } });
     apiFetch("/api/expense-categories", "GET", null, p.token)
       .then(function(d){ if (!cancelled) setExpenseCategories((d && d.data) || []); })
       .catch(function(){ if (!cancelled) setExpenseCategories([]); });
@@ -18921,6 +19024,11 @@ var CommissionsPage = function(p) {
     else if (cycle.state === "received") { pillBg = "#DBEAFE"; pillFg = "#1D4ED8"; }
     var isCancelledCommission = c && c.status === "cancelled";
     var canDelete = !isCancelledCommission && ["pending_claim","claim_submitted","invoice_submitted","received","paid_to_team"].indexOf(cycle.state) >= 0;
+    // Phase R-6 polish — cycles that passed claim_submitted but never captured
+    // unit/rate/claimAmount (pre-R-5 data) qualify for the backfill flow.
+    var passedClaim = ["claim_submitted","invoice_submitted","received","paid_to_team"].indexOf(cycle.state) >= 0;
+    var missingClaimData = Number(cycle.claimAmount || 0) === 0 || Number(cycle.claimUnitValue || 0) === 0 || Number(cycle.commissionRate || 0) === 0;
+    var canBackfill = !isCancelledCommission && passedClaim && missingClaimData;
     return <div key={String(cycle._id || cycle.cycleNumber)} style={{ border:"1px solid #E2E8F0", borderRadius:10, padding:"10px 12px", marginBottom:8, background: isActiveCycle ? "#FAFBFF" : "#fff" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: 12 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
@@ -18931,6 +19039,11 @@ var CommissionsPage = function(p) {
         </div>
         <div style={{ fontSize:11, color:C.textLight, display:"flex", alignItems:"center", gap:8 }}>
           {Number(cycle.receivedAmount || 0) > 0 && <span>Received: <b>{fmtMoney(cycle.receivedAmount)}</b></span>}
+          {canBackfill && <button onClick={function(){ setBackfillTarget({ commission: c, cycle: cycle }); }} disabled={savingFlag}
+            title="Add unit value & rate (pre-R-5 cycle)"
+            style={{ padding:"3px 8px", borderRadius:6, border:"1px solid " + C.accent, background: C.accent + "12", color: C.accent, fontSize:10, fontWeight:600, cursor: savingFlag ? "wait" : "pointer" }}>
+            + Add claim data
+          </button>}
           {canDelete && <button onClick={function(){ handleDeleteCycle(c, cycle); }} disabled={savingFlag} title={"Delete cycle " + cycle.cycleNumber}
             style={{ padding:"3px 8px", borderRadius:6, border:"1px solid #FCA5A5", background:"#fff", color:"#B91C1C", fontSize:10, fontWeight:600, cursor: savingFlag ? "wait" : "pointer" }}>
             ✕ Delete
@@ -19230,7 +19343,7 @@ var CommissionsPage = function(p) {
     if (!window.confirm("Delete this expense?")) return;
     try {
       await apiFetch("/api/expenses/" + row._id, "DELETE", null, p.token);
-      setPnlReloadTick(function(x){ return x + 1; });
+      triggerPnlReload();
       setToast({ kind:"ok", msg:"Expense deleted" });
     } catch(e) {
       setToast({ kind:"err", msg: (e && e.message) || "Failed" });
@@ -19242,7 +19355,7 @@ var CommissionsPage = function(p) {
     var effY = annualYear || String(new Date(Date.now() + 3 * 3600 * 1000).getUTCFullYear());
     try {
       await apiFetch("/api/profit-tax/" + effY, "PUT", { mode: taxModeDraft, value: v }, p.token);
-      setPnlReloadTick(function(x){ return x + 1; });
+      triggerPnlReload();
       setToast({ kind:"ok", msg:"Profit tax saved" });
     } catch(e) {
       setToast({ kind:"err", msg: (e && e.message) || "Failed" });
@@ -19456,7 +19569,6 @@ var CommissionsPage = function(p) {
               {avail.map(function(y){ return <option key={y} value={y}>{y}</option>; })}
             </select>;
           })()}
-          <div style={{ fontSize:11, color:C.textLight }}>Annual summary for {ay}</div>
         </div>
 
         {annualLoading && <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight }}>Loading…</div>}
@@ -19606,44 +19718,112 @@ var CommissionsPage = function(p) {
                     padding:"6px 14px", borderRadius:8, border:"none", background: C.accent, color:"#fff", fontSize:12, fontWeight:600, cursor:"pointer"
                   }}>+ Add Expense</button>
                 </div>
-                <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
-                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-                    <thead>
-                      <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
-                        <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Date</th>
-                        <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Category</th>
-                        <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Description</th>
-                        <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>Amount</th>
-                        <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight, width:90 }}></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredExp.length === 0 && <tr><td colSpan={5} style={{ padding:"18px 14px", color:C.textLight, fontStyle:"italic" }}>No expenses recorded{expCatFilter ? " for this category" : ""} in {ay}.</td></tr>}
-                      {filteredExp.map(function(r){
-                        return <tr key={r._id} style={{ borderTop:"1px solid #F1F5F9" }}>
-                          <td style={{ padding:"8px 12px" }}>{fmtDateShort(r.date)}</td>
-                          <td style={{ padding:"8px 12px" }}>
-                            {r.categoryName}
-                            {r.categoryArchived && <span style={{ marginInlineStart:6, fontSize:9, color:"#B45309", background:"#FEF3C7", padding:"1px 6px", borderRadius:10, fontWeight:700 }}>archived</span>}
-                          </td>
-                          <td style={{ padding:"8px 12px", color:C.textLight }}>{r.description || "—"}</td>
-                          <td style={{ padding:"8px 12px", textAlign:"end", fontWeight:600 }}>{fmtMoneyAr(r.amount)}</td>
-                          <td style={{ padding:"8px 12px", textAlign:"end" }}>
-                            <button onClick={function(){ setEditingExpense(r); }} title="Edit" style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, padding:"2px 7px", fontSize:10, color:C.textLight, cursor:"pointer", marginInlineEnd:4 }}>✎</button>
-                            <button onClick={function(){ deleteExpense(r); }} title="Delete" style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:4, padding:"2px 7px", fontSize:10, color:"#B91C1C", cursor:"pointer" }}>✕</button>
-                          </td>
-                        </tr>;
-                      })}
-                    </tbody>
-                    {filteredExp.length > 0 && <tfoot>
-                      <tr style={{ background:"#F8FAFC", borderTop:"1px solid #E8ECF1" }}>
-                        <td colSpan={3} style={{ padding:"10px 12px", fontWeight:700, color:C.text }}>{expCatFilter ? "Filtered total" : "Total expenses for year"}</td>
-                        <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text }}>{fmtMoneyAr(filteredTotal)}</td>
-                        <td></td>
-                      </tr>
-                    </tfoot>}
-                  </table>
-                </div>
+                {(function(){
+                  // Group filtered expenses into Cairo-local months (Jan-Dec of
+                  // the selected year). 12 rows always render; empty months are
+                  // greyed out. Each month row toggles a drill-down showing its
+                  // individual entries (with Edit/Delete actions retained).
+                  var monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+                  var yearStr = String(ay);
+                  var buckets = monthNames.map(function(){ return []; });
+                  filteredExp.forEach(function(r){
+                    var d = new Date(r.date);
+                    if (isNaN(d.getTime())) return;
+                    var cairoLocal = new Date(d.getTime() + 3 * 3600 * 1000);
+                    if (String(cairoLocal.getUTCFullYear()) !== yearStr) return;
+                    buckets[cairoLocal.getUTCMonth()].push(r);
+                  });
+                  var toggleMonth = function(monthKey){
+                    setExpandedExpMonths(function(prev){
+                      var next = Object.assign({}, prev);
+                      if (next[monthKey]) delete next[monthKey]; else next[monthKey] = true;
+                      return next;
+                    });
+                  };
+                  return <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
+                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                      <thead>
+                        <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
+                          <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Month</th>
+                          <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>Total</th>
+                          <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight, width:40 }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {monthNames.map(function(mn, mi){
+                          var entries = buckets[mi];
+                          var hasEntries = entries.length > 0;
+                          var monthKey = yearStr + "-" + String(mi + 1).padStart(2, "0");
+                          var expanded = !!expandedExpMonths[monthKey];
+                          var monthTotal = entries.reduce(function(s, r){ return s + Number(r.amount || 0); }, 0);
+                          var rows = [
+                            <tr key={"m-" + mi}
+                              onClick={hasEntries ? function(){ toggleMonth(monthKey); } : null}
+                              style={{
+                                borderTop:"1px solid #F1F5F9",
+                                cursor: hasEntries ? "pointer" : "default",
+                                background: expanded ? "#F8FAFC" : "#fff"
+                              }}>
+                              <td style={{ padding:"10px 12px", fontWeight:600, color: hasEntries ? C.text : C.textLight }}>
+                                {mn}
+                                {hasEntries && <span style={{ fontSize:10, color:C.textLight, fontWeight:500, marginInlineStart:8 }}>{entries.length} entr{entries.length === 1 ? "y" : "ies"}</span>}
+                              </td>
+                              <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:hasEntries ? 700 : 400, color: hasEntries ? C.text : C.textLight }}>
+                                {hasEntries ? fmtMoneyAr(monthTotal) : "—"}
+                              </td>
+                              <td style={{ padding:"10px 12px", textAlign:"end", color:C.textLight }}>
+                                {hasEntries ? (expanded ? "▾" : "▸") : ""}
+                              </td>
+                            </tr>
+                          ];
+                          if (expanded && hasEntries) {
+                            // Sub-header for the indented rows.
+                            rows.push(<tr key={"mh-" + mi} style={{ background:"#FAFBFF", borderTop:"1px solid #F1F5F9" }}>
+                              <td colSpan={3} style={{ padding:0 }}>
+                                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+                                  <thead>
+                                    <tr>
+                                      <th style={{ textAlign:"start", padding:"6px 12px 6px 32px", fontWeight:600, color:C.textLight, width:90 }}>Date</th>
+                                      <th style={{ textAlign:"start", padding:"6px 12px", fontWeight:600, color:C.textLight, width:140 }}>Category</th>
+                                      <th style={{ textAlign:"start", padding:"6px 12px", fontWeight:600, color:C.textLight }}>Description</th>
+                                      <th style={{ textAlign:"end",   padding:"6px 12px", fontWeight:600, color:C.textLight, width:120 }}>Amount</th>
+                                      <th style={{ textAlign:"end",   padding:"6px 12px", fontWeight:600, color:C.textLight, width:80 }}></th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {entries.map(function(r){
+                                      return <tr key={r._id} style={{ borderTop:"1px solid #F1F5F9" }}>
+                                        <td style={{ padding:"6px 12px 6px 32px" }}>{fmtDateShort(r.date)}</td>
+                                        <td style={{ padding:"6px 12px" }}>
+                                          {r.categoryName}
+                                          {r.categoryArchived && <span style={{ marginInlineStart:6, fontSize:9, color:"#B45309", background:"#FEF3C7", padding:"1px 6px", borderRadius:10, fontWeight:700 }}>archived</span>}
+                                        </td>
+                                        <td style={{ padding:"6px 12px", color:C.textLight }}>{r.description || "—"}</td>
+                                        <td style={{ padding:"6px 12px", textAlign:"end", fontWeight:600 }}>{fmtMoneyAr(r.amount)}</td>
+                                        <td style={{ padding:"6px 12px", textAlign:"end" }}>
+                                          <button onClick={function(e){ e.stopPropagation(); setEditingExpense(r); }} title="Edit" style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, padding:"2px 7px", fontSize:10, color:C.textLight, cursor:"pointer", marginInlineEnd:4 }}>✎</button>
+                                          <button onClick={function(e){ e.stopPropagation(); deleteExpense(r); }} title="Delete" style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:4, padding:"2px 7px", fontSize:10, color:"#B91C1C", cursor:"pointer" }}>✕</button>
+                                        </td>
+                                      </tr>;
+                                    })}
+                                  </tbody>
+                                </table>
+                              </td>
+                            </tr>);
+                          }
+                          return rows;
+                        })}
+                      </tbody>
+                      {filteredExp.length > 0 && <tfoot>
+                        <tr style={{ background:"#F8FAFC", borderTop:"1px solid #E8ECF1" }}>
+                          <td style={{ padding:"10px 12px", fontWeight:700, color:C.text }}>{expCatFilter ? "Filtered total" : "Total expenses for year"}</td>
+                          <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text }}>{fmtMoneyAr(filteredTotal)}</td>
+                          <td></td>
+                        </tr>
+                      </tfoot>}
+                    </table>
+                  </div>;
+                })()}
               </div>
 
               {/* --- Sub-Block B: Monthly chart ----------------------- */}
@@ -19723,6 +19903,12 @@ var CommissionsPage = function(p) {
     {editingCycleStage && <CommissionCycleStageModal target={editingCycleStage} onClose={function(){ setEditingCycleStage(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
     {editingIncentive && <CommissionIncentiveEditModal target={editingIncentive} onClose={function(){ setEditingIncentive(null); }} writeCommission={writeCommission} savingFlag={savingFlag} users={p.users}/>}
     {addingPayoutFor && <CommissionPayoutAddModal target={addingPayoutFor} onClose={function(){ setAddingPayoutFor(null); }} writeCommission={writeCommission} savingFlag={savingFlag} cashFlow={cashFlow}/>}
+    {/* Phase R-6 polish — claim-data backfill modal for pre-R-5 cycles. */}
+    {backfillTarget && <CommissionClaimBackfillModal
+      commission={backfillTarget.commission}
+      cycle={backfillTarget.cycle}
+      writeCommission={writeCommission}
+      onClose={function(){ setBackfillTarget(null); }}/>}
     {/* Phase R-6 modals — Add/Edit Expense + Manage Categories. Both refresh
         the P&L via pnlReloadTick; Manage Categories also writes back the
         latest list so the dropdowns refresh without a roundtrip. */}
@@ -19730,7 +19916,7 @@ var CommissionsPage = function(p) {
       target={editingExpense}
       categories={expenseCategories}
       token={p.token}
-      onSaved={function(){ setPnlReloadTick(function(x){ return x + 1; }); }}
+      onSaved={function(){ triggerPnlReload(); }}
       onClose={function(){ setAddingExpense(false); setEditingExpense(null); }}/>}
     {managingCategories && <ManageCategoriesModal
       categories={expenseCategories}
@@ -19739,7 +19925,7 @@ var CommissionsPage = function(p) {
         setManagingCategories(false);
         if (Array.isArray(latest)) setExpenseCategories(latest);
         // Refetch P&L so any rename/archive reflects in the table category column.
-        setPnlReloadTick(function(x){ return x + 1; });
+        triggerPnlReload();
       }}/>}
 
     {/* Toast — top-right transient feedback. Auto-dismisses via useEffect. */}
