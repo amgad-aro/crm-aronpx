@@ -2217,6 +2217,81 @@ async function runReviveBrokenBackfill() {
   return summary;
 }
 
+// Targeted hard-delete of specific commission documents. Accepts a list of
+// commissionIds (24-hex strings). Per-id safety:
+//   - id must be a valid ObjectId
+//   - commission must exist
+//   - status must NOT be "active" — active records are the live ones; this
+//     protects the backfill-created replacements from being wiped by accident.
+// Skipped ids are surfaced with a reason; deleted ids carry a snapshot of
+// what was on them (customer, status, cycle count, summed claim/received) so
+// the admin has a record of what was removed.
+async function runDeleteBogusLegacyBackfill(ids) {
+  var summary = {
+    type: "delete_bogus_legacy_commissions",
+    startedAt: new Date().toISOString(),
+    scanned: 0,
+    deleted: [],
+    skipped: [],
+    completedAt: null
+  };
+  if (!Array.isArray(ids) || ids.length === 0) {
+    summary.completedAt = new Date().toISOString();
+    return summary;
+  }
+  summary.scanned = ids.length;
+  for (var i = 0; i < ids.length; i++) {
+    var rawId = String(ids[i] || "").trim();
+    if (!mongoose.Types.ObjectId.isValid(rawId)) {
+      summary.skipped.push({ commissionId: rawId, reason: "invalid_object_id" });
+      continue;
+    }
+    var doc = await Commission.findById(rawId).lean();
+    if (!doc) {
+      summary.skipped.push({ commissionId: rawId, reason: "not_found" });
+      continue;
+    }
+    if (doc.status === "active") {
+      summary.skipped.push({
+        commissionId: rawId,
+        reason: "status_active_refused",
+        customerName: (doc.snapshot && doc.snapshot.customerName) || "(unknown)"
+      });
+      continue;
+    }
+    var cycles = Array.isArray(doc.cycles) ? doc.cycles : [];
+    var claimSum = 0, receivedSum = 0;
+    for (var j = 0; j < cycles.length; j++) {
+      claimSum    += Number(cycles[j].claimAmount    || 0);
+      receivedSum += Number(cycles[j].receivedAmount || 0);
+    }
+    var snap = doc.snapshot || {};
+    var r = await Commission.deleteOne({ _id: doc._id });
+    var delCount = r && (r.deletedCount != null ? r.deletedCount : 0);
+    if (delCount === 1) {
+      summary.deleted.push({
+        commissionId: String(doc._id),
+        customerName: snap.customerName || "(unknown)",
+        projectName:  snap.projectName  || "",
+        status:       doc.status,
+        cycleCount:   cycles.length,
+        claimSum:     Math.round(claimSum    * 100) / 100,
+        receivedSum:  Math.round(receivedSum * 100) / 100
+      });
+      console.log("[delete_bogus_legacy_commissions] removed " + String(doc._id) +
+        " — customer=" + (snap.customerName || "(unknown)") +
+        " status=" + doc.status +
+        " cycles=" + cycles.length +
+        " claimSum=" + claimSum.toFixed(2) +
+        " receivedSum=" + receivedSum.toFixed(2));
+    } else {
+      summary.skipped.push({ commissionId: rawId, reason: "delete_failed" });
+    }
+  }
+  summary.completedAt = new Date().toISOString();
+  return summary;
+}
+
 // cascadeCommissionCancel — flips active commission for a lead to cancelled,
 // closes any open cycles, leaves paid_to_team cycles untouched (history must
 // survive). Used by the deal-cancel hook.
@@ -15610,7 +15685,11 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
     // in the target year. The $elemMatch keeps the query selective; the loop
     // below still re-filters per cycle since a commission may have a mix of
     // R-5 and pre-R-5 cycles.
+    // status filter: exclude cancelled. Cancelled commissions are not part of
+    // the active book and must not be reflected in tax filings or the YoY
+    // totals the admin reconciles against Excel.
     var docs = await Commission.find({
+      status: { $ne: "cancelled" },
       cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "claim_submitted.date": { $regex: "^" + year } } }
     }).select("snapshot.customerName snapshot.projectName cycles").lean();
 
@@ -15632,7 +15711,13 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
         var nv = ca / 1.14;
         var vt = ca - nv;
         var wh = nv * 0.05;
-        var rcv = Number(cy.receivedAmount || 0);
+        // Net Received is computed from the formula (gross claim − 5%
+        // withholding on the netOfVat portion), NOT from cy.receivedAmount.
+        // The raw field is admin-entered cash; historical entries on legacy
+        // cycles were unreliable (e.g. deal totals stored there), and the
+        // tax filing requires the theoretical net that mirrors the Excel
+        // reference. Same math as /api/annual-pnl netDueTotal.
+        var rcv = ca - wh;
 
         grossClaim       += ca;
         netOfVatTotal    += nv;
@@ -15981,7 +16066,10 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
     function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
 
     // --- Revenue: identical filter as R-5 annual-summary ----------------
+    // status filter: exclude cancelled — must match annual-summary or the
+    // two views diverge on the same year.
     var commDocs = await Commission.find({
+      status: { $ne: "cancelled" },
       cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "claim_submitted.date": { $regex: "^" + year } } }
     }).select("cycles").lean();
     var grossClaim = 0, netOfVatTotal = 0, vatTotal = 0, withholdingTotal = 0, netDueTotal = 0;
@@ -16006,7 +16094,12 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
     }
 
     // --- Team commissions: sum payouts.amount where payout.date in year --
+    // status filter mirrors the revenue query above. Cancelled commissions
+    // are not part of the active book, so their payouts (typically empty,
+    // since cascadeCommissionCancel runs at the point of cancel) are
+    // excluded from the P&L for consistency with the revenue side.
     var payDocs = await Commission.find({
+      status: { $ne: "cancelled" },
       payouts: { $elemMatch: { date: { $regex: "^" + year } } }
     }).select("payouts").lean();
     var teamTotal = 0;
@@ -16221,6 +16314,65 @@ app.post("/api/diagnose/create-commission", auth, strictAdminOnly, async functio
   }
 });
 
+// GET /api/diagnose/commissions-for-lead/:leadId — list every commission
+// document attached to a lead, regardless of status. Used by the Diagnostics
+// "Lookup commissions for lead" tool so admin can identify legacy records
+// (cancelled / fully_paid with stale data) before deleting them. Returns a
+// compact per-cycle summary suitable for table rendering.
+app.get("/api/diagnose/commissions-for-lead/:leadId", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.leadId)) return res.status(400).json({ error: "Invalid leadId" });
+    var lead = await Lead.findById(req.params.leadId).select("name phone project").lean();
+    var docs = await Commission.find({ leadId: req.params.leadId })
+      .sort({ createdAt: 1 })
+      .lean();
+    var rows = docs.map(function(c){
+      var snap = c.snapshot || {};
+      var cycles = Array.isArray(c.cycles) ? c.cycles : [];
+      var claimSum = 0, receivedSum = 0;
+      cycles.forEach(function(cy){
+        claimSum    += Number(cy.claimAmount    || 0);
+        receivedSum += Number(cy.receivedAmount || 0);
+      });
+      return {
+        commissionId:    String(c._id),
+        status:          c.status,
+        createdAt:       c.createdAt,
+        cancelledAt:     c.cancelledAt || null,
+        cancelReason:    c.cancelReason || "",
+        customerName:    snap.customerName || "",
+        projectName:     snap.projectName  || "",
+        agentName:       (snap.salesAgent && snap.salesAgent.userName) || "",
+        dealDate:        snap.dealDate || "",
+        cycleCount:      cycles.length,
+        claimSum:        Math.round(claimSum    * 100) / 100,
+        receivedSum:     Math.round(receivedSum * 100) / 100,
+        cycles: cycles.map(function(cy){
+          return {
+            cycleNumber:     cy.cycleNumber,
+            state:           cy.state,
+            claimAmount:     Number(cy.claimAmount    || 0),
+            receivedAmount:  Number(cy.receivedAmount || 0),
+            claimDate:       (cy.claim_submitted && cy.claim_submitted.date) || "",
+            receivedDate:    (cy.received         && cy.received.date)        || ""
+          };
+        })
+      };
+    });
+    res.json({
+      leadId:    req.params.leadId,
+      leadName:  lead ? (lead.name || "") : "",
+      leadPhone: lead ? (lead.phone || "") : "",
+      project:   lead ? (lead.project || "") : "",
+      count:     rows.length,
+      data:      rows
+    });
+  } catch(e) {
+    console.error("[GET /api/diagnose/commissions-for-lead]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "lookup_failed" });
+  }
+});
+
 // POST /api/admin/run-backfill?type=zombies|missing — HTTP trigger for the
 // one-shot backfills. Same implementation as backfill-{zombies,missing}.js
 // (shared functions in this file). Used when Railway shell access is gone
@@ -16241,8 +16393,14 @@ app.post("/api/admin/run-backfill", auth, strictAdminOnly, async function(req, r
       summary = await runFullyPaidRevertBackfill();
     } else if (type === "active_with_no_workable_cycle") {
       summary = await runReviveBrokenBackfill();
+    } else if (type === "delete_bogus_legacy_commissions") {
+      var ids = (req.body && Array.isArray(req.body.commissionIds)) ? req.body.commissionIds : [];
+      if (ids.length === 0) {
+        return res.status(400).json({ error: "commissionIds array required in body for delete_bogus_legacy_commissions" });
+      }
+      summary = await runDeleteBogusLegacyBackfill(ids);
     } else {
-      return res.status(400).json({ error: "type must be one of: zombies, missing, fully_paid_with_active_cycles, active_with_no_workable_cycle" });
+      return res.status(400).json({ error: "type must be one of: zombies, missing, fully_paid_with_active_cycles, active_with_no_workable_cycle, delete_bogus_legacy_commissions" });
     }
     res.json(summary);
   } catch(e) {

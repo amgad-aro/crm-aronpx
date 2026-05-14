@@ -19962,6 +19962,20 @@ var DiagnosticsPage = function(p) {
   // Bulk-backfill state (admin HTTP triggers — same logic as the script files).
   var [bulkRunning, setBulkRunning] = useState(null); // "zombies" | "missing" | null
   var [bulkResult,  setBulkResult]  = useState(null); // { type, summary } or { type, error }
+  // Lookup-by-leadId state — feeds the "Delete legacy bogus commissions" flow.
+  var [lookupLeadId, setLookupLeadId] = useState("");
+  var [lookupResult, setLookupResult] = useState(null); // server response or null
+  var [lookupBusy,   setLookupBusy]   = useState(false);
+  var [lookupErr,    setLookupErr]    = useState("");
+  // Targeted-delete state. deleteIds is a free-text textarea (comma/whitespace
+  // separated) so admin can paste IDs from anywhere — the lookup table's
+  // "Add" buttons just append to this string. Source of truth for the
+  // confirm modal's N-count and for the actual POST body.
+  var [deleteIds,    setDeleteIds]    = useState("");
+  var [confirmOpen,  setConfirmOpen]  = useState(false);
+  var [confirmText,  setConfirmText]  = useState("");
+  var [deleteBusy,   setDeleteBusy]   = useState(false);
+  var [deleteResult, setDeleteResult] = useState(null);
 
   var refresh = function(){
     setRows(null); setErr("");
@@ -20021,6 +20035,85 @@ var DiagnosticsPage = function(p) {
   };
 
   var fmtDate = function(d){ if (!d) return "—"; try { return new Date(d).toLocaleDateString("en-GB"); } catch(_){ return String(d); } };
+  var fmtMoney = function(n){ try { return Math.round(Number(n||0)).toLocaleString(); } catch(_){ return String(n); } };
+
+  // Parse the deleteIds textarea into a deduped list of trimmed tokens.
+  // Accepts comma, whitespace, or newline separation; ignores empty tokens.
+  var parsedIds = (function(){
+    var seen = Object.create(null);
+    var out = [];
+    String(deleteIds || "").split(/[\s,]+/).forEach(function(t){
+      var v = String(t || "").trim();
+      if (!v || seen[v]) return;
+      seen[v] = true;
+      out.push(v);
+    });
+    return out;
+  })();
+
+  var runLookup = async function(){
+    var id = String(lookupLeadId || "").trim();
+    if (!/^[0-9a-fA-F]{24}$/.test(id)) {
+      setLookupErr("Lead ID must be a 24-character hex string");
+      return;
+    }
+    setLookupBusy(true); setLookupErr(""); setLookupResult(null);
+    try {
+      var r = await apiFetch("/api/diagnose/commissions-for-lead/" + encodeURIComponent(id), "GET", null, p.token);
+      setLookupResult(r || null);
+      if (!r || !r.data || r.data.length === 0) {
+        setToast({ kind:"ok", msg:"No commissions found for that lead." });
+      }
+    } catch(e) {
+      setLookupErr((e && e.message) || "Lookup failed");
+    }
+    setLookupBusy(false);
+  };
+
+  var addIdToSelection = function(id){
+    setDeleteIds(function(prev){
+      var existing = String(prev || "").trim();
+      if (existing.split(/[\s,]+/).indexOf(id) >= 0) return existing; // already present
+      return existing ? (existing + ", " + id) : id;
+    });
+  };
+
+  var openConfirm = function(){
+    if (parsedIds.length === 0) {
+      setToast({ kind:"err", msg:"Add at least one commission ID to the deletion list." });
+      return;
+    }
+    setConfirmText("");
+    setConfirmOpen(true);
+  };
+
+  var runDelete = async function(){
+    if (confirmText !== "DELETE") return;
+    setDeleteBusy(true); setDeleteResult(null);
+    try {
+      var summary = await apiFetch(
+        "/api/admin/run-backfill?type=delete_bogus_legacy_commissions",
+        "POST",
+        { commissionIds: parsedIds },
+        p.token
+      );
+      setDeleteResult({ summary: summary });
+      setToast({ kind:"ok", msg:"Deleted " + ((summary.deleted && summary.deleted.length) || 0) + " · skipped " + ((summary.skipped && summary.skipped.length) || 0) });
+      setDeleteIds("");
+      setConfirmOpen(false);
+      setConfirmText("");
+      // Refresh the lookup if the same lead is still on screen — its rows
+      // may have just been deleted.
+      if (lookupResult && lookupResult.leadId) {
+        setLookupLeadId(lookupResult.leadId);
+        try { await runLookup(); } catch(_){}
+      }
+    } catch(e) {
+      setDeleteResult({ error: (e && e.message) || "Delete failed" });
+      setToast({ kind:"err", msg:(e && e.message) || "Delete failed" });
+    }
+    setDeleteBusy(false);
+  };
 
   return <div style={{ padding:"24px 16px", maxWidth:1100, margin:"0 auto" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
@@ -20101,6 +20194,136 @@ var DiagnosticsPage = function(p) {
       </div>}
     </div>
 
+    {/* Lookup all commissions for a given lead. Surfaces every record
+        regardless of status so admin can identify legacy / bogus records
+        (e.g. a cancelled doc whose cycles still carry stale claim amounts
+        that bleed into Annual Summary). Rows have an "Add to delete list"
+        action that appends the commissionId to the textarea below. */}
+    <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:14, padding:"16px 18px", marginBottom:14 }}>
+      <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:4 }}>Lookup commissions for lead</div>
+      <div style={{ fontSize:11, color:C.textLight, marginBottom:10 }}>
+        Paste a lead's ObjectId to list every commission attached to it (active, cancelled, fully_paid). Use this to identify legacy records before adding them to the deletion list.
+      </div>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+        <input
+          type="text"
+          value={lookupLeadId}
+          onChange={function(e){ setLookupLeadId(e.target.value); }}
+          placeholder="24-char hex lead ID"
+          style={{ flex:"1 1 280px", minWidth:240, padding:"8px 12px", border:"1px solid "+C.border, borderRadius:8, fontSize:12, fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace" }}
+        />
+        <button onClick={runLookup} disabled={lookupBusy} style={{
+          padding:"8px 14px", borderRadius:8, fontSize:12, fontWeight:600,
+          border:"1px solid "+C.accent, background: lookupBusy ? C.accent+"30" : C.accent+"12",
+          color:C.accent, cursor: lookupBusy ? "wait" : "pointer"
+        }}>{lookupBusy ? "Looking up…" : "Lookup"}</button>
+      </div>
+      {lookupErr && <div style={{ marginTop:10, padding:"8px 12px", background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8, color:"#B91C1C", fontSize:12 }}>{lookupErr}</div>}
+      {lookupResult && lookupResult.data && lookupResult.data.length > 0 && <div style={{ marginTop:12 }}>
+        <div style={{ fontSize:11, color:C.textLight, marginBottom:8 }}>
+          Lead: <b style={{ color:C.text }}>{lookupResult.leadName || "(unknown)"}</b>
+          {lookupResult.leadPhone ? " · " + lookupResult.leadPhone : ""}
+          {lookupResult.project ? " · " + lookupResult.project : ""}
+          {" · "} <b style={{ color:C.text }}>{lookupResult.count}</b> commission record(s)
+        </div>
+        <div style={{ border:"1px solid "+C.border, borderRadius:10, overflow:"hidden" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+            <thead>
+              <tr style={{ background:"#F8FAFC", borderBottom:"1px solid "+C.border }}>
+                <th style={{ textAlign:"start", padding:"8px 10px", fontWeight:700, color:C.textLight }}>Commission ID</th>
+                <th style={{ textAlign:"start", padding:"8px 10px", fontWeight:700, color:C.textLight }}>Status</th>
+                <th style={{ textAlign:"start", padding:"8px 10px", fontWeight:700, color:C.textLight }}>Created</th>
+                <th style={{ textAlign:"start", padding:"8px 10px", fontWeight:700, color:C.textLight }}>Agent</th>
+                <th style={{ textAlign:"end",   padding:"8px 10px", fontWeight:700, color:C.textLight }}>Cycles</th>
+                <th style={{ textAlign:"end",   padding:"8px 10px", fontWeight:700, color:C.textLight }}>Claim sum</th>
+                <th style={{ textAlign:"end",   padding:"8px 10px", fontWeight:700, color:C.textLight }}>Received sum</th>
+                <th style={{ textAlign:"end",   padding:"8px 10px", fontWeight:700, color:C.textLight, width:120 }}>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lookupResult.data.map(function(row){
+                var isActive = row.status === "active";
+                var selected = parsedIds.indexOf(row.commissionId) >= 0;
+                var statusBg = row.status === "active" ? "#DCFCE7" : (row.status === "cancelled" ? "#FEE2E2" : "#E0F2FE");
+                var statusFg = row.status === "active" ? "#15803D" : (row.status === "cancelled" ? "#B91C1C" : "#0284C7");
+                return <tr key={row.commissionId} style={{ borderTop:"1px solid #F1F5F9" }}>
+                  <td style={{ padding:"8px 10px", fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace", fontSize:10 }}>{row.commissionId}</td>
+                  <td style={{ padding:"8px 10px" }}>
+                    <span style={{ padding:"2px 8px", borderRadius:999, background:statusBg, color:statusFg, fontSize:10, fontWeight:700 }}>{row.status}</span>
+                  </td>
+                  <td style={{ padding:"8px 10px", color:C.textLight }}>{fmtDate(row.createdAt)}</td>
+                  <td style={{ padding:"8px 10px", color:C.text }}>{row.agentName || "—"}</td>
+                  <td style={{ padding:"8px 10px", textAlign:"end" }}>{row.cycleCount}</td>
+                  <td style={{ padding:"8px 10px", textAlign:"end", fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace" }}>{fmtMoney(row.claimSum)}</td>
+                  <td style={{ padding:"8px 10px", textAlign:"end", fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace" }}>{fmtMoney(row.receivedSum)}</td>
+                  <td style={{ padding:"8px 10px", textAlign:"end" }}>
+                    <button
+                      onClick={function(){ addIdToSelection(row.commissionId); }}
+                      disabled={isActive || selected}
+                      title={isActive ? "Active commissions are protected from deletion" : (selected ? "Already in deletion list" : "Append this ID to the deletion list below")}
+                      style={{
+                        padding:"4px 10px", borderRadius:6, fontSize:10, fontWeight:600,
+                        border:"1px solid "+(isActive ? C.border : C.danger),
+                        background:isActive ? "#F8FAFC" : (selected ? "#FEF2F2" : "#FFF"),
+                        color:isActive ? C.textLight : (selected ? C.danger : C.danger),
+                        cursor: (isActive || selected) ? "not-allowed" : "pointer",
+                        opacity: isActive ? 0.6 : 1
+                      }}
+                    >{isActive ? "Protected" : (selected ? "Queued" : "+ Add to delete")}</button>
+                  </td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>}
+      {lookupResult && lookupResult.data && lookupResult.data.length === 0 && <div style={{ marginTop:10, padding:"8px 12px", background:"#F8FAFC", border:"1px solid "+C.border, borderRadius:8, color:C.textLight, fontSize:12 }}>No commissions found for that lead.</div>}
+    </div>
+
+    {/* Delete legacy bogus commissions — accepts a free-form list of IDs
+        and POSTs to /api/admin/run-backfill?type=delete_bogus_legacy_commissions.
+        Two-step confirm: type DELETE in a modal. Active commissions are
+        refused server-side; the response surfaces them in `skipped`. */}
+    <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:14, padding:"16px 18px", marginBottom:14 }}>
+      <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:4 }}>Delete legacy bogus commissions</div>
+      <div style={{ fontSize:11, color:C.textLight, marginBottom:10 }}>
+        Permanently removes the listed commission documents. Active commissions are refused server-side; only cancelled / fully_paid records can be deleted via this tool. No undo — use the lookup above to verify each ID first.
+      </div>
+      <textarea
+        value={deleteIds}
+        onChange={function(e){ setDeleteIds(e.target.value); }}
+        placeholder="Paste commission ObjectIds — comma, space, or newline separated."
+        style={{ width:"100%", minHeight:80, padding:"10px 12px", border:"1px solid "+C.border, borderRadius:8, fontSize:11, fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace", resize:"vertical", boxSizing:"border-box" }}
+      />
+      <div style={{ display:"flex", gap:8, alignItems:"center", marginTop:10, flexWrap:"wrap" }}>
+        <button onClick={openConfirm} disabled={parsedIds.length === 0 || deleteBusy} style={{
+          padding:"8px 14px", borderRadius:8, fontSize:12, fontWeight:700,
+          border:"1px solid "+C.danger,
+          background: parsedIds.length === 0 ? "#F8FAFC" : C.danger,
+          color: parsedIds.length === 0 ? C.textLight : "#FFF",
+          cursor: (parsedIds.length === 0 || deleteBusy) ? "not-allowed" : "pointer"
+        }}>{deleteBusy ? "Deleting…" : ("Delete " + parsedIds.length + " record" + (parsedIds.length === 1 ? "" : "s"))}</button>
+        {parsedIds.length > 0 && <button onClick={function(){ setDeleteIds(""); }} disabled={deleteBusy} style={{
+          padding:"6px 12px", borderRadius:8, fontSize:11, fontWeight:600,
+          border:"1px solid "+C.border, background:"#fff", color:C.textLight,
+          cursor: deleteBusy ? "wait" : "pointer"
+        }}>Clear list</button>}
+        <span style={{ fontSize:11, color:C.textLight }}>{parsedIds.length} unique ID(s) parsed</span>
+      </div>
+      {deleteResult && <div style={{ marginTop:12, paddingTop:12, borderTop:"1px solid #F1F5F9" }}>
+        {deleteResult.error && <div style={{ padding:"10px 12px", background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8, color:"#B91C1C", fontSize:12 }}>
+          Error: {deleteResult.error}
+        </div>}
+        {deleteResult.summary && <pre style={{
+          margin:0, padding:"10px 12px",
+          background:"#0F172A", color:"#E2E8F0", borderRadius:8,
+          fontSize:11, lineHeight:1.55, overflow:"auto", maxHeight:360,
+          fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace",
+          whiteSpace:"pre-wrap", wordBreak:"break-word"
+        }}>{JSON.stringify(deleteResult.summary, null, 2)}</pre>}
+      </div>}
+    </div>
+
     <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:14, padding:"16px 18px", marginBottom:14 }}>
       <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:4 }}>Missing commissions</div>
       <div style={{ fontSize:11, color:C.textLight }}>
@@ -20160,6 +20383,47 @@ var DiagnosticsPage = function(p) {
           })}
         </tbody>
       </table>
+    </div>}
+
+    {/* Two-step confirm — type DELETE to unlock the destructive button.
+        Renders only when admin clicks "Delete N record(s)" above. */}
+    {confirmOpen && <div className="crm-modal" style={{
+      position:"fixed", inset:0, background:"rgba(0,0,0,0.52)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:16
+    }} onClick={function(){ if (!deleteBusy) { setConfirmOpen(false); setConfirmText(""); } }}>
+      <div onClick={function(e){ e.stopPropagation(); }} style={{
+        background:"#fff", borderRadius:14, padding:"22px 22px",
+        width:"100%", maxWidth:480, boxShadow:"0 24px 64px rgba(0,0,0,0.2)"
+      }}>
+        <div style={{ fontSize:16, fontWeight:700, color:C.danger, marginBottom:8 }}>Confirm permanent deletion</div>
+        <div style={{ fontSize:13, color:C.text, marginBottom:14, lineHeight:1.55 }}>
+          This will permanently delete <b>{parsedIds.length}</b> commission record{parsedIds.length === 1 ? "" : "s"}. No undo.
+          Active commissions in this list will be refused server-side.
+        </div>
+        <div style={{ fontSize:12, color:C.textLight, marginBottom:6 }}>Type <b style={{ color:C.danger }}>DELETE</b> to confirm:</div>
+        <input
+          type="text"
+          value={confirmText}
+          onChange={function(e){ setConfirmText(e.target.value); }}
+          autoFocus
+          disabled={deleteBusy}
+          style={{ width:"100%", padding:"10px 12px", border:"1px solid "+C.border, borderRadius:8, fontSize:13, fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace", boxSizing:"border-box" }}
+        />
+        <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:16 }}>
+          <button onClick={function(){ setConfirmOpen(false); setConfirmText(""); }} disabled={deleteBusy} style={{
+            padding:"8px 16px", borderRadius:8, fontSize:12, fontWeight:600,
+            border:"1px solid "+C.border, background:"#fff", color:C.textLight,
+            cursor: deleteBusy ? "wait" : "pointer"
+          }}>Cancel</button>
+          <button onClick={runDelete} disabled={confirmText !== "DELETE" || deleteBusy} style={{
+            padding:"8px 16px", borderRadius:8, fontSize:12, fontWeight:700,
+            border:"1px solid "+C.danger,
+            background: (confirmText === "DELETE" && !deleteBusy) ? C.danger : "#F8FAFC",
+            color: (confirmText === "DELETE" && !deleteBusy) ? "#FFF" : C.textLight,
+            cursor: (confirmText !== "DELETE" || deleteBusy) ? "not-allowed" : "pointer"
+          }}>{deleteBusy ? "Deleting…" : "Permanently delete"}</button>
+        </div>
+      </div>
     </div>}
 
     {toast && <div style={{
