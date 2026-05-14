@@ -17719,14 +17719,31 @@ var FormRow = function(p) {
 // Money input — accepts the codebase-standard pattern (state stores the
 // formatted string like "1,500,000"; caller does Number(value.replace(/,/g,""))
 // on submit). Strips non-digits on each keystroke and re-formats.
+// Phase R-5 follow-up — MoneyInput now accepts an optional decimal point with
+// up to 2 trailing digits (piasters). Integer entry is unchanged: typing
+// "100000" still yields "100,000" with no ".00" tail. Rule for the decimal:
+// only the LAST "." in the raw value counts (earlier dots are treated as
+// thousand-separator typos, matching European number style — see test 5);
+// digits after the dot are truncated to the first 2.
+//
+// inputMode is "decimal" so mobile keyboards surface a "." key.
 var MoneyInput = function(p) {
-  return <input type="text" inputMode="numeric"
+  return <input type="text" inputMode="decimal"
     value={p.value || ""}
     autoFocus={!!p.autoFocus}
     placeholder={p.placeholder || ""}
     onChange={function(e){
-      var raw = e.target.value.replace(/,/g, "").replace(/[^0-9]/g, "");
-      p.onChange(raw === "" ? "" : Number(raw).toLocaleString());
+      var raw = String(e.target.value || "").replace(/,/g, "");
+      var lastDot = raw.lastIndexOf(".");
+      if (lastDot === -1) {
+        var digits = raw.replace(/[^0-9]/g, "");
+        p.onChange(digits === "" ? "" : Number(digits).toLocaleString("en-US"));
+        return;
+      }
+      var intRaw = raw.slice(0, lastDot).replace(/[^0-9]/g, "");
+      var decRaw = raw.slice(lastDot + 1).replace(/[^0-9]/g, "").slice(0, 2);
+      var intFmt = intRaw === "" ? "0" : Number(intRaw).toLocaleString("en-US");
+      p.onChange(intFmt + "." + decRaw);
     }}
     style={p.style || { width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}
   />;
