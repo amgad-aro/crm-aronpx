@@ -17948,16 +17948,16 @@ var CommissionCycleStageModal = function(p) {
 
   var snap = (c && c.snapshot) || {};
   var STAGE_LABELS_LOCAL = {
-    claim_submitted: "Submit Claim (مطالبة)",
-    invoice_submitted: "Submit Invoice (فاتورة إلكترونية)",
-    received: "Mark Received (تحصيل)",
-    paid_to_team: "Mark Paid to Team (دفع الفريق)"
+    claim_submitted: "Submit Claim",
+    invoice_submitted: "Submit Invoice",
+    received: "Mark Received",
+    paid_to_team: "Mark Paid to Team"
   };
   var STAGE_LABELS_EDIT = {
-    claim_submitted: "Edit Claim (مطالبة)",
-    invoice_submitted: "Edit Invoice (فاتورة إلكترونية)",
-    received: "Edit Received (تحصيل)",
-    paid_to_team: "Edit Paid to Team (دفع الفريق)"
+    claim_submitted: "Edit Claim",
+    invoice_submitted: "Edit Invoice",
+    received: "Edit Received",
+    paid_to_team: "Edit Paid to Team"
   };
   var titleLabel = mode === "edit" ? STAGE_LABELS_EDIT[stageKey] : STAGE_LABELS_LOCAL[stageKey];
 
@@ -17986,8 +17986,8 @@ var CommissionCycleStageModal = function(p) {
     if (stageKey === "claim_submitted") {
       var cuv = parseMoney(claimUnitValue);
       var rp  = parseFloat(commissionRatePct);
-      if (!isFinite(cuv) || cuv <= 0) { alert("قيمه الوحده مطلوبة (> 0)"); return; }
-      if (!isFinite(rp)  || rp  <= 0) { alert("نسبه العموله مطلوبة (> 0)"); return; }
+      if (!isFinite(cuv) || cuv <= 0) { alert("Unit Value is required (> 0)"); return; }
+      if (!isFinite(rp)  || rp  <= 0) { alert("Commission Rate is required (> 0)"); return; }
       body.claimUnitValue = cuv;
       body.commissionRate = rp / 100;
     }
@@ -18005,24 +18005,24 @@ var CommissionCycleStageModal = function(p) {
     <FormRow label="Date"><input type="date" value={date} onChange={function(e){ setDate(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
     <FormRow label="Notes (optional)"><textarea rows={2} value={notes} onChange={function(e){ setNotes(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/></FormRow>
     {stageKey === "claim_submitted" && <>
-      <FormRow label="قيمه الوحده — Unit value (EGP)">
+      <FormRow label="Unit Value (EGP)">
         <MoneyInput value={claimUnitValue} onChange={setClaimUnitValue} autoFocus={mode !== "edit"}/>
       </FormRow>
-      <FormRow label="نسبه العموله — Commission rate (%)">
+      <FormRow label="Commission Rate (%)">
         <input type="number" step="0.01" min="0" value={commissionRatePct}
           onChange={function(e){ setCommissionRatePct(e.target.value); }}
           placeholder="e.g. 3"
           style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
       </FormRow>
-      {gross > 0 && <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:C.text, direction:"rtl", textAlign:"right" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>إجمالي المطالبة (شامل VAT)</span><b>{fmtMoney2(gross)}</b></div>
-        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>أصل المبلغ (قبل VAT)</span><span>{fmtMoney2(netOfVat)}</span></div>
+      {gross > 0 && <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:C.text }}>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Claim Total (incl. VAT)</span><b>{fmtMoney2(gross)}</b></div>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Net of VAT</span><span>{fmtMoney2(netOfVat)}</span></div>
         <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>VAT 14%</span><span>{fmtMoney2(vat)}</span></div>
-        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>ضريبة الخصم 5%</span><span>{fmtMoney2(with5)}</span></div>
-        <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #CBD5E1", color:C.success, fontWeight:700 }}><span>صافي مستلم متوقع</span><span>{fmtMoney2(netRcv)}</span></div>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Withholding 5%</span><span>{fmtMoney2(with5)}</span></div>
+        <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #CBD5E1", color:C.success, fontWeight:700 }}><span>Expected Net Received</span><span>{fmtMoney2(netRcv)}</span></div>
       </div>}
     </>}
-    {stageKey === "received" && <FormRow label={mode === "edit" ? "Amount received (EGP)" : "Amount received (EGP) — كم استلمنا في هذه الدفعة؟"}>
+    {stageKey === "received" && <FormRow label="Amount Received (EGP)">
       <MoneyInput value={amount} onChange={setAmount} autoFocus={mode !== "edit"}/>
     </FormRow>}
     <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
@@ -18449,10 +18449,10 @@ var CommissionsPage = function(p) {
   ];
 
   var STAGE_LABELS = {
-    claim_submitted: "مطالبة (Claim)",
-    invoice_submitted: "فاتورة إلكترونية (Invoice)",
-    received: "تحصيل (Received)",
-    paid_to_team: "دفع الفريق (Paid)"
+    claim_submitted: "Claim",
+    invoice_submitted: "Invoice",
+    received: "Received",
+    paid_to_team: "Paid"
   };
 
   // Phase R-1 recipient row — shows computedShare, rate badge, bucket badge,
@@ -18594,8 +18594,8 @@ var CommissionsPage = function(p) {
         var rateP = Number(cycle.commissionRate || 0) * 100;
         var fmt   = function(n){ return round2(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
         return <div style={{ marginTop:8, paddingTop:6, borderTop:"1px dashed #E2E8F0", fontSize:10, color:C.textLight, lineHeight:1.6 }}>
-          <div>قيمه الوحده {fmt(cycle.claimUnitValue)} EGP  •  نسبه {rateP.toFixed(2)}%  •  إجمالي {fmt(ga)} EGP</div>
-          <div>أصل المبلغ {fmt(nv)}  •  VAT {fmt(vt)}  •  خصم 5% {fmt(wh)}  •  صافي متوقع {fmt(nr)} EGP</div>
+          <div>Unit Value {fmt(cycle.claimUnitValue)} EGP  •  Rate {rateP.toFixed(2)}%  •  Total {fmt(ga)} EGP</div>
+          <div>Net of VAT {fmt(nv)}  •  VAT {fmt(vt)}  •  Withholding 5% {fmt(wh)}  •  Expected Net {fmt(nr)} EGP</div>
         </div>;
       })()}
     </div>;
@@ -18842,21 +18842,21 @@ var CommissionsPage = function(p) {
   // reloadTick (the useEffect above re-runs on tick change when on the
   // Annual Summary tab). The 4xx/5xx case surfaces a toast.
   var markVatPaid = async function(month){
-    if (!window.confirm("تأكيد دفع VAT لشهر " + month + "؟")) return;
+    if (!window.confirm("Confirm VAT payment for " + month + "?")) return;
     try {
       await apiFetch("/api/vat-payments", "POST", { month: month }, p.token);
       setReloadTick(function(v){ return v + 1; });
-      setToast({ kind:"ok", msg:"تم تسجيل دفع VAT لشهر " + month });
+      setToast({ kind:"ok", msg:"VAT payment recorded for " + month });
     } catch(e) {
       setToast({ kind:"err", msg: (e && e.message) || "Failed" });
     }
   };
   var undoVatPaid = async function(month){
-    if (!window.confirm("التراجع عن تسجيل دفع VAT لشهر " + month + "؟")) return;
+    if (!window.confirm("Undo VAT payment for " + month + "?")) return;
     try {
       await apiFetch("/api/vat-payments/" + month, "DELETE", null, p.token);
       setReloadTick(function(v){ return v + 1; });
-      setToast({ kind:"ok", msg:"تم التراجع" });
+      setToast({ kind:"ok", msg:"Undone" });
     } catch(e) {
       setToast({ kind:"err", msg: (e && e.message) || "Failed" });
     }
@@ -18882,9 +18882,9 @@ var CommissionsPage = function(p) {
     </div>
 
     <div style={{ borderBottom:"1px solid #E8ECF1", marginBottom:14, display:"flex" }}>
-      <TabBtn id="deals"      label="الديلز — Deals"/>
-      <TabBtn id="calculator" label="حاسبة العمولة — Calculator"/>
-      {p.cu && p.cu.role === "admin" && <TabBtn id="annual" label="الملخص السنوي — Annual summary"/>}
+      <TabBtn id="deals"      label="Claims"/>
+      <TabBtn id="calculator" label="Calculator"/>
+      {p.cu && p.cu.role === "admin" && <TabBtn id="annual" label="Annual Summary"/>}
     </div>
 
     {activeTab === "deals" && <>
@@ -19011,23 +19011,23 @@ var CommissionsPage = function(p) {
       var calcNetDue   = calcGross > 0 ? calcGross - calcWith5 : 0;
 
       return <div style={{ maxWidth:600, marginBottom:18, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"14px 16px" }}>
-        <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:10, direction:"rtl", textAlign:"right" }}>حاسبة العمولة — Commission calculator</div>
-        <div style={{ direction:"rtl" }}>
-          <FormRow label="قيمه الوحده — Unit value (EGP)">
+        <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:10 }}>Commission Calculator</div>
+        <div>
+          <FormRow label="Unit Value (EGP)">
             <MoneyInput value={calcUnit} onChange={setCalcUnit}/>
           </FormRow>
-          <FormRow label="نسبه العموله — Commission rate (%)">
+          <FormRow label="Commission Rate (%)">
             <input type="number" step="0.01" min="0" max="100" value={calcRate} placeholder="3"
               onChange={function(e){ setCalcRate(e.target.value); }}
               style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
           </FormRow>
         </div>
-        <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginTop:6, fontSize:12, color:C.text, direction:"rtl", textAlign:"right" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>إجمالي قيمة العمولة (شامل VAT)</span><b>{fmtMoney2(calcGross)}</b></div>
-          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>أصل المبلغ (قبل VAT)</span><span>{fmtMoney2(calcNetOfVat)}</span></div>
+        <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginTop:6, fontSize:12, color:C.text }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Gross Commission (incl. VAT)</span><b>{fmtMoney2(calcGross)}</b></div>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Net of VAT</span><span>{fmtMoney2(calcNetOfVat)}</span></div>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>VAT 14%</span><span>{fmtMoney2(calcVat)}</span></div>
-          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>ضريبة الخصم 5%</span><span>{fmtMoney2(calcWith5)}</span></div>
-          <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #CBD5E1", color:C.success, fontWeight:700 }}><span>صافي المستحق</span><span>{fmtMoney2(calcNetDue)}</span></div>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Withholding 5%</span><span>{fmtMoney2(calcWith5)}</span></div>
+          <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #CBD5E1", color:C.success, fontWeight:700 }}><span>Net Due</span><span>{fmtMoney2(calcNetDue)}</span></div>
         </div>
       </div>;
     })()}
@@ -19057,41 +19057,41 @@ var CommissionsPage = function(p) {
       return <div>
         {/* Year selector — same yearFilter state as the Deals tab. */}
         <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
-          <span style={{ fontSize:12, color:C.textLight }}>السنة — Year</span>
+          <span style={{ fontSize:12, color:C.textLight }}>Year</span>
           <select value={yearFilter} onChange={function(e){ setYearFilter(e.target.value); }} style={{
             padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff", minWidth:120
           }}>
-            <option value="">{"الافتراضي (" + effYear + ")"}</option>
+            <option value="">{"Default (" + effYear + ")"}</option>
             {(stats && Array.isArray(stats.availableYears) ? stats.availableYears : []).map(function(y){
               return <option key={y} value={y}>{y}</option>;
             })}
           </select>
-          <div style={{ fontSize:11, color:C.textLight }}>الملخص السنوي لعام {ay}</div>
+          <div style={{ fontSize:11, color:C.textLight }}>Annual summary for {ay}</div>
         </div>
 
         {annualLoading && <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight }}>Loading…</div>}
         {!annualLoading && <>
           {/* Section 1 — five totals cards */}
           <div style={{ display:"flex", gap:10, marginBottom:18, flexWrap:"wrap" }}>
-            {summaryCard("إجمالي المطالبات", totals.grossClaim, C.text)}
-            {summaryCard("أصل المبلغ", totals.netOfVat, C.text)}
+            {summaryCard("Total Claims", totals.grossClaim, C.text)}
+            {summaryCard("Net of VAT", totals.netOfVat, C.text)}
             {summaryCard("VAT 14%", totals.vat, C.warning)}
-            {summaryCard("خصم 5%", totals.withholding5pct, C.warning)}
-            {summaryCard("صافي مستلم", totals.netReceived, C.success)}
+            {summaryCard("Withholding 5%", totals.withholding5pct, C.warning)}
+            {summaryCard("Net Received", totals.netReceived, C.success)}
           </div>
 
           {/* Section 2 — VAT monthly table */}
           <div style={{ marginBottom:18 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>VAT الشهري — VAT monthly</div>
-            {byMonth.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>لا توجد مطالبات في هذه السنة.</div>}
+            <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>Monthly VAT</div>
+            {byMonth.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>No claims for this year</div>}
             {byMonth.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                 <thead>
                   <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
-                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>شهر المطالبة</th>
-                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>VAT مستحق</th>
-                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>شهر الدفع</th>
-                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>الحالة</th>
+                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Claim month</th>
+                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>VAT due</th>
+                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Payment month</th>
+                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -19104,16 +19104,16 @@ var CommissionsPage = function(p) {
                       <td style={{ padding:"8px 12px", textAlign:"end" }}>
                         {row.paid && <span style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
                           <span style={{ display:"inline-block", padding:"3px 10px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:11, fontWeight:700 }}>
-                            مدفوع {fmtDateUk(row.paidAt)}
+                            Paid {fmtDateUk(row.paidAt)}
                           </span>
-                          <button onClick={function(){ undoVatPaid(row.month); }} title="التراجع" style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, padding:"2px 6px", fontSize:11, color:C.textLight, cursor:"pointer" }}>↶</button>
+                          <button onClick={function(){ undoVatPaid(row.month); }} title="Undo" style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, padding:"2px 6px", fontSize:11, color:C.textLight, cursor:"pointer" }}>↶</button>
                         </span>}
                         {!row.paid && <button onClick={function(){ markVatPaid(row.month); }} style={{
                           padding:"4px 10px", borderRadius:6, border:"1px solid " + (row.overdue ? "#FCA5A5" : C.accent),
                           background: row.overdue ? "#FEE2E2" : C.accent + "12",
                           color: row.overdue ? "#B91C1C" : C.accent,
                           fontSize:11, fontWeight:600, cursor:"pointer"
-                        }}>تم الدفع</button>}
+                        }}>Mark paid</button>}
                       </td>
                     </tr>;
                   })}
@@ -19124,17 +19124,17 @@ var CommissionsPage = function(p) {
 
           {/* Section 3 — withholding by deal */}
           <div style={{ marginBottom:18 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>تفاصيل خصم 5% — Withholding by deal</div>
-            {byDeal.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>لا توجد مطالبات في هذه السنة.</div>}
+            <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>Withholding by deal</div>
+            {byDeal.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>No claims for this year</div>}
             {byDeal.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                 <thead>
                   <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
-                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>العميل / المشروع</th>
+                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Customer / Project</th>
                     <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Cycle</th>
-                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>تاريخ</th>
-                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>إجمالي المطالبة</th>
-                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>خصم 5%</th>
+                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Date</th>
+                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>Claim total</th>
+                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>Withholding 5%</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -19153,7 +19153,7 @@ var CommissionsPage = function(p) {
                 </tbody>
                 <tfoot>
                   <tr style={{ background:"#F8FAFC", borderTop:"1px solid #E8ECF1" }}>
-                    <td colSpan={4} style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text }}>إجمالي الخصم للسنة</td>
+                    <td colSpan={4} style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text }}>Total withholding for year</td>
                     <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.warning }}>{fmtMoneyAr(totalWh)}</td>
                   </tr>
                 </tfoot>
