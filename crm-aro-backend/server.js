@@ -365,13 +365,22 @@ var commissionStageSchema = new mongoose.Schema({
 
 // Cycle records cash flow from the developer only. Per-recipient payouts moved
 // to Commission.payouts[] in Phase R-1 (cycle.payoutBreakdown dropped).
+// Phase R-5 added claimUnitValue + commissionRate + claimAmount for tax tracking.
+// claimAmount is the GROSS invoice value billed to the developer (incl. 14% VAT).
+// receivedAmount stays as admin-entered net cash actually received (unchanged
+// semantic). Old cycles created before R-5 have all three new fields = 0; they
+// are excluded from the annual summary, never backfilled.
 var commissionCycleSchema = new mongoose.Schema({
   cycleNumber:        { type: Number, required: true },
   state:              { type: String,
                         enum: ["pending_claim","claim_submitted","invoice_submitted","received","paid_to_team","cancelled"],
                         default: "pending_claim" },
   expectedAmount:     { type: Number, default: 0 },
-  receivedAmount:     { type: Number, default: 0 },
+  // Phase R-5 — tax tracking inputs.
+  claimUnitValue:     { type: Number, default: 0 },   // قيمه الوحده (per-unit price billed)
+  commissionRate:     { type: Number, default: 0 },   // نسبه العموله (0.03 = 3%)
+  claimAmount:        { type: Number, default: 0 },   // = claimUnitValue × commissionRate (gross invoice incl. VAT)
+  receivedAmount:     { type: Number, default: 0 },   // admin-entered net cash actually received
   claim_submitted:    { type: commissionStageSchema, default: function(){ return {}; } },
   invoice_submitted:  { type: commissionStageSchema, default: function(){ return {}; } },
   received:           { type: commissionStageSchema, default: function(){ return {}; } },
@@ -464,6 +473,17 @@ commissionSchema.index({ status: 1, expectedCollectionDate: 1 });
 commissionSchema.index({ createdAt: -1 });
 
 var Commission = mongoose.model("Commission", commissionSchema);
+
+// Phase R-5 — VAT payment tracking. One row per month-of-claim, marking the
+// month's accumulated VAT as paid to the tax authority. month is "YYYY-MM"
+// matching the CLAIM month (not the payment month). Unique by month, upserted
+// on POST /api/vat-payments, removed by DELETE /api/vat-payments/:month.
+var vatPaymentSchema = new mongoose.Schema({
+  month:           { type: String, required: true, unique: true }, // "YYYY-MM"
+  paidAt:          { type: Date, default: Date.now },
+  markedByUserId:  { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }
+}, { timestamps: true });
+var VatPayment = mongoose.model("VatPayment", vatPaymentSchema);
 
 // =====================================================================
 // ATTENDANCE & SALARY SYSTEM — Phase 1 foundation
@@ -15261,6 +15281,181 @@ app.get("/api/commissions/cash-flow", auth, salesAdminOnly, async function(req, 
   }
 });
 
+// ===== Phase R-5 annual summary + VAT payments =====
+// Annual summary aggregates ALL cycles (regardless of commission status)
+// whose claim_submitted.date falls in the selected year and which have
+// claimAmount > 0 (i.e. were created under R-5+). Old cycles created
+// before R-5 have claimAmount = 0 and are excluded by design — no
+// backfill, no migration.
+//
+// Must be declared BEFORE /api/commissions/:id so the literal path doesn't
+// get shadowed by the :id route (the existing /:id has no regex guard).
+app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var nowCairo = new Date(Date.now() + 3 * 3600 * 1000); // UTC+3, Cairo, no DST
+    var defaultYear = String(nowCairo.getUTCFullYear());
+    var year = String(req.query.year || "").trim();
+    if (!/^\d{4}$/.test(year)) year = defaultYear;
+    // Phase R-5 — piaster-level precision. Every derived value sent to the
+    // client rounds via round2 so tax filings reconcile against Excel exactly.
+    function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
+
+    // Pull every commission with at least one R-5 cycle whose claim was filed
+    // in the target year. The $elemMatch keeps the query selective; the loop
+    // below still re-filters per cycle since a commission may have a mix of
+    // R-5 and pre-R-5 cycles.
+    var docs = await Commission.find({
+      cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "claim_submitted.date": { $regex: "^" + year } } }
+    }).select("snapshot.customerName snapshot.projectName cycles").lean();
+
+    var grossClaim = 0, netOfVatTotal = 0, vatTotal = 0, withholdingTotal = 0, netReceivedTotal = 0;
+    var vatByMonthMap = Object.create(null); // "YYYY-MM" -> { vatAmount, grossClaim }
+    var withholdingByDeal = [];
+
+    for (var i = 0; i < docs.length; i++) {
+      var doc = docs[i];
+      var snap = doc.snapshot || {};
+      if (!Array.isArray(doc.cycles)) continue;
+      for (var j = 0; j < doc.cycles.length; j++) {
+        var cy = doc.cycles[j];
+        var ca = Number(cy.claimAmount || 0);
+        if (!(ca > 0)) continue;
+        var cd = cy.claim_submitted && cy.claim_submitted.date;
+        if (typeof cd !== "string" || cd.slice(0, 4) !== year) continue;
+
+        var nv = ca / 1.14;
+        var vt = ca - nv;
+        var wh = nv * 0.05;
+        var rcv = Number(cy.receivedAmount || 0);
+
+        grossClaim       += ca;
+        netOfVatTotal    += nv;
+        vatTotal         += vt;
+        withholdingTotal += wh;
+        netReceivedTotal += rcv;
+
+        var claimMonth = cd.slice(0, 7);
+        if (!vatByMonthMap[claimMonth]) vatByMonthMap[claimMonth] = { vatAmount: 0, grossClaim: 0 };
+        vatByMonthMap[claimMonth].vatAmount  += vt;
+        vatByMonthMap[claimMonth].grossClaim += ca;
+
+        withholdingByDeal.push({
+          cycleId:           String(cy._id),
+          commissionId:      String(doc._id),
+          customerName:      snap.customerName || "",
+          projectName:       snap.projectName || "",
+          cycleNumber:       cy.cycleNumber,
+          claimDate:         cd,
+          claimAmount:       ca,
+          withholdingAmount: wh
+        });
+      }
+    }
+
+    // Pull payment status for the months involved. month-string compare keeps it
+    // index-friendly (the unique index on month is already a string equality lookup).
+    var months = Object.keys(vatByMonthMap);
+    var payments = months.length > 0
+      ? await VatPayment.find({ month: { $in: months } }).lean()
+      : [];
+    var paidByMonth = Object.create(null);
+    for (var pi = 0; pi < payments.length; pi++) {
+      paidByMonth[payments[pi].month] = payments[pi];
+    }
+
+    function nextMonth(yyyymm) {
+      var p = yyyymm.split("-");
+      var y = Number(p[0]); var m = Number(p[1]);
+      m++; if (m > 12) { m = 1; y++; }
+      return y + "-" + String(m).padStart(2, "0");
+    }
+    function endOfMonthUtc(yyyymm) {
+      var p = yyyymm.split("-");
+      // Date.UTC month is 0-indexed; passing month=m (1-12) with day=0 returns
+      // the last instant of month m. The +3h Cairo offset isn't required —
+      // we compare against `nowCairo` instants below, both in UTC math.
+      return new Date(Date.UTC(Number(p[0]), Number(p[1]), 0, 23, 59, 59));
+    }
+
+    var vatByMonth = months.sort().map(function(m){
+      var paymentMonth = nextMonth(m);
+      var paymentRec = paidByMonth[m] || null;
+      var paid = !!paymentRec;
+      var overdue = !paid && (nowCairo.getTime() > endOfMonthUtc(paymentMonth).getTime());
+      return {
+        month:        m,
+        vatAmount:    round2(vatByMonthMap[m].vatAmount),
+        grossClaim:   round2(vatByMonthMap[m].grossClaim),
+        paymentMonth: paymentMonth,
+        paid:         paid,
+        paidAt:       paymentRec ? paymentRec.paidAt : null,
+        overdue:      overdue
+      };
+    });
+
+    withholdingByDeal.sort(function(a, b){
+      // Date desc, then customerName asc as a tie-breaker.
+      if (a.claimDate !== b.claimDate) return a.claimDate < b.claimDate ? 1 : -1;
+      return String(a.customerName).localeCompare(String(b.customerName));
+    });
+
+    // Round the per-cycle withholdingByDeal rows too — they're displayed
+    // directly in the table and contribute to the year-total footer.
+    var withholdingByDealRounded = withholdingByDeal.map(function(r){
+      return Object.assign({}, r, {
+        claimAmount:       round2(r.claimAmount),
+        withholdingAmount: round2(r.withholdingAmount)
+      });
+    });
+
+    res.json({
+      year: year,
+      totals: {
+        grossClaim:      round2(grossClaim),
+        netOfVat:        round2(netOfVatTotal),
+        vat:             round2(vatTotal),
+        withholding5pct: round2(withholdingTotal),
+        netReceived:     round2(netReceivedTotal)
+      },
+      vatByMonth: vatByMonth,
+      withholdingByDeal: withholdingByDealRounded
+    });
+  } catch (e) {
+    console.error("[GET /api/commissions/annual-summary]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "annual_summary_failed" });
+  }
+});
+
+// POST /api/vat-payments — upsert (idempotent) a payment record for { month }.
+app.post("/api/vat-payments", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var month = String((req.body && req.body.month) || "").trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ error: "month must be YYYY-MM" });
+    var doc = await VatPayment.findOneAndUpdate(
+      { month: month },
+      { $set: { paidAt: new Date(), markedByUserId: req.user && req.user.id ? req.user.id : null } },
+      { upsert: true, new: true }
+    );
+    res.json({ ok: true, payment: doc });
+  } catch (e) {
+    console.error("[POST /api/vat-payments]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "vat_payment_failed" });
+  }
+});
+
+// DELETE /api/vat-payments/:month — undo a payment mark.
+app.delete("/api/vat-payments/:month", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var month = String(req.params.month || "").trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ error: "month must be YYYY-MM" });
+    await VatPayment.deleteOne({ month: month });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[DELETE /api/vat-payments/:month]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "vat_payment_delete_failed" });
+  }
+});
+
 app.get("/api/commissions/by-lead/:leadId", auth, salesAdminOnly, async function(req, res) {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.leadId)) return res.status(400).json({ error: "Invalid leadId" });
@@ -15556,7 +15751,17 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage", auth, salesAdminOnly, as
 
     cyc[stage] = { date: date, notes: notes, byUser: byUser };
 
-    if (stage === "received") {
+    if (stage === "claim_submitted") {
+      // Phase R-5 — both inputs required (>0) on the initial claim_submitted advance.
+      var cuv = Number(body.claimUnitValue);
+      var rate = Number(body.commissionRate);
+      if (!isFinite(cuv) || cuv <= 0) return res.status(400).json({ error: "claimUnitValue required (>0) when advancing to claim_submitted" });
+      if (!isFinite(rate) || rate <= 0) return res.status(400).json({ error: "commissionRate required (>0) when advancing to claim_submitted" });
+      cyc.claimUnitValue = cuv;
+      cyc.commissionRate = rate;
+      cyc.claimAmount    = cuv * rate;
+      cyc.state = "claim_submitted";
+    } else if (stage === "received") {
       var amount = Number(body.amount);
       if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: "amount required (>0) when advancing to received" });
       cyc.receivedAmount = amount;
@@ -15582,9 +15787,12 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage", auth, salesAdminOnly, as
     await c.save();
 
     // Audit row
-    var noteSuffix = stage === "received"
-      ? " (amount " + Number(body.amount).toLocaleString() + " EGP)"
-      : "";
+    var noteSuffix = "";
+    if (stage === "received") {
+      noteSuffix = " (amount " + Number(body.amount).toLocaleString() + " EGP)";
+    } else if (stage === "claim_submitted") {
+      noteSuffix = " (unit " + Number(cyc.claimUnitValue).toLocaleString() + " EGP × " + (Number(cyc.commissionRate) * 100).toFixed(2) + "% = " + Math.round(Number(cyc.claimAmount)).toLocaleString() + " EGP)";
+    }
     await logCommissionActivity(req.user, c.leadId, "commission_stage_advance",
       "[Commission] cycle " + cyc.cycleNumber + " → " + stage + " on " + date + noteSuffix);
 
@@ -15634,6 +15842,10 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage/:stageName", auth, salesAd
 
     cyc[stageName] = { date: date, notes: notes, byUser: byUser };
 
+    // Snapshot old claim values for the audit diff (Phase R-5).
+    var oldClaimUnit = Number(cyc.claimUnitValue || 0);
+    var oldRate      = Number(cyc.commissionRate || 0);
+
     // received-stage edits update only receivedAmount; per-recipient payouts
     // are managed separately via Commission.payouts[] (Phase R-1).
     if (stageName === "received") {
@@ -15642,6 +15854,16 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage/:stageName", auth, salesAd
         return res.status(400).json({ error: "amount must be > 0 for received stage" });
       }
       cyc.receivedAmount = amount;
+    } else if (stageName === "claim_submitted") {
+      // Phase R-5 — accept partial updates to claimUnitValue / commissionRate.
+      // Recompute claimAmount whenever either input changes. Both must remain > 0.
+      var nextUnit = body.claimUnitValue !== undefined ? Number(body.claimUnitValue) : Number(cyc.claimUnitValue || 0);
+      var nextRate = body.commissionRate !== undefined ? Number(body.commissionRate) : Number(cyc.commissionRate || 0);
+      if (!isFinite(nextUnit) || nextUnit <= 0) return res.status(400).json({ error: "claimUnitValue must be > 0 for claim_submitted stage" });
+      if (!isFinite(nextRate) || nextRate <= 0) return res.status(400).json({ error: "commissionRate must be > 0 for claim_submitted stage" });
+      cyc.claimUnitValue = nextUnit;
+      cyc.commissionRate = nextRate;
+      cyc.claimAmount    = nextUnit * nextRate;
     }
 
     c.markModified("cycles");
@@ -15652,6 +15874,10 @@ app.patch("/api/commissions/:id/cycles/:cycleId/stage/:stageName", auth, salesAd
     if ((oldStage.notes || "") !== notes) changes.push("notes changed");
     if (stageName === "received" && oldAmount !== Number(cyc.receivedAmount || 0)) {
       changes.push("amount " + Math.round(oldAmount).toLocaleString() + " → " + Math.round(Number(cyc.receivedAmount)).toLocaleString() + " EGP");
+    }
+    if (stageName === "claim_submitted") {
+      if (oldClaimUnit !== Number(cyc.claimUnitValue || 0)) changes.push("unit " + Math.round(oldClaimUnit).toLocaleString() + " → " + Math.round(Number(cyc.claimUnitValue)).toLocaleString());
+      if (oldRate !== Number(cyc.commissionRate || 0)) changes.push("rate " + (oldRate * 100).toFixed(2) + "% → " + (Number(cyc.commissionRate) * 100).toFixed(2) + "%");
     }
     var changeStr = changes.length > 0 ? " — " + changes.join(", ") : " (no changes)";
     await logCommissionActivity(req.user, c.leadId, "commission_stage_edit",

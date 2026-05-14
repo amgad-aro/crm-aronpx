@@ -17738,6 +17738,15 @@ function parseMoney(formatted) {
   return Number(s);
 }
 
+// Phase R-5 — piaster-level precision helpers. Every derived tax value
+// (netOfVat, vat, withholding, netReceived) must round to 2 decimals so
+// totals reconcile against Excel/government tax filings. claimAmount itself
+// stays as a clean product of admin-typed inputs; only the derivatives round.
+function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
+function fmtMoney2(n) {
+  return round2(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " EGP";
+}
+
 // Snapshot edit (Phase R-1) — partial PATCH of {developer, unitDetails, dealTotal,
 // expectedTotal, expectedCollectionDate} plus per-recipient overrideAmount/
 // overrideReason. Computed shares are read-only here (server recomputes on save).
@@ -17875,7 +17884,8 @@ var CommissionSnapshotEditModal = function(p) {
 };
 
 // Cycle stage advance — server enforces the state machine, this modal just
-// gathers date + notes (+ amount when advancing to received).
+// gathers date + notes (+ amount when advancing to received, + claim values
+// when advancing to claim_submitted in Phase R-5).
 var CommissionCycleStageModal = function(p) {
   var c = p.target && p.target.commission;
   var cyc = p.target && p.target.cycle;
@@ -17887,8 +17897,37 @@ var CommissionCycleStageModal = function(p) {
   var initial  = (p.target && p.target.initialValues) || {};
   var [date, setDate]     = useState(initial.date || new Date().toISOString().slice(0,10));
   var [notes, setNotes]   = useState(initial.notes || "");
-  var [amount, setAmount] = useState(initial.amount != null && initial.amount !== "" && Number(initial.amount) > 0
-    ? Number(initial.amount).toLocaleString() : "");
+  // Phase R-5: received-stage advance pre-fills with claimAmount × 0.95 (net
+  // after 5% withholding) when claim data exists. Admin can override before save.
+  var [amount, setAmount] = useState(function(){
+    if (initial.amount != null && initial.amount !== "" && Number(initial.amount) > 0) {
+      return Number(initial.amount).toLocaleString();
+    }
+    if (mode === "advance" && stageKey === "received" && cyc && Number(cyc.claimAmount || 0) > 0) {
+      // Phase R-5 — exact formula: netReceived = grossClaim − (grossClaim / 1.14) × 0.05.
+      // Pre-fill at piaster precision; MoneyInput preserves the decimal until the
+      // admin edits the field (its onChange strip is integer-only — pre-R-5 behavior).
+      var ca = Number(cyc.claimAmount);
+      var nr = ca - (ca / 1.14) * 0.05;
+      return round2(nr).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    return "";
+  });
+  // Phase R-5: claim_submitted stage collects claimUnitValue (EGP) + commissionRate
+  // (admin types percentage like "3", stored backend as 0.03). Edit mode pre-fills
+  // from the cycle's existing values; advance mode starts empty.
+  var [claimUnitValue, setClaimUnitValue] = useState(function(){
+    if (mode === "edit" && cyc && Number(cyc.claimUnitValue || 0) > 0) {
+      return Number(cyc.claimUnitValue).toLocaleString();
+    }
+    return "";
+  });
+  var [commissionRatePct, setCommissionRatePct] = useState(function(){
+    if (mode === "edit" && cyc && Number(cyc.commissionRate || 0) > 0) {
+      return String(Number((Number(cyc.commissionRate) * 100).toFixed(4)));
+    }
+    return "";
+  });
 
   var snap = (c && c.snapshot) || {};
   var STAGE_LABELS_LOCAL = {
@@ -17905,6 +17944,17 @@ var CommissionCycleStageModal = function(p) {
   };
   var titleLabel = mode === "edit" ? STAGE_LABELS_EDIT[stageKey] : STAGE_LABELS_LOCAL[stageKey];
 
+  // Live derived breakdown for the claim_submitted modal (Phase R-5).
+  // Compute with full float precision; round only at display via fmtMoney2.
+  var cuvNum   = parseMoney(claimUnitValue) || 0;
+  var rateNum  = parseFloat(commissionRatePct);
+  var rateDec  = isFinite(rateNum) ? (rateNum / 100) : 0;
+  var gross    = cuvNum > 0 && rateDec > 0 ? cuvNum * rateDec : 0;
+  var netOfVat = gross > 0 ? gross / 1.14 : 0;
+  var vat      = gross - netOfVat;
+  var with5    = netOfVat * 0.05;
+  var netRcv   = gross > 0 ? gross - with5 : 0;
+
   // Phase R-1: per-recipient payouts moved off the cycle. The received-stage
   // modal now collects amount only (cash flow from the developer); recipient
   // payouts are recorded separately via the commission-level Payouts UI.
@@ -17915,6 +17965,14 @@ var CommissionCycleStageModal = function(p) {
       var amt = parseMoney(amount);
       if (!isFinite(amt) || amt <= 0) { alert("Amount is required (>0) for the received stage"); return; }
       body.amount = amt;
+    }
+    if (stageKey === "claim_submitted") {
+      var cuv = parseMoney(claimUnitValue);
+      var rp  = parseFloat(commissionRatePct);
+      if (!isFinite(cuv) || cuv <= 0) { alert("قيمه الوحده مطلوبة (> 0)"); return; }
+      if (!isFinite(rp)  || rp  <= 0) { alert("نسبه العموله مطلوبة (> 0)"); return; }
+      body.claimUnitValue = cuv;
+      body.commissionRate = rp / 100;
     }
     var path = mode === "edit"
       ? "/api/commissions/" + c._id + "/cycles/" + cyc._id + "/stage/" + stageKey
@@ -17929,6 +17987,24 @@ var CommissionCycleStageModal = function(p) {
   return <Modal show={true} onClose={p.onClose} title={"Cycle " + (cyc && cyc.cycleNumber) + (mode === "edit" ? " — " : " → ") + (titleLabel || stageKey)} w={520}>
     <FormRow label="Date"><input type="date" value={date} onChange={function(e){ setDate(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/></FormRow>
     <FormRow label="Notes (optional)"><textarea rows={2} value={notes} onChange={function(e){ setNotes(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/></FormRow>
+    {stageKey === "claim_submitted" && <>
+      <FormRow label="قيمه الوحده — Unit value (EGP)">
+        <MoneyInput value={claimUnitValue} onChange={setClaimUnitValue} autoFocus={mode !== "edit"}/>
+      </FormRow>
+      <FormRow label="نسبه العموله — Commission rate (%)">
+        <input type="number" step="0.01" min="0" value={commissionRatePct}
+          onChange={function(e){ setCommissionRatePct(e.target.value); }}
+          placeholder="e.g. 3"
+          style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
+      </FormRow>
+      {gross > 0 && <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:C.text, direction:"rtl", textAlign:"right" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>إجمالي المطالبة (شامل VAT)</span><b>{fmtMoney2(gross)}</b></div>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>أصل المبلغ (قبل VAT)</span><span>{fmtMoney2(netOfVat)}</span></div>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>VAT 14%</span><span>{fmtMoney2(vat)}</span></div>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>ضريبة الخصم 5%</span><span>{fmtMoney2(with5)}</span></div>
+        <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #CBD5E1", color:C.success, fontWeight:700 }}><span>صافي مستلم متوقع</span><span>{fmtMoney2(netRcv)}</span></div>
+      </div>}
+    </>}
     {stageKey === "received" && <FormRow label={mode === "edit" ? "Amount received (EGP)" : "Amount received (EGP) — كم استلمنا في هذه الدفعة؟"}>
       <MoneyInput value={amount} onChange={setAmount} autoFocus={mode !== "edit"}/>
     </FormRow>}
@@ -18142,6 +18218,11 @@ var CommissionsPage = function(p) {
   var [search, setSearch] = useState("");
   var [agentFilter, setAgentFilter] = useState("");
   var [yearFilter, setYearFilter] = useState("");
+  // Phase R-5: "deals" (default) shows the existing list/cards UI; "annual"
+  // shows the new tax-tracking summary tab. Tabs share the page-level year filter.
+  var [activeTab, setActiveTab] = useState("deals");
+  var [annualSummary, setAnnualSummary] = useState(null);
+  var [annualLoading, setAnnualLoading] = useState(false);
   var [rows, setRows] = useState(null);
   var [stats, setStats] = useState(null);
   var [loadErr, setLoadErr] = useState("");
@@ -18178,6 +18259,20 @@ var CommissionsPage = function(p) {
       .catch(function(){ if(!cancelled) setCashFlow({}); });
     return function(){ cancelled = true; };
   }, [statusFilter, search, agentFilter, yearFilter, p.token, reloadTick]);
+
+  // Phase R-5 — annual summary fetcher. Fires when the user is on the Annual
+  // Summary tab; the year follows the page-level yearFilter, defaulting to
+  // the current Cairo calendar year when "All years" is selected.
+  useEffect(function(){
+    if (activeTab !== "annual") return;
+    var cancelled = false;
+    var effYear = yearFilter || String(new Date(Date.now() + 3 * 3600 * 1000).getUTCFullYear());
+    setAnnualLoading(true);
+    apiFetch("/api/commissions/annual-summary?year=" + encodeURIComponent(effYear), "GET", null, p.token)
+      .then(function(d){ if (!cancelled) { setAnnualSummary(d || null); setAnnualLoading(false); } })
+      .catch(function(){ if (!cancelled) { setAnnualSummary(null); setAnnualLoading(false); } });
+    return function(){ cancelled = true; };
+  }, [activeTab, yearFilter, p.token, reloadTick]);
 
   // One-shot consume of selectedCommissionLeadId from CRMApp state.
   // Hits /by-lead/:leadId, expands the matching card, then clears the cue.
@@ -18455,6 +18550,22 @@ var CommissionsPage = function(p) {
         {renderStageDot(c, cycle, "received")}
         {renderStageDot(c, cycle, "paid_to_team")}
       </div>
+      {/* Phase R-5 — tax breakdown line. Only shown when claim data exists.
+          Old cycles (claimAmount === 0) skip this block. All derived values
+          render at piaster precision (round2) for Excel-reconcile parity. */}
+      {Number(cycle.claimAmount || 0) > 0 && (function(){
+        var ga    = Number(cycle.claimAmount);
+        var nv    = ga / 1.14;
+        var vt    = ga - nv;
+        var wh    = nv * 0.05;
+        var nr    = ga - wh;
+        var rateP = Number(cycle.commissionRate || 0) * 100;
+        var fmt   = function(n){ return round2(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+        return <div style={{ marginTop:8, paddingTop:6, borderTop:"1px dashed #E2E8F0", fontSize:10, color:C.textLight, lineHeight:1.6 }}>
+          <div>قيمه الوحده {fmt(cycle.claimUnitValue)} EGP  •  نسبه {rateP.toFixed(2)}%  •  إجمالي {fmt(ga)} EGP</div>
+          <div>أصل المبلغ {fmt(nv)}  •  VAT {fmt(vt)}  •  خصم 5% {fmt(wh)}  •  صافي متوقع {fmt(nr)} EGP</div>
+        </div>;
+      })()}
     </div>;
   };
 
@@ -18695,12 +18806,55 @@ var CommissionsPage = function(p) {
 
   var loading = rows === null;
 
+  // Phase R-5 — VAT payment mark + undo. Both refetch annual-summary via
+  // reloadTick (the useEffect above re-runs on tick change when on the
+  // Annual Summary tab). The 4xx/5xx case surfaces a toast.
+  var markVatPaid = async function(month){
+    if (!window.confirm("تأكيد دفع VAT لشهر " + month + "؟")) return;
+    try {
+      await apiFetch("/api/vat-payments", "POST", { month: month }, p.token);
+      setReloadTick(function(v){ return v + 1; });
+      setToast({ kind:"ok", msg:"تم تسجيل دفع VAT لشهر " + month });
+    } catch(e) {
+      setToast({ kind:"err", msg: (e && e.message) || "Failed" });
+    }
+  };
+  var undoVatPaid = async function(month){
+    if (!window.confirm("التراجع عن تسجيل دفع VAT لشهر " + month + "؟")) return;
+    try {
+      await apiFetch("/api/vat-payments/" + month, "DELETE", null, p.token);
+      setReloadTick(function(v){ return v + 1; });
+      setToast({ kind:"ok", msg:"تم التراجع" });
+    } catch(e) {
+      setToast({ kind:"err", msg: (e && e.message) || "Failed" });
+    }
+  };
+
+  // Phase R-5 — tab strip. Sentence case, thin underline on active. The two
+  // tabs share the page-level yearFilter; Deals tab keeps the search/agent/
+  // status filters in its own filter row, Annual Summary uses only the year.
+  var TabBtn = function(props){
+    var active = activeTab === props.id;
+    return <button onClick={function(){ setActiveTab(props.id); }} style={{
+      padding:"10px 4px", marginInlineEnd: 24, border:"none",
+      borderBottom: active ? "2px solid " + C.accent : "2px solid transparent",
+      background:"transparent", cursor:"pointer", fontSize:14,
+      fontWeight: active ? 700 : 500,
+      color: active ? C.accent : C.textLight
+    }}>{props.label}</button>;
+  };
+
   return <div style={{ padding:"24px 16px", maxWidth:1100, margin:"0 auto" }}>
-    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
       <h1 style={{ margin:0, fontSize:22, fontWeight:700, color:C.text }}>Commissions</h1>
-      <div style={{ fontSize:11, color:C.textLight }}>admin / sales_admin only</div>
     </div>
 
+    <div style={{ borderBottom:"1px solid #E8ECF1", marginBottom:14, display:"flex" }}>
+      <TabBtn id="deals"  label="الديلز — Deals"/>
+      <TabBtn id="annual" label="الملخص السنوي — Annual summary"/>
+    </div>
+
+    {activeTab === "deals" && <>
     {/* Stats row — admin sees 3 cards (incl. Received Commission), sales_admin sees 2 (no money totals). */}
     <div style={{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" }}>
       <StatCard label="Active Deals"          value={(stats && stats.dealsCount) != null ? stats.dealsCount : "—"} icon={Briefcase} c={C.info}/>
@@ -18807,6 +18961,139 @@ var CommissionsPage = function(p) {
       No commissions match the current filters.
     </div>}
     {!loading && rows && rows.length > 0 && rows.map(renderCard)}
+    </>}
+
+    {activeTab === "annual" && (function(){
+      // Effective year — yearFilter when set, else current Cairo year. Mirrors
+      // the backend default so the UI always shows what the endpoint returned.
+      var effYear = yearFilter || String(new Date(Date.now() + 3 * 3600 * 1000).getUTCFullYear());
+      var ay = (annualSummary && annualSummary.year) || effYear;
+      var totals = (annualSummary && annualSummary.totals) || { grossClaim:0, netOfVat:0, vat:0, withholding5pct:0, netReceived:0 };
+      var byMonth = (annualSummary && annualSummary.vatByMonth) || [];
+      var byDeal  = (annualSummary && annualSummary.withholdingByDeal) || [];
+      var totalWh = byDeal.reduce(function(s, r){ return s + Number(r.withholdingAmount || 0); }, 0);
+      // Phase R-5 — tax displays render at piaster precision (round2) so totals
+      // reconcile against Excel/government filings. Module-level fmtMoney2 helper.
+      var fmtMoneyAr = fmtMoney2;
+      var fmtDateShort = function(iso){ if (!iso) return "—"; try { return new Date(iso).toLocaleDateString("en-GB"); } catch(_){ return iso; } };
+      var fmtDateUk = function(d){ if (!d) return ""; try { return new Date(d).toLocaleDateString("en-GB", { day:"2-digit", month:"short" }); } catch(_){ return ""; } };
+
+      var summaryCard = function(label, value, color){
+        return <div style={{ flex:1, minWidth:140, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
+          <div style={{ fontSize:10, color:C.textLight, marginBottom:4 }}>{label}</div>
+          <div style={{ fontSize:14, fontWeight:700, color: color || C.text }}>{fmtMoneyAr(value)}</div>
+        </div>;
+      };
+
+      return <div>
+        {/* Year selector — same yearFilter state as the Deals tab. */}
+        <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
+          <span style={{ fontSize:12, color:C.textLight }}>السنة — Year</span>
+          <select value={yearFilter} onChange={function(e){ setYearFilter(e.target.value); }} style={{
+            padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff", minWidth:120
+          }}>
+            <option value="">{"الافتراضي (" + effYear + ")"}</option>
+            {(stats && Array.isArray(stats.availableYears) ? stats.availableYears : []).map(function(y){
+              return <option key={y} value={y}>{y}</option>;
+            })}
+          </select>
+          <div style={{ fontSize:11, color:C.textLight }}>الملخص السنوي لعام {ay}</div>
+        </div>
+
+        {annualLoading && <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight }}>Loading…</div>}
+        {!annualLoading && <>
+          {/* Section 1 — five totals cards */}
+          <div style={{ display:"flex", gap:10, marginBottom:18, flexWrap:"wrap" }}>
+            {summaryCard("إجمالي المطالبات", totals.grossClaim, C.text)}
+            {summaryCard("أصل المبلغ", totals.netOfVat, C.text)}
+            {summaryCard("VAT 14%", totals.vat, C.warning)}
+            {summaryCard("خصم 5%", totals.withholding5pct, C.warning)}
+            {summaryCard("صافي مستلم", totals.netReceived, C.success)}
+          </div>
+
+          {/* Section 2 — VAT monthly table */}
+          <div style={{ marginBottom:18 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>VAT الشهري — VAT monthly</div>
+            {byMonth.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>لا توجد مطالبات في هذه السنة.</div>}
+            {byMonth.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                <thead>
+                  <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
+                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>شهر المطالبة</th>
+                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>VAT مستحق</th>
+                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>شهر الدفع</th>
+                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>الحالة</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {byMonth.map(function(row){
+                    var rowBg = row.overdue ? "#FEF2F2" : "#fff";
+                    return <tr key={row.month} style={{ borderTop:"1px solid #F1F5F9", background: rowBg }}>
+                      <td style={{ padding:"8px 12px", fontWeight:600 }}>{row.month}</td>
+                      <td style={{ padding:"8px 12px", textAlign:"end" }}>{fmtMoneyAr(row.vatAmount)}</td>
+                      <td style={{ padding:"8px 12px" }}>{row.paymentMonth}</td>
+                      <td style={{ padding:"8px 12px", textAlign:"end" }}>
+                        {row.paid && <span style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
+                          <span style={{ display:"inline-block", padding:"3px 10px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:11, fontWeight:700 }}>
+                            مدفوع {fmtDateUk(row.paidAt)}
+                          </span>
+                          <button onClick={function(){ undoVatPaid(row.month); }} title="التراجع" style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, padding:"2px 6px", fontSize:11, color:C.textLight, cursor:"pointer" }}>↶</button>
+                        </span>}
+                        {!row.paid && <button onClick={function(){ markVatPaid(row.month); }} style={{
+                          padding:"4px 10px", borderRadius:6, border:"1px solid " + (row.overdue ? "#FCA5A5" : C.accent),
+                          background: row.overdue ? "#FEE2E2" : C.accent + "12",
+                          color: row.overdue ? "#B91C1C" : C.accent,
+                          fontSize:11, fontWeight:600, cursor:"pointer"
+                        }}>تم الدفع</button>}
+                      </td>
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>}
+          </div>
+
+          {/* Section 3 — withholding by deal */}
+          <div style={{ marginBottom:18 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>تفاصيل خصم 5% — Withholding by deal</div>
+            {byDeal.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>لا توجد مطالبات في هذه السنة.</div>}
+            {byDeal.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                <thead>
+                  <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
+                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>العميل / المشروع</th>
+                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Cycle</th>
+                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>تاريخ</th>
+                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>إجمالي المطالبة</th>
+                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>خصم 5%</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {byDeal.map(function(r){
+                    return <tr key={r.cycleId} style={{ borderTop:"1px solid #F1F5F9" }}>
+                      <td style={{ padding:"8px 12px" }}>
+                        <div style={{ fontWeight:600 }}>{r.customerName || "—"}</div>
+                        {r.projectName && <div style={{ fontSize:10, color:C.textLight }}>{r.projectName}</div>}
+                      </td>
+                      <td style={{ padding:"8px 12px" }}>#{r.cycleNumber}</td>
+                      <td style={{ padding:"8px 12px" }}>{fmtDateShort(r.claimDate)}</td>
+                      <td style={{ padding:"8px 12px", textAlign:"end" }}>{fmtMoneyAr(r.claimAmount)}</td>
+                      <td style={{ padding:"8px 12px", textAlign:"end", fontWeight:600, color:C.warning }}>{fmtMoneyAr(r.withholdingAmount)}</td>
+                    </tr>;
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr style={{ background:"#F8FAFC", borderTop:"1px solid #E8ECF1" }}>
+                    <td colSpan={4} style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text }}>إجمالي الخصم للسنة</td>
+                    <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.warning }}>{fmtMoneyAr(totalWh)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>}
+          </div>
+        </>}
+      </div>;
+    })()}
 
     {/* Phase D modals — rendered when their state is set. */}
     {editingSnapshot && <CommissionSnapshotEditModal target={editingSnapshot} onClose={function(){ setEditingSnapshot(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
