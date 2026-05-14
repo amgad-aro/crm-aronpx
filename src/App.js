@@ -10566,23 +10566,6 @@ var UsersPage = function(p) {
   var toggleActive=async function(u){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid,"PUT",{active:!u.active},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?upd:x;});});}catch(e){}};
   var del=async function(uid){if(!window.confirm(t.deleteConfirm))return;try{await apiFetch("/api/users/"+uid,"DELETE",null,p.token);p.setUsers(function(prev){return prev.filter(function(x){return gid(x)!==uid;});});}catch(e){alert(e.message);}};
   var updateTarget=async function(u,val){var uid=gid(u);try{await apiFetch("/api/users/"+uid,"PUT",{monthlyTarget:Number(val)},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?Object.assign({},x,{monthlyTarget:Number(val)}):x;});});}catch(e){}};
-  // Phase R-7 — bank-account inline edit. Saves on blur if changed. Backend
-  // enforces (a) admin/sales_admin only, (b) never on own record. Errors
-  // bubble as alerts; the local state revert restores the prior value.
-  var updateBankAccount=async function(u,val){
-    var uid=gid(u);
-    var v=String(val||"").trim();
-    var prev=String(u.bankAccountNumber||"");
-    if (v === prev) return;
-    try {
-      await apiFetch("/api/users/"+uid, "PUT", { bankAccountNumber: v }, p.token);
-      p.setUsers(function(prev){ return prev.map(function(x){ return gid(x)===uid ? Object.assign({}, x, { bankAccountNumber: v }) : x; }); });
-    } catch(e) {
-      alert((e && e.message) || "Failed to update bank account");
-      // Force re-render to revert the input back to its previous value.
-      p.setUsers(function(prev){ return prev.slice(); });
-    }
-  };
   var getQTargets=function(uid){
     var u=p.users.find(function(x){return gid(x)===uid;});
     if(u&&u.qTargets&&Object.keys(u.qTargets).length>0) return u.qTargets;
@@ -10602,13 +10585,7 @@ var UsersPage = function(p) {
     </div>
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:580 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {(function(){
-          // Phase R-7 — bank-account column only visible to admin/sales_admin.
-          var hs=[t.name,t.username,t.title,t.role,t.phone,"Quarterly Target","Last Seen","Starting Date"];
-          if (isOnlyAdmin) hs.push("Bank Account");
-          hs.push(t.status); hs.push("");
-          return hs.map(function(h,i){return <th key={(h||"x")+i} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;});
-        })()}
+        {[t.name,t.username,t.title,t.role,t.phone,"Quarterly Target","Last Seen","Starting Date",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>{p.users.map(function(u){
         var uid=gid(u);
@@ -10665,27 +10642,6 @@ var UsersPage = function(p) {
             return d.toLocaleDateString("en-GB");
           })()}
         </td>
-        {isOnlyAdmin && <td style={{ padding:"6px 12px" }}>
-          {/* Phase R-7 — inline edit. Disabled on self (security: prevents an
-              agent from redirecting their own commission payouts). Backend
-              enforces the same rule + the admin/sales_admin role check. */}
-          <input
-            type="text"
-            defaultValue={u.bankAccountNumber || ""}
-            disabled={isSelf || ownerLocked}
-            placeholder={isSelf ? "(your own — not editable)" : "—"}
-            title={isSelf ? "You cannot edit your own bank account" : (ownerLocked ? "Owner account locked" : "Bank account for monthly payouts")}
-            onBlur={function(e){ if (!isSelf && !ownerLocked) updateBankAccount(u, e.target.value); }}
-            style={{
-              width: 160, padding:"5px 8px", borderRadius:6,
-              border:"1px solid "+(isSelf || ownerLocked ? "#E2E8F0" : C.border),
-              background: (isSelf || ownerLocked) ? "#F8FAFC" : "#fff",
-              fontSize:11, fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace",
-              color: (isSelf || ownerLocked) ? C.textLight : C.text,
-              cursor: (isSelf || ownerLocked) ? "not-allowed" : "text"
-            }}
-          />
-        </td>}
         <td style={{ padding:"11px 12px" }}>{isOwnerRow
           ? <span style={{ fontSize:11, color:C.textLight }}>—</span>
           : <Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge>}</td>
@@ -18365,13 +18321,14 @@ var CommissionClaimBackfillModal = function(p) {
 // edit when target carries an existing expense row. Passes the result back
 // via onSaved (caller refetches the P&L). MoneyInput is decimal-aware
 // (commit e9fbe23) so piaster precision survives admin overrides.
+//
+// Phase R-7 polish (2026-05-14) — add mode is an inline horizontal grid
+// (date / category / amount / description / remove). Edit mode keeps the
+// vertical single-row form. Empty rows are silently skipped on save;
+// "Save N expenses" reflects the count of valid rows.
 var AddExpenseModal = function(p) {
   var editing = p.target || null;
   var isEdit  = !!editing;
-  // Phase R-7 — add mode is now multi-row. The rows[] state holds an array of
-  // draft expense rows; edit mode collapses to a single row that the existing
-  // PATCH endpoint handles. Each row carries date / categoryId / amount /
-  // description / invoiceNumber. Today's date is the default for new rows.
   var todayIso = new Date().toISOString().slice(0, 10);
   var initialRow = function(){
     if (editing) {
@@ -18385,11 +18342,10 @@ var AddExpenseModal = function(p) {
         date: dateStr,
         categoryId: editing.categoryId ? String(editing.categoryId) : "",
         amount: amtStr,
-        description: editing.description || "",
-        invoiceNumber: editing.invoiceNumber || ""
+        description: editing.description || ""
       };
     }
-    return { date: todayIso, categoryId: "", amount: "", description: "", invoiceNumber: "" };
+    return { date: todayIso, categoryId: "", amount: "", description: "" };
   };
   var [rows, setRows] = useState([initialRow()]);
   var [saving, setSaving] = useState(false);
@@ -18417,17 +18373,44 @@ var AddExpenseModal = function(p) {
       return next;
     });
   };
-  var addRow = function(){ setRows(function(prev){ return prev.concat([{ date: todayIso, categoryId: "", amount: "", description: "", invoiceNumber: "" }]); }); };
+  var addRow = function(){ setRows(function(prev){ return prev.concat([{ date: todayIso, categoryId: "", amount: "", description: "" }]); }); };
   var removeRow = function(idx){ setRows(function(prev){ return prev.filter(function(_, i){ return i !== idx; }); }); };
 
+  // Row classification for the inline grid:
+  //   "empty"    — date defaulted, no category, no amount, no description
+  //   "complete" — date + category + amount > 0
+  //   "partial"  — has SOME of date/category/amount but not all 3 (or amount <= 0)
+  // Empty rows are skipped on save; partial rows block save; complete rows commit.
+  function classifyRow(r){
+    var hasCat  = !!r.categoryId;
+    var amtN    = parseMoney(r.amount);
+    var hasAmt  = isFinite(amtN) && amtN > 0;
+    var hasDesc = !!(r.description && r.description.trim());
+    var hasAnyInput = hasCat || hasAmt || hasDesc;
+    if (!hasAnyInput) return "empty";
+    if (r.date && hasCat && hasAmt) return "complete";
+    return "partial";
+  }
+  var rowClasses = rows.map(classifyRow);
+  var completeCount = rowClasses.filter(function(c){ return c === "complete"; }).length;
+  var partialCount  = rowClasses.filter(function(c){ return c === "partial";  }).length;
+  var saveBlocked   = saving || (isEdit ? rowClasses[0] !== "complete" : (completeCount === 0 || partialCount > 0));
+
   var save = async function(){
-    // Validate every row before any network call — atomic UX.
-    for (var i = 0; i < rows.length; i++) {
-      var r = rows[i];
-      if (!r.date)               { alert("Row " + (i+1) + ": date required"); return; }
-      if (!r.categoryId)         { alert("Row " + (i+1) + ": pick a category"); return; }
-      var amtN = parseMoney(r.amount);
-      if (!isFinite(amtN) || amtN <= 0) { alert("Row " + (i+1) + ": amount must be > 0"); return; }
+    if (isEdit) {
+      if (rowClasses[0] !== "complete") {
+        alert("Date, category and a positive amount are required.");
+        return;
+      }
+    } else {
+      if (partialCount > 0) {
+        alert("Fix the incomplete row" + (partialCount === 1 ? "" : "s") + " (highlighted in red) — every saved row needs date + category + amount.");
+        return;
+      }
+      if (completeCount === 0) {
+        alert("Add at least one expense.");
+        return;
+      }
     }
     setSaving(true);
     try {
@@ -18435,17 +18418,16 @@ var AddExpenseModal = function(p) {
         var r0 = rows[0];
         var body = {
           date: r0.date, categoryId: r0.categoryId, amount: parseMoney(r0.amount),
-          description: r0.description || "",
-          invoiceNumber: r0.invoiceNumber || ""
+          description: r0.description || ""
         };
         await apiFetch("/api/expenses/" + editing._id, "PATCH", body, p.token);
       } else {
+        // Only "complete" rows ship; "empty" rows are silently dropped.
         var payload = {
-          rows: rows.map(function(r){
+          rows: rows.filter(function(r, i){ return rowClasses[i] === "complete"; }).map(function(r){
             return {
               date: r.date, categoryId: r.categoryId, amount: parseMoney(r.amount),
-              description: r.description || "",
-              invoiceNumber: r.invoiceNumber || ""
+              description: r.description || ""
             };
           })
         };
@@ -18460,60 +18442,134 @@ var AddExpenseModal = function(p) {
     }
   };
 
-  return <Modal show={true} onClose={p.onClose} title={isEdit ? "Edit Expense" : ("Add Expense" + (rows.length > 1 ? " (" + rows.length + " rows)" : ""))} w={isEdit ? 460 : 820}>
-    {rows.map(function(r, idx){
-      return <div key={"row-" + idx} style={{
-        border: rows.length > 1 ? "1px solid #E8ECF1" : "none",
-        borderRadius: rows.length > 1 ? 10 : 0,
-        padding: rows.length > 1 ? "10px 12px" : 0,
-        marginBottom: rows.length > 1 ? 10 : 0,
-        background: rows.length > 1 ? "#FAFBFC" : "transparent"
-      }}>
-        {rows.length > 1 && <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
-          <span style={{ fontSize:11, fontWeight:700, color:C.textLight }}>Row {idx + 1}</span>
-          <button onClick={function(){ removeRow(idx); }} disabled={saving} style={{
-            padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:600,
-            border:"1px solid "+C.border, background:"#fff", color:C.danger,
-            cursor: saving ? "wait" : "pointer"
-          }}>Remove</button>
-        </div>}
-        <FormRow label="Date">
-          <input type="date" value={r.date} onChange={function(e){ setRowField(idx, "date", e.target.value); }}
-            style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
-        </FormRow>
-        <FormRow label="Category">
-          <select value={r.categoryId} onChange={function(e){ setRowField(idx, "categoryId", e.target.value); }}
-            style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff" }}>
-            <option value="">— select —</option>
-            {buildDropdown(r.categoryId).map(function(c){
-              return <option key={c._id} value={c._id}>{c.name}{c.archived ? " (archived)" : ""}</option>;
-            })}
-          </select>
-        </FormRow>
-        <FormRow label="Amount (EGP)">
-          <MoneyInput value={r.amount} onChange={function(v){ setRowField(idx, "amount", v); }} autoFocus={!isEdit && idx === 0}/>
-        </FormRow>
-        <FormRow label="Invoice Number (optional)">
-          <input type="text" value={r.invoiceNumber} placeholder="e.g. INV-2026-0042"
-            onChange={function(e){ setRowField(idx, "invoiceNumber", e.target.value); }}
-            style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace" }}/>
-        </FormRow>
-        <FormRow label="Description (optional)">
-          <textarea rows={2} value={r.description} onChange={function(e){ setRowField(idx, "description", e.target.value); }}
-            style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/>
-        </FormRow>
-      </div>;
-    })}
-    {!isEdit && <div style={{ marginBottom:12 }}>
-      <button onClick={addRow} disabled={saving} style={{
-        padding:"6px 14px", borderRadius:8, fontSize:12, fontWeight:600,
-        border:"1px dashed "+C.accent, background:"#fff", color:C.accent,
-        cursor: saving ? "wait" : "pointer"
-      }}>+ Add row</button>
-    </div>}
-    <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+  // ---------- Edit mode: classic vertical single-row form ----------
+  if (isEdit) {
+    var r0 = rows[0];
+    return <Modal show={true} onClose={p.onClose} title="Edit Expense" w={460}>
+      <FormRow label="Date">
+        <input type="date" value={r0.date} onChange={function(e){ setRowField(0, "date", e.target.value); }}
+          style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
+      </FormRow>
+      <FormRow label="Category">
+        <select value={r0.categoryId} onChange={function(e){ setRowField(0, "categoryId", e.target.value); }}
+          style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff" }}>
+          <option value="">— select —</option>
+          {buildDropdown(r0.categoryId).map(function(c){
+            return <option key={c._id} value={c._id}>{c.name}{c.archived ? " (archived)" : ""}</option>;
+          })}
+        </select>
+      </FormRow>
+      <FormRow label="Amount (EGP)">
+        <MoneyInput value={r0.amount} onChange={function(v){ setRowField(0, "amount", v); }}/>
+      </FormRow>
+      <FormRow label="Description (optional)">
+        <textarea rows={2} value={r0.description} onChange={function(e){ setRowField(0, "description", e.target.value); }}
+          style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/>
+      </FormRow>
+      <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+        <button onClick={p.onClose} disabled={saving} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: saving ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
+        <button onClick={save} disabled={saveBlocked} style={{
+          padding:"7px 16px", borderRadius:8, border:"none",
+          background: saveBlocked ? "#E2E8F0" : C.accent,
+          color: saveBlocked ? C.textLight : "#fff",
+          cursor: saveBlocked ? "not-allowed" : "pointer", fontSize:13, fontWeight:600
+        }}>{saving ? "Saving…" : "Save"}</button>
+      </div>
+    </Modal>;
+  }
+
+  // ---------- Add mode: inline horizontal grid ----------
+  // Column widths kept fixed (date/category/amount/remove) with description
+  // flex-growing into the remaining space.
+  var colDateW   = 130;
+  var colCatW    = 150;
+  var colAmtW    = 130;
+  var colRemoveW = 36;
+  var rowGap     = 8;
+  var cellPad    = "6px 8px";
+  var fieldBase  = { padding:"6px 8px", borderRadius:6, fontSize:12, border:"1px solid "+C.border, background:"#fff", boxSizing:"border-box", width:"100%" };
+  var errBorder  = "1px solid "+C.danger;
+  return <Modal show={true} onClose={p.onClose} title={"Add Expense" + (completeCount > 0 ? " (" + completeCount + " ready)" : "")} w={720}>
+    <div style={{ marginBottom:10 }}>
+      {/* Header row — column labels */}
+      <div style={{ display:"flex", gap:rowGap, alignItems:"center", paddingBottom:6, borderBottom:"1px solid "+C.border, marginBottom:6, fontSize:10, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>
+        <div style={{ width:colDateW,   padding:cellPad }}>Date</div>
+        <div style={{ width:colCatW,    padding:cellPad }}>Category</div>
+        <div style={{ width:colAmtW,    padding:cellPad }}>Amount (EGP)</div>
+        <div style={{ flex:1,           padding:cellPad }}>Description</div>
+        <div style={{ width:colRemoveW, padding:cellPad }}/>
+      </div>
+      {/* Data rows */}
+      {rows.map(function(r, idx){
+        var cls = rowClasses[idx];
+        var isPartial = cls === "partial";
+        // Highlight specific missing fields when the row is partial.
+        var dateBad = isPartial && !r.date;
+        var catBad  = isPartial && !r.categoryId;
+        var amtN    = parseMoney(r.amount);
+        var amtBad  = isPartial && !(isFinite(amtN) && amtN > 0);
+        return <div key={"erow-" + idx} style={{ display:"flex", gap:rowGap, alignItems:"center", marginBottom:rowGap }}>
+          <div style={{ width:colDateW }}>
+            <input type="date" value={r.date}
+              onChange={function(e){ setRowField(idx, "date", e.target.value); }}
+              style={Object.assign({}, fieldBase, dateBad ? { border:errBorder } : {})}/>
+          </div>
+          <div style={{ width:colCatW }}>
+            <select value={r.categoryId}
+              onChange={function(e){ setRowField(idx, "categoryId", e.target.value); }}
+              style={Object.assign({}, fieldBase, catBad ? { border:errBorder } : {})}>
+              <option value="">— select —</option>
+              {buildDropdown(r.categoryId).map(function(c){
+                return <option key={c._id} value={c._id}>{c.name}{c.archived ? " (archived)" : ""}</option>;
+              })}
+            </select>
+          </div>
+          <div style={{ width:colAmtW }}>
+            <MoneyInput value={r.amount} onChange={function(v){ setRowField(idx, "amount", v); }}
+              autoFocus={idx === 0}
+              style={Object.assign({}, fieldBase, amtBad ? { border:errBorder } : {})}/>
+          </div>
+          <div style={{ flex:1 }}>
+            <input type="text" value={r.description}
+              placeholder="optional"
+              onChange={function(e){ setRowField(idx, "description", e.target.value); }}
+              style={fieldBase}/>
+          </div>
+          <div style={{ width:colRemoveW, textAlign:"center" }}>
+            <button onClick={function(){ removeRow(idx); }}
+              disabled={saving || rows.length === 1}
+              title={rows.length === 1 ? "At least one row is required" : "Remove this row"}
+              style={{
+                width:28, height:28, borderRadius:6, fontSize:13, fontWeight:700,
+                border:"1px solid "+C.border, background:"#fff",
+                color: rows.length === 1 ? C.textLight : C.danger,
+                cursor: (saving || rows.length === 1) ? "not-allowed" : "pointer",
+                opacity: rows.length === 1 ? 0.4 : 1
+              }}>✕</button>
+          </div>
+        </div>;
+      })}
+      {/* Add-row button — sits below the rows, left-aligned. */}
+      <div style={{ marginTop:4 }}>
+        <button onClick={addRow} disabled={saving} style={{
+          padding:"5px 12px", borderRadius:6, fontSize:11, fontWeight:600,
+          border:"1px dashed "+C.accent, background:"#fff", color:C.accent,
+          cursor: saving ? "wait" : "pointer"
+        }}>+ Add row</button>
+        {partialCount > 0 && <span style={{ marginInlineStart:10, fontSize:11, color:C.danger }}>
+          {partialCount} row{partialCount === 1 ? "" : "s"} incomplete — date, category, and amount are required.
+        </span>}
+      </div>
+    </div>
+    <div style={{ display:"flex", justifyContent:"flex-end", gap:8, paddingTop:10, borderTop:"1px solid "+C.border }}>
       <button onClick={p.onClose} disabled={saving} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: saving ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
-      <button onClick={save} disabled={saving} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: saving ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{saving ? "Saving…" : (isEdit ? "Save" : ("Save " + rows.length + " expense" + (rows.length === 1 ? "" : "s")))}</button>
+      <button onClick={save} disabled={saveBlocked} style={{
+        padding:"7px 16px", borderRadius:8, border:"none",
+        background: saveBlocked ? "#E2E8F0" : C.accent,
+        color: saveBlocked ? C.textLight : "#fff",
+        cursor: saveBlocked ? "not-allowed" : "pointer",
+        fontSize:13, fontWeight:600
+      }}>{saving ? "Saving…" : ("Save " + completeCount + " expense" + (completeCount === 1 ? "" : "s"))}</button>
     </div>
   </Modal>;
 };
@@ -19968,7 +20024,6 @@ var CommissionsPage = function(p) {
                                     <tr>
                                       <th style={{ textAlign:"start", padding:"6px 12px 6px 32px", fontWeight:600, color:C.textLight, width:90 }}>Date</th>
                                       <th style={{ textAlign:"start", padding:"6px 12px", fontWeight:600, color:C.textLight, width:140 }}>Category</th>
-                                      <th style={{ textAlign:"start", padding:"6px 12px", fontWeight:600, color:C.textLight, width:140 }}>Invoice Number</th>
                                       <th style={{ textAlign:"start", padding:"6px 12px", fontWeight:600, color:C.textLight }}>Description</th>
                                       <th style={{ textAlign:"end",   padding:"6px 12px", fontWeight:600, color:C.textLight, width:120 }}>Amount</th>
                                       <th style={{ textAlign:"end",   padding:"6px 12px", fontWeight:600, color:C.textLight, width:80 }}></th>
@@ -19982,7 +20037,6 @@ var CommissionsPage = function(p) {
                                           {r.categoryName}
                                           {r.categoryArchived && <span style={{ marginInlineStart:6, fontSize:9, color:"#B45309", background:"#FEF3C7", padding:"1px 6px", borderRadius:10, fontWeight:700 }}>archived</span>}
                                         </td>
-                                        <td style={{ padding:"6px 12px", fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace", color: r.invoiceNumber ? C.text : C.textLight }}>{r.invoiceNumber || "—"}</td>
                                         <td style={{ padding:"6px 12px", color:C.textLight }}>{r.description || "—"}</td>
                                         <td style={{ padding:"6px 12px", textAlign:"end", fontWeight:600 }}>{fmtMoneyAr(r.amount)}</td>
                                         <td style={{ padding:"6px 12px", textAlign:"end" }}>
@@ -20208,7 +20262,6 @@ var CommissionsPage = function(p) {
                 <th className="no-print" style={{ width:32 }}></th>
                 <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Agent</th>
                 <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Role</th>
-                <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Bank account</th>
                 <th style={{ textAlign:"end",   padding:"10px 12px", fontWeight:700, color:C.textLight }}>Deals</th>
                 <th style={{ textAlign:"end",   padding:"10px 12px", fontWeight:700, color:C.textLight }}>Total owed (EGP)</th>
               </tr>
@@ -20228,12 +20281,11 @@ var CommissionsPage = function(p) {
                     <td className="no-print" style={{ padding:"10px 12px", color:C.textLight, fontSize:14 }}>{expanded ? "▾" : "▸"}</td>
                     <td style={{ padding:"10px 12px", fontWeight:600 }}>{a.userName}</td>
                     <td style={{ padding:"10px 12px", color:C.textLight }}>{a.role}</td>
-                    <td style={{ padding:"10px 12px", fontFamily:"'SF Mono', 'Consolas', 'Monaco', monospace", fontSize:11, color: a.bankAccountNumber ? C.text : C.textLight }}>{a.bankAccountNumber || "— not set —"}</td>
                     <td style={{ padding:"10px 12px", textAlign:"end" }}>{a.deals.length}</td>
                     <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.success }}>{fmtMoney(a.totalOwed)}</td>
                   </tr>
                   {expanded && <tr style={{ background:"#F8FAFC" }}>
-                    <td colSpan={6} style={{ padding:"6px 12px 12px 44px" }}>
+                    <td colSpan={5} style={{ padding:"6px 12px 12px 44px" }}>
                       <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
                         <thead>
                           <tr style={{ color:C.textLight }}>
@@ -20267,7 +20319,7 @@ var CommissionsPage = function(p) {
             </tbody>
             <tfoot>
               <tr style={{ background:"#F8FAFC", borderTop:"2px solid #CBD5E1" }}>
-                <td colSpan={4} style={{ padding:"10px 12px", fontWeight:700, color:C.text }}>Total</td>
+                <td colSpan={3} style={{ padding:"10px 12px", fontWeight:700, color:C.text }}>Total</td>
                 <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text }}>{summary.dealCount}</td>
                 <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.success }}>{fmtMoney(summary.totalPayout)} EGP</td>
               </tr>

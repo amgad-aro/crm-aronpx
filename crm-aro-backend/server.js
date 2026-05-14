@@ -84,13 +84,7 @@ var User = mongoose.model("User", new mongoose.Schema({
   // calendar day (server time / Africa/Cairo). Counted from agentHistory[]
   // Rotation entries where date >= start of today. Manual /rotate ignores
   // this cap entirely (admin override).
-  dailyLeadCap:{type:Number,default:null,min:0},
-  // Phase R-7 — bank account for monthly commission payouts. Editable by
-  // admin + sales_admin ONLY, and never by the user themselves (prevents an
-  // agent from redirecting their own payments). Free-text on purpose: Egyptian
-  // bank accounts vary in shape (IBAN / domestic / wallet IDs) and the field
-  // is for human-readable transfer instructions, not API integration.
-  bankAccountNumber:{type:String,default:""}
+  dailyLeadCap:{type:Number,default:null,min:0}
 },{timestamps:true}));
 
 var Lead = mongoose.model("Lead", new mongoose.Schema({
@@ -514,10 +508,6 @@ var expenseSchema = new mongoose.Schema({
   categoryId:      { type: mongoose.Schema.Types.ObjectId, ref: "ExpenseCategory", required: true },
   amount:          { type: Number, required: true, min: 0 }, // > 0 enforced at write site
   description:     { type: String, default: "" },
-  // Phase R-7 — optional invoice number. Applies to ANY expense (not just the
-  // "Invoices" category). Free-text — Egyptian tax invoices are alphanumeric
-  // and vary in format. Displayed in the ledger table as its own column.
-  invoiceNumber:   { type: String, default: "" },
   createdByUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }
 }, { timestamps: true });
 expenseSchema.index({ date: -1 });
@@ -1007,6 +997,27 @@ mongoose.connect(process.env.MONGODB_URI).then(function() {
   seedFirstBranch().catch(function(e){ console.error("[seed branch]", e && e.message); });
   seedAssetCategories().catch(function(e){ console.error("[seed asset categories]", e && e.message); });
   seedExpenseCategories().catch(function(e){ console.error("[seed expense categories]", e && e.message); });
+  // Phase R-7 polish — one-shot cleanup of fields that were briefly added
+  // then reverted (bankAccountNumber on User, invoiceNumber on Expense).
+  // Idempotent: countDocuments first; skip the updateMany when no docs
+  // carry the field. Both removed before the writes had a chance to
+  // accumulate, so this clears the strict-mode residue on existing rows.
+  (async function cleanupRevertedFields(){
+    try {
+      var userHits = await User.countDocuments({ bankAccountNumber: { $exists: true } });
+      if (userHits > 0) {
+        var r1 = await User.updateMany({}, { $unset: { bankAccountNumber: "" } });
+        console.log("[cleanup] User.bankAccountNumber unset on " + ((r1 && (r1.modifiedCount != null ? r1.modifiedCount : r1.nModified)) || 0) + " docs");
+      }
+      var expHits = await Expense.countDocuments({ invoiceNumber: { $exists: true } });
+      if (expHits > 0) {
+        var r2 = await Expense.updateMany({}, { $unset: { invoiceNumber: "" } });
+        console.log("[cleanup] Expense.invoiceNumber unset on " + ((r2 && (r2.modifiedCount != null ? r2.modifiedCount : r2.nModified)) || 0) + " docs");
+      }
+    } catch(e) {
+      console.error("[cleanupRevertedFields]", e && e.message);
+    }
+  })();
   // Clean up null entries in previousAgentIds from old rotation code
   Lead.updateMany({ previousAgentIds: null }, { $pull: { previousAgentIds: null } }).catch(function(){});
   // One-time backfill for rows that reached MeetingDone before the
@@ -6050,19 +6061,6 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     }
     if (req.body.saturdayPatternStartDate !== undefined) {
       update.saturdayPatternStartDate = req.body.saturdayPatternStartDate || null;
-    }
-    // Phase R-7 — bankAccountNumber. Edit only by admin/sales_admin, and
-    // never on one's own record (an agent must not be able to redirect their
-    // own commission payouts). Free-text — see User schema comment.
-    if (req.body.bankAccountNumber !== undefined) {
-      var callerRole = req.user && req.user.role;
-      if (callerRole !== "admin" && callerRole !== "sales_admin") {
-        return res.status(403).json({ error: "bankAccountNumber edit requires admin or sales_admin" });
-      }
-      if (String(req.user.id) === String(req.params.id)) {
-        return res.status(403).json({ error: "Cannot edit your own bankAccountNumber" });
-      }
-      update.bankAccountNumber = String(req.body.bankAccountNumber || "").trim();
     }
     var user = await User.findByIdAndUpdate(req.params.id, { $set: update }, { new: true, strict: false }).select("-password");
     // Bust the active-flag cache so a just-toggled user is rejected on their
@@ -15828,21 +15826,6 @@ async function computePayoutsForMonth(year, month) {
     });
   });
 
-  // Hydrate bank account from User collection (one query). The snapshot
-  // doesn't carry bankAccountNumber by design — bank info is profile-level
-  // and may change; reading at report time keeps it fresh.
-  var agentIds = agentList
-    .map(function(a){ try { return new mongoose.Types.ObjectId(a.userId); } catch(_){ return null; } })
-    .filter(Boolean);
-  var users = agentIds.length > 0
-    ? await User.find({ _id: { $in: agentIds } }).select("bankAccountNumber").lean()
-    : [];
-  var bankByUid = Object.create(null);
-  users.forEach(function(u){ bankByUid[String(u._id)] = u.bankAccountNumber || ""; });
-  agentList.forEach(function(a){
-    a.bankAccountNumber = bankByUid[a.userId] || "";
-  });
-
   var totalPayout = 0, totalDeals = 0;
   agentList.forEach(function(a){
     totalPayout += a.totalOwed;
@@ -15882,7 +15865,6 @@ app.get("/api/commissions/payout-report", auth, salesAdminOnly, async function(r
           userId:            a.userId,
           userName:          a.userName,
           role:              a.role,
-          bankAccountNumber: a.bankAccountNumber,
           totalOwed:         round2(a.totalOwed),
           deals: a.deals.map(function(d){
             return Object.assign({}, d, {
@@ -16211,7 +16193,6 @@ app.post("/api/expenses", auth, strictAdminOnly, async function(req, res) {
       categoryId:      body.categoryId,
       amount:          amount,
       description:     String(body.description || ""),
-      invoiceNumber:   String(body.invoiceNumber || "").trim(),
       createdByUserId: req.user && req.user.id ? req.user.id : null
     });
     res.json(doc.toObject());
@@ -16222,11 +16203,11 @@ app.post("/api/expenses", auth, strictAdminOnly, async function(req, res) {
 });
 
 // Phase R-7 — bulk expense create. Accepts { rows: [{ date, categoryId,
-// amount, description?, invoiceNumber? }, ...] }, validates every row, and
-// only persists if all pass. Validation is identical to POST /api/expenses
-// above (single source of truth would be a helper, but the dup is small and
-// the row-level error messages need the index to be useful). Returns
-// { created: N, expenses: [...] } on success.
+// amount, description? }, ...] }, validates every row, and only persists
+// if all pass. Validation is identical to POST /api/expenses above (single
+// source of truth would be a helper, but the dup is small and the row-level
+// error messages need the index to be useful). Returns { created: N,
+// expenses: [...] } on success.
 app.post("/api/expenses/bulk", auth, strictAdminOnly, async function(req, res) {
   try {
     var rows = (req.body && Array.isArray(req.body.rows)) ? req.body.rows : null;
@@ -16248,7 +16229,6 @@ app.post("/api/expenses/bulk", auth, strictAdminOnly, async function(req, res) {
         categoryId:      r.categoryId,
         amount:          amt,
         description:     String(r.description || ""),
-        invoiceNumber:   String(r.invoiceNumber || "").trim(),
         createdByUserId: req.user && req.user.id ? req.user.id : null
       });
     }
@@ -16284,7 +16264,6 @@ app.patch("/api/expenses/:id", auth, strictAdminOnly, async function(req, res) {
       update.amount = amt;
     }
     if (body.description !== undefined) update.description = String(body.description || "");
-    if (body.invoiceNumber !== undefined) update.invoiceNumber = String(body.invoiceNumber || "").trim();
     if (Object.keys(update).length === 0) return res.status(400).json({ error: "no fields to update" });
     var doc = await Expense.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
     if (!doc) return res.status(404).json({ error: "not found" });
@@ -16465,7 +16444,6 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
         date:             r.date,
         amount:           round2(r.amount),
         description:      r.description || "",
-        invoiceNumber:    r.invoiceNumber || "",
         categoryId:       r.categoryId && r.categoryId._id ? String(r.categoryId._id) : null,
         categoryName:     r.categoryId && r.categoryId.name ? r.categoryId.name : "(unknown)",
         categoryArchived: !!(r.categoryId && r.categoryId.archived === true),
