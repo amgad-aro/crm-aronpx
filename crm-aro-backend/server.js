@@ -18002,6 +18002,20 @@ broadcast = function(type, data){
   }
   dispatch(data, data);
 };
-httpServer.listen(PORT, function() {
-  console.log("CRM ARO Server + WebSocket running on port " + PORT);
-});
+// Listen-guard: only bind the port when server.js is run directly. When it's
+// required from a maintenance script (e.g. backfill-missing-commissions.js),
+// the script can reuse the connection + helpers without starting a second
+// HTTP listener. mongoose.connect + seeders still run at top-level either
+// way, which is what scripts want.
+if (require.main === module) {
+  httpServer.listen(PORT, function() {
+    console.log("CRM ARO Server + WebSocket running on port " + PORT);
+  });
+}
+
+// Phase R-6 polish #2 — export functions that maintenance scripts need to
+// invoke. Keep this list minimal so the require-mode surface stays narrow.
+module.exports = {
+  ensureCommissionForLead: ensureCommissionForLead,
+  buildSnapshotForLead:    buildSnapshotForLead
+};
