@@ -18226,6 +18226,290 @@ var CommissionIncentiveEditModal = function(p) {
   </Modal>;
 };
 
+// Phase R-6 — AddExpenseModal. Dual-purpose: create when target is falsy,
+// edit when target carries an existing expense row. Passes the result back
+// via onSaved (caller refetches the P&L). MoneyInput is decimal-aware
+// (commit e9fbe23) so piaster precision survives admin overrides.
+var AddExpenseModal = function(p) {
+  var editing = p.target || null;
+  var isEdit  = !!editing;
+  var [date, setDate] = useState(function(){
+    if (editing && editing.date) {
+      try { return new Date(editing.date).toISOString().slice(0, 10); } catch(_){ return new Date().toISOString().slice(0,10); }
+    }
+    return new Date().toISOString().slice(0, 10);
+  });
+  var [categoryId, setCategoryId] = useState(editing && editing.categoryId ? String(editing.categoryId) : "");
+  var [amount, setAmount] = useState(function(){
+    if (!editing) return "";
+    var n = Number(editing.amount || 0);
+    if (!isFinite(n) || n <= 0) return "";
+    return round2(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  });
+  var [description, setDescription] = useState(editing && editing.description ? editing.description : "");
+  var [saving, setSaving] = useState(false);
+
+  // Active categories only in the dropdown — archived stays selectable when
+  // editing an existing expense that points to it (so we don't silently lose
+  // the row's tag), but doesn't appear for new entries.
+  var activeCats = (p.categories || []).filter(function(c){ return !c.archived; });
+  var dropdownCats = activeCats.slice();
+  if (isEdit && editing.categoryId) {
+    var alreadyIn = activeCats.some(function(c){ return String(c._id) === String(editing.categoryId); });
+    if (!alreadyIn) {
+      var arch = (p.categories || []).find(function(c){ return String(c._id) === String(editing.categoryId); });
+      if (arch) dropdownCats.push(arch);
+    }
+  }
+
+  var save = async function(){
+    if (!categoryId) { alert("Pick a category"); return; }
+    var amt = parseMoney(amount);
+    if (!isFinite(amt) || amt <= 0) { alert("Amount must be > 0"); return; }
+    setSaving(true);
+    try {
+      var body = { date: date, categoryId: categoryId, amount: amt, description: description };
+      if (isEdit) {
+        await apiFetch("/api/expenses/" + editing._id, "PATCH", body, p.token);
+      } else {
+        await apiFetch("/api/expenses", "POST", body, p.token);
+      }
+      setSaving(false);
+      if (p.onSaved) p.onSaved();
+      p.onClose();
+    } catch(e) {
+      setSaving(false);
+      alert((e && e.message) || "Save failed");
+    }
+  };
+
+  return <Modal show={true} onClose={p.onClose} title={isEdit ? "Edit Expense" : "Add Expense"} w={460}>
+    <FormRow label="Date">
+      <input type="date" value={date} onChange={function(e){ setDate(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
+    </FormRow>
+    <FormRow label="Category">
+      <select value={categoryId} onChange={function(e){ setCategoryId(e.target.value); }} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff" }}>
+        <option value="">— select —</option>
+        {dropdownCats.map(function(c){
+          return <option key={c._id} value={c._id}>{c.name}{c.archived ? " (archived)" : ""}</option>;
+        })}
+      </select>
+    </FormRow>
+    <FormRow label="Amount (EGP)">
+      <MoneyInput value={amount} onChange={setAmount} autoFocus={!isEdit}/>
+    </FormRow>
+    <FormRow label="Description (optional)">
+      <textarea rows={2} value={description} onChange={function(e){ setDescription(e.target.value); }}
+        style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, resize:"vertical", fontFamily:"inherit" }}/>
+    </FormRow>
+    <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+      <button onClick={p.onClose} disabled={saving} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor: saving ? "wait" : "pointer", fontSize:13 }}>Cancel</button>
+      <button onClick={save} disabled={saving} style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: saving ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>{saving ? "Saving…" : "Save"}</button>
+    </div>
+  </Modal>;
+};
+
+// Phase R-6 — ManageCategoriesModal. List with inline rename, archive/restore,
+// and delete (server soft-deletes when referenced, hard-deletes otherwise).
+// New-category row at the bottom. Caller refetches categories + P&L on close.
+var ManageCategoriesModal = function(p) {
+  var [localCats, setLocalCats] = useState((p.categories || []).slice());
+  var [newName, setNewName] = useState("");
+  var [saving, setSaving] = useState(false);
+
+  // Pull fresh categories on mount so the modal isn't stale if the user
+  // opened it after some other admin made changes.
+  useEffect(function(){
+    var cancelled = false;
+    apiFetch("/api/expense-categories", "GET", null, p.token)
+      .then(function(d){ if (!cancelled) setLocalCats((d && d.data) || []); })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  }, [p.token]);
+
+  var renameCat = async function(id, name) {
+    name = String(name || "").trim();
+    if (!name) return;
+    setSaving(true);
+    try {
+      await apiFetch("/api/expense-categories/" + id, "PATCH", { name: name }, p.token);
+      setLocalCats(function(prev){ return prev.map(function(c){ return String(c._id) === String(id) ? Object.assign({}, c, { name: name }) : c; }); });
+    } catch(e) { alert((e && e.message) || "Rename failed"); }
+    setSaving(false);
+  };
+  var toggleArchive = async function(c) {
+    setSaving(true);
+    try {
+      await apiFetch("/api/expense-categories/" + c._id, "PATCH", { archived: !c.archived }, p.token);
+      setLocalCats(function(prev){ return prev.map(function(x){ return String(x._id) === String(c._id) ? Object.assign({}, x, { archived: !c.archived }) : x; }); });
+    } catch(e) { alert((e && e.message) || "Archive toggle failed"); }
+    setSaving(false);
+  };
+  var deleteCat = async function(c) {
+    if (!window.confirm("Delete category \"" + c.name + "\"? If any expense uses it, it will be archived instead.")) return;
+    setSaving(true);
+    try {
+      var res = await apiFetch("/api/expense-categories/" + c._id, "DELETE", null, p.token);
+      if (res && res.action === "archived") {
+        setLocalCats(function(prev){ return prev.map(function(x){ return String(x._id) === String(c._id) ? Object.assign({}, x, { archived: true }) : x; }); });
+        alert("Category is in use by " + (res.expenseCount || 0) + " expense(s) — archived instead of deleted.");
+      } else {
+        setLocalCats(function(prev){ return prev.filter(function(x){ return String(x._id) !== String(c._id); }); });
+      }
+    } catch(e) { alert((e && e.message) || "Delete failed"); }
+    setSaving(false);
+  };
+  var addNew = async function() {
+    var nm = newName.trim();
+    if (!nm) return;
+    setSaving(true);
+    try {
+      var d = await apiFetch("/api/expense-categories", "POST", { name: nm }, p.token);
+      setLocalCats(function(prev){ return prev.concat([d]); });
+      setNewName("");
+    } catch(e) { alert((e && e.message) || "Create failed"); }
+    setSaving(false);
+  };
+
+  var sorted = localCats.slice().sort(function(a, b){
+    if (a.archived !== b.archived) return a.archived ? 1 : -1;
+    return String(a.name).localeCompare(String(b.name));
+  });
+
+  return <Modal show={true} onClose={function(){ if (p.onClose) p.onClose(localCats); }} title="Manage Categories" w={520}>
+    <div style={{ marginBottom:12 }}>
+      {sorted.length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"8px 0" }}>No categories yet.</div>}
+      {sorted.map(function(c){
+        return <div key={c._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", borderBottom:"1px solid #F1F5F9" }}>
+          <input type="text" defaultValue={c.name} disabled={saving}
+            onBlur={function(e){ if (e.target.value.trim() !== c.name) renameCat(c._id, e.target.value); }}
+            style={{ flex:1, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:13, background: c.archived ? "#F8FAFC" : "#fff", color: c.archived ? C.textLight : C.text }}/>
+          <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, fontWeight:700,
+            background: c.archived ? "#FEF3C7" : "#DCFCE7",
+            color: c.archived ? "#B45309" : "#15803D" }}>
+            {c.archived ? "Archived" : "Active"}
+          </span>
+          <button onClick={function(){ toggleArchive(c); }} disabled={saving} style={{ padding:"3px 10px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", fontSize:11, cursor: saving ? "wait" : "pointer", color:C.textLight }}>{c.archived ? "Restore" : "Archive"}</button>
+          <button onClick={function(){ deleteCat(c); }} disabled={saving} style={{ padding:"3px 10px", borderRadius:6, border:"1px solid #FCA5A5", background:"#fff", fontSize:11, cursor: saving ? "wait" : "pointer", color:"#B91C1C" }}>Delete</button>
+        </div>;
+      })}
+    </div>
+    <div style={{ display:"flex", gap:6, borderTop:"1px solid #E2E8F0", paddingTop:10 }}>
+      <input type="text" placeholder="Add new category" value={newName} onChange={function(e){ setNewName(e.target.value); }} disabled={saving}
+        onKeyDown={function(e){ if (e.key === "Enter") addNew(); }}
+        style={{ flex:1, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:13 }}/>
+      <button onClick={addNew} disabled={saving || !newName.trim()} style={{ padding:"5px 14px", borderRadius:6, border:"none", background: C.accent, color:"#fff", fontSize:12, fontWeight:600, cursor: (saving || !newName.trim()) ? "not-allowed" : "pointer" }}>Add</button>
+    </div>
+    <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:12 }}>
+      <button onClick={function(){ if (p.onClose) p.onClose(localCats); }} style={{ padding:"7px 16px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:13 }}>Done</button>
+    </div>
+  </Modal>;
+};
+
+// Phase R-6 — Lightweight inline SVG bar chart. One bar per month (Jan-Dec).
+// Stacked variant: each month is split by category, stacked bottom→top in
+// the same fixed color palette so legend → bar segments stay aligned. No
+// external chart library — keeps the bundle lean.
+var ExpenseBarChart = function(p) {
+  var year = p.year || String(new Date().getUTCFullYear());
+  var rows = Array.isArray(p.rows) ? p.rows : [];
+  var mode = p.mode || "total";
+
+  // Aggregate Cairo-local yyyy-mm bins from the raw expense rows. The backend
+  // already returns these in pnl.expenses.byMonth, but recomputing client-side
+  // means the chart can switch between Total and Stacked modes without a
+  // refetch.
+  var monthLabels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  var totals = monthLabels.map(function(){ return 0; });
+  var categoryNames = []; // ordered list, first-seen wins
+  var byMonthCat = monthLabels.map(function(){ return {}; });
+  rows.forEach(function(r){
+    var d = new Date(r.date);
+    if (isNaN(d.getTime())) return;
+    var cairoLocal = new Date(d.getTime() + 3 * 3600 * 1000);
+    if (cairoLocal.getUTCFullYear() !== Number(year)) return;
+    var m = cairoLocal.getUTCMonth();
+    var amt = Number(r.amount || 0);
+    if (!(amt > 0)) return;
+    totals[m] += amt;
+    var cat = r.categoryName || "(unknown)";
+    if (categoryNames.indexOf(cat) === -1) categoryNames.push(cat);
+    byMonthCat[m][cat] = (byMonthCat[m][cat] || 0) + amt;
+  });
+
+  var max = totals.reduce(function(s, n){ return n > s ? n : s; }, 0);
+  if (max <= 0) {
+    return <div style={{ padding:"30px 12px", textAlign:"center", color:C.textLight, fontSize:12 }}>No expenses recorded for {year}.</div>;
+  }
+
+  // Fixed color palette — long enough for ~12 categories. Repeats after that.
+  var palette = ["#3B82F6","#10B981","#F59E0B","#EF4444","#8B5CF6","#EC4899","#14B8A6","#F97316","#06B6D4","#84CC16","#A855F7","#F43F5E"];
+  var colorFor = function(name){
+    var idx = categoryNames.indexOf(name);
+    if (idx < 0) idx = 0;
+    return palette[idx % palette.length];
+  };
+
+  var chartW = 720, chartH = 220;
+  var padL = 50, padR = 10, padT = 10, padB = 24;
+  var plotW = chartW - padL - padR;
+  var plotH = chartH - padT - padB;
+  var barW = plotW / 12 * 0.65;
+  var barGap = plotW / 12;
+
+  // Y-axis ticks: 4 grid lines (0, 25%, 50%, 75%, 100% of max).
+  var yTicks = [0, 0.25, 0.5, 0.75, 1].map(function(f){ return Math.round(max * f); });
+
+  return <div>
+    <svg viewBox={"0 0 " + chartW + " " + chartH} width="100%" preserveAspectRatio="xMidYMid meet" style={{ display:"block" }}>
+      {/* Y grid + labels */}
+      {yTicks.map(function(t, i){
+        var y = padT + plotH - (t / max) * plotH;
+        return <g key={"y" + i}>
+          <line x1={padL} y1={y} x2={chartW - padR} y2={y} stroke="#E8ECF1" strokeWidth="1"/>
+          <text x={padL - 6} y={y + 3} textAnchor="end" fontSize="9" fill={C.textLight}>{Math.round(t).toLocaleString()}</text>
+        </g>;
+      })}
+      {/* Bars */}
+      {monthLabels.map(function(label, mi){
+        var cx = padL + barGap * mi + (barGap - barW) / 2;
+        var monthTotal = totals[mi];
+        if (mode === "byCategory") {
+          var stackY = padT + plotH;
+          return <g key={"bar" + mi}>
+            {categoryNames.map(function(cat, ci){
+              var v = byMonthCat[mi][cat] || 0;
+              if (v <= 0) return null;
+              var h = (v / max) * plotH;
+              stackY -= h;
+              return <rect key={"seg" + ci} x={cx} y={stackY} width={barW} height={h} fill={colorFor(cat)} stroke="#fff" strokeWidth="0.5">
+                <title>{label} · {cat} · {Math.round(v).toLocaleString()} EGP</title>
+              </rect>;
+            })}
+            <text x={cx + barW / 2} y={chartH - padB + 14} textAnchor="middle" fontSize="10" fill={C.textLight}>{label}</text>
+          </g>;
+        }
+        var h = (monthTotal / max) * plotH;
+        var y = padT + plotH - h;
+        return <g key={"bar" + mi}>
+          <rect x={cx} y={y} width={barW} height={h} fill={C.accent} opacity="0.85">
+            <title>{label} · {Math.round(monthTotal).toLocaleString()} EGP</title>
+          </rect>
+          <text x={cx + barW / 2} y={chartH - padB + 14} textAnchor="middle" fontSize="10" fill={C.textLight}>{label}</text>
+        </g>;
+      })}
+    </svg>
+    {mode === "byCategory" && categoryNames.length > 0 && <div style={{ display:"flex", flexWrap:"wrap", gap:10, marginTop:8 }}>
+      {categoryNames.map(function(cat){
+        return <div key={cat} style={{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:C.textLight }}>
+          <span style={{ display:"inline-block", width:10, height:10, borderRadius:2, background: colorFor(cat) }}/>
+          <span>{cat}</span>
+        </div>;
+      })}
+    </div>}
+  </div>;
+};
+
 // ===== COMMISSIONS PAGE — Phase C (read-only) + Phase D (edit modals) =====
 // admin / sales_admin only. Fetches /api/commissions + /api/commissions/stats.
 var CommissionsPage = function(p) {
@@ -18250,6 +18534,22 @@ var CommissionsPage = function(p) {
   // page reload. No persistence by design — pure UI scratchpad.
   var [calcUnit, setCalcUnit] = useState("");
   var [calcRate, setCalcRate] = useState("");
+  // Phase R-6 — Expenses + P&L section on Annual Summary tab (admin only).
+  // pnl is the full /api/annual-pnl response (totals + chart bins + folded
+  // expense rows). Refetched on year change + after any expense/tax edit.
+  var [pnl, setPnl] = useState(null);
+  var [pnlLoading, setPnlLoading] = useState(false);
+  var [expenseCategories, setExpenseCategories] = useState([]);
+  var [addingExpense, setAddingExpense] = useState(false);
+  var [editingExpense, setEditingExpense] = useState(null); // expense row or null
+  var [managingCategories, setManagingCategories] = useState(false);
+  var [expCatFilter, setExpCatFilter] = useState(""); // "" = all
+  var [chartMode, setChartMode] = useState("total"); // "total" | "byCategory"
+  var [pnlReloadTick, setPnlReloadTick] = useState(0);
+  // Inline profit-tax editor (always visible per judgment #6). Drafts sync
+  // from pnl.profitTax when the response loads/changes; admin edits + Saves.
+  var [taxModeDraft, setTaxModeDraft] = useState("percent");
+  var [taxValueDraft, setTaxValueDraft] = useState("");
   var [rows, setRows] = useState(null);
   var [stats, setStats] = useState(null);
   var [loadErr, setLoadErr] = useState("");
@@ -18301,6 +18601,27 @@ var CommissionsPage = function(p) {
     return function(){ cancelled = true; };
   }, [activeTab, annualYear, p.token, reloadTick]);
 
+  // Phase R-6 — annual P&L fetcher (admin only). Fires alongside the R-5
+  // summary fetch, scoped to the same annualYear. pnlReloadTick lets the
+  // Expenses + ProfitTax handlers force a refetch after a mutation without
+  // touching reloadTick (which would also rebuild the Claims list).
+  // Categories load once when the user enters the tab; refetched only when
+  // ManageCategoriesModal closes (handled inline in that modal's save path).
+  useEffect(function(){
+    if (activeTab !== "annual") return;
+    if (!p.cu || p.cu.role !== "admin") return;
+    var cancelled = false;
+    var effYear = annualYear || String(new Date(Date.now() + 3 * 3600 * 1000).getUTCFullYear());
+    setPnlLoading(true);
+    apiFetch("/api/annual-pnl?year=" + encodeURIComponent(effYear), "GET", null, p.token)
+      .then(function(d){ if (!cancelled) { setPnl(d || null); setPnlLoading(false); } })
+      .catch(function(){ if (!cancelled) { setPnl(null); setPnlLoading(false); } });
+    apiFetch("/api/expense-categories", "GET", null, p.token)
+      .then(function(d){ if (!cancelled) setExpenseCategories((d && d.data) || []); })
+      .catch(function(){ if (!cancelled) setExpenseCategories([]); });
+    return function(){ cancelled = true; };
+  }, [activeTab, annualYear, p.cu, p.token, pnlReloadTick]);
+
   // One-shot consume of selectedCommissionLeadId from CRMApp state.
   // Hits /by-lead/:leadId, expands the matching card, then clears the cue.
   useEffect(function(){
@@ -18344,6 +18665,27 @@ var CommissionsPage = function(p) {
       setActiveTab("deals");
     }
   }, [activeTab, p.cu]);
+
+  // Phase R-6 — sync the profit-tax draft inputs from the loaded pnl response.
+  // Drafts default to ("percent", "") when no config exists for the year; the
+  // FE renders an inline CTA ("Set profit tax to calculate net profit") in
+  // that case (judgment #9). Re-runs when annualYear flips so admin sees the
+  // saved values for the year they just selected.
+  useEffect(function(){
+    if (!pnl || !pnl.profitTax) {
+      setTaxModeDraft("percent");
+      setTaxValueDraft("");
+      return;
+    }
+    var cfg = pnl.profitTax;
+    if (cfg.mode) {
+      setTaxModeDraft(cfg.mode);
+      setTaxValueDraft(cfg.value != null ? String(cfg.value) : "");
+    } else {
+      setTaxModeDraft("percent");
+      setTaxValueDraft("");
+    }
+  }, [pnl, annualYear]);
 
   // Annual Summary tab: auto-select the most recent available year when the
   // user lands on the tab with no year set. Prevents the dropdown from showing
@@ -18881,6 +19223,32 @@ var CommissionsPage = function(p) {
     }
   };
 
+  // Phase R-6 handlers. deleteExpense + saveProfitTax both refetch the P&L
+  // via pnlReloadTick (the R-6 fetch effect re-runs); category mutations
+  // come back through ManageCategoriesModal's onClose callback below.
+  var deleteExpense = async function(row){
+    if (!window.confirm("Delete this expense?")) return;
+    try {
+      await apiFetch("/api/expenses/" + row._id, "DELETE", null, p.token);
+      setPnlReloadTick(function(x){ return x + 1; });
+      setToast({ kind:"ok", msg:"Expense deleted" });
+    } catch(e) {
+      setToast({ kind:"err", msg: (e && e.message) || "Failed" });
+    }
+  };
+  var saveProfitTax = async function(){
+    var v = Number(taxValueDraft);
+    if (!isFinite(v) || v < 0) { alert("Value must be a number ≥ 0"); return; }
+    var effY = annualYear || String(new Date(Date.now() + 3 * 3600 * 1000).getUTCFullYear());
+    try {
+      await apiFetch("/api/profit-tax/" + effY, "PUT", { mode: taxModeDraft, value: v }, p.token);
+      setPnlReloadTick(function(x){ return x + 1; });
+      setToast({ kind:"ok", msg:"Profit tax saved" });
+    } catch(e) {
+      setToast({ kind:"err", msg: (e && e.message) || "Failed" });
+    }
+  };
+
   // Phase R-5 — tab strip. Sentence case, thin underline on active. Each tab
   // owns its own year state (claimsYearFilter / annualYear); Claims keeps the
   // search/agent/status filters in its own filter row, Annual Summary uses
@@ -19182,6 +19550,170 @@ var CommissionsPage = function(p) {
               </table>
             </div>}
           </div>
+
+          {/* Phase R-6 — Expenses + P&L section. The Annual Summary tab is
+              already gated to admin role (commit 0821637), so anyone reaching
+              this point is admin. No redundant per-section check (judgment #5).
+              Three sub-blocks: Expenses table, Monthly chart, P&L statement. */}
+          {(function(){
+            if (pnlLoading) return <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight }}>Loading P&amp;L…</div>;
+            var pnlData      = pnl || { revenue:{netDueTotal:0}, teamCommissions:{total:0,byMonth:[]}, expenses:{total:0,rows:[],byCategory:[]}, profitBeforeTax:0, profitTax:{mode:null,value:null,amount:0}, netProfit:0 };
+            var allExpenses  = (pnlData.expenses && Array.isArray(pnlData.expenses.rows)) ? pnlData.expenses.rows : [];
+            var filteredExp  = expCatFilter
+              ? allExpenses.filter(function(r){ return String(r.categoryId) === String(expCatFilter); })
+              : allExpenses;
+            var filteredTotal = filteredExp.reduce(function(s,r){ return s + Number(r.amount || 0); }, 0);
+            var hasTaxCfg = !!(pnlData.profitTax && pnlData.profitTax.mode);
+
+            // Sub-Block C inline tax editor — render its bits up-front so the
+            // statement layout below stays declarative.
+            var taxEditor = <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+              <select value={taxModeDraft} onChange={function(e){ setTaxModeDraft(e.target.value); }} style={{
+                padding:"4px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11, background:"#fff"
+              }}>
+                <option value="percent">Percent (%)</option>
+                <option value="fixed">Fixed (EGP)</option>
+              </select>
+              <input type="number" step="0.01" min="0" value={taxValueDraft}
+                placeholder={taxModeDraft === "percent" ? "e.g. 22.5" : "e.g. 50000"}
+                onChange={function(e){ setTaxValueDraft(e.target.value); }}
+                style={{ width:120, padding:"4px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
+              <button onClick={saveProfitTax} style={{
+                padding:"4px 12px", borderRadius:6, border:"none", background: C.accent, color:"#fff", fontSize:11, fontWeight:600, cursor:"pointer"
+              }}>Save</button>
+            </div>;
+
+            return <>
+              {/* --- Sub-Block A: Expenses table ----------------------- */}
+              <div style={{ marginTop:24, marginBottom:18 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:C.text, flex:1, minWidth:160 }}>Operating Expenses</div>
+                  <select value={expCatFilter} onChange={function(e){ setExpCatFilter(e.target.value); }} style={{
+                    padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", minWidth:140
+                  }}>
+                    <option value="">All categories</option>
+                    {expenseCategories.filter(function(c){ return !c.archived; }).map(function(c){
+                      return <option key={c._id} value={c._id}>{c.name}</option>;
+                    })}
+                    {expenseCategories.filter(function(c){ return c.archived; }).map(function(c){
+                      return <option key={c._id} value={c._id} style={{ color: C.textLight }}>{c.name} (archived)</option>;
+                    })}
+                  </select>
+                  <button onClick={function(){ setManagingCategories(true); }} style={{
+                    padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, fontWeight:600, color:C.text, cursor:"pointer"
+                  }}>Manage Categories</button>
+                  <button onClick={function(){ setAddingExpense(true); }} style={{
+                    padding:"6px 14px", borderRadius:8, border:"none", background: C.accent, color:"#fff", fontSize:12, fontWeight:600, cursor:"pointer"
+                  }}>+ Add Expense</button>
+                </div>
+                <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
+                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                    <thead>
+                      <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
+                        <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Date</th>
+                        <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Category</th>
+                        <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Description</th>
+                        <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>Amount</th>
+                        <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight, width:90 }}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredExp.length === 0 && <tr><td colSpan={5} style={{ padding:"18px 14px", color:C.textLight, fontStyle:"italic" }}>No expenses recorded{expCatFilter ? " for this category" : ""} in {ay}.</td></tr>}
+                      {filteredExp.map(function(r){
+                        return <tr key={r._id} style={{ borderTop:"1px solid #F1F5F9" }}>
+                          <td style={{ padding:"8px 12px" }}>{fmtDateShort(r.date)}</td>
+                          <td style={{ padding:"8px 12px" }}>
+                            {r.categoryName}
+                            {r.categoryArchived && <span style={{ marginInlineStart:6, fontSize:9, color:"#B45309", background:"#FEF3C7", padding:"1px 6px", borderRadius:10, fontWeight:700 }}>archived</span>}
+                          </td>
+                          <td style={{ padding:"8px 12px", color:C.textLight }}>{r.description || "—"}</td>
+                          <td style={{ padding:"8px 12px", textAlign:"end", fontWeight:600 }}>{fmtMoneyAr(r.amount)}</td>
+                          <td style={{ padding:"8px 12px", textAlign:"end" }}>
+                            <button onClick={function(){ setEditingExpense(r); }} title="Edit" style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, padding:"2px 7px", fontSize:10, color:C.textLight, cursor:"pointer", marginInlineEnd:4 }}>✎</button>
+                            <button onClick={function(){ deleteExpense(r); }} title="Delete" style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:4, padding:"2px 7px", fontSize:10, color:"#B91C1C", cursor:"pointer" }}>✕</button>
+                          </td>
+                        </tr>;
+                      })}
+                    </tbody>
+                    {filteredExp.length > 0 && <tfoot>
+                      <tr style={{ background:"#F8FAFC", borderTop:"1px solid #E8ECF1" }}>
+                        <td colSpan={3} style={{ padding:"10px 12px", fontWeight:700, color:C.text }}>{expCatFilter ? "Filtered total" : "Total expenses for year"}</td>
+                        <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text }}>{fmtMoneyAr(filteredTotal)}</td>
+                        <td></td>
+                      </tr>
+                    </tfoot>}
+                  </table>
+                </div>
+              </div>
+
+              {/* --- Sub-Block B: Monthly chart ----------------------- */}
+              <div style={{ marginBottom:18 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:C.text, flex:1 }}>Monthly Expenses</div>
+                  <div style={{ display:"inline-flex", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", fontSize:11 }}>
+                    {[{ id:"total", label:"Total" },{ id:"byCategory", label:"By category" }].map(function(opt){
+                      var active = chartMode === opt.id;
+                      return <button key={opt.id} onClick={function(){ setChartMode(opt.id); }} style={{
+                        padding:"4px 10px", border:"none", background: active ? C.accent + "12" : "#fff",
+                        color: active ? C.accent : C.textLight, fontWeight: active ? 700 : 500, cursor:"pointer"
+                      }}>{opt.label}</button>;
+                    })}
+                  </div>
+                </div>
+                <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
+                  <ExpenseBarChart rows={allExpenses} year={ay} mode={chartMode}/>
+                </div>
+              </div>
+
+              {/* --- Sub-Block C: P&L statement ----------------------- */}
+              <div style={{ marginBottom:18 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>Annual P&amp;L Statement — {ay}</div>
+                <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"16px 18px", maxWidth:600 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                    <span style={{ fontSize:13, color:C.text }}>Revenue (Net Due Total)</span>
+                    <span style={{ fontSize:13, fontWeight:600, color:C.text }}>{fmtMoneyAr(pnlData.revenue && pnlData.revenue.netDueTotal)}</span>
+                  </div>
+                  <div style={{ borderTop:"1px solid #E2E8F0", marginTop:4, marginBottom:8 }}/>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                    <span style={{ fontSize:13, color:C.text }}>Less: Team Commissions</span>
+                    <span style={{ fontSize:13, color:"#B45309" }}>({fmtMoneyAr(pnlData.teamCommissions && pnlData.teamCommissions.total)})</span>
+                  </div>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                    <span style={{ fontSize:13, color:C.text }}>Less: Operating Expenses</span>
+                    <span style={{ fontSize:13, color:"#B45309" }}>({fmtMoneyAr(pnlData.expenses && pnlData.expenses.total)})</span>
+                  </div>
+                  <div style={{ borderTop:"1px solid #E2E8F0", marginTop:4, marginBottom:8 }}/>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
+                    <span style={{ fontSize:13, fontWeight:700, color:C.text }}>Profit Before Tax</span>
+                    <span style={{ fontSize:13, fontWeight:700, color: pnlData.profitBeforeTax >= 0 ? C.text : "#B91C1C" }}>{fmtMoneyAr(pnlData.profitBeforeTax)}</span>
+                  </div>
+
+                  <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:8 }}>
+                    <div style={{ fontSize:11, color:C.textLight, marginBottom:6 }}>Profit Tax</div>
+                    {taxEditor}
+                    {!hasTaxCfg && <div style={{ fontSize:11, color:"#B45309", marginTop:6 }}>Set profit tax to calculate net profit</div>}
+                  </div>
+
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                    <span style={{ fontSize:13, color:C.text }}>
+                      Less: Profit Tax
+                      {hasTaxCfg && <span style={{ fontSize:10, color:C.textLight, marginInlineStart:6 }}>
+                        ({pnlData.profitTax.mode === "percent" ? (pnlData.profitTax.value + "%") : "fixed"})
+                      </span>}
+                    </span>
+                    <span style={{ fontSize:13, color:"#B45309" }}>({fmtMoneyAr(pnlData.profitTax && pnlData.profitTax.amount)})</span>
+                  </div>
+                  <div style={{ borderTop:"1px solid #E2E8F0", marginTop:4, marginBottom:8 }}/>
+                  <div style={{ display:"flex", justifyContent:"space-between", paddingTop:4 }}>
+                    <span style={{ fontSize:14, fontWeight:700, color:C.text }}>Net Profit (after tax)</span>
+                    <span style={{ fontSize:15, fontWeight:700, color: hasTaxCfg ? (pnlData.netProfit >= 0 ? C.success : "#B91C1C") : C.textLight }}>
+                      {hasTaxCfg ? fmtMoneyAr(pnlData.netProfit) : "—"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </>;
+          })()}
         </>}
       </div>;
     })()}
@@ -19191,6 +19723,24 @@ var CommissionsPage = function(p) {
     {editingCycleStage && <CommissionCycleStageModal target={editingCycleStage} onClose={function(){ setEditingCycleStage(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
     {editingIncentive && <CommissionIncentiveEditModal target={editingIncentive} onClose={function(){ setEditingIncentive(null); }} writeCommission={writeCommission} savingFlag={savingFlag} users={p.users}/>}
     {addingPayoutFor && <CommissionPayoutAddModal target={addingPayoutFor} onClose={function(){ setAddingPayoutFor(null); }} writeCommission={writeCommission} savingFlag={savingFlag} cashFlow={cashFlow}/>}
+    {/* Phase R-6 modals — Add/Edit Expense + Manage Categories. Both refresh
+        the P&L via pnlReloadTick; Manage Categories also writes back the
+        latest list so the dropdowns refresh without a roundtrip. */}
+    {(addingExpense || editingExpense) && <AddExpenseModal
+      target={editingExpense}
+      categories={expenseCategories}
+      token={p.token}
+      onSaved={function(){ setPnlReloadTick(function(x){ return x + 1; }); }}
+      onClose={function(){ setAddingExpense(false); setEditingExpense(null); }}/>}
+    {managingCategories && <ManageCategoriesModal
+      categories={expenseCategories}
+      token={p.token}
+      onClose={function(latest){
+        setManagingCategories(false);
+        if (Array.isArray(latest)) setExpenseCategories(latest);
+        // Refetch P&L so any rename/archive reflects in the table category column.
+        setPnlReloadTick(function(x){ return x + 1; });
+      }}/>}
 
     {/* Toast — top-right transient feedback. Auto-dismisses via useEffect. */}
     {toast && <div style={{

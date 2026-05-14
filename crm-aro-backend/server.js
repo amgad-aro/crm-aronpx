@@ -486,6 +486,47 @@ var vatPaymentSchema = new mongoose.Schema({
 var VatPayment = mongoose.model("VatPayment", vatPaymentSchema);
 
 // =====================================================================
+// Phase R-6 — Expenses ledger + Profit Tax + Annual P&L (admin-only).
+// Builds on R-5's tax tracking to surface a full annual P&L on the
+// Annual Summary tab. Three collections, all admin-only access.
+// =====================================================================
+
+// ExpenseCategory — labels for the expense ledger. Seeded once at boot.
+// Soft-delete (archived=true) preserves history when a category has been used;
+// hard delete only when no Expense references it.
+var expenseCategorySchema = new mongoose.Schema({
+  name:     { type: String, required: true, unique: true, trim: true },
+  archived: { type: Boolean, default: false }
+}, { timestamps: true });
+var ExpenseCategory = mongoose.model("ExpenseCategory", expenseCategorySchema);
+
+// Expense — single ledger entry. amount is EGP (no currency field by design).
+// date is a Date object; the /annual-pnl endpoint year-scopes via Cairo-local
+// calendar (UTC+3 fixed range), matching R-5's nowCairo convention.
+var expenseSchema = new mongoose.Schema({
+  date:            { type: Date, required: true },
+  categoryId:      { type: mongoose.Schema.Types.ObjectId, ref: "ExpenseCategory", required: true },
+  amount:          { type: Number, required: true, min: 0 }, // > 0 enforced at write site
+  description:     { type: String, default: "" },
+  createdByUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }
+}, { timestamps: true });
+expenseSchema.index({ date: -1 });
+expenseSchema.index({ categoryId: 1 });
+var Expense = mongoose.model("Expense", expenseSchema);
+
+// ProfitTaxConfig — admin-entered profit-tax rate for a given year. One row
+// per year (unique). mode determines how value is applied at P&L time:
+// percent → profitBeforeTax × value/100; fixed → value (EGP). The /annual-pnl
+// endpoint clamps the computed amount to ≥ 0 (judgment call #2 — Phase R-6).
+var profitTaxConfigSchema = new mongoose.Schema({
+  year:            { type: Number, required: true, unique: true },
+  mode:            { type: String, enum: ["percent", "fixed"], required: true },
+  value:           { type: Number, required: true, min: 0 },
+  updatedByUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }
+}, { timestamps: true });
+var ProfitTaxConfig = mongoose.model("ProfitTaxConfig", profitTaxConfigSchema);
+
+// =====================================================================
 // ATTENDANCE & SALARY SYSTEM — Phase 1 foundation
 // Spec: docs/attendance-salary-requirements.md
 //
@@ -955,6 +996,7 @@ mongoose.connect(process.env.MONGODB_URI).then(function() {
   seedAdmin();
   seedFirstBranch().catch(function(e){ console.error("[seed branch]", e && e.message); });
   seedAssetCategories().catch(function(e){ console.error("[seed asset categories]", e && e.message); });
+  seedExpenseCategories().catch(function(e){ console.error("[seed expense categories]", e && e.message); });
   // Clean up null entries in previousAgentIds from old rotation code
   Lead.updateMany({ previousAgentIds: null }, { $pull: { previousAgentIds: null } }).catch(function(){});
   // One-time backfill for rows that reached MeetingDone before the
@@ -1102,6 +1144,19 @@ async function seedAssetCategories() {
   }
 }
 
+// Phase R-6 — seed the five default expense categories on first server boot.
+// Only fires when ExpenseCategory is empty; safe to ship as a permanent seeder
+// because subsequent boots find rows and no-op.
+async function seedExpenseCategories() {
+  var existing = await ExpenseCategory.countDocuments();
+  if (existing > 0) return;
+  var seeds = ["Salaries", "Rent", "Utilities", "Internet", "Other"];
+  for (var i = 0; i < seeds.length; i++) {
+    try { await ExpenseCategory.create({ name: seeds[i] }); } catch(_e){ /* dup unique — ignore */ }
+  }
+  console.log("[seed] expense categories: " + seeds.length + " created");
+}
+
 // ===== CREATE DEFAULT ADMIN =====
 async function seedAdmin() {
   try {
@@ -1186,6 +1241,19 @@ async function auth(req, res, next) {
 function adminOnly(req, res, next) {
   if (req.user.role !== "admin" && req.user.role !== "sales_admin" && req.user.role !== "manager" && req.user.role !== "team_leader") {
     return res.status(403).json({ error: "Admin only" });
+  }
+  next();
+}
+
+// Phase R-6 — TRUE admin-only middleware. Distinct from `adminOnly` above,
+// which is a misnomer (it accepts admin/sales_admin/manager/team_leader for
+// historical reasons; renaming would break many endpoints). Used by every
+// Expenses + ProfitTax + AnnualPnL endpoint. Future-audit-item: revisit the
+// `adminOnly` permissiveness in a follow-up phase.
+function strictAdminOnly(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ error: "Forbidden — admin role required" });
   }
   next();
 }
@@ -15427,6 +15495,364 @@ app.delete("/api/vat-payments/:month", auth, salesAdminOnly, async function(req,
   } catch (e) {
     console.error("[DELETE /api/vat-payments/:month]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "vat_payment_delete_failed" });
+  }
+});
+
+// =====================================================================
+// Phase R-6 endpoints — Expenses ledger, Profit Tax config, Annual P&L.
+// All gated by strictAdminOnly (admin role exclusively — sales_admin/manager/
+// team_leader rejected). The annual-pnl endpoint folds in the expense ledger
+// rows so the FE table renders off the same single response (judgment #10).
+// =====================================================================
+
+// --- Expense Categories ---------------------------------------------------
+app.get("/api/expense-categories", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var rows = await ExpenseCategory.find({}).sort({ archived: 1, name: 1 }).lean();
+    res.json({ data: rows });
+  } catch(e) {
+    console.error("[GET /api/expense-categories]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "categories_list_failed" });
+  }
+});
+
+app.post("/api/expense-categories", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var name = String((req.body && req.body.name) || "").trim();
+    if (!name) return res.status(400).json({ error: "name required" });
+    var existing = await ExpenseCategory.findOne({ name: name }).lean();
+    if (existing) return res.status(400).json({ error: "category already exists" });
+    var doc = await ExpenseCategory.create({ name: name });
+    res.json(doc.toObject());
+  } catch(e) {
+    console.error("[POST /api/expense-categories]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "category_create_failed" });
+  }
+});
+
+app.patch("/api/expense-categories/:id", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var update = {};
+    if (req.body && typeof req.body.name === "string") {
+      var nm = req.body.name.trim();
+      if (!nm) return res.status(400).json({ error: "name cannot be empty" });
+      update.name = nm;
+    }
+    if (req.body && typeof req.body.archived === "boolean") update.archived = req.body.archived;
+    if (Object.keys(update).length === 0) return res.status(400).json({ error: "no fields to update" });
+    var doc = await ExpenseCategory.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
+    if (!doc) return res.status(404).json({ error: "not found" });
+    res.json(doc.toObject());
+  } catch(e) {
+    console.error("[PATCH /api/expense-categories/:id]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "category_update_failed" });
+  }
+});
+
+// Soft-delete (archive) when at least one Expense references the category;
+// hard delete otherwise. Response reports which path was taken so the FE
+// can show the right toast.
+app.delete("/api/expense-categories/:id", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var expenseCount = await Expense.countDocuments({ categoryId: req.params.id });
+    if (expenseCount > 0) {
+      var doc = await ExpenseCategory.findByIdAndUpdate(req.params.id, { $set: { archived: true } }, { new: true });
+      if (!doc) return res.status(404).json({ error: "not found" });
+      return res.json({ action: "archived", expenseCount: expenseCount });
+    }
+    var del = await ExpenseCategory.findByIdAndDelete(req.params.id);
+    if (!del) return res.status(404).json({ error: "not found" });
+    res.json({ action: "deleted" });
+  } catch(e) {
+    console.error("[DELETE /api/expense-categories/:id]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "category_delete_failed" });
+  }
+});
+
+// --- Expenses --------------------------------------------------------------
+// Cairo-local year-scoping: build a UTC range that maps to Y/01/01 00:00 →
+// (Y+1)/01/01 00:00 in Cairo. Egypt is UTC+3 fixed (no DST).
+function cairoYearRangeUtc(yNum) {
+  return {
+    startUtc: new Date(Date.UTC(yNum, 0, 1, 0, 0, 0) - 3 * 3600 * 1000),
+    endUtc:   new Date(Date.UTC(yNum + 1, 0, 1, 0, 0, 0) - 3 * 3600 * 1000)
+  };
+}
+
+app.get("/api/expenses", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var year = String(req.query.year || "").trim();
+    var categoryId = String(req.query.categoryId || "").trim();
+    var q = {};
+    if (/^\d{4}$/.test(year)) {
+      var r = cairoYearRangeUtc(Number(year));
+      q.date = { $gte: r.startUtc, $lt: r.endUtc };
+    }
+    if (categoryId && mongoose.Types.ObjectId.isValid(categoryId)) {
+      q.categoryId = new mongoose.Types.ObjectId(categoryId);
+    }
+    var rows = await Expense.find(q).sort({ date: -1, createdAt: -1 }).populate("categoryId", "name archived").lean();
+    res.json({ data: rows });
+  } catch(e) {
+    console.error("[GET /api/expenses]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "expenses_list_failed" });
+  }
+});
+
+app.post("/api/expenses", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var body = req.body || {};
+    if (!body.date) return res.status(400).json({ error: "date required" });
+    var date = new Date(body.date);
+    if (isNaN(date.getTime())) return res.status(400).json({ error: "invalid date" });
+    if (!body.categoryId || !mongoose.Types.ObjectId.isValid(body.categoryId)) return res.status(400).json({ error: "valid categoryId required" });
+    var amount = Number(body.amount);
+    if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: "amount must be > 0" });
+    var doc = await Expense.create({
+      date:            date,
+      categoryId:      body.categoryId,
+      amount:          amount,
+      description:     String(body.description || ""),
+      createdByUserId: req.user && req.user.id ? req.user.id : null
+    });
+    res.json(doc.toObject());
+  } catch(e) {
+    console.error("[POST /api/expenses]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "expense_create_failed" });
+  }
+});
+
+app.patch("/api/expenses/:id", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var body = req.body || {};
+    var update = {};
+    if (body.date !== undefined) {
+      var d = new Date(body.date);
+      if (isNaN(d.getTime())) return res.status(400).json({ error: "invalid date" });
+      update.date = d;
+    }
+    if (body.categoryId !== undefined) {
+      if (!mongoose.Types.ObjectId.isValid(body.categoryId)) return res.status(400).json({ error: "invalid categoryId" });
+      update.categoryId = body.categoryId;
+    }
+    if (body.amount !== undefined) {
+      var amt = Number(body.amount);
+      if (!isFinite(amt) || amt <= 0) return res.status(400).json({ error: "amount must be > 0" });
+      update.amount = amt;
+    }
+    if (body.description !== undefined) update.description = String(body.description || "");
+    if (Object.keys(update).length === 0) return res.status(400).json({ error: "no fields to update" });
+    var doc = await Expense.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
+    if (!doc) return res.status(404).json({ error: "not found" });
+    res.json(doc.toObject());
+  } catch(e) {
+    console.error("[PATCH /api/expenses/:id]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "expense_update_failed" });
+  }
+});
+
+app.delete("/api/expenses/:id", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var del = await Expense.findByIdAndDelete(req.params.id);
+    if (!del) return res.status(404).json({ error: "not found" });
+    res.json({ ok: true });
+  } catch(e) {
+    console.error("[DELETE /api/expenses/:id]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "expense_delete_failed" });
+  }
+});
+
+// --- Profit Tax Config -----------------------------------------------------
+app.get("/api/profit-tax/:year", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var y = Number(req.params.year);
+    if (!isFinite(y) || y < 1900 || y > 9999) return res.status(400).json({ error: "invalid year" });
+    var doc = await ProfitTaxConfig.findOne({ year: y }).lean();
+    res.json(doc || null);
+  } catch(e) {
+    console.error("[GET /api/profit-tax/:year]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "profit_tax_get_failed" });
+  }
+});
+
+app.put("/api/profit-tax/:year", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var y = Number(req.params.year);
+    if (!isFinite(y) || y < 1900 || y > 9999) return res.status(400).json({ error: "invalid year" });
+    var body = req.body || {};
+    var mode = String(body.mode || "").trim();
+    if (mode !== "percent" && mode !== "fixed") return res.status(400).json({ error: "mode must be 'percent' or 'fixed'" });
+    var value = Number(body.value);
+    if (!isFinite(value) || value < 0) return res.status(400).json({ error: "value must be >= 0" });
+    var doc = await ProfitTaxConfig.findOneAndUpdate(
+      { year: y },
+      { $set: { mode: mode, value: value, updatedByUserId: req.user && req.user.id ? req.user.id : null } },
+      { upsert: true, new: true }
+    );
+    res.json(doc.toObject());
+  } catch(e) {
+    console.error("[PUT /api/profit-tax/:year]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "profit_tax_put_failed" });
+  }
+});
+
+// --- Annual P&L ------------------------------------------------------------
+// Single endpoint feeds the entire R-6 section: 5 totals (folded with R-5
+// revenue math), team commissions total + monthly bins, expenses total +
+// monthly bins + by-category bins, profit-before-tax, profit-tax config +
+// computed amount (clamped ≥ 0), net profit, AND the full expense ledger
+// rows for the year (judgment #10 — single fetch covers chart + statement +
+// table). Year defaults to current Cairo year when query is missing.
+app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var nowCairo = new Date(Date.now() + 3 * 3600 * 1000);
+    var defaultYear = String(nowCairo.getUTCFullYear());
+    var year = String(req.query.year || "").trim();
+    if (!/^\d{4}$/.test(year)) year = defaultYear;
+    var yNum = Number(year);
+    function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
+
+    // --- Revenue: identical filter as R-5 annual-summary ----------------
+    var commDocs = await Commission.find({
+      cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "claim_submitted.date": { $regex: "^" + year } } }
+    }).select("cycles").lean();
+    var grossClaim = 0, netOfVatTotal = 0, vatTotal = 0, withholdingTotal = 0, netDueTotal = 0;
+    for (var i = 0; i < commDocs.length; i++) {
+      var doc = commDocs[i];
+      if (!Array.isArray(doc.cycles)) continue;
+      for (var j = 0; j < doc.cycles.length; j++) {
+        var cy = doc.cycles[j];
+        var ca = Number(cy.claimAmount || 0);
+        if (!(ca > 0)) continue;
+        var cd = cy.claim_submitted && cy.claim_submitted.date;
+        if (typeof cd !== "string" || cd.slice(0, 4) !== year) continue;
+        var nv = ca / 1.14;
+        var vt = ca - nv;
+        var wh = nv * 0.05;
+        grossClaim       += ca;
+        netOfVatTotal    += nv;
+        vatTotal         += vt;
+        withholdingTotal += wh;
+        netDueTotal      += ca - wh;
+      }
+    }
+
+    // --- Team commissions: sum payouts.amount where payout.date in year --
+    var payDocs = await Commission.find({
+      payouts: { $elemMatch: { date: { $regex: "^" + year } } }
+    }).select("payouts").lean();
+    var teamTotal = 0;
+    var teamByMonthMap = Object.create(null);
+    for (var pi = 0; pi < payDocs.length; pi++) {
+      var pdoc = payDocs[pi];
+      if (!Array.isArray(pdoc.payouts)) continue;
+      for (var pj = 0; pj < pdoc.payouts.length; pj++) {
+        var po = pdoc.payouts[pj];
+        if (typeof po.date !== "string" || po.date.slice(0,4) !== year) continue;
+        var amt = Number(po.amount || 0);
+        if (!isFinite(amt) || amt <= 0) continue;
+        teamTotal += amt;
+        var mk = po.date.slice(0, 7);
+        teamByMonthMap[mk] = (teamByMonthMap[mk] || 0) + amt;
+      }
+    }
+    var teamByMonth = Object.keys(teamByMonthMap).sort().map(function(m){
+      return { month: m, amount: round2(teamByMonthMap[m]) };
+    });
+
+    // --- Expenses: Cairo-year range, sum + monthly bins + by-category ----
+    var range = cairoYearRangeUtc(yNum);
+    var expRows = await Expense.find({ date: { $gte: range.startUtc, $lt: range.endUtc } })
+      .sort({ date: -1, createdAt: -1 })
+      .populate("categoryId", "name archived")
+      .lean();
+    var expTotal = 0;
+    var expByMonthMap = Object.create(null);
+    var expByCatMap   = Object.create(null);
+    for (var ei = 0; ei < expRows.length; ei++) {
+      var ex = expRows[ei];
+      var ea = Number(ex.amount || 0);
+      if (!(ea > 0)) continue;
+      expTotal += ea;
+      var cairoLocal = new Date(new Date(ex.date).getTime() + 3 * 3600 * 1000);
+      var em = cairoLocal.toISOString().slice(0, 7); // yyyy-mm in Cairo
+      expByMonthMap[em] = (expByMonthMap[em] || 0) + ea;
+      var catId   = ex.categoryId && ex.categoryId._id ? String(ex.categoryId._id) : "unknown";
+      var catName = ex.categoryId && ex.categoryId.name ? ex.categoryId.name : "(unknown)";
+      if (!expByCatMap[catId]) expByCatMap[catId] = { categoryId: catId, categoryName: catName, total: 0 };
+      expByCatMap[catId].total += ea;
+    }
+    var expByMonth = Object.keys(expByMonthMap).sort().map(function(m){
+      return { month: m, amount: round2(expByMonthMap[m]) };
+    });
+    var expByCategory = Object.keys(expByCatMap).map(function(k){
+      var c = expByCatMap[k];
+      return { categoryId: c.categoryId, categoryName: c.categoryName, total: round2(c.total) };
+    }).sort(function(a,b){ return b.total - a.total; });
+
+    var profitBeforeTax = netDueTotal - teamTotal - expTotal;
+
+    // --- Profit tax: clamp to ≥ 0 (judgment #2) ------------------------
+    var taxCfg = await ProfitTaxConfig.findOne({ year: yNum }).lean();
+    var taxMode = taxCfg ? taxCfg.mode : null;
+    var taxValue = taxCfg ? Number(taxCfg.value || 0) : null;
+    var taxAmount = 0;
+    if (taxCfg) {
+      var computed = taxMode === "percent"
+        ? profitBeforeTax * (taxValue / 100)
+        : Number(taxValue || 0);
+      taxAmount = Math.max(0, computed);
+    }
+    var netProfit = profitBeforeTax - taxAmount;
+
+    // --- Folded expense rows (judgment #10) ----------------------------
+    var expensesList = expRows.map(function(r){
+      return {
+        _id:              String(r._id),
+        date:             r.date,
+        amount:           round2(r.amount),
+        description:      r.description || "",
+        categoryId:       r.categoryId && r.categoryId._id ? String(r.categoryId._id) : null,
+        categoryName:     r.categoryId && r.categoryId.name ? r.categoryId.name : "(unknown)",
+        categoryArchived: !!(r.categoryId && r.categoryId.archived === true),
+        createdAt:        r.createdAt
+      };
+    });
+
+    res.json({
+      year: year,
+      revenue: {
+        netDueTotal:     round2(netDueTotal),
+        grossClaimTotal: round2(grossClaim),
+        vatTotal:        round2(vatTotal),
+        withholdingTotal: round2(withholdingTotal),
+        netOfVatTotal:   round2(netOfVatTotal)
+      },
+      teamCommissions: {
+        total: round2(teamTotal),
+        byMonth: teamByMonth
+      },
+      expenses: {
+        total: round2(expTotal),
+        byMonth: expByMonth,
+        byCategory: expByCategory,
+        rows: expensesList
+      },
+      profitBeforeTax: round2(profitBeforeTax),
+      profitTax: {
+        mode:   taxMode,
+        value:  taxValue,
+        amount: round2(taxAmount)
+      },
+      netProfit: round2(netProfit)
+    });
+  } catch(e) {
+    console.error("[GET /api/annual-pnl]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "annual_pnl_failed" });
   }
 });
 
