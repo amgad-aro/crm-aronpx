@@ -183,7 +183,26 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // and a new lead is created without an agent, the lead goes into an
   // "unassigned queue" for admins to manually assign. After this timestamp
   // passes, the background sweeper auto-rotates it to Tier 1.
-  manualWindowExpiresAt:{type:Date,default:null,index:true}
+  manualWindowExpiresAt:{type:Date,default:null,index:true},
+  // Phase R-12 Part 2 — External-deal fields. All optional; default values
+  // mean every existing lead reads as a normal internal deal (no migration
+  // needed). Only consulted by Phase R-12 Parts 3-6 (Add/Edit Deal modal,
+  // Deals/Claims filter pills, Commission.externalSplit computation).
+  // - dealType "internal": externalBrokerId + externalDealConfig are
+  //   ignored. Existing recipient logic runs unchanged.
+  // - dealType "external": externalBrokerId required + both pcts > 0
+  //   (enforced at the Lead PUT site that flips dealType in Part 3,
+  //   NOT at schema level — leaving them write-time validations keeps
+  //   existing PUTs that never touch dealType from accidentally tripping).
+  // Broker model is declared further down (~line 540); the "Broker" ref
+  // string is resolved at populate-time, not schema-define-time, so the
+  // forward reference is fine.
+  dealType:{type:String,enum:["internal","external"],default:"internal"},
+  externalBrokerId:{type:mongoose.Schema.Types.ObjectId,ref:"Broker",default:null},
+  externalDealConfig:{
+    commissionTaxPct:{type:Number,default:0},
+    brokerSharePct:{type:Number,default:0}
+  }
 },{timestamps:true}));
 
 // Indexes for query performance
@@ -415,6 +434,12 @@ var commissionIncentiveSchema = new mongoose.Schema({
   }]
 }, { _id: false });
 
+// Phase R-12 Part 5 — externalSplit subdoc is defined inline on
+// commissionSchema below (with brokerPayouts as an inline subarray). Reference:
+// math is documented at the externalSplit field site (commissionSchema:526).
+//   gross 100,000, tax 30%, broker 80%  → broker 56,000 EGP / ARO 14,000 EGP
+// computeAllRecipientShares is the single writer of the four computed amounts.
+
 var commissionSchema = new mongoose.Schema({
   leadId:              { type: mongoose.Schema.Types.ObjectId, ref: "Lead", required: true, index: true },
 
@@ -450,6 +475,39 @@ var commissionSchema = new mongoose.Schema({
   cycles:        [commissionCycleSchema],
   payouts:       [commissionPayoutSchema],
   incentive:     { type: commissionIncentiveSchema, default: function(){ return { recipients: [] }; } },
+
+  // Phase R-12 Part 5 — external-deal split. isExternal is the master flag;
+  // when false, every other field is ignored and the commission behaves
+  // exactly as today. brokerName is a SNAPSHOT taken at commission-creation
+  // time (matches how snapshot.salesAgent.userName freezes — a Broker rename
+  // later does not retroactively rewrite past commissions). The four computed
+  // fields (commissionTaxAmount/aroNetAmount/brokerOwed/aroOwed) are populated
+  // by computeAllRecipientShares from the running gross commission claim
+  // (Σ cycle.claimAmount). brokerPayouts is a separate subdoc array — kept
+  // OUT of payouts[] so the existing recipientRole enum + aggregations
+  // (computeRecipientNetPositions, payout report) remain unchanged. Internal
+  // team payouts on external deals still go in the regular payouts[] array.
+  externalSplit: {
+    isExternal:          { type: Boolean, default: false },
+    brokerId:            { type: mongoose.Schema.Types.ObjectId, ref: "Broker", default: null },
+    brokerName:          { type: String, default: "" },
+    commissionTaxPct:    { type: Number, default: 0 },
+    brokerSharePct:      { type: Number, default: 0 },
+    // Computed by computeAllRecipientShares — round2-rounded:
+    commissionTaxAmount: { type: Number, default: 0 },
+    aroNetAmount:        { type: Number, default: 0 },
+    brokerOwed:          { type: Number, default: 0 },
+    aroOwed:             { type: Number, default: 0 },
+    // Broker payment tracking (parallel to commission.payouts[] for internal
+    // recipients). Append-only; brokerPaid (the running sum of amount) and
+    // brokerRemaining (brokerOwed - brokerPaid) are derived at read time.
+    brokerPayouts: [{
+      amount: { type: Number, required: true },
+      date:   { type: String, default: "" },     // ISO yyyy-mm-dd
+      notes:  { type: String, default: "" },
+      byUser: { type: String, default: "" }      // SNAPSHOT of admin name
+    }]
+  },
 
   // Phase R-1: snapshot of the per-1000 rates active at compute time, so the
   // commission stays interpretable even after Settings rates change.
@@ -525,6 +583,24 @@ var profitTaxConfigSchema = new mongoose.Schema({
   updatedByUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }
 }, { timestamps: true });
 var ProfitTaxConfig = mongoose.model("ProfitTaxConfig", profitTaxConfigSchema);
+
+// =====================================================================
+// Phase R-12 — External brokers + external-deal commission split.
+// Broker is a standalone reference collection (not an internal ARO User).
+// Soft-delete (archived=true) preserves history when a Commission references
+// the broker; hard delete only when no references exist. Future phases
+// (R-12 Parts 2-7) wire this into Lead.dealType + Commission.externalSplit.
+// =====================================================================
+var brokerSchema = new mongoose.Schema({
+  name:            { type: String, required: true, trim: true },
+  phone:           { type: String, default: "" },
+  email:           { type: String, default: "" },
+  notes:           { type: String, default: "" },
+  archived:        { type: Boolean, default: false },
+  createdByUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }
+}, { timestamps: true });
+brokerSchema.index({ archived: 1, name: 1 });
+var Broker = mongoose.model("Broker", brokerSchema);
 
 // =====================================================================
 // ATTENDANCE & SALARY SYSTEM — Phase 1 foundation
@@ -1381,6 +1457,68 @@ function parseDealTotalFromBudget(budget) {
   return isFinite(n) ? n : 0;
 }
 
+// Phase R-12 Part 3 — Write-site validation for the external-deal fields on
+// Lead. Schema-level required/min validators were intentionally NOT added
+// (Part 2 judgment #1) so the hundreds of partial PUTs that never touch
+// dealType keep working. This helper is called by POST /api/leads and
+// PUT /api/leads/:id BEFORE the persist step.
+//
+// Behavior:
+// - body untouched if dealType / externalBrokerId / externalDealConfig are
+//   all absent → returns { ok: true }
+// - resolves effective dealType (body wins; falls back to oldLead, then
+//   default "internal")
+// - dealType "internal": clears externalBrokerId + zeros config (defensive)
+// - dealType "external": requires valid broker (must exist + not archived)
+//   AND both pcts in (0, 100]
+// - mutates body in place so the existing $set update flow propagates the
+//   normalized values without further changes
+async function validateAndNormalizeExternalDeal(body, oldLead) {
+  var hasDealType = body.dealType         !== undefined;
+  var hasBroker   = body.externalBrokerId !== undefined;
+  var hasConfig   = body.externalDealConfig !== undefined;
+  if (!hasDealType && !hasBroker && !hasConfig) return { ok: true };
+
+  var dealType = hasDealType ? String(body.dealType) : (oldLead && oldLead.dealType) || "internal";
+  if (dealType !== "internal" && dealType !== "external") {
+    return { ok: false, error: "dealType must be 'internal' or 'external'" };
+  }
+
+  if (dealType === "internal") {
+    body.dealType           = "internal";
+    body.externalBrokerId   = null;
+    body.externalDealConfig = { commissionTaxPct: 0, brokerSharePct: 0 };
+    return { ok: true };
+  }
+
+  // dealType === "external"
+  var brokerIdRaw = hasBroker ? body.externalBrokerId : (oldLead && oldLead.externalBrokerId);
+  var brokerId    = brokerIdRaw ? String(brokerIdRaw) : "";
+  if (!brokerId || !mongoose.Types.ObjectId.isValid(brokerId)) {
+    return { ok: false, error: "externalBrokerId required for external deals" };
+  }
+  var brokerDoc = await Broker.findById(brokerId).select("archived").lean();
+  if (!brokerDoc) return { ok: false, error: "Broker not found" };
+  if (brokerDoc.archived) {
+    return { ok: false, error: "Broker is archived — restore it before assigning to a deal" };
+  }
+
+  var cfg       = hasConfig ? body.externalDealConfig : ((oldLead && oldLead.externalDealConfig) || {});
+  var taxPct    = Number((cfg && cfg.commissionTaxPct) || 0);
+  var brokerPct = Number((cfg && cfg.brokerSharePct)   || 0);
+  if (!isFinite(taxPct) || taxPct <= 0 || taxPct > 100) {
+    return { ok: false, error: "externalDealConfig.commissionTaxPct must be > 0 and ≤ 100" };
+  }
+  if (!isFinite(brokerPct) || brokerPct <= 0 || brokerPct > 100) {
+    return { ok: false, error: "externalDealConfig.brokerSharePct must be > 0 and ≤ 100" };
+  }
+
+  body.dealType           = "external";
+  body.externalBrokerId   = brokerId;
+  body.externalDealConfig = { commissionTaxPct: taxPct, brokerSharePct: brokerPct };
+  return { ok: true };
+}
+
 // ===== PHASE R-1 — RATES, ACHIEVEMENT, BUCKET, SHARE COMPUTATION =====
 
 // Default per-1000 commission rates. AppSetting key="commissionRates" overrides.
@@ -1526,6 +1664,58 @@ async function computeAllRecipientShares(c) {
   var isSplit   = !!c.snapshot.isSplitDeal;
   var splitMult = isSplit ? 0.5 : 1;
 
+  // Phase R-12 Part 5 — external-deal computed block. Populates the four
+  // derived fields on commission.externalSplit so the FE card + Annual
+  // Summary / P&L (Parts 6-7) can read them without recomputing.
+  //
+  // GROSS basis: Σ of every cycle.claimAmount (the running gross commission
+  // billed to the developer, incl. 14% VAT). Cancelled cycles are excluded
+  // — same predicate the Annual Summary uses for VAT/withholding rows.
+  // Pre-R-5 cycles have claimAmount=0 and contribute nothing (consistent
+  // with how the Annual Summary already treats them).
+  //
+  // FORMULA — example: gross 100,000 EGP, commissionTax 30%, brokerShare 80%
+  //   commissionTaxAmount = 100,000 × 30%        = 30,000 EGP
+  //   aroNetAmount        = 100,000 − 30,000     = 70,000 EGP
+  //   brokerOwed          =  70,000 × 80%        = 56,000 EGP
+  //   aroOwed             =  70,000 − 56,000     = 14,000 EGP
+  // Internal team (if any) on this commission then computes against
+  // dealTotal=14,000 instead of the original snapshot.dealTotal — see the
+  // applyTo() call site below.
+  var isExternal = !!(c.externalSplit && c.externalSplit.isExternal);
+  if (isExternal) {
+    // round2 is defined inline in several handlers (server.js:16101 etc.)
+    // but not at module scope; redeclared locally to avoid a global-helper
+    // refactor that's out of Phase R-12 Part 5 scope.
+    var round2Local  = function(n){ return Math.round(Number(n||0) * 100) / 100; };
+    var taxPctEx    = Number((c.externalSplit && c.externalSplit.commissionTaxPct) || 0);
+    var brokerPctEx = Number((c.externalSplit && c.externalSplit.brokerSharePct)   || 0);
+    var grossClaim  = 0;
+    if (Array.isArray(c.cycles)) {
+      for (var ci = 0; ci < c.cycles.length; ci++) {
+        var cy = c.cycles[ci];
+        if (!cy || cy.state === "cancelled") continue;
+        grossClaim += Number(cy.claimAmount || 0);
+      }
+    }
+    var taxAmt = grossClaim * (taxPctEx    / 100);
+    var aroNet = grossClaim - taxAmt;
+    var brkOwd = aroNet     * (brokerPctEx / 100);
+    var aroOwd = aroNet     - brkOwd;
+    c.externalSplit.commissionTaxAmount = round2Local(taxAmt);
+    c.externalSplit.aroNetAmount        = round2Local(aroNet);
+    c.externalSplit.brokerOwed          = round2Local(brkOwd);
+    c.externalSplit.aroOwed             = round2Local(aroOwd);
+    c.markModified("externalSplit");
+    // Substitute aroOwed in place of the deal-level dealTotal for the
+    // internal-team rate machinery below. Per spec Part 5.3:
+    // "internal team recipients (if any) compute against aroOwed instead
+    // of grossClaim". Effect: shares scale to ARO's keep, not the deal
+    // total. Admins can use overrideAmount to set explicit values when
+    // the rate-derived shares aren't appropriate for an external deal.
+    dealTotal = Number(c.externalSplit.aroOwed || 0);
+  }
+
   // Project weight: prefer the live Lead.projectWeight (denormalised cache),
   // fall back to AppSetting lookup by project name, default 1.
   var weight = 1;
@@ -1535,6 +1725,13 @@ async function computeAllRecipientShares(c) {
       if (l && typeof l.projectWeight === "number") weight = l.projectWeight;
     } catch(e) { /* fall through to weight=1 */ }
   }
+  // Phase R-12 Part 5 — external commissions force weight=1. The base we're
+  // distributing is already aroOwed (post-tax, post-broker), a final ARO
+  // EGP amount; applying a project-weight discount on top would double-count
+  // (weight is a deal-value adjustment, not a pool-distribution adjustment).
+  // isHalfWeight flag also clears so the FE doesn't render the half-weight
+  // chip on external recipient rows.
+  if (isExternal) weight = 1;
   var isHalfWeight = weight < 1;
 
   // Per-sales-agent quarter achievement + bucket. Primary chain reads from
@@ -1865,6 +2062,44 @@ async function buildSnapshotForLead(leadDoc) {
   };
 }
 
+// Phase R-12 Part 5 — buildExternalSplitForLead. Snapshots Lead.externalDealConfig
+// + the broker's name onto a Commission's externalSplit block. Returns:
+// - { isExternal: false, ...zeros... } when the lead's dealType isn't external
+//   so schema defaults populate cleanly without a special-case at create time.
+// - { isExternal: true, brokerId, brokerName, commissionTaxPct, brokerSharePct,
+//     ...computed fields zeroed (computeAllRecipientShares fills them) }
+// brokerName is a SNAPSHOT — same convention as snapshot.salesAgent.userName.
+// If the broker doc is missing (race / hard delete), we still record the id
+// but stamp "(removed broker)" as the snapshot name; computeAllRecipientShares
+// is unaffected since it reads only the percentages + cycles.
+async function buildExternalSplitForLead(leadDoc) {
+  if (!leadDoc || leadDoc.dealType !== "external") {
+    return {
+      isExternal: false, brokerId: null, brokerName: "",
+      commissionTaxPct: 0, brokerSharePct: 0,
+      commissionTaxAmount: 0, aroNetAmount: 0, brokerOwed: 0, aroOwed: 0,
+      brokerPayouts: []
+    };
+  }
+  var brokerName = "(removed broker)";
+  if (leadDoc.externalBrokerId) {
+    try {
+      var b = await Broker.findById(leadDoc.externalBrokerId).select("name").lean();
+      if (b && b.name) brokerName = b.name;
+    } catch(e) { /* fall back to placeholder */ }
+  }
+  var cfg = leadDoc.externalDealConfig || {};
+  return {
+    isExternal:          true,
+    brokerId:            leadDoc.externalBrokerId || null,
+    brokerName:          brokerName,
+    commissionTaxPct:    Number(cfg.commissionTaxPct) || 0,
+    brokerSharePct:      Number(cfg.brokerSharePct)   || 0,
+    commissionTaxAmount: 0, aroNetAmount: 0, brokerOwed: 0, aroOwed: 0,
+    brokerPayouts:       []
+  };
+}
+
 // ensureCommissionForLead — invoked from the four lifecycle hooks. Same-agent
 // revival flips a cancelled doc back to active. Different-agent close inserts
 // a NEW commission and leaves any prior cancelled one in place.
@@ -1940,6 +2175,23 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
               });
               revived.markModified("cycles");
             }
+            // Phase R-12 Part 5 — refresh externalSplit from the lead on
+            // revive. While the commission was cancelled, the dealType lock
+            // was lifted (lock applies only to active commissions) — so the
+            // user may have flipped Internal⇄External, swapped broker, or
+            // tweaked percentages. Snapshot brokerName fresh; brokerPayouts
+            // intentionally PRESERVED (any prior payouts to a broker survive
+            // the cancel→revive cycle, parallel to how internal payouts[]
+            // and incentive.recipients[] survive). computeAllRecipientShares
+            // below then recomputes the four derived amount fields.
+            var refreshedSplit = await buildExternalSplitForLead(leadDoc);
+            if (refreshedSplit.isExternal) {
+              var preserved = (revived.externalSplit && Array.isArray(revived.externalSplit.brokerPayouts))
+                ? revived.externalSplit.brokerPayouts : [];
+              refreshedSplit.brokerPayouts = preserved;
+            }
+            revived.externalSplit = refreshedSplit;
+            revived.markModified("externalSplit");
             await computeAllRecipientShares(revived);
             revived.markModified("snapshot");
             revived.markModified("ratesSnapshot");
@@ -1959,6 +2211,29 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
 
     // No matching record — build a brand-new one.
     var snapshot = await buildSnapshotForLead(leadDoc);
+    // Phase R-12 Part 5 — when the closing lead is tagged dealType:"external",
+    // build the externalSplit subdoc with a SNAPSHOT of the broker name (so
+    // a future Broker.name rename never retroactively rewrites this commission).
+    // Computed amount fields are zero at create time and get populated on the
+    // computeAllRecipientShares() call further down (or any subsequent recompute).
+    var externalSplitInit = { isExternal: false };
+    if (leadDoc.dealType === "external" && leadDoc.externalBrokerId) {
+      var brokerSnap = null;
+      try { brokerSnap = await Broker.findById(leadDoc.externalBrokerId).lean(); } catch(e){}
+      var cfg = leadDoc.externalDealConfig || {};
+      externalSplitInit = {
+        isExternal:          true,
+        brokerId:            leadDoc.externalBrokerId,
+        brokerName:          (brokerSnap && brokerSnap.name) || "",
+        commissionTaxPct:    Number(cfg.commissionTaxPct || 0),
+        brokerSharePct:      Number(cfg.brokerSharePct   || 0),
+        commissionTaxAmount: 0,
+        aroNetAmount:        0,
+        brokerOwed:          0,
+        aroOwed:             0,
+        brokerPayouts:       []
+      };
+    }
     var created = await Commission.create({
       leadId: leadDoc._id,
       snapshot: snapshot,
@@ -1972,7 +2247,8 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
         receivedAmount: 0
       }],
       payouts: [],
-      incentive: { recipients: [] }
+      incentive: { recipients: [] },
+      externalSplit: externalSplitInit
     });
     try {
       await Activity.create({
@@ -6875,6 +7151,18 @@ app.post("/api/leads", auth, async function(req, res) {
     }
     var initialStatus = req.body.status || "NewLead";
     var stampsMeeting = initialStatus === "MeetingDone";
+    // Phase R-12 Part 3 — external-deal field validation. Strips for non-admin
+    // callers (sales/TL/manager have no UI control here; refuse silently to
+    // mirror the `locked`-strip pattern at L7825). For admin/sales_admin, the
+    // helper validates and normalizes in place — sets defaults on the body so
+    // the Lead.create call below picks them up.
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      delete req.body.dealType;
+      delete req.body.externalBrokerId;
+      delete req.body.externalDealConfig;
+    }
+    var extCheck = await validateAndNormalizeExternalDeal(req.body, null);
+    if (!extCheck.ok) return res.status(400).json({ error: extCheck.error });
     var lead = await Lead.create({
       name:             req.body.name,
       phone:            req.body.phone,
@@ -6899,6 +7187,12 @@ app.post("/api/leads", auth, async function(req, res) {
       isVIP:            false,
       eoiDeposit:       req.body.eoiDeposit || "",
       eoiDate:          req.body.eoiDate || "",
+      // Phase R-12 Part 3 — defaults handled by validateAndNormalizeExternalDeal:
+      // when dealType is absent the schema default ("internal") + defaulted
+      // sub-doc kick in; when present the helper has already normalized.
+      dealType:           req.body.dealType,
+      externalBrokerId:   req.body.externalBrokerId,
+      externalDealConfig: req.body.externalDealConfig,
       assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "New Lead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: req.body.notes || "", budget: req.body.budget || "", callbackTime: req.body.callbackTime || "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
       expiresAt:        new Date(Date.now() + 30*24*60*60*1000),
       globalStatus:     "active",
@@ -7788,6 +8082,48 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     if (req.body.locked !== undefined &&
         ["admin","sales_admin","team_leader","manager"].indexOf(req.user.role) < 0) {
       delete req.body.locked;
+    }
+    // Phase R-12 Part 3 — external-deal field gate. Same defense-in-depth
+    // pattern as `locked` above: the Add/Edit Deal modal is admin-only on
+    // the FE, so any sales/TL/manager attempting to mutate these fields is
+    // either a bug or a bypass. Strip silently and continue with the rest
+    // of the PUT.
+    if (req.body.dealType !== undefined || req.body.externalBrokerId !== undefined || req.body.externalDealConfig !== undefined) {
+      if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+        delete req.body.dealType;
+        delete req.body.externalBrokerId;
+        delete req.body.externalDealConfig;
+      } else {
+        // Need oldLead.dealType when the body changes external-config or broker
+        // without re-stating dealType (partial edit on an already-external lead).
+        // The general oldLead load below is conditional on a different set of
+        // tracked fields, so do an early targeted fetch here.
+        var dtOldLead = await Lead.findById(req.params.id).select("dealType externalBrokerId externalDealConfig").lean();
+        if (!dtOldLead) return res.status(404).json({ error: "Lead not found" });
+        // Phase R-12 Part 5 — commission lock. Once an active commission
+        // exists for this lead, the external-deal fields are frozen. Allowing
+        // a flip would orphan the existing commission's externalSplit (or
+        // worse — stamp internal recipients onto a deal that's now external,
+        // or vice-versa). Cancelled commissions don't lock — admins can
+        // re-tag a lead whose only prior commission was rolled back.
+        var hasNoiseInBody = (req.body.dealType         !== undefined && String(req.body.dealType)         !== String(dtOldLead.dealType || "internal"))
+                          || (req.body.externalBrokerId !== undefined && String(req.body.externalBrokerId || "") !== String(dtOldLead.externalBrokerId || ""))
+                          || (req.body.externalDealConfig !== undefined);
+        if (hasNoiseInBody) {
+          var lockingComm = await Commission.findOne({
+            leadId: req.params.id,
+            status: { $ne: "cancelled" }
+          }).select("_id status").lean();
+          if (lockingComm) {
+            return res.status(409).json({
+              error: "deal_type_locked",
+              message: "An active commission exists for this deal. Cancel the commission first if you need to change the deal type, broker, or external split percentages."
+            });
+          }
+        }
+        var extCheckPut = await validateAndNormalizeExternalDeal(req.body, dtOldLead);
+        if (!extCheckPut.ok) return res.status(400).json({ error: extCheckPut.error });
+      }
     }
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty unless explicitly reassigning
@@ -15740,11 +16076,16 @@ async function computePayoutsForMonth(year, month) {
     status: { $ne: "cancelled" },
     cycles: { $elemMatch: { "received.date": { $regex: "^" + monthKey } } }
   })
-    .select("leadId status snapshot cycles payouts")
+    .select("leadId status snapshot cycles payouts externalSplit")
     .lean();
 
   // byAgent: { userIdStr -> { userId, userName, role, totalOwed, deals: [...] } }
   var byAgent = Object.create(null);
+  // Phase R-12 Part 8 — byBroker: { brokerKey -> { brokerId, brokerName,
+  // totalOwed, deals: [...] } }. Keyed by brokerId when present, else by
+  // a `name:<brokerName>` fallback so historical commissions whose Broker
+  // doc was hard-deleted still aggregate cleanly under their snapshot name.
+  var byBroker = Object.create(null);
 
   function ensureAgent(rec) {
     if (!rec || !rec.userId) return null;
@@ -15839,14 +16180,74 @@ async function computePayoutsForMonth(year, month) {
       pushDeal(snap.splitChain.manager2,    doc, "Split 50%", cycleRef);
       pushDeal(snap.splitChain.director2,   doc, "Split 50%", cycleRef);
     }
+
+    // Phase R-12 Part 8 — broker payout aggregation. brokerOwed is a
+    // running commission-level total (computeAllRecipientShares writes it
+    // from Σ cycle.claimAmount × pcts, see Part 5). brokerPaid is summed
+    // lifetime across externalSplit.brokerPayouts. brokerNet is what's
+    // owed RIGHT NOW. We bucket by brokerId (or name fallback for hard-
+    // deleted brokers) so multi-deal brokers consolidate into a single
+    // row. Same scoping as agents — only commissions whose received.date
+    // matched the month above are loaded.
+    var es = doc.externalSplit;
+    if (es && es.isExternal) {
+      var brokerOwed = Number(es.brokerOwed || 0);
+      var brokerPaid = (es.brokerPayouts || []).reduce(function(s, bp){ return s + Number(bp.amount || 0); }, 0);
+      var brokerNet  = brokerOwed - brokerPaid;
+      if (brokerOwed > 0 && brokerNet > 0) {
+        var brokerKey = es.brokerId ? String(es.brokerId) : ("name:" + (es.brokerName || ""));
+        if (!byBroker[brokerKey]) {
+          byBroker[brokerKey] = {
+            brokerId:  es.brokerId ? String(es.brokerId) : null,
+            brokerName: es.brokerName || "(unnamed broker)",
+            totalOwed: 0,
+            deals:     []
+          };
+        }
+        byBroker[brokerKey].totalOwed += brokerNet;
+        byBroker[brokerKey].deals.push({
+          commissionId:  String(doc._id),
+          leadId:        String(doc.leadId || ""),
+          customerName:  snap.customerName || "",
+          projectName:   snap.projectName  || "",
+          dealDate:      snap.dealDate     || "",
+          dealTotal:     Number(snap.dealTotal || 0),
+          owedTotal:     brokerOwed,
+          paidToDate:    brokerPaid,
+          owedNet:       brokerNet,
+          cycleRef:      cycleRef
+        });
+      }
+    }
   }
 
   // Sort agents by totalOwed desc, and within each agent sort deals by
   // dealDate desc (most recent first — matches admin's expected scan order).
-  var agentList = Object.keys(byAgent).map(function(k){ return byAgent[k]; });
+  // type:"user" added Phase R-12 Part 8 so the FE can branch on row shape
+  // without a brittle "does this object have brokerId?" check.
+  var agentList = Object.keys(byAgent).map(function(k){
+    var a = byAgent[k];
+    a.type = "user";
+    return a;
+  });
   agentList.sort(function(a, b){ return b.totalOwed - a.totalOwed; });
   agentList.forEach(function(a){
     a.deals.sort(function(x, y){
+      if (x.dealDate !== y.dealDate) return x.dealDate < y.dealDate ? 1 : -1;
+      return 0;
+    });
+  });
+
+  // Phase R-12 Part 8 — same sort treatment for brokers. type:"broker" so
+  // the FE can render a violet badge + skip the split column.
+  var brokerList = Object.keys(byBroker).map(function(k){
+    var b = byBroker[k];
+    b.type = "broker";
+    return b;
+  });
+  brokerList.sort(function(a, b){ return b.totalOwed - a.totalOwed; });
+  brokerList.forEach(function(b){
+    b.deals.sort(function(x, y){
       if (x.dealDate !== y.dealDate) return x.dealDate < y.dealDate ? 1 : -1;
       return 0;
     });
@@ -15857,14 +16258,23 @@ async function computePayoutsForMonth(year, month) {
     totalPayout += a.totalOwed;
     totalDeals  += a.deals.length;
   });
+  brokerList.forEach(function(b){
+    totalPayout += b.totalOwed;
+    totalDeals  += b.deals.length;
+  });
 
   return {
     monthKey: monthKey,
     agents:   agentList,
+    brokers:  brokerList,
     summary: {
-      totalPayout: totalPayout,
-      agentCount:  agentList.length,
-      dealCount:   totalDeals
+      totalPayout:    totalPayout,
+      agentCount:     agentList.length,
+      brokerCount:    brokerList.length,
+      // recipientCount = agents + brokers, for the FE summary card. agentCount
+      // is preserved for any pre-Part-8 consumer of this endpoint.
+      recipientCount: agentList.length + brokerList.length,
+      dealCount:      totalDeals
     }
   };
 }
@@ -15888,6 +16298,7 @@ app.get("/api/commissions/payout-report", auth, salesAdminOnly, async function(r
       monthKey: result.monthKey,
       agents: result.agents.map(function(a){
         return {
+          type:              "user",
           userId:            a.userId,
           userName:          a.userName,
           role:              a.role,
@@ -15904,10 +16315,31 @@ app.get("/api/commissions/payout-report", auth, salesAdminOnly, async function(r
           })
         };
       }),
+      // Phase R-12 Part 8 — broker rows mirror the agent shape but with
+      // brokerId/brokerName + no role/split. The FE branches on `type` to
+      // render a violet badge and skip the split column.
+      brokers: (result.brokers || []).map(function(b){
+        return {
+          type:       "broker",
+          brokerId:   b.brokerId,
+          brokerName: b.brokerName,
+          totalOwed:  round2(b.totalOwed),
+          deals: b.deals.map(function(d){
+            return Object.assign({}, d, {
+              dealTotal:  round2(d.dealTotal),
+              paidToDate: round2(d.paidToDate),
+              owedTotal:  round2(d.owedTotal),
+              owedNet:    round2(d.owedNet)
+            });
+          })
+        };
+      }),
       summary: {
-        totalPayout: round2(result.summary.totalPayout),
-        agentCount:  result.summary.agentCount,
-        dealCount:   result.summary.dealCount
+        totalPayout:    round2(result.summary.totalPayout),
+        agentCount:     result.summary.agentCount,
+        brokerCount:    result.summary.brokerCount || 0,
+        recipientCount: result.summary.recipientCount || result.summary.agentCount,
+        dealCount:      result.summary.dealCount
       }
     };
     res.json(rounded);
@@ -16402,28 +16834,64 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
       }
     }
 
-    // --- Team commissions: sum payouts.amount where payout.date in year --
+    // --- Team / broker commissions: sum payouts.amount + brokerPayouts.amount
+    // --- where the payout date falls in the year ------------------------
     // status filter mirrors the revenue query above. Cancelled commissions
     // are not part of the active book, so their payouts (typically empty,
     // since cascadeCommissionCancel runs at the point of cancel) are
     // excluded from the P&L for consistency with the revenue side.
+    //
+    // Phase R-12 Part 7 — folds externalSplit.brokerPayouts[] into the same
+    // teamTotal + teamByMonth bucket as internal payouts. Per the agreed
+    // P&L treatment (Option A): broker share is an internal cost on ARO's
+    // books, so it lives on the same Team Commissions line and not as a
+    // Revenue adjustment. Total Revenue (P&L) === Total Claims (Annual
+    // Summary) is preserved.
+    //
+    // Both queries use the same year-prefix $regex on the date string. ISO
+    // yyyy-mm-dd dates entered by admins are effectively Cairo-local (no
+    // timezone offset baked in), so a string-prefix match is the same as
+    // a Cairo year/month bucket — matches the existing convention.
+    //
+    // Defensive: brokerPayouts are summed regardless of externalSplit
+    // .isExternal. From Part 5 judgment #4, an orphan brokerPayouts entry
+    // on a now-internal commission still represents real cash that left
+    // ARO's account — it must show up on the P&L.
     var payDocs = await Commission.find({
       status: { $ne: "cancelled" },
-      payouts: { $elemMatch: { date: { $regex: "^" + year } } }
-    }).select("payouts").lean();
+      $or: [
+        { payouts:                       { $elemMatch: { date: { $regex: "^" + year } } } },
+        { "externalSplit.brokerPayouts": { $elemMatch: { date: { $regex: "^" + year } } } }
+      ]
+    }).select("payouts externalSplit.brokerPayouts").lean();
     var teamTotal = 0;
     var teamByMonthMap = Object.create(null);
     for (var pi = 0; pi < payDocs.length; pi++) {
       var pdoc = payDocs[pi];
-      if (!Array.isArray(pdoc.payouts)) continue;
-      for (var pj = 0; pj < pdoc.payouts.length; pj++) {
-        var po = pdoc.payouts[pj];
-        if (typeof po.date !== "string" || po.date.slice(0,4) !== year) continue;
-        var amt = Number(po.amount || 0);
-        if (!isFinite(amt) || amt <= 0) continue;
-        teamTotal += amt;
-        var mk = po.date.slice(0, 7);
-        teamByMonthMap[mk] = (teamByMonthMap[mk] || 0) + amt;
+      // Internal team payouts (existing behavior — unchanged).
+      if (Array.isArray(pdoc.payouts)) {
+        for (var pj = 0; pj < pdoc.payouts.length; pj++) {
+          var po = pdoc.payouts[pj];
+          if (typeof po.date !== "string" || po.date.slice(0,4) !== year) continue;
+          var amt = Number(po.amount || 0);
+          if (!isFinite(amt) || amt <= 0) continue;
+          teamTotal += amt;
+          var mk = po.date.slice(0, 7);
+          teamByMonthMap[mk] = (teamByMonthMap[mk] || 0) + amt;
+        }
+      }
+      // Phase R-12 Part 7 — broker payouts (new). Same year/month bucket
+      // as internal payouts; both contribute to the same line.
+      var bpArr = pdoc.externalSplit && Array.isArray(pdoc.externalSplit.brokerPayouts)
+        ? pdoc.externalSplit.brokerPayouts : [];
+      for (var bj = 0; bj < bpArr.length; bj++) {
+        var bp = bpArr[bj];
+        if (typeof bp.date !== "string" || bp.date.slice(0,4) !== year) continue;
+        var bamt = Number(bp.amount || 0);
+        if (!isFinite(bamt) || bamt <= 0) continue;
+        teamTotal += bamt;
+        var bmk = bp.date.slice(0, 7);
+        teamByMonthMap[bmk] = (teamByMonthMap[bmk] || 0) + bamt;
       }
     }
     var teamByMonth = Object.keys(teamByMonthMap).sort().map(function(m){
@@ -16519,6 +16987,93 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
   } catch(e) {
     console.error("[GET /api/annual-pnl]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "annual_pnl_failed" });
+  }
+});
+
+// =====================================================================
+// Phase R-12 Part 1 — Brokers CRUD (salesAdminOnly).
+// External entities (not ARO employees) that bring deals to the company.
+// Soft-delete when referenced by a Commission.externalSplit.brokerId
+// (added in Part 5); hard delete otherwise. List defaults to active only;
+// pass ?includeArchived=1 to include archived rows.
+// =====================================================================
+
+app.get("/api/brokers", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var includeArchived = String(req.query.includeArchived || "") === "1";
+    var q = includeArchived ? {} : { archived: { $ne: true } };
+    var rows = await Broker.find(q).sort({ archived: 1, name: 1 }).lean();
+    res.json({ data: rows });
+  } catch(e) {
+    console.error("[GET /api/brokers]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "brokers_list_failed" });
+  }
+});
+
+app.post("/api/brokers", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var body = req.body || {};
+    var name = String(body.name || "").trim();
+    if (!name) return res.status(400).json({ error: "name required" });
+    var doc = await Broker.create({
+      name:            name,
+      phone:           String(body.phone || "").trim(),
+      email:           String(body.email || "").trim(),
+      notes:           String(body.notes || ""),
+      createdByUserId: req.user && req.user.id ? req.user.id : null
+    });
+    res.json(doc.toObject());
+  } catch(e) {
+    console.error("[POST /api/brokers]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "broker_create_failed" });
+  }
+});
+
+app.patch("/api/brokers/:id", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var body = req.body || {};
+    var update = {};
+    if (typeof body.name === "string") {
+      var nm = body.name.trim();
+      if (!nm) return res.status(400).json({ error: "name cannot be empty" });
+      update.name = nm;
+    }
+    if (typeof body.phone    === "string")  update.phone    = body.phone.trim();
+    if (typeof body.email    === "string")  update.email    = body.email.trim();
+    if (typeof body.notes    === "string")  update.notes    = body.notes;
+    if (typeof body.archived === "boolean") update.archived = body.archived;
+    if (Object.keys(update).length === 0) return res.status(400).json({ error: "no fields to update" });
+    var doc = await Broker.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
+    if (!doc) return res.status(404).json({ error: "not found" });
+    res.json(doc.toObject());
+  } catch(e) {
+    console.error("[PATCH /api/brokers/:id]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "broker_update_failed" });
+  }
+});
+
+// Soft-delete when at least one Commission references the broker; hard
+// delete otherwise. The reference check uses Commission.externalSplit.brokerId
+// — that field doesn't exist yet (added in Phase R-12 Part 5) so countDocuments
+// returns 0 today and every delete is hard. Once Part 5 ships, delete on a
+// referenced broker flips to soft-delete automatically. Response reports
+// which path was taken so the FE can show the right toast.
+app.delete("/api/brokers/:id", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var refCount = await Commission.countDocuments({ "externalSplit.brokerId": req.params.id });
+    if (refCount > 0) {
+      var doc = await Broker.findByIdAndUpdate(req.params.id, { $set: { archived: true } }, { new: true });
+      if (!doc) return res.status(404).json({ error: "not found" });
+      return res.json({ action: "archived", refCount: refCount });
+    }
+    var del = await Broker.findByIdAndDelete(req.params.id);
+    if (!del) return res.status(404).json({ error: "not found" });
+    res.json({ action: "deleted" });
+  } catch(e) {
+    console.error("[DELETE /api/brokers/:id]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "broker_delete_failed" });
   }
 });
 
@@ -17553,6 +18108,83 @@ app.delete("/api/commissions/:id/payouts/:payoutId", auth, salesAdminOnly, async
 
 // (cash-flow GET moved above /api/commissions/:id to fix Express route ordering)
 
+// =====================================================================
+// Phase R-12 Part 6 — Broker payouts (separate from internal payouts[]).
+// POST: append a broker payout. Refuses if commission is cancelled OR not
+// flagged isExternal (defends against orphaned-payout edge case from Part 5
+// judgment #4 — the FE renders a warning but the API also rejects writes).
+// Validates against externalSplit.brokerOwed: the cumulative paid amount
+// after the new payout cannot exceed brokerOwed (analogous to the
+// internal-team owed-cap at /payouts).
+// DELETE: remove a broker payout by its subdoc _id.
+// Both routes are admin/sales_admin (salesAdminOnly). brokerPayouts entries
+// have no userId, no debt machinery, no role enum — flat amount/date/notes
+// per Part 5 judgment #1.
+// =====================================================================
+app.post("/api/commissions/:id/broker-payouts", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (c.status === "cancelled") return res.status(400).json({ error: "cannot record a broker payout on a cancelled commission" });
+    if (!c.externalSplit || !c.externalSplit.isExternal) {
+      return res.status(400).json({ error: "broker_payouts_not_external", message: "this commission is not flagged as external — broker payouts are not applicable" });
+    }
+    var body   = req.body || {};
+    var amount = Number(body.amount);
+    var date   = String(body.date || new Date().toISOString().slice(0,10));
+    var notes  = String(body.notes || "");
+    if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: "amount must be > 0" });
+    var owed = Number(c.externalSplit.brokerOwed || 0);
+    var paidSoFar = (c.externalSplit.brokerPayouts || []).reduce(function(s, bp){ return s + Number(bp.amount || 0); }, 0);
+    if (paidSoFar + amount > owed + 0.5) {
+      return res.status(400).json({
+        error: "exceeds broker owed: owed " + Math.round(owed).toLocaleString() +
+               " EGP, already paid " + Math.round(paidSoFar).toLocaleString() +
+               " EGP, requested " + Math.round(amount).toLocaleString() + " EGP"
+      });
+    }
+    if (!Array.isArray(c.externalSplit.brokerPayouts)) c.externalSplit.brokerPayouts = [];
+    c.externalSplit.brokerPayouts.push({
+      amount: amount,
+      date:   date,
+      notes:  notes,
+      byUser: (req.user && req.user.name) || ""
+    });
+    c.markModified("externalSplit");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_broker_payout_create",
+      "[Commission] broker payout " + Math.round(amount).toLocaleString() + " EGP to " + (c.externalSplit.brokerName || "broker") + " on " + date);
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[POST /api/commissions/:id/broker-payouts]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "broker_payout_create_failed" });
+  }
+});
+
+app.delete("/api/commissions/:id/broker-payouts/:payoutId", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (!c.externalSplit || !Array.isArray(c.externalSplit.brokerPayouts) || c.externalSplit.brokerPayouts.length === 0) {
+      return res.status(404).json({ error: "Broker payout not found" });
+    }
+    var bp = c.externalSplit.brokerPayouts.id ? c.externalSplit.brokerPayouts.id(req.params.payoutId) : null;
+    if (!bp) return res.status(404).json({ error: "Broker payout not found" });
+    var snapshot = { amount: Number(bp.amount || 0), date: bp.date || "" };
+    bp.deleteOne();
+    c.markModified("externalSplit");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_broker_payout_delete",
+      "[Commission] broker payout " + Math.round(snapshot.amount).toLocaleString() + " EGP (" + (snapshot.date || "—") + ") deleted");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[DELETE /api/commissions/:id/broker-payouts/:payoutId]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "broker_payout_delete_failed" });
+  }
+});
+
 // ===== COMMISSIONS — Phase D.3 cron sweeper =====
 // Daily-ish (every 6h) check for active commissions with imminent expected
 // collection (≤7 days) AND an open cycle missing stages. One notification
@@ -17633,9 +18265,11 @@ async function sweepPayoutReminders() {
     var month = nowCairo.getUTCMonth() + 1;
     var monthKey = String(year) + "-" + String(month).padStart(2, "0");
     var report = await computePayoutsForMonth(year, month);
-    if (!report.agents || report.agents.length === 0) return;
+    var hasAgents  = report.agents  && report.agents.length  > 0;
+    var hasBrokers = report.brokers && report.brokers.length > 0;
+    if (!hasAgents && !hasBrokers) return;
     var created = 0;
-    for (var i = 0; i < report.agents.length; i++) {
+    for (var i = 0; i < (report.agents || []).length; i++) {
       var a = report.agents[i];
       if (!(a.totalOwed > 0)) continue;
       var idemKey = a.userId + ":" + monthKey;
@@ -17664,6 +18298,41 @@ async function sweepPayoutReminders() {
         created++;
       } catch(notifErr) {
         console.error("[sweepPayoutReminders notify]", notifErr && notifErr.message);
+      }
+    }
+    // Phase R-12 Part 8 — broker reminders. Same banner format + idempotency
+    // approach as agents. Idempotency key prefixed with "broker:" so it can
+    // never collide with a user._id (which is a 24-char hex). status field
+    // carries the literal "broker" so the FE banner row can render a violet
+    // tag inline, matching the Payout Report visual.
+    for (var bi = 0; bi < (report.brokers || []).length; bi++) {
+      var b = report.brokers[bi];
+      if (!(b.totalOwed > 0)) continue;
+      var brokerKeyPart = b.brokerId ? b.brokerId : ("name:" + b.brokerName);
+      var bIdemKey = "broker:" + brokerKeyPart + ":" + monthKey;
+      var bExisting = await Notification.findOne({
+        type: "commission_payout_reminder",
+        fromName: bIdemKey
+      }).lean();
+      if (bExisting) continue;
+      try {
+        var bTotalRounded = Math.round(b.totalOwed);
+        await Notification.create({
+          type:      "commission_payout_reminder",
+          leadName:  b.brokerName,
+          agentName: b.brokerName,
+          fromName:  bIdemKey,
+          toName:    b.brokerId || "",
+          status:    "broker",
+          budget:    String(bTotalRounded),
+          reason:    "Pay broker " + b.brokerName + " " + bTotalRounded.toLocaleString() +
+                     " EGP this month — from " + b.deals.length +
+                     " deal" + (b.deals.length === 1 ? "" : "s") +
+                     ". Click to view breakdown."
+        });
+        created++;
+      } catch(notifErr) {
+        console.error("[sweepPayoutReminders notify-broker]", notifErr && notifErr.message);
       }
     }
     if (created > 0) {

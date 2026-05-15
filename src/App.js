@@ -62,7 +62,7 @@ var TR = {
     dashboard: "الرئيسية", leads: "الLeads", deals: "الDeals", projects: "المشاريع",
     tasks: "المهام", reports: "التقارير", team: "فريق المبيعات", users: "Users",
     units: "الوحدات", settings: "الإعدادات", channels: "القنوات", dailyReq: "Daily Request",
-    archive: "الArchive",
+    archive: "الArchive", brokers: "Brokers",
     search: "Search...",
     all: "الكل", totalLeads: "Total الLeads", newLeads: "جدد",
     activeDeals: "Deals نشطة", doneDeals: "تم البيع",
@@ -132,7 +132,7 @@ var TR = {
     dashboard: "Dashboard", leads: "Leads", deals: "Deals", projects: "Projects",
     tasks: "Tasks", reports: "Reports", team: "Sales Team", users: "Users",
     units: "Units", settings: "Settings", channels: "Channels", dailyReq: "Daily Request",
-    archive: "Archive",
+    archive: "Archive", brokers: "Brokers",
     search: "Search...",
     all: "All", totalLeads: "Total Leads", newLeads: "New",
     activeDeals: "Active Deals", doneDeals: "Done Deals",
@@ -1065,6 +1065,8 @@ var SidebarIcon = function(id, active){
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="5.5" cy="6" r="2.5" stroke={col} strokeWidth={sw}/><circle cx="12.5" cy="6" r="2.5" stroke={col} strokeWidth={sw}/><path d="M1 15c0-2.5 2-4.5 4.5-4.5M17 15c0-2.5-2-4.5-4.5-4.5M9 15c0-2.5 2-4.5 4.5-4.5" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     case "archive":
       return <svg style={base} viewBox="0 0 18 18" fill="none"><rect x="2" y="2" width="14" height="14" rx="3" stroke={col} strokeWidth={sw}/><path d="M6 9h6" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
+    case "brokers":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="6" r="3" stroke={col} strokeWidth={sw}/><path d="M2 16c0-3.5 3-6 7-6s7 2.5 7 6" stroke={col} strokeWidth={sw} strokeLinecap="round"/><path d="M14 3l2 1.5L14 6" stroke={col} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round"/></svg>;
     case "commissions":
       return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M9 2v14M12.5 5.5C12 4.2 10.7 3.5 9 3.5S6 4.2 6 5.5c0 1.3 1 2 3 2.5s3 1.2 3 2.5-1.3 2-3 2-3-.7-3.5-2" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     case "attendance":
@@ -1094,6 +1096,7 @@ var Sidebar = function(p) {
     isOnlyAdmin&&{id:"reports",label:t.reports,adminSection:true},
     isAdmin&&{id:"team",label:t.team,adminSection:true},
     isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
+    isOnlyAdmin&&{id:"brokers",label:t.brokers,adminSection:true},
     isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
     // Single Attendance entry — visible to anyone who can use any attendance
     // tab. Inside the page, tabs are gated by the same per-action permissions.
@@ -1701,6 +1704,7 @@ var Header = function(p) {
 // ===== LEAD FORM (shared for add/edit) =====
 var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader";
+  var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [form, setForm] = useState((function(){
     var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", eoiDate:"", eoiDeposit:"", downPaymentPct:"", installmentYears:"" };
@@ -1711,10 +1715,45 @@ var LeadForm = function(p) {
       // Also read dealDate from lead object if available
       if(p.initial&&p.initial.dealDate&&!base.dealDate) base=Object.assign({},base,{dealDate:p.initial.dealDate});
     }
+    // Phase R-12 Part 3 — seed external-deal fields from initial. dealType
+    // defaults to "internal" so existing add-deal flows are unchanged. The
+    // sub-doc shape mirrors the schema (Part 2): { commissionTaxPct, brokerSharePct }.
+    base = Object.assign({
+      dealType: "internal",
+      externalBrokerId: "",
+      externalDealConfig: { commissionTaxPct: 0, brokerSharePct: 0 }
+    }, base);
+    if (base.externalBrokerId && typeof base.externalBrokerId === "object") {
+      base.externalBrokerId = String(base.externalBrokerId._id || "");
+    }
+    // Defensive normalize: an existing lead may come back with externalDealConfig
+    // as an empty object (or with string-typed pcts from old payloads). Coerce
+    // to numeric so the controlled inputs below don't render NaN.
+    var seedCfg = (base.externalDealConfig && typeof base.externalDealConfig === "object") ? base.externalDealConfig : {};
+    base.externalDealConfig = {
+      commissionTaxPct: Number(seedCfg.commissionTaxPct) || 0,
+      brokerSharePct:   Number(seedCfg.brokerSharePct)   || 0
+    };
     return base;
   })());
   var [dupWarning, setDupWarning] = useState(null);
   var [saving, setSaving] = useState(false);
+  // Phase R-12 Part 3 — brokers state for the External-deal dropdown.
+  // Self-fetched on mount when admin AND the form is for a Done Deal (the
+  // only context that surfaces the toggle). Fetches with includeArchived=1
+  // so an existing lead's archived broker still renders correctly.
+  var [brokers, setBrokers] = useState([]);
+  var [brokersLoaded, setBrokersLoaded] = useState(false);
+  var [showAddBroker, setShowAddBroker] = useState(false);
+  var [newBrokerName, setNewBrokerName] = useState("");
+  var [savingBroker, setSavingBroker] = useState(false);
+  // Phase R-12 Part 5 — commission lock. When editing an existing deal whose
+  // active commission already exists, the dealType / broker / pct fields are
+  // frozen on the FE (matched by the backend lock at PUT /api/leads/:id).
+  // Cancelled commissions don't lock — admin can re-tag a rolled-back deal.
+  // null = not yet checked (or no editId / not DoneDeal); false = unlocked;
+  // true = locked.
+  var [commissionLock, setCommissionLock] = useState(null);
   // Synchronous inflight guard — the button's disabled attribute depends on
   // React state, which isn't committed to the DOM until after the current
   // event loop tick, so a second click that fires before React commits could
@@ -1727,6 +1766,67 @@ var LeadForm = function(p) {
   var effectiveStatus = p.initialStatus || (p.editId&&p.initial ? p.initial.status : form.status) || "";
   var isEOIForm = effectiveStatus==="EOI";
   var isDoneDealForm = effectiveStatus==="DoneDeal";
+
+  // Phase R-12 Part 3 — fetch brokers when the form is in a Done Deal context
+  // for an admin user. Skip otherwise to avoid wasted API calls (regular Add
+  // Lead / Edit Lead never surfaces the External toggle). includeArchived=1
+  // so editing an old deal whose broker has since been archived still renders.
+  // Hooks-above-guards: this useEffect must precede any conditional return.
+  useEffect(function(){
+    if (!isOnlyAdmin) return;
+    if (!isDoneDealForm) return;
+    if (brokersLoaded) return;
+    apiFetch("/api/brokers?includeArchived=1", "GET", null, p.token).then(function(resp){
+      setBrokers((resp && resp.data) || []);
+      setBrokersLoaded(true);
+    }).catch(function(){
+      // Silent — dropdown will be empty + "+ Add Broker" still works.
+      setBrokersLoaded(true);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnlyAdmin, isDoneDealForm]);
+
+  // Phase R-12 Part 5 — commission-lock probe. Only when EDITING an existing
+  // deal as admin (not Add Deal — no commission can exist on a brand-new
+  // lead). 404 from /api/commissions/by-lead/:leadId means no commission =
+  // unlocked. 200 with status !== "cancelled" means active/fully_paid =
+  // locked. Mirrors the backend gate at PUT /api/leads/:id.
+  useEffect(function(){
+    if (!isOnlyAdmin || !isDoneDealForm || !p.editId) {
+      setCommissionLock(false);
+      return;
+    }
+    apiFetch("/api/commissions/by-lead/" + p.editId, "GET", null, p.token).then(function(c){
+      if (c && c.status && c.status !== "cancelled") setCommissionLock(true);
+      else setCommissionLock(false);
+    }).catch(function(){
+      // 404 (no commission yet) or any other error → unlocked. The backend
+      // is the source of truth and will re-reject on PUT if the state changed
+      // between probe and submit.
+      setCommissionLock(false);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnlyAdmin, isDoneDealForm, p.editId]);
+
+  // Inline broker creation. Triggered when the user picks "+ Add new broker"
+  // in the dropdown OR clicks the inline + button. Posts to /api/brokers,
+  // appends the result to the local list, and auto-selects it. Kept inline
+  // (no nested Modal) because the form is already inside one.
+  var addBrokerInline = async function() {
+    var nm = String(newBrokerName || "").trim();
+    if (!nm) { alert("Broker name required"); return; }
+    setSavingBroker(true);
+    try {
+      var doc = await apiFetch("/api/brokers", "POST", { name: nm }, p.token, p.csrfToken);
+      if (doc && doc._id) {
+        setBrokers(function(prev){ return [doc].concat(prev || []); });
+        upd("externalBrokerId", String(doc._id));
+        setShowAddBroker(false);
+        setNewBrokerName("");
+      }
+    } catch(e) { alert(e.message || "Failed to add broker"); }
+    setSavingBroker(false);
+  };
   // Only Add Lead (no forced status, not editing) shows a status picker.
   var showStatusPicker = !p.initialStatus && !p.editId;
 
@@ -1750,6 +1850,15 @@ var LeadForm = function(p) {
     if (isEOIForm && !form.budget) { alert("Please enter the Amount (EGP)"); return; }
     if (isEOIForm && !form.project) { alert("Please enter the Project"); return; }
     if (isEOIForm && !form.eoiDeposit) { alert("Please enter the Deposit (EGP)"); return; }
+    // Phase R-12 Part 3 — client-side mirror of validateAndNormalizeExternalDeal.
+    // Backend re-validates; this just gives a faster, friendlier error.
+    if (isDoneDealForm && form.dealType === "external") {
+      if (!form.externalBrokerId) { alert("Please select a broker for this external deal"); return; }
+      var taxPct = Number((form.externalDealConfig && form.externalDealConfig.commissionTaxPct) || 0);
+      var brkPct = Number((form.externalDealConfig && form.externalDealConfig.brokerSharePct)   || 0);
+      if (!(taxPct > 0 && taxPct <= 100)) { alert("Commission Tax % must be between 0 and 100"); return; }
+      if (!(brkPct > 0 && brkPct <= 100)) { alert("Broker Share % must be between 0 and 100"); return; }
+    }
     inflight.current = true;
     setSaving(true);
     try {
@@ -1840,6 +1949,124 @@ var LeadForm = function(p) {
       <Inp label="Down Payment %" value={form.downPaymentPct||""} onChange={function(e){upd("downPaymentPct",e.target.value.replace(/[^0-9.]/g,""));}} placeholder="e.g. 10"/>
       <Inp label="Installment Years" value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
     </div>}
+    {/* Phase R-12 Part 3 — Deal Type toggle (Internal / External). Surfaces
+        only on Done-Deal forms for admin/sales_admin (matches backend gate).
+        Edit-Deal can flip mid-stream; the backend write-site validator clears
+        external fields when flipping back to internal so no stale config
+        lingers on the lead. */}
+    {isDoneDealForm&&isOnlyAdmin&&<div style={{ marginBottom:13, padding:"12px 14px", background:"#F8FAFC", borderRadius:10, border:"1px solid #E8ECF1" }}>
+      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:8 }}>Deal Type</label>
+      {/* Phase R-12 Part 5 — commission-lock banner. Mirrors the backend
+          409 from PUT /api/leads/:id when an active commission exists. */}
+      {commissionLock===true&&<div style={{ marginBottom:10, padding:"8px 12px", background:"#FEF3C7", border:"1px solid #FDE68A", borderRadius:8, fontSize:12, color:"#92400E", lineHeight:1.5 }}>
+        🔒 <b>Locked.</b> An active commission exists for this deal. Cancel the commission first if you need to change the deal type, broker, or split percentages.
+      </div>}
+      <div style={{ display:"flex", gap:8, marginBottom: form.dealType==="external" ? 14 : 0 }}>
+        {[["internal","🏢 Internal","Managed by ARO team"],["external","🤝 External","Brought in by a broker"]].map(function(opt){
+          var active = form.dealType === opt[0];
+          var locked = commissionLock===true;
+          return <button key={opt[0]} type="button" disabled={locked}
+            title={locked ? "Locked — active commission exists" : ""}
+            onClick={function(){
+              if (locked) return;
+              upd("dealType", opt[0]);
+              if (opt[0] === "internal") {
+                upd("externalBrokerId", "");
+                upd("externalDealConfig", { commissionTaxPct: 0, brokerSharePct: 0 });
+              }
+            }}
+            style={{ flex:1, padding:"10px 12px", borderRadius:9, border:"1px solid", borderColor: active ? C.accent : "#E2E8F0", background: active ? C.accent+"12" : "#fff", cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.55 : 1, textAlign:"left" }}>
+            <div style={{ fontSize:13, fontWeight:600, color: active ? C.accent : C.text }}>{opt[1]}</div>
+            <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{opt[2]}</div>
+          </button>;
+        })}
+      </div>
+
+      {form.dealType==="external"&&<div>
+        <div style={{ marginBottom:13 }}>
+          <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>Broker<span style={{ color:C.danger, marginLeft:3 }}>*</span></label>
+          <select value={form.externalBrokerId||""} disabled={commissionLock===true}
+            title={commissionLock===true ? "Locked — active commission exists" : ""}
+            onChange={function(e){
+              if (e.target.value === "__add_new__") {
+                setShowAddBroker(true);
+                setNewBrokerName("");
+                return;
+              }
+              upd("externalBrokerId", e.target.value);
+            }}
+            style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background: commissionLock===true ? "#F1F5F9" : "#fff", color: commissionLock===true ? C.textLight : C.text, boxSizing:"border-box", cursor: commissionLock===true ? "not-allowed" : "pointer" }}>
+            <option value="">{brokersLoaded ? "- Select Broker -" : "Loading brokers..."}</option>
+            {brokers.map(function(b){
+              return <option key={gid(b)} value={gid(b)}>{b.name}{b.archived?" (archived)":""}</option>;
+            })}
+            {commissionLock!==true && <option value="__add_new__">+ Add new broker</option>}
+          </select>
+        </div>
+
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0 12px" }}>
+          <Inp label="Commission Tax %" req
+            value={(form.externalDealConfig && form.externalDealConfig.commissionTaxPct) || ""}
+            onChange={function(e){
+              if (commissionLock===true) return;
+              var raw = e.target.value.replace(/[^0-9.]/g,"");
+              var n = raw === "" ? 0 : Number(raw);
+              upd("externalDealConfig", Object.assign({}, form.externalDealConfig||{}, { commissionTaxPct: n }));
+            }}
+            placeholder="e.g. 30"/>
+          <Inp label="Broker Share %" req
+            value={(form.externalDealConfig && form.externalDealConfig.brokerSharePct) || ""}
+            onChange={function(e){
+              if (commissionLock===true) return;
+              var raw = e.target.value.replace(/[^0-9.]/g,"");
+              var n = raw === "" ? 0 : Number(raw);
+              upd("externalDealConfig", Object.assign({}, form.externalDealConfig||{}, { brokerSharePct: n }));
+            }}
+            placeholder="e.g. 80"/>
+          <div style={{ marginBottom:13 }}>
+            <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>ARO Share %</label>
+            <input type="text" disabled
+              value={(function(){
+                var bp = Number((form.externalDealConfig && form.externalDealConfig.brokerSharePct) || 0);
+                if (!isFinite(bp) || bp <= 0) return "";
+                return Math.max(0, 100 - bp).toString();
+              })()}
+              style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#F1F5F9", color:C.textLight, boxSizing:"border-box", cursor:"not-allowed" }}/>
+          </div>
+        </div>
+
+        {/* Live preview at gross 100,000. Formula: tax = gross × taxPct/100,
+            aroNet = gross − tax, broker = aroNet × brokerPct/100,
+            aro = aroNet × (100 − brokerPct)/100. Matches the spec wording. */}
+        {(function(){
+          var taxPct = Number((form.externalDealConfig && form.externalDealConfig.commissionTaxPct) || 0);
+          var brkPct = Number((form.externalDealConfig && form.externalDealConfig.brokerSharePct)   || 0);
+          if (!(taxPct > 0 && taxPct <= 100) || !(brkPct > 0 && brkPct <= 100)) return null;
+          var GROSS = 100000;
+          var tax = GROSS * (taxPct/100);
+          var aroNet = GROSS - tax;
+          var brokerEgp = aroNet * (brkPct/100);
+          var aroEgp    = aroNet - brokerEgp;
+          var fmt = function(n){ return Math.round(n).toLocaleString(); };
+          return <div style={{ padding:"10px 12px", background:"#EFF6FF", borderRadius:8, fontSize:12, color:"#1E3A8A", lineHeight:1.6 }}>
+            <div style={{ fontWeight:600, marginBottom:4 }}>📊 Live Preview — on a 100,000 EGP gross claim:</div>
+            <div>Tax ({taxPct}%): <b>{fmt(tax)} EGP</b> &nbsp;→&nbsp; ARO net: <b>{fmt(aroNet)} EGP</b></div>
+            <div>Broker ({brkPct}% of net): <b>{fmt(brokerEgp)} EGP</b> &nbsp;·&nbsp; ARO ({100-brkPct}% of net): <b>{fmt(aroEgp)} EGP</b></div>
+          </div>;
+        })()}
+      </div>}
+    </div>}
+    {/* Inline Add Broker — quick-add modal launched from the "+ Add new broker"
+        option in the dropdown above. Single name field for speed; full edit
+        (phone/email/notes) happens on the Brokers page. */}
+    {showAddBroker&&<Modal show={true} onClose={function(){ setShowAddBroker(false); }} title="➕ Add New Broker" w={420}>
+      <Inp label="Name" req value={newBrokerName} onChange={function(e){ setNewBrokerName(e.target.value); }}/>
+      <div style={{ fontSize:11, color:C.textLight, marginBottom:14 }}>You can add phone, email, and notes later from the Brokers page.</div>
+      <div style={{ display:"flex", gap:10 }}>
+        <Btn outline onClick={function(){ setShowAddBroker(false); }} style={{ flex:1 }}>Cancel</Btn>
+        <Btn onClick={addBrokerInline} loading={savingBroker} style={{ flex:1 }}>{savingBroker ? "Saving..." : "Save & Select"}</Btn>
+      </div>
+    </Modal>}
     {(isEOIForm||isDoneDealForm)&&<DocumentsUpload
       files={form.documentFiles||[]}
       onChange={function(next){upd("documentFiles",next);}}
@@ -8938,9 +9165,19 @@ var DealsPage = function(p) {
     var w={};deals.forEach(function(d){if(d.project)w[d.project]=getProjectWeight(d.project);});return w;
   });
   var [dateFrom,setDateFrom]=useState(""); var [dateTo,setDateTo]=useState(""); var [dealSearch,setDealSearch]=useState(""); var [dealAgent,setDealAgent]=useState("");
+  // Phase R-12 Part 4 — All / Internal / External filter pill state. Scoped
+  // to the current Active|Cancelled tab (counts and filter both). Default
+  // "all". Pre-Part-2 leads default to dealType "internal" so the External
+  // bucket is empty until admins start tagging deals via Part 3 modal.
+  var [dealTypeFilter,setDealTypeFilter]=useState("all");
   var curYear=new Date().getFullYear(); var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
   var dealYears=[curYear,curYear-1,curYear-2,curYear-3];
   var [dealQ,setDealQ]=useState(curQ); var [dealYear,setDealYear]=useState(curYear);
+  // Deal-type counts on the current Active|Cancelled tab. Computed BEFORE
+  // the user's other filters so the pill badges reflect the full tab scope —
+  // matches the Active/Cancelled tab badges above which also show full counts.
+  var dealsInternalCount = deals.filter(function(d){ return (d.dealType||"internal")!=="external"; }).length;
+  var dealsExternalCount = deals.filter(function(d){ return d.dealType==="external"; }).length;
   var filteredDeals=deals.filter(function(d){
     if(dealQ!=="all"){var dd=getDealDate(d);if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
     if(dealQ!=="all"&&new Date(getDealDate(d)||0).getFullYear()!==dealYear) return false;
@@ -8948,6 +9185,8 @@ var DealsPage = function(p) {
     if(dateTo&&new Date(d.updatedAt||d.createdAt)>new Date(dateTo+"T23:59:59")) return false;
     if(dealSearch){var q2=dealSearch.toLowerCase();var nm=d.name?d.name.toLowerCase():"";var pr=d.project?d.project.toLowerCase():"";var ph=d.phone||"";if(!nm.includes(q2)&&!pr.includes(q2)&&!ph.includes(q2))return false;}
     if(dealAgent){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;if(aid!==dealAgent)return false;}
+    if(dealTypeFilter==="internal" && (d.dealType||"internal")==="external") return false;
+    if(dealTypeFilter==="external" && d.dealType!=="external") return false;
     return true;
   });
   var filteredTotal=filteredDeals.reduce(function(s,d){
@@ -9012,6 +9251,23 @@ var DealsPage = function(p) {
       })}
     </div>
 
+    {/* Phase R-12 Part 4 \u2014 All / Internal / External filter pill row.
+        Style mirrors the Commissions Claims tab STATUS_PILLS (the spec's
+        reference style). Counts reflect the current Active|Cancelled tab
+        scope \u2014 internal+external sum to deals.length. */}
+    <div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
+      {[["all","All",deals.length],["internal","\ud83c\udfe2 Internal",dealsInternalCount],["external","\ud83e\udd1d External",dealsExternalCount]].map(function(pill){
+        var active=dealTypeFilter===pill[0];
+        return <button key={pill[0]} onClick={function(){setDealTypeFilter(pill[0]);}} style={{
+          padding:"5px 12px", borderRadius:8, border:"1px solid",
+          borderColor: active ? C.accent : "#E2E8F0",
+          background: active ? C.accent+"12" : "#fff",
+          color: active ? C.accent : C.textLight,
+          fontSize:12, fontWeight:600, cursor:"pointer"
+        }}>{pill[1]} ({pill[2]})</button>;
+      })}
+    </div>
+
     {/* Deals Search + Filter bar */}
     <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:10, flexWrap:"wrap" }}>
       <div style={{ display:"flex", gap:5 }}>
@@ -9038,7 +9294,7 @@ var DealsPage = function(p) {
         <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>To:</span>
         <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
       </div>
-      {(dateFrom||dateTo||dealSearch||dealAgent)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
+      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all")&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
     </div>
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} initialStatus="DoneDeal"
@@ -10516,6 +10772,198 @@ var JOB_TITLES = [
   { label:"Sales Director",          role:"director" }
 ];
 var ROLE_FOR_TITLE = JOB_TITLES.reduce(function(a,j){ a[j.label]=j.role; return a; }, {});
+
+// Phase R-12 Part 1 — External brokers registry. Standalone page, admin
+// + sales_admin only (gated at sidebar, renderPage, AND backend salesAdminOnly).
+// Self-fetches its own data on mount instead of joining the App-level loadData
+// — brokers aren't needed elsewhere yet (Parts 2-7 will integrate with deals
+// + commissions). Soft-delete vs hard-delete decision lives on the backend
+// (DELETE /api/brokers/:id) based on whether any Commission references the
+// broker; the FE just shows the appropriate toast based on response.action.
+var BrokersPage = function(p) {
+  var t = p.t;
+  var [rows, setRows]            = useState([]);
+  var [loading, setLoading]      = useState(true);
+  var [error, setError]          = useState(null);
+  var [includeArchived, setIncludeArchived] = useState(false);
+  var [search, setSearch]        = useState("");
+  var [showAdd, setShowAdd]      = useState(false);
+  var [adding, setAdding]        = useState(false);
+  var [newBroker, setNewBroker]  = useState({ name:"", phone:"", email:"", notes:"" });
+  var [editModal, setEditModal]  = useState(null); // { _id, name, phone, email, notes, archived }
+  var [editSaving, setEditSaving] = useState(false);
+
+  var load = useCallback(function(){
+    setLoading(true); setError(null);
+    var qs = includeArchived ? "?includeArchived=1" : "";
+    apiFetch("/api/brokers" + qs, "GET", null, p.token).then(function(resp){
+      setRows((resp && resp.data) || []);
+    }).catch(function(e){
+      setError(e.message || "Failed to load brokers");
+    }).then(function(){ setLoading(false); });
+  }, [p.token, includeArchived]);
+
+  useEffect(function(){ load(); }, [load]);
+
+  var add = async function(){
+    var name = String(newBroker.name||"").trim();
+    if (!name) { alert("Name is required"); return; }
+    setAdding(true);
+    try {
+      var doc = await apiFetch("/api/brokers", "POST", {
+        name:  name,
+        phone: newBroker.phone,
+        email: newBroker.email,
+        notes: newBroker.notes
+      }, p.token);
+      setRows(function(prev){ return [doc].concat(prev).sort(function(a,b){
+        if ((a.archived?1:0) !== (b.archived?1:0)) return (a.archived?1:0) - (b.archived?1:0);
+        return String(a.name||"").localeCompare(String(b.name||""));
+      }); });
+      setShowAdd(false);
+      setNewBroker({ name:"", phone:"", email:"", notes:"" });
+    } catch(e) { alert(e.message || "Failed to create broker"); }
+    setAdding(false);
+  };
+
+  var saveEdit = async function(){
+    if (!editModal) return;
+    var name = String(editModal.name||"").trim();
+    if (!name) { alert("Name cannot be empty"); return; }
+    setEditSaving(true);
+    try {
+      var upd = await apiFetch("/api/brokers/"+editModal._id, "PATCH", {
+        name:  name,
+        phone: editModal.phone,
+        email: editModal.email,
+        notes: editModal.notes
+      }, p.token);
+      setRows(function(prev){ return prev.map(function(r){ return gid(r)===gid(upd) ? upd : r; }); });
+      setEditModal(null);
+    } catch(e) { alert(e.message || "Failed to update broker"); }
+    setEditSaving(false);
+  };
+
+  var toggleArchive = async function(b){
+    try {
+      var upd = await apiFetch("/api/brokers/"+gid(b), "PATCH", { archived: !b.archived }, p.token);
+      setRows(function(prev){ return prev.map(function(r){ return gid(r)===gid(upd) ? upd : r; }); });
+    } catch(e) { alert(e.message || "Failed to update broker"); }
+  };
+
+  // Hard-delete attempt — backend returns { action: "deleted" | "archived",
+  // refCount? } depending on whether the broker is referenced. Soft-delete
+  // (archived) keeps the row in the list with the Archived badge.
+  var del = async function(b){
+    if (!window.confirm("Delete broker \""+b.name+"\"? If this broker is linked to any commission, it will be archived instead of deleted.")) return;
+    try {
+      var resp = await apiFetch("/api/brokers/"+gid(b), "DELETE", null, p.token);
+      if (resp && resp.action === "archived") {
+        setRows(function(prev){ return prev.map(function(r){ return gid(r)===gid(b) ? Object.assign({}, r, { archived: true }) : r; }); });
+        alert("Broker is referenced by "+(resp.refCount||0)+" commission(s) — archived instead of deleted.");
+      } else {
+        setRows(function(prev){ return prev.filter(function(r){ return gid(r) !== gid(b); }); });
+      }
+    } catch(e) { alert(e.message || "Failed to delete broker"); }
+  };
+
+  var visible = rows.filter(function(r){
+    if (!search) return true;
+    return String(r.name||"").toLowerCase().indexOf(search.toLowerCase()) !== -1;
+  });
+  var activeCount   = rows.filter(function(r){ return !r.archived; }).length;
+  var archivedCount = rows.filter(function(r){ return  r.archived; }).length;
+
+  return <div style={{ padding:"18px 16px 40px" }}>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18, flexWrap:"wrap", gap:10 }}>
+      <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.brokers} ({activeCount}{includeArchived&&archivedCount>0 ? " active, "+archivedCount+" archived" : ""})</h2>
+      <Btn onClick={function(){ setShowAdd(true); }} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> Add Broker</Btn>
+    </div>
+
+    <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
+      <div style={{ position:"relative", flex:"1 1 240px", minWidth:200 }}>
+        <Search size={14} style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:C.textLight }}/>
+        <input type="text" placeholder="Search by name..." value={search} onChange={function(e){ setSearch(e.target.value); }}
+          style={{ width:"100%", padding:"8px 12px 8px 32px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:13, outline:"none", boxSizing:"border-box" }}/>
+      </div>
+      <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:C.textLight, cursor:"pointer" }}>
+        <input type="checkbox" checked={includeArchived} onChange={function(e){ setIncludeArchived(e.target.checked); }}/>
+        Include archived
+      </label>
+    </div>
+
+    {loading
+      ? <Loader/>
+      : error
+      ? <Card><div style={{ color:C.danger, fontSize:13 }}>⚠️ {error}</div></Card>
+      : visible.length === 0
+      ? <Card><div style={{ color:C.textLight, fontSize:13, textAlign:"center", padding:"30px 20px" }}>{rows.length===0 ? "No brokers yet. Click \"Add Broker\" to create one." : "No brokers match your search."}</div></Card>
+      : <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:580 }}>
+          <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+            {["Name","Phone","Email","Notes",""].map(function(h){
+              return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;
+            })}
+          </tr></thead>
+          <tbody>{visible.map(function(b){
+            var bid = gid(b);
+            return <tr key={bid} style={{ borderBottom:"1px solid #F1F5F9", opacity:b.archived?0.55:1 }}>
+              <td style={{ padding:"11px 12px" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <div style={{ width:32, height:32, borderRadius:8, background:C.accent+"15", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:12, color:C.accent, flexShrink:0 }}>{(b.name||"?")[0].toUpperCase()}</div>
+                  <div>
+                    <div style={{ fontSize:12, fontWeight:600, display:"flex", alignItems:"center", gap:6 }}>
+                      {b.name}
+                      {b.archived&&<Badge bg="#FEE2E2" color="#B91C1C">Archived</Badge>}
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td style={{ padding:"11px 12px", fontSize:12, fontFamily:"monospace", direction:"ltr" }}>{b.phone||"—"}</td>
+              <td style={{ padding:"11px 12px", fontSize:12 }}>{b.email||"—"}</td>
+              <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, maxWidth:240, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={b.notes||""}>{b.notes||"—"}</td>
+              <td style={{ padding:"11px 12px" }}>
+                <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                  <button onClick={function(){ setEditModal({ _id:bid, name:b.name||"", phone:b.phone||"", email:b.email||"", notes:b.notes||"", archived:!!b.archived }); }}
+                    style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Edit">
+                    <Edit size={12} color={C.accent}/>
+                  </button>
+                  <button onClick={function(){ toggleArchive(b); }}
+                    style={{ padding:"3px 10px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", fontSize:11, cursor:"pointer", color:C.textLight }}>
+                    {b.archived ? "Restore" : "Archive"}
+                  </button>
+                  <button onClick={function(){ del(b); }}
+                    style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Delete">
+                    <Trash2 size={12} color={C.danger}/>
+                  </button>
+                </div>
+              </td>
+            </tr>;
+          })}</tbody>
+        </table></div></Card>}
+
+    {showAdd&&<Modal show={true} onClose={function(){ setShowAdd(false); }} title="➕ Add Broker">
+      <Inp label="Name" req value={newBroker.name} onChange={function(e){ setNewBroker(Object.assign({}, newBroker, { name:e.target.value })); }}/>
+      <Inp label={t.phone} value={newBroker.phone} onChange={function(e){ setNewBroker(Object.assign({}, newBroker, { phone:e.target.value })); }}/>
+      <Inp label={t.email} value={newBroker.email} onChange={function(e){ setNewBroker(Object.assign({}, newBroker, { email:e.target.value })); }}/>
+      <Inp label={t.notes} type="textarea" value={newBroker.notes} onChange={function(e){ setNewBroker(Object.assign({}, newBroker, { notes:e.target.value })); }}/>
+      <div style={{ display:"flex", gap:10, marginTop:6 }}>
+        <Btn outline onClick={function(){ setShowAdd(false); }} style={{ flex:1 }}>{t.cancel}</Btn>
+        <Btn onClick={add} loading={adding} style={{ flex:1 }}>{adding ? "Saving..." : t.save}</Btn>
+      </div>
+    </Modal>}
+
+    {editModal&&<Modal show={true} onClose={function(){ setEditModal(null); }} title={"✏️ Edit Broker — "+(editModal.name||"")}>
+      <Inp label="Name" req value={editModal.name} onChange={function(e){ setEditModal(Object.assign({}, editModal, { name:e.target.value })); }}/>
+      <Inp label={t.phone} value={editModal.phone} onChange={function(e){ setEditModal(Object.assign({}, editModal, { phone:e.target.value })); }}/>
+      <Inp label={t.email} value={editModal.email} onChange={function(e){ setEditModal(Object.assign({}, editModal, { email:e.target.value })); }}/>
+      <Inp label={t.notes} type="textarea" value={editModal.notes} onChange={function(e){ setEditModal(Object.assign({}, editModal, { notes:e.target.value })); }}/>
+      <div style={{ display:"flex", gap:10, marginTop:6 }}>
+        <Btn outline onClick={function(){ setEditModal(null); }} style={{ flex:1 }}>{t.cancel}</Btn>
+        <Btn onClick={saveEdit} loading={editSaving} style={{ flex:1 }}>{editSaving ? "Saving..." : t.save}</Btn>
+      </div>
+    </Modal>}
+  </div>;
+};
 
 var UsersPage = function(p) {
   var t=p.t; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"; var [showAdd,setShowAdd]=useState(false); var [saving,setSaving]=useState(false);
@@ -17844,6 +18292,35 @@ var CommissionEditCollectionModal = function(p) {
   var [payoutsToDelete, setPayoutsToDelete] = useState({});  // {payoutId: true}
   var [newPayouts, setNewPayouts] = useState([]);            // each: {recipientUserName, recipientRole, amount, date, notes}
 
+  // ---------- SECTION 3.5 — broker payouts (Phase R-12 Part 6) ----------
+  // Mirrors the internal-payout pattern above. Only surfaced in the modal
+  // when externalSplit.isExternal — but we still init state so saveAll can
+  // be a single sequential flush. brokerPayouts have no userId, no debt
+  // machinery, no role enum (Part 5 judgment #1).
+  var [existingBrokerPayouts] = useState(function(){
+    return ((c.externalSplit && c.externalSplit.brokerPayouts) || []).slice();
+  });
+  var [brokerPayoutsToDelete, setBrokerPayoutsToDelete] = useState({});
+  var [newBrokerPayouts, setNewBrokerPayouts] = useState([]);
+  var addBrokerPayoutDraft = function(){
+    setNewBrokerPayouts(function(prev){
+      return prev.concat([{ amount: "", date: new Date().toISOString().slice(0,10), notes: "" }]);
+    });
+  };
+  var setNewBrokerPayoutField = function(idx, patch){
+    setNewBrokerPayouts(function(prev){ return prev.map(function(r, i){ return i === idx ? Object.assign({}, r, patch) : r; }); });
+  };
+  var removeNewBrokerPayout = function(idx){
+    setNewBrokerPayouts(function(prev){ return prev.filter(function(_, i){ return i !== idx; }); });
+  };
+  var toggleBrokerPayoutDelete = function(id){
+    setBrokerPayoutsToDelete(function(prev){
+      var next = Object.assign({}, prev);
+      if (next[id]) delete next[id]; else next[id] = true;
+      return next;
+    });
+  };
+
   // Build the recipient dropdown from snapshot slots (matches the old
   // CommissionPayoutAddModal logic).
   var recipientOptions = (function(){
@@ -17978,6 +18455,14 @@ var CommissionEditCollectionModal = function(p) {
       if (!np.date) { alert("New payout row " + (i+1) + ": date required"); return; }
       if (!np.recipientUserName) { alert("New payout row " + (i+1) + ": recipient required"); return; }
     }
+    // Phase R-12 Part 6 — broker-payout draft validation. Mirrors internal
+    // payout validation; date is required, amount must be > 0.
+    for (var bi = 0; bi < newBrokerPayouts.length; bi++) {
+      var bnp = newBrokerPayouts[bi];
+      var ban = parseMoney(bnp.amount);
+      if (!isFinite(ban) || ban <= 0) { alert("New broker payout row " + (bi+1) + ": amount must be > 0"); return; }
+      if (!bnp.date) { alert("New broker payout row " + (bi+1) + ": date required"); return; }
+    }
     for (var ii = 0; ii < incentiveRows.length; ii++) {
       var ir = incentiveRows[ii];
       if (!String(ir.userName || "").trim()) { alert("Incentive row " + (ii+1) + ": name required"); return; }
@@ -17986,11 +18471,14 @@ var CommissionEditCollectionModal = function(p) {
     setSaving(true);
     var snapshotBody = buildSnapshotBody();
     var deletions = Object.keys(payoutsToDelete);
+    var brokerDeletions = Object.keys(brokerPayoutsToDelete);
     var hadSnapshotEdit  = Object.keys(snapshotBody).length > 0;
     var hadPayoutDel     = deletions.length > 0;
     var hadNewPayouts    = newPayouts.length > 0;
+    var hadBrokerDel     = brokerDeletions.length > 0;
+    var hadNewBrokerPayouts = newBrokerPayouts.length > 0;
     var hadIncentiveEdit = incentiveChanged;
-    var didAnything      = hadSnapshotEdit || hadPayoutDel || hadNewPayouts || hadIncentiveEdit;
+    var didAnything      = hadSnapshotEdit || hadPayoutDel || hadNewPayouts || hadBrokerDel || hadNewBrokerPayouts || hadIncentiveEdit;
 
     try {
       // 1. Snapshot + overrides (single PATCH)
@@ -18012,6 +18500,21 @@ var CommissionEditCollectionModal = function(p) {
           amount:            parseMoney(npRow.amount),
           date:              npRow.date,
           notes:             npRow.notes || ""
+        }, token);
+      }
+      // 3.5. Broker payout deletes (parallel) + creates (sequential — owed
+      //       cap is checked server-side per request, so order matters).
+      if (hadBrokerDel) {
+        await Promise.all(brokerDeletions.map(function(bid){
+          return apiFetch("/api/commissions/" + c._id + "/broker-payouts/" + bid, "DELETE", null, token);
+        }));
+      }
+      for (var bn = 0; bn < newBrokerPayouts.length; bn++) {
+        var bnpRow = newBrokerPayouts[bn];
+        await apiFetch("/api/commissions/" + c._id + "/broker-payouts", "POST", {
+          amount: parseMoney(bnpRow.amount),
+          date:   bnpRow.date,
+          notes:  bnpRow.notes || ""
         }, token);
       }
       // 4. Incentive PUT (full replacement, only if changed)
@@ -18126,12 +18629,45 @@ var CommissionEditCollectionModal = function(p) {
       <div style={roSubLabel}>Snapshotted at deal close. Edit on the lead page to change.</div>
     </FormRow>
 
+    {/* Phase R-12 Part 6 — SECTION 1.5: External Split (read-only). Surfaces
+        between Snapshot and Recipients only when the commission is external.
+        All three input fields (broker, both pcts) are read-only here — the
+        Part 5 lock prevents mutation while the commission is active. To
+        change them, admin cancels the commission then edits via the deal. */}
+    {c.externalSplit && c.externalSplit.isExternal && (function(){
+      var es = c.externalSplit;
+      var taxAmt    = Number(es.commissionTaxAmount || 0);
+      var aroNet    = Number(es.aroNetAmount || 0);
+      var brokerOwd = Number(es.brokerOwed || 0);
+      var aroOwd    = Number(es.aroOwed || 0);
+      var fmt = function(n){ return Math.round(Number(n||0)).toLocaleString(); };
+      return <>
+        <div style={dividerStyle}/>
+        <div style={Object.assign({}, sectionHeaderStyle, { color:"#5B21B6" })}>External Split</div>
+        <div style={{ fontSize:10, color:C.textLight, marginBottom:8, lineHeight:1.5 }}>
+          🔒 Locked — change via the Edit Deal modal on the lead (requires cancelling this commission first).
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
+          <FormRow label="Broker"><input type="text" value={es.brokerName || "(unnamed)"} readOnly disabled style={roFieldStyle}/></FormRow>
+          <FormRow label="Commission Tax %"><input type="text" value={String(es.commissionTaxPct || 0)} readOnly disabled style={roFieldStyle}/></FormRow>
+          <FormRow label="Broker Share %"><input type="text" value={String(es.brokerSharePct || 0)} readOnly disabled style={roFieldStyle}/></FormRow>
+        </div>
+        <div style={{ background:"#F5F3FF", border:"1px solid #DDD6FE", borderRadius:8, padding:"10px 12px", fontSize:12, color:"#3730A3", lineHeight:1.7 }}>
+          <div><b>Computed (from received cycles)</b></div>
+          <div>Tax: <b>{fmt(taxAmt)} EGP</b> &nbsp;·&nbsp; ARO net: <b>{fmt(aroNet)} EGP</b></div>
+          <div>Broker owed: <b>{fmt(brokerOwd)} EGP</b> &nbsp;·&nbsp; ARO owed: <b>{fmt(aroOwd)} EGP</b></div>
+        </div>
+      </>;
+    })()}
+
     <div style={dividerStyle}/>
 
     {/* SECTION 2 — Recipients */}
     <div style={sectionHeaderStyle}>Recipients & Overrides</div>
     <div style={{ fontSize:10, color:C.textLight, marginBottom:8, lineHeight:1.5 }}>
-      Computed share + rate are derived from the agent's quarterly bucket — they recompute on save. Type an override amount (EGP) to pin a custom value; clear it to revert.
+      {c.externalSplit && c.externalSplit.isExternal
+        ? <>Internal team share (out of ARO's <b>{Math.round(Number(c.externalSplit.aroOwed || 0)).toLocaleString()} EGP</b>). Computed share + rate are derived from the agent's quarterly bucket against this ARO-owed base — they recompute on save. Type an override amount (EGP) to pin a custom value; clear it to revert.</>
+        : <>Computed share + rate are derived from the agent's quarterly bucket — they recompute on save. Type an override amount (EGP) to pin a custom value; clear it to revert.</>}
     </div>
     <div style={{ background:"#F8FAFC", borderRadius:8, padding:"6px 12px" }}>
       {Object.keys(overrides).length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>No recipients on snapshot.</div>}
@@ -18202,6 +18738,74 @@ var CommissionEditCollectionModal = function(p) {
           style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:4, padding:"3px 7px", fontSize:10, color:"#B91C1C", cursor: saving ? "wait" : "pointer" }}>×</button>
       </div>;
     })}
+
+    {/* Phase R-12 Part 6 — SECTION 3.5: Broker Payouts. Surfaces only when
+        external. Same structure as internal Payouts above (existing rows w/
+        toggle-delete + draft rows w/ inline form), but with the broker-only
+        schema (no recipient picker, no role, no debt). */}
+    {c.externalSplit && c.externalSplit.isExternal && (function(){
+      var totalBpCount = existingBrokerPayouts.length + newBrokerPayouts.length;
+      return <>
+        <div style={dividerStyle}/>
+        <div style={Object.assign({}, sectionHeaderStyle, { display:"flex", justifyContent:"space-between", alignItems:"center", color:"#5B21B6" })}>
+          <span>Broker Payouts ({totalBpCount}) — to <b>{c.externalSplit.brokerName || "(unnamed)"}</b></span>
+          <button onClick={addBrokerPayoutDraft} disabled={saving}
+            style={{ padding:"3px 10px", borderRadius:6, border:"1px solid #5B21B6", background:"#EDE9FE", color:"#5B21B6", fontSize:11, fontWeight:600, cursor: saving ? "wait" : "pointer", textTransform:"none", letterSpacing:0 }}>+ Add Broker Payout</button>
+        </div>
+        {totalBpCount === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 10px" }}>No broker payouts recorded yet.</div>}
+        {existingBrokerPayouts.map(function(bp){
+          var marked = !!brokerPayoutsToDelete[String(bp._id)];
+          return <div key={String(bp._id)} style={{
+            display:"flex", justifyContent:"space-between", alignItems:"center",
+            padding:"6px 10px", background: marked ? "#FEF2F2" : "#F8FAFC",
+            borderRadius:6, marginBottom:4,
+            textDecoration: marked ? "line-through" : "none",
+            opacity: marked ? 0.7 : 1
+          }}>
+            <div style={{ minWidth:0, flex:1 }}>
+              <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{bp.date ? new Date(bp.date).toLocaleDateString("en-GB") : "—"}{bp.byUser ? " · by " + bp.byUser : ""}</div>
+              {bp.notes && <div style={{ fontSize:10, color:C.textLight }}>{bp.notes}</div>}
+            </div>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <div style={{ fontSize:12, fontWeight:600, color:"#5B21B6" }}>{Math.round(Number(bp.amount || 0)).toLocaleString() + " EGP"}</div>
+              <button onClick={function(){ toggleBrokerPayoutDelete(String(bp._id)); }} disabled={saving}
+                title={marked ? "Undo delete" : "Mark for deletion"}
+                style={{ background:"#fff", border:"1px solid "+(marked ? C.textLight : "#FCA5A5"), borderRadius:4, padding:"2px 6px", fontSize:10, color: marked ? C.textLight : "#B91C1C", cursor: saving ? "wait" : "pointer" }}>
+                {marked ? "undo" : "✕"}
+              </button>
+            </div>
+          </div>;
+        })}
+        {newBrokerPayouts.map(function(bnp, idx){
+          return <div key={"bnp-" + idx} style={{ display:"flex", gap:6, alignItems:"center", marginBottom:4, padding:"6px 10px", background:"#F5F3FF", borderRadius:6, border:"1px dashed #DDD6FE" }}>
+            <input type="date" value={bnp.date}
+              onChange={function(e){ setNewBrokerPayoutField(idx, { date: e.target.value }); }}
+              style={{ width:130, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
+            <input type="text" inputMode="numeric" placeholder="Amount" value={bnp.amount}
+              onChange={function(e){
+                var raw = e.target.value.replace(/,/g, "").replace(/[^0-9]/g, "");
+                var fmt = raw === "" ? "" : Number(raw).toLocaleString();
+                setNewBrokerPayoutField(idx, { amount: fmt });
+              }}
+              style={{ width:120, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
+            <input type="text" placeholder="Notes" value={bnp.notes}
+              onChange={function(e){ setNewBrokerPayoutField(idx, { notes: e.target.value }); }}
+              style={{ flex:1, padding:"4px 6px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:11 }}/>
+            <button onClick={function(){ removeNewBrokerPayout(idx); }} disabled={saving} title="Discard draft"
+              style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:4, padding:"3px 7px", fontSize:10, color:"#B91C1C", cursor: saving ? "wait" : "pointer" }}>×</button>
+          </div>;
+        })}
+      </>;
+    })()}
+
+    {/* Phase R-12 Part 6 — orphan brokerPayouts warning. From Part 5 judgment
+        #4: a deal that flipped External→Internal while cancelled, then was
+        revived, may carry historical brokerPayouts on a now-internal commission.
+        Show a small audit notice; the backend POST endpoint refuses new
+        broker payouts in this state, so this is read-only. */}
+    {c.externalSplit && !c.externalSplit.isExternal && Array.isArray(c.externalSplit.brokerPayouts) && c.externalSplit.brokerPayouts.length > 0 && <div style={{ marginTop:10, padding:"10px 12px", background:"#FEF3C7", border:"1px solid #FDE68A", borderRadius:8, fontSize:11, color:"#92400E", lineHeight:1.6 }}>
+      ⚠️ <b>Historical broker payouts preserved.</b> This commission carries {c.externalSplit.brokerPayouts.length} broker payout entr{c.externalSplit.brokerPayouts.length === 1 ? "y" : "ies"} from a previous external lifecycle. They are kept for audit. Contact admin to reconcile.
+    </div>}
 
     <div style={dividerStyle}/>
 
@@ -18911,6 +19515,13 @@ var CommissionsPage = function(p) {
   var t = p.t;
   // ALL hooks before any role-gate (CRA rules-of-hooks).
   var [statusFilter, setStatusFilter] = useState("all");
+  // Phase R-12 Part 4 — All / Internal / External pill filter on Claims tab.
+  // Client-side filter against commission.externalSplit.isExternal (added in
+  // Part 5). Until Part 5 ships, no commission has externalSplit set so
+  // every row reads as Internal — the External bucket counts to 0. Counts
+  // are computed against the loaded `rows` (post-server-filters) so picking
+  // a different status pill rescopes the dealType counts naturally.
+  var [dealTypeFilter, setDealTypeFilter] = useState("all");
   var [search, setSearch] = useState("");
   var [agentFilter, setAgentFilter] = useState("");
   // Phase R-5: each tab owns its own year state so the Annual Summary
@@ -19430,6 +20041,10 @@ var CommissionsPage = function(p) {
             </span>
             {snap.developer && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontWeight:700 }}>{snap.developer}</span>}
             {snap.isSplitDeal && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#F5F3FF", color:"#7C3AED", fontWeight:700 }}>🤝 Split</span>}
+            {/* Phase R-12 Part 6 — External badge. Distinct violet tint to
+                differentiate from the amber/green/gray status badges below.
+                Only shows when commission.externalSplit.isExternal === true. */}
+            {c.externalSplit && c.externalSplit.isExternal && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#EDE9FE", color:"#5B21B6", fontWeight:700 }}>🤝 External</span>}
             {/* Phase R-7 — commission status badges. Active = amber (in-progress
                 book), Fully paid = green (closed), Cancelled = gray (dead).
                 The Revert button only shows for status=fully_paid AND admin role. */}
@@ -19452,6 +20067,11 @@ var CommissionsPage = function(p) {
             {snap.projectName || "—"}
             {snap.unitDetails && <span> · {snap.unitDetails}</span>}
             <span> · closed {fmtDate(snap.dealDate)}</span>
+            {/* Phase R-12 Part 6 — broker subtitle. brokerName is a snapshot
+                from commission-creation time (Part 5), so a later Broker
+                rename never rewrites this line — it preserves who actually
+                brought the deal at close. */}
+            {c.externalSplit && c.externalSplit.isExternal && c.externalSplit.brokerName && <span> · External via <b style={{ color:"#5B21B6" }}>{c.externalSplit.brokerName}</b></span>}
           </div>
         </div>
         <div style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
@@ -19561,10 +20181,75 @@ var CommissionsPage = function(p) {
               }}/>
             </div>
           </div>
-          <div style={{ overflow:"hidden", transition:"max-height 0.25s ease", maxHeight: expanded ? 1400 : 0 }}>
+          <div style={{ overflow:"hidden", transition:"max-height 0.25s ease", maxHeight: expanded ? 1800 : 0 }}>
             <div style={{ paddingTop:6 }}>
-              {/* Primary recipients table */}
-              {rows.length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 0" }}>No recipients on snapshot.</div>}
+              {/* Phase R-12 Part 6 — External Split sub-section. Renders first
+                  (above the internal team table) when commission.externalSplit
+                  .isExternal. Two rows: Broker (with Owed/Paid/Remaining) and
+                  ARO (informational only — no actions). Tax footnote below. */}
+              {c.externalSplit && c.externalSplit.isExternal && (function(){
+                var es = c.externalSplit;
+                var brokerOwed = Number(es.brokerOwed || 0);
+                var brokerPaid = (es.brokerPayouts || []).reduce(function(s, bp){ return s + Number(bp.amount || 0); }, 0);
+                var brokerRem  = Math.max(0, brokerOwed - brokerPaid);
+                var brokerOver = brokerPaid > brokerOwed && brokerOwed > 0;
+                var brokerFull = !brokerOver && brokerOwed > 0 && brokerRem === 0;
+                var brokerNot  = brokerPaid === 0 && brokerOwed > 0;
+                var aroOwed    = Number(es.aroOwed || 0);
+                var taxAmt     = Number(es.commissionTaxAmount || 0);
+                var taxPct     = Number(es.commissionTaxPct || 0);
+                var brokerRowBg = brokerFull ? "#F0FDF4" : brokerNot ? "#FFFBEB" : "#fff";
+                var brokerIcon  = brokerOver ? "⚠️" : brokerFull ? "✅" : "🔴";
+                var brokerRemColor = brokerOver ? "#B91C1C" : brokerFull ? "#15803D" : C.text;
+                var brokerRemValue = brokerOver ? ("+" + n2(brokerPaid - brokerOwed)) : n2(brokerRem);
+                return <div style={{ marginBottom: rows.length > 0 ? 12 : 6 }}>
+                  <div style={{ fontSize:10, fontWeight:700, color:"#5B21B6", textTransform:"uppercase", letterSpacing:0.3, padding:"2px 0 6px" }}>
+                    External Split
+                  </div>
+                  <div style={{ border:"1px solid #DDD6FE", borderRadius:10, overflow:"hidden", background:"#fff" }}>
+                    {/* Broker row (with payout state) */}
+                    <div style={{ padding:"8px 12px", background: brokerRowBg }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:4, gap:8 }}>
+                        <div style={{ display:"flex", gap:8, alignItems:"baseline", minWidth:0, flexWrap:"wrap" }}>
+                          <span style={{ fontSize:10, fontWeight:700, color:C.textLight, textTransform:"uppercase", minWidth:72 }}>Broker</span>
+                          <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{es.brokerName || "(unnamed)"}</span>
+                        </div>
+                        <span style={{ fontSize:12 }}>{brokerIcon}</span>
+                      </div>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, fontSize:11, marginInlineStart:80 }}>
+                        <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Owed:&nbsp;</span><span style={{ color:C.text }}>{n2(brokerOwed)}</span></div>
+                        <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Paid:&nbsp;</span><span style={{ color:C.text }}>{n2(brokerPaid)}</span></div>
+                        <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Rem:&nbsp;</span><span style={{ color:brokerRemColor, fontWeight:700 }}>{brokerRemValue}</span></div>
+                      </div>
+                    </div>
+                    {/* ARO informational row — no actions, grayed-out */}
+                    <div style={{ padding:"8px 12px", borderTop:"1px solid #F1F5F9", background:"#F8FAFC" }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:4, gap:8 }}>
+                        <div style={{ display:"flex", gap:8, alignItems:"baseline", minWidth:0, flexWrap:"wrap" }}>
+                          <span style={{ fontSize:10, fontWeight:700, color:C.textLight, textTransform:"uppercase", minWidth:72 }}>ARO</span>
+                          <span style={{ fontSize:12, fontWeight:700, color:C.textLight }}>(company keep)</span>
+                        </div>
+                      </div>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, fontSize:11, marginInlineStart:80 }}>
+                        <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Owed:&nbsp;</span><span style={{ color:C.text }}>{n2(aroOwed)}</span></div>
+                        <div style={{ textAlign:"right", color:"#CBD5E1" }}>—</div>
+                        <div style={{ textAlign:"right", color:"#CBD5E1" }}>—</div>
+                      </div>
+                    </div>
+                  </div>
+                  {/* Tax footnote */}
+                  <div style={{ fontSize:10, color:C.textLight, padding:"6px 4px 0", fontStyle:"italic" }}>
+                    Commission tax: {taxPct}% = {n2(taxAmt)} EGP (accounting adjustment, not paid to anyone).
+                  </div>
+                </div>;
+              })()}
+              {/* Primary recipients table — for external deals, shares are
+                  computed against aroOwed (Part 5 server-side); the sub-heading
+                  reflects that so admins understand the smaller numbers. */}
+              {c.externalSplit && c.externalSplit.isExternal && rows.length > 0 && <div style={{ fontSize:10, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, padding:"2px 0 6px" }}>
+                Internal team share (out of ARO's {n2(Number(c.externalSplit.aroOwed || 0))} EGP)
+              </div>}
+              {rows.length === 0 && (!(c.externalSplit && c.externalSplit.isExternal)) && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 0" }}>No recipients on snapshot.</div>}
               {rows.length > 0 && <div style={{ border:"1px solid #E2E8F0", borderRadius:10, overflow:"hidden", background:"#fff" }}>
                 {rows.map(function(x, idx){
                   var rowBg = x.fullyPaid ? "#F0FDF4" : x.notStarted ? "#FFFBEB" : "#fff";
@@ -19886,6 +20571,33 @@ var CommissionsPage = function(p) {
       })}
     </div>
 
+    {/* Phase R-12 Part 4 — Deal-type filter pills (All / Internal / External).
+        Counts come from `rows` after the server-side filters. Same visual
+        style as STATUS_PILLS above. Until Part 5 wires externalSplit onto
+        Commission docs, every row reads as Internal — External will be 0. */}
+    {(function(){
+      var rs = Array.isArray(rows) ? rows : [];
+      var extCount = rs.filter(function(r){ return r && r.externalSplit && r.externalSplit.isExternal; }).length;
+      var intCount = rs.length - extCount;
+      var DEAL_TYPE_PILLS = [
+        { id:"all",      label:"All",         count: rs.length },
+        { id:"internal", label:"🏢 Internal", count: intCount },
+        { id:"external", label:"🤝 External", count: extCount }
+      ];
+      return <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
+        {DEAL_TYPE_PILLS.map(function(s){
+          var active = dealTypeFilter === s.id;
+          return <button key={s.id} onClick={function(){ setDealTypeFilter(s.id); }} style={{
+            padding:"5px 12px", borderRadius:8, border:"1px solid",
+            borderColor: active ? C.accent : "#E2E8F0",
+            background: active ? C.accent + "12" : "#fff",
+            color: active ? C.accent : C.textLight,
+            fontSize:12, fontWeight:600, cursor:"pointer"
+          }}>{s.label} ({s.count})</button>;
+        })}
+      </div>;
+    })()}
+
     {/* Search + agent + year filters */}
     <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
       <input type="text" placeholder="Search customer / project / developer…" value={search} onChange={function(e){ setSearch(e.target.value); }} style={{
@@ -19907,7 +20619,7 @@ var CommissionsPage = function(p) {
           return <option key={String(u._id)} value={String(u._id)}>{u.name}</option>;
         })}
       </select>
-      {(search || agentFilter || claimsYearFilter || statusFilter !== "all") && <button onClick={function(){ setSearch(""); setAgentFilter(""); setClaimsYearFilter(""); setStatusFilter("all"); }} style={{
+      {(search || agentFilter || claimsYearFilter || statusFilter !== "all" || dealTypeFilter !== "all") && <button onClick={function(){ setSearch(""); setAgentFilter(""); setClaimsYearFilter(""); setStatusFilter("all"); setDealTypeFilter("all"); }} style={{
         padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:12, color:C.textLight
       }}>Clear</button>}
     </div>
@@ -19915,10 +20627,24 @@ var CommissionsPage = function(p) {
     {/* List */}
     {loading && <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight }}>Loading…</div>}
     {!loading && loadErr && <div style={{ padding:"16px", background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8, color:"#B91C1C", fontSize:13, marginBottom:14 }}>{loadErr}</div>}
-    {!loading && rows && rows.length === 0 && <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight, background:"#fff", borderRadius:14, border:"1px solid #E8ECF1" }}>
-      No commissions match the current filters.
-    </div>}
-    {!loading && rows && rows.length > 0 && rows.map(renderCard)}
+    {!loading && rows && (function(){
+      // Phase R-12 Part 4 — apply the All / Internal / External pill filter
+      // client-side. Server-side filtering by dealType deferred until Part 5
+      // when externalSplit lands on Commission docs (today the FE filter is
+      // a no-op since no commission has externalSplit set).
+      var displayRows = rows;
+      if (dealTypeFilter === "external") {
+        displayRows = rows.filter(function(r){ return r && r.externalSplit && r.externalSplit.isExternal; });
+      } else if (dealTypeFilter === "internal") {
+        displayRows = rows.filter(function(r){ return !(r && r.externalSplit && r.externalSplit.isExternal); });
+      }
+      if (displayRows.length === 0) {
+        return <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight, background:"#fff", borderRadius:14, border:"1px solid #E8ECF1" }}>
+          No commissions match the current filters.
+        </div>;
+      }
+      return displayRows.map(renderCard);
+    })()}
     </>}
 
     {activeTab === "calculator" && (function(){
@@ -20283,7 +21009,11 @@ var CommissionsPage = function(p) {
                   </div>
                   <div style={{ borderTop:"1px solid #E2E8F0", marginTop:4, marginBottom:8 }}/>
                   <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
-                    <span style={{ fontSize:13, color:C.text }}>Less: Team Commissions</span>
+                    {/* Phase R-12 Part 7 — label rename. Backend field name
+                        (teamCommissions.total) unchanged for API compat;
+                        the line now folds in broker payouts from external
+                        deals alongside internal team payouts. */}
+                    <span style={{ fontSize:13, color:C.text }}>Less: Team &amp; Broker Commissions</span>
                     <span style={{ fontSize:13, color:"#B45309" }}>({fmtMoneyAr(pnlData.teamCommissions && pnlData.teamCommissions.total)})</span>
                   </div>
                   <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
@@ -20344,8 +21074,17 @@ var CommissionsPage = function(p) {
         }
         return arr;
       })();
-      var agents = (payoutReport && payoutReport.agents) || [];
-      var summary = (payoutReport && payoutReport.summary) || { totalPayout:0, agentCount:0, dealCount:0 };
+      var agents  = (payoutReport && payoutReport.agents)  || [];
+      // Phase R-12 Part 8 — broker rows from the same /payout-report
+      // response. Rendered AS A SEPARATE GROUP at the bottom of the table,
+      // not interleaved with agents (judgment call: clean visual split,
+      // and admins typically pay one big broker payment vs many small
+      // internal ones — easier to scan when grouped).
+      var brokers = (payoutReport && payoutReport.brokers) || [];
+      var summary = (payoutReport && payoutReport.summary) || { totalPayout:0, agentCount:0, brokerCount:0, recipientCount:0, dealCount:0 };
+      // recipientCount falls back to agentCount on pre-Part-8 responses (none
+      // exist in prod yet, but keeps this resilient if a stale cache hits).
+      var recipientCount = (summary.recipientCount != null) ? summary.recipientCount : (summary.agentCount + brokers.length);
       var currentMonthLabel = (months.find(function(m){ return m.key === payoutMonth; }) || { label: payoutMonth }).label;
       // Phase R-7 — Print to PDF. Expand all agents first so every drill-down
       // row renders into the DOM, then call window.print() on the next tick
@@ -20353,9 +21092,13 @@ var CommissionsPage = function(p) {
       // produces the file — no PDF library dependency. @media print CSS in
       // the inline <style> block below hides everything outside
       // #payout-print-area and forces A4 portrait.
+      // Phase R-12 Part 8 — also expand broker rows. expandedPayoutAgents
+      // doubles as the broker-expand map; broker keys are namespaced
+      // ("broker:" + id) so they can never collide with a 24-char user._id.
       var printPayoutReport = function(){
         var allExpanded = {};
         agents.forEach(function(a){ allExpanded[a.userId] = true; });
+        brokers.forEach(function(b){ allExpanded["broker:" + (b.brokerId || b.brokerName)] = true; });
         setExpandedPayoutAgents(allExpanded);
         // Two rAFs to be safe — first commits the expand, second is the
         // post-commit paint. window.print is synchronous and blocks; on
@@ -20381,6 +21124,14 @@ var CommissionsPage = function(p) {
             html, body { background: #fff !important; }
             body * { visibility: hidden !important; }
             #payout-print-area, #payout-print-area * { visibility: visible !important; }
+            /* Phase R-12 Part 8 — force background colors to print so the
+               violet "Broker" badge + sub-header stripe stay visible in
+               the PDF. Without these the browser strips backgrounds by
+               default and the broker section reads as plain text. */
+            #payout-print-area * {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
             #payout-print-area {
               position: absolute !important;
               left: 0 !important; top: 0 !important;
@@ -20411,25 +21162,28 @@ var CommissionsPage = function(p) {
           </select>
           {payoutLoading && <span style={{ fontSize:11, color:C.textLight }}>Loading payout report…</span>}
           <span style={{ flex:1 }}/>
-          <button onClick={printPayoutReport} disabled={agents.length === 0 || payoutLoading} title="Open the browser print dialog — pick 'Save as PDF' to file the report"
+          <button onClick={printPayoutReport} disabled={(agents.length + brokers.length) === 0 || payoutLoading} title="Open the browser print dialog — pick 'Save as PDF' to file the report"
             style={{
               padding:"7px 14px", borderRadius:8, fontSize:12, fontWeight:600,
               border:"1px solid "+C.accent,
-              background: agents.length === 0 ? "#F8FAFC" : C.accent + "12",
-              color: agents.length === 0 ? C.textLight : C.accent,
-              cursor: agents.length === 0 || payoutLoading ? "not-allowed" : "pointer"
+              background: (agents.length + brokers.length) === 0 ? "#F8FAFC" : C.accent + "12",
+              color: (agents.length + brokers.length) === 0 ? C.textLight : C.accent,
+              cursor: (agents.length + brokers.length) === 0 || payoutLoading ? "not-allowed" : "pointer"
             }}>🖨️ Print to PDF</button>
         </div>
 
-        {/* Stats row */}
+        {/* Stats row — Phase R-12 Part 8 changes the middle card from
+            "Agents to pay" → "Recipients to pay" so brokers count too.
+            Sub-text breaks out (N agents + M brokers) when both exist. */}
         <div style={{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" }}>
           <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
             <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Total payout</div>
             <div style={{ fontSize:18, fontWeight:700, color:C.success }}>{fmtMoney(summary.totalPayout)} EGP</div>
           </div>
           <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
-            <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Agents to pay</div>
-            <div style={{ fontSize:18, fontWeight:700, color:C.text }}>{summary.agentCount}</div>
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Recipients to pay</div>
+            <div style={{ fontSize:18, fontWeight:700, color:C.text }}>{recipientCount}</div>
+            {brokers.length > 0 && <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>{summary.agentCount} internal · {brokers.length} broker{brokers.length === 1 ? "" : "s"}</div>}
           </div>
           <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
             <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Deals contributing</div>
@@ -20438,18 +21192,21 @@ var CommissionsPage = function(p) {
         </div>
 
         {/* Per-agent table — expandable rows. Each agent shows totalOwed,
-            bank account, and their list of contributing deals. */}
-        {agents.length === 0 && !payoutLoading && <div style={{
+            and their list of contributing deals. Phase R-12 Part 8 appends
+            broker rows in their own tbody section, separated by a labelled
+            sub-header. Brokers grouped at bottom (judgment call) for clean
+            visual split. */}
+        {(agents.length + brokers.length) === 0 && !payoutLoading && <div style={{
           padding:"30px 16px", textAlign:"center", color:C.textLight,
           background:"#fff", border:"1px solid #E8ECF1", borderRadius:10
         }}>No payouts owed for this month.</div>}
 
-        {agents.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
+        {(agents.length + brokers.length) > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
             <thead>
               <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
                 <th className="no-print" style={{ width:32 }}></th>
-                <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Agent</th>
+                <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Recipient</th>
                 <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Role</th>
                 <th style={{ textAlign:"end",   padding:"10px 12px", fontWeight:700, color:C.textLight }}>Deals</th>
                 <th style={{ textAlign:"end",   padding:"10px 12px", fontWeight:700, color:C.textLight }}>Total owed (EGP)</th>
@@ -20503,6 +21260,75 @@ var CommissionsPage = function(p) {
                               <td style={{ padding:"6px 8px", color: d.isSplit ? "#7C3AED" : C.textLight, fontWeight: d.isSplit ? 600 : 400 }}>{d.splitLabel || "Full deal"}</td>
                               <td style={{ padding:"6px 8px", color:C.textLight }}>{d.cycleRef ? "#" + d.cycleRef : "—"}</td>
                               <td style={{ padding:"6px 8px", textAlign:"end", fontWeight:700, color:C.success }}>{fmtMoney(d.owedNet)}</td>
+                            </tr>;
+                          })}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>}
+                </Fragment>;
+              })}
+              {/* Phase R-12 Part 8 — broker section. Sub-header divider row,
+                  then one expandable row per broker. Drill-down omits the
+                  Split column (brokers don't have team splits). */}
+              {brokers.length > 0 && <tr style={{ background:"#F5F3FF", borderTop:"2px solid #DDD6FE" }}>
+                <td colSpan={5} style={{ padding:"8px 12px", fontSize:11, fontWeight:700, color:"#5B21B6", textTransform:"uppercase", letterSpacing:0.4 }}>
+                  Brokers ({brokers.length})
+                </td>
+              </tr>}
+              {brokers.map(function(b){
+                var bKey = "broker:" + (b.brokerId || b.brokerName);
+                var expanded = !!expandedPayoutAgents[bKey];
+                return <Fragment key={bKey}>
+                  <tr style={{ borderTop:"1px solid #F1F5F9", cursor:"pointer" }}
+                      onClick={function(){
+                        setExpandedPayoutAgents(function(prev){
+                          var next = Object.assign({}, prev);
+                          if (next[bKey]) delete next[bKey]; else next[bKey] = true;
+                          return next;
+                        });
+                      }}>
+                    <td className="no-print" style={{ padding:"10px 12px", color:C.text, width:32 }}>
+                      <ChevronDown size={16} style={{
+                        display:"inline-block", verticalAlign:"middle",
+                        transform: expanded ? "rotate(0deg)" : "rotate(-90deg)",
+                        transition:"transform 0.2s ease"
+                      }}/>
+                    </td>
+                    <td style={{ padding:"10px 12px", fontWeight:600 }}>
+                      {b.brokerName}
+                      {/* Violet "Broker" tag — same color family as the
+                          External badge on the commission card (Part 6).
+                          Renders cleanly in print (background + border
+                          both visible — no opacity/shadow tricks). */}
+                      <span style={{ marginInlineStart:8, fontSize:10, padding:"2px 8px", borderRadius:10, background:"#EDE9FE", color:"#5B21B6", fontWeight:700, border:"1px solid #DDD6FE" }}>Broker</span>
+                    </td>
+                    <td style={{ padding:"10px 12px", color:C.textLight }}>—</td>
+                    <td style={{ padding:"10px 12px", textAlign:"end" }}>{b.deals.length}</td>
+                    <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:"#5B21B6" }}>{fmtMoney(b.totalOwed)}</td>
+                  </tr>
+                  {expanded && <tr style={{ background:"#F5F3FF" }}>
+                    <td colSpan={5} style={{ padding:"6px 12px 12px 44px" }}>
+                      <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+                        <thead>
+                          <tr style={{ color:C.textLight }}>
+                            <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Customer</th>
+                            <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Project</th>
+                            <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Deal date</th>
+                            <th style={{ textAlign:"end",   padding:"6px 8px", fontWeight:700 }}>Deal total</th>
+                            <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Cycle</th>
+                            <th style={{ textAlign:"end",   padding:"6px 8px", fontWeight:700 }}>Owed (EGP)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {b.deals.map(function(d, idx){
+                            return <tr key={d.commissionId + ":" + idx} style={{ borderTop:"1px solid #E2E8F0" }}>
+                              <td style={{ padding:"6px 8px", color:C.text }}>{d.customerName || "(unknown)"}</td>
+                              <td style={{ padding:"6px 8px", color:C.text }}>{d.projectName || "—"}</td>
+                              <td style={{ padding:"6px 8px", color:C.textLight }}>{fmtDate(d.dealDate)}</td>
+                              <td style={{ padding:"6px 8px", textAlign:"end", color:C.textLight }}>{fmtMoney(d.dealTotal)}</td>
+                              <td style={{ padding:"6px 8px", color:C.textLight }}>{d.cycleRef ? "#" + d.cycleRef : "—"}</td>
+                              <td style={{ padding:"6px 8px", textAlign:"end", fontWeight:700, color:"#5B21B6" }}>{fmtMoney(d.owedNet)}</td>
                             </tr>;
                           })}
                         </tbody>
@@ -21962,6 +22788,7 @@ export default function CRMApp() {
       case "reports": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <ReportsPage {...sp}/> : <DashboardPage {...sp}/>;
       case "team": return <TeamPage {...sp}/>;
       case "users": return <UsersPage {...sp}/>;
+      case "brokers": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <BrokersPage {...sp}/> : <DashboardPage {...sp}/>;
       case "archive": return <ArchivePage {...sp}/>;
       case "attendance": return <AttendancePage {...sp}/>;
       // Legacy page ids (salaries / offsiteRequests / companyOffDays) used to
