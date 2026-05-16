@@ -7,6 +7,13 @@ const config: CapacitorConfig = {
   server: {
     url: 'https://crm-aro.com',
     cleartext: false
+  },
+  plugins: {
+    PrivacyScreen: {
+      enable: true,
+      imageName: 'Splash',
+      preventScreenshots: true
+    }
   }
 };
 
