@@ -1726,7 +1726,8 @@ var LeadForm = function(p) {
     base = Object.assign({
       dealType: "internal",
       externalBrokerId: "",
-      externalDealConfig: { commissionTaxPct: 0, brokerSharePct: 0 }
+      externalDealConfig: { commissionTaxPct: 0, brokerSharePct: 0 },
+      commissionAmount: ""
     }, base);
     if (base.externalBrokerId && typeof base.externalBrokerId === "object") {
       base.externalBrokerId = String(base.externalBrokerId._id || "");
@@ -1739,6 +1740,14 @@ var LeadForm = function(p) {
       commissionTaxPct: Number(seedCfg.commissionTaxPct) || 0,
       brokerSharePct:   Number(seedCfg.brokerSharePct)   || 0
     };
+    // commissionAmount is a Number on the DB but a formatted string in the
+    // controlled input. Format existing values; leave nullish as empty so the
+    // field appears empty + required on old deals that pre-date this field.
+    if (typeof base.commissionAmount === "number" && isFinite(base.commissionAmount) && base.commissionAmount > 0) {
+      base.commissionAmount = base.commissionAmount.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    } else {
+      base.commissionAmount = "";
+    }
     return base;
   })());
   var [dupWarning, setDupWarning] = useState(null);
@@ -1864,10 +1873,28 @@ var LeadForm = function(p) {
       if (!(taxPct > 0 && taxPct <= 100)) { alert("Commission Tax % must be between 0 and 100"); return; }
       if (!(brkPct > 0 && brkPct <= 100)) { alert("Broker Share % must be between 0 and 100"); return; }
     }
+    // Commission Amount — required > 0 for any DoneDeal save (Internal or
+    // External). Mirrors backend rejection at POST/PUT /api/leads.
+    if (isDoneDealForm && isOnlyAdmin) {
+      var caInputStr = String(form.commissionAmount || "").replace(/,/g, "").trim();
+      var caInputNum = Number(caInputStr);
+      if (!caInputStr || !isFinite(caInputNum) || caInputNum <= 0) {
+        alert("Please enter a valid Commission Amount (EGP) greater than 0");
+        return;
+      }
+    }
     inflight.current = true;
     setSaving(true);
     try {
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||form.status||"NewLead"), phone2: form.phone2||"" });
+      // commissionAmount is a Number on the wire — coerce the formatted string
+      // back; blank fields go up as null so non-DoneDeal saves don't introduce
+      // a stray zero.
+      (function(){
+        var s = String(payload.commissionAmount || "").replace(/,/g, "").trim();
+        var n = Number(s);
+        payload.commissionAmount = (s && isFinite(n) && n > 0) ? n : null;
+      })();
       // Strip client-only fields the API doesn't need
       delete payload.documentFiles;
       // Managerial roles editing an existing lead: strip notes/lastFeedback
@@ -1960,6 +1987,27 @@ var LeadForm = function(p) {
         external fields when flipping back to internal so no stale config
         lingers on the lead. */}
     {isDoneDealForm&&isOnlyAdmin&&<div style={{ marginBottom:13, padding:"12px 14px", background:"#F8FAFC", borderRadius:10, border:"1px solid #E8ECF1" }}>
+      {/* Commission Amount — applies to BOTH Internal and External. Required > 0.
+          The Live Preview at the bottom of this box recalculates from this value
+          (replaces the prior hardcoded 100,000 EGP placeholder). */}
+      <Inp label="💰 Commission Amount (EGP)" req
+        value={form.commissionAmount || ""}
+        onChange={function(e){
+          var raw = e.target.value.replace(/,/g, "").replace(/[^0-9.]/g, "");
+          var firstDot = raw.indexOf(".");
+          if (firstDot >= 0) {
+            raw = raw.slice(0, firstDot+1) + raw.slice(firstDot+1).replace(/\./g, "");
+          }
+          var parts = raw.split(".");
+          var intPart = parts[0] || "";
+          var hasDec = parts.length > 1;
+          var decPart = hasDec ? parts[1].slice(0, 2) : "";
+          var formatted = intPart === ""
+            ? (hasDec ? "0." + decPart : "")
+            : Number(intPart).toLocaleString() + (hasDec ? "." + decPart : "");
+          upd("commissionAmount", formatted);
+        }}
+        placeholder="e.g. 100,000"/>
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:8 }}>Deal Type</label>
       {/* Phase R-12 Part 5 — commission-lock banner. Mirrors the backend
           409 from PUT /api/leads/:id when an active commission exists. */}
@@ -2040,26 +2088,33 @@ var LeadForm = function(p) {
           </div>
         </div>
 
-        {/* Live preview at gross 100,000. Formula: tax = gross × taxPct/100,
-            aroNet = gross − tax, broker = aroNet × brokerPct/100,
-            aro = aroNet × (100 − brokerPct)/100. Matches the spec wording. */}
-        {(function(){
-          var taxPct = Number((form.externalDealConfig && form.externalDealConfig.commissionTaxPct) || 0);
-          var brkPct = Number((form.externalDealConfig && form.externalDealConfig.brokerSharePct)   || 0);
-          if (!(taxPct > 0 && taxPct <= 100) || !(brkPct > 0 && brkPct <= 100)) return null;
-          var GROSS = 100000;
-          var tax = GROSS * (taxPct/100);
-          var aroNet = GROSS - tax;
-          var brokerEgp = aroNet * (brkPct/100);
-          var aroEgp    = aroNet - brokerEgp;
-          var fmt = function(n){ return Math.round(n).toLocaleString(); };
-          return <div style={{ padding:"10px 12px", background:"#EFF6FF", borderRadius:8, fontSize:12, color:"#1E3A8A", lineHeight:1.6 }}>
-            <div style={{ fontWeight:600, marginBottom:4 }}>📊 Live Preview — on a 100,000 EGP gross claim:</div>
-            <div>Tax ({taxPct}%): <b>{fmt(tax)} EGP</b> &nbsp;→&nbsp; ARO net: <b>{fmt(aroNet)} EGP</b></div>
-            <div>Broker ({brkPct}% of net): <b>{fmt(brokerEgp)} EGP</b> &nbsp;·&nbsp; ARO ({100-brkPct}% of net): <b>{fmt(aroEgp)} EGP</b></div>
-          </div>;
-        })()}
       </div>}
+
+      {/* Live Preview — recalculates from the Commission Amount field above.
+          Formula: tax = gross × taxPct/100, aroNet = gross − tax,
+          broker = aroNet × brokerPct/100, aro = aroNet × (100 − brokerPct)/100.
+          Renders for both Internal and External once commissionAmount > 0:
+          Internal shows tax line only (broker line hidden); External adds the
+          broker / ARO split when brokerSharePct is set. */}
+      {(function(){
+        var grossStr = String(form.commissionAmount || "").replace(/,/g, "").trim();
+        var gross = Number(grossStr);
+        if (!grossStr || !isFinite(gross) || gross <= 0) return null;
+        var taxPct = Number((form.externalDealConfig && form.externalDealConfig.commissionTaxPct) || 0);
+        var isExternal = form.dealType === "external";
+        var brkPct = isExternal ? Number((form.externalDealConfig && form.externalDealConfig.brokerSharePct) || 0) : 0;
+        var tax = gross * (taxPct / 100);
+        var aroNet = gross - tax;
+        var brokerEgp = aroNet * (brkPct / 100);
+        var aroEgp = aroNet - brokerEgp;
+        var fmt = function(n){ return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); };
+        var showBroker = isExternal && brkPct > 0 && brkPct <= 100;
+        return <div style={{ padding:"10px 12px", background:"#EFF6FF", borderRadius:8, fontSize:12, color:"#1E3A8A", lineHeight:1.6, marginTop:10 }}>
+          <div style={{ fontWeight:600, marginBottom:4 }}>📊 Live Preview — on a {fmt(gross)} EGP gross claim:</div>
+          <div>Tax ({taxPct}%): <b>{fmt(tax)} EGP</b> &nbsp;→&nbsp; ARO net: <b>{fmt(aroNet)} EGP</b></div>
+          {showBroker && <div>Broker ({brkPct}% of net): <b>{fmt(brokerEgp)} EGP</b> &nbsp;·&nbsp; ARO ({100-brkPct}% of net): <b>{fmt(aroEgp)} EGP</b></div>}
+        </div>;
+      })()}
     </div>}
     {/* Inline Add Broker — quick-add modal launched from the "+ Add new broker"
         option in the dropdown above. Single name field for speed; full edit
