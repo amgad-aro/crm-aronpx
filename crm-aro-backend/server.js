@@ -209,10 +209,22 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
     commissionTaxPct:{type:Number,default:0},
     brokerSharePct:{type:Number,default:0}
   },
-  // Gross commission claim (EGP) received from the developer for this deal.
-  // Separate from `budget` (deal value). Required on admin's DoneDeal save
-  // path; null on pre-existing deals that predate this field.
-  commissionAmount:{type:Number,default:null}
+  // Commission claim from the developer for this deal.
+  // commissionRate: percent value typed in the deal form (e.g. 3 for 3%).
+  // commissionAmount: always computed server-side as round2(budget × rate / 100);
+  // never trusted from the client. Separate from `budget` (deal value).
+  // Both required on admin's DoneDeal save path; null on pre-existing deals.
+  commissionRate:{type:Number,default:null},
+  commissionAmount:{type:Number,default:null},
+  // External-deal optional "Sales Agent involved" toggle. When enabled, a
+  // second sales agent (not in the Lead's reportsTo chain) is paid a manual
+  // EGP amount on this deal. The per-1000 chain (TL/manager/director/owner)
+  // is NEVER paid for External deals regardless of this toggle — only the
+  // broker (always) and this external sales agent (when enabled).
+  externalSalesAgentEnabled:{type:Boolean,default:false},
+  externalSalesAgentId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+  externalSalesAgentName:{type:String,default:""},
+  externalSalesAgentManualAmount:{type:Number,default:null}
 },{timestamps:true}));
 
 // Indexes for query performance
@@ -532,6 +544,26 @@ var commissionSchema = new mongoose.Schema({
     director:        { type: Number, default: 0.5 }
   },
   computedAt:    { type: Date, default: null },
+
+  // Per-deal admin recipient overrides (Phase R-13). Three actions:
+  //   manual_add    — add an extra recipient (chain or off-chain) with a manual amount.
+  //                   targetSlot is "extra"; userId is optional (null for non-User names).
+  //   manual_zero   — pin a chain slot's effective share to 0 without removing it.
+  //                   targetSlot is one of the snapshot slot keys (e.g. "teamLeader").
+  //   manual_remove — exclude a chain slot from the effective recipient list entirely.
+  //                   targetSlot is the slot key; computedShare ignored.
+  // Computed shares on commission.snapshot.* are NOT mutated. The effective
+  // recipient list is derived at read time by combining snapshot + overrides.
+  recipientOverrides: [{
+    targetSlot:    { type: String, required: true },  // "salesAgent" | "teamLeader" | "manager" | "director" | "salesAgent2" | "teamLeader2" | "manager2" | "director2" | "extra"
+    source:        { type: String, enum: ["manual_add","manual_zero","manual_remove"], required: true },
+    userId:        { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    name:          { type: String, default: "" },
+    role:          { type: String, enum: ["sales","team_leader","manager","director"], default: "sales" },
+    computedShare: { type: Number, default: 0 },
+    addedBy:       { type: String, default: "" },     // admin name SNAPSHOT
+    addedAt:       { type: Date, default: Date.now }
+  }],
 
   lastAlertedAt: { type: Date, default: null }
 }, { timestamps: true });
@@ -1487,7 +1519,10 @@ async function validateAndNormalizeExternalDeal(body, oldLead) {
   var hasDealType = body.dealType         !== undefined;
   var hasBroker   = body.externalBrokerId !== undefined;
   var hasConfig   = body.externalDealConfig !== undefined;
-  if (!hasDealType && !hasBroker && !hasConfig) return { ok: true };
+  var hasExtSales = body.externalSalesAgentEnabled !== undefined
+                 || body.externalSalesAgentId      !== undefined
+                 || body.externalSalesAgentManualAmount !== undefined;
+  if (!hasDealType && !hasBroker && !hasConfig && !hasExtSales) return { ok: true };
 
   var dealType = hasDealType ? String(body.dealType) : (oldLead && oldLead.dealType) || "internal";
   if (dealType !== "internal" && dealType !== "external") {
@@ -1498,6 +1533,10 @@ async function validateAndNormalizeExternalDeal(body, oldLead) {
     body.dealType           = "internal";
     body.externalBrokerId   = null;
     body.externalDealConfig = { commissionTaxPct: 0, brokerSharePct: 0 };
+    body.externalSalesAgentEnabled      = false;
+    body.externalSalesAgentId           = null;
+    body.externalSalesAgentName         = "";
+    body.externalSalesAgentManualAmount = null;
     return { ok: true };
   }
 
@@ -1513,11 +1552,14 @@ async function validateAndNormalizeExternalDeal(body, oldLead) {
     return { ok: false, error: "Broker is archived — restore it before assigning to a deal" };
   }
 
+  // Phase R-13 — commissionTaxPct (informal pre-broker deduction) may now be
+  // 0; brokerSharePct still required > 0. State tax (VAT 14% + Withholding 5%)
+  // is handled by the canonical flow off cycle.claimAmount, never here.
   var cfg       = hasConfig ? body.externalDealConfig : ((oldLead && oldLead.externalDealConfig) || {});
   var taxPct    = Number((cfg && cfg.commissionTaxPct) || 0);
   var brokerPct = Number((cfg && cfg.brokerSharePct)   || 0);
-  if (!isFinite(taxPct) || taxPct <= 0 || taxPct > 100) {
-    return { ok: false, error: "externalDealConfig.commissionTaxPct must be > 0 and ≤ 100" };
+  if (!isFinite(taxPct) || taxPct < 0 || taxPct > 100) {
+    return { ok: false, error: "externalDealConfig.commissionTaxPct must be between 0 and 100" };
   }
   if (!isFinite(brokerPct) || brokerPct <= 0 || brokerPct > 100) {
     return { ok: false, error: "externalDealConfig.brokerSharePct must be > 0 and ≤ 100" };
@@ -1526,6 +1568,38 @@ async function validateAndNormalizeExternalDeal(body, oldLead) {
   body.dealType           = "external";
   body.externalBrokerId   = brokerId;
   body.externalDealConfig = { commissionTaxPct: taxPct, brokerSharePct: brokerPct };
+
+  // Phase R-13 — "Sales Agent involved" toggle. When enabled, a second sales
+  // agent receives a manual EGP payout on this deal. The per-1000 internal
+  // chain is NEVER paid for External deals (Q4-B); only broker + this agent.
+  var enabled = !!(hasExtSales ? body.externalSalesAgentEnabled : (oldLead && oldLead.externalSalesAgentEnabled));
+  if (enabled) {
+    var agentIdRaw = (body.externalSalesAgentId !== undefined)
+      ? body.externalSalesAgentId
+      : (oldLead && oldLead.externalSalesAgentId);
+    var agentId = agentIdRaw ? String(agentIdRaw) : "";
+    if (!agentId || !mongoose.Types.ObjectId.isValid(agentId)) {
+      return { ok: false, error: "externalSalesAgentId required when 'Sales Agent involved' is enabled" };
+    }
+    var agentDoc = await User.findById(agentId).select("name role active").lean();
+    if (!agentDoc) return { ok: false, error: "External sales agent user not found" };
+    var amtRaw = (body.externalSalesAgentManualAmount !== undefined)
+      ? body.externalSalesAgentManualAmount
+      : (oldLead && oldLead.externalSalesAgentManualAmount);
+    var amt = Number(amtRaw);
+    if (!isFinite(amt) || amt <= 0) {
+      return { ok: false, error: "externalSalesAgentManualAmount must be > 0 when 'Sales Agent involved' is enabled" };
+    }
+    body.externalSalesAgentEnabled      = true;
+    body.externalSalesAgentId           = agentId;
+    body.externalSalesAgentName         = agentDoc.name || "";
+    body.externalSalesAgentManualAmount = amt;
+  } else {
+    body.externalSalesAgentEnabled      = false;
+    body.externalSalesAgentId           = null;
+    body.externalSalesAgentName         = "";
+    body.externalSalesAgentManualAmount = null;
+  }
   return { ok: true };
 }
 
@@ -1717,13 +1791,37 @@ async function computeAllRecipientShares(c) {
     c.externalSplit.brokerOwed          = round2Local(brkOwd);
     c.externalSplit.aroOwed             = round2Local(aroOwd);
     c.markModified("externalSplit");
-    // Substitute aroOwed in place of the deal-level dealTotal for the
-    // internal-team rate machinery below. Per spec Part 5.3:
-    // "internal team recipients (if any) compute against aroOwed instead
-    // of grossClaim". Effect: shares scale to ARO's keep, not the deal
-    // total. Admins can use overrideAmount to set explicit values when
-    // the rate-derived shares aren't appropriate for an external deal.
-    dealTotal = Number(c.externalSplit.aroOwed || 0);
+    // Phase R-13 — External deals no longer route through the per-1000 chain.
+    // Recipients for External: (1) broker (always, via externalSplit.brokerOwed
+    // → brokerPayouts[]), and (2) optional "Sales Agent involved" — a second
+    // sales agent receiving a manual EGP amount stored on the Lead. The chain
+    // slots (TL/manager/director/owner) are NEVER paid on External deals.
+    // Short-circuit the chain math: set the salesAgent slot to either the
+    // manual external-sales amount or 0, then bail out.
+    var manualAmt = 0;
+    try {
+      var lExt = await Lead.findById(c.leadId).select("externalSalesAgentEnabled externalSalesAgentManualAmount").lean();
+      if (lExt && lExt.externalSalesAgentEnabled) {
+        manualAmt = Number(lExt.externalSalesAgentManualAmount) || 0;
+      }
+    } catch(e) { /* leave manualAmt = 0 */ }
+    if (c.snapshot.salesAgent) {
+      c.snapshot.salesAgent.computedShare       = round2Local(manualAmt);
+      c.snapshot.salesAgent.rate                = 0;
+      c.snapshot.salesAgent.rateBucket          = manualAmt > 0 ? "manual" : "fixed";
+      c.snapshot.salesAgent.isHalfWeight        = false;
+      c.snapshot.salesAgent.effectiveDealTotal  = 0;
+      c.snapshot.salesAgent.targetSnapshot      = 0;
+      c.snapshot.salesAgent.performanceSnapshot = 0;
+      c.snapshot.salesAgent.computedAt          = new Date();
+    }
+    c.ratesSnapshot = {
+      sales: { base: rates.sales.base, target_met: rates.sales.target_met, double_target: rates.sales.double_target },
+      team_leader: rates.team_leader, manager: rates.manager, director: rates.director
+    };
+    c.computedAt = new Date();
+    c.markModified("snapshot");
+    return c;
   }
 
   // Project weight: prefer the live Lead.projectWeight (denormalised cache),
@@ -2030,10 +2128,42 @@ async function buildSnapshotForLead(leadDoc) {
     try { primaryAgent = await User.findById(leadDoc.agentId).lean(); } catch(e){}
   }
   if (!primaryAgent) throw new Error("buildSnapshotForLead: lead has no resolvable primary agent");
-  var primaryRecipient = recipientFromUser(primaryAgent, "sales");
-  var primaryChain = await walkReportsToChain(primaryAgent._id);
 
-  var isSplit = !!leadDoc.splitAgent2Id;
+  var isExternalDeal = leadDoc.dealType === "external";
+
+  // Phase R-13 — For External deals, the per-1000 chain (TL/manager/director/
+  // owner) is NEVER paid. We null those slots at snapshot time (Q4 answer B).
+  // The salesAgent slot is preserved for audit but its computedShare becomes
+  // 0 in computeAllRecipientShares. When the "Sales Agent involved" toggle is
+  // ON, the salesAgent slot is REPLACED with the externalSalesAgent (paid
+  // manualAmount); the Lead's primary agentId is kept in Lead.agentId for
+  // audit/listing purposes but not stamped on the commission.
+  var primaryRecipient;
+  if (isExternalDeal && leadDoc.externalSalesAgentEnabled) {
+    var extAgent = null;
+    if (leadDoc.externalSalesAgentId) {
+      try { extAgent = await User.findById(leadDoc.externalSalesAgentId).lean(); } catch(e){}
+    }
+    primaryRecipient = extAgent
+      ? recipientFromUser(extAgent, "sales")
+      : {
+          userName: leadDoc.externalSalesAgentName || "(removed user)",
+          userId: leadDoc.externalSalesAgentId || null,
+          userActiveAtClose: false, role: "sales"
+        };
+  } else {
+    primaryRecipient = recipientFromUser(primaryAgent, "sales");
+  }
+
+  var primaryChain;
+  if (isExternalDeal) {
+    primaryChain = { teamLeader: null, manager: null, director: null };
+  } else {
+    primaryChain = await walkReportsToChain(primaryAgent._id);
+  }
+
+  // External deals never run the split-chain mechanic either.
+  var isSplit = !isExternalDeal && !!leadDoc.splitAgent2Id;
   var splitChainOut = {
     salesAgent2: null, teamLeader2: null, manager2: null, director2: null
   };
@@ -2244,18 +2374,35 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
         brokerPayouts:       []
       };
     }
+    // Phase R-13 — cycle 1 seeded from Lead.commissionRate / commissionAmount.
+    // claimUnitValue = parsed Lead.budget (= dealTotal); commissionRate stored
+    // as DECIMAL (e.g. 0.03 for 3%) to match the cycle-stage modal convention;
+    // claimAmount = round2(claimUnitValue × commissionRate). When the Lead has
+    // none of these set (legacy / non-DoneDeal path that somehow reached here),
+    // cycle 1 stays zeroed and admin fills it on stage advance.
+    var seedRound2 = function(n){ return Math.round(Number(n||0) * 100) / 100; };
+    var seedCuv     = Number(parseDealTotalFromBudget(leadDoc.budget)) || 0;
+    var seedRatePct = Number(leadDoc.commissionRate);
+    var seedRateDec = (isFinite(seedRatePct) && seedRatePct > 0) ? (seedRatePct / 100) : 0;
+    var seedAmount  = (typeof leadDoc.commissionAmount === "number" && leadDoc.commissionAmount > 0)
+      ? Number(leadDoc.commissionAmount)
+      : seedRound2(seedCuv * seedRateDec);
+    var cycle1 = {
+      cycleNumber: 1,
+      state: "pending_claim",
+      expectedAmount: seedAmount > 0 ? seedAmount : 0,
+      claimUnitValue: seedCuv,
+      commissionRate: seedRateDec,
+      claimAmount: seedAmount > 0 ? seedAmount : 0,
+      receivedAmount: 0
+    };
     var created = await Commission.create({
       leadId: leadDoc._id,
       snapshot: snapshot,
       expectedTotal: 0,
       expectedCollectionDate: "",
       status: "active",
-      cycles: [{
-        cycleNumber: 1,
-        state: "pending_claim",
-        expectedAmount: 0,
-        receivedAmount: 0
-      }],
+      cycles: [cycle1],
       payouts: [],
       incentive: { recipients: [] },
       externalSplit: externalSplitInit
@@ -7195,20 +7342,34 @@ app.post("/api/leads", auth, async function(req, res) {
       delete req.body.dealType;
       delete req.body.externalBrokerId;
       delete req.body.externalDealConfig;
+      delete req.body.commissionRate;
       delete req.body.commissionAmount;
+      delete req.body.externalSalesAgentEnabled;
+      delete req.body.externalSalesAgentId;
+      delete req.body.externalSalesAgentName;
+      delete req.body.externalSalesAgentManualAmount;
     }
     var extCheck = await validateAndNormalizeExternalDeal(req.body, null);
     if (!extCheck.ok) return res.status(400).json({ error: extCheck.error });
-    // commissionAmount: required > 0 when admin/sales_admin creates a DoneDeal.
-    // Recompute fresh from a clean Number coerce — never trust client math.
+    // Phase R-13 — Commission rate + amount (canonical state-tax model).
+    // FE sends commissionRate (percent); BE always recomputes commissionAmount
+    // from round2(budget × rate / 100). Client-supplied commissionAmount is
+    // ignored. Both required > 0 on admin's DoneDeal save; budget > 0 too.
+    var __round2 = function(n){ return Math.round(Number(n||0) * 100) / 100; };
     if ((req.user.role === "admin" || req.user.role === "sales_admin") && initialStatus === "DoneDeal") {
-      var caRawCreate = req.body.commissionAmount;
-      var caNumCreate = Number(caRawCreate);
-      if (caRawCreate === undefined || caRawCreate === null || caRawCreate === "" || !isFinite(caNumCreate) || caNumCreate <= 0) {
-        return res.status(400).json({ error: "commission_amount_required", message: "Commission Amount (EGP) is required and must be greater than 0." });
+      var crRawCreate = req.body.commissionRate;
+      var crNumCreate = Number(crRawCreate);
+      if (crRawCreate === undefined || crRawCreate === null || crRawCreate === "" || !isFinite(crNumCreate) || crNumCreate <= 0 || crNumCreate > 100) {
+        return res.status(400).json({ error: "commission_rate_required", message: "Commission Rate (%) is required and must be between 0 and 100." });
       }
-      req.body.commissionAmount = caNumCreate;
+      var budgetNumCreate = parseDealTotalFromBudget(req.body.budget);
+      if (!(budgetNumCreate > 0)) {
+        return res.status(400).json({ error: "budget_required_for_commission", message: "Budget (EGP) is required and must be greater than 0 to compute the commission." });
+      }
+      req.body.commissionRate   = crNumCreate;
+      req.body.commissionAmount = __round2(budgetNumCreate * crNumCreate / 100);
     } else {
+      delete req.body.commissionRate;
       delete req.body.commissionAmount;
     }
     var lead = await Lead.create({
@@ -7241,7 +7402,12 @@ app.post("/api/leads", auth, async function(req, res) {
       dealType:           req.body.dealType,
       externalBrokerId:   req.body.externalBrokerId,
       externalDealConfig: req.body.externalDealConfig,
+      commissionRate:     (typeof req.body.commissionRate === "number") ? req.body.commissionRate : null,
       commissionAmount:   (typeof req.body.commissionAmount === "number") ? req.body.commissionAmount : null,
+      externalSalesAgentEnabled:      !!req.body.externalSalesAgentEnabled,
+      externalSalesAgentId:           req.body.externalSalesAgentId || null,
+      externalSalesAgentName:         req.body.externalSalesAgentName || "",
+      externalSalesAgentManualAmount: (typeof req.body.externalSalesAgentManualAmount === "number") ? req.body.externalSalesAgentManualAmount : null,
       assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "New Lead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: req.body.notes || "", budget: req.body.budget || "", callbackTime: req.body.callbackTime || "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
       expiresAt:        new Date(Date.now() + 30*24*60*60*1000),
       globalStatus:     "active",
@@ -8137,17 +8303,23 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // the FE, so any sales/TL/manager attempting to mutate these fields is
     // either a bug or a bypass. Strip silently and continue with the rest
     // of the PUT.
-    if (req.body.dealType !== undefined || req.body.externalBrokerId !== undefined || req.body.externalDealConfig !== undefined) {
+    if (req.body.dealType !== undefined || req.body.externalBrokerId !== undefined || req.body.externalDealConfig !== undefined
+        || req.body.externalSalesAgentEnabled !== undefined || req.body.externalSalesAgentId !== undefined
+        || req.body.externalSalesAgentManualAmount !== undefined) {
       if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
         delete req.body.dealType;
         delete req.body.externalBrokerId;
         delete req.body.externalDealConfig;
+        delete req.body.externalSalesAgentEnabled;
+        delete req.body.externalSalesAgentId;
+        delete req.body.externalSalesAgentName;
+        delete req.body.externalSalesAgentManualAmount;
       } else {
         // Need oldLead.dealType when the body changes external-config or broker
         // without re-stating dealType (partial edit on an already-external lead).
         // The general oldLead load below is conditional on a different set of
         // tracked fields, so do an early targeted fetch here.
-        var dtOldLead = await Lead.findById(req.params.id).select("dealType externalBrokerId externalDealConfig").lean();
+        var dtOldLead = await Lead.findById(req.params.id).select("dealType externalBrokerId externalDealConfig externalSalesAgentEnabled externalSalesAgentId externalSalesAgentManualAmount").lean();
         if (!dtOldLead) return res.status(404).json({ error: "Lead not found" });
         // Phase R-12 Part 5 — commission lock. Once an active commission
         // exists for this lead, the external-deal fields are frozen. Allowing
@@ -8174,31 +8346,46 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         if (!extCheckPut.ok) return res.status(400).json({ error: extCheckPut.error });
       }
     }
-    // commissionAmount: strip for non-admin roles (defense in depth — UI is
-    // admin-only). For admin/sales_admin saving a DoneDeal (any path that
-    // sets status="DoneDeal"), require > 0 and recompute from a clean Number
-    // coerce — never trust client-computed tax/net/broker/aro values.
+    // Phase R-13 — commissionRate + commissionAmount (canonical state-tax model).
+    // FE sends commissionRate (percent); BE always recomputes commissionAmount
+    // from round2(budget × rate / 100). Client-supplied commissionAmount is
+    // ignored. Non-admin roles: strip both. Admin saving a DoneDeal: require
+    // commissionRate > 0 and budget > 0; recompute. Admin saving non-DoneDeal:
+    // accept rate if provided but drop empty/invalid.
+    var __round2Put = function(n){ return Math.round(Number(n||0) * 100) / 100; };
     if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      delete req.body.commissionRate;
       delete req.body.commissionAmount;
     } else if (req.body.status === "DoneDeal") {
-      var caRawPut = req.body.commissionAmount;
-      var caNumPut = Number(caRawPut);
-      if (caRawPut === undefined || caRawPut === null || caRawPut === "" || !isFinite(caNumPut) || caNumPut <= 0) {
-        return res.status(400).json({ error: "commission_amount_required", message: "Commission Amount (EGP) is required and must be greater than 0." });
+      var crRawPut = req.body.commissionRate;
+      var crNumPut = Number(crRawPut);
+      if (crRawPut === undefined || crRawPut === null || crRawPut === "" || !isFinite(crNumPut) || crNumPut <= 0 || crNumPut > 100) {
+        return res.status(400).json({ error: "commission_rate_required", message: "Commission Rate (%) is required and must be between 0 and 100." });
       }
-      req.body.commissionAmount = caNumPut;
-    } else if (req.body.commissionAmount !== undefined) {
-      var caRawSil = req.body.commissionAmount;
-      if (caRawSil === "" || caRawSil === null) {
-        delete req.body.commissionAmount;
+      // Budget can come from the body, OR fall back to the lead's existing budget.
+      var budgetForCalcPut;
+      if (req.body.budget !== undefined && req.body.budget !== null && req.body.budget !== "") {
+        budgetForCalcPut = parseDealTotalFromBudget(req.body.budget);
       } else {
-        var caNumSil = Number(caRawSil);
-        if (!isFinite(caNumSil) || caNumSil <= 0) {
-          delete req.body.commissionAmount;
-        } else {
-          req.body.commissionAmount = caNumSil;
-        }
+        var budgetOldLead = await Lead.findById(req.params.id).select("budget").lean();
+        budgetForCalcPut = parseDealTotalFromBudget(budgetOldLead && budgetOldLead.budget);
       }
+      if (!(budgetForCalcPut > 0)) {
+        return res.status(400).json({ error: "budget_required_for_commission", message: "Budget (EGP) is required and must be greater than 0 to compute the commission." });
+      }
+      req.body.commissionRate   = crNumPut;
+      req.body.commissionAmount = __round2Put(budgetForCalcPut * crNumPut / 100);
+    } else if (req.body.commissionRate !== undefined || req.body.commissionAmount !== undefined) {
+      // Non-DoneDeal admin save with rate field present — coerce or drop.
+      if (req.body.commissionRate === "" || req.body.commissionRate === null) {
+        delete req.body.commissionRate;
+      } else if (req.body.commissionRate !== undefined) {
+        var crNumSil = Number(req.body.commissionRate);
+        if (!isFinite(crNumSil) || crNumSil <= 0) delete req.body.commissionRate;
+        else req.body.commissionRate = crNumSil;
+      }
+      // Always strip commissionAmount on non-DoneDeal — BE owns its computation.
+      delete req.body.commissionAmount;
     }
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty unless explicitly reassigning
@@ -8508,6 +8695,33 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         await ensureCommissionForLead(lead, req.user);
       }
     } catch(e){ console.error("[commission hook put-leads]", e && e.message); }
+    // Phase R-13 — propagate Lead.commissionRate / commissionAmount / budget
+    // edits into cycle 1 IF cycle 1 is still in "pending_claim". Once admin
+    // has advanced cycle 1 (claim_submitted or later), Lead edits no longer
+    // touch the cycle — the cycle becomes the source of truth.
+    try {
+      if (lead && lead.status === "DoneDeal" &&
+          (req.body.commissionRate !== undefined || req.body.commissionAmount !== undefined || req.body.budget !== undefined)) {
+        var commForPropagate = await Commission.findOne({ leadId: lead._id, status: "active" });
+        if (commForPropagate && Array.isArray(commForPropagate.cycles) && commForPropagate.cycles.length > 0) {
+          var cyc1 = commForPropagate.cycles[0];
+          if (cyc1 && cyc1.state === "pending_claim") {
+            var cuvProp     = Number(parseDealTotalFromBudget(lead.budget)) || 0;
+            var ratePctProp = Number(lead.commissionRate);
+            var rateDecProp = (isFinite(ratePctProp) && ratePctProp > 0) ? (ratePctProp / 100) : 0;
+            var amtProp     = (typeof lead.commissionAmount === "number" && lead.commissionAmount > 0)
+              ? Number(lead.commissionAmount)
+              : Math.round(cuvProp * rateDecProp * 100) / 100;
+            cyc1.claimUnitValue = cuvProp;
+            cyc1.commissionRate = rateDecProp;
+            cyc1.claimAmount    = amtProp > 0 ? amtProp : 0;
+            cyc1.expectedAmount = amtProp > 0 ? amtProp : 0;
+            commForPropagate.markModified("cycles");
+            await commForPropagate.save();
+          }
+        }
+      }
+    } catch(propErr) { console.error("[cycle 1 propagation]", propErr && propErr.message); }
     res.json(lead);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -16510,7 +16724,7 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
     }).select("snapshot.customerName snapshot.projectName cycles").lean();
 
     var grossClaim = 0, netOfVatTotal = 0, vatTotal = 0, withholdingTotal = 0, netReceivedTotal = 0;
-    var vatByMonthMap = Object.create(null); // "YYYY-MM" -> { vatAmount, grossClaim }
+    var vatByMonthMap = Object.create(null); // "YYYY-MM" -> { vatAmount, grossClaim, leads: [{name, claimAmount, vatAmount}] }
     var withholdingByDeal = [];
 
     for (var i = 0; i < docs.length; i++) {
@@ -16546,9 +16760,15 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
         netReceivedTotal += rcv;
 
         var claimMonth = cd.slice(0, 7);
-        if (!vatByMonthMap[claimMonth]) vatByMonthMap[claimMonth] = { vatAmount: 0, grossClaim: 0 };
+        if (!vatByMonthMap[claimMonth]) vatByMonthMap[claimMonth] = { vatAmount: 0, grossClaim: 0, leads: [] };
         vatByMonthMap[claimMonth].vatAmount  += vt;
         vatByMonthMap[claimMonth].grossClaim += ca;
+        // Phase R-13 — per-month deal-name breakdown for the Monthly VAT table.
+        vatByMonthMap[claimMonth].leads.push({
+          name:         snap.customerName || "(unknown)",
+          claimAmount:  round2(ca),
+          vatAmount:    round2(vt)
+        });
 
         withholdingByDeal.push({
           cycleId:           String(cy._id),
@@ -16593,6 +16813,10 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
       var paymentRec = paidByMonth[m] || null;
       var paid = !!paymentRec;
       var overdue = !paid && (nowCairo.getTime() > endOfMonthUtc(paymentMonth).getTime());
+      // Sort per-month leads by claimAmount desc for stable, useful display.
+      var leadsForMonth = (vatByMonthMap[m].leads || []).slice().sort(function(a, b){
+        return Number(b.claimAmount || 0) - Number(a.claimAmount || 0);
+      });
       return {
         month:        m,
         vatAmount:    round2(vatByMonthMap[m].vatAmount),
@@ -16600,7 +16824,8 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
         paymentMonth: paymentMonth,
         paid:         paid,
         paidAt:       paymentRec ? paymentRec.paidAt : null,
-        overdue:      overdue
+        overdue:      overdue,
+        leads:        leadsForMonth
       };
     });
 
@@ -18307,6 +18532,128 @@ app.delete("/api/commissions/:id/broker-payouts/:payoutId", auth, salesAdminOnly
     console.error("[DELETE /api/commissions/:id/broker-payouts/:payoutId]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "broker_payout_delete_failed" });
   }
+});
+
+// ===== Phase R-13 — Per-deal recipient overrides =====
+// Four admin actions:
+//   POST   /api/commissions/:id/recipients              — add extra recipient (manual_add).
+//   DELETE /api/commissions/:id/recipients/:overrideId  — remove an override by its _id.
+//   PATCH  /api/commissions/:id/recipients/:slot/zero   — pin a chain slot's effective share to 0.
+//   PATCH  /api/commissions/:id/recipients/:slot/remove — exclude a chain slot entirely.
+// Slot keys: salesAgent | teamLeader | manager | director | salesAgent2 | teamLeader2 | manager2 | director2.
+// Overrides never mutate snapshot.* — the effective recipient list is derived
+// at read time by combining snapshot + recipientOverrides[].
+var VALID_OVERRIDE_SLOTS = ["salesAgent","teamLeader","manager","director","salesAgent2","teamLeader2","manager2","director2"];
+
+app.post("/api/commissions/:id/recipients", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (c.status === "cancelled") return res.status(400).json({ error: "cannot add a recipient to a cancelled commission" });
+    var body = req.body || {};
+    var name = String(body.name || "").trim();
+    var amount = Number(body.amount);
+    var roleIn = String(body.role || "sales");
+    if (!name) return res.status(400).json({ error: "name required" });
+    if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: "amount must be > 0" });
+    if (["sales","team_leader","manager","director"].indexOf(roleIn) < 0) {
+      return res.status(400).json({ error: "role must be one of sales/team_leader/manager/director" });
+    }
+    var userIdIn = body.userId && mongoose.Types.ObjectId.isValid(body.userId) ? new mongoose.Types.ObjectId(body.userId) : null;
+    if (!Array.isArray(c.recipientOverrides)) c.recipientOverrides = [];
+    c.recipientOverrides.push({
+      targetSlot:    "extra",
+      source:        "manual_add",
+      userId:        userIdIn,
+      name:          name,
+      role:          roleIn,
+      computedShare: Math.round(amount * 100) / 100,
+      addedBy:       (req.user && req.user.name) || "",
+      addedAt:       new Date()
+    });
+    c.markModified("recipientOverrides");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_recipient_override_add",
+      "[Commission] manual recipient '" + name + "' (" + roleIn + ") added with " + Math.round(amount).toLocaleString() + " EGP");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[POST /api/commissions/:id/recipients]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "recipient_add_failed" });
+  }
+});
+
+app.delete("/api/commissions/:id/recipients/:overrideId", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (!Array.isArray(c.recipientOverrides) || c.recipientOverrides.length === 0) {
+      return res.status(404).json({ error: "Override not found" });
+    }
+    var ov = c.recipientOverrides.id ? c.recipientOverrides.id(req.params.overrideId) : null;
+    if (!ov) return res.status(404).json({ error: "Override not found" });
+    var snapshot = { targetSlot: ov.targetSlot, source: ov.source, name: ov.name };
+    ov.deleteOne();
+    c.markModified("recipientOverrides");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_recipient_override_delete",
+      "[Commission] recipient override removed (" + snapshot.source + " on " + snapshot.targetSlot + (snapshot.name ? " — " + snapshot.name : "") + ")");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[DELETE /api/commissions/:id/recipients/:overrideId]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "recipient_delete_failed" });
+  }
+});
+
+// Shared handler for /zero and /remove — same shape, only `source` differs.
+async function applyChainOverride(req, res, sourceTag) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var slot = String(req.params.slot || "");
+    if (VALID_OVERRIDE_SLOTS.indexOf(slot) < 0) {
+      return res.status(400).json({ error: "invalid slot — must be one of " + VALID_OVERRIDE_SLOTS.join(", ") });
+    }
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (c.status === "cancelled") return res.status(400).json({ error: "cannot override recipients on a cancelled commission" });
+    // Resolve the chain recipient for this slot to snapshot its name/role.
+    var recipient = null;
+    if (slot.endsWith("2")) {
+      recipient = c.snapshot && c.snapshot.splitChain && c.snapshot.splitChain[slot] ? c.snapshot.splitChain[slot] : null;
+    } else {
+      recipient = c.snapshot && c.snapshot[slot] ? c.snapshot[slot] : null;
+    }
+    if (!recipient) return res.status(404).json({ error: "Chain slot is empty for this commission — nothing to override" });
+    if (!Array.isArray(c.recipientOverrides)) c.recipientOverrides = [];
+    // Remove any existing override targeting this slot so the new one wins.
+    c.recipientOverrides = c.recipientOverrides.filter(function(o){ return o.targetSlot !== slot; });
+    c.recipientOverrides.push({
+      targetSlot:    slot,
+      source:        sourceTag,
+      userId:        recipient.userId || null,
+      name:          recipient.userName || "",
+      role:          recipient.role || "sales",
+      computedShare: 0,
+      addedBy:       (req.user && req.user.name) || "",
+      addedAt:       new Date()
+    });
+    c.markModified("recipientOverrides");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_recipient_" + sourceTag,
+      "[Commission] " + sourceTag + " on " + slot + " (" + (recipient.userName || "") + ")");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PATCH /api/commissions/:id/recipients/:slot/" + sourceTag + "]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "recipient_override_failed" });
+  }
+}
+
+app.patch("/api/commissions/:id/recipients/:slot/zero", auth, salesAdminOnly, function(req, res) {
+  return applyChainOverride(req, res, "manual_zero");
+});
+app.patch("/api/commissions/:id/recipients/:slot/remove", auth, salesAdminOnly, function(req, res) {
+  return applyChainOverride(req, res, "manual_remove");
 });
 
 // ===== COMMISSIONS — Phase D.3 cron sweeper =====
