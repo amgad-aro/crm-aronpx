@@ -11031,6 +11031,12 @@ app.post("/api/notifications", auth, async function(req, res) {
     }
 
     var n = await Notification.create(body);
+    // Notify every connected admin/sales_admin/team_leader so their deal-bell
+    // unread badge increments in real time without waiting for the next bell
+    // open or page reload. Every other Notification.create site already
+    // broadcasts (rotation at 9108/9225, offsite at 5395, commission at
+    // 2710/18305) — this brings the client-fired create into line.
+    try { broadcast("notification_updated", {}); } catch(e) {}
     res.json(n);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
