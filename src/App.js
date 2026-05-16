@@ -1727,10 +1727,16 @@ var LeadForm = function(p) {
       dealType: "internal",
       externalBrokerId: "",
       externalDealConfig: { commissionTaxPct: 0, brokerSharePct: 0 },
-      commissionAmount: ""
+      commissionRate: "",
+      externalSalesAgentEnabled: false,
+      externalSalesAgentId: "",
+      externalSalesAgentManualAmount: ""
     }, base);
     if (base.externalBrokerId && typeof base.externalBrokerId === "object") {
       base.externalBrokerId = String(base.externalBrokerId._id || "");
+    }
+    if (base.externalSalesAgentId && typeof base.externalSalesAgentId === "object") {
+      base.externalSalesAgentId = String(base.externalSalesAgentId._id || "");
     }
     // Defensive normalize: an existing lead may come back with externalDealConfig
     // as an empty object (or with string-typed pcts from old payloads). Coerce
@@ -1740,13 +1746,18 @@ var LeadForm = function(p) {
       commissionTaxPct: Number(seedCfg.commissionTaxPct) || 0,
       brokerSharePct:   Number(seedCfg.brokerSharePct)   || 0
     };
-    // commissionAmount is a Number on the DB but a formatted string in the
-    // controlled input. Format existing values; leave nullish as empty so the
-    // field appears empty + required on old deals that pre-date this field.
-    if (typeof base.commissionAmount === "number" && isFinite(base.commissionAmount) && base.commissionAmount > 0) {
-      base.commissionAmount = base.commissionAmount.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    // commissionRate is a Number on the DB (percent), but a string in the
+    // controlled input (allows decimals). Leave empty for old deals that
+    // predate this field so the field appears empty + required.
+    if (typeof base.commissionRate === "number" && isFinite(base.commissionRate) && base.commissionRate > 0) {
+      base.commissionRate = String(base.commissionRate);
     } else {
-      base.commissionAmount = "";
+      base.commissionRate = "";
+    }
+    if (typeof base.externalSalesAgentManualAmount === "number" && isFinite(base.externalSalesAgentManualAmount) && base.externalSalesAgentManualAmount > 0) {
+      base.externalSalesAgentManualAmount = base.externalSalesAgentManualAmount.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    } else {
+      base.externalSalesAgentManualAmount = "";
     }
     return base;
   })());
@@ -1864,22 +1875,43 @@ var LeadForm = function(p) {
     if (isEOIForm && !form.budget) { alert("Please enter the Amount (EGP)"); return; }
     if (isEOIForm && !form.project) { alert("Please enter the Project"); return; }
     if (isEOIForm && !form.eoiDeposit) { alert("Please enter the Deposit (EGP)"); return; }
-    // Phase R-12 Part 3 — client-side mirror of validateAndNormalizeExternalDeal.
-    // Backend re-validates; this just gives a faster, friendlier error.
+    // Phase R-13 — broker split is now informal (commissionTaxPct may be 0).
+    // Only brokerSharePct is required > 0 for External; broker dropdown still
+    // required. State tax is handled by the canonical preview flow off
+    // commissionAmount = budget × commissionRate / 100, not these fields.
     if (isDoneDealForm && form.dealType === "external") {
       if (!form.externalBrokerId) { alert("Please select a broker for this external deal"); return; }
       var taxPct = Number((form.externalDealConfig && form.externalDealConfig.commissionTaxPct) || 0);
       var brkPct = Number((form.externalDealConfig && form.externalDealConfig.brokerSharePct)   || 0);
-      if (!(taxPct > 0 && taxPct <= 100)) { alert("Commission Tax % must be between 0 and 100"); return; }
+      if (!(taxPct >= 0 && taxPct <= 100)) { alert("Broker pre-deduction % must be between 0 and 100"); return; }
       if (!(brkPct > 0 && brkPct <= 100)) { alert("Broker Share % must be between 0 and 100"); return; }
+      if (form.externalSalesAgentEnabled) {
+        if (!form.externalSalesAgentId) { alert("Please select the second sales agent (Sales Agent involved toggle is ON)"); return; }
+        var manualRaw = String(form.externalSalesAgentManualAmount || "").replace(/,/g, "").trim();
+        var manualNum = Number(manualRaw);
+        if (!manualRaw || !isFinite(manualNum) || manualNum <= 0) {
+          alert("Please enter the manual commission amount for the second sales agent");
+          return;
+        }
+      }
     }
-    // Commission Amount — required > 0 for any DoneDeal save (Internal or
-    // External). Mirrors backend rejection at POST/PUT /api/leads.
+    // Commission Rate (%) — required > 0 for any DoneDeal save (Internal +
+    // External). Mirrors backend rejection at POST/PUT /api/leads. BE computes
+    // commissionAmount = budget × rate / 100 server-side; FE only sends rate.
     if (isDoneDealForm && isOnlyAdmin) {
-      var caInputStr = String(form.commissionAmount || "").replace(/,/g, "").trim();
-      var caInputNum = Number(caInputStr);
-      if (!caInputStr || !isFinite(caInputNum) || caInputNum <= 0) {
-        alert("Please enter a valid Commission Amount (EGP) greater than 0");
+      var crInputStr = String(form.commissionRate || "").trim();
+      var crInputNum = Number(crInputStr);
+      if (!crInputStr || !isFinite(crInputNum) || crInputNum <= 0 || crInputNum > 100) {
+        alert("Please enter a valid Commission Rate (%) between 0 and 100");
+        return;
+      }
+      var budgetCheck = (function(){
+        var s = String(form.budget || "").replace(/,/g, "").replace(/[^0-9.]/g, "");
+        var n = parseFloat(s);
+        return isFinite(n) ? n : 0;
+      })();
+      if (!(budgetCheck > 0)) {
+        alert("Please enter a Budget (EGP) greater than 0 — commission is computed as Budget × Rate%");
         return;
       }
     }
@@ -1887,13 +1919,24 @@ var LeadForm = function(p) {
     setSaving(true);
     try {
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||form.status||"NewLead"), phone2: form.phone2||"" });
-      // commissionAmount is a Number on the wire — coerce the formatted string
-      // back; blank fields go up as null so non-DoneDeal saves don't introduce
-      // a stray zero.
+      // Phase R-13 — FE sends commissionRate only; BE recomputes commissionAmount
+      // server-side from budget × rate / 100. Never trust the client number.
       (function(){
-        var s = String(payload.commissionAmount || "").replace(/,/g, "").trim();
+        var s = String(payload.commissionRate || "").replace(/,/g, "").trim();
         var n = Number(s);
-        payload.commissionAmount = (s && isFinite(n) && n > 0) ? n : null;
+        payload.commissionRate = (s && isFinite(n) && n > 0 && n <= 100) ? n : null;
+        delete payload.commissionAmount;
+      })();
+      // External sales agent — coerce manual amount + agent id.
+      (function(){
+        if (payload.externalSalesAgentEnabled) {
+          var s = String(payload.externalSalesAgentManualAmount || "").replace(/,/g, "").trim();
+          var n = Number(s);
+          payload.externalSalesAgentManualAmount = (s && isFinite(n) && n > 0) ? n : null;
+        } else {
+          payload.externalSalesAgentId           = null;
+          payload.externalSalesAgentManualAmount = null;
+        }
       })();
       // Strip client-only fields the API doesn't need
       delete payload.documentFiles;
@@ -1987,13 +2030,13 @@ var LeadForm = function(p) {
         external fields when flipping back to internal so no stale config
         lingers on the lead. */}
     {isDoneDealForm&&isOnlyAdmin&&<div style={{ marginBottom:13, padding:"12px 14px", background:"#F8FAFC", borderRadius:10, border:"1px solid #E8ECF1" }}>
-      {/* Commission Amount — applies to BOTH Internal and External. Required > 0.
-          The Live Preview at the bottom of this box recalculates from this value
-          (replaces the prior hardcoded 100,000 EGP placeholder). */}
-      <Inp label="💰 Commission Amount (EGP)" req
-        value={form.commissionAmount || ""}
+      {/* Phase R-13 — Commission Rate (%) applies to BOTH Internal and External.
+          Required > 0, ≤ 100. Backend recomputes commissionAmount on save from
+          budget × rate / 100. Read-only display below shows the formula result. */}
+      <Inp label="💰 Commission Rate (%)" req
+        value={form.commissionRate || ""}
         onChange={function(e){
-          var raw = e.target.value.replace(/,/g, "").replace(/[^0-9.]/g, "");
+          var raw = e.target.value.replace(/[^0-9.]/g, "");
           var firstDot = raw.indexOf(".");
           if (firstDot >= 0) {
             raw = raw.slice(0, firstDot+1) + raw.slice(firstDot+1).replace(/\./g, "");
@@ -2001,13 +2044,36 @@ var LeadForm = function(p) {
           var parts = raw.split(".");
           var intPart = parts[0] || "";
           var hasDec = parts.length > 1;
-          var decPart = hasDec ? parts[1].slice(0, 2) : "";
+          var decPart = hasDec ? parts[1].slice(0, 4) : "";
           var formatted = intPart === ""
             ? (hasDec ? "0." + decPart : "")
-            : Number(intPart).toLocaleString() + (hasDec ? "." + decPart : "");
-          upd("commissionAmount", formatted);
+            : (hasDec ? intPart + "." + decPart : intPart);
+          upd("commissionRate", formatted);
         }}
-        placeholder="e.g. 100,000"/>
+        placeholder="e.g. 3"/>
+      {(function(){
+        var budgetNum = (function(){
+          var s = String(form.budget || "").replace(/,/g, "").replace(/[^0-9.]/g, "");
+          var n = parseFloat(s);
+          return isFinite(n) ? n : 0;
+        })();
+        var rateNum = Number(form.commissionRate);
+        var fmtMoney = function(n){ return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); };
+        if (!(budgetNum > 0)) {
+          return <div style={{ marginBottom:12, padding:"6px 10px", background:"#FEF3C7", border:"1px solid #FDE68A", borderRadius:6, fontSize:11, color:"#92400E" }}>
+            Set Budget (EGP) above to see the computed Commission Amount.
+          </div>;
+        }
+        if (!(isFinite(rateNum) && rateNum > 0)) {
+          return <div style={{ marginBottom:12, padding:"6px 10px", background:"#F1F5F9", border:"1px solid #E2E8F0", borderRadius:6, fontSize:11, color:C.textLight }}>
+            Commission Amount = Budget ({fmtMoney(budgetNum)}) × Rate% = <b>—</b>
+          </div>;
+        }
+        var amt = Math.round(budgetNum * rateNum) / 100;
+        return <div style={{ marginBottom:12, padding:"6px 10px", background:"#ECFDF5", border:"1px solid #A7F3D0", borderRadius:6, fontSize:11, color:"#065F46" }}>
+          Commission Amount = Budget ({fmtMoney(budgetNum)}) × {rateNum}% = <b>{fmtMoney(amt)} EGP</b>
+        </div>;
+      })()}
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:8 }}>Deal Type</label>
       {/* Phase R-12 Part 5 — commission-lock banner. Mirrors the backend
           409 from PUT /api/leads/:id when an active commission exists. */}
@@ -2026,6 +2092,9 @@ var LeadForm = function(p) {
               if (opt[0] === "internal") {
                 upd("externalBrokerId", "");
                 upd("externalDealConfig", { commissionTaxPct: 0, brokerSharePct: 0 });
+                upd("externalSalesAgentEnabled", false);
+                upd("externalSalesAgentId", "");
+                upd("externalSalesAgentManualAmount", "");
               }
             }}
             style={{ flex:1, padding:"10px 12px", borderRadius:9, border:"1px solid", borderColor: active ? C.accent : "#E2E8F0", background: active ? C.accent+"12" : "#fff", cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.55 : 1, textAlign:"left" }}>
@@ -2057,8 +2126,68 @@ var LeadForm = function(p) {
           </select>
         </div>
 
+        {/* Phase R-13 — "Sales Agent involved" toggle (External only). When ON,
+            a second sales agent (picked here) is paid a manual EGP amount on
+            this deal. The Lead's primary agent is NOT paid commission on
+            External deals regardless of this toggle (per-1000 chain disabled). */}
+        <div style={{ marginBottom:13, padding:"10px 12px", background:"#fff", border:"1px solid #E2E8F0", borderRadius:10 }}>
+          <label style={{ display:"flex", alignItems:"center", gap:8, fontSize:13, fontWeight:600, color:C.text, cursor:"pointer" }}>
+            <input type="checkbox" checked={!!form.externalSalesAgentEnabled}
+              onChange={function(e){
+                var on = e.target.checked;
+                upd("externalSalesAgentEnabled", on);
+                if (!on) {
+                  upd("externalSalesAgentId", "");
+                  upd("externalSalesAgentManualAmount", "");
+                }
+              }}/>
+            Sales Agent involved
+          </label>
+          <div style={{ fontSize:11, color:C.textLight, marginTop:4, marginInlineStart:24 }}>
+            When ON, pick the second sales agent and enter the manual EGP commission they receive.
+            The Internal team chain (TL / manager / director / owner) is never paid on External deals.
+          </div>
+          {form.externalSalesAgentEnabled && <div style={{ marginTop:10, display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
+            <div>
+              <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>Second Sales Agent<span style={{ color:C.danger, marginLeft:3 }}>*</span></label>
+              <select value={form.externalSalesAgentId || ""}
+                onChange={function(e){ upd("externalSalesAgentId", e.target.value); }}
+                style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", color:C.text, boxSizing:"border-box", cursor:"pointer" }}>
+                <option value="">- Select -</option>
+                {salesUsers.map(function(u){
+                  return <option key={gid(u)} value={gid(u)}>{u.name}{u.title?" — "+u.title:""}</option>;
+                })}
+              </select>
+            </div>
+            <Inp label="Manual Commission (EGP)" req
+              value={form.externalSalesAgentManualAmount || ""}
+              onChange={function(e){
+                var raw = e.target.value.replace(/,/g, "").replace(/[^0-9.]/g, "");
+                var firstDot = raw.indexOf(".");
+                if (firstDot >= 0) raw = raw.slice(0, firstDot+1) + raw.slice(firstDot+1).replace(/\./g, "");
+                var parts = raw.split(".");
+                var intPart = parts[0] || "";
+                var hasDec = parts.length > 1;
+                var decPart = hasDec ? parts[1].slice(0, 2) : "";
+                var formatted = intPart === ""
+                  ? (hasDec ? "0." + decPart : "")
+                  : Number(intPart).toLocaleString() + (hasDec ? "." + decPart : "");
+                upd("externalSalesAgentManualAmount", formatted);
+              }}
+              placeholder="e.g. 50,000"/>
+          </div>}
+        </div>
+
+        {/* Phase R-13 — External Broker Split (informal, for bookkeeping).
+            Separate from the canonical state-tax flow (14% VAT + 5% withholding)
+            shown in the Live Preview below. commissionTaxPct here is an informal
+            pre-broker deduction; 0 is allowed (broker takes their share from
+            the full gross). */}
+        <div style={{ fontSize:11, fontWeight:700, color:"#5B21B6", textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>
+          External Broker Split (informal — for bookkeeping)
+        </div>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0 12px" }}>
-          <Inp label="Commission Tax %" req
+          <Inp label="Broker pre-deduction %"
             value={(form.externalDealConfig && form.externalDealConfig.commissionTaxPct) || ""}
             onChange={function(e){
               if (commissionLock===true) return;
@@ -2066,7 +2195,7 @@ var LeadForm = function(p) {
               var n = raw === "" ? 0 : Number(raw);
               upd("externalDealConfig", Object.assign({}, form.externalDealConfig||{}, { commissionTaxPct: n }));
             }}
-            placeholder="e.g. 30"/>
+            placeholder="e.g. 0"/>
           <Inp label="Broker Share %" req
             value={(form.externalDealConfig && form.externalDealConfig.brokerSharePct) || ""}
             onChange={function(e){
@@ -2088,31 +2217,61 @@ var LeadForm = function(p) {
           </div>
         </div>
 
+        {/* Informal broker-split preview — renders only when both pcts are set. */}
+        {(function(){
+          var budgetNum = (function(){
+            var s = String(form.budget || "").replace(/,/g, "").replace(/[^0-9.]/g, "");
+            var n = parseFloat(s);
+            return isFinite(n) ? n : 0;
+          })();
+          var rateNum = Number(form.commissionRate);
+          if (!(budgetNum > 0) || !(isFinite(rateNum) && rateNum > 0)) return null;
+          var gross = budgetNum * rateNum / 100;
+          var taxPct = Number((form.externalDealConfig && form.externalDealConfig.commissionTaxPct) || 0);
+          var brkPct = Number((form.externalDealConfig && form.externalDealConfig.brokerSharePct) || 0);
+          if (!(brkPct > 0)) return null;
+          var X = gross * (100 - taxPct) / 100;
+          var Y = X * brkPct / 100;
+          var Z = X - Y;
+          var fmt = function(n){ return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); };
+          return <div style={{ padding:"10px 12px", background:"#F5F3FF", border:"1px solid #DDD6FE", borderRadius:8, fontSize:12, color:"#5B21B6", lineHeight:1.6, marginBottom:6 }}>
+            <div style={{ fontWeight:600, marginBottom:4 }}>🤝 Broker Split Calculation (informal):</div>
+            <div>Gross × {100 - taxPct}% = <b>{fmt(X)} EGP</b></div>
+            <div>Broker share ({brkPct}%) = <b>{fmt(Y)} EGP</b></div>
+            <div>ARO theoretical ({100 - brkPct}%) = <b>{fmt(Z)} EGP</b></div>
+          </div>;
+        })()}
+
       </div>}
 
-      {/* Live Preview — recalculates from the Commission Amount field above.
-          Formula: tax = gross × taxPct/100, aroNet = gross − tax,
-          broker = aroNet × brokerPct/100, aro = aroNet × (100 − brokerPct)/100.
-          Renders for both Internal and External once commissionAmount > 0:
-          Internal shows tax line only (broker line hidden); External adds the
-          broker / ARO split when brokerSharePct is set. */}
+      {/* Phase R-13 — Canonical Live Preview (state-tax flow).
+          Same math the Commission Calculator and Annual Summary use:
+            Gross (incl. VAT) = Budget × Rate / 100
+            Net of VAT        = Gross / 1.14
+            VAT 14%           = Gross − Net of VAT
+            Withholding 5%    = Net of VAT × 0.05
+            Net Due           = Gross − Withholding
+          Applies to BOTH Internal and External (state tax is dealType-agnostic). */}
       {(function(){
-        var grossStr = String(form.commissionAmount || "").replace(/,/g, "").trim();
-        var gross = Number(grossStr);
-        if (!grossStr || !isFinite(gross) || gross <= 0) return null;
-        var taxPct = Number((form.externalDealConfig && form.externalDealConfig.commissionTaxPct) || 0);
-        var isExternal = form.dealType === "external";
-        var brkPct = isExternal ? Number((form.externalDealConfig && form.externalDealConfig.brokerSharePct) || 0) : 0;
-        var tax = gross * (taxPct / 100);
-        var aroNet = gross - tax;
-        var brokerEgp = aroNet * (brkPct / 100);
-        var aroEgp = aroNet - brokerEgp;
+        var budgetNum = (function(){
+          var s = String(form.budget || "").replace(/,/g, "").replace(/[^0-9.]/g, "");
+          var n = parseFloat(s);
+          return isFinite(n) ? n : 0;
+        })();
+        var rateNum = Number(form.commissionRate);
+        if (!(budgetNum > 0) || !(isFinite(rateNum) && rateNum > 0)) return null;
+        var gross    = budgetNum * rateNum / 100;
+        var netOfVat = gross / 1.14;
+        var vat      = gross - netOfVat;
+        var with5    = netOfVat * 0.05;
+        var netDue   = gross - with5;
         var fmt = function(n){ return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); };
-        var showBroker = isExternal && brkPct > 0 && brkPct <= 100;
         return <div style={{ padding:"10px 12px", background:"#EFF6FF", borderRadius:8, fontSize:12, color:"#1E3A8A", lineHeight:1.6, marginTop:10 }}>
           <div style={{ fontWeight:600, marginBottom:4 }}>📊 Live Preview — on a {fmt(gross)} EGP gross claim:</div>
-          <div>Tax ({taxPct}%): <b>{fmt(tax)} EGP</b> &nbsp;→&nbsp; ARO net: <b>{fmt(aroNet)} EGP</b></div>
-          {showBroker && <div>Broker ({brkPct}% of net): <b>{fmt(brokerEgp)} EGP</b> &nbsp;·&nbsp; ARO ({100-brkPct}% of net): <b>{fmt(aroEgp)} EGP</b></div>}
+          <div>Net of VAT (÷ 1.14):&nbsp;&nbsp;<b>{fmt(netOfVat)} EGP</b></div>
+          <div>VAT 14%:&nbsp;&nbsp;<b>{fmt(vat)} EGP</b></div>
+          <div>Withholding 5%:&nbsp;&nbsp;<b>{fmt(with5)} EGP</b></div>
+          <div style={{ marginTop:4, paddingTop:4, borderTop:"1px solid #BFDBFE", color:"#15803D", fontWeight:700 }}>Net Due:&nbsp;&nbsp;{fmt(netDue)} EGP</div>
         </div>;
       })()}
     </div>}
@@ -19595,6 +19754,9 @@ var CommissionsPage = function(p) {
   var [activeTab, setActiveTab] = useState("deals");
   var [annualSummary, setAnnualSummary] = useState(null);
   var [annualLoading, setAnnualLoading] = useState(false);
+  // Phase R-13 — per-month expand state for the Monthly VAT table.
+  // Keyed by "YYYY-MM"; row clicks toggle.
+  var [vatMonthExpanded, setVatMonthExpanded] = useState({});
   // Phase R-5 standalone calculator on the Annual Summary tab. State lives
   // here (not inside the IIFE) so it survives tab switches; resets on full
   // page reload. No persistence by design — pure UI scratchpad.
@@ -19662,6 +19824,14 @@ var CommissionsPage = function(p) {
   // clearly clickable. Keyed by commission _id; only one row hovers at a time
   // in practice, but a map keeps the logic per-card.
   var [hoveredRecipientHeader, setHoveredRecipientHeader] = useState(null);
+  // Phase R-13 — Add Recipient modal state. Holds the commission being edited
+  // (or null when modal is closed). The modal collects name/role/amount, then
+  // POSTs to /api/commissions/:id/recipients via writeCommission.
+  var [addRecipientFor, setAddRecipientFor] = useState(null);
+  var [addRecipName, setAddRecipName] = useState("");
+  var [addRecipRole, setAddRecipRole] = useState("sales");
+  var [addRecipAmount, setAddRecipAmount] = useState("");
+  var [addRecipUserId, setAddRecipUserId] = useState("");
   // Phase R-9 — cashFlow state removed; the new Recipients breakdown computes
   // paid totals straight from c.payouts, so the global cash-flow endpoint is no
   // longer needed for card rendering.
@@ -20176,10 +20346,23 @@ var CommissionsPage = function(p) {
           primarySlots.push(["manager2",    "Manager 2",   snap.splitChain.manager2]);
           primarySlots.push(["director2",   "Director 2",  snap.splitChain.director2]);
         }
+        // Phase R-13 — Per-deal recipient overrides. Three actions:
+        //   manual_remove → skip the chain slot entirely.
+        //   manual_zero   → render the slot but with computedShare = 0.
+        //   manual_add    → extra rows appended below (off-chain).
+        var allOverrides = Array.isArray(c.recipientOverrides) ? c.recipientOverrides : [];
+        var overridesBySlot = {};
+        allOverrides.forEach(function(o){
+          if (o && o.targetSlot && o.targetSlot !== "extra") overridesBySlot[o.targetSlot] = o;
+        });
+        var manualAddOverrides = allOverrides.filter(function(o){ return o && o.source === "manual_add"; });
         var rows = primarySlots.filter(function(t){ return !!t[2]; }).map(function(t){
           var r = t[2];
+          var ov = overridesBySlot[t[0]];
+          var removed = ov && ov.source === "manual_remove";
+          var zeroed  = ov && ov.source === "manual_zero";
           var hasOverride = r.overrideAmount != null && Number(r.overrideAmount) > 0;
-          var owed = hasOverride ? Number(r.overrideAmount) : Number(r.computedShare || 0);
+          var owed = removed ? 0 : (zeroed ? 0 : (hasOverride ? Number(r.overrideAmount) : Number(r.computedShare || 0)));
           var paid = Number(paidByName[r.userName] || 0);
           var remaining = Math.max(0, owed - paid);
           var overpaid = paid > owed && owed > 0;
@@ -20189,8 +20372,27 @@ var CommissionsPage = function(p) {
             key: t[0], label: t[1], r: r,
             owed: owed, paid: paid, remaining: remaining,
             overpaid: overpaid, fullyPaid: fullyPaid, notStarted: notStarted,
-            isSplit: t[0].indexOf("2") > -1
+            isSplit: t[0].indexOf("2") > -1,
+            override: ov || null,
+            removed: !!removed, zeroed: !!zeroed
           };
+        }).filter(function(x){ return !x.removed; });
+        // Append off-chain manual_add overrides as extra rows.
+        manualAddOverrides.forEach(function(ov, idx){
+          var owed = Number(ov.computedShare || 0);
+          var paid = Number(paidByName[ov.name] || 0);
+          var remaining = Math.max(0, owed - paid);
+          rows.push({
+            key: "extra-" + (ov._id ? String(ov._id) : idx),
+            label: "Extra · " + (ov.role || "sales"),
+            r: { userName: ov.name, role: ov.role || "sales", computedShare: owed, rate: 0, rateBucket: "manual", isHalfWeight: false, overrideAmount: null },
+            owed: owed, paid: paid, remaining: remaining,
+            overpaid: paid > owed && owed > 0,
+            fullyPaid: !(paid > owed && owed > 0) && owed > 0 && remaining === 0,
+            notStarted: paid === 0 && owed > 0,
+            isSplit: false,
+            override: ov, removed: false, zeroed: false, isExtra: true
+          });
         });
         var totals = rows.reduce(function(acc, x){
           acc.owed += x.owed; acc.paid += x.paid; acc.remaining += x.remaining;
@@ -20328,8 +20530,50 @@ var CommissionsPage = function(p) {
                         {x.r.userActiveAtClose === false && <span title="User deactivated" style={{ fontSize:9, padding:"1px 5px", borderRadius:6, background:"#FEE2E2", color:"#B91C1C", fontWeight:700 }}>⊘ inactive</span>}
                         {x.r.overrideAmount != null && Number(x.r.overrideAmount) > 0 && <span title={"Override: " + (x.r.overrideReason || "no reason")} style={{ fontSize:9, padding:"1px 5px", borderRadius:6, background:"#FDF4FF", color:"#86198F", fontWeight:700 }}>override</span>}
                         {x.isSplit && <span style={{ fontSize:9, padding:"1px 5px", borderRadius:6, background:"#F5F3FF", color:"#7C3AED", fontWeight:700 }}>split</span>}
+                        {x.zeroed && <span title={"Manually zeroed by " + (x.override.addedBy || "admin") + " on " + (x.override.addedAt ? new Date(x.override.addedAt).toLocaleDateString("en-GB") : "—")} style={{ fontSize:9, padding:"1px 5px", borderRadius:6, background:"#FEF3C7", color:"#92400E", fontWeight:700 }}>manually zeroed</span>}
+                        {x.isExtra && <span title={"Added by " + (x.override.addedBy || "admin") + " on " + (x.override.addedAt ? new Date(x.override.addedAt).toLocaleDateString("en-GB") : "—")} style={{ fontSize:9, padding:"1px 5px", borderRadius:6, background:"#EDE9FE", color:"#5B21B6", fontWeight:700 }}>manually added</span>}
                       </div>
-                      <span style={{ fontSize:12 }}>{statusIcon}</span>
+                      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                        <span style={{ fontSize:12 }}>{statusIcon}</span>
+                        {c.status !== "cancelled" && (x.isExtra
+                          ? <button type="button" title="Remove this manual recipient"
+                              onClick={async function(){
+                                if (!x.override || !x.override._id) return;
+                                if (!window.confirm("Remove manual recipient '" + (x.r.userName || "") + "' from this deal?")) return;
+                                try { await writeCommission("DELETE", "/api/commissions/" + c._id + "/recipients/" + x.override._id, null, "Manual recipient removed"); } catch(_){}
+                              }}
+                              style={{ fontSize:10, padding:"2px 8px", borderRadius:6, border:"1px solid #FCA5A5", background:"#FEF2F2", color:"#B91C1C", cursor:"pointer", fontWeight:600 }}>
+                              ✕ Remove
+                            </button>
+                          : <>
+                              {x.zeroed
+                                ? <button type="button" title="Restore this recipient's computed share"
+                                    onClick={async function(){
+                                      if (!x.override || !x.override._id) return;
+                                      try { await writeCommission("DELETE", "/api/commissions/" + c._id + "/recipients/" + x.override._id, null, "Override removed"); } catch(_){}
+                                    }}
+                                    style={{ fontSize:10, padding:"2px 8px", borderRadius:6, border:"1px solid #A7F3D0", background:"#ECFDF5", color:"#065F46", cursor:"pointer", fontWeight:600 }}>
+                                    ↶ Restore
+                                  </button>
+                                : <button type="button" title="Set this recipient's share to 0 for this deal"
+                                    onClick={async function(){
+                                      if (!window.confirm("Set " + x.label + " (" + (x.r.userName || "") + ") share to 0 for this deal?")) return;
+                                      try { await writeCommission("PATCH", "/api/commissions/" + c._id + "/recipients/" + x.key + "/zero", {}, "Set to zero"); } catch(_){}
+                                    }}
+                                    style={{ fontSize:10, padding:"2px 8px", borderRadius:6, border:"1px solid #FDE68A", background:"#FFFBEB", color:"#92400E", cursor:"pointer", fontWeight:600 }}>
+                                    🚫 Zero
+                                  </button>}
+                              <button type="button" title="Exclude this recipient from this deal entirely"
+                                onClick={async function(){
+                                  if (!window.confirm("Remove " + x.label + " (" + (x.r.userName || "") + ") from this deal? They will not appear on the payout list.")) return;
+                                  try { await writeCommission("PATCH", "/api/commissions/" + c._id + "/recipients/" + x.key + "/remove", {}, "Recipient removed from deal"); } catch(_){}
+                                }}
+                                style={{ fontSize:10, padding:"2px 8px", borderRadius:6, border:"1px solid #FCA5A5", background:"#FEF2F2", color:"#B91C1C", cursor:"pointer", fontWeight:600 }}>
+                                ✕ Remove
+                              </button>
+                            </>
+                        )}
+                      </div>
                     </div>
                     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, fontSize:11, marginInlineStart:80 }}>
                       <div style={{ textAlign:"right" }}>
@@ -20372,6 +20616,16 @@ var CommissionsPage = function(p) {
                     <span style={{ color: totals.remaining === 0 ? "#15803D" : C.text, fontWeight:700 }}>{n2(totals.remaining)}</span>
                   </span>
                 </div>
+              </div>}
+
+              {/* Phase R-13 — Add Recipient button */}
+              {c.status !== "cancelled" && <div style={{ marginTop:8 }}>
+                <button type="button" onClick={function(){
+                  setAddRecipName(""); setAddRecipRole("sales"); setAddRecipAmount(""); setAddRecipUserId("");
+                  setAddRecipientFor(c);
+                }} style={{ padding:"6px 12px", borderRadius:8, border:"1px dashed " + C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer" }}>
+                  + Add manual recipient
+                </button>
               </div>}
 
               {/* Incentive sub-section */}
@@ -20543,10 +20797,9 @@ var CommissionsPage = function(p) {
     </div>
 
     {activeTab === "deals" && <>
-    {/* Stats row — admin sees 3 cards (incl. Received Commission), sales_admin sees 2 (no money totals). */}
+    {/* Stats row — admin + sales_admin see Active Deals + Active Cycles. Phase R-13: Received Commission card removed. */}
     <div style={{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" }}>
       <StatCard label="Active Deals"          value={(stats && stats.dealsCount) != null ? stats.dealsCount : "—"} icon={Briefcase} c={C.info}/>
-      {p.cu && p.cu.role === "admin" && <StatCard label="Received Commission"   value={(stats && stats.receivedTotal) != null ? fmtMoney(stats.receivedTotal) : "—"} icon={CheckCircle} c={C.success}/>}
       <StatCard label="Active Cycles"         value={(stats && stats.activeCycles) != null ? stats.activeCycles : "—"} icon={Activity} c={C.accent}/>
     </div>
 
@@ -20800,6 +21053,7 @@ var CommissionsPage = function(p) {
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                 <thead>
                   <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
+                    <th style={{ width:30, padding:"8px 0 8px 12px" }}></th>
                     <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Claim month</th>
                     <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>VAT due</th>
                     <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Payment month</th>
@@ -20809,25 +21063,58 @@ var CommissionsPage = function(p) {
                 <tbody>
                   {byMonth.map(function(row){
                     var rowBg = row.overdue ? "#FEF2F2" : "#fff";
-                    return <tr key={row.month} style={{ borderTop:"1px solid #F1F5F9", background: rowBg }}>
-                      <td style={{ padding:"8px 12px", fontWeight:600 }}>{row.month}</td>
-                      <td style={{ padding:"8px 12px", textAlign:"end" }}>{fmtMoneyAr(row.vatAmount)}</td>
-                      <td style={{ padding:"8px 12px" }}>{row.paymentMonth}</td>
-                      <td style={{ padding:"8px 12px", textAlign:"end" }}>
-                        {row.paid && <span style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
-                          <span style={{ display:"inline-block", padding:"3px 10px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:11, fontWeight:700 }}>
-                            Paid {fmtDateUk(row.paidAt)}
-                          </span>
-                          <button onClick={function(){ undoVatPaid(row.month); }} title="Undo" style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, padding:"2px 6px", fontSize:11, color:C.textLight, cursor:"pointer" }}>↶</button>
-                        </span>}
-                        {!row.paid && <button onClick={function(){ markVatPaid(row.month); }} style={{
-                          padding:"4px 10px", borderRadius:6, border:"1px solid " + (row.overdue ? "#FCA5A5" : C.accent),
-                          background: row.overdue ? "#FEE2E2" : C.accent + "12",
-                          color: row.overdue ? "#B91C1C" : C.accent,
-                          fontSize:11, fontWeight:600, cursor:"pointer"
-                        }}>Mark paid</button>}
-                      </td>
-                    </tr>;
+                    var isOpen = !!vatMonthExpanded[row.month];
+                    var leadsForRow = Array.isArray(row.leads) ? row.leads : [];
+                    var toggleRow = function(){
+                      setVatMonthExpanded(function(prev){
+                        var next = Object.assign({}, prev);
+                        next[row.month] = !prev[row.month];
+                        return next;
+                      });
+                    };
+                    return <Fragment key={row.month}>
+                      <tr style={{ borderTop:"1px solid #F1F5F9", background: rowBg, cursor: leadsForRow.length > 0 ? "pointer" : "default" }}
+                          onClick={function(e){
+                            if (leadsForRow.length === 0) return;
+                            var tag = e.target && e.target.tagName;
+                            if (tag === "BUTTON" || tag === "SPAN") return;
+                            toggleRow();
+                          }}>
+                        <td style={{ padding:"8px 0 8px 12px", color:C.textLight, fontSize:11 }}>
+                          {leadsForRow.length > 0 ? (isOpen ? "▾" : "▸") : ""}
+                        </td>
+                        <td style={{ padding:"8px 12px", fontWeight:600 }}>{row.month}</td>
+                        <td style={{ padding:"8px 12px", textAlign:"end" }}>{fmtMoneyAr(row.vatAmount)}</td>
+                        <td style={{ padding:"8px 12px" }}>{row.paymentMonth}</td>
+                        <td style={{ padding:"8px 12px", textAlign:"end" }}>
+                          {row.paid && <span style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
+                            <span style={{ display:"inline-block", padding:"3px 10px", borderRadius:10, background:"#DCFCE7", color:"#15803D", fontSize:11, fontWeight:700 }}>
+                              Paid {fmtDateUk(row.paidAt)}
+                            </span>
+                            <button onClick={function(e){ e.stopPropagation(); undoVatPaid(row.month); }} title="Undo" style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, padding:"2px 6px", fontSize:11, color:C.textLight, cursor:"pointer" }}>↶</button>
+                          </span>}
+                          {!row.paid && <button onClick={function(e){ e.stopPropagation(); markVatPaid(row.month); }} style={{
+                            padding:"4px 10px", borderRadius:6, border:"1px solid " + (row.overdue ? "#FCA5A5" : C.accent),
+                            background: row.overdue ? "#FEE2E2" : C.accent + "12",
+                            color: row.overdue ? "#B91C1C" : C.accent,
+                            fontSize:11, fontWeight:600, cursor:"pointer"
+                          }}>Mark paid</button>}
+                        </td>
+                      </tr>
+                      {isOpen && leadsForRow.length > 0 && <tr style={{ background:"#F8FAFC", borderTop:"1px solid #F1F5F9" }}>
+                        <td></td>
+                        <td colSpan={4} style={{ padding:"6px 12px 10px" }}>
+                          <div style={{ fontSize:10, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:4 }}>Deals contributing to this month</div>
+                          {leadsForRow.map(function(ld, lIdx){
+                            return <div key={lIdx} style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:C.text, padding:"2px 0", borderTop: lIdx>0?"1px dashed #E2E8F0":"none" }}>
+                              <span style={{ flex:1, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{ld.name}</span>
+                              <span style={{ color:C.textLight, marginInlineStart:12 }}>Claim {fmtMoneyAr(ld.claimAmount)}</span>
+                              <span style={{ color:"#B45309", fontWeight:600, marginInlineStart:12 }}>VAT {fmtMoneyAr(ld.vatAmount)}</span>
+                            </div>;
+                          })}
+                        </td>
+                      </tr>}
+                    </Fragment>;
                   })}
                 </tbody>
               </table>
@@ -21435,6 +21722,43 @@ var CommissionsPage = function(p) {
       onPartialFailure={function(){ setReloadTick(function(v){ return v + 1; }); }}
     />}
     {editingCycleStage && <CommissionCycleStageModal target={editingCycleStage} onClose={function(){ setEditingCycleStage(null); }} writeCommission={writeCommission} savingFlag={savingFlag}/>}
+    {addRecipientFor && <Modal show={true} onClose={function(){ setAddRecipientFor(null); }} title={"➕ Add Manual Recipient — " + (addRecipientFor.snapshot && addRecipientFor.snapshot.customerName ? addRecipientFor.snapshot.customerName : "Commission")} w={460}>
+      <div style={{ fontSize:11, color:C.textLight, marginBottom:12, lineHeight:1.5 }}>
+        Add an extra recipient to this deal with a manual EGP commission. This appears alongside the chain recipients but is per-deal only — global rates are unchanged.
+      </div>
+      <Inp label="Name" req value={addRecipName} onChange={function(e){ setAddRecipName(e.target.value); }} placeholder="Full name"/>
+      <Inp label="Role" type="select" value={addRecipRole} onChange={function(e){ setAddRecipRole(e.target.value); }} options={[
+        { value:"sales", label:"Sales" },
+        { value:"team_leader", label:"Team Leader" },
+        { value:"manager", label:"Manager" },
+        { value:"director", label:"Director" }
+      ]}/>
+      <Inp label="Amount (EGP)" req value={addRecipAmount} onChange={function(e){
+        var raw = e.target.value.replace(/,/g, "").replace(/[^0-9.]/g, "");
+        var firstDot = raw.indexOf(".");
+        if (firstDot >= 0) raw = raw.slice(0, firstDot+1) + raw.slice(firstDot+1).replace(/\./g, "");
+        var parts = raw.split(".");
+        var intPart = parts[0] || "";
+        var hasDec = parts.length > 1;
+        var decPart = hasDec ? parts[1].slice(0, 2) : "";
+        var formatted = intPart === "" ? (hasDec ? "0." + decPart : "") : Number(intPart).toLocaleString() + (hasDec ? "." + decPart : "");
+        setAddRecipAmount(formatted);
+      }} placeholder="e.g. 25,000"/>
+      <div style={{ display:"flex", gap:10, marginTop:6 }}>
+        <Btn outline onClick={function(){ setAddRecipientFor(null); }} style={{ flex:1 }}>Cancel</Btn>
+        <Btn onClick={async function(){
+          var nm = String(addRecipName || "").trim();
+          var amtRaw = String(addRecipAmount || "").replace(/,/g, "").trim();
+          var amtNum = Number(amtRaw);
+          if (!nm) { alert("Name is required"); return; }
+          if (!amtRaw || !isFinite(amtNum) || amtNum <= 0) { alert("Amount must be greater than 0"); return; }
+          try {
+            await writeCommission("POST", "/api/commissions/" + addRecipientFor._id + "/recipients", { name: nm, role: addRecipRole, amount: amtNum }, "Manual recipient added");
+            setAddRecipientFor(null);
+          } catch(_){}
+        }} style={{ flex:1 }} loading={savingFlag}>Add</Btn>
+      </div>
+    </Modal>}
     {/* Phase R-6 polish — claim-data backfill modal for pre-R-5 cycles. */}
     {backfillTarget && <CommissionClaimBackfillModal
       commission={backfillTarget.commission}

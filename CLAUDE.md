@@ -118,3 +118,38 @@ Implementation notes (2026-05-16 fix):
 - The deal-bell icon badge AND the dropdown header chip count BOTH read from `dealNotifs.filter(n => !n.seen).length` (single source of truth — App.js Header). Do not reintroduce a second counter or a localStorage cutoff (`crm_deal_seen_<uid>`, `lastSeenDealAt`).
 - Opening the bell fires `PUT /api/notifications/mark-seen` with `{type:"deal"}`, which `$addToSet`'s the caller's userId into `seenBy` for every visible deal notification, then `loadNotifications` refetches so `dealNotifs[].seen` reflects the new DB state.
 - `POST /api/notifications` MUST emit `broadcast("notification_updated", {})` after `Notification.create` so other admins' bells refresh in real time. Every other `Notification.create` site already does this — keep it consistent.
+
+## Commission Tax Canonical Model (shipped 2026-05-17)
+
+The deal form has ONE commission input: `Commission Rate (%)`. State tax (VAT 14% + Withholding 5%) is the only "tax" in the canonical flow and applies to BOTH Internal and External deals. There is **no** broker-style "Tax %" input on the deal form anymore — that name was historically used for the External informal split (now relabeled as "Broker pre-deduction %" and clearly scoped to the External-Broker-Split bookkeeping section).
+
+Canonical formula (used by the deal-form Live Preview, the cycle-stage modal, the Commission Calculator, the Annual Summary, and `/api/annual-pnl`):
+```
+Gross Commission (incl. VAT) = Budget × commissionRate / 100
+Net of VAT                   = Gross / 1.14
+VAT 14%                      = Gross − Net of VAT
+Withholding 5%               = Net of VAT × 0.05
+Net Due                      = Gross − Withholding
+```
+
+Invariants:
+1. `Lead.commissionRate` is the canonical input (Number, percent — e.g. 3 for 3%). `Lead.commissionAmount` is always **computed server-side** from `round2(budget × rate / 100)` and never trusted from the client. Both are stored on the Lead for audit + cycle seeding.
+2. Required (BE 400 otherwise) on admin/sales_admin DoneDeal save path: `commissionRate ∈ (0, 100]` AND `budget > 0`. Stripped from body for any other role.
+3. `ensureCommissionForLead` seeds cycle 1 with `claimUnitValue = budget`, `commissionRate = Lead.commissionRate / 100` (decimal), `claimAmount = Lead.commissionAmount`. PUT `/api/leads/:id` propagates Lead edits into cycle 1 ONLY when cycle 1 is still in `pending_claim`. Once admin advances cycle 1, the cycle becomes the source of truth and Lead edits no longer touch it.
+4. `Lead.externalDealConfig.commissionTaxPct` is the External "informal broker pre-deduction" (admin-typed, 0 allowed). It is **NOT** state tax and **NOT** the canonical commission tax. Future contributors MUST NOT reintroduce a "Tax %" input on the main deal form — that name belongs to the (relabeled) Broker Split section only.
+5. External deals NEVER pay the per-1000 chain (`teamLeader/manager/director` slots are `null` on the snapshot when `dealType === "external"`). Only the broker (always) and the optional "Sales Agent involved" toggle's external sales agent are paid.
+
+## Per-Deal Recipient Overrides (shipped 2026-05-17)
+
+`Commission.recipientOverrides[]` is the source of truth for per-deal admin tweaks to the recipient list. Three actions, no snapshot mutation:
+- `manual_add` — extra recipient (off-chain). `targetSlot: "extra"`. Renders as an extra row in the recipient list.
+- `manual_zero` — pins a chain slot's effective share to 0 for this deal (recipient still appears, with a "manually zeroed" badge).
+- `manual_remove` — excludes a chain slot from the effective recipient list entirely.
+
+Endpoints (all admin/sales_admin):
+- `POST /api/commissions/:id/recipients` — body `{ name, role, amount, userId? }`. Creates a manual_add override.
+- `DELETE /api/commissions/:id/recipients/:overrideId` — removes any override by `_id` (manual_add, manual_zero, or manual_remove).
+- `PATCH /api/commissions/:id/recipients/:slot/zero` — slot ∈ {salesAgent, teamLeader, manager, director, owner, salesAgent2, teamLeader2, manager2, director2, owner2}.
+- `PATCH /api/commissions/:id/recipients/:slot/remove` — same slot enum.
+
+The recipient list rendering in `CommissionsPage` derives the effective rows by combining `commission.snapshot.*` with `commission.recipientOverrides[]`. Snapshot.* is NEVER mutated by an override action — recompute (`computeAllRecipientShares`) computes shares as if no override exists; the override layer is applied at read time only.
