@@ -105,3 +105,16 @@ Inventory tracking for company-owned equipment, furniture, and appliances.
 - **Excel exports**: uses `exceljs` (not `xlsx` — needed cell styling). Single endpoint `GET /api/assets/reports/export?type=<type>`; each type produces a multi-sheet workbook (summary + detail). Date columns formatted in Cairo time via `Africa/Cairo` + `sv-SE` locale.
 - **Required env var**: `APP_URL` on Railway must match the Vercel domain so QR codes point to the right host. Falls back to `https://crm-aronpx.vercel.app` if unset.
 - **JWT lifetime**: bumped to 30d during the rebuild (was 7d). Existing tokens keep their original 7d window until they expire.
+
+## Deal Notifications — DO NOT BREAK
+Invariants that MUST hold for the deal notification bell to keep working:
+1. Both deal-notification creation paths (POST new deal AND EOI → Done Deal conversion) MUST save the notification with the SAME canonical `type` value. Current canonical value: `"deal"`.
+2. The auto-mark-as-read flow MUST include the canonical deal-notification type in its handled types. If a type whitelist exists on either FE or BE, the canonical deal type MUST be present.
+3. Deal notifications MUST have a valid ISO `createdAt`, an explicit `isRead: false` on creation, and a non-null actor reference.
+4. Any future refactor that touches notification types must update BOTH creation paths AND the mark-as-read handler in the same commit.
+
+Implementation notes (2026-05-16 fix):
+- Read state is per-user, DB-backed: `Notification.seenBy[]` (array of userId strings). The Notification model has no `isRead` / `readAt` field — "read" means the caller's userId is in `seenBy`. Invariant #3's `isRead: false` corresponds to leaving `seenBy: []` on creation (Mongoose schema default; do not initialize otherwise).
+- The deal-bell icon badge AND the dropdown header chip count BOTH read from `dealNotifs.filter(n => !n.seen).length` (single source of truth — App.js Header). Do not reintroduce a second counter or a localStorage cutoff (`crm_deal_seen_<uid>`, `lastSeenDealAt`).
+- Opening the bell fires `PUT /api/notifications/mark-seen` with `{type:"deal"}`, which `$addToSet`'s the caller's userId into `seenBy` for every visible deal notification, then `loadNotifications` refetches so `dealNotifs[].seen` reflects the new DB state.
+- `POST /api/notifications` MUST emit `broadcast("notification_updated", {})` after `Notification.create` so other admins' bells refresh in real time. Every other `Notification.create` site already does this — keep it consistent.

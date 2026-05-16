@@ -1541,11 +1541,11 @@ var Header = function(p) {
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span style={{ fontSize:16 }}>💰</span>
               <span style={{ fontWeight:700, fontSize:14, color:C.text }}>Deals & EOI</span>
-              {(function(){
-                var n = (p.leads||[]).filter(function(l){return !l.archived && (l.status==="EOI"||l.status==="DoneDeal"||l.globalStatus==="eoi"||l.globalStatus==="donedeal") && l.eoiStatus!=="EOI Cancelled";}).length
-                      + (p.dailyRequests||[]).filter(function(r){return !r.archived && (r.status==="EOI"||r.status==="DoneDeal") && r.eoiStatus!=="EOI Cancelled";}).length;
-                return n>0 ? <span style={{ background:"#F0FDF4", color:"#15803D", padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:600 }}>{n}</span> : null;
-              })()}
+              {/* Header chip shows UNREAD count from the same source as the
+                  icon badge (dealNotifs[].seen, DB-backed via Notification.seenBy).
+                  Total-count derivation was removed because it disagreed with
+                  the badge — see CLAUDE.md "Deal Notifications — DO NOT BREAK". */}
+              {p.unseenDeals>0 ? <span style={{ background:"#F0FDF4", color:"#15803D", padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:600 }}>{p.unseenDeals}</span> : null}
             </div>
             <div style={{ display:"flex", gap:4, alignItems:"center" }}>
               {p.unseenDeals>0&&<button onClick={function(){if(p.onDealNotifSeen)p.onDealNotifSeen();}} style={{ background:"#F0FDF4", border:"none", borderRadius:6, cursor:"pointer", fontSize:11, color:"#15803D", fontWeight:600, padding:"4px 10px" }}>Mark Read</button>}
@@ -22073,11 +22073,10 @@ export default function CRMApp() {
   // just renders whatever the API returns.
   var [offSiteNotifs,setOffSiteNotifs]=useState([]);
   var [showOffSiteNotif,setShowOffSiteNotif]=useState(false);
-  // Client-side "last seen" markers for the Deal and Rotation bells. Stored per
-  // user in localStorage so the badge clears across reloads on the same device.
-  // Deal badge is driven by live lead/DR state (see buildDealItems), not the
-  // Notification collection, so the "seen" flag lives here rather than the DB.
-  var [lastSeenDealAt,setLastSeenDealAt]=useState(0);
+  // Deal-bell unread state is per-user, DB-backed via Notification.seenBy[]
+  // (see /api/notifications/mark-seen). The earlier localStorage cutoff
+  // (lastSeenDealAt + crm_deal_seen_<uid>) was removed because it didn't
+  // travel across devices and disagreed with the dropdown header count.
   // Phase: rotation "Clear all" no longer hides notifications client-side —
   // it just marks them seen on the server. rotHiddenBefore state removed.
   // Attendance & Salary — Phase 2. Cached settings + permissions for the
@@ -22168,17 +22167,14 @@ export default function CRMApp() {
     window.addEventListener("resize",fn); return function(){window.removeEventListener("resize",fn);};
   },[]);
 
-  // Load per-user bell "seen" markers from localStorage once the user is known.
-  // Also evict the now-inert crm_rot_hidden_<uid> key (was used by the
-  // dropped rotation client-side hide-cutoff; server-side mark-seen now drives
-  // the unread indicator instead).
+  // Evict the now-inert per-user localStorage keys that used to drive the
+  // rotation hide-cutoff and the deal-bell unread cutoff. Both bells now read
+  // their unread state from the DB (Notification.seenBy[] via mark-seen),
+  // so these keys are dead and we clear them on every login to free the slots.
   useEffect(function(){
     var uid = gid(currentUser); if (!uid) return;
-    try {
-      var dv = localStorage.getItem("crm_deal_seen_"+uid);
-      if (dv) setLastSeenDealAt(parseInt(dv,10)||0);
-      localStorage.removeItem("crm_rot_hidden_"+uid);
-    } catch(e){}
+    try { localStorage.removeItem("crm_rot_hidden_"+uid); } catch(e){}
+    try { localStorage.removeItem("crm_deal_seen_"+uid); } catch(e){}
   },[currentUser&&gid(currentUser)]);
 
   var t=TR[lang];
@@ -22862,7 +22858,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} navigateToCommission={navigateToCommission} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={(function(){var items=buildDealItems(scopedLeads,scopedDailyReqs,currentUser,myTeamUsers);var cutoff=lastSeenDealAt||0;return items.filter(function(it){return new Date(it.time||0).getTime()>cutoff;}).length;})()} onDealNotifSeen={function(){var now=Date.now();setLastSeenDealAt(now);try{var uid=gid(currentUser);if(uid)localStorage.setItem("crm_deal_seen_"+uid,String(now));}catch(e){}apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} navigateToCommission={navigateToCommission} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
