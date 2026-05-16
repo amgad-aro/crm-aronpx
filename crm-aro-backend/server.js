@@ -202,7 +202,11 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   externalDealConfig:{
     commissionTaxPct:{type:Number,default:0},
     brokerSharePct:{type:Number,default:0}
-  }
+  },
+  // Gross commission claim (EGP) received from the developer for this deal.
+  // Separate from `budget` (deal value). Required on admin's DoneDeal save
+  // path; null on pre-existing deals that predate this field.
+  commissionAmount:{type:Number,default:null}
 },{timestamps:true}));
 
 // Indexes for query performance
@@ -7160,9 +7164,22 @@ app.post("/api/leads", auth, async function(req, res) {
       delete req.body.dealType;
       delete req.body.externalBrokerId;
       delete req.body.externalDealConfig;
+      delete req.body.commissionAmount;
     }
     var extCheck = await validateAndNormalizeExternalDeal(req.body, null);
     if (!extCheck.ok) return res.status(400).json({ error: extCheck.error });
+    // commissionAmount: required > 0 when admin/sales_admin creates a DoneDeal.
+    // Recompute fresh from a clean Number coerce — never trust client math.
+    if ((req.user.role === "admin" || req.user.role === "sales_admin") && initialStatus === "DoneDeal") {
+      var caRawCreate = req.body.commissionAmount;
+      var caNumCreate = Number(caRawCreate);
+      if (caRawCreate === undefined || caRawCreate === null || caRawCreate === "" || !isFinite(caNumCreate) || caNumCreate <= 0) {
+        return res.status(400).json({ error: "commission_amount_required", message: "Commission Amount (EGP) is required and must be greater than 0." });
+      }
+      req.body.commissionAmount = caNumCreate;
+    } else {
+      delete req.body.commissionAmount;
+    }
     var lead = await Lead.create({
       name:             req.body.name,
       phone:            req.body.phone,
@@ -7193,6 +7210,7 @@ app.post("/api/leads", auth, async function(req, res) {
       dealType:           req.body.dealType,
       externalBrokerId:   req.body.externalBrokerId,
       externalDealConfig: req.body.externalDealConfig,
+      commissionAmount:   (typeof req.body.commissionAmount === "number") ? req.body.commissionAmount : null,
       assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "New Lead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: req.body.notes || "", budget: req.body.budget || "", callbackTime: req.body.callbackTime || "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
       expiresAt:        new Date(Date.now() + 30*24*60*60*1000),
       globalStatus:     "active",
@@ -8123,6 +8141,32 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         }
         var extCheckPut = await validateAndNormalizeExternalDeal(req.body, dtOldLead);
         if (!extCheckPut.ok) return res.status(400).json({ error: extCheckPut.error });
+      }
+    }
+    // commissionAmount: strip for non-admin roles (defense in depth — UI is
+    // admin-only). For admin/sales_admin saving a DoneDeal (any path that
+    // sets status="DoneDeal"), require > 0 and recompute from a clean Number
+    // coerce — never trust client-computed tax/net/broker/aro values.
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      delete req.body.commissionAmount;
+    } else if (req.body.status === "DoneDeal") {
+      var caRawPut = req.body.commissionAmount;
+      var caNumPut = Number(caRawPut);
+      if (caRawPut === undefined || caRawPut === null || caRawPut === "" || !isFinite(caNumPut) || caNumPut <= 0) {
+        return res.status(400).json({ error: "commission_amount_required", message: "Commission Amount (EGP) is required and must be greater than 0." });
+      }
+      req.body.commissionAmount = caNumPut;
+    } else if (req.body.commissionAmount !== undefined) {
+      var caRawSil = req.body.commissionAmount;
+      if (caRawSil === "" || caRawSil === null) {
+        delete req.body.commissionAmount;
+      } else {
+        var caNumSil = Number(caRawSil);
+        if (!isFinite(caNumSil) || caNumSil <= 0) {
+          delete req.body.commissionAmount;
+        } else {
+          req.body.commissionAmount = caNumSil;
+        }
       }
     }
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
