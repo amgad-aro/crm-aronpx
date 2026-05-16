@@ -18426,6 +18426,98 @@ function parseMoney(formatted) {
   return Number(s);
 }
 
+// Phase R-13 — applyRecipientOverridesFE(commission): canonical post-override
+// recipient list (FE mirror of the BE applyRecipientOverrides helper at
+// crm-aro-backend/server.js right after computeAllRecipientShares).
+//
+// Returns the same row shape as the BE helper so any FE site that aggregates
+// recipients stays consistent with the BE Payout Report / cash-flow / payout
+// creation membership checks. Rows:
+//   { slotKey, userName, userId, role, computedShare, overrideAmount,
+//     effectiveOwed, isExtra, overrideSource, overrideId, addedBy, addedAt,
+//     isSplit }
+//
+// Currently consumed by: the "Add Payout" recipient dropdown inside the
+// Commission detail. The Commission detail's recipient-list rendering retains
+// its own inline override layer (added when overrides shipped); it produces
+// the same output by construction. If a third FE site needs to aggregate
+// recipients, call this helper rather than duplicating logic.
+function applyRecipientOverridesFE(commission) {
+  var rows = [];
+  if (!commission || !commission.snapshot) return rows;
+  var snap = commission.snapshot;
+  var overrides = Array.isArray(commission.recipientOverrides) ? commission.recipientOverrides : [];
+  var bySlot = {};
+  var manualAdds = [];
+  overrides.forEach(function(o){
+    if (!o || !o.source) return;
+    if (o.source === "manual_add") { manualAdds.push(o); return; }
+    if (o.targetSlot) bySlot[o.targetSlot] = o;
+  });
+  var chain = [
+    ["salesAgent", snap.salesAgent, false],
+    ["teamLeader", snap.teamLeader, false],
+    ["manager",    snap.manager,    false],
+    ["director",   snap.director,   false]
+  ];
+  if (snap.isSplitDeal && snap.splitChain) {
+    chain.push(["salesAgent2", snap.splitChain.salesAgent2, true]);
+    chain.push(["teamLeader2", snap.splitChain.teamLeader2, true]);
+    chain.push(["manager2",    snap.splitChain.manager2,    true]);
+    chain.push(["director2",   snap.splitChain.director2,   true]);
+  }
+  chain.forEach(function(t){
+    var slotKey = t[0], r = t[1], isSplit = t[2];
+    if (!r || !r.userName) return;
+    var ov = bySlot[slotKey];
+    if (ov && ov.source === "manual_remove") return;
+    var computed = Number(r.computedShare || 0);
+    var override = (r.overrideAmount != null && Number(r.overrideAmount) > 0) ? Number(r.overrideAmount) : null;
+    var effective;
+    var overrideSource = null;
+    if (ov && ov.source === "manual_zero") {
+      effective = 0;
+      overrideSource = "manual_zero";
+    } else {
+      effective = override != null ? override : computed;
+    }
+    rows.push({
+      slotKey:        slotKey,
+      userName:       r.userName,
+      userId:         r.userId || null,
+      role:           r.role || "sales",
+      computedShare:  computed,
+      overrideAmount: override,
+      effectiveOwed:  effective,
+      isExtra:        false,
+      overrideSource: overrideSource,
+      overrideId:     ov && ov._id ? String(ov._id) : null,
+      addedBy:        ov && ov.addedBy ? ov.addedBy : "",
+      addedAt:        ov && ov.addedAt ? ov.addedAt : null,
+      isSplit:        isSplit
+    });
+  });
+  manualAdds.forEach(function(ma){
+    var maAmt = Number(ma.computedShare || 0);
+    rows.push({
+      slotKey:        "extra",
+      userName:       ma.name || "",
+      userId:         ma.userId || null,
+      role:           ma.role || "sales",
+      computedShare:  maAmt,
+      overrideAmount: null,
+      effectiveOwed:  maAmt,
+      isExtra:        true,
+      overrideSource: "manual_add",
+      overrideId:     ma._id ? String(ma._id) : null,
+      addedBy:        ma.addedBy || "",
+      addedAt:        ma.addedAt || null,
+      isSplit:        false
+    });
+  });
+  return rows;
+}
+
 // Phase R-5 — piaster-level precision helpers. Every derived tax value
 // (netOfVat, vat, withholding, netReceived) must round to 2 decimals so
 // totals reconcile against Excel/government tax filings. claimAmount itself
@@ -18540,28 +18632,13 @@ var CommissionEditCollectionModal = function(p) {
     });
   };
 
-  // Build the recipient dropdown from snapshot slots (matches the old
-  // CommissionPayoutAddModal logic).
-  var recipientOptions = (function(){
-    var opts = [];
-    function add(r){
-      if (!r || !r.userName) return;
-      var owed = (r.overrideAmount != null && Number(r.overrideAmount) > 0)
-        ? Number(r.overrideAmount) : Number(r.computedShare || 0);
-      opts.push({ userName: r.userName, role: r.role, owed: owed });
-    }
-    add(snap.salesAgent);
-    add(snap.teamLeader);
-    add(snap.manager);
-    add(snap.director);
-    if (snap.isSplitDeal && snap.splitChain) {
-      add(snap.splitChain.salesAgent2);
-      add(snap.splitChain.teamLeader2);
-      add(snap.splitChain.manager2);
-      add(snap.splitChain.director2);
-    }
-    return opts;
-  })();
+  // Build the recipient dropdown via the canonical override layer so the
+  // dropdown matches what the Payout Report / BE membership check will accept.
+  // Phase R-13 — manual_remove drops the slot; manual_zero shows the row with
+  // owed=0; manual_add extras are valid payout targets.
+  var recipientOptions = applyRecipientOverridesFE(c).map(function(r){
+    return { userName: r.userName, role: r.role, owed: Number(r.effectiveOwed || 0) };
+  });
   var todayIso = new Date().toISOString().slice(0, 10);
   var addPayoutDraft = function(){
     if (recipientOptions.length === 0) { alert("No recipients on this commission's snapshot."); return; }

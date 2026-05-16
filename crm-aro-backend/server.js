@@ -1908,6 +1908,104 @@ async function computeAllRecipientShares(c) {
   return c;
 }
 
+// Phase R-13 — applyRecipientOverrides(commission): canonical post-override
+// recipient list. Single source of truth for every aggregator that needs to
+// know who is paid (and how much) on this commission AFTER admin's per-deal
+// overrides. Mutates nothing. Returns:
+//   [{ slotKey, userName, userId, role,
+//      computedShare, overrideAmount, effectiveOwed,
+//      isExtra, overrideSource, overrideId, addedBy, addedAt,
+//      isSplit }]
+// Rules:
+//   - Iterate 8 chain slots. If recipientOverrides[] has a manual_remove for
+//     that slotKey → omit the slot entirely.
+//   - manual_zero → emit slot with effectiveOwed=0, overrideSource="manual_zero".
+//   - Else emit slot with effectiveOwed = (overrideAmount || computedShare),
+//     overrideSource=null.
+//   - Then append each manual_add override as an extra row (isExtra=true,
+//     effectiveOwed = override.computedShare).
+// Callers: computePayoutsForMonth, computeRecipientNetPositions,
+// recipientSlotsByUserName. Snapshot.* is NEVER mutated here.
+function applyRecipientOverrides(commission) {
+  var rows = [];
+  if (!commission || !commission.snapshot) return rows;
+  var snap = commission.snapshot;
+  var overrides = Array.isArray(commission.recipientOverrides) ? commission.recipientOverrides : [];
+  var bySlot = {};
+  var manualAdds = [];
+  for (var oi = 0; oi < overrides.length; oi++) {
+    var o = overrides[oi];
+    if (!o || !o.source) continue;
+    if (o.source === "manual_add") { manualAdds.push(o); continue; }
+    if (o.targetSlot) bySlot[o.targetSlot] = o;
+  }
+  var chain = [
+    ["salesAgent", snap.salesAgent,                          false],
+    ["teamLeader", snap.teamLeader,                          false],
+    ["manager",    snap.manager,                             false],
+    ["director",   snap.director,                            false]
+  ];
+  if (snap.isSplitDeal && snap.splitChain) {
+    chain.push(["salesAgent2", snap.splitChain.salesAgent2, true]);
+    chain.push(["teamLeader2", snap.splitChain.teamLeader2, true]);
+    chain.push(["manager2",    snap.splitChain.manager2,    true]);
+    chain.push(["director2",   snap.splitChain.director2,   true]);
+  }
+  for (var ci = 0; ci < chain.length; ci++) {
+    var slotKey = chain[ci][0];
+    var r       = chain[ci][1];
+    var isSplit = chain[ci][2];
+    if (!r || !r.userName) continue;
+    var ov = bySlot[slotKey];
+    if (ov && ov.source === "manual_remove") continue;
+    var computed = Number(r.computedShare || 0);
+    var override = (r.overrideAmount != null && Number(r.overrideAmount) > 0) ? Number(r.overrideAmount) : null;
+    var effective;
+    var overrideSource = null;
+    if (ov && ov.source === "manual_zero") {
+      effective = 0;
+      overrideSource = "manual_zero";
+    } else {
+      effective = override != null ? override : computed;
+    }
+    rows.push({
+      slotKey:        slotKey,
+      userName:       r.userName,
+      userId:         r.userId || null,
+      role:           r.role || "sales",
+      computedShare:  computed,
+      overrideAmount: override,
+      effectiveOwed:  effective,
+      isExtra:        false,
+      overrideSource: overrideSource,
+      overrideId:     ov && ov._id ? String(ov._id) : null,
+      addedBy:        ov && ov.addedBy ? ov.addedBy : "",
+      addedAt:        ov && ov.addedAt ? ov.addedAt : null,
+      isSplit:        isSplit
+    });
+  }
+  for (var ai = 0; ai < manualAdds.length; ai++) {
+    var ma = manualAdds[ai];
+    var maAmt = Number(ma.computedShare || 0);
+    rows.push({
+      slotKey:        "extra",
+      userName:       ma.name || "",
+      userId:         ma.userId || null,
+      role:           ma.role || "sales",
+      computedShare:  maAmt,
+      overrideAmount: null,
+      effectiveOwed:  maAmt,
+      isExtra:        true,
+      overrideSource: "manual_add",
+      overrideId:     ma._id ? String(ma._id) : null,
+      addedBy:        ma.addedBy || "",
+      addedAt:        ma.addedAt || null,
+      isSplit:        false
+    });
+  }
+  return rows;
+}
+
 // recomputeQuarterSiblings — find all non-cancelled commissions where the given
 // agent appears (as primary OR split) AND whose dealDate falls in the same
 // calendar quarter as anchorDate. Recomputes each. Returns array of
@@ -1995,7 +2093,10 @@ function snapshotRecipientSummary(c) {
 //   debt             = max(0, perCommOverpaid - applied)
 //   netPosition      = owed - paid   (cash-flow position; >0 → we owe them more cash)
 async function computeRecipientNetPositions() {
-  var all = await Commission.find({}).select("status snapshot payouts").lean();
+  // Phase R-13 — must select recipientOverrides so applyRecipientOverrides()
+  // sees per-deal admin tweaks (manual_remove drops the recipient from owed
+  // totals; manual_zero zeroes them; manual_add appends extras).
+  var all = await Commission.find({}).select("status snapshot payouts recipientOverrides").lean();
   var byName = {};
   function ensure(name, role) {
     if (!byName[name]) byName[name] = {
@@ -2004,31 +2105,15 @@ async function computeRecipientNetPositions() {
     };
     return byName[name];
   }
-  function effectiveOwed(r) {
-    if (!r || !r.userName) return 0;
-    var v = (r.overrideAmount != null && Number(r.overrideAmount) > 0)
-      ? Number(r.overrideAmount) : Number(r.computedShare || 0);
-    return isFinite(v) && v > 0 ? v : 0;
-  }
   function collectOwed(c) {
     var out = {};
-    function add(r) {
-      if (!r || !r.userName) return;
-      var v = effectiveOwed(r);
-      if (v <= 0) return;
-      out[r.userName] = (out[r.userName] || 0) + v;
+    var rows = applyRecipientOverrides(c);
+    for (var ri = 0; ri < rows.length; ri++) {
+      var r = rows[ri];
+      if (!r.userName) continue;
+      var v = Number(r.effectiveOwed || 0);
       ensure(r.userName, r.role); // touch — so a recipient with only owed still appears
-    }
-    if (!c.snapshot) return out;
-    add(c.snapshot.salesAgent);
-    add(c.snapshot.teamLeader);
-    add(c.snapshot.manager);
-    add(c.snapshot.director);
-    if (c.snapshot.isSplitDeal && c.snapshot.splitChain) {
-      add(c.snapshot.splitChain.salesAgent2);
-      add(c.snapshot.splitChain.teamLeader2);
-      add(c.snapshot.splitChain.manager2);
-      add(c.snapshot.splitChain.director2);
+      if (v > 0) out[r.userName] = (out[r.userName] || 0) + v;
     }
     return out;
   }
@@ -16453,21 +16538,16 @@ async function computePayoutsForMonth(year, month) {
     return s;
   }
 
-  function effectiveOwed(rec) {
-    if (!rec) return 0;
-    var override = rec.overrideAmount != null && Number(rec.overrideAmount) > 0
-      ? Number(rec.overrideAmount) : null;
-    return override != null ? override : Number(rec.computedShare || 0);
-  }
-
-  function pushDeal(rec, doc, splitLabel, cycleNumberRef) {
-    if (!rec || !rec.userId) return;
-    var owed = effectiveOwed(rec);
+  function pushDeal(row, doc, cycleNumberRef) {
+    // row is an applyRecipientOverrides() entry. Drops removed slots upstream;
+    // manual_zero rows already carry effectiveOwed=0 (filtered below).
+    if (!row || !row.userId) return;                  // userId-less rows (off-chain manual_add w/o user, deleted users) can't enter payout bucket
+    var owed = Number(row.effectiveOwed || 0);
     if (!(owed > 0)) return;
-    var paid = paidToRecipient(doc.payouts, rec.userId);
+    var paid = paidToRecipient(doc.payouts, row.userId);
     var net = owed - paid;
     if (!(net > 0)) return;
-    var bucket = ensureAgent(rec);
+    var bucket = ensureAgent({ userId: row.userId, userName: row.userName, role: row.role });
     if (!bucket) return;
     var snap = doc.snapshot || {};
     bucket.totalOwed += net;
@@ -16479,20 +16559,22 @@ async function computePayoutsForMonth(year, month) {
       dealDate:      snap.dealDate     || "",
       dealTotal:     Number(snap.dealTotal || 0),
       isSplit:       !!snap.isSplitDeal,
-      splitLabel:    splitLabel,                       // "Full deal" | "Split 50%"
-      role:          rec.role,
-      computedShare: Number(rec.computedShare || 0),
-      overrideAmount: rec.overrideAmount != null ? Number(rec.overrideAmount) : null,
+      splitLabel:    row.isExtra ? "Manual" : (row.isSplit ? "Split 50%" : "Full deal"),
+      role:          row.role,
+      computedShare: Number(row.computedShare || 0),
+      overrideAmount: row.overrideAmount,
       paidToDate:    paid,
       owedTotal:     owed,
       owedNet:       net,
-      cycleRef:      cycleNumberRef                   // first matching cycle # for display
+      cycleRef:      cycleNumberRef,
+      // Phase R-13 — override provenance for FE display / tooltips.
+      overrideSource: row.overrideSource || null,
+      overrideAddedBy: row.addedBy || ""
     });
   }
 
   for (var di = 0; di < docs.length; di++) {
     var doc = docs[di];
-    var snap = doc.snapshot || {};
     // Find the first cycle that triggered match (display reference).
     var cycleRef = null;
     if (Array.isArray(doc.cycles)) {
@@ -16505,18 +16587,12 @@ async function computePayoutsForMonth(year, month) {
         }
       }
     }
-    var isSplit  = !!snap.isSplitDeal;
-    var splitLab = isSplit ? "Split 50%" : "Full deal";
-
-    pushDeal(snap.salesAgent, doc, splitLab, cycleRef);
-    pushDeal(snap.teamLeader, doc, splitLab, cycleRef);
-    pushDeal(snap.manager,    doc, splitLab, cycleRef);
-    pushDeal(snap.director,   doc, splitLab, cycleRef);
-    if (isSplit && snap.splitChain) {
-      pushDeal(snap.splitChain.salesAgent2, doc, "Split 50%", cycleRef);
-      pushDeal(snap.splitChain.teamLeader2, doc, "Split 50%", cycleRef);
-      pushDeal(snap.splitChain.manager2,    doc, "Split 50%", cycleRef);
-      pushDeal(snap.splitChain.director2,   doc, "Split 50%", cycleRef);
+    // Phase R-13 — replace direct snapshot reads with applyRecipientOverrides()
+    // so manual_remove drops the recipient, manual_zero zeroes them, and
+    // manual_add extras appear on the report.
+    var effective = applyRecipientOverrides(doc);
+    for (var ei = 0; ei < effective.length; ei++) {
+      pushDeal(effective[ei], doc, cycleRef);
     }
 
     // Phase R-12 Part 8 — broker payout aggregation. brokerOwed is a
@@ -18282,24 +18358,16 @@ app.patch("/api/commissions/:id/incentive/:index", auth, salesAdminOnly, async f
 // Helper: find every recipient slot on a commission matching a userName.
 // Returns array of {role, slotKey, owed} where owed = overrideAmount ?? computedShare.
 function recipientSlotsByUserName(c, userName) {
+  // Phase R-13 — derive from applyRecipientOverrides so manual_remove drops
+  // the recipient from membership entirely (POST /payouts rejects), manual_zero
+  // returns the slot with owed=0 (existing "exceeds remaining share" check
+  // blocks the payout), and manual_add extras are valid payout targets.
+  var rows = applyRecipientOverrides(c);
   var slots = [];
-  function check(slotKey, r) {
-    if (!r || !r.userName) return;
-    if (r.userName !== userName) return;
-    var owed = (r.overrideAmount != null && Number(r.overrideAmount) > 0)
-      ? Number(r.overrideAmount) : Number(r.computedShare || 0);
-    slots.push({ slotKey: slotKey, role: r.role, owed: owed });
-  }
-  if (!c || !c.snapshot) return slots;
-  check("salesAgent", c.snapshot.salesAgent);
-  check("teamLeader", c.snapshot.teamLeader);
-  check("manager",    c.snapshot.manager);
-  check("director",   c.snapshot.director);
-  if (c.snapshot.isSplitDeal && c.snapshot.splitChain) {
-    check("salesAgent2", c.snapshot.splitChain.salesAgent2);
-    check("teamLeader2", c.snapshot.splitChain.teamLeader2);
-    check("manager2",    c.snapshot.splitChain.manager2);
-    check("director2",   c.snapshot.splitChain.director2);
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    if (!r.userName || r.userName !== userName) continue;
+    slots.push({ slotKey: r.slotKey, role: r.role, owed: Number(r.effectiveOwed || 0) });
   }
   return slots;
 }
