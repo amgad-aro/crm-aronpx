@@ -8295,6 +8295,49 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       }
       await Lead.updateOne({ _id: req.params.id, "assignments.agentId": new mongoose.Types.ObjectId(req.user.id) }, assignOps);
     }
+    // Holder-slice status sync — when a non-holder caller (admin / manager /
+    // team_leader / director) changes the status, mirror the new status onto
+    // the current holder's assignments[] slice so the FE currentStatus()
+    // (which reads slice.status before falling back to lead.status) doesn't
+    // display the stale slice value. Without this, a TL who picks a new
+    // status on a team member's lead and pairs it with a to_sales feedback
+    // would see the status revert: POST /feedback bumps the holder's
+    // slice.lastActionAt without touching slice.status, so the currentStatus
+    // walker picks the (old) slice.status as the latest timestamped signal.
+    // Mirrors the slice sync block above but targets the holder, not the
+    // caller. Restricted to status changes — feedback / callback / budget
+    // routing through this PUT is already correctly handled by the
+    // caller-slice sync above and the /feedback endpoint.
+    // sales_admin is excluded from this mirror (see one-liner below).
+    // sales_admin intentionally excluded — status changes on others' leads stay local to caller
+    if (req.body.status && oldLead && oldLead.agentId &&
+        String(oldLead.agentId) !== String(req.user.id) &&
+        req.body.status !== oldLead.status &&
+        req.user.role !== "sales_admin") {
+      try {
+        var holderObjId = new mongoose.Types.ObjectId(String(oldLead.agentId));
+        var holderAssignUpdate = {
+          "assignments.$.status":       req.body.status,
+          "assignments.$.lastActionAt": new Date()
+        };
+        var holderAssignOps = {
+          $set: holderAssignUpdate,
+          $push: {
+            "assignments.$.agentHistory": {
+              type: "status_change",
+              note: "Status: " + req.body.status,
+              createdAt: new Date()
+            }
+          }
+        };
+        await Lead.updateOne(
+          { _id: req.params.id, "assignments.agentId": holderObjId },
+          holderAssignOps
+        );
+      } catch (holderSyncErr) {
+        console.error("[holder slice status sync]", holderSyncErr && holderSyncErr.message ? holderSyncErr.message : holderSyncErr);
+      }
+    }
     // Single final read with populate
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     // Admin audit timeline — translate the just-applied diff into one or more
