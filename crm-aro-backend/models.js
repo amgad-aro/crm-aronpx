@@ -13,6 +13,16 @@ var userSchema = new mongoose.Schema({
   monthlyTarget: { type: Number, default: 15 },
   teamId: { type: String, default: "" },
   teamName: { type: String, default: "" },
+  // Mobile push registry. NOTE: the live User schema is redefined inline in
+  // server.js (delete mongoose.models["User"]; var User = mongoose.model(...)),
+  // so this field declaration here is documentation; the runtime source of
+  // truth is the inline declaration in server.js.
+  pushTokens: [{
+    token: String,
+    platform: String,
+    deviceId: String,
+    addedAt: { type: Date, default: Date.now }
+  }],
 }, { timestamps: true });
 
 // ===== LEAD MODEL =====

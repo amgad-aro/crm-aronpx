@@ -84,7 +84,13 @@ var User = mongoose.model("User", new mongoose.Schema({
   // calendar day (server time / Africa/Cairo). Counted from agentHistory[]
   // Rotation entries where date >= start of today. Manual /rotate ignores
   // this cap entirely (admin override).
-  dailyLeadCap:{type:Number,default:null,min:0}
+  dailyLeadCap:{type:Number,default:null,min:0},
+  // Capacitor Push Notifications registry. One entry per (device,platform)
+  // registration. token = FCM/APNs token from Capacitor's PushNotifications
+  // plugin. Deduped by token value in POST /api/users/push-token. Invalid
+  // tokens are pruned lazily by notifications.js when FCM returns
+  // 'registration-token-not-registered' / 'invalid-registration-token'.
+  pushTokens:[{token:String,platform:String,deviceId:String,addedAt:{type:Date,default:Date.now}}]
 },{timestamps:true}));
 
 var Lead = mongoose.model("Lead", new mongoose.Schema({
@@ -6211,6 +6217,31 @@ app.get("/api/users", auth, async function(req, res) {
     }
 
     res.json(users);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Mobile push-token self-registration. Any authenticated user can register a
+// token from their own device. Path is literal ("push-token"), so it MUST stay
+// registered before /api/users/:id below — Express would otherwise match :id.
+app.post("/api/users/push-token", auth, async function(req, res) {
+  try {
+    var uid = req.user.id;
+    var token = (req.body && req.body.token) ? String(req.body.token).trim() : "";
+    if (!token) return res.status(400).json({ error: "token required" });
+    var platform = (req.body && req.body.platform) ? String(req.body.platform).trim() : "";
+    var deviceId = (req.body && req.body.deviceId) ? String(req.body.deviceId).trim() : "";
+
+    var user = await User.findById(uid);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    user.pushTokens = user.pushTokens || [];
+    var existing = user.pushTokens.find(function(t){ return t && t.token === token; });
+    if (!existing) {
+      user.pushTokens.push({ token: token, platform: platform, deviceId: deviceId, addedAt: new Date() });
+      await user.save();
+    }
+    res.json({ success: true, tokenCount: user.pushTokens.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
