@@ -468,6 +468,11 @@ var cleanPhone = function(phone) {
 var timeAgo = function(d, t) {
   if (!d) return "-";
   var diff = (Date.now() - new Date(d).getTime()) / 60000;
+  // Defensive: future-dated values (data-entry bugs — e.g. a dealDate typed
+  // as 2026-12-15 when meant 2026-02-15) make diff negative, which would
+  // satisfy `diff < 1` below and render "Just now". Render the ISO date
+  // instead so the bad date is visually obvious.
+  if (diff < 0) return new Date(d).toISOString().slice(0,10);
   if (diff < 1) return t.just;
   if (diff < 60) return Math.floor(diff) + " " + t.minutes + " " + t.ago;
   if (diff < 1440) return Math.floor(diff / 60) + " " + t.hours + " " + t.ago;
