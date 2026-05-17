@@ -488,6 +488,60 @@ var timeAgo = function(d, t) {
   return Math.floor(diff / 1440) + " " + t.days + " " + t.ago;
 };
 
+// 2026-05-18 — forward-looking time formatter for the CallbackBell rows.
+// `timeAgo` always reads as "X ago" which is the wrong direction for the
+// callback bell (the bell answers "when is the next call due?", which is
+// usually in the future for Upcoming / Now, and is "how overdue?" for the
+// Delay tab). Render:
+//   future: "in 2 hr" / "in 3 days"
+//   today:  "Today 14:30"  (same calendar day in local time)
+//   past:   "Overdue 1 day" / "Overdue 3 hr"
+// "Today" branch sidesteps the awkward "in 0 hr" / "Overdue 0 hr" reading
+// around the boundary and gives reps a clock time they can act on.
+var callbackTimeStr = function(d, t) {
+  if (!d) return "-";
+  var ts = new Date(d).getTime();
+  if (isNaN(ts)) return "-";
+  var now = Date.now();
+  var diffMin = (ts - now) / 60000;
+  var absMin = Math.abs(diffMin);
+  var dD = new Date(ts), nD = new Date(now);
+  var sameDay = dD.getFullYear()===nD.getFullYear() && dD.getMonth()===nD.getMonth() && dD.getDate()===nD.getDate();
+  var t2 = t || {};
+  var lblMin = t2.minutes || "min";
+  var lblHr  = t2.hours || "hr";
+  var lblDay = t2.days || "days";
+  var lblOverdue = t2.overdue || "Overdue";
+  if (sameDay) {
+    var hh = String(dD.getHours()).padStart(2,"0");
+    var mm = String(dD.getMinutes()).padStart(2,"0");
+    return "Today " + hh + ":" + mm;
+  }
+  // Round to nearest unit + clamp to ≥1 to avoid "in 0 min" reading. Floor
+  // would shave "in 3 days" to "in 2 days" on sub-second drift at boundary.
+  var unit, qty;
+  if (absMin < 60) { unit = lblMin; qty = Math.max(1, Math.round(absMin)); }
+  else if (absMin < 1440) { unit = lblHr; qty = Math.max(1, Math.round(absMin / 60)); }
+  else { qty = Math.max(1, Math.round(absMin / 1440)); unit = qty === 1 ? "day" : lblDay; }
+  return diffMin >= 0 ? ("in " + qty + " " + unit) : (lblOverdue + " " + qty + " " + unit);
+};
+
+// 2026-05-18 — absolute date+time formatter for notification dropdowns.
+// Used by the deal-bell and rotation-bell where every row should read as
+// its own discrete event time. Relative "X days ago" hides per-row
+// distinction when notifications cluster within the same window (the
+// "1 days ago for every row" symptom we shipped to fix in 0e91a2c).
+// Format: "15 May 2026 · 14:32" (locale-independent month abbrev).
+var MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+var absoluteDateTime = function(d) {
+  if (!d) return "-";
+  var dt = new Date(d);
+  if (isNaN(dt.getTime())) return "-";
+  var hh = String(dt.getHours()).padStart(2,"0");
+  var mm = String(dt.getMinutes()).padStart(2,"0");
+  return dt.getDate() + " " + MONTHS_SHORT[dt.getMonth()] + " " + dt.getFullYear() + " · " + hh + ":" + mm;
+};
+
 // Smart search: name, phone, last 4 digits
 var matchSearch = function(lead, q) {
   if (!q) return true;
@@ -1429,7 +1483,15 @@ var CallbackBell = function(p) {
           var lType=getType(l);
           var cc=CB_COLORS[lType]||CB_COLORS.now;
           var cbTypeLabel=lType==="overdue"?"Overdue":lType==="now"?"Callback Now":lType==="upcoming"?"Upcoming":"No Contact";
-          var timeStr=lType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?timeAgo(l.callbackTime,p.t):"");
+          // 2026-05-18 — forward-looking time relative to the SCHEDULED
+          // callback (callbackTimeStr), not the backward "X days ago" of
+          // last activity. The bell answers "when is the next call due?"
+          // — Upcoming/Now rows read "in 2 hr"/"Today 14:30", Overdue
+          // rows read "Overdue 3 days". No Contact rows have no scheduled
+          // callback by definition, so they fall back to lastActivityTime
+          // via timeAgo (the "how long since last touch" framing is the
+          // correct semantic for that tab).
+          var timeStr=lType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?callbackTimeStr(l.callbackTime,p.t):"");
           return <div key={gid(l)} className="cb-card" onClick={function(){p.setShowNotif(false);var isDR=l._kind==="dr";setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();return;}/* BUG #6 — /api/leads/callbacks returns only LEAD_CALLBACK_FIELDS (no project/campaign/budget). Fetch full doc before opening the panel; fail-soft to the bell's lite copy. */apiFetch("/api/leads/"+gid(l),"GET",null,p.token).then(function(fresh){p.onLeadClick((fresh&&fresh._id)?fresh:l);}).catch(function(){p.onLeadClick(l);});},50);}} style={{ background:cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
             <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{lType==="overdue"?"⏰":lType==="now"?"📞":lType==="upcoming"?"🔔":"😴"}</div>
             <div style={{ flex:1, minWidth:0 }}>
@@ -1683,7 +1745,7 @@ var Header = function(p) {
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}{n.leadName?" — "+n.leadName:""}</div>
                   <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
-                  <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{timeAgo(n.eventTime||n.createdAt,p.t)}</div>
+                  <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{absoluteDateTime(n.eventTime||n.createdAt)}</div>
                 </div>
                 {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#15803D", flexShrink:0 }}/>}
               </div>;
@@ -1739,7 +1801,7 @@ var Header = function(p) {
                   <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.fromName} → {n.toName}</div>
                   <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:2 }}>
                     <span style={{ fontSize:10, color:"#EA580C", fontWeight:600, background:"#FFF7ED", padding:"1px 6px", borderRadius:4 }}>{(function(){ if(n.reason==="Manual reassign") return "Manual reassign"; var labels={no_answer_streak:"No Answer",callback_overdue:"Callback overdue",not_interested_return:"Not Interested return",no_action_timeout:"No action timeout",hot_no_action:"Hot Case +1 no contact"}; return "Auto rotation — "+(labels[n.reason]||n.reason||"auto"); })()}</span>
-                    <span style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.createdAt||n.time,p.t)}</span>
+                    <span style={{ fontSize:10, color:C.textLight }}>{absoluteDateTime(n.eventTime||n.createdAt||n.time)}</span>
                   </div>
                 </div>
                 {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#EA580C", flexShrink:0 }}/>}
