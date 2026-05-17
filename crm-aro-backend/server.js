@@ -7786,6 +7786,170 @@ app.get("/api/leads/no-contact", auth, async function(req, res) {
   }
 });
 
+// STEP 4-4 — EOI list endpoint. Replaces the in-memory p.leads.filter at
+// App.js EOIPage L9119-L9124 that would silently miss EOIs once STEP 4-5
+// shrinks the bootstrap.
+//
+// Status filter:
+//   pending   — eoiStatus = "Pending" OR (status = "EOI" AND !eoiApproved)
+//               (legacy rows without eoiStatus set yet)
+//   approved  — eoiStatus = "Approved" OR (status = "EOI" AND eoiApproved)
+//   cancelled — eoiStatus IN {"EOI Cancelled", "Deal Cancelled"} OR
+//               status = "Deal Cancelled" (the wasEOI variant — see below)
+//   all       — every lead with eoiStatus set OR status = "EOI" OR a
+//               wasEOI Deal Cancelled. Matches the FE eoiScope at L9120.
+//
+// wasEOI guard: a "Deal Cancelled" lead is only in the EOI scope if it
+// previously held EOI artifacts (eoiDate / eoiApproved / eoiImage /
+// non-empty eoiDocuments). Mirrors App.js wasEOI() at L9119.
+//
+// Role-scoped via buildLeadSearchScopeQuery. Pagination same shape as
+// /api/leads (data/total/page/totalPages). totalBudget included for the
+// FE summary tile.
+//
+// Field projection — same heavy-strip as the bootstrap (eoiImage,
+// eoiDocuments, dealImages); the side-panel hydrates the full doc via
+// /api/leads/:id (existing endpoint) when a row opens.
+var EOI_LIST_FIELDS = "_id name phone phone2 email status eoiStatus eoiDate eoiApproved eoiDeposit dealStatus dealApproved dealDate dealType externalBrokerId externalDealConfig agentId splitAgent2Id splitAgent2Name budget project source campaign notes archived createdAt updatedAt lastActivityTime callbackTime commissionRate commissionAmount commissionClaimDate commissionClaimed";
+
+app.get("/api/eois", auth, async function(req, res) {
+  try {
+    var status = String(req.query.status || "all").toLowerCase();
+    var page   = Math.max(1, parseInt(req.query.page) || 1);
+    var limit  = Math.min(Math.max(1, parseInt(req.query.limit) || 200), 1000);
+    var skip   = (page - 1) * limit;
+    var scope  = await buildLeadSearchScopeQuery(req);
+
+    // wasEOI check expressed as a Mongo $or (any artifact present).
+    var wasEOI = { $or: [
+      { eoiDate:     { $type: "string", $gt: "" } },
+      { eoiApproved: true },
+      { eoiImage:    { $type: "string", $gt: "" } },
+      { eoiDocuments:{ $exists: true, $not: { $size: 0 } } }
+    ]};
+
+    // Full EOI scope — anything ever in the EOI flow.
+    var eoiScope = { $or: [
+      { eoiStatus: { $type: "string", $gt: "" } },
+      { status:    "EOI" },
+      { $and: [{ status: "Deal Cancelled" }, wasEOI] }
+    ]};
+
+    // Tab filter on top of scope.
+    var tabFilter = null;
+    if (status === "pending") {
+      tabFilter = { $or: [
+        { eoiStatus: "Pending" },
+        { $and: [{ status: "EOI" }, { $or: [{ eoiApproved: { $exists: false } }, { eoiApproved: false }] }] }
+      ]};
+    } else if (status === "approved") {
+      tabFilter = { $or: [
+        { eoiStatus: "Approved" },
+        { $and: [{ status: "EOI" }, { eoiApproved: true }] }
+      ]};
+    } else if (status === "cancelled") {
+      tabFilter = { $or: [
+        { eoiStatus: "EOI Cancelled" },
+        { eoiStatus: "Deal Cancelled" },
+        { $and: [{ status: "Deal Cancelled" }, wasEOI] }
+      ]};
+    }
+
+    var ands = [scope, { archived: { $ne: true } }, eoiScope];
+    if (tabFilter) ands.push(tabFilter);
+    var q = { $and: ands };
+
+    var total = await Lead.countDocuments(q);
+    var rows = await Lead.find(q)
+      .select(EOI_LIST_FIELDS)
+      .populate("agentId", "name title")
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    // totalBudget (sum across the entire filtered set, not just current page)
+    var bgAgg = await Lead.aggregate([
+      { $match: q },
+      { $addFields: { _bg: { $convert: { input: { $replaceAll: { input: { $ifNull: ["$budget", ""] }, find: ",", replacement: "" } }, to: "double", onError: 0, onNull: 0 } } } },
+      { $group: { _id: null, totalBudget: { $sum: "$_bg" } } }
+    ]);
+    var totalBudget = bgAgg.length ? bgAgg[0].totalBudget : 0;
+
+    res.json({
+      data:        rows,
+      total:       total,
+      page:        page,
+      totalPages:  Math.max(1, Math.ceil(total / limit)),
+      totalBudget: totalBudget
+    });
+  } catch (e) {
+    console.error("[GET /api/eois]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "eois_failed" });
+  }
+});
+
+// STEP 4-4 — Deals list endpoint. Replaces the in-memory p.leads.filter at
+// App.js DealsPage L9749-L9750 that would silently miss deals once STEP 4-5
+// shrinks the bootstrap.
+//
+// Status filter:
+//   active    — (status = "DoneDeal" OR globalStatus = "donedeal") AND
+//               !archived AND NOT (dealStatus = "Deal Cancelled" OR
+//               status = "Deal Cancelled")
+//   cancelled — (dealStatus = "Deal Cancelled" OR status = "Deal Cancelled")
+//               AND !archived AND NOT eoiStatus = "EOI Cancelled"
+//   all       — union of both
+//
+// Field projection same as EOI list (heavy fields stripped; panel hydrates
+// via /api/leads/:id). Role-scoped via buildLeadSearchScopeQuery.
+var DEAL_LIST_FIELDS = EOI_LIST_FIELDS;
+
+app.get("/api/deals", auth, async function(req, res) {
+  try {
+    var status = String(req.query.status || "active").toLowerCase();
+    var page   = Math.max(1, parseInt(req.query.page) || 1);
+    var limit  = Math.min(Math.max(1, parseInt(req.query.limit) || 200), 1000);
+    var skip   = (page - 1) * limit;
+    var scope  = await buildLeadSearchScopeQuery(req);
+
+    var dealActive = { $and: [
+      { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] },
+      { $nor: [{ dealStatus: "Deal Cancelled" }, { status: "Deal Cancelled" }] }
+    ]};
+    var dealCancelled = { $and: [
+      { $or: [{ dealStatus: "Deal Cancelled" }, { status: "Deal Cancelled" }] },
+      { $nor: [{ eoiStatus: "EOI Cancelled" }] }
+    ]};
+
+    var tabFilter;
+    if (status === "cancelled") tabFilter = dealCancelled;
+    else if (status === "all")  tabFilter = { $or: [dealActive, dealCancelled] };
+    else                         tabFilter = dealActive;
+
+    var q = { $and: [scope, { archived: { $ne: true } }, tabFilter] };
+
+    var total = await Lead.countDocuments(q);
+    var rows = await Lead.find(q)
+      .select(DEAL_LIST_FIELDS)
+      .populate("agentId", "name title")
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    res.json({
+      data:       rows,
+      total:      total,
+      page:       page,
+      totalPages: Math.max(1, Math.ceil(total / limit))
+    });
+  } catch (e) {
+    console.error("[GET /api/deals]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "deals_failed" });
+  }
+});
+
 // ===== SINGLE LEAD GET (with per-agent overlay) =====
 app.get("/api/leads/:id", auth, async function(req, res) {
   try {
