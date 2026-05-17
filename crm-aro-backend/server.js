@@ -7485,6 +7485,119 @@ app.get("/api/leads/backfill-feedback", auth, adminOnly, async function(req, res
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== STEP 4-1 — SEARCH + BY-PHONE LOOKUP =====
+// Server-side replacements for the in-memory p.leads.filter scans in
+// HeaderSearch and QuickPhoneSearch. Both endpoints honor the same
+// role-scoped visibility as the list endpoint so a sales user can't
+// discover leads outside their assignments[] slice via search.
+// Registered BEFORE /api/leads/:id so Express doesn't ObjectId-cast the
+// literal path "search" / "by-phone".
+//
+// Both return slim documents (omit history/agentHistory/eoiDocuments/
+// dealImages/privateNotes) — search results are a routing aid, not a
+// detail view. Side panels still hydrate via /api/leads/:id when a
+// search result is clicked.
+
+var LEAD_SEARCH_FIELDS = "_id name phone phone2 email status eoiStatus dealStatus globalStatus agentId archived source project";
+
+// Shared role-scoping helper for the two search endpoints. Returns a
+// MongoDB query object that the caller AND-merges with their own match.
+// Mirrors the per-role query-builder block at the top of GET /api/leads
+// (server.js around L6926) — sales sees only own assignments + split
+// agent + legacy ownership; TL/manager/director scoped via reportsTo;
+// admin / sales_admin unrestricted.
+async function buildLeadSearchScopeQuery(req) {
+  var role = req.user.role;
+  var uid = req.user.id;
+  if (role === "sales") {
+    var saleUid = new mongoose.Types.ObjectId(uid);
+    return { $or: [
+      { "assignments.agentId": saleUid },
+      { splitAgent2Id: saleUid },
+      { $and: [
+        { agentId: saleUid },
+        { $or: [
+          { globalStatus: { $in: ["eoi", "donedeal"] } },
+          { status: { $in: ["EOI", "DoneDeal", "Deal Cancelled"] } },
+          { eoiStatus: { $nin: [null, ""] } },
+          { dealStatus: "Deal Cancelled" }
+        ]}
+      ]}
+    ]};
+  }
+  if (role === "team_leader") {
+    var tlUser = await User.findById(uid).lean();
+    if (!tlUser) return { _id: null };
+    var visibleAgentIds = [tlUser._id];
+    var directSales = await User.find({ reportsTo: tlUser._id }).lean();
+    directSales.forEach(function(s){ visibleAgentIds.push(s._id); });
+    return { $or: [
+      { agentId: { $in: visibleAgentIds } },
+      { splitAgent2Id: { $in: visibleAgentIds } }
+    ]};
+  }
+  if (role === "manager" || role === "director") {
+    var ids = await getScopedUserIds(req.user);
+    if (!ids || ids.length === 0) return { _id: null };
+    return { $or: [
+      { agentId: { $in: ids } },
+      { splitAgent2Id: { $in: ids } }
+    ]};
+  }
+  return {}; // admin / sales_admin: unrestricted
+}
+
+app.get("/api/leads/search", auth, async function(req, res) {
+  try {
+    var q = String(req.query.q || "").trim();
+    if (q.length < 2) return res.json([]);
+    var limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    var rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    var scope = await buildLeadSearchScopeQuery(req);
+    var query = { $and: [
+      scope,
+      { archived: { $ne: true } },
+      { $or: [{ name: rx }, { phone: rx }, { phone2: rx }, { email: rx }] }
+    ]};
+    var rows = await Lead.find(query)
+      .select(LEAD_SEARCH_FIELDS)
+      .populate("agentId", "name title")
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /api/leads/search]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "search_failed" });
+  }
+});
+
+app.get("/api/leads/by-phone", auth, async function(req, res) {
+  try {
+    var phone = String(req.query.phone || "").trim();
+    if (phone.length < 4) return res.json([]);
+    var limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    // Substring + endsWith semantics — mirrors the FE QuickPhoneSearch
+    // filter at src/App.js L2456-2461 (`.includes(q) || .endsWith(q)`).
+    var rx = new RegExp(phone.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    var scope = await buildLeadSearchScopeQuery(req);
+    var query = { $and: [
+      scope,
+      { $or: [{ phone: rx }, { phone2: rx }] }
+    ]};
+    var rows = await Lead.find(query)
+      .select(LEAD_SEARCH_FIELDS)
+      .populate("agentId", "name title")
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /api/leads/by-phone]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "by_phone_failed" });
+  }
+});
+
 // ===== SINGLE LEAD GET (with per-agent overlay) =====
 app.get("/api/leads/:id", auth, async function(req, res) {
   try {
@@ -11717,6 +11830,84 @@ app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req
     var updated = await DailyRequest.find({ _id: { $in: leadIds } }).populate("agentId", "name title").lean();
     res.json({ ok: true, count: leadIds.length, drs: updated });
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== STEP 4-1 — DR SEARCH + BY-PHONE LOOKUP =====
+// Server-side replacements for the in-memory p.dailyRequests.filter scans
+// in HeaderSearch, QuickPhoneSearch, and ActivityListPage routing. Same
+// role-scoping as the DR list endpoint. Registered BEFORE :id so Express
+// doesn't ObjectId-cast "search" / "by-phone".
+
+var DR_SEARCH_FIELDS = "_id name phone phone2 email status eoiStatus dealStatus agentId archived budget propertyType area callbackTime lastActivityTime notes";
+
+async function buildDRSearchScopeQuery(req) {
+  var role = req.user.role;
+  if (role === "sales") {
+    return { agentId: new mongoose.Types.ObjectId(req.user.id) };
+  }
+  if (role === "team_leader") {
+    var tlUser = await User.findById(req.user.id).lean();
+    if (!tlUser) return { _id: null };
+    var visibleIds = [tlUser._id];
+    var tlSales = await User.find({ reportsTo: tlUser._id }).lean();
+    tlSales.forEach(function(s){ visibleIds.push(s._id); });
+    return { agentId: { $in: visibleIds } };
+  }
+  if (role === "manager" || role === "director") {
+    var ids = await getScopedUserIds(req.user);
+    if (!ids || ids.length === 0) return { _id: null };
+    return { agentId: { $in: ids } };
+  }
+  return {}; // admin / sales_admin: unrestricted
+}
+
+app.get("/api/daily-requests/search", auth, async function(req, res) {
+  try {
+    var q = String(req.query.q || "").trim();
+    if (q.length < 2) return res.json([]);
+    var limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    var rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    var scope = await buildDRSearchScopeQuery(req);
+    var query = { $and: [
+      scope,
+      { archived: { $ne: true } },
+      { $or: [{ name: rx }, { phone: rx }, { phone2: rx }, { email: rx }, { notes: rx }, { propertyType: rx }, { area: rx }] }
+    ]};
+    var rows = await DailyRequest.find(query)
+      .select(DR_SEARCH_FIELDS)
+      .populate("agentId", "name title")
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /api/daily-requests/search]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "search_failed" });
+  }
+});
+
+app.get("/api/daily-requests/by-phone", auth, async function(req, res) {
+  try {
+    var phone = String(req.query.phone || "").trim();
+    if (phone.length < 4) return res.json([]);
+    var limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    var rx = new RegExp(phone.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    var scope = await buildDRSearchScopeQuery(req);
+    var query = { $and: [
+      scope,
+      { $or: [{ phone: rx }, { phone2: rx }] }
+    ]};
+    var rows = await DailyRequest.find(query)
+      .select(DR_SEARCH_FIELDS)
+      .populate("agentId", "name title")
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /api/daily-requests/by-phone]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "by_phone_failed" });
+  }
 });
 
 // STEP 3 — single-DR detail endpoint. Mirrors the role visibility of the
