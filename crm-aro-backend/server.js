@@ -7566,6 +7566,61 @@ var LEAD_SEARCH_FIELDS = "_id name phone phone2 email status eoiStatus dealStatu
 // (server.js around L6926) — sales sees only own assignments + split
 // agent + legacy ownership; TL/manager/director scoped via reportsTo;
 // admin / sales_admin unrestricted.
+// STRICT scope — sales sees ONLY leads they currently own (top-level
+// agentId OR splitAgent2Id). Historical assignments[] entries do NOT
+// grant visibility under this helper. Use this for the always-visible
+// bell + dashboard counts where the FE intent is "show me MY leads
+// right now".
+//
+// Distinct from buildLeadSearchScopeQuery (broader on purpose — search
+// needs to find leads you used to hold).
+//
+// Incident 2026-05-17: STEP 4-2 reused the broad search helper for the
+// callback bell endpoints. Sales user Hussien Ahmed saw 459 callbacks
+// including entries for other agents' currently-owned leads (rotated
+// away from Hussien but still matching "assignments.agentId === Hussien"
+// historically). The pre-STEP-4-2 CallbackBell narrowed the broad
+// bootstrap to top-level agentId client-side; that filter was lost when
+// the scope moved server-side. This helper restores the strict
+// semantics.
+//
+// Fail-closed: helper returns null when scope can't be safely computed
+// (User.findById fails, empty subtree for TL/manager/director, unknown
+// role). Callers MUST check for null and return 403 — never fall back
+// to "{}" (all leads).
+async function buildLeadCurrentOwnerScopeQuery(req) {
+  var role = req.user.role;
+  var uid = req.user.id;
+  if (role === "sales") {
+    var saleUid = new mongoose.Types.ObjectId(uid);
+    return { $or: [
+      { agentId: saleUid },
+      { splitAgent2Id: saleUid }
+    ]};
+  }
+  if (role === "team_leader") {
+    var tlUser = await User.findById(uid).lean();
+    if (!tlUser) return null;
+    var visibleAgentIds = [tlUser._id];
+    var directSales = await User.find({ reportsTo: tlUser._id }).lean();
+    directSales.forEach(function(s){ visibleAgentIds.push(s._id); });
+    return { $or: [
+      { agentId: { $in: visibleAgentIds } },
+      { splitAgent2Id: { $in: visibleAgentIds } }
+    ]};
+  }
+  if (role === "manager" || role === "director") {
+    var ids = await getScopedUserIds(req.user);
+    if (!ids || ids.length === 0) return null;
+    return { $or: [
+      { agentId: { $in: ids } },
+      { splitAgent2Id: { $in: ids } }
+    ]};
+  }
+  if (role === "admin" || role === "sales_admin") return {};
+  return null; // unknown role → fail-closed
+}
+
 async function buildLeadSearchScopeQuery(req) {
   var role = req.user.role;
   var uid = req.user.id;
@@ -7686,7 +7741,14 @@ app.get("/api/leads/callbacks", auth, async function(req, res) {
     var limit = Math.min(parseInt(req.query.limit) || 500, 2000);
     var order = req.query.order === "desc" ? -1 : 1;
     var countOnly = req.query.count_only === "true" || req.query.count_only === "1";
-    var scope = await buildLeadSearchScopeQuery(req);
+    // STRICT scope — current ownership only. See the helper header for the
+    // 2026-05-17 leak incident this guards against. Fail-closed on null.
+    var scope = await buildLeadCurrentOwnerScopeQuery(req);
+    if (scope === null) {
+      console.error("[scope:LEAK-GUARD] /api/leads/callbacks rejected role=" + req.user.role + " uid=" + req.user.id);
+      return res.status(403).json({ error: "Scope unavailable for this role." });
+    }
+    console.log("[scope] /api/leads/callbacks role=" + req.user.role + " uid=" + req.user.id + " scope=" + JSON.stringify(scope));
 
     // callbackTime is a String ISO 8601. We compare against the caller's
     // ISO strings directly — Mongo compares strings lexicographically, and
@@ -7738,7 +7800,13 @@ app.get("/api/leads/counts", auth, async function(req, res) {
     var fromIso = from ? from.toISOString() : null;
     var toIso   = to   ? to.toISOString()   : null;
     var nowIso  = new Date().toISOString();
-    var scope = await buildLeadSearchScopeQuery(req);
+    // STRICT scope — counts reflect "my current leads", not historical.
+    var scope = await buildLeadCurrentOwnerScopeQuery(req);
+    if (scope === null) {
+      console.error("[scope:LEAK-GUARD] /api/leads/counts rejected role=" + req.user.role + " uid=" + req.user.id);
+      return res.status(403).json({ error: "Scope unavailable for this role." });
+    }
+    console.log("[scope] /api/leads/counts role=" + req.user.role + " uid=" + req.user.id + " scope=" + JSON.stringify(scope));
 
     var createdInWindow = {};
     if (from || to) {
@@ -7796,7 +7864,13 @@ app.get("/api/leads/no-contact", auth, async function(req, res) {
     var staleHours = Math.max(1, parseInt(req.query.stale_hours) || 24);
     var excludeStatuses = parseExcludeStatuses(req.query.excludeStatuses);
     var limit = Math.min(parseInt(req.query.limit) || 500, 2000);
-    var scope = await buildLeadSearchScopeQuery(req);
+    // STRICT scope — current ownership only (see incident note in helper).
+    var scope = await buildLeadCurrentOwnerScopeQuery(req);
+    if (scope === null) {
+      console.error("[scope:LEAK-GUARD] /api/leads/no-contact rejected role=" + req.user.role + " uid=" + req.user.id);
+      return res.status(403).json({ error: "Scope unavailable for this role." });
+    }
+    console.log("[scope] /api/leads/no-contact role=" + req.user.role + " uid=" + req.user.id + " scope=" + JSON.stringify(scope));
     var threshold = new Date(Date.now() - staleHours * 3600 * 1000);
     var ands = [
       scope,
