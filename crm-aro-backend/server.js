@@ -256,6 +256,11 @@ Lead.collection.createIndex({ "assignments.agentId": 1, createdAt: -1 }).catch(f
 Lead.collection.createIndex({ status: 1, createdAt: -1 }).catch(function(){});
 Lead.collection.createIndex({ source: 1, status: 1 }).catch(function(){});
 
+// Archive page support — pairs with the {archived:1, agentId:1} index above
+// to cover both per-agent and sort-newest-first queries on archived rows.
+// Non-unique; safe to add hot.
+Lead.collection.createIndex({ archived: 1, createdAt: -1 }).catch(function(){});
+
 // Inbound dedupe — sparse so manually-created leads (no externalId) don't share
 // the index. Compound (externalId, source) matches the inbound dedupe query and
 // allows the same external id across different platforms.
@@ -1094,6 +1099,11 @@ DailyRequest.collection.createIndex({ agentId: 1, createdAt: -1 }).catch(functio
 DailyRequest.collection.createIndex({ createdAt: -1 }).catch(function(){});
 // Reports — Phase 1: DR pipeline + intake queries by status.
 DailyRequest.collection.createIndex({ status: 1, createdAt: -1 }).catch(function(){});
+// Archive support — match the new ?archived= filter on /api/daily-requests.
+// Compound with agentId covers per-agent archived listings; compound with
+// createdAt covers archived-sorted-by-date pages. Non-unique; safe to add hot.
+DailyRequest.collection.createIndex({ archived: 1, agentId: 1 }).catch(function(){});
+DailyRequest.collection.createIndex({ archived: 1, createdAt: -1 }).catch(function(){});
 
 var app = express();
 // Railway sits behind a proxy; req.ip must reflect the real client IP for
@@ -9151,6 +9161,12 @@ app.delete("/api/leads/:id", auth, async function(req, res) {
     // findByIdAndDelete returns the deleted doc on older versions but we
     // want the doc regardless of driver behavior, so do an explicit read.
     var leadDoc = await Lead.findById(req.params.id).lean();
+    // Cascade: cancel any active commission BEFORE the lead row is gone, so
+    // cascadeCommissionCancel's quarter-sibling recompute can still read the
+    // surrounding context. Mirrors the existing deal-cancel hook at the
+    // /api/leads/:id/deal-cancel route (server.js around L8533). Without
+    // this the Commissions page kept showing rows for hard-deleted deals.
+    try { await cascadeCommissionCancel(req.params.id, "Lead permanently deleted by " + (req.user && req.user.name ? req.user.name : "admin"), req.user); } catch(e){ console.error("[commission hook lead-delete]", e && e.message); }
     await Lead.findByIdAndDelete(req.params.id);
     // Mirror cascade: if this lead was a DR mirror, hard-delete the
     // originating DR(s) too. Source guard prevents a standalone non-mirror
@@ -10994,6 +11010,17 @@ app.post("/api/leads/bulk-delete", auth, adminOnly, async function(req, res) {
     // and no broadcast, leaving the paired DR unarchived in the DB).
     var leadDocs = await Lead.find({ _id: { $in: ids }, archived: true }, { _id: 1, phone: 1, source: 1 }).lean();
     var deletedIdStrs = leadDocs.map(function(l){ return String(l._id); });
+    // Cascade: cancel any active commissions on these leads BEFORE the rows
+    // are gone, same reasoning as the single DELETE handler above. Promise.all
+    // runs them concurrently — each cascadeCommissionCancel call is
+    // independent (different leadId) and its internal quarter-sibling fanout
+    // already handles its own failures.
+    try {
+      await Promise.all(deletedIdStrs.map(function(lid){
+        return cascadeCommissionCancel(lid, "Lead bulk-deleted from Archive by " + (req.user && req.user.name ? req.user.name : "admin"), req.user)
+          .catch(function(e){ console.error("[commission hook bulk-delete " + lid + "]", e && e.message); });
+      }));
+    } catch(e){ console.error("[commission hook bulk-delete]", e && e.message); }
     await Lead.deleteMany({ _id: { $in: ids }, archived: true });
     // Mirror cascade: collect mirror phones (only from leads that ARE mirrors,
     // i.e. source="Daily Request") and bulk-delete the paired DRs in one
@@ -11412,6 +11439,14 @@ app.get("/", function(req, res) {
 app.get("/api/daily-requests", auth, async function(req, res) {
   try {
     var query = {};
+    // Optional ?archived=true|false filter. Absent param keeps the legacy
+    // behaviour (returns everything) so the unmigrated DailyRequestsPage +
+    // ArchivePage callers — which still filter client-side, partly for
+    // legacy-localStorage migration safety — continue to work unchanged.
+    // Lets future callers (and Phase-2 ArchivePage rework) skip archived
+    // rows on the wire instead of after the round-trip.
+    if (req.query.archived === "true") query.archived = true;
+    else if (req.query.archived === "false") query.archived = { $ne: true };
     if (req.user.role === "sales") {
       // Strict ownership. Equality match already excludes null/missing, but we
       // spell out $exists + $ne: null explicitly so the intent is visible and
@@ -11430,16 +11465,30 @@ app.get("/api/daily-requests", auth, async function(req, res) {
       tlSales.forEach(function(s){ tlVisibleIds.push(s._id); });
       query.agentId = { $in: tlVisibleIds };
     } else if (req.user.role === "manager") {
-      // Manager: only assigned requests (no unassigned), filtered by team
+      // Manager: only assigned requests (no unassigned), filtered by team.
+      // Previous implementation issued up to three sequential User.find calls
+      // (TLs then sales-under-TLs) before the DR query could run; with even a
+      // modest org tree this added 1-2s to every page open and was the main
+      // source of the chrome-renders-then-table-spins symptom. Single
+      // $graphLookup over reportsTo with maxDepth:2 collapses the head-manager
+      // walk to one round trip; mid-manager branch stays a single find.
       var managerUser = await User.findById(req.user.id).lean();
       var visibleIds = [managerUser._id];
       if (!managerUser.reportsTo) {
-        var tls = await User.find({ reportsTo: managerUser._id }).lean();
-        tls.forEach(function(tl){ visibleIds.push(tl._id); });
-        if (tls.length > 0) {
-          var sales = await User.find({ reportsTo: { $in: tls.map(function(t){return t._id;}) } }).lean();
-          sales.forEach(function(s){ visibleIds.push(s._id); });
-        }
+        var sub = await User.aggregate([
+          { $match: { _id: managerUser._id } },
+          { $graphLookup: {
+              from: "users",
+              startWith: "$_id",
+              connectFromField: "_id",
+              connectToField: "reportsTo",
+              as: "descendants",
+              maxDepth: 2
+          }},
+          { $project: { "descendants._id": 1 } }
+        ]);
+        var descArr = (sub[0] && Array.isArray(sub[0].descendants)) ? sub[0].descendants : [];
+        descArr.forEach(function(u){ visibleIds.push(u._id); });
       } else {
         var direct = await User.find({ reportsTo: managerUser._id }).lean();
         direct.forEach(function(s){ visibleIds.push(s._id); });
@@ -12166,6 +12215,12 @@ app.put("/api/leads/:id/archive", auth, async function(req, res) {
       return res.status(403).json({ error: "Admin only" });
     }
     var lead = await Lead.findByIdAndUpdate(req.params.id, { archived: true }, { new: true });
+    // Cascade: cancel any active commission tied to this lead. Archiving was
+    // the second user-facing path (after deal-cancel) that should drop a deal
+    // from the Commissions page; without this hook, archived deals lingered
+    // as active commissions even though their Lead was no longer in the Deals
+    // page. Same helper used by /api/leads/:id/deal-cancel.
+    try { await cascadeCommissionCancel(req.params.id, "Lead archived by " + (req.user && req.user.name ? req.user.name : "admin"), req.user); } catch(e){ console.error("[commission hook lead-archive]", e && e.message); }
     // Cascade: drop any Notification rows pointing at this lead. The GET-time
     // filter at getVisibleNotifications already drops archived-lead rows for
     // type=deal/rotation, but (a) other types (e.g. legacy "new_lead") slip
