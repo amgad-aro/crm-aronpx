@@ -22207,67 +22207,106 @@ var CommissionsPage = function(p) {
         : (netDue - brokerShare - (hasSales ? manualAmount : 0));
       var fmt = function(n){ return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " EGP"; };
       var leadName = (c.snapshot && c.snapshot.customerName) || "(deal)";
+      // Phase R-13.3 — print path. Inject a body-level sibling of #root
+      // containing ONLY the broker copy, then hide every other body > *
+      // during @media print. Body height collapses to the injected root,
+      // so the browser allocates exactly one printed page (the previous
+      // visibility-based approach left the underlying scrolled document
+      // height intact and produced N pages of repeated/blank output).
       var printNow = function(){
+        var ROOT_ID = "broker-print-root";
+        var cleanup = function(){
+          try { document.body.classList.remove("printing-broker"); } catch(_){}
+          try {
+            var stale = document.getElementById(ROOT_ID);
+            if (stale && stale.parentNode) stale.parentNode.removeChild(stale);
+          } catch(_){}
+        };
         try {
+          cleanup();
+          var escapeHtml = function(s){
+            return String(s == null ? "" : s).replace(/[&<>"']/g, function(ch){
+              return ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" })[ch];
+            });
+          };
+          // Each row uses flex with space-between so the amount is always
+          // hard-right; no reliance on grid sizing that has misbehaved
+          // on the Broker share row historically.
+          var row = function(label, value, opts){
+            opts = opts || {};
+            var rs = "display:flex;justify-content:space-between;align-items:baseline;gap:6px;padding:6px 0;";
+            if (opts.emphasized) rs = "display:flex;justify-content:space-between;align-items:baseline;gap:6px;padding:8px 0;border-top:2px solid #CBD5E1;border-bottom:2px solid #CBD5E1;background:#F8FAFC;";
+            if (opts.divider) rs += "border-bottom:1px solid #E2E8F0;";
+            if (opts.topBorder) rs += "border-top:1px solid #E2E8F0;";
+            if (opts.bottomBorder) rs += "border-bottom:2px solid #CBD5E1;";
+            if (opts.indent) rs += "padding-left:16px;font-size:12px;";
+            var ls = opts.bold ? "font-weight:600;color:#111;" : "color:#475569;";
+            var vs = "font-weight:700;" + (opts.color ? "color:" + opts.color + ";" : "color:#111;");
+            return '<div style="' + rs + '"><span style="' + ls + '">' + escapeHtml(label) + '</span><b style="' + vs + '">' + escapeHtml(value) + '</b></div>';
+          };
+          // Build the broker copy exactly the way the broker should see it.
+          // paidBy=broker → full breakdown (gross share, − pays sales, NET take).
+          // paidBy=company → single Broker share line. Sales agent and Company
+          // net rows are NEVER printed regardless of mode.
+          var body = "";
+          body += row("Gross Commission:", fmt(gross), { divider: true });
+          body += row("Pre-deduction (" + taxPct + "%):", "−" + fmt(taxAmount), { divider: true, color: "#B45309" });
+          body += row("Amount after deduction:", fmt(grossAfterTax), { emphasized: true, bold: true });
+          body += row("Broker share (" + brokerPct + "%):", fmt(brokerShare), { color: "#5B21B6" });
+          if (paidByBroker && hasSales) {
+            body += row("Broker pays sales (" + salesAgentName + "):", "−" + fmt(manualAmount), { indent: true, color: "#B45309" });
+            body += row("Broker NET take:", fmt(brokerNetTake), { topBorder: true, bold: true, color: "#5B21B6" });
+          }
+          body += row("ARO theoretical (" + aroPct + "%):", fmt(aroTheoretical), { bottomBorder: true });
+
+          var printRoot = document.createElement("div");
+          printRoot.id = ROOT_ID;
+          printRoot.innerHTML =
+            '<div style="padding:32px;font-family:system-ui,-apple-system,sans-serif;font-size:13px;line-height:1.8;color:#111;background:#fff;">' +
+              '<div style="margin-bottom:14px;padding-bottom:10px;border-bottom:2px solid #1F2937;">' +
+                '<div style="font-size:18px;font-weight:700;color:#111;">💼 Broker Calculation</div>' +
+                '<div style="font-size:12px;color:#374151;margin-top:4px;">Deal: <b>' + escapeHtml(leadName) + '</b> · Date: <b>' + escapeHtml(new Date().toLocaleDateString("en-GB")) + '</b></div>' +
+              '</div>' + body +
+            '</div>';
+          document.body.appendChild(printRoot);
           document.body.classList.add("printing-broker");
           // Defer so the print CSS has a tick to apply before the dialog opens.
           setTimeout(function(){
-            window.print();
+            try { window.print(); } catch(_){}
             // Cleanup runs after the dialog returns (print or cancel).
-            setTimeout(function(){ document.body.classList.remove("printing-broker"); }, 100);
-          }, 50);
+            setTimeout(cleanup, 200);
+          }, 80);
         } catch(_){
-          document.body.classList.remove("printing-broker");
+          cleanup();
         }
       };
       return <Modal show={true} onClose={function(){ setBrokerCalcFor(null); }} title={"💼 Broker Calculation — " + leadName} w={520}>
         <style>{
-          // Phase R-13.2 — visibility-based "print only this element" pattern.
-          // The previous display-based rule (hide direct body children except
-          // [data-overlay-above]) failed because the modal is nested deep
-          // inside #root, so hiding #root hides the modal too. visibility
-          // cascades differently and lets descendants override their hidden
-          // ancestors, regardless of nesting depth.
+          // Phase R-13.3 — display-based "print only this element" pattern.
+          // The previous visibility:hidden approach hid paint but left the
+          // underlying document's full scroll height intact, so the browser
+          // still allocated N print pages (one per viewport-worth of hidden
+          // content). Switching to display:none on body's direct children
+          // collapses body height to the injected #broker-print-root and
+          // produces exactly one printed page. #broker-print-root is built
+          // in printNow() as a sibling of #root (not nested inside it), so
+          // hiding body > * doesn't take the print copy down with it.
           "@media print {" +
-          "  body.printing-broker * { visibility: hidden !important; }" +
-          "  body.printing-broker .print-only-broker-modal," +
-          "  body.printing-broker .print-only-broker-modal * { visibility: visible !important; }" +
-          "  body.printing-broker .print-only-broker-modal {" +
-          // Phase R-13.2 fix — position:fixed (not absolute) so the printed
-          // overlay does NOT repeat once per page of the underlying scrolled
-          // document. absolute positions relative to the document, which the
-          // browser slices into N print pages; fixed positions relative to the
-          // viewport and prints exactly ONE page. The page-break-* rules below
-          // are belt-and-suspenders against Chrome's repeated-block heuristic.
-          "    position: fixed !important; left: 0 !important; top: 0 !important;" +
-          "    width: 100% !important; max-height: 100vh !important; overflow: hidden !important;" +
-          "    padding: 32px !important;" +
-          "    background: #fff !important; color: #000 !important;" +
-          "    font-family: system-ui, -apple-system, sans-serif !important;" +
-          "    box-shadow: none !important;" +
-          "    page-break-inside: avoid !important;" +
-          "    page-break-after: avoid !important;" +
-          "  }" +
-          "  body.printing-broker .print-only-broker-modal button { display: none !important; }" +
-          "  body.printing-broker .screen-only { display: none !important; }" +
-          // Phase R-13.2 — paidBy="broker" print swap. The screen shows broker
-          // gross + a "− pays sales" sub-line for transparency; the printed
-          // broker copy shows ONLY the broker's net take-home so the broker on
-          // paper sees their actual number.
-          "  body.printing-broker .print-only { display: block !important; }" +
+          "  body.printing-broker > * { display: none !important; }" +
+          "  body.printing-broker > #broker-print-root { display: block !important; }" +
+          "  body.printing-broker { background: #fff !important; }" +
           "}" +
-          // .print-only is hidden by default everywhere (screen AND print),
-          // then revealed inside @media print only when body.printing-broker
-          // is on. Belt-and-suspenders so a stray Ctrl+P never leaks the
-          // print-only row.
-          ".print-only { display: none !important; }" +
+          // Off-screen by default; only revealed inside @media print on a
+          // .printing-broker body. Belt-and-suspenders against a stray
+          // Ctrl+P leaking a half-built print root.
+          "#broker-print-root { display: none; }" +
           "@page { margin: 1cm; }"
         }</style>
-        <div className="print-only-broker-modal" style={{ fontSize:13, lineHeight:1.8, color:C.text }}>
-          {/* Print-only header — the Modal's own title bar is hidden by the
-              visibility:hidden rule on its parent, so the printed page needs
-              its own header. Visible on screen too (acts as the modal's
-              internal title); the screen Modal still has its own chrome above. */}
+        <div style={{ fontSize:13, lineHeight:1.8, color:C.text }}>
+          {/* Internal title block — visible on screen as the modal's own
+              header. The printed broker copy gets its own header built in
+              printNow(); this one is screen-only by virtue of living
+              inside #root, which is hidden by the print stylesheet. */}
           <div style={{ marginBottom:14, paddingBottom:10, borderBottom:"2px solid #1F2937" }}>
             <div style={{ fontSize:18, fontWeight:700, color:"#111" }}>💼 Broker Calculation</div>
             <div style={{ fontSize:12, color:"#374151", marginTop:4 }}>
@@ -22283,25 +22322,21 @@ var CommissionsPage = function(p) {
           <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"8px 0", borderTop:"2px solid #CBD5E1", borderBottom:"2px solid #CBD5E1", background:"#F8FAFC" }}>
             <span style={{ color:C.text, fontWeight:600 }}>Amount after deduction:</span><b style={{ textAlign:"right" }}>{fmt(grossAfterTax)}</b>
           </div>
-          {/* Phase R-13.2 — Broker share rows. Screen view shows broker GROSS
-              + optional "− pays sales" sub-line when paidBy="broker". The
-              printed broker copy shows the broker NET (the actual take-home)
-              so the broker on paper sees their real number. */}
-          <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", marginTop:4 }}>
-            <span style={{ color:C.textLight }}>Broker share ({brokerPct}%):</span><b style={{ textAlign:"right", color:"#5B21B6" }}>{fmt(brokerShare)}</b>
+          {/* Phase R-13.3 — Broker share rows on screen. Flex with
+              justify-content:space-between hard-rights the amount; the
+              earlier grid 1fr/auto rendering left this row's value butted
+              against the label. The printed broker copy is built in
+              printNow() as a separate body-level DOM tree — these screen
+              rows are NOT what's printed. */}
+          <div className="screen-only" style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:6, padding:"6px 0", marginTop:4 }}>
+            <span style={{ color:C.textLight }}>Broker share ({brokerPct}%):</span><b style={{ color:"#5B21B6" }}>{fmt(brokerShare)}</b>
           </div>
-          {paidByBroker && hasSales && <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"2px 0 6px 16px", fontSize:12, color:"#B45309" }}>
-            <span>Broker pays sales ({salesAgentName}):</span><b style={{ textAlign:"right" }}>−{fmt(manualAmount)}</b>
+          {paidByBroker && hasSales && <div className="screen-only" style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:6, padding:"2px 0 6px 16px", fontSize:12, color:"#B45309" }}>
+            <span>Broker pays sales ({salesAgentName}):</span><b>−{fmt(manualAmount)}</b>
           </div>}
-          {paidByBroker && hasSales && <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", borderTop:"1px solid #E2E8F0" }}>
-            <span style={{ color:C.text, fontWeight:600 }}>Broker NET take:</span><b style={{ textAlign:"right", color:"#5B21B6" }}>{fmt(brokerNetTake)}</b>
+          {paidByBroker && hasSales && <div className="screen-only" style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:6, padding:"6px 0", borderTop:"1px solid #E2E8F0" }}>
+            <span style={{ color:C.text, fontWeight:600 }}>Broker NET take:</span><b style={{ color:"#5B21B6" }}>{fmt(brokerNetTake)}</b>
           </div>}
-          {/* Print-only broker share row — when paidBy=broker, this is the
-              NET take. When paidBy=company, it equals brokerShare (same as
-              screen). One row regardless of mode keeps the broker copy clean. */}
-          <div className="print-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", marginTop:4 }}>
-            <span style={{ color:C.textLight }}>Broker share ({brokerPct}%):</span><b style={{ textAlign:"right", color:"#5B21B6" }}>{fmt(brokerNetTake)}</b>
-          </div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", borderBottom:"2px solid #CBD5E1" }}>
             <span style={{ color:C.textLight }}>ARO theoretical ({aroPct}%):</span><b style={{ textAlign:"right" }}>{fmt(aroTheoretical)}</b>
           </div>
