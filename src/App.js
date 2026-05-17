@@ -1302,19 +1302,17 @@ var CallbackBell = function(p) {
   // open→true, 60s interval fallback. Each row is tagged with _kind so the
   // click handler below can route to lead vs DR without needing the parent's
   // p.dailyRequests array.
-  // BUG #1 — the BE callbacks endpoint defaults to "every non-empty
-  // callbackTime, ever" when from/to aren't passed. The bell only
-  // renders callbacks in (now - ∞, now + 24h] anyway and a runaway
-  // dataset (Atlas as of this commit: ~1500 callbacks across leads +
-  // DRs) made the bell payload heavy on every cbBust tick. Bound the
-  // fetch to the bell's actionable window: 90 days back (covers every
-  // current overdue row) + 24 hours forward (matches the upcoming
-  // bucket cutoff at line 1334). Every other caller of the endpoint
-  // already passes explicit from/to — the bell was the only sinner.
+  //
+  // 2026-05-18 rebuild — window now spans 1 year back + 1 year forward.
+  // The previous 90d/+24h window cut off the new Upcoming tab's intent
+  // ("everything scheduled in the future") at 24h. The BE-side
+  // lastActivityTime <= callbackTime filter (this commit) keeps the
+  // payload small without the date squeeze, so the wider window costs
+  // nothing in practice while letting weeks/months-out callbacks render.
   var bellQS = function(){
     var nowMs = Date.now();
-    var fromIso = new Date(nowMs - 90 * 24 * 3600 * 1000).toISOString();
-    var toIso   = new Date(nowMs + 24 * 3600 * 1000).toISOString();
+    var fromIso = new Date(nowMs - 365 * 24 * 3600 * 1000).toISOString();
+    var toIso   = new Date(nowMs + 365 * 24 * 3600 * 1000).toISOString();
     return "?from=" + encodeURIComponent(fromIso) + "&to=" + encodeURIComponent(toIso) + "&limit=2000";
   };
 
@@ -1362,10 +1360,17 @@ var CallbackBell = function(p) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.showNotif]);
 
-  // Simple computation - no useMemo, no useRef tricks
+  // 2026-05-18 rebuild — bell qualification, tab boundaries, sorting:
+  //   * qualified: row has callbackTime (BE-side lastActivityTime ≤ callbackTime filter).
+  //   * Delay:    callbackTime < now - 1h (overdue by more than the Now window).
+  //   * Now:      |callbackTime - now| ≤ 1h.
+  //   * Upcoming: callbackTime > now + 1h.
+  //   * No Contact: no callbackTime AND lastActivityTime > 24h ago
+  //                 (from /api/leads/no-contact, deduped against the above).
+  //   * Sort: callbackTime DESC across every tab (newest scheduled first).
   var now = Date.now();
+  var NOW_WINDOW_MS = 3600000;
 
-  // Server already scopes by role, excludes archived/DoneDeal/NotInterested/EOI.
   var myItems = bellLeads.concat(bellDRs);
 
   var overdue = [];
@@ -1375,25 +1380,25 @@ var CallbackBell = function(p) {
   var cbIds = new Set();
 
   myItems.forEach(function(l){
-    if(l.callbackTime){
-      var cbT = new Date(l.callbackTime).getTime();
-      var diff = cbT - now;
-      var lastAct = l.lastActivityTime ? new Date(l.lastActivityTime).getTime() : 0;
-      if(lastAct > cbT) return;
-      if(diff < -3600000){ overdue.push(l); cbIds.add(gid(l)); }
-      else if(diff <= 0){ nowItems.push(l); cbIds.add(gid(l)); }
-      else if(diff <= 86400000){ upcoming.push(l); cbIds.add(gid(l)); }
-    }
+    if(!l.callbackTime) return;
+    var cbT = new Date(l.callbackTime).getTime();
+    if(isNaN(cbT)) return;
+    var diff = cbT - now;
+    if(diff < -NOW_WINDOW_MS){ overdue.push(l); cbIds.add(gid(l)); }
+    else if(diff <= NOW_WINDOW_MS){ nowItems.push(l); cbIds.add(gid(l)); }
+    else { upcoming.push(l); cbIds.add(gid(l)); }
   });
 
-  upcoming.sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
+  var byCbDesc = function(a,b){ return new Date(b.callbackTime) - new Date(a.callbackTime); };
+  overdue.sort(byCbDesc);
+  nowItems.sort(byCbDesc);
+  upcoming.sort(byCbDesc);
 
-  // No Contact: server returns leads with stale lastActivityTime regardless
-  // of callbackTime state. Dedupe against rows already in an overdue/now/
-  // upcoming bucket (parity with the pre-4-2 in-memory behavior).
   bellNoContact.forEach(function(l){
+    if(l.callbackTime) return;
     if(!cbIds.has(gid(l))) noContact.push(l);
   });
+  noContact.sort(function(a,b){ return new Date(b.lastActivityTime||0) - new Date(a.lastActivityTime||0); });
 
   var allItems = overdue.concat(nowItems).concat(upcoming).concat(noContact);
 

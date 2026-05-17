@@ -7764,10 +7764,10 @@ app.get("/api/leads/callbacks", auth, async function(req, res) {
     var to   = req.query.to   ? String(req.query.to)   : null;
     var excludeStatuses = parseExcludeStatuses(req.query.excludeStatuses);
     var limit = Math.min(parseInt(req.query.limit) || 500, 2000);
-    var order = req.query.order === "desc" ? -1 : 1;
+    // Default DESC: newest scheduled callback first (CallbackBell spec
+    // 2026-05-18). Callers can opt back into ASC with ?order=asc.
+    var order = req.query.order === "asc" ? 1 : -1;
     var countOnly = req.query.count_only === "true" || req.query.count_only === "1";
-    // STRICT scope — current ownership only. See the helper header for the
-    // 2026-05-17 leak incident this guards against. Fail-closed on null.
     var scope = await buildLeadCurrentOwnerScopeQuery(req);
     if (scope === null) {
       console.error("[scope:LEAK-GUARD] /api/leads/callbacks rejected role=" + req.user.role + " uid=" + req.user.id);
@@ -7775,17 +7775,30 @@ app.get("/api/leads/callbacks", auth, async function(req, res) {
     }
     console.log("[scope] /api/leads/callbacks role=" + req.user.role + " uid=" + req.user.id + " scope=" + JSON.stringify(scope));
 
-    // callbackTime is a String ISO 8601. We compare against the caller's
-    // ISO strings directly — Mongo compares strings lexicographically, and
-    // ISO 8601 is lex-sortable. Non-empty filter rides on the partial index
-    // created above (callbackTime_partial).
     var cbCond = { $type: "string", $gt: "" };
     if (from) cbCond.$gte = from;
     if (to)   cbCond.$lte = to;
     var ands = [
       scope,
       { archived: { $ne: true } },
-      { callbackTime: cbCond }
+      { callbackTime: cbCond },
+      // Bell qualification (2026-05-18 rebuild): only show rows whose most
+      // recent activity is at-or-before the scheduled callback. Rows where
+      // lastActivityTime > callbackTime have already been touched after the
+      // scheduled call and are no longer pending — exclude. Implemented
+      // server-side so a stale-but-not-yet-purged row can't sneak past the
+      // FE filter. $convert returns null on unparseable callbackTime; null
+      // comparisons evaluate false in $lte so those rows drop out (safer
+      // than including unreadable data).
+      { $expr: {
+        $let: {
+          vars: { cbDate: { $convert: { input: "$callbackTime", to: "date", onError: null, onNull: null } } },
+          in: { $and: [
+            { $ne: ["$$cbDate", null] },
+            { $lte: [{ $ifNull: ["$lastActivityTime", new Date(0)] }, "$$cbDate"] }
+          ]}
+        }
+      }}
     ];
     if (excludeStatuses.length) ands.push({ status: { $nin: excludeStatuses } });
     var query = { $and: ands };
@@ -9593,6 +9606,20 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     var trackedBody = req.body.agentId || req.body.status || req.body.callbackTime !== undefined || req.body.notes !== undefined || req.body.lastFeedback !== undefined || req.body.locked !== undefined;
     if (trackedBody) {
       oldLead = await Lead.findById(req.params.id).lean();
+    }
+    // CallbackBell auto-clear (2026-05-18 rebuild): when this PUT logs new
+    // feedback / status_change activity AND the lead already has a scheduled
+    // callbackTime in the past, clear callbackTime so the bell drops it on the
+    // next read. The bell's lastActivityTime <= callbackTime read filter
+    // already excludes the row, but clearing the field keeps the DB tidy and
+    // makes the next purge a no-op.
+    // Skipped when the caller is rescheduling (callbackTime in body).
+    if (oldLead && oldLead.callbackTime && req.body.callbackTime === undefined &&
+        (req.body.status || req.body.notes !== undefined || req.body.lastFeedback !== undefined)) {
+      var oldCbDate = new Date(oldLead.callbackTime);
+      if (!isNaN(oldCbDate.getTime()) && Date.now() > oldCbDate.getTime()) {
+        update.callbackTime = "";
+      }
     }
     // Phase R-13.3 — lock audit stamping. When `locked` transitions false→true
     // (or set to true on a lead that had no prior value), stamp lockedAt +
@@ -12548,7 +12575,8 @@ app.get("/api/daily-requests/callbacks", auth, async function(req, res) {
       ? parseExcludeStatuses(req.query.excludeStatuses)
       : DEFAULT_DR_CB_EXCLUDE;
     var limit = Math.min(parseInt(req.query.limit) || 500, 2000);
-    var order = req.query.order === "desc" ? -1 : 1;
+    // Default DESC — symmetric to /api/leads/callbacks.
+    var order = req.query.order === "asc" ? 1 : -1;
     var countOnly = req.query.count_only === "true" || req.query.count_only === "1";
     var scope = await buildDRSearchScopeQuery(req);
 
@@ -12558,7 +12586,18 @@ app.get("/api/daily-requests/callbacks", auth, async function(req, res) {
     var ands = [
       scope,
       { archived: { $ne: true } },
-      { callbackTime: cbCond }
+      { callbackTime: cbCond },
+      // Same lastActivityTime <= callbackTime filter as the Leads variant —
+      // see /api/leads/callbacks comment for the qualification rule.
+      { $expr: {
+        $let: {
+          vars: { cbDate: { $convert: { input: "$callbackTime", to: "date", onError: null, onNull: null } } },
+          in: { $and: [
+            { $ne: ["$$cbDate", null] },
+            { $lte: [{ $ifNull: ["$lastActivityTime", new Date(0)] }, "$$cbDate"] }
+          ]}
+        }
+      }}
     ];
     if (excludeStatuses.length) ands.push({ status: { $nin: excludeStatuses } });
     var query = { $and: ands };
@@ -13351,6 +13390,21 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
     var prevDr = null;
     if (req.body.status === "EOI" || req.body.status === "DoneDeal" || req.body.status === "MeetingDone") {
       prevDr = await DailyRequest.findById(req.params.id).lean();
+    }
+    // CallbackBell auto-clear (2026-05-18 rebuild) — DR variant of the same
+    // hygiene applied in PUT /api/leads/:id. When this PUT logs new
+    // status/feedback activity AND there's a stale callbackTime in the past,
+    // clear it so the bell drops the row immediately. Skipped when the
+    // caller is rescheduling.
+    if (req.body.callbackTime === undefined &&
+        (req.body.status || req.body.notes !== undefined || req.body.lastFeedback !== undefined)) {
+      var preDr = prevDr || await DailyRequest.findById(req.params.id).select("callbackTime").lean();
+      if (preDr && preDr.callbackTime) {
+        var drOldCb = new Date(preDr.callbackTime);
+        if (!isNaN(drOldCb.getTime()) && Date.now() > drOldCb.getTime()) {
+          update.callbackTime = "";
+        }
+      }
     }
     if ((req.body.status === "EOI" || req.body.status === "DoneDeal") && prevDr && prevDr.status && prevDr.status !== req.body.status) {
       if (req.body.status === "EOI") { update.preEoiStatus = prevDr.status; update.eoiStatus = "Pending"; }
