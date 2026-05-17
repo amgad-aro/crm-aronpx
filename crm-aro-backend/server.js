@@ -11470,8 +11470,48 @@ app.get("/api/daily-requests", auth, async function(req, res) {
       var dirScopedDrIds = await getScopedUserIds(req.user);
       query.agentId = { $in: dirScopedDrIds };
     }
-    var requests = await DailyRequest.find(query).populate("agentId", "name title").sort({ createdAt: -1 });
-    res.json(requests);
+    // Pagination — STEP 1 of the leads/DR scalability work. Backward
+    // compatible by design: when no ?page/?limit/?all param is sent, returns
+    // the legacy plain-array shape so the four pre-existing callers (boot
+    // loadData, DailyRequestsPage, ArchivePage, fetchDRs WS fallback)
+    // continue to work unchanged. When any pagination param is present,
+    // switches to the same {data,total,page,totalPages} shape that
+    // /api/leads has been returning for a while — picked over the
+    // alternative {items,totalCount,...} shape for cross-endpoint
+    // consistency (the planned FE pagination helper sees one contract).
+    // ?all=1 is an explicit opt-in to the object shape without slicing.
+    var hasLimit      = req.query.limit !== undefined && parseInt(req.query.limit) > 0;
+    var hasPage       = req.query.page !== undefined;
+    var explicitAll   = req.query.all === "1";
+    var wantsObjShape = hasLimit || hasPage || explicitAll;
+    var page          = parseInt(req.query.page) || 1;
+    var limit         = hasLimit ? parseInt(req.query.limit) : 0;
+    var skip          = hasLimit ? (page - 1) * limit : 0;
+
+    var drQuery = DailyRequest.find(query)
+      .populate("agentId", "name title")
+      .sort({ createdAt: -1 });
+    if (hasLimit) drQuery = drQuery.skip(skip).limit(limit);
+    var requests = await drQuery;
+
+    if (!wantsObjShape) return res.json(requests);
+
+    // Smart-skip on countDocuments — same shape as /api/leads above.
+    // When the page already contains the entire result set, the count
+    // round-trip is redundant.
+    var total = !hasLimit
+      ? requests.length
+      : (page === 1 && requests.length < limit)
+        ? requests.length
+        : await DailyRequest.countDocuments(query);
+    console.log("[/api/daily-requests pagination]",
+      { page: page, limit: limit, total: total, role: req.user.role, archived: req.query.archived || "all" });
+    res.json({
+      data: requests,
+      total: total,
+      page: page,
+      totalPages: hasLimit ? Math.ceil(total / limit) : 1
+    });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
