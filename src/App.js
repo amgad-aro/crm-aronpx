@@ -4640,6 +4640,7 @@ var LeadsPage = function(p) {
               useWindowScroll
               data={filtered}
               components={leadsImportantTableComponents}
+              endReached={function(){ if (p.loadMoreLeads) p.loadMoreLeads(); }}
               fixedHeaderContent={function(){
                 return <tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
                   <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120, background:"#F8FAFC" }}>{t.name}</th>
@@ -4691,6 +4692,7 @@ var LeadsPage = function(p) {
           <Virtuoso
             useWindowScroll
             data={filtered}
+            endReached={function(){ if (p.loadMoreLeads) p.loadMoreLeads(); }}
             itemContent={function(idx, lead){
               var curSt=currentStatus(lead); var curFb=currentFeedback(lead); var so=sc.find(function(s){return s.value===curSt;})||sc[0]; var isVIP=lead.isVIP;
               var lastAct=lead.lastActivityTime?timeAgo(lead.lastActivityTime,t):"—";
@@ -4774,6 +4776,13 @@ var LeadsPage = function(p) {
               useWindowScroll
               data={filtered}
               components={leadsMainTableComponents}
+              endReached={function(){
+                // STEP 4-5 X3 — infinite scroll. Called by Virtuoso when the
+                // last visible item nears the bottom. loadMoreLeads short-
+                // circuits if no more pages or a fetch is already in flight,
+                // so calling unconditionally here is safe.
+                if (p.loadMoreLeads) p.loadMoreLeads();
+              }}
               fixedHeaderContent={function(){
                 return <tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
                   <th style={{ padding:"10px 8px", width:32, background:"#F8FAFC" }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(l){return gid(l);}):[])}}/></th>
@@ -11345,6 +11354,7 @@ var DailyRequestsPage = function(p) {
           {filtered.length > 0 && <Virtuoso
             useWindowScroll
             data={filtered}
+            endReached={function(){ if (p.loadMoreDRs) p.loadMoreDRs(); }}
             itemContent={function(idx, r){
               var rid=gid(r); var so=sc.find(function(s){return s.value===r.status;})||sc[0];
               var lastAct=r.lastActivityTime?timeAgo(r.lastActivityTime,t):"—";
@@ -11422,6 +11432,7 @@ var DailyRequestsPage = function(p) {
               useWindowScroll
               data={filtered}
               components={drTableComponents}
+              endReached={function(){ if (p.loadMoreDRs) p.loadMoreDRs(); }}
               fixedHeaderContent={function(){
                 return <tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
                   {p.cu.role==="admin"&&<th style={{ padding:"10px 8px", width:32, background:"#F8FAFC" }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(r){return gid(r);}):[]);}}/></th>}
@@ -23816,6 +23827,13 @@ export default function CRMApp() {
     }
   },[page]);
   var [leadsPage,setLeadsPage]=useState(1); var [leadsTotal,setLeadsTotal]=useState(0); var [leadsTotalPages,setLeadsTotalPages]=useState(0);
+  // STEP 4-5 X3 — DR pagination state mirrors leads. drsTotalPages drives
+  // the DRPage endReached gate (skip the fetch when already on the last
+  // page). drsLoadingMore guards against duplicate firings of endReached
+  // while a fetch is in flight.
+  var [drsPage,setDrsPage]=useState(1); var [drsTotal,setDrsTotal]=useState(0); var [drsTotalPages,setDrsTotalPages]=useState(0);
+  var [leadsLoadingMore,setLeadsLoadingMore]=useState(false);
+  var [drsLoadingMore,setDrsLoadingMore]=useState(false);
   var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
   var [dealNotifs,setDealNotifs]=useState([]);
@@ -23958,12 +23976,16 @@ export default function CRMApp() {
       // _currentFeedback, _hasAction) come back on each Lead and the FE
       // helpers fall back to them. Side panels still refetch full docs via
       // /api/leads/:id and /api/daily-requests/:id when needed.
+      // STEP 4-5 X3 — bootstrap shrink. Only the first page of leads + DRs
+      // is fetched on boot; subsequent pages load via loadMoreLeads /
+      // loadMoreDRs (LeadsPage / DRPage endReached). Payload drops from
+      // ~16 MB raw / ~1.6 MB gz to ~1.4 MB raw / ~140 KB gz.
       var results=await Promise.all([
-        apiFetch("/api/leads?fields=summary","GET",null,tok),
+        apiFetch("/api/leads?fields=summary&page=1&limit=100","GET",null,tok),
         apiFetch("/api/users","GET",null,tok),
         apiFetch("/api/activities?page="+activitiesPage+"&limit=1000","GET",null,tok),
         apiFetch("/api/tasks","GET",null,tok),
-        apiFetch("/api/daily-requests?fields=summary","GET",null,tok).catch(function(e){ console.error("DR fetch failed:", e); return []; })
+        apiFetch("/api/daily-requests?fields=summary&page=1&limit=100","GET",null,tok).catch(function(e){ console.error("DR fetch failed:", e); return []; })
       ]);
       // Use userOverride if passed (avoids React state timing issue)
       var effectiveUser = userOverride || currentUser;
@@ -23985,7 +24007,21 @@ export default function CRMApp() {
       setActivitiesTotal(results[2].total || 0);
       setActivitiesTotalPages(results[2].totalPages || 0);
       setTasks(results[3]);
-      setDailyReqs(results[4] || []);
+      // STEP 4-5 X3 — DR now returns the {data,total,page,totalPages} shape
+      // because the request includes ?page=1&limit=100. Earlier callers
+      // (fetchDRs WS fallback, ArchivePage's own fetch) still use the legacy
+      // array shape — preserved by checking Array.isArray.
+      var drBootResult = results[4];
+      var drBootRows = (drBootResult && Array.isArray(drBootResult.data)) ? drBootResult.data
+                     : Array.isArray(drBootResult) ? drBootResult
+                     : [];
+      setDailyReqs(drBootRows);
+      if (drBootResult && typeof drBootResult.total === "number") {
+        setDrsTotal(drBootResult.total);
+        setDrsTotalPages(drBootResult.totalPages || 0);
+        setDrsPage(1);
+      }
+      setLeadsPage(1);
     } catch(e){setDataError(e.message);}
     setLoading(false);
     isInitialLoadRef.current = false;
@@ -24008,6 +24044,64 @@ export default function CRMApp() {
       }
     }catch(e){}
   },[activitiesPage]);
+
+  // STEP 4-5 X3 — load-more helpers for LeadsPage / DRPage. Called by
+  // TableVirtuoso's endReached when the user scrolls within ~256px of the
+  // bottom. Guarded by leadsLoadingMore / drsLoadingMore (Virtuoso fires
+  // endReached repeatedly during smooth scroll; the guard dedups). When
+  // there are no more pages we short-circuit so the bottom of the table
+  // doesn't kick off a no-op fetch every frame.
+  var loadMoreLeads = function(){
+    if (leadsLoadingMore) return;
+    if (leadsPage >= leadsTotalPages) return;
+    if (!token) return;
+    var nextPage = leadsPage + 1;
+    setLeadsLoadingMore(true);
+    apiFetch("/api/leads?fields=summary&page=" + nextPage + "&limit=100","GET",null,token)
+      .then(function(r){
+        var rows = (r && Array.isArray(r.data)) ? r.data : (Array.isArray(r) ? r : []);
+        if (rows.length) {
+          var scoped = getVisibleLeads(rows, currentUser, users);
+          // Append to existing list. Dedup by _id to survive overlap if a
+          // mutation upserted a row that's also in the next page response.
+          setLeads(function(prev){
+            var byId = {};
+            prev.forEach(function(l){ if(l && l._id) byId[String(l._id)] = true; });
+            var fresh = scoped.filter(function(l){ return l && l._id && !byId[String(l._id)]; });
+            return prev.concat(fresh);
+          });
+        }
+        if (r && typeof r.total === "number") setLeadsTotal(r.total);
+        if (r && typeof r.totalPages === "number") setLeadsTotalPages(r.totalPages);
+        setLeadsPage(nextPage);
+      })
+      .catch(function(e){ console.error("[loadMoreLeads]", e && e.message); })
+      .finally(function(){ setLeadsLoadingMore(false); });
+  };
+  var loadMoreDRs = function(){
+    if (drsLoadingMore) return;
+    if (drsPage >= drsTotalPages) return;
+    if (!token) return;
+    var nextPage = drsPage + 1;
+    setDrsLoadingMore(true);
+    apiFetch("/api/daily-requests?fields=summary&page=" + nextPage + "&limit=100","GET",null,token)
+      .then(function(r){
+        var rows = (r && Array.isArray(r.data)) ? r.data : (Array.isArray(r) ? r : []);
+        if (rows.length) {
+          setDailyReqs(function(prev){
+            var byId = {};
+            prev.forEach(function(d){ if(d && d._id) byId[String(d._id)] = true; });
+            var fresh = rows.filter(function(d){ return d && d._id && !byId[String(d._id)]; });
+            return prev.concat(fresh);
+          });
+        }
+        if (r && typeof r.total === "number") setDrsTotal(r.total);
+        if (r && typeof r.totalPages === "number") setDrsTotalPages(r.totalPages);
+        setDrsPage(nextPage);
+      })
+      .catch(function(e){ console.error("[loadMoreDRs]", e && e.message); })
+      .finally(function(){ setDrsLoadingMore(false); });
+  };
 
   // Phase 2 Slice 3 — hydrate the projectWeights module cache once auth is
   // available, then bump rev so children re-render and read the new values.
@@ -24551,7 +24645,7 @@ export default function CRMApp() {
     setPage("commissions");
     try { localStorage.setItem("crm_page","commissions"); } catch(e){}
   };
-  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings,salaryViewUserId:salaryViewUserId,setSalaryViewUserId:setSalaryViewUserId,setPage:setPage,navigateToCommission:navigateToCommission,selectedCommissionLeadId:selectedCommissionLeadId,setSelectedCommissionLeadId:setSelectedCommissionLeadId,cbBust:cbBust};
+  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings,salaryViewUserId:salaryViewUserId,setSalaryViewUserId:setSalaryViewUserId,setPage:setPage,navigateToCommission:navigateToCommission,selectedCommissionLeadId:selectedCommissionLeadId,setSelectedCommissionLeadId:setSelectedCommissionLeadId,cbBust:cbBust,loadMoreLeads:loadMoreLeads,loadMoreDRs:loadMoreDRs,leadsLoadingMore:leadsLoadingMore,drsLoadingMore:drsLoadingMore,leadsTotal:leadsTotal,leadsTotalPages:leadsTotalPages,leadsPage:leadsPage,drsTotal:drsTotal,drsTotalPages:drsTotalPages,drsPage:drsPage};
 
   var renderPage=function(){
     switch(currentPage){
