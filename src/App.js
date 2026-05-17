@@ -1383,36 +1383,41 @@ var HeaderSearch = function(p) {
   var t = p.t;
   var wrapRef = useRef(null);
   var [open, setOpen] = useState(false);
+  // STEP 4-1 — server-side search replaces the previous in-memory
+  // p.leads.filter / p.dailyRequests.filter scans. Those scans worked only
+  // because the bootstrap shipped the full collection; once STEP 4-5
+  // shrinks the bootstrap to ~100 rows, in-memory search silently misses
+  // every lead beyond the first page. Debounced (250ms) so rapid typing
+  // doesn't flood the BE with one request per keystroke; the server
+  // endpoints (/api/leads/search, /api/daily-requests/search) cap at
+  // limit=10 to match the previous .slice(0,10) UX and apply the same
+  // role-scoped visibility as the list endpoints.
+  var [leadResults, setLeadResults] = useState([]);
+  var [drResults, setDrResults] = useState([]);
+  var [searching, setSearching] = useState(false);
   useEffect(function(){
     var onDown = function(e){ if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", onDown);
     return function(){ document.removeEventListener("mousedown", onDown); };
   },[]);
   var q = (p.search||"").trim();
-  var leadResults = [];
-  var drResults = [];
-  if (q.length>=2) {
-    var lc = q.toLowerCase();
-    leadResults = (p.leads||[]).filter(function(l){
-      if (l.archived) return false;
-      if (l.name && l.name.toLowerCase().indexOf(lc)>=0) return true;
-      if (l.phone && l.phone.indexOf(q)>=0) return true;
-      if (l.phone2 && l.phone2.indexOf(q)>=0) return true;
-      if (l.email && l.email.toLowerCase().indexOf(lc)>=0) return true;
-      return false;
-    }).slice(0,10);
-    drResults = (p.dailyRequests||[]).filter(function(r){
-      if (r.archived) return false; // unified archive rule (Divergence #7)
-      if (r.name && r.name.toLowerCase().indexOf(lc)>=0) return true;
-      if (r.phone && r.phone.indexOf(q)>=0) return true;
-      if (r.phone2 && r.phone2.indexOf(q)>=0) return true;
-      if (r.email && r.email.toLowerCase().indexOf(lc)>=0) return true;
-      if (r.notes && r.notes.toLowerCase().indexOf(lc)>=0) return true;
-      if (r.propertyType && r.propertyType.toLowerCase().indexOf(lc)>=0) return true;
-      if (r.area && r.area.toLowerCase().indexOf(lc)>=0) return true;
-      return false;
-    }).slice(0,10);
-  }
+  useEffect(function(){
+    if (q.length < 2) { setLeadResults([]); setDrResults([]); setSearching(false); return; }
+    setSearching(true);
+    var timer = setTimeout(function(){
+      var qParam = encodeURIComponent(q);
+      Promise.all([
+        apiFetch("/api/leads/search?q=" + qParam + "&limit=10", "GET", null, p.token).catch(function(){ return []; }),
+        apiFetch("/api/daily-requests/search?q=" + qParam + "&limit=10", "GET", null, p.token).catch(function(){ return []; })
+      ]).then(function(results){
+        setLeadResults(Array.isArray(results[0]) ? results[0] : []);
+        setDrResults(Array.isArray(results[1]) ? results[1] : []);
+        setSearching(false);
+      });
+    }, 250);
+    return function(){ clearTimeout(timer); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q]);
   var totalResults = leadResults.length + drResults.length;
   var showDropdown = open && q.length>=2;
   var sc = STATUSES(t);
@@ -1442,7 +1447,8 @@ var HeaderSearch = function(p) {
       {q.length>0&&<button onClick={function(){p.setSearch("");setOpen(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, padding:0, display:"flex" }} title="Clear"><X size={14}/></button>}
     </div>
     {showDropdown && <div data-overlay-above="true" style={{ position:"absolute", top:"calc(100% + 6px)", left:0, right:0, background:"#fff", border:"1px solid #E2E8F0", borderRadius:12, boxShadow:"0 8px 32px rgba(0,0,0,0.12)", zIndex:500, maxHeight:420, overflowY:"auto" }}>
-      {totalResults===0 && <div style={{ padding:"14px 16px", fontSize:12, color:"#94A3B8", textAlign:"center" }}>No matching results</div>}
+      {searching && totalResults===0 && <div style={{ padding:"14px 16px", fontSize:12, color:"#94A3B8", textAlign:"center" }}>Searching…</div>}
+      {!searching && totalResults===0 && <div style={{ padding:"14px 16px", fontSize:12, color:"#94A3B8", textAlign:"center" }}>No matching results</div>}
       {leadResults.length>0 && <>
         {sectionLabel("Leads", leadResults.length)}
         {leadResults.map(function(l){ return renderRow(l, p.onLeadClick, sc, false); })}
@@ -1542,7 +1548,7 @@ var Header = function(p) {
       <h1 style={{ fontSize:p.isMobile?15:19, fontWeight:700, color:C.text, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.title}</h1>
     </div>
     <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
-      {!p.isMobile&&<HeaderSearch t={t} search={p.search} setSearch={p.setSearch} leads={p.leads} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRItemClick||p.onDRClick}/>}
+      {!p.isMobile&&<HeaderSearch t={t} token={p.token} search={p.search} setSearch={p.setSearch} leads={p.leads} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRItemClick||p.onDRClick}/>}
       
       {/* BELL 3 — Deal notifications: admin + sales_admin + team_leader */}
       {(p.isAdmin||p.cu&&(p.cu.role==="sales_admin"||p.cu.role==="team_leader"))&&<div ref={dealNotifRef} style={{ position:"relative" }}>
@@ -1579,9 +1585,20 @@ var Header = function(p) {
                 var openItem = function(){
                   p.setShowDealNotif(false);
                   if (!p.onDealNotifClick) return;
-                  var target = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);}) || { _id: n.leadId, name: n.leadName||"" };
                   var page = isDeal ? "deals" : "eoi";
-                  p.onDealNotifClick(page, target);
+                  var inMemory = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);});
+                  if (inMemory) { p.onDealNotifClick(page, inMemory); return; }
+                  // STEP 4-1 — once bootstrap shrinks to ~100 leads, the lead
+                  // behind a notification often isn't in p.leads. Fetch the
+                  // full doc via /api/leads/:id (which has always existed)
+                  // before navigating. Fail-soft to the shell if the fetch
+                  // 404s / errors so the page still opens to the right tab.
+                  apiFetch("/api/leads/" + String(n.leadId), "GET", null, p.token).then(function(fresh){
+                    var target = (fresh && fresh._id) ? fresh : { _id: n.leadId, name: n.leadName||"" };
+                    p.onDealNotifClick(page, target);
+                  }).catch(function(){
+                    p.onDealNotifClick(page, { _id: n.leadId, name: n.leadName||"" });
+                  });
                 };
                 return <div key={n._id+"-"+idx} onClick={openItem} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:"#fff", transition:"background 0.2s", cursor:"pointer" }}>
                   <div style={{ width:38, height:38, borderRadius:10, background:iconBg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:18 }}>{iconEmoji}</div>
@@ -1624,9 +1641,21 @@ var Header = function(p) {
               var openItem = function(){
                 if (p.setShowRotNotif) p.setShowRotNotif(false);
                 if (!canNav) return;
-                var target = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);}) || { _id: n.leadId, name: n.leadName||"" };
-                if (p.onRotNotifClick) p.onRotNotifClick(target);
-                else if (p.onLeadClick) p.onLeadClick(target);
+                var inMemory = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);});
+                var route = function(target){
+                  if (p.onRotNotifClick) p.onRotNotifClick(target);
+                  else if (p.onLeadClick) p.onLeadClick(target);
+                };
+                if (inMemory) { route(inMemory); return; }
+                // STEP 4-1 — fetch full lead from /api/leads/:id when the
+                // notification's lead isn't in the bootstrap page slice.
+                // Fail-soft to a shell so the page still opens if the
+                // fetch errors.
+                apiFetch("/api/leads/" + String(n.leadId), "GET", null, p.token).then(function(fresh){
+                  route((fresh && fresh._id) ? fresh : { _id: n.leadId, name: n.leadName||"" });
+                }).catch(function(){
+                  route({ _id: n.leadId, name: n.leadName||"" });
+                });
               };
               return <div key={n._id||n.id} onClick={canNav?openItem:undefined} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#FFFBF5", transition:"background 0.2s", cursor:canNav?"pointer":"default" }}>
                 <div style={{ width:38, height:38, borderRadius:10, background:"linear-gradient(135deg,#FFF7ED,#FFEDD5)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><RotateCcw size={16} color="#EA580C"/></div>
@@ -1710,7 +1739,7 @@ var Header = function(p) {
     </div>
   </div>
   {p.isMobile&&<div style={{ padding:"8px", background:"#fff", borderBottom:"1px solid #E5E7EB" }}>
-    <HeaderSearch width="100%" t={t} search={p.search} setSearch={p.setSearch} leads={p.leads} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRItemClick||p.onDRClick}/>
+    <HeaderSearch width="100%" t={t} token={p.token} search={p.search} setSearch={p.setSearch} leads={p.leads} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRItemClick||p.onDRClick}/>
   </div>}
   </div>;
 };
@@ -2453,13 +2482,32 @@ var callbackColor = function(cbTime) {
 var QuickPhoneSearch = function(p) {
   var [show,setShow]=useState(false);
   var [q,setQ]=useState("");
-  var leadResults=q.length>=4?p.leads.filter(function(l){
-    return (l.phone&&(l.phone.includes(q)||l.phone.endsWith(q)))||(l.phone2&&(l.phone2.includes(q)||l.phone2.endsWith(q)));
-  }):[];
-  var drResults=q.length>=4?(p.dailyReqs||[]).filter(function(r){
-    if (r.archived) return false; // unified archive rule (Divergence #7)
-    return (r.phone&&(r.phone.includes(q)||r.phone.endsWith(q)))||(r.phone2&&(r.phone2.includes(q)||r.phone2.endsWith(q)));
-  }):[];
+  // STEP 4-1 — server-side by-phone lookup replaces the in-memory
+  // p.leads / p.dailyReqs scans. Once bootstrap shrinks to ~100 rows the
+  // old scan would silently skip the rest of the collection; the BE
+  // endpoints honor the same role-scope as the list and apply
+  // substring + endsWith semantics matching the previous filter.
+  // Debounced 250ms.
+  var [leadResults,setLeadResults]=useState([]);
+  var [drResults,setDrResults]=useState([]);
+  var [searching,setSearching]=useState(false);
+  useEffect(function(){
+    if (q.length < 4) { setLeadResults([]); setDrResults([]); setSearching(false); return; }
+    setSearching(true);
+    var timer = setTimeout(function(){
+      var qParam = encodeURIComponent(q);
+      Promise.all([
+        apiFetch("/api/leads/by-phone?phone=" + qParam + "&limit=20", "GET", null, p.token).catch(function(){ return []; }),
+        apiFetch("/api/daily-requests/by-phone?phone=" + qParam + "&limit=20", "GET", null, p.token).catch(function(){ return []; })
+      ]).then(function(results){
+        setLeadResults(Array.isArray(results[0]) ? results[0] : []);
+        setDrResults(Array.isArray(results[1]) ? results[1] : []);
+        setSearching(false);
+      });
+    }, 250);
+    return function(){ clearTimeout(timer); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q]);
   var sc=STATUSES(p.t);
   var drSc=DR_STATUSES(p.t);
   var totalResults=leadResults.length+drResults.length;
@@ -2486,7 +2534,8 @@ var QuickPhoneSearch = function(p) {
       </div>
       <input autoFocus value={q} onChange={function(e){setQ(e.target.value);}} placeholder="Enter last 4 digits or full number..." style={{ width:"100%", padding:"10px 14px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr", marginBottom:12 }}/>
       {q.length>0&&q.length<4&&<div style={{ fontSize:12, color:"#94A3B8", textAlign:"center", marginBottom:10 }}>Type at least 4 digits</div>}
-      {totalResults===0&&q.length>=4&&<div style={{ fontSize:13, color:"#94A3B8", textAlign:"center", padding:20 }}>No results</div>}
+      {searching&&totalResults===0&&q.length>=4&&<div style={{ fontSize:13, color:"#94A3B8", textAlign:"center", padding:20 }}>Searching…</div>}
+      {!searching&&totalResults===0&&q.length>=4&&<div style={{ fontSize:13, color:"#94A3B8", textAlign:"center", padding:20 }}>No results</div>}
       {leadResults.length>0&&<div>
         <div style={{ fontSize:12, fontWeight:700, color:"#64748B", textTransform:"uppercase", letterSpacing:1, marginBottom:8 }}>Leads ({leadResults.length})</div>
         {leadResults.map(function(l){return renderCard(l,p.onSelect,sc);})}
@@ -8183,8 +8232,17 @@ var DashboardPage = function(p) {
     var id = activityLeadIdStr(a);
     if (!id) return;
     if (activityIsLead(a)) {
-      var leadObj = _leadsById[id] || { _id: id, name: (a.leadId && a.leadId.name) || "" };
-      if (p.nav) p.nav("leads", leadObj);
+      var inMemoryLead = _leadsById[id];
+      if (inMemoryLead) { if (p.nav) p.nav("leads", inMemoryLead); return; }
+      // STEP 4-1 — fetch the lead from /api/leads/:id when it isn't in the
+      // bootstrap page slice. Same fail-soft fallback as the notification
+      // bells: on error, navigate to the shell so the page still opens.
+      apiFetch("/api/leads/" + id, "GET", null, p.token).then(function(fresh){
+        var target = (fresh && fresh._id) ? fresh : { _id: id, name: (a.leadId && a.leadId.name) || "" };
+        if (p.nav) p.nav("leads", target);
+      }).catch(function(){
+        if (p.nav) p.nav("leads", { _id: id, name: (a.leadId && a.leadId.name) || "" });
+      });
       return;
     }
     // DR-backed.
@@ -8195,8 +8253,28 @@ var DashboardPage = function(p) {
       if (p.nav) p.nav("leads", linkedLead);
       return;
     }
-    var drForOpen = drObj || { _id: id, name: resolveClientName(a), phone: (a && a.clientPhone) || "" };
-    if (p.nav) p.nav("dailyReq", drForOpen);
+    if (drObj) { if (p.nav) p.nav("dailyReq", drObj); return; }
+    // STEP 4-1 — DR not in p.dailyReqs and no linked lead in memory either.
+    // Try the by-phone fallback to recover the linked Lead first (preferred
+    // routing for DR-backed activities is to open the lead, not the DR
+    // mirror). If that also fails, fall back to fetching the DR by phone
+    // and opening that. Final fallback: shell open as before.
+    var doShellOpen = function(){
+      var shell = { _id: id, name: resolveClientName(a), phone: (a && a.clientPhone) || "" };
+      if (p.nav) p.nav("dailyReq", shell);
+    };
+    if (!drPhone) { doShellOpen(); return; }
+    apiFetch("/api/leads/by-phone?phone=" + encodeURIComponent(drPhone), "GET", null, p.token).then(function(leads){
+      if (Array.isArray(leads) && leads.length > 0) {
+        if (p.nav) p.nav("leads", leads[0]);
+        return;
+      }
+      apiFetch("/api/daily-requests/by-phone?phone=" + encodeURIComponent(drPhone), "GET", null, p.token).then(function(drs){
+        if (Array.isArray(drs) && drs.length > 0) {
+          if (p.nav) p.nav("dailyReq", drs[0]);
+        } else { doShellOpen(); }
+      }).catch(doShellOpen);
+    }).catch(doShellOpen);
   };
   // Is the originating Lead/DR for this activity archived? Archived records
   // stay in the Activities card as a read-only history, so the row must be
@@ -24098,11 +24176,11 @@ export default function CRMApp() {
     </div>}
     <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads} attendanceSettings={attendanceSettings}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
-      <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
+      <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} token={token} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} navigateToCommission={navigateToCommission} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} token={token} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} navigateToCommission={navigateToCommission} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
