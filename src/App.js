@@ -1730,7 +1730,8 @@ var LeadForm = function(p) {
       commissionRate: "",
       externalSalesAgentEnabled: false,
       externalSalesAgentId: "",
-      externalSalesAgentManualAmount: ""
+      externalSalesAgentManualAmount: "",
+      externalSalesAgentPaidBy: "company"
     }, base);
     if (base.externalBrokerId && typeof base.externalBrokerId === "object") {
       base.externalBrokerId = String(base.externalBrokerId._id || "");
@@ -1927,15 +1928,20 @@ var LeadForm = function(p) {
         payload.commissionRate = (s && isFinite(n) && n > 0 && n <= 100) ? n : null;
         delete payload.commissionAmount;
       })();
-      // External sales agent — coerce manual amount + agent id.
+      // External sales agent — coerce manual amount + agent id + paidBy.
       (function(){
         if (payload.externalSalesAgentEnabled) {
           var s = String(payload.externalSalesAgentManualAmount || "").replace(/,/g, "").trim();
           var n = Number(s);
           payload.externalSalesAgentManualAmount = (s && isFinite(n) && n > 0) ? n : null;
+          // Phase R-13.2 — paidBy enum normalize. Default "company"; "broker"
+          // routes the sales-agent amount out of the broker's share.
+          var pb = String(payload.externalSalesAgentPaidBy || "company");
+          payload.externalSalesAgentPaidBy = (pb === "broker") ? "broker" : "company";
         } else {
           payload.externalSalesAgentId           = null;
           payload.externalSalesAgentManualAmount = null;
+          payload.externalSalesAgentPaidBy       = "company";
         }
       })();
       // Strip client-only fields the API doesn't need
@@ -2095,6 +2101,7 @@ var LeadForm = function(p) {
                 upd("externalSalesAgentEnabled", false);
                 upd("externalSalesAgentId", "");
                 upd("externalSalesAgentManualAmount", "");
+                upd("externalSalesAgentPaidBy", "company");
               }
             }}
             style={{ flex:1, padding:"10px 12px", borderRadius:9, border:"1px solid", borderColor: active ? C.accent : "#E2E8F0", background: active ? C.accent+"12" : "#fff", cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.55 : 1, textAlign:"left" }}>
@@ -2139,6 +2146,7 @@ var LeadForm = function(p) {
                 if (!on) {
                   upd("externalSalesAgentId", "");
                   upd("externalSalesAgentManualAmount", "");
+                  upd("externalSalesAgentPaidBy", "company");
                 }
               }}/>
             Sales Agent involved
@@ -2175,6 +2183,29 @@ var LeadForm = function(p) {
                 upd("externalSalesAgentManualAmount", formatted);
               }}
               placeholder="e.g. 50,000"/>
+            {/* Phase R-13.2 — Paid by radio. Company (default) deducts the
+                sales-agent amount from ARO's net. Broker deducts it from the
+                broker's share (broker's net take-home shrinks). */}
+            <div style={{ gridColumn:"1 / span 2", marginTop:8 }}>
+              <div style={{ fontSize:11, fontWeight:600, color:C.text, marginBottom:6 }}>Paid by:</div>
+              <div style={{ display:"flex", gap:18, alignItems:"center" }}>
+                <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:C.text, cursor:"pointer" }}>
+                  <input type="radio" name="extSalesPaidBy"
+                    checked={String(form.externalSalesAgentPaidBy || "company") === "company"}
+                    onChange={function(){ upd("externalSalesAgentPaidBy", "company"); }}/>
+                  Company
+                </label>
+                <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:C.text, cursor:"pointer" }}>
+                  <input type="radio" name="extSalesPaidBy"
+                    checked={String(form.externalSalesAgentPaidBy || "company") === "broker"}
+                    onChange={function(){ upd("externalSalesAgentPaidBy", "broker"); }}/>
+                  Broker
+                </label>
+              </div>
+              <div style={{ fontSize:10, color:C.textLight, marginTop:4 }}>
+                Company (default): sales amount comes out of ARO's net. Broker: sales amount comes out of the broker's share.
+              </div>
+            </div>
           </div>}
         </div>
 
@@ -18937,7 +18968,10 @@ var CommissionEditCollectionModal = function(p) {
       var es = c.externalSplit;
       var taxAmt    = Number(es.commissionTaxAmount || 0);
       var aroNet    = Number(es.aroNetAmount || 0);
-      var brokerOwd = Number(es.brokerOwed || 0);
+      // Phase R-13.2 — show brokerNetOwed when present (paidBy-adjusted).
+      var brokerGrossOwd = Number(es.brokerOwed || 0);
+      var brokerOwd = (es.brokerNetOwed != null) ? Number(es.brokerNetOwed) : brokerGrossOwd;
+      var paidByBrokerHere = String(es.salesAgentPaidBy || "company") === "broker";
       var aroOwd    = Number(es.aroOwed || 0);
       var fmt = function(n){ return Math.round(Number(n||0)).toLocaleString(); };
       return <>
@@ -18954,7 +18988,7 @@ var CommissionEditCollectionModal = function(p) {
         <div style={{ background:"#F5F3FF", border:"1px solid #DDD6FE", borderRadius:8, padding:"10px 12px", fontSize:12, color:"#3730A3", lineHeight:1.7 }}>
           <div><b>Computed (from received cycles)</b></div>
           <div>Tax: <b>{fmt(taxAmt)} EGP</b> &nbsp;·&nbsp; ARO net: <b>{fmt(aroNet)} EGP</b></div>
-          <div>Broker owed: <b>{fmt(brokerOwd)} EGP</b> &nbsp;·&nbsp; ARO owed: <b>{fmt(aroOwd)} EGP</b></div>
+          <div>Broker owed: <b>{fmt(brokerOwd)} EGP</b>{paidByBrokerHere && brokerGrossOwd !== brokerOwd && <span style={{ color:C.textLight }}> (gross {fmt(brokerGrossOwd)} − sales {fmt(brokerGrossOwd - brokerOwd)})</span>} &nbsp;·&nbsp; ARO owed: <b>{fmt(aroOwd)} EGP</b></div>
         </div>
       </>;
     })()}
@@ -20534,7 +20568,12 @@ var CommissionsPage = function(p) {
                   ARO (informational only — no actions). Tax footnote below. */}
               {c.externalSplit && c.externalSplit.isExternal && (function(){
                 var es = c.externalSplit;
-                var brokerOwed = Number(es.brokerOwed || 0);
+                // Phase R-13.2 — display brokerNetOwed when present (paidBy
+                // adjusts the take-home). Pre-13.2 docs have no brokerNetOwed;
+                // fall back to brokerOwed.
+                var brokerGross = Number(es.brokerOwed || 0);
+                var brokerOwed = (es.brokerNetOwed != null) ? Number(es.brokerNetOwed) : brokerGross;
+                var paidByBroker = String(es.salesAgentPaidBy || "company") === "broker";
                 var brokerPaid = (es.brokerPayouts || []).reduce(function(s, bp){ return s + Number(bp.amount || 0); }, 0);
                 var brokerRem  = Math.max(0, brokerOwed - brokerPaid);
                 var brokerOver = brokerPaid > brokerOwed && brokerOwed > 0;
@@ -20547,6 +20586,9 @@ var CommissionsPage = function(p) {
                 var brokerIcon  = brokerOver ? "⚠️" : brokerFull ? "✅" : "🔴";
                 var brokerRemColor = brokerOver ? "#B91C1C" : brokerFull ? "#15803D" : C.text;
                 var brokerRemValue = brokerOver ? ("+" + n2(brokerPaid - brokerOwed)) : n2(brokerRem);
+                var brokerSubLine = paidByBroker
+                  ? "Gross " + n2(brokerGross) + " − sales " + n2(Math.max(0, brokerGross - brokerOwed)) + " (paid by broker)"
+                  : "";
                 return <div style={{ marginBottom: rows.length > 0 ? 12 : 6 }}>
                   <div style={{ fontSize:10, fontWeight:700, color:"#5B21B6", textTransform:"uppercase", letterSpacing:0.3, padding:"2px 0 6px" }}>
                     External Split
@@ -20558,6 +20600,7 @@ var CommissionsPage = function(p) {
                         <div style={{ display:"flex", gap:8, alignItems:"baseline", minWidth:0, flexWrap:"wrap" }}>
                           <span style={{ fontSize:10, fontWeight:700, color:C.textLight, textTransform:"uppercase", minWidth:72 }}>Broker</span>
                           <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{es.brokerName || "(unnamed)"}</span>
+                          {paidByBroker && <span style={{ fontSize:9, padding:"1px 5px", borderRadius:6, background:"#EDE9FE", color:"#5B21B6", fontWeight:700 }}>pays sales</span>}
                         </div>
                         <span style={{ fontSize:12 }}>{brokerIcon}</span>
                       </div>
@@ -20566,6 +20609,7 @@ var CommissionsPage = function(p) {
                         <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Paid:&nbsp;</span><span style={{ color:C.text }}>{n2(brokerPaid)}</span></div>
                         <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Rem:&nbsp;</span><span style={{ color:brokerRemColor, fontWeight:700 }}>{brokerRemValue}</span></div>
                       </div>
+                      {brokerSubLine && <div style={{ fontSize:10, color:C.textLight, marginTop:3, marginInlineStart:80, fontStyle:"italic" }}>{brokerSubLine}</div>}
                     </div>
                     {/* ARO informational row — no actions, grayed-out */}
                     <div style={{ padding:"8px 12px", borderTop:"1px solid #F1F5F9", background:"#F8FAFC" }}>
@@ -20595,6 +20639,7 @@ var CommissionsPage = function(p) {
                 Internal team share (out of ARO's {n2(Number(c.externalSplit.aroOwed || 0))} EGP)
               </div>}
               {rows.length === 0 && (!(c.externalSplit && c.externalSplit.isExternal)) && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 0" }}>No recipients on snapshot.</div>}
+              {rows.length === 0 && (c.externalSplit && c.externalSplit.isExternal) && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 0" }}>No internal recipients — broker-only deal.</div>}
               {rows.length > 0 && <div style={{ border:"1px solid #E2E8F0", borderRadius:10, overflow:"hidden", background:"#fff" }}>
                 {rows.map(function(x, idx){
                   var rowBg = x.fullyPaid ? "#F0FDF4" : x.notStarted ? "#FFFBEB" : "#fff";
@@ -21888,6 +21933,9 @@ var CommissionsPage = function(p) {
       var grossAfterTax = gross - taxAmount;
       var brokerPct = Number(es.brokerSharePct || 0);
       var aroPct = Math.max(0, 100 - brokerPct);
+      // Phase R-13.2 — brokerShare on the modal stays the original/gross
+      // amount the broker is entitled to before the optional sales-agent
+      // deduction. The "Paid by" branch below shows how that splits.
       var brokerShare = Number(es.brokerOwed || 0);
       var aroTheoretical = Number(es.aroOwed || 0);
       // Net Due derives from gross via the canonical state-tax formula.
@@ -21899,7 +21947,18 @@ var CommissionsPage = function(p) {
       var salesAgentName = sa && sa.userName ? sa.userName : "";
       var manualAmount = sa ? Number(sa.computedShare || 0) : 0;
       var hasSales = manualAmount > 0;
-      var companyNet = netDue - brokerShare - (hasSales ? manualAmount : 0);
+      // Phase R-13.2 — paidBy semantics:
+      //   "company": company net = NetDue − broker − sales (today's behavior).
+      //   "broker":  company net = NetDue − broker (sales is paid by broker
+      //              from their share; the 100k stays with company).
+      //   Broker NET (the amount the broker actually takes home in the
+      //   "broker" mode) is brokerShare − manualAmount; the print view uses
+      //   this so the broker on paper sees their real take.
+      var paidByBroker = String(es.salesAgentPaidBy || "company") === "broker";
+      var brokerNetTake = paidByBroker ? Math.max(0, brokerShare - manualAmount) : brokerShare;
+      var companyNet = paidByBroker
+        ? (netDue - brokerShare)
+        : (netDue - brokerShare - (hasSales ? manualAmount : 0));
       var fmt = function(n){ return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " EGP"; };
       var leadName = (c.snapshot && c.snapshot.customerName) || "(deal)";
       var printNow = function(){
@@ -21928,15 +21987,34 @@ var CommissionsPage = function(p) {
           "  body.printing-broker .print-only-broker-modal," +
           "  body.printing-broker .print-only-broker-modal * { visibility: visible !important; }" +
           "  body.printing-broker .print-only-broker-modal {" +
-          "    position: absolute !important; left: 0 !important; top: 0 !important;" +
-          "    width: 100% !important; padding: 32px !important;" +
+          // Phase R-13.2 fix — position:fixed (not absolute) so the printed
+          // overlay does NOT repeat once per page of the underlying scrolled
+          // document. absolute positions relative to the document, which the
+          // browser slices into N print pages; fixed positions relative to the
+          // viewport and prints exactly ONE page. The page-break-* rules below
+          // are belt-and-suspenders against Chrome's repeated-block heuristic.
+          "    position: fixed !important; left: 0 !important; top: 0 !important;" +
+          "    width: 100% !important; max-height: 100vh !important; overflow: hidden !important;" +
+          "    padding: 32px !important;" +
           "    background: #fff !important; color: #000 !important;" +
           "    font-family: system-ui, -apple-system, sans-serif !important;" +
           "    box-shadow: none !important;" +
+          "    page-break-inside: avoid !important;" +
+          "    page-break-after: avoid !important;" +
           "  }" +
           "  body.printing-broker .print-only-broker-modal button { display: none !important; }" +
           "  body.printing-broker .screen-only { display: none !important; }" +
+          // Phase R-13.2 — paidBy="broker" print swap. The screen shows broker
+          // gross + a "− pays sales" sub-line for transparency; the printed
+          // broker copy shows ONLY the broker's net take-home so the broker on
+          // paper sees their actual number.
+          "  body.printing-broker .print-only { display: block !important; }" +
           "}" +
+          // .print-only is hidden by default everywhere (screen AND print),
+          // then revealed inside @media print only when body.printing-broker
+          // is on. Belt-and-suspenders so a stray Ctrl+P never leaks the
+          // print-only row.
+          ".print-only { display: none !important; }" +
           "@page { margin: 1cm; }"
         }</style>
         <div className="print-only-broker-modal" style={{ fontSize:13, lineHeight:1.8, color:C.text }}>
@@ -21959,20 +22037,36 @@ var CommissionsPage = function(p) {
           <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"8px 0", borderTop:"2px solid #CBD5E1", borderBottom:"2px solid #CBD5E1", background:"#F8FAFC" }}>
             <span style={{ color:C.text, fontWeight:600 }}>Amount after deduction:</span><b style={{ textAlign:"right" }}>{fmt(grossAfterTax)}</b>
           </div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", marginTop:4 }}>
+          {/* Phase R-13.2 — Broker share rows. Screen view shows broker GROSS
+              + optional "− pays sales" sub-line when paidBy="broker". The
+              printed broker copy shows the broker NET (the actual take-home)
+              so the broker on paper sees their real number. */}
+          <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", marginTop:4 }}>
             <span style={{ color:C.textLight }}>Broker share ({brokerPct}%):</span><b style={{ textAlign:"right", color:"#5B21B6" }}>{fmt(brokerShare)}</b>
+          </div>
+          {paidByBroker && hasSales && <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"2px 0 6px 16px", fontSize:12, color:"#B45309" }}>
+            <span>Broker pays sales ({salesAgentName}):</span><b style={{ textAlign:"right" }}>−{fmt(manualAmount)}</b>
+          </div>}
+          {paidByBroker && hasSales && <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", borderTop:"1px solid #E2E8F0" }}>
+            <span style={{ color:C.text, fontWeight:600 }}>Broker NET take:</span><b style={{ textAlign:"right", color:"#5B21B6" }}>{fmt(brokerNetTake)}</b>
+          </div>}
+          {/* Print-only broker share row — when paidBy=broker, this is the
+              NET take. When paidBy=company, it equals brokerShare (same as
+              screen). One row regardless of mode keeps the broker copy clean. */}
+          <div className="print-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", marginTop:4 }}>
+            <span style={{ color:C.textLight }}>Broker share ({brokerPct}%):</span><b style={{ textAlign:"right", color:"#5B21B6" }}>{fmt(brokerNetTake)}</b>
           </div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", borderBottom:"2px solid #CBD5E1" }}>
             <span style={{ color:C.textLight }}>ARO theoretical ({aroPct}%):</span><b style={{ textAlign:"right" }}>{fmt(aroTheoretical)}</b>
           </div>
-          {/* Phase R-13.2 — Sales agent + Company net rows are admin-only.
-              `.screen-only` hides them on print (via @media print rule above)
-              while preserving the on-screen breakdown for admin. */}
+          {/* Sales agent + Company net rows — admin-only (screen). When
+              paidBy=broker, the sales line shows the "(paid by broker)"
+              suffix so admin reads it correctly against the broker NET. */}
           {hasSales && <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", marginTop:8, color:C.textLight, fontSize:12 }}>
-            <span>Sales agent ({salesAgentName}):</span><b style={{ textAlign:"right" }}>{fmt(manualAmount)}</b>
+            <span>Sales agent ({salesAgentName}){paidByBroker ? " (paid by broker)" : ""}:</span><b style={{ textAlign:"right" }}>{fmt(manualAmount)}</b>
           </div>}
           <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"10px 0 4px", borderTop:"2px solid #15803D", marginTop:hasSales ? 0 : 8, color:"#15803D", fontWeight:700 }}>
-            <span>Company net (after broker{hasSales ? " + sales" : ""}):</span><span style={{ textAlign:"right" }}>{fmt(companyNet)}</span>
+            <span>Company net (after broker{(hasSales && !paidByBroker) ? " + sales" : ""}):</span><span style={{ textAlign:"right" }}>{fmt(companyNet)}</span>
           </div>
         </div>
         <div style={{ display:"flex", gap:10, marginTop:18 }}>
