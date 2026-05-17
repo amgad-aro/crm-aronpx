@@ -21917,14 +21917,39 @@ var CommissionsPage = function(p) {
       };
       return <Modal show={true} onClose={function(){ setBrokerCalcFor(null); }} title={"💼 Broker Calculation — " + leadName} w={520}>
         <style>{
+          // Phase R-13.2 — visibility-based "print only this element" pattern.
+          // The previous display-based rule (hide direct body children except
+          // [data-overlay-above]) failed because the modal is nested deep
+          // inside #root, so hiding #root hides the modal too. visibility
+          // cascades differently and lets descendants override their hidden
+          // ancestors, regardless of nesting depth.
           "@media print {" +
-          "  body.printing-broker > *:not([data-overlay-above=\"true\"]) { display: none !important; }" +
-          "  body.printing-broker .print-only-broker-modal { position: fixed !important; inset: 0 !important; background: #fff !important; padding: 32px !important; color: #000 !important; font-family: system-ui, sans-serif !important; z-index: 99999 !important; }" +
+          "  body.printing-broker * { visibility: hidden !important; }" +
+          "  body.printing-broker .print-only-broker-modal," +
+          "  body.printing-broker .print-only-broker-modal * { visibility: visible !important; }" +
+          "  body.printing-broker .print-only-broker-modal {" +
+          "    position: absolute !important; left: 0 !important; top: 0 !important;" +
+          "    width: 100% !important; padding: 32px !important;" +
+          "    background: #fff !important; color: #000 !important;" +
+          "    font-family: system-ui, -apple-system, sans-serif !important;" +
+          "    box-shadow: none !important;" +
+          "  }" +
           "  body.printing-broker .print-only-broker-modal button { display: none !important; }" +
-          "  body.printing-broker .print-only-broker-modal .modal-overlay { background: transparent !important; }" +
-          "}"
+          "  body.printing-broker .screen-only { display: none !important; }" +
+          "}" +
+          "@page { margin: 1cm; }"
         }</style>
         <div className="print-only-broker-modal" style={{ fontSize:13, lineHeight:1.8, color:C.text }}>
+          {/* Print-only header — the Modal's own title bar is hidden by the
+              visibility:hidden rule on its parent, so the printed page needs
+              its own header. Visible on screen too (acts as the modal's
+              internal title); the screen Modal still has its own chrome above. */}
+          <div style={{ marginBottom:14, paddingBottom:10, borderBottom:"2px solid #1F2937" }}>
+            <div style={{ fontSize:18, fontWeight:700, color:"#111" }}>💼 Broker Calculation</div>
+            <div style={{ fontSize:12, color:"#374151", marginTop:4 }}>
+              Deal: <b>{leadName}</b> &nbsp;·&nbsp; Date: <b>{new Date().toLocaleDateString("en-GB")}</b>
+            </div>
+          </div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", borderBottom:"1px solid #E2E8F0" }}>
             <span style={{ color:C.textLight }}>Gross Commission:</span><b style={{ textAlign:"right" }}>{fmt(gross)}</b>
           </div>
@@ -21940,14 +21965,14 @@ var CommissionsPage = function(p) {
           <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", borderBottom:"2px solid #CBD5E1" }}>
             <span style={{ color:C.textLight }}>ARO theoretical ({aroPct}%):</span><b style={{ textAlign:"right" }}>{fmt(aroTheoretical)}</b>
           </div>
-          {hasSales && <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", marginTop:8, color:C.textLight, fontSize:12 }}>
+          {/* Phase R-13.2 — Sales agent + Company net rows are admin-only.
+              `.screen-only` hides them on print (via @media print rule above)
+              while preserving the on-screen breakdown for admin. */}
+          {hasSales && <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", marginTop:8, color:C.textLight, fontSize:12 }}>
             <span>Sales agent ({salesAgentName}):</span><b style={{ textAlign:"right" }}>{fmt(manualAmount)}</b>
           </div>}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"10px 0 4px", borderTop:"2px solid #15803D", marginTop:hasSales ? 0 : 8, color:"#15803D", fontWeight:700 }}>
+          <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"10px 0 4px", borderTop:"2px solid #15803D", marginTop:hasSales ? 0 : 8, color:"#15803D", fontWeight:700 }}>
             <span>Company net (after broker{hasSales ? " + sales" : ""}):</span><span style={{ textAlign:"right" }}>{fmt(companyNet)}</span>
-          </div>
-          <div style={{ fontSize:10, color:C.textLight, marginTop:14, fontStyle:"italic" }}>
-            Net Due is the gross commission minus 5% withholding tax (after 14% VAT is excluded). The pre-deduction is an informal broker-split convention; state tax is filed separately via Annual Summary.
           </div>
         </div>
         <div style={{ display:"flex", gap:10, marginTop:18 }}>
