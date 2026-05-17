@@ -10692,13 +10692,36 @@ var ArchivePage = function(p) {
   // NOT re-walk the full leads list. The old plain filter ran on every
   // render and was the main reason the Archive page felt slow on every
   // action — most renders weren't changing p.leads at all.
+  // STEP 4-5 X2.5 — server-fetched archived leads. Replaces the in-memory
+  // p.leads.filter(archived) which would return ~0 rows after the X3
+  // bootstrap shrink (bootstrap sorts by createdAt desc, so the 100 most
+  // recent are almost always non-archived). Endpoint is /api/leads with
+  // ?archived=true; same role-scoping as the list. Keyed on cbBust so
+  // archive/unarchive mutations refresh the list in real time.
+  var [archivedLeadsData, setArchivedLeadsData] = useState(null);
+  useEffect(function(){
+    if (!p.token) return;
+    var cancelled = false;
+    apiFetch("/api/leads?archived=true&fields=summary&limit=5000","GET",null,p.token)
+      .then(function(r){
+        if (cancelled) return;
+        var data = (r && Array.isArray(r.data)) ? r.data : (Array.isArray(r) ? r : []);
+        setArchivedLeadsData(data);
+      })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust]);
   var archived = useMemo(function(){
-    return p.leads.filter(function(l){
+    // Prefer the server-fetched archived list once resolved; fall back to
+    // the in-memory p.leads scan during the first paint.
+    var source = archivedLeadsData || p.leads;
+    return source.filter(function(l){
       if (!l.archived) return false;
       if (l.source === "Daily Request" && l.phone && archivedDRPhones.has(String(l.phone))) return false;
       return true;
     });
-  }, [p.leads, archivedDRPhones]);
+  }, [archivedLeadsData, p.leads, archivedDRPhones]);
   useEffect(function(){
     // Load archived DRs from the server (the API returns all DRs regardless of archived flag).
     apiFetch("/api/daily-requests","GET",null,p.token)
@@ -12151,6 +12174,26 @@ var TeamPage = function(p) {
   var curYear=new Date().getFullYear();
   var years=[curYear,curYear-1,curYear-2,curYear-3];
   var [viewYear,setViewYear]=useState(curYear);
+  // STEP 4-5 X2.5 — server-driven MemberCard quarterly stats. Replaces the
+  // per-card p.leads / p.activities scans that would silently undercount
+  // after the X3 bootstrap shrink. One fetch covers every visible card;
+  // we keep the in-memory derivation as a bootstrap-time fallback.
+  var [memberStatsMap, setMemberStatsMap] = useState(null);
+  useEffect(function(){
+    if (!p.token) return;
+    var cancelled = false;
+    var qNum = parseInt(String(viewQ).replace("Q","")) || 1;
+    apiFetch("/api/team/member-stats?year="+viewYear+"&quarter="+qNum,"GET",null,p.token)
+      .then(function(r){
+        if (cancelled || !r || !Array.isArray(r.members)) return;
+        var map = {};
+        r.members.forEach(function(m){ if (m && m.uid) map[String(m.uid)] = m; });
+        setMemberStatsMap(map);
+      })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, viewYear, viewQ, p.cbBust]);
   var [editQModal,setEditQModal]=useState(null);
   var [expandedManager,setExpandedManager]=useState(null); // uid of expanded manager
   // Hide-all confirm flow — admin / sales_admin only. Triggers the same
@@ -12266,6 +12309,25 @@ var TeamPage = function(p) {
     // leads/calls, not the team's, preserving prior behavior.
     var qLeads=p.leads.filter(function(l){var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;if(String(aid)!==uid||l.archived||!l.createdAt)return false;return getQ(l.createdAt)===viewQ&&new Date(l.createdAt).getFullYear()===viewYear;});
     var qCalls=p.activities.filter(function(ac){var auid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId;if(String(auid)!==uid||ac.type!=="call"||!ac.createdAt)return false;return getQ(ac.createdAt)===viewQ&&new Date(ac.createdAt).getFullYear()===viewYear;}).length;
+    // STEP 4-5 X2.5 — once /api/team/member-stats resolves, prefer the
+    // server-aggregated numbers over the in-memory scans (which become
+    // wrong post-X3 bootstrap shrink). For consistency every per-card
+    // metric switches together: qTarget, qDeals length, qLeads length,
+    // qCalls, qRevenue, qProg.
+    var serverMember = memberStatsMap ? memberStatsMap[uid] : null;
+    if (serverMember) {
+      qTarget = serverMember.qTarget || 0;
+      qRevenue = typeof serverMember.qRev === "number" ? serverMember.qRev : qRevenue;
+      qProg = qTarget > 0 ? Math.min(100, Math.round((qRevenue / qTarget) * 100)) : 0;
+      // Shadow .length on the qDeals/qLeads arrays so the existing render
+      // sites (stats[].v at L12276-12279 read .length) get the server number
+      // without rewriting their access pattern. qDeals.length / qLeads.length
+      // are used at the render site (see stats[] below); reassigning to a
+      // plain array of the right length keeps that code unchanged.
+      qDeals = new Array(serverMember.qDeals || 0);
+      qLeads = new Array(serverMember.qLeads || 0);
+      qCalls = serverMember.qCalls || 0;
+    }
     var isOnlineNow=a.lastSeen&&(Date.now()-new Date(a.lastSeen).getTime())<2*60*1000;
     var lastSeenStr=a.lastSeen?("Last seen: "+new Date(a.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" — "+timeAgo(a.lastSeen,p.t)):"Never logged in";
     var initials = (a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
@@ -19034,21 +19096,36 @@ var KPIsPage = function(p) {
   // The page-wide myLeads scan becomes wrong post-X3 bootstrap shrink; this
   // endpoint covers the chart data (byStatus + totals.leads/deals/calls).
   var [myStats, setMyStats] = useState(null);
+  // STEP 4-5 X2.5 — team_leader Team Members grid. Same /api/team/member-stats
+  // endpoint TeamPage uses. Map keyed on uid → server-aggregated stats so each
+  // card can override its in-memory aQLeads/aQDeals/aQRev/aQCalls scans (which
+  // become wrong post-X3 shrink).
+  var [kpiMemberStatsMap, setKpiMemberStatsMap] = useState(null);
   useEffect(function(){
     if (!p.token || !uid) return;
     var cancelled = false;
     var qNum = parseInt(String(selQ).replace("Q","")) || 1;
-    Promise.all([
+    var fetches = [
       apiFetch("/api/agents/"+uid+"/quarterly-stats?year="+selYear+"&quarter="+qNum,"GET",null,p.token).catch(function(){return null;}),
       apiFetch("/api/agents/"+uid+"/my-stats","GET",null,p.token).catch(function(){return null;})
-    ]).then(function(r){
+    ];
+    // Only TL/manager need the team grid data — skip the extra call otherwise.
+    if (isTeamLeader) {
+      fetches.push(apiFetch("/api/team/member-stats?year="+selYear+"&quarter="+qNum,"GET",null,p.token).catch(function(){return null;}));
+    }
+    Promise.all(fetches).then(function(r){
       if (cancelled) return;
       if (r[0] && typeof r[0] === "object") setQStats(r[0]);
       if (r[1] && typeof r[1] === "object") setMyStats(r[1]);
+      if (isTeamLeader && r[2] && Array.isArray(r[2].members)) {
+        var map = {};
+        r[2].members.forEach(function(m){ if (m && m.uid) map[String(m.uid)] = m; });
+        setKpiMemberStatsMap(map);
+      }
     });
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[p.token, uid, selQ, selYear, p.cbBust]);
+  },[p.token, uid, selQ, selYear, p.cbBust, isTeamLeader]);
 
   // Team leader target: sum of every team member's quarterly target so the
   // progress bar reflects the whole team's quota, matching aggregated deals.
@@ -19237,6 +19314,19 @@ var KPIsPage = function(p) {
           var aQCalls = p.activities.filter(function(ac){ var aauid=ac.userId&&ac.userId._id?ac.userId._id:ac.userId; if(String(aauid)!==auid||ac.type!=="call"||!ac.createdAt) return false; return getQ(ac.createdAt)===selQ && getYear(ac.createdAt)===selYear; }).length;
           var aTarget = getEffectiveQTarget(a, p.users, selQ);
           var aProg = aTarget>0 ? Math.min(100, Math.round(aQRev/aTarget*100)) : 0;
+          // STEP 4-5 X2.5 — once /api/team/member-stats has resolved, prefer
+          // the server numbers. Same pattern as the TeamPage MemberCard
+          // migration. .length-based render sites are preserved by replacing
+          // the source arrays with empty arrays of the right length.
+          var kpiSrv = kpiMemberStatsMap ? kpiMemberStatsMap[auid] : null;
+          if (kpiSrv) {
+            aTarget = kpiSrv.qTarget || 0;
+            aQRev   = typeof kpiSrv.qRev === "number" ? kpiSrv.qRev : aQRev;
+            aProg   = aTarget > 0 ? Math.min(100, Math.round(aQRev / aTarget * 100)) : 0;
+            aQDeals = new Array(kpiSrv.qDeals || 0);
+            aQLeads = new Array(kpiSrv.qLeads || 0);
+            aQCalls = kpiSrv.qCalls || 0;
+          }
           var aGrad = kpiGradFor(auid);
           var aInitials = (a.name||"?").split(" ").slice(0,2).map(function(x){return x[0]||"";}).join("").toUpperCase();
           var aOnline = a.lastSeen && (Date.now()-new Date(a.lastSeen).getTime()) < 3*60*1000;
