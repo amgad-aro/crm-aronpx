@@ -10148,11 +10148,18 @@ var ArchivePage = function(p) {
     archivedDR.forEach(function(r){ if (r && r.phone) s.add(String(r.phone)); });
     return s;
   }, [archivedDR]);
-  var archived = p.leads.filter(function(l){
-    if (!l.archived) return false;
-    if (l.source === "Daily Request" && l.phone && archivedDRPhones.has(String(l.phone))) return false;
-    return true;
-  });
+  // Memoized so an unrelated parent re-render (sidebar nav, modal toggle,
+  // socket-driven leads refresh that doesn't change reference identity) does
+  // NOT re-walk the full leads list. The old plain filter ran on every
+  // render and was the main reason the Archive page felt slow on every
+  // action — most renders weren't changing p.leads at all.
+  var archived = useMemo(function(){
+    return p.leads.filter(function(l){
+      if (!l.archived) return false;
+      if (l.source === "Daily Request" && l.phone && archivedDRPhones.has(String(l.phone))) return false;
+      return true;
+    });
+  }, [p.leads, archivedDRPhones]);
   useEffect(function(){
     // Load archived DRs from the server (the API returns all DRs regardless of archived flag).
     apiFetch("/api/daily-requests","GET",null,p.token)
@@ -22346,9 +22353,9 @@ var CommissionsPage = function(p) {
           {hasSales && <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", marginTop:8, color:C.textLight, fontSize:12 }}>
             <span>Sales agent ({salesAgentName}){paidByBroker ? " (paid by broker)" : ""}:</span><b style={{ textAlign:"right" }}>{fmt(manualAmount)}</b>
           </div>}
-          <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"10px 0 4px", borderTop:"2px solid #15803D", marginTop:hasSales ? 0 : 8, color:"#15803D", fontWeight:700 }}>
+          {p.cu.role === "admin" && <div className="screen-only" style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"10px 0 4px", borderTop:"2px solid #15803D", marginTop:hasSales ? 0 : 8, color:"#15803D", fontWeight:700 }}>
             <span>Company net (after broker{(hasSales && !paidByBroker) ? " + sales" : ""}):</span><span style={{ textAlign:"right" }}>{fmt(companyNet)}</span>
-          </div>
+          </div>}
         </div>
         <div style={{ display:"flex", gap:10, marginTop:18 }}>
           <Btn outline onClick={printNow} style={{ flex:1 }}>📄 Print for Broker</Btn>
