@@ -1269,13 +1269,30 @@ var CallbackBell = function(p) {
   // open→true, 60s interval fallback. Each row is tagged with _kind so the
   // click handler below can route to lead vs DR without needing the parent's
   // p.dailyRequests array.
+  // BUG #1 — the BE callbacks endpoint defaults to "every non-empty
+  // callbackTime, ever" when from/to aren't passed. The bell only
+  // renders callbacks in (now - ∞, now + 24h] anyway and a runaway
+  // dataset (Atlas as of this commit: ~1500 callbacks across leads +
+  // DRs) made the bell payload heavy on every cbBust tick. Bound the
+  // fetch to the bell's actionable window: 90 days back (covers every
+  // current overdue row) + 24 hours forward (matches the upcoming
+  // bucket cutoff at line 1334). Every other caller of the endpoint
+  // already passes explicit from/to — the bell was the only sinner.
+  var bellQS = function(){
+    var nowMs = Date.now();
+    var fromIso = new Date(nowMs - 90 * 24 * 3600 * 1000).toISOString();
+    var toIso   = new Date(nowMs + 24 * 3600 * 1000).toISOString();
+    return "?from=" + encodeURIComponent(fromIso) + "&to=" + encodeURIComponent(toIso) + "&limit=2000";
+  };
+
   useEffect(function(){
     if(!p.token) return;
     var cancelled = false;
     var load = function(){
+      var qs = bellQS();
       Promise.all([
-        apiFetch("/api/leads/callbacks?limit=2000","GET",null,p.token).catch(function(){return [];}),
-        apiFetch("/api/daily-requests/callbacks?limit=2000","GET",null,p.token).catch(function(){return [];}),
+        apiFetch("/api/leads/callbacks" + qs,"GET",null,p.token).catch(function(){return [];}),
+        apiFetch("/api/daily-requests/callbacks" + qs,"GET",null,p.token).catch(function(){return [];}),
         apiFetch("/api/leads/no-contact?stale_hours=24&limit=500","GET",null,p.token).catch(function(){return [];})
       ]).then(function(r){
         if (cancelled) return;
@@ -1296,9 +1313,10 @@ var CallbackBell = function(p) {
   useEffect(function(){
     if(!p.showNotif || !p.token) return;
     var cancelled = false;
+    var qs = bellQS();
     Promise.all([
-      apiFetch("/api/leads/callbacks?limit=2000","GET",null,p.token).catch(function(){return [];}),
-      apiFetch("/api/daily-requests/callbacks?limit=2000","GET",null,p.token).catch(function(){return [];}),
+      apiFetch("/api/leads/callbacks" + qs,"GET",null,p.token).catch(function(){return [];}),
+      apiFetch("/api/daily-requests/callbacks" + qs,"GET",null,p.token).catch(function(){return [];}),
       apiFetch("/api/leads/no-contact?stale_hours=24&limit=500","GET",null,p.token).catch(function(){return [];})
     ]).then(function(r){
       if (cancelled) return;
@@ -24317,6 +24335,12 @@ export default function CRMApp() {
       try{ ws = new WebSocket(wsUrl); }catch(e){ return; }
       ws.onopen = function(){
         retries = 0;
+        // BUG #1 diagnostic — surface the WS lifecycle in DevTools so a user
+        // can confirm live updates are wired end-to-end without sniffing the
+        // Network → WS frames tab. Three signals total: opened, auth_ok,
+        // auth_failed. Plus a one-liner per inbound event (low noise; one
+        // line per server push, matches the cadence the user expects).
+        console.log("[ws] opened");
         // Authenticate the socket so the server can scope per-client broadcasts
         // (sales must only receive events for leads/DRs they own).
         try { ws.send(JSON.stringify({ type: "auth", token: token })); } catch(e){}
@@ -24338,6 +24362,11 @@ export default function CRMApp() {
         try{
           var msg = JSON.parse(e.data);
           var data = msg.data || {};
+          // BUG #1 diagnostic — log every inbound event so a user reproducing
+          // the "admin doesn't see new deal notifications" symptom can confirm
+          // whether the WS layer is even firing. Skip "hello" (server greeting,
+          // arrives on every connect and would spam the console).
+          if (msg.type && msg.type !== "hello") console.log("[ws] event:", msg.type);
           switch(msg.type){
             case "lead_updated":
               if (data.lead && data.lead._id) {
@@ -24488,6 +24517,10 @@ export default function CRMApp() {
               try { window.dispatchEvent(new CustomEvent("crm:salary_finalized", { detail: data })); } catch(e){}
               break;
             case "hello": break; // server greeting
+            case "auth_ok": console.log("[ws] auth ok"); break;
+            case "auth_failed":
+              console.error("[ws] auth FAILED — token rejected, real-time updates will not arrive. Logout / login to refresh.");
+              break;
             default: break;
           }
         }catch(err){}
