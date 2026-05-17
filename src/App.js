@@ -4208,8 +4208,13 @@ var LeadsPage = function(p) {
       p.setLeads(function(prev){return prev.map(function(l){return selected2.includes(gid(l))?Object.assign({},l,{agentId:updAgent||bulkAgent}):l;});});
       setSelected2([]); setShowBulk(false);
       // Surface the breakdown so the admin can see what actually happened.
+      // Phase R-13.3 — surface skippedFrozen (added to the BE response in
+      // FIX 4 / 71a3a25) so DoneDeal/EOI leads silently dropped from a bulk
+      // reassign are visible to the admin instead of vanishing from the
+      // count.
+      var skippedFrozen = res && typeof res.skippedFrozen === "number" ? res.skippedFrozen : 0;
       var summary = (res && typeof res.reassigned === "number")
-        ? ("Reassigned "+res.reassigned+"/"+res.total+(res.skippedSelf?(" · "+res.skippedSelf+" skipped (same agent)"):"")+(!force&&skippedPrev?(" · "+skippedPrev+" skipped (previously held)"):"")+(res.notFound?(" · "+res.notFound+" not found"):""))
+        ? ("Reassigned "+res.reassigned+"/"+res.total+(res.skippedSelf?(" · "+res.skippedSelf+" skipped (same agent)"):"")+(!force&&skippedPrev?(" · "+skippedPrev+" skipped (previously held)"):"")+(skippedFrozen?(" · "+skippedFrozen+" skipped (DoneDeal/EOI frozen)"):"")+(res.notFound?(" · "+res.notFound+" not found"):""))
         : null;
       if (summary) alert(summary);
     } catch(e){alert(e.message);}
@@ -4604,7 +4609,7 @@ var LeadsPage = function(p) {
                       if(!newAgent)return;
                       var oldAgName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";
                       var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
-                      try{var rotRes=await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);try{var freshLead=await apiFetch("/api/leads/"+gid(lead),"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?freshLead:l;});});if(selected&&gid(selected)===gid(lead))setSelected(freshLead);}}catch(fe){}if(rotRes.firstAssignment)return;if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
+                      try{var rotRes=await apiFetch("/api/leads/"+gid(lead)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);try{var freshLead=await apiFetch("/api/leads/"+gid(lead),"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?freshLead:l;});});if(selected&&gid(selected)===gid(lead))setSelected(freshLead);}}catch(fe){}if(rotRes.firstAssignment)return;if(oldAgName&&p.notifyRotation)p.notifyRotation(lead,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){/* Phase R-13.3 — surface server errors so the user doesn't see a phantom hang. Refetch the lead so the dropdown reverts to the actual owner. */alert((ex&&ex.message)||"Rotation failed");try{var revert=await apiFetch("/api/leads/"+gid(lead),"GET",null,p.token);if(revert&&revert._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?revert:l;});});}}catch(_){}}
                     }} style={{ fontSize:11, padding:"3px 6px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.text, cursor:"pointer", maxWidth:110 }}>
                       {isOnlyAdmin&&<option value="">— No Agent —</option>}
                       {(function(){
@@ -4687,7 +4692,7 @@ var LeadsPage = function(p) {
               if(isManagerUser&&p.cu.teamId){var tgt=p.users.find(function(u){return gid(u)===newAgent;});if(tgt&&tgt.teamId!==p.cu.teamId)return;}
               var oldAgName=selected.agentId&&selected.agentId.name?selected.agentId.name:"";
               var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
-              try{var rotRes=await apiFetch("/api/leads/"+gid(selected)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);try{var freshLead=await apiFetch("/api/leads/"+gid(selected),"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?freshLead:l;});});setSelected(freshLead);}}catch(fe){}if(rotRes.firstAssignment)return;if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){}
+              try{var rotRes=await apiFetch("/api/leads/"+gid(selected)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);try{var freshLead=await apiFetch("/api/leads/"+gid(selected),"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?freshLead:l;});});setSelected(freshLead);}}catch(fe){}if(rotRes.firstAssignment)return;if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){/* Phase R-13.3 — surface server errors instead of swallowing them. Refetch the lead so the assign-select reverts to the actual owner. */alert((ex&&ex.message)||"Rotation failed");try{var revert=await apiFetch("/api/leads/"+gid(selected),"GET",null,p.token);if(revert&&revert._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?revert:l;});});setSelected(revert);}}catch(_){}}
             }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
               {isOnlyAdmin&&<option value="">— No Agent —</option>}
               {(function(){
@@ -14549,6 +14554,244 @@ var ProjectsPage = function(p) {
   </div>;
 };
 
+// Phase R-13.3 — Rotation Diagnostics tab inside SettingsPage. Pulls one
+// payload from GET /api/rotation/diagnostics (admin / sales_admin only; BE
+// enforces the gate). Five collapsible sections, all default-expanded.
+// Manual refresh only — no auto-poll (would create churn during cron runs).
+var RotationDiagnosticsTab = function(props) {
+  var [data, setData] = useState(null);
+  var [loading, setLoading] = useState(false);
+  var [error, setError] = useState("");
+  var [expanded, setExpanded] = useState({
+    recent: true, lastRun: true, tiers: true, available: true, locked: true
+  });
+  var load = async function() {
+    setLoading(true); setError("");
+    try {
+      var d = await apiFetch("/api/rotation/diagnostics", "GET", null, props.token);
+      setData(d);
+    } catch(e) {
+      setError((e && e.message) || "Failed to load diagnostics");
+    }
+    setLoading(false);
+  };
+  useEffect(function(){ load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  var section = function(key, title, content){
+    var isOpen = !!expanded[key];
+    return <div style={{ marginBottom:16, border:"1px solid #E2E8F0", borderRadius:10, overflow:"hidden", background:"#fff" }}>
+      <div onClick={function(){ setExpanded(Object.assign({}, expanded, { [key]: !isOpen })); }}
+        style={{ padding:"10px 14px", background:"#F8FAFC", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", userSelect:"none" }}>
+        <span style={{ fontSize:13, fontWeight:700, color:C.text }}>{title}</span>
+        <span style={{ fontSize:11, color:C.textLight }}>{isOpen ? "▼" : "▶"}</span>
+      </div>
+      {isOpen && <div style={{ padding:"12px 14px" }}>{content}</div>}
+    </div>;
+  };
+
+  var fmtTs = function(d){
+    if (!d) return "—";
+    try {
+      var dt = new Date(d);
+      if (isNaN(dt.getTime())) return "—";
+      return dt.toLocaleString("en-GB", { dateStyle: "short", timeStyle: "medium" });
+    } catch(e) { return "—"; }
+  };
+  var fmtDate = function(d){
+    if (!d) return "—";
+    try {
+      var dt = new Date(d);
+      if (isNaN(dt.getTime())) return "—";
+      return dt.toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" });
+    } catch(e) { return "—"; }
+  };
+
+  var th = { padding:"8px 10px", fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, textAlign:"left", borderBottom:"2px solid #E2E8F0", whiteSpace:"nowrap" };
+  var td = { padding:"7px 10px", fontSize:12, color:C.text, borderBottom:"1px solid #F1F5F9", verticalAlign:"top" };
+
+  return <div style={{ padding:"16px 4px" }}>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+      <div>
+        <h2 style={{ margin:0, fontSize:18, fontWeight:700, color:C.text }}>Rotation Diagnostics</h2>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:4 }}>
+          Why is or isn't auto-rotation running. Updates every 5 min via the cron — refresh below to re-pull.
+          {data && data.generatedAt && <span> · Last loaded {fmtTs(data.generatedAt)}</span>}
+        </div>
+      </div>
+      <button onClick={load} disabled={loading}
+        style={{ padding:"8px 14px", borderRadius:8, border:"1px solid "+C.accent, background:loading?"#F1F5F9":"#fff", color:C.accent, fontSize:12, fontWeight:600, cursor:loading?"wait":"pointer" }}>
+        {loading ? "Loading…" : "↻ Refresh"}
+      </button>
+    </div>
+
+    {error && <div style={{ padding:"10px 14px", marginBottom:12, background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8, color:"#B91C1C", fontSize:12 }}>{error}</div>}
+
+    {data && data.rotationStatus && !data.rotationStatus.autoRotationEnabled && <div style={{ padding:"10px 14px", marginBottom:12, background:"#FEF3C7", border:"1px solid #FCD34D", borderRadius:8, color:"#92400E", fontSize:12, fontWeight:600 }}>
+      ⚠ Auto-rotation is DISABLED in Rotation settings. The cron is still ticking but bails immediately.
+    </div>}
+    {data && data.rotationStatus && data.rotationStatus.autoRotationPausedUntil && new Date(data.rotationStatus.autoRotationPausedUntil) > new Date() && <div style={{ padding:"10px 14px", marginBottom:12, background:"#FEF3C7", border:"1px solid #FCD34D", borderRadius:8, color:"#92400E", fontSize:12, fontWeight:600 }}>
+      ⏸ Auto-rotation is PAUSED until {fmtTs(data.rotationStatus.autoRotationPausedUntil)}.
+    </div>}
+
+    {/* (1) Last Cron Run Summary + recent runs table */}
+    {data && section("recent", "1. Last Cron Run Summary", (function(){
+      var last = data.lastRun;
+      var recent = data.recentRuns || [];
+      return <div>
+        {last ? <div style={{ display:"flex", gap:16, flexWrap:"wrap", marginBottom:12 }}>
+          <div style={{ background:"#F8FAFC", padding:"8px 12px", borderRadius:8, minWidth:140 }}>
+            <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Started</div>
+            <div style={{ fontSize:13, fontWeight:600, color:C.text }}>{fmtTs(last.startedAt)}</div>
+          </div>
+          <div style={{ background:"#F8FAFC", padding:"8px 12px", borderRadius:8, minWidth:90 }}>
+            <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Evaluated</div>
+            <div style={{ fontSize:18, fontWeight:700, color:C.text }}>{last.evaluated || 0}</div>
+          </div>
+          <div style={{ background:"#F0FDF4", padding:"8px 12px", borderRadius:8, minWidth:90 }}>
+            <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Rotated</div>
+            <div style={{ fontSize:18, fontWeight:700, color:"#15803D" }}>{last.rotated || 0}</div>
+          </div>
+          <div style={{ background:"#FEF3C7", padding:"8px 12px", borderRadius:8, minWidth:90 }}>
+            <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Skipped</div>
+            <div style={{ fontSize:18, fontWeight:700, color:"#B45309" }}>{last.skipped || 0}</div>
+          </div>
+        </div> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:12 }}>No cron runs recorded yet. The cron ticks every 5 minutes — the first row will appear after the next tick.</div>}
+        <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Last 10 runs</div>
+        {recent.length > 0 ? <table style={{ width:"100%", borderCollapse:"collapse" }}>
+          <thead><tr>
+            <th style={th}>Started</th>
+            <th style={Object.assign({}, th, { textAlign:"right" })}>Evaluated</th>
+            <th style={Object.assign({}, th, { textAlign:"right" })}>Rotated</th>
+            <th style={Object.assign({}, th, { textAlign:"right" })}>Skipped</th>
+          </tr></thead>
+          <tbody>{recent.map(function(r, i){
+            return <tr key={i}>
+              <td style={td}>{fmtTs(r.startedAt)}</td>
+              <td style={Object.assign({}, td, { textAlign:"right" })}>{r.evaluated || 0}</td>
+              <td style={Object.assign({}, td, { textAlign:"right", color:"#15803D", fontWeight:600 })}>{r.rotated || 0}</td>
+              <td style={Object.assign({}, td, { textAlign:"right", color:"#B45309" })}>{r.skipped || 0}</td>
+            </tr>;
+          })}</tbody>
+        </table> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>—</div>}
+      </div>;
+    })())}
+
+    {/* (2) Skipped Leads Breakdown (most recent run) */}
+    {data && section("lastRun", "2. Skipped Leads (most recent run)", (function(){
+      var last = data.lastRun;
+      if (!last) return <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>No run data yet.</div>;
+      var reasons = last.skippedReasons || {};
+      var reasonKeys = Object.keys(reasons).sort(function(a,b){ return reasons[b]-reasons[a]; });
+      var skipped = Array.isArray(last.skippedLeads) ? last.skippedLeads : [];
+      return <div>
+        {reasonKeys.length > 0 && <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Skip reasons (histogram)</div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>{reasonKeys.map(function(k){
+            return <span key={k} style={{ fontSize:11, padding:"3px 8px", borderRadius:14, background:"#FEF3C7", color:"#92400E", fontWeight:600 }}>{k} · {reasons[k]}</span>;
+          })}</div>
+        </div>}
+        <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>
+          Skipped leads detail{skipped.length >= 200 ? " (capped at 200)" : ""}
+        </div>
+        {skipped.length > 0 ? <div style={{ maxHeight:520, overflowY:"auto", border:"1px solid #E2E8F0", borderRadius:8 }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+            <thead><tr>
+              <th style={th}>Lead</th>
+              <th style={th}>Agent</th>
+              <th style={th}>Status</th>
+              <th style={th}>Last action</th>
+              <th style={th}>Callback time</th>
+              <th style={th}>Reason</th>
+            </tr></thead>
+            <tbody>{skipped.map(function(s, i){
+              return <tr key={i}>
+                <td style={td}>{s.leadName || "(no name)"}</td>
+                <td style={td}>{s.currentAgent || "—"}</td>
+                <td style={td}>{s.status || "—"}</td>
+                <td style={td}>{fmtDate(s.lastActionAt)}</td>
+                <td style={td}>{fmtDate(s.callbackTime)}</td>
+                <td style={Object.assign({}, td, { color:"#92400E" })}>{s.reason || "—"}</td>
+              </tr>;
+            })}</tbody>
+          </table>
+        </div> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>—</div>}
+      </div>;
+    })())}
+
+    {/* (3) Current Tier Distribution */}
+    {data && section("tiers", "3. Current Tier Distribution", (function(){
+      var td2 = data.tierDistribution || {};
+      var cells = [
+        { label: "Tier 1", value: td2.tier1 || 0, bg:"#EFF6FF", fg:"#1E40AF" },
+        { label: "Tier 2", value: td2.tier2 || 0, bg:"#F0FDF4", fg:"#15803D" },
+        { label: "Tier 3", value: td2.tier3 || 0, bg:"#FEF3C7", fg:"#92400E" },
+        { label: "Outside tiers", value: td2.assignedOutsideTiers || 0, bg:"#F8FAFC", fg:C.textLight },
+        { label: "Unassigned", value: td2.unassigned || 0, bg:"#FEF2F2", fg:"#B91C1C" }
+      ];
+      return <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>{cells.map(function(c){
+        return <div key={c.label} style={{ background:c.bg, padding:"10px 14px", borderRadius:8, minWidth:120 }}>
+          <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>{c.label}</div>
+          <div style={{ fontSize:22, fontWeight:700, color:c.fg }}>{c.value}</div>
+          <div style={{ fontSize:10, color:C.textLight }}>leads currently owned</div>
+        </div>;
+      })}</div>;
+    })())}
+
+    {/* (4) Agents Available for Rotation */}
+    {data && section("available", "4. Agents Available for Rotation", (function(){
+      var avail = data.availableForRotation || [];
+      if (!avail.length) return <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>No agents configured in any rotation tier.</div>;
+      return <table style={{ width:"100%", borderCollapse:"collapse" }}>
+        <thead><tr>
+          <th style={th}>Agent</th>
+          <th style={th}>Tier</th>
+          <th style={th}>Role</th>
+          <th style={Object.assign({}, th, { textAlign:"right" })}>Lead count</th>
+        </tr></thead>
+        <tbody>{avail.map(function(a, i){
+          var tierBg = a.tier === 1 ? "#EFF6FF" : a.tier === 2 ? "#F0FDF4" : "#FEF3C7";
+          var tierFg = a.tier === 1 ? "#1E40AF" : a.tier === 2 ? "#15803D" : "#92400E";
+          return <tr key={i}>
+            <td style={td}>{a.userName}{a.title ? " — " + a.title : ""}</td>
+            <td style={td}><span style={{ fontSize:10, padding:"2px 6px", borderRadius:10, background:tierBg, color:tierFg, fontWeight:700 }}>Tier {a.tier || "?"}</span></td>
+            <td style={Object.assign({}, td, { textTransform:"capitalize" })}>{String(a.role || "").replace(/_/g, " ")}</td>
+            <td style={Object.assign({}, td, { textAlign:"right", fontWeight:700, color: a.leadCount === 0 ? "#15803D" : C.text })}>{a.leadCount}</td>
+          </tr>;
+        })}</tbody>
+      </table>;
+    })())}
+
+    {/* (5) Locked Leads */}
+    {data && section("locked", "5. Locked Leads", (function(){
+      var locked = data.lockedLeads || [];
+      if (!locked.length) return <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>No leads are currently locked.</div>;
+      return <div>
+        <div style={{ fontSize:11, color:C.textLight, marginBottom:6, fontStyle:"italic" }}>
+          Lock metadata (when / by whom) is captured starting this commit. Locks applied earlier show "—".
+        </div>
+        <table style={{ width:"100%", borderCollapse:"collapse" }}>
+          <thead><tr>
+            <th style={th}>Lead</th>
+            <th style={th}>Current agent</th>
+            <th style={th}>Status</th>
+            <th style={th}>Locked at</th>
+            <th style={th}>Locked by</th>
+          </tr></thead>
+          <tbody>{locked.map(function(l, i){
+            return <tr key={i}>
+              <td style={td}>{l.name || "(no name)"}</td>
+              <td style={td}>{l.currentAgent || "—"}</td>
+              <td style={td}>{l.status || "—"}</td>
+              <td style={td}>{fmtDate(l.lockedAt)}</td>
+              <td style={td}>{l.lockedBy || "—"}</td>
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>;
+    })())}
+  </div>;
+};
+
 var SettingsPage = function(p) {
   var t=p.t;
   var getSaved = function(k,def){ try{ return localStorage.getItem('crm_set_'+k)||def; }catch(e){return def;} };
@@ -14994,6 +15237,7 @@ var SettingsPage = function(p) {
   var tabs=[
     {id:"general",     label:"General"},
     {id:"rotation",    label:"Rotation"},
+    {id:"rotationDiag",label:"Rotation Diagnostics"},
     {id:"team",        label:"Team & Roles"},
     p.cu&&p.cu.role!=="sales_admin"&&{id:"integrations",label:"Integrations"},
     {id:"rules",       label:"Business Rules"},
@@ -15775,6 +16019,8 @@ var SettingsPage = function(p) {
           </div>}
         </div>;
       })()}
+
+      {activeTab==="rotationDiag" && <RotationDiagnosticsTab token={p.token} cu={p.cu}/>}
 
       {activeTab==="team"&&(function(){
         // ───── Hierarchy data (pulled from User.role + User.reportsTo) ─────

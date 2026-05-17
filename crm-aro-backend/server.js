@@ -131,6 +131,13 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   rotationStopped:{type:Boolean,default:false},
   notInterestedStreak:{type:Number,default:0},
   locked:{type:Boolean,default:false},
+  // Phase R-13.3 — lock audit metadata. Stamped when lock toggles
+  // false→true via PUT /api/leads/:id; cleared on the reverse transition.
+  // Read by the Rotation Diagnostics page's Locked Leads section. Locks
+  // applied before this commit have null/empty values (the diagnostics UI
+  // shows "—" in that case).
+  lockedAt:{type:Date,default:null},
+  lockedBy:{type:String,default:""},
   lastFeedback:{type:String,default:""},
   // Permanent meeting marker — once set, must never be cleared or overwritten.
   // hadMeeting records that the lead has reached MeetingDone at least once,
@@ -591,6 +598,37 @@ commissionSchema.index({ status: 1, expectedCollectionDate: 1 });
 commissionSchema.index({ createdAt: -1 });
 
 var Commission = mongoose.model("Commission", commissionSchema);
+
+// Phase R-13.3 — RotationRunLog: persistent record of each sweepAutoRotation
+// tick. Powers the Rotation Diagnostics page (GET /api/rotation/diagnostics).
+// Pruned to the last 30 runs at end of each sweep — older entries dropped.
+// rotatedLeads + skippedLeads are capped at 200 entries each to bound doc
+// size on long candidate lists. skippedReasons aggregates ALL skips (not
+// capped) so the histogram is accurate even when the detail list is truncated.
+var RotationRunLog = mongoose.model("RotationRunLog", new mongoose.Schema({
+  startedAt:      { type: Date, required: true, index: true },
+  finishedAt:     { type: Date, default: null },
+  evaluated:      { type: Number, default: 0 },
+  rotated:        { type: Number, default: 0 },
+  skipped:        { type: Number, default: 0 },
+  skippedReasons: { type: Object, default: {} },   // { "<reason text>": count }
+  rotatedLeads:   [{
+    leadId:    { type: mongoose.Schema.Types.ObjectId, ref: "Lead" },
+    leadName:  String,
+    fromAgent: String,
+    toAgent:   String,
+    firedRule: String
+  }],
+  skippedLeads:   [{
+    leadId:       { type: mongoose.Schema.Types.ObjectId, ref: "Lead" },
+    leadName:     String,
+    currentAgent: String,
+    status:       String,
+    lastActionAt: Date,
+    callbackTime: Date,
+    reason:       String
+  }]
+}, { timestamps: true }));
 
 // Phase R-5 — VAT payment tracking. One row per month-of-claim, marking the
 // month's accumulated VAT as paid to the tax authority. month is "YYYY-MM"
@@ -8724,9 +8762,24 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // Load the existing lead if any tracked field could change — needed both
     // for status/rotation logic AND to log accurate admin audit entries.
     var oldLead = null;
-    var trackedBody = req.body.agentId || req.body.status || req.body.callbackTime !== undefined || req.body.notes !== undefined || req.body.lastFeedback !== undefined;
+    var trackedBody = req.body.agentId || req.body.status || req.body.callbackTime !== undefined || req.body.notes !== undefined || req.body.lastFeedback !== undefined || req.body.locked !== undefined;
     if (trackedBody) {
       oldLead = await Lead.findById(req.params.id).lean();
+    }
+    // Phase R-13.3 — lock audit stamping. When `locked` transitions false→true
+    // (or set to true on a lead that had no prior value), stamp lockedAt +
+    // lockedBy. On the reverse transition, clear them. Read by the Rotation
+    // Diagnostics page's Locked Leads section.
+    if (req.body.locked !== undefined && oldLead) {
+      var wasLocked = oldLead.locked === true;
+      var willLock  = req.body.locked === true;
+      if (!wasLocked && willLock) {
+        update.lockedAt = new Date();
+        update.lockedBy = (req.user && req.user.name) || (req.user && req.user.role) || "System";
+      } else if (wasLocked && !willLock) {
+        update.lockedAt = null;
+        update.lockedBy = "";
+      }
     }
     // Guard: never downgrade EOI or DoneDeal back to NewLead (prevents stale rotation overwrites)
     if (oldLead && (oldLead.status === "EOI" || oldLead.status === "DoneDeal") && req.body.status === "NewLead") {
@@ -9157,6 +9210,15 @@ app.delete("/api/leads/:id/assignment/:agentId", auth, async function(req, res) 
 
 // ===== ROTATE LEAD =====
 app.post("/api/leads/:id/rotate", auth, async function(req, res) {
+  // Phase R-13.3 — entry log so Railway logs show every manual rotation attempt.
+  // Outside-the-card flows (bulk reassign + per-row select) used to "hang" from
+  // the user's perspective because the FE swallowed server errors in empty
+  // catch blocks; this log + the FE alert upgrade (App.js) make failures visible.
+  console.log("[manual-rotate] lead=" + req.params.id +
+    " target=" + (req.body && req.body.targetAgentId) +
+    " by=" + ((req.user && req.user.name) || "?") +
+    " role=" + ((req.user && req.user.role) || "?") +
+    " force=" + !!(req.body && req.body.force));
   try {
     // Caller-role gate (BATCH 2.7 L12). Manual rotate is a managerial action:
     // admin/SA pass through unrestricted; TL/manager/director are scope-gated
@@ -9504,18 +9566,32 @@ async function autoRotateLead(leadId, byName, opts) {
           else { eligible = true; firedRule = "no_action_timeout"; }
           break;
         case "CallBack": {
+          // Phase R-13.3 — Callback rotates on EITHER:
+          //   (a) scheduled callbackTime overdue by cbHours (the original
+          //       intent — admin booked a callback, sales missed it), OR
+          //   (b) lastActionAt older than hotDays (fallback: the slice has
+          //       gone stale even though no callback time was set, or the
+          //       callback time was cleared on update).
+          // Pre-13.3 only (a) was checked, so Callback leads where the agent
+          // never set callbackTime sat forever. Frozen states (DoneDeal /
+          // EOI / Pending / Approved / locked / rotationStopped) are still
+          // hard-blocked above this switch — see isLeadFrozen / hard-stops
+          // at L9219-9242. Do NOT re-add status-level exclusions here.
+          //
           // Slice mirror is only synced on sales/team_leader writes (see PUT
           // /api/leads/:id ~L2433). When admin/sales_admin sets the callback
           // time, lead.callbackTime updates but the slice stays blank — fall
           // back to the lead-level value so those leads still rotate.
           var effectiveCb = curSlice.callbackTime || lead.callbackTime || null;
-          if (!effectiveCb) notEligibleReason = "CallBack: callbackTime not set";
-          else {
-            var cbMs = new Date(effectiveCb).getTime();
-            if (!cbMs)                                         notEligibleReason = "CallBack: callbackTime unparseable";
-            else if ((nowTs.getTime() - cbMs) < cbHours*HOUR_MS) notEligibleReason = "CallBack: not yet overdue";
-            else { eligible = true; firedRule = "callback_overdue"; }
-          }
+          var cbMs = effectiveCb ? new Date(effectiveCb).getTime() : 0;
+          var cbOverdue = cbMs > 0 && (nowTs.getTime() - cbMs) >= cbHours*HOUR_MS;
+          var staleByHot = hasClock && (ageMs >= hotDays*DAY_MS);
+          if (cbOverdue) { eligible = true; firedRule = "callback_overdue"; }
+          else if (staleByHot) { eligible = true; firedRule = "hot_no_action"; }
+          else if (!hasClock && !effectiveCb) notEligibleReason = "CallBack: no callbackTime, no lastActionAt";
+          else if (!hasClock)                  notEligibleReason = "CallBack: callbackTime not yet overdue (no lastActionAt)";
+          else if (!effectiveCb)               notEligibleReason = "CallBack: lastActionAt too recent (no callbackTime)";
+          else                                 notEligibleReason = "CallBack: callbackTime not yet overdue and lastActionAt too recent";
           break;
         }
         case "HotCase":
@@ -10059,11 +10135,20 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
           byRule.newLead++; eligibleLeads.push(l); break;
         }
         case "CallBack": {
-          if (!cur.callbackTime)                  { bumpReason("CallBack: callbackTime not set"); return; }
-          var cb = new Date(cur.callbackTime).getTime();
-          if (!cb)                                { bumpReason("CallBack: callbackTime unparseable"); return; }
-          if ((now.getTime() - cb) < cbHours*HOUR)  { bumpReason("CallBack: not yet cbHours overdue"); return; }
-          byRule.callBack++; eligibleLeads.push(l); break;
+          // Phase R-13.3 — same OR rule as autoRotateLead: eligible if
+          // callbackTime overdue OR lastActionAt > hotDays. Frozen states
+          // (DoneDeal / EOI / Pending / Approved / locked / rotationStopped)
+          // are hard-blocked above this switch via isLeadFrozen + the
+          // excluded.{archived,locked,rotationStopped,eoiOrDoneDeal} filters
+          // at ~L9967. Do NOT re-add status-level exclusions here.
+          var cbMs2 = cur.callbackTime ? new Date(cur.callbackTime).getTime() : 0;
+          var cbOverdue2 = cbMs2 > 0 && (now.getTime() - cbMs2) >= cbHours*HOUR;
+          var staleByHot2 = hasClock && (ageMs >= hotDays*DAY);
+          if (cbOverdue2 || staleByHot2) { byRule.callBack++; eligibleLeads.push(l); break; }
+          if (!hasClock && !cbMs2)       { bumpReason("CallBack: no callbackTime, no lastActionAt"); return; }
+          if (!cbMs2)                    { bumpReason("CallBack: lastActionAt too recent (no callbackTime)"); return; }
+          if (!hasClock)                 { bumpReason("CallBack: callbackTime not yet overdue (no lastActionAt)"); return; }
+          bumpReason("CallBack: callbackTime not yet overdue and lastActionAt too recent"); return;
         }
         case "HotCase":
         case "Potential":
@@ -10349,13 +10434,33 @@ setInterval(function(){
 // with browser-triggered rotations — duplicate triggers no-op with
 // error:"concurrent_rotation".
 async function sweepAutoRotation() {
+  // Phase R-13.3 — persist per-run telemetry into RotationRunLog so the
+  // Rotation Diagnostics page can show "why is rotation not running" with
+  // an authoritative reason-per-lead. Reason strings come verbatim from
+  // autoRotateLead's notEligibleReason / error fields — same source-of-
+  // truth as cron decisions, so the page can never disagree with reality.
+  var runStartedAt = new Date();
+  var skippedReasons = {};
+  var rotatedLeads = [];
+  var skippedLeads = [];
+  var SKIP_DETAIL_CAP = 200;
+  var ROT_DETAIL_CAP  = 200;
+
   try {
     // Bail early if rotation is globally paused or disabled. The helper
     // checks this too (defense in depth) but doing it here saves us from
     // querying + iterating candidates only to skip every single one.
     var settings = await getRotationSettings();
-    if (settings.autoRotationEnabled === false) return;
-    if (settings.autoRotationPausedUntil && new Date(settings.autoRotationPausedUntil) > new Date()) return;
+    if (settings.autoRotationEnabled === false) {
+      // Persist a "disabled" marker so the diagnostics page can show the
+      // operator that rotation is paused (vs. just no candidates).
+      await persistRotationRun(runStartedAt, 0, 0, 0, { "rotation_disabled": 1 }, [], []);
+      return;
+    }
+    if (settings.autoRotationPausedUntil && new Date(settings.autoRotationPausedUntil) > new Date()) {
+      await persistRotationRun(runStartedAt, 0, 0, 0, { "rotation_paused": 1 }, [], []);
+      return;
+    }
 
     // Coarse pre-filter — the helper still re-checks each one. limit:1000
     // bounds per-tick work; leftovers pick up on the next tick (5 min later).
@@ -10367,19 +10472,64 @@ async function sweepAutoRotation() {
       archived: false,
       locked: { $ne: true },
       rotationStopped: { $ne: true }
-    }).select("_id").sort({ lastRotationAt: 1 }).limit(1000).lean();
+    }).select("_id name status callbackTime lastActivityTime agentId assignments lastRotationAt")
+      .populate("agentId", "name").sort({ lastRotationAt: 1 }).limit(1000).lean();
 
-    if (!candidates.length) return;
+    if (!candidates.length) {
+      await persistRotationRun(runStartedAt, 0, 0, 0, {}, [], []);
+      return;
+    }
 
     var rotated = 0;
     var skipped = 0;
     for (var i = 0; i < candidates.length; i++) {
+      var cand = candidates[i];
       try {
-        var r = await autoRotateLead(candidates[i]._id, "System");
-        if (r && r.ok) rotated++;
-        else skipped++;
+        var r = await autoRotateLead(cand._id, "System");
+        if (r && r.ok) {
+          rotated++;
+          if (rotatedLeads.length < ROT_DETAIL_CAP) {
+            var body = r.body || {};
+            var leadDoc = body.lead || null;
+            var curSlice = (cand.assignments || []).find(function(a){
+              var aid = a && a.agentId && a.agentId._id ? a.agentId._id : (a && a.agentId);
+              var leadAid = cand.agentId && cand.agentId._id ? cand.agentId._id : cand.agentId;
+              return String(aid || "") === String(leadAid || "");
+            });
+            var lastAct = curSlice && curSlice.lastActionAt ? curSlice.lastActionAt : cand.lastActivityTime;
+            rotatedLeads.push({
+              leadId:    cand._id,
+              leadName:  cand.name || "",
+              fromAgent: (cand.agentId && cand.agentId.name) || "",
+              toAgent:   (leadDoc && leadDoc.agentId && leadDoc.agentId.name) || "",
+              firedRule: body.firedRule || r.firedRule || ""
+            });
+          }
+        } else {
+          skipped++;
+          var reasonText = (r && (r.reason || r.error)) || "unknown";
+          skippedReasons[reasonText] = (skippedReasons[reasonText] || 0) + 1;
+          if (skippedLeads.length < SKIP_DETAIL_CAP) {
+            var curSliceS = (cand.assignments || []).find(function(a){
+              var aid = a && a.agentId && a.agentId._id ? a.agentId._id : (a && a.agentId);
+              var leadAidS = cand.agentId && cand.agentId._id ? cand.agentId._id : cand.agentId;
+              return String(aid || "") === String(leadAidS || "");
+            });
+            skippedLeads.push({
+              leadId:       cand._id,
+              leadName:     cand.name || "",
+              currentAgent: (cand.agentId && cand.agentId.name) || "",
+              status:       (curSliceS && curSliceS.status) || cand.status || "",
+              lastActionAt: (curSliceS && curSliceS.lastActionAt) || cand.lastActivityTime || null,
+              callbackTime: (curSliceS && curSliceS.callbackTime) || cand.callbackTime || null,
+              reason:       String(reasonText)
+            });
+          }
+        }
       } catch (innerErr) {
         skipped++;
+        var errText = (innerErr && innerErr.message) || "exception";
+        skippedReasons[errText] = (skippedReasons[errText] || 0) + 1;
       }
     }
 
@@ -10387,8 +10537,39 @@ async function sweepAutoRotation() {
       try { broadcast("rotation_swept", { rotated: rotated }); } catch(e) {}
       console.log("[rotation sweep] rotated " + rotated + " leads, skipped " + skipped);
     }
+    await persistRotationRun(runStartedAt, candidates.length, rotated, skipped, skippedReasons, rotatedLeads, skippedLeads);
   } catch (e) {
     console.error("[rotation sweep]", e && e.message ? e.message : e);
+    try {
+      await persistRotationRun(runStartedAt, 0, 0, 0, { "sweep_exception": 1, "exception_message": (e && e.message) || "unknown" }, [], []);
+    } catch(_) {}
+  }
+}
+
+// Phase R-13.3 — persist one RotationRunLog doc and prune to the last 30
+// runs. Called from sweepAutoRotation (success, paused, disabled, and
+// catch-all error paths). Isolated as a helper so the same prune logic
+// runs in every exit path.
+async function persistRotationRun(startedAt, evaluated, rotated, skipped, skippedReasons, rotatedLeads, skippedLeads) {
+  try {
+    await RotationRunLog.create({
+      startedAt:      startedAt,
+      finishedAt:     new Date(),
+      evaluated:      evaluated,
+      rotated:        rotated,
+      skipped:        skipped,
+      skippedReasons: skippedReasons,
+      rotatedLeads:   rotatedLeads,
+      skippedLeads:   skippedLeads
+    });
+    // Keep only the last 30 runs. find().skip(30) — older runs flagged for
+    // delete by _id. Cheap once per 5-min tick.
+    var stale = await RotationRunLog.find({}).sort({ startedAt: -1 }).skip(30).select("_id").lean();
+    if (stale.length) {
+      await RotationRunLog.deleteMany({ _id: { $in: stale.map(function(r){ return r._id; }) } });
+    }
+  } catch (logErr) {
+    console.error("[rotation sweep] persist failed:", logErr && logErr.message);
   }
 }
 
@@ -10396,6 +10577,132 @@ var ROTATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 setInterval(function(){
   if (mongoose.connection && mongoose.connection.readyState === 1) sweepAutoRotation();
 }, ROTATION_SWEEP_INTERVAL_MS);
+
+// ===== Phase R-13.3 — Rotation Diagnostics =====
+// One endpoint returns the five sections the Settings → Rotation Diagnostics
+// tab renders. admin / sales_admin only — sales / TL / manager / director
+// see 403. Source-of-truth: RotationRunLog (populated by sweepAutoRotation),
+// AppSetting "rotation" (tier configuration), live Lead counts.
+app.get("/api/rotation/diagnostics", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Forbidden — admin / sales_admin only" });
+    }
+
+    // (1) Recent runs — last 10 summaries, newest first. The skipped/rotated
+    // detail arrays are intentionally excluded here to keep the response
+    // small; the latest run's full detail is returned separately as `lastRun`.
+    var recentRuns = await RotationRunLog.find({})
+      .sort({ startedAt: -1 })
+      .limit(10)
+      .select("startedAt finishedAt evaluated rotated skipped")
+      .lean();
+
+    // (2) Last run full detail — includes skippedReasons histogram +
+    // skippedLeads detail (capped at 200 entries by the cron).
+    var lastRun = await RotationRunLog.findOne({})
+      .sort({ startedAt: -1 })
+      .lean();
+
+    // (3) Tier distribution — count leads currently owned by each tier's
+    // agents. settings.tiers.tier{1,2,3}.agents are arrays of userIds.
+    var settings = await getRotationSettings();
+    var tier1Ids = (settings && settings.tiers && settings.tiers.tier1 && settings.tiers.tier1.agents) || [];
+    var tier2Ids = (settings && settings.tiers && settings.tiers.tier2 && settings.tiers.tier2.agents) || [];
+    var tier3Ids = (settings && settings.tiers && settings.tiers.tier3 && settings.tiers.tier3.agents) || [];
+    var toOid = function(id){ try { return new mongoose.Types.ObjectId(id); } catch(e){ return null; } };
+    var tier1Oids = tier1Ids.map(toOid).filter(Boolean);
+    var tier2Oids = tier2Ids.map(toOid).filter(Boolean);
+    var tier3Oids = tier3Ids.map(toOid).filter(Boolean);
+    var liveLeadFilter = { archived: false, agentId: { $ne: null } };
+    var [tier1Count, tier2Count, tier3Count, totalAssigned, unassignedCount] = await Promise.all([
+      tier1Oids.length ? Lead.countDocuments(Object.assign({}, liveLeadFilter, { agentId: { $in: tier1Oids } })) : Promise.resolve(0),
+      tier2Oids.length ? Lead.countDocuments(Object.assign({}, liveLeadFilter, { agentId: { $in: tier2Oids } })) : Promise.resolve(0),
+      tier3Oids.length ? Lead.countDocuments(Object.assign({}, liveLeadFilter, { agentId: { $in: tier3Oids } })) : Promise.resolve(0),
+      Lead.countDocuments(liveLeadFilter),
+      Lead.countDocuments({ archived: false, agentId: null })
+    ]);
+    var tieredAgentIds = [].concat(tier1Ids, tier2Ids, tier3Ids).map(String);
+    var assignedToOthers = Math.max(0, totalAssigned - tier1Count - tier2Count - tier3Count);
+    var tierDistribution = {
+      tier1: tier1Count,
+      tier2: tier2Count,
+      tier3: tier3Count,
+      assignedOutsideTiers: assignedToOthers,
+      unassigned: unassignedCount
+    };
+
+    // (4) Agents available for rotation — every active sales / team_leader in
+    // ANY tier, ranked by current lead count ascending. The cron's tryPool()
+    // walks Tier 1 first then Tier 2+3 combined; this list mirrors that
+    // intent so admin can see who's next in line.
+    var allTierOids = [].concat(tier1Oids, tier2Oids, tier3Oids);
+    var availableForRotation = [];
+    if (allTierOids.length) {
+      var tierUsers = await User.find({
+        _id: { $in: allTierOids },
+        active: { $ne: false },
+        role: { $in: ["sales", "team_leader"] }
+      }).select("_id name role title").lean();
+      var counts = await Promise.all(tierUsers.map(function(u){
+        return Lead.countDocuments({ archived: false, agentId: u._id });
+      }));
+      tierUsers.forEach(function(u, i){
+        var tier = tier1Ids.map(String).indexOf(String(u._id)) >= 0 ? 1
+          : tier2Ids.map(String).indexOf(String(u._id)) >= 0 ? 2
+          : tier3Ids.map(String).indexOf(String(u._id)) >= 0 ? 3 : null;
+        availableForRotation.push({
+          userId:    String(u._id),
+          userName:  u.name || "(unnamed)",
+          title:     u.title || "",
+          role:      u.role,
+          tier:      tier,
+          leadCount: counts[i] || 0
+        });
+      });
+      availableForRotation.sort(function(a, b){ return a.leadCount - b.leadCount; });
+    }
+
+    // (5) Locked leads — top-level locked=true. lockedAt + lockedBy may be
+    // null/empty for locks applied before this commit (the diagnostics UI
+    // shows "—" in that case).
+    var lockedLeads = await Lead.find({ locked: true, archived: false })
+      .select("_id name status agentId lockedAt lockedBy lastActivityTime")
+      .populate("agentId", "name")
+      .sort({ lockedAt: -1 })
+      .limit(200)
+      .lean();
+    var lockedLeadsOut = lockedLeads.map(function(l){
+      return {
+        leadId:        String(l._id),
+        name:          l.name || "",
+        status:        l.status || "",
+        currentAgent:  (l.agentId && l.agentId.name) || "",
+        lockedAt:      l.lockedAt || null,
+        lockedBy:      l.lockedBy || "",
+        lastActivityTime: l.lastActivityTime || null
+      };
+    });
+
+    res.json({
+      recentRuns: recentRuns,
+      lastRun:    lastRun,
+      tierDistribution: tierDistribution,
+      availableForRotation: availableForRotation,
+      lockedLeads: lockedLeadsOut,
+      // Surface the master switch + pause state so the FE can show a banner
+      // ("rotation is disabled" / "paused until X") when nothing is rotating.
+      rotationStatus: {
+        autoRotationEnabled: settings && settings.autoRotationEnabled !== false,
+        autoRotationPausedUntil: (settings && settings.autoRotationPausedUntil) || null
+      },
+      generatedAt: new Date().toISOString()
+    });
+  } catch (e) {
+    console.error("[GET /api/rotation/diagnostics]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "diagnostics_failed" });
+  }
+});
 
 // Admin cleanup: remove duplicate leads by phone, keep oldest
 app.post("/api/admin/cleanup-duplicates", auth, adminOnly, async function(req, res) {
