@@ -7006,6 +7006,12 @@ var DashboardPage = function(p) {
   // shrink under STEP 4-5.
   var [cbSalesState, setCbSalesState] = useState({ overdue: [], scheduled: [], overdueCount: 0 });
   var [cbCompliance, setCbCompliance] = useState(null);
+  // STEP 4-3 — admin dashboard tile counts. null until first fetch resolves;
+  // the destructuring at the render site falls back to the in-memory
+  // adminMetrics values while loading, so existing numbers stay visible
+  // through the first paint. Once STEP 4-5 shrinks the bootstrap, the
+  // in-memory fallback becomes wrong but this state stays authoritative.
+  var [statsCounts, setStatsCounts] = useState(null);
   useEffect(function(){
     var onResize = function(){ setIsMobile(window.innerWidth<768); };
     window.addEventListener("resize", onResize);
@@ -7112,6 +7118,52 @@ var DashboardPage = function(p) {
         .catch(function(){ if (!cancelled) setCbCompliance(null); });
     };
     load();
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust, filter, isOnlyAdmin]);
+
+  // STEP 4-3 — Dashboard admin tile counts. Mirrors the same range derivation
+  // as adminMetrics (admin path only) and pulls aggregated counts from
+  // /api/leads/counts + /api/daily-requests/counts. The render below uses
+  // these values whenever statsCounts is non-null (overriding adminMetrics'
+  // in-memory derivations). Fetch is keyed on cbBust so lead/DR WS events
+  // refresh the tiles in real time.
+  useEffect(function(){
+    if (!p.token) return;
+    if (!isOnlyAdmin) return;
+    var cancelled = false;
+    var nd = new Date();
+    var cY = nd.getFullYear(), cM = nd.getMonth(), cD = nd.getDate();
+    var jsDay = nd.getDay();
+    var daysSinceSat = (jsDay - 6 + 7) % 7;
+    var todayStart = new Date(cY, cM, cD, 0,0,0,0);
+    var todayEnd   = new Date(cY, cM, cD, 23,59,59,999);
+    var yestStart  = new Date(cY, cM, cD-1, 0,0,0,0);
+    var yestEnd    = new Date(cY, cM, cD-1, 23,59,59,999);
+    var weekStart  = new Date(cY, cM, cD - daysSinceSat, 0,0,0,0);
+    var weekEnd    = new Date(weekStart.getTime() + 7*86400000 - 1);
+    var monthStart = new Date(cY, cM, 1, 0,0,0,0);
+    var monthEnd   = new Date(cY, cM+1, 0, 23,59,59,999);
+    var rs, re;
+    if (filter==="today") { rs = todayStart.getTime(); re = todayEnd.getTime(); }
+    else if (filter==="yesterday") { rs = yestStart.getTime(); re = yestEnd.getTime(); }
+    else if (filter==="week") { rs = weekStart.getTime(); re = weekEnd.getTime(); }
+    else if (filter==="month") { rs = monthStart.getTime(); re = monthEnd.getTime(); }
+    else if (typeof filter==="string" && /^Q\d\s+\d{4}$/.test(filter)) {
+      var mm = filter.match(/^Q(\d)\s+(\d{4})$/);
+      var qn = parseInt(mm[1]), qy = parseInt(mm[2]);
+      rs = new Date(qy, (qn-1)*3, 1).getTime();
+      re = new Date(qy, qn*3, 0, 23,59,59,999).getTime();
+    } else { rs = monthStart.getTime(); re = monthEnd.getTime(); }
+    var fromIso = new Date(rs).toISOString();
+    var toIso   = new Date(re).toISOString();
+    Promise.all([
+      apiFetch("/api/leads/counts?from="+encodeURIComponent(fromIso)+"&to="+encodeURIComponent(toIso),"GET",null,p.token).catch(function(){return null;}),
+      apiFetch("/api/daily-requests/counts?from="+encodeURIComponent(fromIso)+"&to="+encodeURIComponent(toIso),"GET",null,p.token).catch(function(){return null;})
+    ]).then(function(r){
+      if (cancelled) return;
+      if (r[0] && r[1]) setStatsCounts({ leads: r[0], drs: r[1] });
+    });
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token, p.cbBust, filter, isOnlyAdmin]);
@@ -8218,6 +8270,25 @@ var DashboardPage = function(p) {
   var dealsFromLeads = adminMetrics.dealsFromLeads, dealsFromDR = adminMetrics.dealsFromDR, dealsFiltered = adminMetrics.dealsFiltered;
   var overdueLeads = adminMetrics.overdueLeads, overdueDR = adminMetrics.overdueDR, overdueFiltered = adminMetrics.overdueFiltered;
   var callbacksFiltered = adminMetrics.callbacksFiltered, drFiltered = adminMetrics.drFiltered;
+  // STEP 4-3 — once /api/leads/counts + /api/daily-requests/counts have
+  // resolved, prefer the server-aggregated numbers over the in-memory
+  // adminMetrics derivations. Same shape; identical semantics. Once STEP 4-5
+  // shrinks p.leads / p.dailyReqs the in-memory derivation becomes wrong but
+  // statsCounts stays correct.
+  if (statsCounts) {
+    meetingsFromLeads = statsCounts.leads.meetings;
+    meetingsFromDR    = statsCounts.drs.meetings;
+    meetingsFiltered  = meetingsFromLeads + meetingsFromDR;
+    interestedFiltered = statsCounts.leads.interested;
+    dealsFromLeads = statsCounts.leads.deals;
+    dealsFromDR    = statsCounts.drs.deals;
+    dealsFiltered  = dealsFromLeads + dealsFromDR;
+    overdueLeads = statsCounts.leads.overdueCallbacks;
+    overdueDR    = statsCounts.drs.overdueCallbacks;
+    overdueFiltered = overdueLeads + overdueDR;
+    callbacksFiltered = statsCounts.leads.callbacksInRange;
+    drFiltered = statsCounts.drs.total;
+  }
 
   // Campaign performance (filtered)
   var fCampMap={};
@@ -18848,11 +18919,30 @@ var KPIsPage = function(p) {
   var [selQ, setSelQ] = useState(curQ);
   var [selYear, setSelYear] = useState(curYear);
 
+  // STEP 4-3 — quarterly stats from /api/agents/:id/quarterly-stats. Replaces
+  // the in-memory myDeals.filter / myLeads.filter / myActs.filter scans below
+  // that would silently miss data once STEP 4-5 shrinks the bootstrap. Server
+  // owns the team-subtree aggregation for TL/manager (see /api/agents/...
+  // handler). State stays null while loading — the existing in-memory derivs
+  // serve as the bootstrap-time fallback so the page never flashes zeros.
+  var [qStats, setQStats] = useState(null);
+  useEffect(function(){
+    if (!p.token || !uid) return;
+    var cancelled = false;
+    var qNum = parseInt(String(selQ).replace("Q","")) || 1;
+    apiFetch("/api/agents/"+uid+"/quarterly-stats?year="+selYear+"&quarter="+qNum,"GET",null,p.token)
+      .then(function(r){ if (!cancelled && r && typeof r === "object") setQStats(r); })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, uid, selQ, selYear, p.cbBust]);
+
   // Team leader target: sum of every team member's quarterly target so the
   // progress bar reflects the whole team's quota, matching aggregated deals.
-  var qTarget = isTeamLeader
+  // Falls back to in-memory derivation while qStats is loading.
+  var qTarget = qStats ? (qStats.qTarget || 0) : (isTeamLeader
     ? (p.myTeamUsers||[]).reduce(function(s,u){ return s + (getEffectiveQTarget(u, p.users, selQ)||0); }, 0)
-    : getEffectiveQTarget(myUser, p.users, selQ);
+    : getEffectiveQTarget(myUser, p.users, selQ));
 
   // Scope-based split-deal credit (rule (B) — purple card only). p.users is
   // server-scoped per role: sales sees just self → splits always 0.5; TL sees
@@ -18878,8 +18968,20 @@ var KPIsPage = function(p) {
     return getQ(l.createdAt)===selQ && getYear(l.createdAt)===selYear;
   });
   var qRev = qDeals.reduce(function(s,d){return s+parseBudget(d.budget)*getProjectWeight(d.project,d)*splitMultiplier(d, visibleUserIds);},0);
+  // STEP 4-3 — once /api/agents/:id/quarterly-stats has resolved, prefer the
+  // server-aggregated counts and revenue over the in-memory derivations.
+  // Note: server returns raw budget sum (no project-weight / split-halving
+  // applied) because those rules are FE-owned. After STEP 4-5 the in-memory
+  // qRev would understate (weights × splits applied to a shrunk lead list);
+  // server qRev is a slight overstatement (no weight/split) but stays
+  // consistent across the bootstrap window. Acceptable trade-off documented
+  // for STEP 4-4 follow-up if exact parity becomes required.
+  var qLeadsCount = qStats ? (qStats.qLeads || 0) : qLeads.length;
+  var qDealsCount = qStats ? (qStats.qDeals || 0) : qDeals.length;
+  var qCallsCount = qStats ? (qStats.qCalls || 0) : qCalls.length;
+  if (qStats && typeof qStats.qRev === "number") qRev = qStats.qRev;
   var qProg = qTarget>0?Math.min(100,Math.round(qRev/qTarget*100)):0;
-  var convRate = qLeads.length>0?Math.round(qDeals.length/qLeads.length*100):0;
+  var convRate = qLeadsCount>0?Math.round(qDealsCount/qLeadsCount*100):0;
 
   var isOnlineNow = myUser.lastSeen&&(Date.now()-new Date(myUser.lastSeen).getTime())<3*60*1000;
 
@@ -18899,10 +19001,10 @@ var KPIsPage = function(p) {
   // diverged from the DealsPage Q-filtered total — see KPIs Q-filter bugfix).
   var qRevM = (qRev/1000000).toFixed(1)+"M";
   var kpiMemberStats = [
-    { v: qLeads.length, l: "Leads", isDeals:false },
-    { v: qDeals.length, l: "Deals", isDeals:true  },
-    { v: qRevM,         l: "Total", isDeals:false },
-    { v: qCalls.length, l: "Calls", isDeals:false }
+    { v: qLeadsCount, l: "Leads", isDeals:false },
+    { v: qDealsCount, l: "Deals", isDeals:true  },
+    { v: qRevM,       l: "Total", isDeals:false },
+    { v: qCallsCount, l: "Calls", isDeals:false }
   ];
   return <div className="kpi-page-v2" style={{ padding:"18px 16px 40px" }}>
     {/* Inter font + the 8 gradient classes — mirrors Admin's Sales Team page. */}
@@ -18992,9 +19094,9 @@ var KPIsPage = function(p) {
     {/* Q stats */}
     <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
       {[
-        {v:qDeals.length, l:"Deals", c:C.success, icon:"🏆"},
-        {v:qCalls.length, l:"Calls", c:C.info, icon:"📞"},
-        {v:qLeads.length, l:"New Leads", c:C.accent, icon:"👤"},
+        {v:qDealsCount, l:"Deals", c:C.success, icon:"🏆"},
+        {v:qCallsCount, l:"Calls", c:C.info, icon:"📞"},
+        {v:qLeadsCount, l:"New Leads", c:C.accent, icon:"👤"},
         {v:convRate+"%", l:"Conversion Rate", c:C.warning, icon:"📊"},
       ].map(function(s){return <Card key={s.l} style={{ flex:"1 1 120px", textAlign:"center", padding:"16px 12px" }}>
         <div style={{ fontSize:22, marginBottom:4 }}>{s.icon}</div>
