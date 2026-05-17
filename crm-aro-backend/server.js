@@ -12351,7 +12351,7 @@ app.get("/api/agents/:id([0-9a-fA-F]{24})/quarterly-stats", auth, async function
       source:    { $ne: "Daily Request" }
     }));
 
-    var dealAgg = await Lead.aggregate([
+    var dealRows = await Lead.aggregate([
       { $match: {
         archived: { $ne: true },
         $and: [
@@ -12370,14 +12370,47 @@ app.get("/api/agents/:id([0-9a-fA-F]{24})/quarterly-stats", auth, async function
               { $ifNull: ["$updatedAt", "$createdAt"] }
             ]}]}
           }
-        },
-        _budget: { $convert: { input: { $replaceAll: { input: { $ifNull: ["$budget", ""] }, find: ",", replacement: "" } }, to: "double", onError: 0, onNull: 0 } }
+        }
       }},
       { $match: { _effDate: { $gte: qStart, $lt: qEnd } }},
-      { $group: { _id: null, qDeals: { $sum: 1 }, qRev: { $sum: "$_budget" } }}
+      { $project: { budget: 1, projectWeight: 1, project: 1, agentId: 1, splitAgent2Id: 1 } }
     ]);
-    var qDeals = dealAgg.length ? dealAgg[0].qDeals : 0;
-    var qRev   = dealAgg.length ? dealAgg[0].qRev   : 0;
+
+    // Apply weight × split locally to mirror the FE math at
+    // App.js KPIsPage L18951 (parseBudget × getProjectWeight × splitMultiplier).
+    // Weight resolution chain:
+    //   1) Lead.projectWeight when set AND != 1 (the denormalised cache that
+    //      server.js cascades on the project-weight PUT handler).
+    //   2) AppSetting.projectWeights[project] fallback for the edge case where
+    //      a row pre-dates the cascade or was created without the project
+    //      name in the cache.
+    //   3) Default 1.
+    // splitMult mirrors splitMultiplier(d, visibleUserIds) at App.js L9648:
+    //   no split        → 1
+    //   both sides in agentOids → 1 (each card adds 50%, sum = 100% — for the
+    //                                visible scope, the full deal counts once)
+    //   only one side in agentOids → 0.5
+    var pwDoc = await AppSetting.findOne({ key: "projectWeights" }).lean();
+    var pwMap = (pwDoc && pwDoc.value && typeof pwDoc.value === "object") ? pwDoc.value : {};
+    var agentOidSet = new Set(agentOids.map(function(o){ return String(o); }));
+    var qDeals = dealRows.length;
+    var qRev = 0;
+    for (var i = 0; i < dealRows.length; i++) {
+      var d = dealRows[i];
+      var w;
+      if (typeof d.projectWeight === "number" && d.projectWeight !== 1) w = d.projectWeight;
+      else if (d.project && pwMap[d.project] != null) w = Number(pwMap[d.project]) || 1;
+      else w = 1;
+      var bg = parseDealTotalFromBudget(d.budget);
+      var hasSplit = !!d.splitAgent2Id;
+      var splitMult = 1;
+      if (hasSplit) {
+        var pri = String(d.agentId && d.agentId._id ? d.agentId._id : d.agentId || "");
+        var sec = String(d.splitAgent2Id && d.splitAgent2Id._id ? d.splitAgent2Id._id : d.splitAgent2Id || "");
+        splitMult = (agentOidSet.has(pri) && agentOidSet.has(sec)) ? 1 : 0.5;
+      }
+      qRev += bg * w * splitMult;
+    }
 
     // Calls: count across the same agent set so TL/manager view aggregates
     // the team's calls (matches FE KPIsPage which scans myActs by team uid).
