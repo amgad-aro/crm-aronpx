@@ -7193,6 +7193,12 @@ app.get("/api/leads", auth, async function(req, res) {
       query.locked = true;
     }
 
+    // STEP 4-5 X1 — scope audit log. Every list-leads call records the
+    // computed query.$or shape (the role-derived scope clause) so any
+    // future regression in the scope helper is visible in Railway logs.
+    // The "audit" prefix distinguishes from in-line debug noise.
+    console.log("[scope] /api/leads role=" + role + " uid=" + uid + " scopeOr=" + JSON.stringify(query.$or || null));
+
     // STEP 3 — opt-in summary projection flag. When set, applySummaryProjection
     // runs per-lead at the end of the per-role mapper (see calls below in both
     // the sales branch and the admin/manager branch). Absent param = no
@@ -7729,8 +7735,13 @@ var LEAD_CALLBACK_FIELDS = "_id name phone phone2 status agentId archived callba
 var DEFAULT_CB_EXCLUDE = ["DoneDeal", "NotInterested", "EOI"];
 
 function parseExcludeStatuses(raw) {
-  if (!raw) return DEFAULT_CB_EXCLUDE;
-  return String(raw).split(",").map(function(s){ return s.trim(); }).filter(Boolean);
+  if (raw === undefined || raw === null) return DEFAULT_CB_EXCLUDE;
+  var trimmed = String(raw).trim();
+  // Explicit opt-out for "include all statuses" callers (e.g. STEP 4-5 X1
+  // admin overdue alert which counts every overdue callback regardless of
+  // closed-deal status, matching the legacy in-memory behaviour).
+  if (trimmed === "" || trimmed.toLowerCase() === "none") return [];
+  return trimmed.split(",").map(function(s){ return s.trim(); }).filter(Boolean);
 }
 
 app.get("/api/leads/callbacks", auth, async function(req, res) {
@@ -7921,9 +7932,12 @@ app.get("/api/eois", auth, async function(req, res) {
   try {
     var status = String(req.query.status || "all").toLowerCase();
     var page   = Math.max(1, parseInt(req.query.page) || 1);
-    var limit  = Math.min(Math.max(1, parseInt(req.query.limit) || 200), 1000);
+    // STEP 4-5 X1 — cap bumped from 1000 to 5000. FE now paginates via
+    // ?page=... so the cap is a sanity guard, not a silent truncation point.
+    var limit  = Math.min(Math.max(1, parseInt(req.query.limit) || 100), 5000);
     var skip   = (page - 1) * limit;
     var scope  = await buildLeadSearchScopeQuery(req);
+    console.log("[scope] /api/eois role=" + req.user.role + " uid=" + req.user.id + " status=" + status + " page=" + page + " limit=" + limit + " scope=" + JSON.stringify(scope));
 
     // wasEOI check expressed as a Mongo $or (any artifact present).
     var wasEOI = { $or: [
@@ -8014,9 +8028,12 @@ app.get("/api/deals", auth, async function(req, res) {
   try {
     var status = String(req.query.status || "active").toLowerCase();
     var page   = Math.max(1, parseInt(req.query.page) || 1);
-    var limit  = Math.min(Math.max(1, parseInt(req.query.limit) || 200), 1000);
+    // STEP 4-5 X1 — cap bumped from 1000 to 5000 (sanity guard, not silent
+    // truncation). Default 100/page; FE paginates via ?page=...
+    var limit  = Math.min(Math.max(1, parseInt(req.query.limit) || 100), 5000);
     var skip   = (page - 1) * limit;
     var scope  = await buildLeadSearchScopeQuery(req);
+    console.log("[scope] /api/deals role=" + req.user.role + " uid=" + req.user.id + " status=" + status + " page=" + page + " limit=" + limit + " scope=" + JSON.stringify(scope));
 
     var dealActive = { $and: [
       { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] },
@@ -12203,6 +12220,12 @@ app.get("/api/daily-requests", auth, async function(req, res) {
     var page          = parseInt(req.query.page) || 1;
     var limit         = hasLimit ? parseInt(req.query.limit) : 0;
     var skip          = hasLimit ? (page - 1) * limit : 0;
+
+    // STEP 4-5 X1 — scope audit log. Mirrors /api/leads logging. The
+    // computed `query.agentId` clause captures the role-derived scope
+    // shape ($eq for sales, $in for TL/manager/director, undefined for
+    // admin/sales_admin).
+    console.log("[scope] /api/daily-requests role=" + req.user.role + " uid=" + req.user.id + " scopeAgent=" + JSON.stringify(query.agentId || null));
 
     var drQuery = DailyRequest.find(query)
       .populate("agentId", "name title")
