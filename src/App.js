@@ -488,42 +488,21 @@ var timeAgo = function(d, t) {
   return Math.floor(diff / 1440) + " " + t.days + " " + t.ago;
 };
 
-// 2026-05-18 — forward-looking time formatter for the CallbackBell rows.
-// `timeAgo` always reads as "X ago" which is the wrong direction for the
-// callback bell (the bell answers "when is the next call due?", which is
-// usually in the future for Upcoming / Now, and is "how overdue?" for the
-// Delay tab). Render:
-//   future: "in 2 hr" / "in 3 days"
-//   today:  "Today 14:30"  (same calendar day in local time)
-//   past:   "Overdue 1 day" / "Overdue 3 hr"
-// "Today" branch sidesteps the awkward "in 0 hr" / "Overdue 0 hr" reading
-// around the boundary and gives reps a clock time they can act on.
-var callbackTimeStr = function(d, t) {
+// Forward-looking, compact time formatter for CallbackBell rows. The bell
+// answers "when is the next call due?" — future rows read "in 2h" / "in 3d",
+// overdue rows read "Overdue 2d". Compact units (m/h/d) with no space
+// between qty and unit keep the row chip readable at 10px font.
+var callbackTimeStr = function(d) {
   if (!d) return "-";
   var ts = new Date(d).getTime();
   if (isNaN(ts)) return "-";
-  var now = Date.now();
-  var diffMin = (ts - now) / 60000;
-  var absMin = Math.abs(diffMin);
-  var dD = new Date(ts), nD = new Date(now);
-  var sameDay = dD.getFullYear()===nD.getFullYear() && dD.getMonth()===nD.getMonth() && dD.getDate()===nD.getDate();
-  var t2 = t || {};
-  var lblMin = t2.minutes || "min";
-  var lblHr  = t2.hours || "hr";
-  var lblDay = t2.days || "days";
-  var lblOverdue = t2.overdue || "Overdue";
-  if (sameDay) {
-    var hh = String(dD.getHours()).padStart(2,"0");
-    var mm = String(dD.getMinutes()).padStart(2,"0");
-    return "Today " + hh + ":" + mm;
-  }
-  // Round to nearest unit + clamp to ≥1 to avoid "in 0 min" reading. Floor
-  // would shave "in 3 days" to "in 2 days" on sub-second drift at boundary.
-  var unit, qty;
-  if (absMin < 60) { unit = lblMin; qty = Math.max(1, Math.round(absMin)); }
-  else if (absMin < 1440) { unit = lblHr; qty = Math.max(1, Math.round(absMin / 60)); }
-  else { qty = Math.max(1, Math.round(absMin / 1440)); unit = qty === 1 ? "day" : lblDay; }
-  return diffMin >= 0 ? ("in " + qty + " " + unit) : (lblOverdue + " " + qty + " " + unit);
+  var diffMs = ts - Date.now();
+  var absMin = Math.abs(diffMs) / 60000;
+  var qty, unit;
+  if (absMin < 60) { qty = Math.max(1, Math.round(absMin)); unit = "m"; }
+  else if (absMin < 1440) { qty = Math.max(1, Math.round(absMin / 60)); unit = "h"; }
+  else { qty = Math.max(1, Math.round(absMin / 1440)); unit = "d"; }
+  return diffMs >= 0 ? ("in " + qty + unit) : ("Overdue " + qty + unit);
 };
 
 // 2026-05-18 — absolute date+time formatter for notification dropdowns.
@@ -1483,15 +1462,12 @@ var CallbackBell = function(p) {
           var lType=getType(l);
           var cc=CB_COLORS[lType]||CB_COLORS.now;
           var cbTypeLabel=lType==="overdue"?"Overdue":lType==="now"?"Callback Now":lType==="upcoming"?"Upcoming":"No Contact";
-          // 2026-05-18 — forward-looking time relative to the SCHEDULED
-          // callback (callbackTimeStr), not the backward "X days ago" of
-          // last activity. The bell answers "when is the next call due?"
-          // — Upcoming/Now rows read "in 2 hr"/"Today 14:30", Overdue
-          // rows read "Overdue 3 days". No Contact rows have no scheduled
-          // callback by definition, so they fall back to lastActivityTime
-          // via timeAgo (the "how long since last touch" framing is the
-          // correct semantic for that tab).
-          var timeStr=lType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?callbackTimeStr(l.callbackTime,p.t):"");
+          // Every bell row — overdue / now / upcoming / no-contact — reads
+          // the same forward-looking direction off lead.callbackTime. The
+          // No Contact tab used to fall back to timeAgo(lastActivityTime)
+          // which inverted the direction ("15 days ago") on rows visible
+          // alongside future-direction siblings in the All tab.
+          var timeStr=l.callbackTime?callbackTimeStr(l.callbackTime):"";
           return <div key={gid(l)} className="cb-card" onClick={function(){p.setShowNotif(false);var isDR=l._kind==="dr";setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();return;}/* BUG #6 — /api/leads/callbacks returns only LEAD_CALLBACK_FIELDS (no project/campaign/budget). Fetch full doc before opening the panel; fail-soft to the bell's lite copy. */apiFetch("/api/leads/"+gid(l),"GET",null,p.token).then(function(fresh){p.onLeadClick((fresh&&fresh._id)?fresh:l);}).catch(function(){p.onLeadClick(l);});},50);}} style={{ background:cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
             <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{lType==="overdue"?"⏰":lType==="now"?"📞":lType==="upcoming"?"🔔":"😴"}</div>
             <div style={{ flex:1, minWidth:0 }}>
