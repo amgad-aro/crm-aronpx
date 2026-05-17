@@ -1132,7 +1132,15 @@ var Sidebar = function(p) {
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
-  var leadsCount = Array.isArray(p.leads) ? p.leads.filter(function(l){return !l.archived;}).length : 0;
+  // Fix C — prefer the server-reported total over the loaded slice count.
+  // Post-STEP-4-5 bootstrap shrink, p.leads is only the first paginated
+  // page (~100 rows); falling back to its length painted the badge with
+  // a growing number as the user scrolled. p.leadsTotal is set in
+  // loadData from /api/leads.total (the role-scoped count from the
+  // server) and is the user-facing "true" leads count.
+  var leadsCount = (typeof p.leadsTotal === "number" && p.leadsTotal > 0)
+    ? p.leadsTotal
+    : (Array.isArray(p.leads) ? p.leads.filter(function(l){return !l.archived;}).length : 0);
   var userName = p.cu.username==="amgad" ? "Amgad Mohamed" : p.cu.name;
   var userInitial = (userName||"?")[0];
   var userRole = p.cu.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer"}[p.cu.role]||"");
@@ -3568,6 +3576,22 @@ var LeadsPage = function(p) {
   var [selected, setSelected] = useState(null);
   // Close the side panel when the user clicks anywhere outside of it.
   var panelRef = useOutsideClose(!!selected, function(){ setSelected(null); });
+  // Fix C — server-side counters for the tab strip. byStatus comes from
+  // /api/leads/counts (the X2 endpoint) with ?excludeSource=Daily Request
+  // applied so the numbers honour LeadsPage's "non-DR" visibility rule.
+  // Without these counts the tab strip showed the loaded-slice count
+  // (which grew as the user scrolled with infinite scroll) instead of
+  // the true Atlas total. Falls back to allVisible.length while loading.
+  var [leadsPageCounts, setLeadsPageCounts] = useState(null);
+  useEffect(function(){
+    if (!p.token) return;
+    var cancelled = false;
+    apiFetch("/api/leads/counts?excludeSource=" + encodeURIComponent("Daily Request"), "GET", null, p.token)
+      .then(function(r){ if (!cancelled && r && typeof r === "object") setLeadsPageCounts(r); })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust]);
   var [statusDrop, setStatusDrop] = useState(null);
   var [showAdd, setShowAdd] = useState(false);
   var [editLead, setEditLead] = useState(null);
@@ -4049,7 +4073,18 @@ var LeadsPage = function(p) {
     return 0;
   });
 
-  useEffect(function(){ if(p.initSelected){setSelected(p.initSelected);} },[p.initSelected]);
+  // Fix A — clear p.initSelected after consuming it (matches EOI/Deals/DR
+  // patterns at L9246 / L9903 / L10911). Without this, the deep-link state
+  // sticks across page navigations: any remount of LeadsPage re-fires the
+  // setSelected, painting a side panel for a stale lead — the visible
+  // symptom is the post-STEP-4-5 "blank panel on the right" bug since the
+  // shrunk bootstrap may no longer carry the deep-linked lead.
+  useEffect(function(){
+    if(p.initSelected){
+      setSelected(p.initSelected);
+      if (p.setInitSelected) p.setInitSelected(null);
+    }
+  },[p.initSelected]);
 
   // Consume one-shot agent filter from Admin Dashboard drill-down clicks.
   useEffect(function(){
@@ -4520,10 +4555,38 @@ var LeadsPage = function(p) {
           return base;
         })().map(function(s){
           var cnt;
-          if (s.v==="all") cnt = allVisible.length;
-          else if (s.v==="important") cnt = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; }).length;
-          else if (s.v==="NewLead") cnt = allVisible.filter(isGenuineNewLead).length;
-          else cnt = allVisible.filter(function(l){ return currentStatus(l)===s.v; }).length;
+          // Fix C — server-side counts from leadsPageCounts (the
+          // /api/leads/counts?excludeSource=Daily Request response).
+          // byStatus is the all-time, role-scoped, non-DR-source per-status
+          // map. The "All" tab is sum(byStatus) minus closed-state buckets
+          // (EOI / DoneDeal / Deal Cancelled) — these have dedicated pages.
+          // Two predicates stay on the in-memory loaded slice because they
+          // aren't server-friendly:
+          //   - "important" (qualifyingMarks() walks each lead's
+          //     assignments / history for a date threshold)
+          //   - "NewLead" (isGenuineNewLead() rules — not just status)
+          // Both are admin-only views; the documented deferral covers them.
+          var bs = leadsPageCounts && leadsPageCounts.byStatus;
+          if (bs) {
+            if (s.v === "all") {
+              cnt = 0;
+              Object.keys(bs).forEach(function(k){
+                if (k === "EOI" || k === "DoneDeal" || k === "Deal Cancelled") return;
+                cnt += bs[k] || 0;
+              });
+            } else if (s.v === "important") {
+              cnt = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; }).length;
+            } else if (s.v === "NewLead") {
+              cnt = allVisible.filter(isGenuineNewLead).length;
+            } else {
+              cnt = bs[s.v] || 0;
+            }
+          } else {
+            if (s.v==="all") cnt = allVisible.length;
+            else if (s.v==="important") cnt = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; }).length;
+            else if (s.v==="NewLead") cnt = allVisible.filter(isGenuineNewLead).length;
+            else cnt = allVisible.filter(function(l){ return currentStatus(l)===s.v; }).length;
+          }
           return <button key={s.v} onClick={function(){setLockedOnly(false);p.setFilter(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:p.leadFilter===s.v?C.accent:"#E8ECF1", background:p.leadFilter===s.v?C.accent+"12":"#fff", color:p.leadFilter===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
         })}
       </div>
@@ -4609,7 +4672,7 @@ var LeadsPage = function(p) {
     </div>
     {importMsg&&<div style={{ marginBottom:10, padding:"9px 14px", background:importMsg.startsWith("✅")?"#DCFCE7":"#FEE2E2", color:importMsg.startsWith("✅")?"#15803D":"#B91C1C", borderRadius:9, fontSize:13 }}>{importMsg}</div>}
 
-    <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&selected?330:0, transition:"padding-right 0.25s" }}>
+    <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&selected&&gid(selected)?330:0, transition:"padding-right 0.25s" }}>
       {/* Status dropdown overlay */}
       {statusDrop&&<div data-overlay-above="true" style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
     {/* Table */}
@@ -4903,8 +4966,12 @@ var LeadsPage = function(p) {
         <button onClick={function(){if(p.leadsPage<p.leadsTotalPages){p.setLeadsPage(p.leadsPage+1);}}} disabled={p.leadsPage>=p.leadsTotalPages} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:p.leadsPage>=p.leadsTotalPages?"#F1F5F9":"#fff", color:p.leadsPage>=p.leadsTotalPages?C.textLight:C.text, fontSize:12, cursor:p.leadsPage>=p.leadsTotalPages?"not-allowed":"pointer" }}>Next ➡️</button>
       </div>}
 
-      {/* Side Panel */}
-      {selected&&<Card innerRef={panelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
+      {/* Side Panel — Fix B: require gid(selected) so a stale or partial
+          `selected` value (e.g. the deep-link initSelected projection that
+          shipped only {_id, phone, name}) doesn't paint an apparently-
+          blank Card. The paddingRight rule above uses the same guard so
+          the wrapper offset matches the panel's actual rendering. */}
+      {selected&&gid(selected)&&<Card innerRef={panelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px", position:"sticky", top:0 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
@@ -11306,7 +11373,7 @@ var DailyRequestsPage = function(p) {
       </select>
     </div>
 
-    <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&selected?330:0, transition:"padding-right 0.25s" }}>
+    <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&selected&&gid(selected)?330:0, transition:"padding-right 0.25s" }}>
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         {loading?<Loader/>:p.isMobile?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:"12px", maxWidth:500, margin:"0 auto" }}>
           {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>No requests</div>}
@@ -11503,7 +11570,7 @@ var DailyRequestsPage = function(p) {
       </Card>
 
       {/* Side Panel */}
-      {selected&&<Card innerRef={drPanelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
+      {selected&&gid(selected)&&<Card innerRef={drPanelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
@@ -24731,7 +24798,7 @@ export default function CRMApp() {
       </div>
       <button onClick={function(){setShowPwaBanner(false);try{localStorage.setItem("crm_pwa_dismissed","1");}catch(e){}}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, color:"#fff", padding:"6px 12px", fontSize:12, cursor:"pointer", flexShrink:0 }}>Got it</button>
     </div>}
-    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads} attendanceSettings={attendanceSettings}/>
+    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads} leadsTotal={leadsTotal} attendanceSettings={attendanceSettings}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
       <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} token={token} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
