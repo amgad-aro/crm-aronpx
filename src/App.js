@@ -20638,7 +20638,15 @@ var CommissionsPage = function(p) {
     { id:"claim_submitted", label:"Claim Submitted" },
     { id:"invoice_submitted", label:"Invoice Submitted" },
     { id:"received", label:"Received" },
-    { id:"paid_to_team", label:"Paid" },
+    // Paid pill: filter by Commission.status === "fully_paid" (the terminal
+    // state set by zombie cleanup when all cycles are paid_to_team or
+    // cancelled). Previously this pill sent ?status=paid_to_team which the
+    // BE interprets as { status:"active", "cycles.state":"paid_to_team" } —
+    // that excluded every commission already flipped to fully_paid, so the
+    // tab read 0 even when fully-paid commissions existed. The cycle-level
+    // "paid_to_team" filter has no separate pill (admins inspect cycles via
+    // the open card UI instead).
+    { id:"fully_paid", label:"Paid" },
     { id:"cancelled", label:"Cancelled" }
   ];
 
@@ -21269,6 +21277,31 @@ var CommissionsPage = function(p) {
           display:"inline-flex", alignItems:"center", gap:4
         }}>
           💼 Broker Calculation
+        </button>}
+        {/* Cancel Deal — mirrors the Deals-page ❌ Cancel button so admin can
+            drop a deal directly from here without navigating away. Uses the
+            existing /deal-cancel endpoint which already cascades the lead +
+            commission together via cascadeCommissionCancel (shipped in
+            527d5c3). Hidden once the commission is already cancelled, and
+            hidden for non-admin roles. */}
+        {!isCancelled && (p.cu.role === "admin" || p.cu.role === "sales_admin") && c.leadId && <button
+          onClick={async function(){
+            if(!window.confirm("Cancel this deal? The commission will be cancelled too (lockstep).")) return;
+            var leadIdStr = typeof c.leadId === "object" ? String(c.leadId._id || c.leadId) : String(c.leadId);
+            try {
+              await apiFetch("/api/leads/" + leadIdStr + "/deal-cancel", "POST", {}, p.token);
+              setToast({ kind:"ok", msg:"Deal cancelled — commission moved to Cancelled tab" });
+              setReloadTick(function(v){ return v + 1; });
+            } catch(e) {
+              setToast({ kind:"err", msg: (e && e.message) || "Cancel failed" });
+            }
+          }}
+          style={{
+            padding:"6px 12px", borderRadius:8, border:"1px solid #FCA5A5", background:"#FEF2F2",
+            cursor:"pointer", fontSize:12, fontWeight:600, color:"#B91C1C",
+            display:"inline-flex", alignItems:"center", gap:4
+          }}>
+          ❌ Cancel Deal
         </button>}
         <button onClick={function(){ goToDeal(c); }} style={{
           padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff",
@@ -22705,6 +22738,8 @@ var DiagnosticsPage = function(p) {
         msg = "Fully-paid revert done — " + (summary.updated || 0) + " flipped back to active";
       } else if (type === "active_with_no_workable_cycle") {
         msg = "Revive-broken backfill done — " + (summary.updated || 0) + " fresh cycle(s) added";
+      } else if (type === "cleanup_orphans") {
+        msg = "Orphan cleanup done — " + (summary.count || 0) + " commission(s) cancelled";
       } else {
         msg = "Backfill done";
       }
@@ -22858,6 +22893,17 @@ var DiagnosticsPage = function(p) {
             cursor: bulkRunning ? "wait" : "pointer"
           }}>
           {bulkRunning === "active_with_no_workable_cycle" ? "Running revive-broken backfill…" : "Run revive-broken backfill"}
+        </button>
+        <button onClick={function(){ runBulk("cleanup_orphans"); }} disabled={!!bulkRunning}
+          title="Cancel any active commissions whose underlying lead is archived or marked Deal Cancelled (pre-527d5c3 orphans). Uses cascadeCommissionCancel — preserves paid_to_team history, fans out quarter siblings. Idempotent."
+          style={{
+            padding:"8px 14px", borderRadius:8, fontSize:12, fontWeight:600,
+            border: "1px solid " + C.danger,
+            background: bulkRunning === "cleanup_orphans" ? C.danger + "30" : C.danger + "12",
+            color: C.danger,
+            cursor: bulkRunning ? "wait" : "pointer"
+          }}>
+          {bulkRunning === "cleanup_orphans" ? "Cleaning orphan commissions…" : "Run orphan commission cleanup"}
         </button>
       </div>
       {bulkResult && <div style={{ marginTop:12, paddingTop:12, borderTop:"1px solid #F1F5F9" }}>
