@@ -1412,7 +1412,7 @@ var CallbackBell = function(p) {
           var cc=CB_COLORS[lType]||CB_COLORS.now;
           var cbTypeLabel=lType==="overdue"?"Overdue":lType==="now"?"Callback Now":lType==="upcoming"?"Upcoming":"No Contact";
           var timeStr=lType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?timeAgo(l.callbackTime,p.t):"");
-          return <div key={gid(l)} className="cb-card" onClick={function(){p.setShowNotif(false);var isDR=l._kind==="dr";setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
+          return <div key={gid(l)} className="cb-card" onClick={function(){p.setShowNotif(false);var isDR=l._kind==="dr";setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();return;}/* BUG #6 — /api/leads/callbacks returns only LEAD_CALLBACK_FIELDS (no project/campaign/budget). Fetch full doc before opening the panel; fail-soft to the bell's lite copy. */apiFetch("/api/leads/"+gid(l),"GET",null,p.token).then(function(fresh){p.onLeadClick((fresh&&fresh._id)?fresh:l);}).catch(function(){p.onLeadClick(l);});},50);}} style={{ background:cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
             <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{lType==="overdue"?"⏰":lType==="now"?"📞":lType==="upcoming"?"🔔":"😴"}</div>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ fontSize:15, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
@@ -1639,13 +1639,11 @@ var Header = function(p) {
                   p.setShowDealNotif(false);
                   if (!p.onDealNotifClick) return;
                   var page = isDeal ? "deals" : "eoi";
-                  var inMemory = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);});
-                  if (inMemory) { p.onDealNotifClick(page, inMemory); return; }
-                  // STEP 4-1 — once bootstrap shrinks to ~100 leads, the lead
-                  // behind a notification often isn't in p.leads. Fetch the
-                  // full doc via /api/leads/:id (which has always existed)
-                  // before navigating. Fail-soft to the shell if the fetch
-                  // 404s / errors so the page still opens to the right tab.
+                  // BUG #6 — always fetch /api/leads/:id. Previously this
+                  // short-circuited on a p.leads in-memory hit, but that
+                  // slice is the ?fields=summary projection and capped at
+                  // 100 post-shrink — Project + Campaign came up blank in
+                  // the side panel. Fail-soft to a name shell on error.
                   apiFetch("/api/leads/" + String(n.leadId), "GET", null, p.token).then(function(fresh){
                     var target = (fresh && fresh._id) ? fresh : { _id: n.leadId, name: n.leadName||"" };
                     p.onDealNotifClick(page, target);
@@ -1694,16 +1692,13 @@ var Header = function(p) {
               var openItem = function(){
                 if (p.setShowRotNotif) p.setShowRotNotif(false);
                 if (!canNav) return;
-                var inMemory = (p.leads||[]).find(function(l){return gid(l)===String(n.leadId);});
                 var route = function(target){
                   if (p.onRotNotifClick) p.onRotNotifClick(target);
                   else if (p.onLeadClick) p.onLeadClick(target);
                 };
-                if (inMemory) { route(inMemory); return; }
-                // STEP 4-1 — fetch full lead from /api/leads/:id when the
-                // notification's lead isn't in the bootstrap page slice.
-                // Fail-soft to a shell so the page still opens if the
-                // fetch errors.
+                // BUG #6 — always fetch /api/leads/:id; the ?fields=summary
+                // slice in p.leads omits Project/Campaign and post-shrink
+                // may not even contain the lead. Fail-soft to a name shell.
                 apiFetch("/api/leads/" + String(n.leadId), "GET", null, p.token).then(function(fresh){
                   route((fresh && fresh._id) ? fresh : { _id: n.leadId, name: n.leadName||"" });
                 }).catch(function(){
