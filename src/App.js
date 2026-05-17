@@ -1644,41 +1644,50 @@ var Header = function(p) {
             </div>
           </div>
           <div style={{ overflowY:"auto", flex:1 }}>
-            {(function(){
-              var items = buildDealItems(p.leads, p.dailyRequests, p.cu, p.myTeamUsers);
-              if (items.length===0) return <div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}><div style={{ fontSize:28, marginBottom:8 }}>💰</div>No deals yet</div>;
-              return items.map(function(n, idx){
-                var isDeal = n.kind==="DoneDeal";
-                var label = isDeal ? "🎉 Done Deal" : (n.kind==="Approved" ? "✅ Approved EOI" : "⏳ Pending EOI");
-                var iconBg = isDeal ? "linear-gradient(135deg,#DCFCE7,#BBF7D0)"
-                  : (n.kind==="Approved" ? "linear-gradient(135deg,#D1FAE5,#A7F3D0)" : "linear-gradient(135deg,#FFF7ED,#FED7AA)");
-                var iconEmoji = isDeal ? "🎉" : (n.kind==="Approved" ? "✅" : "⏳");
-                var openItem = function(){
-                  p.setShowDealNotif(false);
-                  if (!p.onDealNotifClick) return;
-                  var page = isDeal ? "deals" : "eoi";
-                  // BUG #6 — always fetch /api/leads/:id. Previously this
-                  // short-circuited on a p.leads in-memory hit, but that
-                  // slice is the ?fields=summary projection and capped at
-                  // 100 post-shrink — Project + Campaign came up blank in
-                  // the side panel. Fail-soft to a name shell on error.
-                  apiFetch("/api/leads/" + String(n.leadId), "GET", null, p.token).then(function(fresh){
-                    var target = (fresh && fresh._id) ? fresh : { _id: n.leadId, name: n.leadName||"" };
-                    p.onDealNotifClick(page, target);
-                  }).catch(function(){
-                    p.onDealNotifClick(page, { _id: n.leadId, name: n.leadName||"" });
-                  });
-                };
-                return <div key={n._id+"-"+idx} onClick={openItem} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:"#fff", transition:"background 0.2s", cursor:"pointer" }}>
-                  <div style={{ width:38, height:38, borderRadius:10, background:iconBg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:18 }}>{iconEmoji}</div>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}{n.leadName?" — "+n.leadName:""}</div>
-                    <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
-                    <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{timeAgo(n.time,p.t)}</div>
-                  </div>
-                </div>;
-              });
-            })()}
+            {/* BUG #1 root cause — this dropdown body used to derive its
+                rows by calling buildDealItems(p.leads, p.dailyRequests, ...),
+                a client-side scan over the in-memory leads list. After the
+                STEP 4-5 bootstrap shrink (commit 8a8b2c4) p.leads is only
+                the first 100 leads — any DoneDeal/EOI on a row beyond that
+                slice silently vanished from the dropdown even though the
+                badge (which reads p.unseenDeals from dealNotifs) was still
+                ticking up via WS. CLAUDE.md "Deal Notifications — DO NOT
+                BREAK" already prescribed dealNotifs as the single source
+                of truth for the badge; this brings the dropdown body in
+                line so the badge count and the dropdown list never
+                disagree. Mirrors the rotation dropdown below which has
+                always read from p.rotNotifs the same way. */}
+            {(!p.dealNotifs||p.dealNotifs.length===0)&&<div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}><div style={{ fontSize:28, marginBottom:8 }}>💰</div>No deals yet</div>}
+            {p.dealNotifs&&p.dealNotifs.map(function(n){
+              var isDeal = n.status==="DoneDeal";
+              var label = isDeal ? "🎉 Done Deal" : "📋 EOI";
+              var iconBg = isDeal ? "linear-gradient(135deg,#DCFCE7,#BBF7D0)" : "linear-gradient(135deg,#D1FAE5,#A7F3D0)";
+              var iconEmoji = isDeal ? "🎉" : "📋";
+              var openItem = function(){
+                p.setShowDealNotif(false);
+                if (!p.onDealNotifClick) return;
+                var page = isDeal ? "deals" : "eoi";
+                // BUG #6 — always fetch /api/leads/:id; the p.leads slice
+                // may not contain the lead at all (post-shrink) and the
+                // summary projection omits Project/Campaign even when it
+                // does. Fail-soft to a name shell on error.
+                apiFetch("/api/leads/" + String(n.leadId), "GET", null, p.token).then(function(fresh){
+                  var target = (fresh && fresh._id) ? fresh : { _id: n.leadId, name: n.leadName||"" };
+                  p.onDealNotifClick(page, target);
+                }).catch(function(){
+                  p.onDealNotifClick(page, { _id: n.leadId, name: n.leadName||"" });
+                });
+              };
+              return <div key={n._id} onClick={openItem} style={{ padding:"12px 18px", borderBottom:"1px solid #F8FAFC", display:"flex", alignItems:"center", gap:12, background:n.seen?"#fff":"#F0FDF4", transition:"background 0.2s", cursor:"pointer" }}>
+                <div style={{ width:38, height:38, borderRadius:10, background:iconBg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:18 }}>{iconEmoji}</div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}{n.leadName?" — "+n.leadName:""}</div>
+                  <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
+                  <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{timeAgo(n.createdAt,p.t)}</div>
+                </div>
+                {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#15803D", flexShrink:0 }}/>}
+              </div>;
+            })}
           </div>
         </div>}
       </div>}
