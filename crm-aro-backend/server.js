@@ -271,6 +271,23 @@ User.collection.createIndex({ reportsTo: 1 }).catch(function(){});
 Lead.collection.createIndex({ splitAgent2Id: 1 }).catch(function(){});
 Lead.collection.createIndex({ splitAgent2Id: 1, createdAt: -1 }).catch(function(){});
 
+// STEP 4-2 — callback migration indexes. callbackTime is a String (ISO 8601)
+// so range queries against ISO strings sort lexicographically. Partial filter
+// keeps the index small (only ~64% of leads have a non-empty callbackTime).
+// agentId+callbackTime covers the sales-role scope on the new
+// /api/leads/callbacks endpoint; the bare callbackTime index covers admin/SA.
+// assignments.agentId+assignments.callbackTime covers the per-current-assignment
+// scan in /api/reports/callback-compliance.
+Lead.collection.createIndex(
+  { callbackTime: 1 },
+  { partialFilterExpression: { callbackTime: { $type: "string", $gt: "" } }, name: "callbackTime_partial" }
+).catch(function(){});
+Lead.collection.createIndex(
+  { agentId: 1, callbackTime: 1 },
+  { partialFilterExpression: { callbackTime: { $type: "string", $gt: "" } }, name: "agentId_callbackTime_partial" }
+).catch(function(){});
+Lead.collection.createIndex({ "assignments.agentId": 1, "assignments.callbackTime": 1 }).catch(function(){});
+
 // Meeting aggregation indexes — sales-ranking meetRows matches
 // { hadMeeting: true, agentId: { $in: salesIds } } and my-stats meetLeads
 // matches { agentId, $or: [{ hadMeeting: true }, { status: "MeetingDone" }] }
@@ -1098,6 +1115,18 @@ DailyRequest.collection.createIndex({ status: 1, createdAt: -1 }).catch(function
 // createdAt covers archived-sorted-by-date pages. Non-unique; safe to add hot.
 DailyRequest.collection.createIndex({ archived: 1, agentId: 1 }).catch(function(){});
 DailyRequest.collection.createIndex({ archived: 1, createdAt: -1 }).catch(function(){});
+
+// STEP 4-2 — DR callback migration indexes. Same partial-filter shape as the
+// Lead indexes above. ~99.9% of DRs have a non-empty callbackTime, so the
+// partial filter mostly just dedupes from the empties; we keep it for symmetry.
+DailyRequest.collection.createIndex(
+  { callbackTime: 1 },
+  { partialFilterExpression: { callbackTime: { $type: "string", $gt: "" } }, name: "dr_callbackTime_partial" }
+).catch(function(){});
+DailyRequest.collection.createIndex(
+  { agentId: 1, callbackTime: 1 },
+  { partialFilterExpression: { callbackTime: { $type: "string", $gt: "" } }, name: "dr_agentId_callbackTime_partial" }
+).catch(function(){});
 
 var app = express();
 // Railway sits behind a proxy; req.ip must reflect the real client IP for
@@ -7598,6 +7627,98 @@ app.get("/api/leads/by-phone", auth, async function(req, res) {
   }
 });
 
+// ===== STEP 4-2 — CALLBACK + NO-CONTACT ENDPOINTS =====
+// Server-side replacements for the in-memory p.leads.filter scans in
+// CallbackBell, HomePage sales urgent/schedule cards, and TasksPage. Once
+// STEP 4-5 shrinks the bootstrap, the existing in-memory bucketing would
+// silently miss callbacks outside the page slice. Same role-scoping as
+// /api/leads/search via buildLeadSearchScopeQuery. Registered BEFORE
+// /api/leads/:id so Express doesn't ObjectId-cast "callbacks" / "no-contact".
+//
+// Field projection mirrors what the bell + cards actually render — narrow
+// payload so the bell's 60s poll stays cheap.
+
+var LEAD_CALLBACK_FIELDS = "_id name phone phone2 status agentId archived callbackTime lastActivityTime";
+
+var DEFAULT_CB_EXCLUDE = ["DoneDeal", "NotInterested", "EOI"];
+
+function parseExcludeStatuses(raw) {
+  if (!raw) return DEFAULT_CB_EXCLUDE;
+  return String(raw).split(",").map(function(s){ return s.trim(); }).filter(Boolean);
+}
+
+app.get("/api/leads/callbacks", auth, async function(req, res) {
+  try {
+    var from = req.query.from ? String(req.query.from) : null;
+    var to   = req.query.to   ? String(req.query.to)   : null;
+    var excludeStatuses = parseExcludeStatuses(req.query.excludeStatuses);
+    var limit = Math.min(parseInt(req.query.limit) || 500, 2000);
+    var order = req.query.order === "desc" ? -1 : 1;
+    var countOnly = req.query.count_only === "true" || req.query.count_only === "1";
+    var scope = await buildLeadSearchScopeQuery(req);
+
+    // callbackTime is a String ISO 8601. We compare against the caller's
+    // ISO strings directly — Mongo compares strings lexicographically, and
+    // ISO 8601 is lex-sortable. Non-empty filter rides on the partial index
+    // created above (callbackTime_partial).
+    var cbCond = { $type: "string", $gt: "" };
+    if (from) cbCond.$gte = from;
+    if (to)   cbCond.$lte = to;
+    var ands = [
+      scope,
+      { archived: { $ne: true } },
+      { callbackTime: cbCond }
+    ];
+    if (excludeStatuses.length) ands.push({ status: { $nin: excludeStatuses } });
+    var query = { $and: ands };
+
+    if (countOnly) {
+      var count = await Lead.countDocuments(query);
+      return res.json({ count: count });
+    }
+    var rows = await Lead.find(query)
+      .select(LEAD_CALLBACK_FIELDS)
+      .populate("agentId", "name title")
+      .sort({ callbackTime: order })
+      .limit(limit)
+      .lean();
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /api/leads/callbacks]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "callbacks_failed" });
+  }
+});
+
+// No-contact tab on CallbackBell. Returns leads with stale lastActivityTime
+// regardless of callbackTime state — the FE dedupes against the
+// /api/leads/callbacks result via the existing cbIds Set, matching today's
+// in-memory behavior (App.js L1293-1297).
+app.get("/api/leads/no-contact", auth, async function(req, res) {
+  try {
+    var staleHours = Math.max(1, parseInt(req.query.stale_hours) || 24);
+    var excludeStatuses = parseExcludeStatuses(req.query.excludeStatuses);
+    var limit = Math.min(parseInt(req.query.limit) || 500, 2000);
+    var scope = await buildLeadSearchScopeQuery(req);
+    var threshold = new Date(Date.now() - staleHours * 3600 * 1000);
+    var ands = [
+      scope,
+      { archived: { $ne: true } },
+      { lastActivityTime: { $lt: threshold } }
+    ];
+    if (excludeStatuses.length) ands.push({ status: { $nin: excludeStatuses } });
+    var rows = await Lead.find({ $and: ands })
+      .select(LEAD_CALLBACK_FIELDS)
+      .populate("agentId", "name title")
+      .sort({ lastActivityTime: 1 })
+      .limit(limit)
+      .lean();
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /api/leads/no-contact]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "no_contact_failed" });
+  }
+});
+
 // ===== SINGLE LEAD GET (with per-agent overlay) =====
 app.get("/api/leads/:id", auth, async function(req, res) {
   try {
@@ -11910,6 +12031,53 @@ app.get("/api/daily-requests/by-phone", auth, async function(req, res) {
   }
 });
 
+// STEP 4-2 — DR callbacks endpoint. Mirror of /api/leads/callbacks for DRs.
+// DR has no assignments[] array — the top-level status/callbackTime IS the
+// authoritative state, so the query is straightforward. Default exclude
+// matches the FE bell's DR filter (DoneDeal-ish + Deal Cancelled + Not Int.).
+var DR_CALLBACK_FIELDS = "_id name phone phone2 status agentId archived callbackTime lastActivityTime";
+var DEFAULT_DR_CB_EXCLUDE = ["DoneDeal", "Done Deal", "Deal Cancelled", "NotInterested"];
+
+app.get("/api/daily-requests/callbacks", auth, async function(req, res) {
+  try {
+    var from = req.query.from ? String(req.query.from) : null;
+    var to   = req.query.to   ? String(req.query.to)   : null;
+    var excludeStatuses = req.query.excludeStatuses
+      ? parseExcludeStatuses(req.query.excludeStatuses)
+      : DEFAULT_DR_CB_EXCLUDE;
+    var limit = Math.min(parseInt(req.query.limit) || 500, 2000);
+    var order = req.query.order === "desc" ? -1 : 1;
+    var countOnly = req.query.count_only === "true" || req.query.count_only === "1";
+    var scope = await buildDRSearchScopeQuery(req);
+
+    var cbCond = { $type: "string", $gt: "" };
+    if (from) cbCond.$gte = from;
+    if (to)   cbCond.$lte = to;
+    var ands = [
+      scope,
+      { archived: { $ne: true } },
+      { callbackTime: cbCond }
+    ];
+    if (excludeStatuses.length) ands.push({ status: { $nin: excludeStatuses } });
+    var query = { $and: ands };
+
+    if (countOnly) {
+      var count = await DailyRequest.countDocuments(query);
+      return res.json({ count: count });
+    }
+    var rows = await DailyRequest.find(query)
+      .select(DR_CALLBACK_FIELDS)
+      .populate("agentId", "name title")
+      .sort({ callbackTime: order })
+      .limit(limit)
+      .lean();
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /api/daily-requests/callbacks]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "callbacks_failed" });
+  }
+});
+
 // STEP 3 — single-DR detail endpoint. Mirrors the role visibility of the
 // list handler so the FE can refetch a full DR (including eoiDocuments[])
 // after ?fields=summary has stripped them from the list response. Today
@@ -13304,6 +13472,119 @@ function reportsParseRange(from, to) {
 //
 // Pipeline value also uses raw budget — open pipeline doesn't apply
 // closed-deal weighting in any current view.
+
+// STEP 4-2 — Callback Compliance leaderboard (admin/sales_admin dashboard
+// card). Replaces the in-memory aggregation at src/App.js L8736-L8794. The
+// rule is "current-assignment only" for leads: a lead's callback contributes
+// to the agent who currently holds it, not historical rotated-off assignments
+// whose stale callbackTime would otherwise inflate every agent's bucket.
+//
+// from / to are ISO datetime strings; both required. Window is matched
+// against the current assignment's callbackTime for leads, and the top-level
+// callbackTime for DRs (DR has no assignments[] array). Missed = callback
+// is in the past AND the slice/DR status is still "CallBack". Done-on-time
+// = total scheduled minus missed (covers future callbacks + past callbacks
+// where the status has since moved on).
+app.get("/api/reports/callback-compliance", auth, reportsAuth, async function(req, res) {
+  try {
+    var from = req.query.from ? String(req.query.from) : null;
+    var to   = req.query.to   ? String(req.query.to)   : null;
+    if (!from || !to) return res.status(400).json({ error: "from and to (ISO datetime) are required" });
+    var nowIso = new Date().toISOString();
+
+    // Seed every active sales/sales_admin/TL/manager so the leaderboard
+    // never drops an agent with zero scheduled callbacks in the window
+    // (parity with FE App.js L8740-L8743).
+    var roles = ["sales", "sales_admin", "team_leader", "manager"];
+    var seedUsers = await User.find({ active: { $ne: false }, role: { $in: roles } }).select("_id name").lean();
+    var byAgent = {};
+    seedUsers.forEach(function(u){
+      byAgent[String(u._id)] = { uid: String(u._id), name: u.name || "Unknown", total: 0, doneOnTime: 0, missed: 0 };
+    });
+    var ensureBucket = function(uid, name){
+      if (!byAgent[uid]) byAgent[uid] = { uid: uid, name: name || "Unknown", total: 0, doneOnTime: 0, missed: 0 };
+      return byAgent[uid];
+    };
+
+    // ---- LEADS ---- current-assignment slice only.
+    // Index hit: { "assignments.agentId": 1, "assignments.callbackTime": 1 }
+    // The match prefilters to leads that have at least one slice with a
+    // callbackTime in window; the JS pass below picks the slice that matches
+    // top-level agentId.
+    var leadCandidates = await Lead.find({
+      "assignments.callbackTime": { $type: "string", $gte: from, $lte: to }
+    }).select("_id agentId assignments").lean();
+    var missingNames = {};
+    leadCandidates.forEach(function(l){
+      var currentAid = l.agentId ? String(l.agentId._id || l.agentId) : "";
+      if (!currentAid) return;
+      var active = (l.assignments || []).find(function(a){
+        var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+        return String(aid || "") === currentAid;
+      });
+      if (!active || !active.callbackTime) return;
+      var cb = active.callbackTime;
+      if (cb < from || cb > to) return;
+      var bucket = ensureBucket(currentAid);
+      if (bucket.name === "Unknown") missingNames[currentAid] = true;
+      bucket.total++;
+      var stillCallBack = active.status === "CallBack" || active.status === "Call Back";
+      var isMissed = cb < nowIso && stillCallBack;
+      if (isMissed) bucket.missed++;
+    });
+
+    // ---- DAILY REQUESTS ---- top-level fields.
+    var drRows = await DailyRequest.find({
+      callbackTime: { $type: "string", $gte: from, $lte: to }
+    }).select("_id agentId callbackTime status").lean();
+    drRows.forEach(function(r){
+      var aid = r.agentId ? String(r.agentId._id || r.agentId) : "";
+      if (!aid) return;
+      var bucket = ensureBucket(aid);
+      if (bucket.name === "Unknown") missingNames[aid] = true;
+      bucket.total++;
+      var drStill = r.status === "CallBack" || r.status === "Call Back";
+      var drMissed = r.callbackTime < nowIso && drStill;
+      if (drMissed) bucket.missed++;
+    });
+
+    // Backfill any unseen agent names (agents not in the active sales pool
+    // — e.g. a rotated-off TL or deactivated sales). Single query.
+    var missingIds = Object.keys(missingNames);
+    if (missingIds.length) {
+      var fillUsers = await User.find({ _id: { $in: missingIds } }).select("_id name").lean();
+      fillUsers.forEach(function(u){ if (byAgent[String(u._id)]) byAgent[String(u._id)].name = u.name || "Unknown"; });
+    }
+
+    // Compute derived fields + summary totals.
+    var sumScheduled = 0, sumMissed = 0;
+    Object.values(byAgent).forEach(function(x){
+      x.doneOnTime = x.total - x.missed;
+      x.rate = x.total > 0 ? Math.round((x.doneOnTime / x.total) * 100) : 100;
+      sumScheduled += x.total;
+      sumMissed += x.missed;
+    });
+    var sumDoneOnTime = sumScheduled - sumMissed;
+    var complianceRate = sumScheduled > 0 ? Math.round((sumDoneOnTime / sumScheduled) * 100) : 0;
+    // Worst-first sort matches FE behavior.
+    var leaderboard = Object.values(byAgent).sort(function(a, b){
+      if (b.missed !== a.missed) return b.missed - a.missed;
+      return b.total - a.total;
+    });
+
+    res.json({
+      leaderboard: leaderboard,
+      sumScheduled: sumScheduled,
+      sumDoneOnTime: sumDoneOnTime,
+      sumMissed: sumMissed,
+      complianceRate: complianceRate
+    });
+  } catch (e) {
+    console.error("[GET /api/reports/callback-compliance]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "callback_compliance_failed" });
+  }
+});
+
 app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res) {
   try {
     var range = reportsParseRange(req.query.from, req.query.to);

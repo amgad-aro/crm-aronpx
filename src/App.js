@@ -1233,6 +1233,14 @@ var cbStyleInjected = false;
 var CallbackBell = function(p) {
   var [tab, setTab] = useState("all");
   var [limit, setLimit] = useState(30);
+  // STEP 4-2 — own state populated from /api/leads/callbacks +
+  // /api/daily-requests/callbacks + /api/leads/no-contact. Rows are already
+  // role-scoped + archived-filtered + status-excluded server-side. Replaces
+  // the previous p.leads.concat(p.dailyRequests) scan which would silently
+  // miss callbacks once STEP 4-5 shrinks the bootstrap.
+  var [bellLeads, setBellLeads] = useState([]);
+  var [bellDRs, setBellDRs] = useState([]);
+  var [bellNoContact, setBellNoContact] = useState([]);
   var ref = useRef(null);
 
   useEffect(function(){ setLimit(30); },[tab]);
@@ -1249,21 +1257,57 @@ var CallbackBell = function(p) {
     var s=document.createElement("style"); s.textContent=CB_CSS; document.head.appendChild(s); cbStyleInjected=true;
   },[]);
 
+  // Fetch all three lists. Triggers: mount, cbBust (WS-driven), showNotif
+  // open→true, 60s interval fallback. Each row is tagged with _kind so the
+  // click handler below can route to lead vs DR without needing the parent's
+  // p.dailyRequests array.
+  useEffect(function(){
+    if(!p.token) return;
+    var cancelled = false;
+    var load = function(){
+      Promise.all([
+        apiFetch("/api/leads/callbacks?limit=2000","GET",null,p.token).catch(function(){return [];}),
+        apiFetch("/api/daily-requests/callbacks?limit=2000","GET",null,p.token).catch(function(){return [];}),
+        apiFetch("/api/leads/no-contact?stale_hours=24&limit=500","GET",null,p.token).catch(function(){return [];})
+      ]).then(function(r){
+        if (cancelled) return;
+        var tagged = function(arr,kind){ return (Array.isArray(arr)?arr:[]).map(function(x){ x._kind=kind; return x; }); };
+        setBellLeads(tagged(r[0],"lead"));
+        setBellDRs(tagged(r[1],"dr"));
+        setBellNoContact(tagged(r[2],"lead"));
+      });
+    };
+    load();
+    var t = setInterval(load, 60000);
+    return function(){ cancelled = true; clearInterval(t); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust]);
+
+  // Open-the-bell refetch — covers the rare case where WS missed an event
+  // and the user opens the bell within the 60s polling window.
+  useEffect(function(){
+    if(!p.showNotif || !p.token) return;
+    var cancelled = false;
+    Promise.all([
+      apiFetch("/api/leads/callbacks?limit=2000","GET",null,p.token).catch(function(){return [];}),
+      apiFetch("/api/daily-requests/callbacks?limit=2000","GET",null,p.token).catch(function(){return [];}),
+      apiFetch("/api/leads/no-contact?stale_hours=24&limit=500","GET",null,p.token).catch(function(){return [];})
+    ]).then(function(r){
+      if (cancelled) return;
+      var tagged = function(arr,kind){ return (Array.isArray(arr)?arr:[]).map(function(x){ x._kind=kind; return x; }); };
+      setBellLeads(tagged(r[0],"lead"));
+      setBellDRs(tagged(r[1],"dr"));
+      setBellNoContact(tagged(r[2],"lead"));
+    });
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.showNotif]);
+
   // Simple computation - no useMemo, no useRef tricks
   var now = Date.now();
-  var uid = String(p.cu&&p.cu.id||"");
-  var teamUids = new Set((p.myTeamUsers||[]).map(function(u){return String(u._id||gid(u)||"");}));
-  teamUids.add(uid);
 
-  var allLeads = (p.leads||[]).concat(p.dailyRequests||[]);
-
-  var myItems = allLeads.filter(function(l){
-    if(l.archived||l.status==="DoneDeal"||l.status==="NotInterested"||l.status==="EOI") return false;
-    var aid = String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
-    if(p.cu.role==="sales") return aid===uid;
-    if(p.cu.role==="team_leader") return teamUids.has(aid);
-    return true;
-  });
+  // Server already scopes by role, excludes archived/DoneDeal/NotInterested/EOI.
+  var myItems = bellLeads.concat(bellDRs);
 
   var overdue = [];
   var nowItems = [];
@@ -1285,10 +1329,11 @@ var CallbackBell = function(p) {
 
   upcoming.sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
 
-  myItems.forEach(function(l){
-    if(!cbIds.has(gid(l)) && (now - new Date(l.lastActivityTime||0).getTime()) > 86400000){
-      noContact.push(l);
-    }
+  // No Contact: server returns leads with stale lastActivityTime regardless
+  // of callbackTime state. Dedupe against rows already in an overdue/now/
+  // upcoming bucket (parity with the pre-4-2 in-memory behavior).
+  bellNoContact.forEach(function(l){
+    if(!cbIds.has(gid(l))) noContact.push(l);
   });
 
   var allItems = overdue.concat(nowItems).concat(upcoming).concat(noContact);
@@ -1359,7 +1404,7 @@ var CallbackBell = function(p) {
           var cc=CB_COLORS[lType]||CB_COLORS.now;
           var cbTypeLabel=lType==="overdue"?"Overdue":lType==="now"?"Callback Now":lType==="upcoming"?"Upcoming":"No Contact";
           var timeStr=lType==="nocontact"?timeAgo(l.lastActivityTime,p.t):(l.callbackTime?timeAgo(l.callbackTime,p.t):"");
-          return <div key={gid(l)} className="cb-card" onClick={function(){p.setShowNotif(false);var isDR=(p.dailyRequests||[]).some(function(r){return gid(r)===gid(l);});setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
+          return <div key={gid(l)} className="cb-card" onClick={function(){p.setShowNotif(false);var isDR=l._kind==="dr";setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();}else{p.onLeadClick(l);}},50);}} style={{ background:cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
             <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{lType==="overdue"?"⏰":lType==="now"?"📞":lType==="upcoming"?"🔔":"😴"}</div>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ fontSize:15, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
@@ -1735,7 +1780,7 @@ var Header = function(p) {
       </div>}
 
       {/* BELL 1 — Callbacks (isolated component) */}
-      <CallbackBell t={p.t} leads={p.leads} dailyRequests={p.dailyRequests} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>
+      <CallbackBell t={p.t} token={p.token} cbBust={p.cbBust} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>
     </div>
   </div>
   {p.isMobile&&<div style={{ padding:"8px", background:"#fff", borderBottom:"1px solid #E5E7EB" }}>
@@ -6954,6 +6999,13 @@ var DashboardPage = function(p) {
   var [seeAllOpen, setSeeAllOpen] = useState(false);
   // Mobile layout flag — updates on resize. Desktop styles are untouched; mobile just overrides specific rules.
   var [isMobile, setIsMobile] = useState(typeof window!=="undefined" && window.innerWidth<768);
+  // STEP 4-2 — callback-card state. Sales-side (urgent / schedule / overdueCount)
+  // for the !isOnlyAdmin branch; compliance leaderboard for the admin branch.
+  // Fetched from /api/leads/callbacks + /api/reports/callback-compliance so the
+  // cards don't depend on the in-memory p.leads + p.dailyReqs scans which
+  // shrink under STEP 4-5.
+  var [cbSalesState, setCbSalesState] = useState({ overdue: [], scheduled: [], overdueCount: 0 });
+  var [cbCompliance, setCbCompliance] = useState(null);
   useEffect(function(){
     var onResize = function(){ setIsMobile(window.innerWidth<768); };
     window.addEventListener("resize", onResize);
@@ -6969,6 +7021,100 @@ var DashboardPage = function(p) {
     document.addEventListener("mousedown", handleClickOutside);
     return function(){ document.removeEventListener("mousedown", handleClickOutside); };
   },[]);
+
+  // STEP 4-2 — fetch sales-side callback cards (urgent / schedule /
+  // overdueCount). Range is computed from `filter` to match the legacy
+  // rangeStartS / rangeEndS expressions at App.js (now-replaced section).
+  // Gated on !isOnlyAdmin so admin's dashboard doesn't issue these fetches
+  // (admin renders the CallbackCompliance card instead — separate fetch
+  // below).
+  useEffect(function(){
+    if (!p.token) return;
+    if (isOnlyAdmin) return;
+    var cancelled = false;
+    var load = function(){
+      var nowD = new Date();
+      var cY = nowD.getFullYear(), cM = nowD.getMonth(), cD = nowD.getDate();
+      var jsDay = nowD.getDay();
+      var daysSinceSat = (jsDay - 6 + 7) % 7;
+      var todayStart = new Date(cY, cM, cD, 0,0,0,0);
+      var todayEnd   = new Date(cY, cM, cD, 23,59,59,999);
+      var yestStart  = new Date(cY, cM, cD-1, 0,0,0,0);
+      var yestEnd    = new Date(cY, cM, cD-1, 23,59,59,999);
+      var weekStart  = new Date(cY, cM, cD - daysSinceSat, 0,0,0,0);
+      var monthStart = new Date(cY, cM, 1, 0,0,0,0);
+      var monthEnd   = new Date(cY, cM+1, 0, 23,59,59,999);
+      var rangeStart, rangeEnd;
+      if (filter==="today")          { rangeStart = todayStart.getTime();  rangeEnd = todayEnd.getTime(); }
+      else if (filter==="yesterday") { rangeStart = yestStart.getTime();   rangeEnd = yestEnd.getTime(); }
+      else if (filter==="week")      { rangeStart = weekStart.getTime();   rangeEnd = Date.now(); }
+      else if (filter==="month")     { rangeStart = monthStart.getTime();  rangeEnd = Math.min(Date.now(), monthEnd.getTime()); }
+      else if (typeof filter==="string" && /^Q\d\s+\d{4}$/.test(filter)) {
+        var m = filter.match(/^Q(\d)\s+(\d{4})$/);
+        var qn = parseInt(m[1]); var qy = parseInt(m[2]);
+        var qS = new Date(qy, (qn-1)*3, 1, 0,0,0,0);
+        var qE = new Date(qy, qn*3, 0, 23,59,59,999);
+        rangeStart = qS.getTime(); rangeEnd = Math.min(Date.now(), qE.getTime());
+      } else { rangeStart = todayStart.getTime(); rangeEnd = todayEnd.getTime(); }
+      var fromIso = new Date(rangeStart).toISOString();
+      var toIso   = new Date(rangeEnd).toISOString();
+      var nowIso  = new Date().toISOString();
+      Promise.all([
+        apiFetch("/api/leads/callbacks?to="+encodeURIComponent(nowIso)+"&limit=5&order=asc","GET",null,p.token).catch(function(){return [];}),
+        apiFetch("/api/leads/callbacks?from="+encodeURIComponent(fromIso)+"&to="+encodeURIComponent(toIso)+"&limit=7&order=asc","GET",null,p.token).catch(function(){return [];}),
+        apiFetch("/api/leads/callbacks?to="+encodeURIComponent(nowIso)+"&count_only=true","GET",null,p.token).catch(function(){return {count:0};})
+      ]).then(function(r){
+        if (cancelled) return;
+        setCbSalesState({
+          overdue:    Array.isArray(r[0]) ? r[0] : [],
+          scheduled:  Array.isArray(r[1]) ? r[1] : [],
+          overdueCount: (r[2] && typeof r[2].count==="number") ? r[2].count : 0
+        });
+      });
+    };
+    load();
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust, filter, isOnlyAdmin]);
+
+  // STEP 4-2 — admin CallbackCompliance leaderboard. Mirrors the sales-side
+  // fetch but targets the dedicated /api/reports/callback-compliance endpoint
+  // which does the per-current-assignment aggregation server-side.
+  useEffect(function(){
+    if (!p.token) return;
+    if (!isOnlyAdmin) return;
+    var cancelled = false;
+    var load = function(){
+      var nowD = new Date();
+      var cY = nowD.getFullYear(), cM = nowD.getMonth(), cD = nowD.getDate();
+      var jsDay = nowD.getDay();
+      var daysSinceSat = (jsDay - 6 + 7) % 7;
+      var todayStart = new Date(cY, cM, cD, 0,0,0,0);
+      var yestStart  = new Date(cY, cM, cD-1, 0,0,0,0);
+      var weekStart  = new Date(cY, cM, cD - daysSinceSat, 0,0,0,0);
+      var monthStart = new Date(cY, cM, 1, 0,0,0,0);
+      var rangeStart, periodEnd;
+      var DAY = 86400000;
+      if (filter==="today") { rangeStart = todayStart.getTime(); periodEnd = todayStart.getTime() + DAY - 1; }
+      else if (filter==="yesterday") { rangeStart = yestStart.getTime(); periodEnd = yestStart.getTime() + DAY - 1; }
+      else if (filter==="week") { rangeStart = weekStart.getTime(); periodEnd = weekStart.getTime() + 7*DAY - 1; }
+      else if (filter==="month") { rangeStart = monthStart.getTime(); periodEnd = new Date(cY, cM+1, 1, 0,0,0,0).getTime() - 1; }
+      else if (typeof filter==="string" && /^Q\d\s+\d{4}$/.test(filter)) {
+        var m = filter.match(/^Q(\d)\s+(\d{4})$/);
+        var qn = parseInt(m[1]); var qy = parseInt(m[2]);
+        rangeStart = new Date(qy, (qn-1)*3, 1).getTime();
+        periodEnd  = new Date(qy, qn*3, 1).getTime() - 1;
+      } else { rangeStart = monthStart.getTime(); periodEnd = new Date(cY, cM+1, 1, 0,0,0,0).getTime() - 1; }
+      var fromIso = new Date(rangeStart).toISOString();
+      var toIso   = new Date(periodEnd).toISOString();
+      apiFetch("/api/reports/callback-compliance?from="+encodeURIComponent(fromIso)+"&to="+encodeURIComponent(toIso),"GET",null,p.token)
+        .then(function(r){ if (!cancelled) setCbCompliance(r||null); })
+        .catch(function(){ if (!cancelled) setCbCompliance(null); });
+    };
+    load();
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust, filter, isOnlyAdmin]);
   // Fetch activities since the active period's start (not just today's 00:00)
   // — so Today's Activities / This Week's Activities / etc all have enough
   // data to render without another round-trip. Refreshes every 30s, and
@@ -7717,14 +7863,17 @@ var DashboardPage = function(p) {
     var myTotal2 = (myStats && typeof myStats.myLeads === "number") ? myStats.myLeads : myLeads2.length;
     var myInt2  = (mySC2.HotCase||0) + (mySC2.Potential||0) + (mySC2.MeetingDone||0) + (mySC2.DoneDeal||0);
     var myMeet2 = (myStats && typeof myStats.meetings === "number") ? myStats.meetings : ((mySC2.MeetingDone||0) + (mySC2.DoneDeal||0));
-    // Overdue uses the NOW state across all my leads (date filter doesn't apply to callback overdue).
-    var myOv2   = allMyLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).length;
-    // These lists are "now state" — independent of the date range filter.
-    var urgent2    = allMyLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).getTime()<now;}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);}).slice(0,5);
+    // STEP 4-2 — callbacks come from /api/leads/callbacks (fetched in the
+    // useEffect above into cbSalesState). The previous allMyLeads.filter scan
+    // worked only because the bootstrap shipped every lead; once STEP 4-5
+    // shrinks the bootstrap it would silently miss callbacks outside the
+    // page slice. urgent2 + schedule2 + myOv2 stay role-scoped server-side.
+    var myOv2   = cbSalesState.overdueCount;
+    var urgent2 = cbSalesState.overdue;
+    var schedule2 = cbSalesState.scheduled;
+    // urgentNew2 stays in-memory — it's about NewLead-status leads with no
+    // recent activity, which isn't a callback query. Migrates with STEP 4-5.
     var urgentNew2 = allMyLeads.filter(function(l){return l.status==="NewLead"&&l.createdAt&&(now-new Date(l.createdAt).getTime())>2*3600000;}).slice(0,3);
-    // Schedule card — callbacks whose scheduled time falls in the active filter
-    // range. Title updates alongside (see scheduleTitle2 below).
-    var schedule2  = allMyLeads.filter(function(l){return l.callbackTime&&!l.archived&&inRangeS(l.callbackTime);}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);}).slice(0,7);
     var scheduleTitle2 = (function(){
       if (filter==="today") return "Today's Schedule";
       if (filter==="yesterday") return "Yesterday's Schedule";
@@ -8728,65 +8877,19 @@ var DashboardPage = function(p) {
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Callback Compliance</div>
         {(function(){
-          var nowMs = now;
-          var parseCb = function(v){ if(!v) return 0; var t=new Date(v).getTime(); return isNaN(t)?0:t; };
-          // Seed every active sales/team_leader/manager so the leaderboard never drops an agent
-          var byAgent = {};
-          (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="sales_admin"||u.role==="team_leader"||u.role==="manager");}).forEach(function(u){
-            var uid = String(u._id||gid(u));
-            byAgent[uid] = {uid:uid,name:u.name||"Unknown",total:0,doneOnTime:0,missed:0};
-          });
-          var sumScheduled=0, sumMissed=0;
-          // For each lead, only the assignment matching the CURRENT lead.agentId counts as that lead's active callback
-          // (rotated-off assignments carry stale callbackTime and must be ignored).
-          leads.forEach(function(l){
-            var currentAid = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId||"");
-            if (!currentAid) return;
-            var active = (l.assignments||[]).find(function(a){
-              var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
-              return String(aid||"")===currentAid;
-            });
-            if (!active) return;
-            var cb = parseCb(active.callbackTime);
-            if (!cb) return;
-            if (cb<rangeStart || cb>periodEnd) return;
-            if (!byAgent[currentAid]) {
-              var aName = l.agentId && l.agentId.name ? l.agentId.name : (function(){var u=(p.users||[]).find(function(x){return String(x._id||gid(x))===currentAid;});return u?u.name:"Unknown";})();
-              byAgent[currentAid] = {uid:currentAid,name:aName,total:0,doneOnTime:0,missed:0};
-            }
-            byAgent[currentAid].total++;
-            var stillCallBack = active.status==="CallBack" || active.status==="Call Back";
-            var isMissed = cb<nowMs && stillCallBack;
-            if (isMissed) byAgent[currentAid].missed++;
-            sumScheduled++;
-            if (isMissed) sumMissed++;
-          });
-          // Daily Requests — DR has a single top-level agentId/callbackTime/status (no assignments array)
-          (p.dailyReqs||[]).forEach(function(r){
-            var cb = parseCb(r.callbackTime);
-            if (!cb) return;
-            if (cb<rangeStart || cb>periodEnd) return;
-            var aid = r.agentId&&r.agentId._id?r.agentId._id:r.agentId;
-            var auid = String(aid||"");
-            if (!auid) return;
-            if (!byAgent[auid]) {
-              var aName = r.agentId&&r.agentId.name ? r.agentId.name : (function(){var u=(p.users||[]).find(function(x){return String(x._id||gid(x))===auid;});return u?u.name:"Unknown";})();
-              byAgent[auid] = {uid:auid,name:aName,total:0,doneOnTime:0,missed:0};
-            }
-            byAgent[auid].total++;
-            var drStillCallBack = r.status==="CallBack" || r.status==="Call Back";
-            var drMissed = cb<nowMs && drStillCallBack;
-            if (drMissed) byAgent[auid].missed++;
-            sumScheduled++;
-            if (drMissed) sumMissed++;
-          });
-          // Done on time = scheduled minus missed (covers future callbacks + past callbacks where status has moved on)
-          Object.values(byAgent).forEach(function(x){ x.doneOnTime = x.total - x.missed; });
-          var sumDoneOnTime = sumScheduled - sumMissed;
-          var complianceRate = sumScheduled>0 ? Math.round(sumDoneOnTime/sumScheduled*100) : 0;
-          var leaderboard = Object.values(byAgent).sort(function(a,b){ if (b.missed!==a.missed) return b.missed-a.missed; return b.total-a.total; });
-          // Per-agent compliance rate = done on time / total scheduled (spec definition).
-          leaderboard.forEach(function(x){ x.rate = x.total>0?Math.round(x.doneOnTime/x.total*100):100; });
+          // STEP 4-2 — aggregation moved to /api/reports/callback-compliance
+          // (fetched in the useEffect above into cbCompliance). The previous
+          // in-memory loop scanned every assignment of every lead in p.leads
+          // plus every DR in p.dailyReqs — once STEP 4-5 shrinks the bootstrap
+          // those scans would silently miss most rows. Server-side aggregation
+          // owns the current-assignment-only rule (see server.js
+          // /api/reports/callback-compliance handler).
+          if (!cbCompliance) return <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0",textAlign:"center"}}>Loading…</div>;
+          var sumScheduled = cbCompliance.sumScheduled || 0;
+          var sumDoneOnTime = cbCompliance.sumDoneOnTime || 0;
+          var sumMissed = cbCompliance.sumMissed || 0;
+          var complianceRate = cbCompliance.complianceRate || 0;
+          var leaderboard = cbCompliance.leaderboard || [];
           var rateColor = function(rate){ return rate>=80?"#10B981":rate>=60?"#F59E0B":"#DC2626"; };
           var initialsOfName = function(n){return (n||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();};
           var filterLabel = filter==="today" ? "Scheduled Today" : filter==="yesterday" ? "Scheduled Yesterday" : filter==="week" ? "Scheduled this Week" : filter==="month" ? "Scheduled this Month" : "Scheduled in Period";
@@ -10273,14 +10376,50 @@ var TasksPage = function(p) {
   var now=Date.now();
   var today=new Date().toDateString();
 
+  // STEP 4-2 — today's callbacks + overdue-not-today count fetched from
+  // /api/leads/callbacks (role-scoped server-side). The previous
+  // myLeads.filter scan worked only because the bootstrap shipped every
+  // lead; once STEP 4-5 shrinks the bootstrap it would silently miss
+  // callbacks outside the page slice.
+  var [callbacksToday, setCallbacksToday] = useState([]);
+  var [overdueRows, setOverdueRows] = useState([]);
+  var [overdueCount, setOverdueCount] = useState(0);
+  useEffect(function(){
+    if (!p.token) return;
+    var cancelled = false;
+    var load = function(){
+      var nowD = new Date();
+      var cY=nowD.getFullYear(), cM=nowD.getMonth(), cD=nowD.getDate();
+      var todayStart = new Date(cY, cM, cD, 0,0,0,0);
+      var todayEnd   = new Date(cY, cM, cD, 23,59,59,999);
+      Promise.all([
+        apiFetch("/api/leads/callbacks?from="+encodeURIComponent(todayStart.toISOString())+"&to="+encodeURIComponent(todayEnd.toISOString())+"&limit=200&order=asc","GET",null,p.token).catch(function(){return [];}),
+        // Overdue-and-NOT-today: callbackTime < todayStart. Returns up to
+        // limit=200 rows for the top-5 list AND a separate count_only fetch
+        // for the badge — total Atlas overdue is ~280 leads so the list
+        // would saturate without the count_only round-trip.
+        apiFetch("/api/leads/callbacks?to="+encodeURIComponent(todayStart.toISOString())+"&limit=200&order=asc","GET",null,p.token).catch(function(){return [];}),
+        apiFetch("/api/leads/callbacks?to="+encodeURIComponent(todayStart.toISOString())+"&count_only=true","GET",null,p.token).catch(function(){return {count:0};})
+      ]).then(function(r){
+        if (cancelled) return;
+        setCallbacksToday(Array.isArray(r[0]) ? r[0] : []);
+        setOverdueRows(Array.isArray(r[1]) ? r[1] : []);
+        setOverdueCount((r[2] && typeof r[2].count==="number") ? r[2].count : 0);
+      });
+    };
+    load();
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust]);
+
   var myLeads=p.leads.filter(function(l){
     if(l.archived)return false;
     var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
     return p.cu.role==="admin"||p.cu.role==="manager"||p.cu.role==="team_leader"||aid===p.cu.id;
   });
 
-  var callbacksToday=myLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime).toDateString()===today;}).sort(function(a,b){return new Date(a.callbackTime)-new Date(b.callbackTime);});
-  var overdue=myLeads.filter(function(l){return l.callbackTime&&new Date(l.callbackTime)<new Date()&&new Date(l.callbackTime).toDateString()!==today;});
+  // noActivity stays in-memory — it's about lastActivityTime AND status, not
+  // a callback query. Migrates with STEP 4-5.
   var noActivity=myLeads.filter(function(l){return (!l.lastActivityTime||(now-new Date(l.lastActivityTime).getTime())>1*24*60*60*1000)&&l.status!=="DoneDeal"&&l.status!=="NotInterested";});
 
   var myTasks=p.tasks.filter(function(tk){
@@ -10329,19 +10468,19 @@ var TasksPage = function(p) {
 
     <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
       <StatCard icon={Phone} label={"Today's Calls"} value={callbacksToday.length+""} c={C.info} onClick={function(){var el=document.getElementById("t-callbacks");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
-      <StatCard icon={AlertCircle} label={"Overdue"} value={(overdue.length+overdueTasks.length)+""} c={C.danger} onClick={function(){var el=document.getElementById("t-overdue");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
+      <StatCard icon={AlertCircle} label={"Overdue"} value={(overdueCount+overdueTasks.length)+""} c={C.danger} onClick={function(){var el=document.getElementById("t-overdue");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
       <StatCard icon={Activity} label={"No Activity"} value={noActivity.length+""} c={C.warning} onClick={function(){var el=document.getElementById("t-noact");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
       <StatCard icon={CheckCircle} label={"Today's Tasks"} value={todayTasks.length+""} c={"#8B5CF6"} onClick={function(){var el=document.getElementById("t-today");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
     </div>
 
-    {overdue.length>0&&<div id="t-overdue"><Sec icon="⚠️" title="Overdue Calls" color={C.danger} count={overdue.length}>{overdue.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
+    {overdueCount>0&&<div id="t-overdue"><Sec icon="⚠️" title="Overdue Calls" color={C.danger} count={overdueCount}>{overdueRows.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {overdueTasks.length>0&&<Sec icon="🔴" title="Overdue Tasks" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
     {callbacksToday.length>0&&<div id="t-callbacks"><Sec icon="📞" title="Today's Calls" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {todayTasks.length>0&&<div id="t-today"><Sec icon="📋" title="Today's Tasks" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec></div>}
     {noActivity.length>0&&<div id="t-noact"><Sec icon="😴" title="No Activity +3 Days" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
     {upcoming.length>0&&<Sec icon="📅" title="Upcoming Tasks" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
 
-    {callbacksToday.length===0&&overdue.length===0&&noActivity.length===0&&myTasks.length===0&&
+    {callbacksToday.length===0&&overdueCount===0&&noActivity.length===0&&myTasks.length===0&&
       <div style={{ textAlign:"center", padding:"60px 20px" }}>
         <div style={{ fontSize:48, marginBottom:12 }}>🎉</div>
         <div style={{ fontSize:16, fontWeight:700, marginBottom:8 }}>Clear day!</div>
@@ -23377,6 +23516,11 @@ export default function CRMApp() {
   var [dealNotifs,setDealNotifs]=useState([]);
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
+  // STEP 4-2 — bumped (debounced) on every lead/DR WS event. CallbackBell +
+  // DashboardPage's callback cards + TasksPage read this in their fetch effect
+  // deps so they refresh in real time without scanning the (soon-to-shrink)
+  // p.leads / p.dailyRequests arrays in memory.
+  var [cbBust,setCbBust]=useState(0);
   var [rotNotifs,setRotNotifs]=useState([]);
   // Off-site request bell — pending rows go to approvers, approved/rejected
   // rows go to the requester. Visibility is enforced server-side; this client
@@ -23636,6 +23780,15 @@ export default function CRMApp() {
         });
       }).catch(function(){});
     };
+    // STEP 4-2 — debounced bump for the callback consumers. Coalesces bursts
+    // (e.g. cascade lead_updated emits) into a single refresh tick. 1500ms
+    // matches the report-card debounce used elsewhere — fast enough to feel
+    // live, slow enough to skip mid-burst churn.
+    var cbBumpTimer = null;
+    var bumpCbBust = function(){
+      if (cbBumpTimer) clearTimeout(cbBumpTimer);
+      cbBumpTimer = setTimeout(function(){ setCbBust(function(v){return v+1;}); }, 1500);
+    };
     function connect(){
       if(cancelled || retries>=maxRetries) return;
       try{ ws = new WebSocket(wsUrl); }catch(e){ return; }
@@ -23686,9 +23839,11 @@ export default function CRMApp() {
                 // the local Lead state can't silently diverge from the DB.
                 fetchLeadsLight();
               }
+              bumpCbBust();
               break;
             case "lead_deleted":
               if (data.leadId) setLeads(function(prev){return prev.filter(function(l){return gid(l)!==String(data.leadId);});});
+              bumpCbBust();
               break;
             case "dr_updated":
               if (data.dr && data.dr._id) {
@@ -23730,9 +23885,11 @@ export default function CRMApp() {
               } else {
                 fetchDRs();
               }
+              bumpCbBust();
               break;
             case "dr_deleted":
               if (data.drId) setDailyReqs(function(prev){return prev.filter(function(r){return gid(r)!==String(data.drId);});});
+              bumpCbBust();
               break;
             case "activity_created":
               if (data.activity) setActivities(function(prev){
@@ -23835,6 +23992,7 @@ export default function CRMApp() {
     return function(){
       cancelled = true;
       clearTimeout(reconnectTimer);
+      if (cbBumpTimer) clearTimeout(cbBumpTimer);
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", onFocus);
       if (ws) try{ws.close();}catch(e){}
@@ -24088,7 +24246,7 @@ export default function CRMApp() {
     setPage("commissions");
     try { localStorage.setItem("crm_page","commissions"); } catch(e){}
   };
-  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings,salaryViewUserId:salaryViewUserId,setSalaryViewUserId:setSalaryViewUserId,setPage:setPage,navigateToCommission:navigateToCommission,selectedCommissionLeadId:selectedCommissionLeadId,setSelectedCommissionLeadId:setSelectedCommissionLeadId};
+  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings,salaryViewUserId:salaryViewUserId,setSalaryViewUserId:setSalaryViewUserId,setPage:setPage,navigateToCommission:navigateToCommission,selectedCommissionLeadId:selectedCommissionLeadId,setSelectedCommissionLeadId:setSelectedCommissionLeadId,cbBust:cbBust};
 
   var renderPage=function(){
     switch(currentPage){
@@ -24180,7 +24338,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} token={token} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} navigateToCommission={navigateToCommission} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} token={token} cbBust={cbBust} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} navigateToCommission={navigateToCommission} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
   </div>;
