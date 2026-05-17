@@ -9431,9 +9431,24 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         // worse — stamp internal recipients onto a deal that's now external,
         // or vice-versa). Cancelled commissions don't lock — admins can
         // re-tag a lead whose only prior commission was rolled back.
+        // BUG #5 follow-up — externalDealConfig deep-compare. The FE's
+        // edit-deal form re-sends the existing config on every save (it
+        // spreads `form` into the payload at src/App.js:2008), so
+        // `!== undefined` was a false-positive that fired the lock even
+        // when admin only changed dealDate / notes / project / name.
+        // Compare the actual pct values instead — only true config flips
+        // (taxPct or brokerSharePct changed) count as noise. dealType
+        // and externalBrokerId already use the same correct pattern.
+        var cfgChanged = (function(){
+          if (req.body.externalDealConfig === undefined) return false;
+          var n = req.body.externalDealConfig || {};
+          var o = dtOldLead.externalDealConfig || {};
+          return Number(n.commissionTaxPct || 0) !== Number(o.commissionTaxPct || 0)
+              || Number(n.brokerSharePct   || 0) !== Number(o.brokerSharePct   || 0);
+        })();
         var hasNoiseInBody = (req.body.dealType         !== undefined && String(req.body.dealType)         !== String(dtOldLead.dealType || "internal"))
                           || (req.body.externalBrokerId !== undefined && String(req.body.externalBrokerId || "") !== String(dtOldLead.externalBrokerId || ""))
-                          || (req.body.externalDealConfig !== undefined);
+                          || cfgChanged;
         if (hasNoiseInBody) {
           var lockingComm = await Commission.findOne({
             leadId: req.params.id,
