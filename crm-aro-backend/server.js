@@ -7720,6 +7720,73 @@ app.get("/api/leads/callbacks", auth, async function(req, res) {
   }
 });
 
+// STEP 4-3 — Lead counts endpoint. Replaces the in-memory adminMetrics scans
+// (App.js L7619-L7653) that derive total / meetings / deals / interested /
+// overdueCallbacks / callbacksInRange from p.leads. Role-scoped via
+// buildLeadSearchScopeQuery. Used by Dashboard admin tiles and KPIsPage.
+//
+// Date semantics: "createdAt window" for total/meetings/deals/interested;
+// "callbackTime window" for callbacksInRange / overdueCallbacks. All counts
+// use countDocuments which rides the existing indexes (createdAt_-1,
+// status_1_createdAt_-1, hadMeeting_1_agentId_1, callbackTime_partial).
+app.get("/api/leads/counts", auth, async function(req, res) {
+  try {
+    var from = req.query.from ? new Date(String(req.query.from)) : null;
+    var to   = req.query.to   ? new Date(String(req.query.to))   : null;
+    if (from && isNaN(from.getTime())) from = null;
+    if (to   && isNaN(to.getTime()))   to   = null;
+    var fromIso = from ? from.toISOString() : null;
+    var toIso   = to   ? to.toISOString()   : null;
+    var nowIso  = new Date().toISOString();
+    var scope = await buildLeadSearchScopeQuery(req);
+
+    var createdInWindow = {};
+    if (from || to) {
+      createdInWindow.createdAt = {};
+      if (from) createdInWindow.createdAt.$gte = from;
+      if (to)   createdInWindow.createdAt.$lte = to;
+    }
+    var baseInWindowAnd = [scope, { archived: { $ne: true } }];
+    if (from || to) baseInWindowAnd.push(createdInWindow);
+
+    var interestedSet = ["Interested", "HotCase", "Hot Case", "Potential", "MeetingDone", "Meeting Done", "DoneDeal"];
+
+    var cbCondInWindow = { $type: "string", $gt: "" };
+    if (fromIso) cbCondInWindow.$gte = fromIso;
+    if (toIso)   cbCondInWindow.$lte = toIso;
+    var cbOverdueCond = Object.assign({}, cbCondInWindow, { $lt: nowIso });
+
+    var dealsCond = { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] };
+    var meetingsCond = { $or: [{ hadMeeting: true }, { status: "MeetingDone" }, { status: "Meeting Done" }] };
+    var interestedCond = { $or: [{ status: { $in: interestedSet } }, { "assignments.status": { $in: interestedSet } }] };
+
+    var counts = await Promise.all([
+      Lead.countDocuments({ $and: baseInWindowAnd }),
+      Lead.countDocuments({ $and: baseInWindowAnd.concat([meetingsCond]) }),
+      Lead.countDocuments({ $and: baseInWindowAnd.concat([dealsCond]) }),
+      Lead.countDocuments({ $and: baseInWindowAnd.concat([interestedCond]) }),
+      Lead.countDocuments({ $and: [scope, { archived: { $ne: true } }, { callbackTime: cbCondInWindow }] }),
+      Lead.countDocuments({ $and: [scope,
+        { archived: { $ne: true } },
+        { callbackTime: cbOverdueCond },
+        { status: { $nin: ["MeetingDone", "DoneDeal", "EOI"] } }
+      ]})
+    ]);
+
+    res.json({
+      total:            counts[0],
+      meetings:         counts[1],
+      deals:            counts[2],
+      interested:       counts[3],
+      callbacksInRange: counts[4],
+      overdueCallbacks: counts[5]
+    });
+  } catch (e) {
+    console.error("[GET /api/leads/counts]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "counts_failed" });
+  }
+});
+
 // No-contact tab on CallbackBell. Returns leads with stale lastActivityTime
 // regardless of callbackTime state — the FE dedupes against the
 // /api/leads/callbacks result via the existing cbIds Set, matching today's
@@ -12106,6 +12173,238 @@ app.get("/api/daily-requests/callbacks", auth, async function(req, res) {
   } catch (e) {
     console.error("[GET /api/daily-requests/callbacks]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "callbacks_failed" });
+  }
+});
+
+// STEP 4-3 — DR counts endpoint. Mirror of /api/leads/counts for the DR
+// collection. Role-scoped via buildDRSearchScopeQuery. Date semantics match
+// the lead version. DR has no assignments[] array so interested is computed
+// against the top-level status only.
+app.get("/api/daily-requests/counts", auth, async function(req, res) {
+  try {
+    var from = req.query.from ? new Date(String(req.query.from)) : null;
+    var to   = req.query.to   ? new Date(String(req.query.to))   : null;
+    if (from && isNaN(from.getTime())) from = null;
+    if (to   && isNaN(to.getTime()))   to   = null;
+    var fromIso = from ? from.toISOString() : null;
+    var toIso   = to   ? to.toISOString()   : null;
+    var nowIso  = new Date().toISOString();
+    var scope = await buildDRSearchScopeQuery(req);
+
+    var createdInWindow = {};
+    if (from || to) {
+      createdInWindow.createdAt = {};
+      if (from) createdInWindow.createdAt.$gte = from;
+      if (to)   createdInWindow.createdAt.$lte = to;
+    }
+    var baseAnd = [scope, { archived: { $ne: true } }];
+    if (from || to) baseAnd.push(createdInWindow);
+
+    var cbCondInWindow = { $type: "string", $gt: "" };
+    if (fromIso) cbCondInWindow.$gte = fromIso;
+    if (toIso)   cbCondInWindow.$lte = toIso;
+    var cbOverdueCond = Object.assign({}, cbCondInWindow, { $lt: nowIso });
+
+    // DR statuses observed in production: "Meeting"|"MeetingDone" for meetings;
+    // "DoneDeal"|"Done Deal"|"Deal" for deals.
+    var meetingsCond = { status: { $in: ["Meeting", "MeetingDone", "Meeting Done"] } };
+    var dealsCond    = { status: { $in: ["DoneDeal", "Done Deal", "Deal"] } };
+
+    var counts = await Promise.all([
+      DailyRequest.countDocuments({ $and: baseAnd }),
+      DailyRequest.countDocuments({ $and: baseAnd.concat([meetingsCond]) }),
+      DailyRequest.countDocuments({ $and: baseAnd.concat([dealsCond]) }),
+      DailyRequest.countDocuments({ $and: [scope, { archived: { $ne: true } }, { callbackTime: cbCondInWindow }] }),
+      DailyRequest.countDocuments({ $and: [scope,
+        { archived: { $ne: true } },
+        { callbackTime: cbOverdueCond },
+        { status: { $nin: ["Meeting", "MeetingDone", "DoneDeal", "Done Deal", "Deal", "Deal Cancelled"] } }
+      ]})
+    ]);
+
+    res.json({
+      total:            counts[0],
+      meetings:         counts[1],
+      deals:            counts[2],
+      callbacksInRange: counts[3],
+      overdueCallbacks: counts[4]
+    });
+  } catch (e) {
+    console.error("[GET /api/daily-requests/counts]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "dr_counts_failed" });
+  }
+});
+
+// STEP 4-3 — DR per-agent stats for AgentPerf / TeamPage. Admin/sales_admin
+// only — same access tier as the existing /api/dashboard/admin-stats. Returns
+// `{ perAgent: [{uid, drs, meetings, deals}], total: N }` aggregated server-
+// side via $group on agentId so 50 sales × ~1k DRs no longer round-trip an
+// in-memory bucket on the client.
+app.get("/api/dashboard/dr-stats", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    var from = req.query.from ? new Date(String(req.query.from)) : null;
+    var to   = req.query.to   ? new Date(String(req.query.to))   : null;
+    if (from && isNaN(from.getTime())) from = null;
+    if (to   && isNaN(to.getTime()))   to   = null;
+
+    var match = { archived: { $ne: true } };
+    if (from || to) {
+      match.createdAt = {};
+      if (from) match.createdAt.$gte = from;
+      if (to)   match.createdAt.$lte = to;
+    }
+
+    var pipeline = [
+      { $match: match },
+      { $group: {
+        _id: "$agentId",
+        drs: { $sum: 1 },
+        meetings: { $sum: { $cond: [{ $in: ["$status", ["Meeting", "MeetingDone", "Meeting Done"]] }, 1, 0] } },
+        deals:    { $sum: { $cond: [{ $in: ["$status", ["DoneDeal", "Done Deal", "Deal"]] }, 1, 0] } }
+      }},
+      { $lookup: { from: "users", localField: "_id", foreignField: "_id", as: "agent" } },
+      { $project: {
+        _id: 0,
+        uid:  { $ifNull: [{ $toString: "$_id" }, "" ] },
+        name: { $ifNull: [{ $arrayElemAt: ["$agent.name", 0] }, ""] },
+        drs: 1, meetings: 1, deals: 1
+      }},
+      { $sort: { drs: -1 } }
+    ];
+
+    var perAgent = await DailyRequest.aggregate(pipeline);
+    var total = perAgent.reduce(function(s,r){ return s + (r.drs || 0); }, 0);
+    res.json({ perAgent: perAgent, total: total });
+  } catch (e) {
+    console.error("[GET /api/dashboard/dr-stats]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "dr_stats_failed" });
+  }
+});
+
+// STEP 4-3 — Per-agent quarterly stats. Replaces the in-memory KPIsPage and
+// TeamPage MemberCard scans that compute qLeads / qDeals / qCalls / qRev /
+// qTarget from p.leads + p.activities + p.users. Once STEP 4-5 shrinks the
+// bootstrap those scans would silently miss most of the quarter's history.
+//
+// Effective qTarget mirrors the FE getEffectiveQTarget: manager/team_leader
+// with subordinates → sum of subordinates' qTargets; otherwise own qTarget.
+// Year-aware via readQTargetServer.
+//
+// qRev is the raw budget sum for DoneDeal leads in the quarter (by dealDate
+// fallback chain: dealDate → eoiDate → updatedAt → createdAt). Project
+// weight and split halving are NOT applied here — the FE multiplies
+// projectWeight × split factor at render time, matching the existing
+// KPIsPage / TeamPage formulas. Returning the raw sum keeps the endpoint
+// scope-agnostic (no need to embed project-weights/split logic server-side
+// that the FE already owns).
+app.get("/api/agents/:id([0-9a-fA-F]{24})/quarterly-stats", auth, async function(req, res) {
+  try {
+    var targetId = req.params.id;
+    var nowDate = new Date();
+    var year    = parseInt(req.query.year)    || nowDate.getUTCFullYear();
+    var quarter = parseInt(req.query.quarter) || (Math.floor(nowDate.getUTCMonth()/3) + 1);
+    if (quarter < 1 || quarter > 4) return res.status(400).json({ error: "quarter must be 1..4" });
+    var qStart = new Date(Date.UTC(year, (quarter-1)*3, 1, 0, 0, 0, 0));
+    var qEnd   = new Date(Date.UTC(year, quarter*3, 1, 0, 0, 0, 0));
+
+    // Access: self, OR admin/sales_admin, OR a TL/manager/director whose
+    // scope (per getScopedUserIds) includes targetId.
+    var uid = String(req.user.id);
+    var role = req.user.role;
+    var isSelf = uid === targetId;
+    var isAdminTier = role === "admin" || role === "sales_admin";
+    var hasAccess = isSelf || isAdminTier;
+    if (!hasAccess && (role === "team_leader" || role === "manager" || role === "director")) {
+      var scopedIds = await getScopedUserIds(req.user) || [];
+      hasAccess = scopedIds.some(function(id){ return String(id) === targetId; });
+    }
+    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+
+    var target = await User.findById(targetId).lean();
+    if (!target) return res.status(404).json({ error: "Agent not found" });
+
+    // Effective qTarget — sum subordinate targets for manager/TL, else own.
+    // For agent-set expansion below, also pre-resolve direct sales reports so
+    // qDeals / qLeads / qCalls / qRev aggregate across the team subtree
+    // (matches the FE KPIsPage TL/manager view at App.js L18833-L18837).
+    var oid = new mongoose.Types.ObjectId(targetId);
+    var qTarget = 0;
+    var agentOids = [oid];
+    if (target.role === "manager" || target.role === "team_leader") {
+      var team = await User.find({ active: { $ne: false }, role: { $in: ["sales", "team_leader"] }, reportsTo: target._id }).select("_id qTargets role").lean();
+      qTarget = team.reduce(function(s,u){ return s + (readQTargetServer(u, year, quarter) || 0); }, 0);
+      if (!qTarget) qTarget = readQTargetServer(target, year, quarter) || 0;
+      team.forEach(function(u){ agentOids.push(u._id); });
+    } else {
+      qTarget = readQTargetServer(target, year, quarter) || 0;
+    }
+
+    // Lead/deal aggregation. agentId or splitAgent2Id matches any agent in
+    // the resolved team subtree (sales role = just self). archived excluded.
+    var ownerMatch = { archived: { $ne: true }, $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }] };
+
+    var qLeadsCount = await Lead.countDocuments(Object.assign({}, ownerMatch, {
+      createdAt: { $gte: qStart, $lt: qEnd },
+      source:    { $ne: "Daily Request" }
+    }));
+
+    var dealAgg = await Lead.aggregate([
+      { $match: {
+        archived: { $ne: true },
+        $and: [
+          { $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }] },
+          { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] }
+        ]
+      }},
+      { $addFields: {
+        // dealDate is stored as a string ("YYYY-MM-DD"); convert; fall back
+        // through eoiDate → updatedAt → createdAt to mirror getDealDate.
+        _effDate: {
+          $let: {
+            vars: { d1: { $convert: { input: "$dealDate", to: "date", onError: null, onNull: null } } },
+            in:   { $ifNull: ["$$d1", { $ifNull: [
+              { $convert: { input: "$eoiDate", to: "date", onError: null, onNull: null } },
+              { $ifNull: ["$updatedAt", "$createdAt"] }
+            ]}]}
+          }
+        },
+        _budget: { $convert: { input: { $replaceAll: { input: { $ifNull: ["$budget", ""] }, find: ",", replacement: "" } }, to: "double", onError: 0, onNull: 0 } }
+      }},
+      { $match: { _effDate: { $gte: qStart, $lt: qEnd } }},
+      { $group: { _id: null, qDeals: { $sum: 1 }, qRev: { $sum: "$_budget" } }}
+    ]);
+    var qDeals = dealAgg.length ? dealAgg[0].qDeals : 0;
+    var qRev   = dealAgg.length ? dealAgg[0].qRev   : 0;
+
+    // Calls: count across the same agent set so TL/manager view aggregates
+    // the team's calls (matches FE KPIsPage which scans myActs by team uid).
+    var qCalls = await Activity.countDocuments({
+      userId: { $in: agentOids },
+      type:   "call",
+      createdAt: { $gte: qStart, $lt: qEnd }
+    });
+
+    var qProg = qTarget > 0 ? Math.min(100, Math.round((qRev / qTarget) * 100)) : 0;
+
+    res.json({
+      uid:     targetId,
+      name:    target.name || "",
+      role:    target.role || "",
+      year:    year,
+      quarter: quarter,
+      qTarget: qTarget,
+      qLeads:  qLeadsCount,
+      qDeals:  qDeals,
+      qCalls:  qCalls,
+      qRev:    qRev,
+      qProg:   qProg
+    });
+  } catch (e) {
+    console.error("[GET /api/agents/:id/quarterly-stats]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "quarterly_stats_failed" });
   }
 });
 
