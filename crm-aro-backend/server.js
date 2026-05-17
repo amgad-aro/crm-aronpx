@@ -8440,6 +8440,16 @@ app.post("/api/leads", auth, async function(req, res) {
       delete req.body.commissionRate;
       delete req.body.commissionAmount;
     }
+    // BUG #5 — reject future dealDate on create. Cairo-day comparison
+    // mirrors the timezone pattern at server.js:19153 (annual report).
+    // Once created, admin / sales_admin can edit dealDate via PUT to
+    // correct typos (any value, past or future); see PUT handler below.
+    if (req.body.dealDate) {
+      var cairoTodayCreate = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
+      if (String(req.body.dealDate).slice(0, 10) > cairoTodayCreate) {
+        return res.status(400).json({ error: "deal_date_future", message: "Deal date cannot be in the future" });
+      }
+    }
     var lead = await Lead.create({
       name:             req.body.name,
       phone:            req.body.phone,
@@ -9378,6 +9388,16 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     if (req.body.locked !== undefined &&
         ["admin","sales_admin","team_leader","manager"].indexOf(req.user.role) < 0) {
       delete req.body.locked;
+    }
+    // BUG #5 — dealDate edit gate. Only admin / sales_admin can correct
+    // an existing deal's date — they may legitimately set it past or
+    // future to fix typos. All other roles (sales / TL / manager /
+    // director): strip silently, matching the locked/externalDealConfig
+    // defense-in-depth pattern. No future-date check here; admin/SA are
+    // trusted on PUT. POST has its own future-date guard, see above.
+    if (req.body.dealDate !== undefined &&
+        req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      delete req.body.dealDate;
     }
     // Phase R-12 Part 3 — external-deal field gate. Same defense-in-depth
     // pattern as `locked` above: the Add/Edit Deal modal is admin-only on
