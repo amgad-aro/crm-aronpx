@@ -7161,6 +7161,13 @@ app.get("/api/leads", auth, async function(req, res) {
     if (req.query.lockedOnly === "true" && (role === "admin" || role === "sales_admin")) {
       query.locked = true;
     }
+    // STEP 4-5 X2 — opt-in archived filter. ArchivePage uses this to fetch
+    // its own list instead of scanning p.leads (which would be empty post-
+    // X3 bootstrap shrink since the bootstrap sorts by createdAt desc and
+    // archived leads tend to be older). Absent param = no filter
+    // (legacy callers continue to receive both archived + non-archived).
+    if (req.query.archived === "true")       query.archived = true;
+    else if (req.query.archived === "false") query.archived = { $ne: true };
 
     // STEP 4-5 X1 — scope audit log. Every list-leads call records the
     // computed query.$or shape (the role-derived scope clause) so any
@@ -7821,13 +7828,68 @@ app.get("/api/leads/counts", auth, async function(req, res) {
       ]})
     ]);
 
+    // STEP 4-5 X2 — extended breakdowns for adminMetrics migration:
+    // byStatus  → "Leads by Status" card
+    // bySource  → Source ROI / campaign aggregations
+    // byCampaign → Campaign Performance card (campaign|project|source key)
+    // Each is an aggregation grouped on the same baseInWindowAnd $match.
+    var aggMatch = { $and: baseInWindowAnd };
+    var aggResults = await Promise.all([
+      Lead.aggregate([
+        { $match: aggMatch },
+        { $group: { _id: "$status", count: { $sum: 1 } } }
+      ]),
+      Lead.aggregate([
+        { $match: aggMatch },
+        { $group: { _id: "$source", count: { $sum: 1 } } }
+      ]),
+      Lead.aggregate([
+        { $match: aggMatch },
+        { $group: {
+          _id: { campaign: "$campaign", project: "$project", source: "$source" },
+          leads: { $sum: 1 },
+          interested: { $sum: { $cond: [{ $or: [
+            { $in: ["$status", interestedSet] },
+            { $anyElementTrue: { $map: { input: { $ifNull: ["$assignments", []] }, as: "a", in: { $in: ["$$a.status", interestedSet] } } } }
+          ]}, 1, 0] } },
+          meet: { $sum: { $cond: [{ $or: [
+            meetingsCond.$or[0], meetingsCond.$or[1], meetingsCond.$or[2]
+          ]}, 1, 0] } },
+          dealsC: { $sum: { $cond: [{ $or: [
+            { $eq: ["$status", "DoneDeal"] }, { $eq: ["$globalStatus", "donedeal"] }
+          ]}, 1, 0] } }
+        }},
+        { $sort: { leads: -1 } },
+        { $limit: 12 }
+      ])
+    ]);
+
+    var byStatus = {};
+    aggResults[0].forEach(function(g){ if (g._id) byStatus[g._id] = g.count; });
+    var bySource = {};
+    aggResults[1].forEach(function(g){ if (g._id) bySource[g._id || "—"] = g.count; });
+    var byCampaign = aggResults[2].map(function(g){
+      return {
+        campaign: (g._id && g._id.campaign) || "",
+        project:  (g._id && g._id.project)  || "",
+        source:   (g._id && g._id.source)   || "",
+        leads:    g.leads || 0,
+        interested: g.interested || 0,
+        meet:     g.meet || 0,
+        deals:    g.dealsC || 0
+      };
+    });
+
     res.json({
       total:            counts[0],
       meetings:         counts[1],
       deals:            counts[2],
       interested:       counts[3],
       callbacksInRange: counts[4],
-      overdueCallbacks: counts[5]
+      overdueCallbacks: counts[5],
+      byStatus:   byStatus,
+      bySource:   bySource,
+      byCampaign: byCampaign
     });
   } catch (e) {
     console.error("[GET /api/leads/counts]", e && e.message);
@@ -12511,6 +12573,441 @@ app.get("/api/dashboard/dr-stats", auth, async function(req, res) {
   } catch (e) {
     console.error("[GET /api/dashboard/dr-stats]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "dr_stats_failed" });
+  }
+});
+
+// STEP 4-5 X2 — distinct source values across archived leads. Replaces the
+// in-memory ArchivePage.legacy-source scan at App.js L3641-3648, which after
+// the X3 bootstrap shrink would only see ~100 leads' sources. Admin-only
+// (matches existing ArchivePage access pattern).
+app.get("/api/leads/archived-sources", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    console.log("[scope] /api/leads/archived-sources role=" + req.user.role + " uid=" + req.user.id);
+    var sources = await Lead.distinct("source", { archived: true });
+    res.json({ sources: (sources || []).filter(function(s){ return s && String(s).trim().length > 0; }).sort() });
+  } catch (e) {
+    console.error("[GET /api/leads/archived-sources]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "archived_sources_failed" });
+  }
+});
+
+// STEP 4-5 X2 — TeamPage MemberCard quarterly aggregation. One round-trip
+// for every member instead of N parallel /api/agents/:id/quarterly-stats
+// calls. Mirrors the FE getQTargets + per-card matchesAgent + qDeals/qRev/
+// qLeads/qCalls derivations.
+//
+// Returns: { members: [{
+//   uid, name, role, qTarget, qDeals, qLeads, qCalls, qRev, qProg,
+//   isManagerCard, teamUids: []
+// }] }
+//
+// Scope rule (same as TeamPage's visibleManagers logic):
+//   - admin / sales_admin: every manager + team_leader + their direct sales
+//   - manager: self + own team subtree
+//   - team_leader: self + direct sales
+//   - sales / viewer / hr / director / other: 403
+app.get("/api/team/member-stats", auth, async function(req, res) {
+  try {
+    var role = req.user.role;
+    if (role !== "admin" && role !== "sales_admin" && role !== "manager" && role !== "team_leader" && role !== "director") {
+      return res.status(403).json({ error: "Team stats not available for this role" });
+    }
+    var nowDate = new Date();
+    var year    = parseInt(req.query.year)    || nowDate.getUTCFullYear();
+    var quarter = parseInt(req.query.quarter) || (Math.floor(nowDate.getUTCMonth()/3) + 1);
+    if (quarter < 1 || quarter > 4) return res.status(400).json({ error: "quarter must be 1..4" });
+    var qStart = new Date(Date.UTC(year, (quarter-1)*3, 1, 0,0,0,0));
+    var qEnd   = new Date(Date.UTC(year, quarter*3, 1, 0,0,0,0));
+    console.log("[scope] /api/team/member-stats role=" + role + " uid=" + req.user.id + " year=" + year + " q=" + quarter);
+
+    // Resolve the visible user pool by role
+    var visibleQuery;
+    if (role === "admin" || role === "sales_admin") {
+      visibleQuery = { active: { $ne: false }, role: { $in: ["sales", "team_leader", "manager"] } };
+    } else if (role === "manager" || role === "director") {
+      var scopedIds = await getScopedUserIds(req.user) || [];
+      if (scopedIds.length === 0) return res.status(403).json({ error: "Scope unavailable" });
+      visibleQuery = { _id: { $in: scopedIds } };
+    } else {
+      var meUid = new mongoose.Types.ObjectId(req.user.id);
+      var directs = await User.find({ reportsTo: meUid }).select("_id").lean();
+      var ids = [meUid].concat(directs.map(function(u){ return u._id; }));
+      visibleQuery = { _id: { $in: ids } };
+    }
+    var members = await User.find(visibleQuery).select("_id name role qTargets reportsTo").lean();
+
+    // Pre-fetch project-weights map (single AppSetting read)
+    var pwDoc = await AppSetting.findOne({ key: "projectWeights" }).lean();
+    var pwMap = (pwDoc && pwDoc.value && typeof pwDoc.value === "object") ? pwDoc.value : {};
+
+    // Per-member quarterly aggregation. For each user, build agentOids set
+    // (self + direct sales subordinates for manager/TL cards) and aggregate
+    // deals + leads + calls in the quarter.
+    var memberById = {};
+    members.forEach(function(u){ memberById[String(u._id)] = u; });
+
+    var results = [];
+    for (var i = 0; i < members.length; i++) {
+      var u = members[i];
+      var uid = u._id;
+      var isManagerCard = u.role === "manager" || u.role === "team_leader";
+      var agentOids = [uid];
+      if (isManagerCard) {
+        var subs = await User.find({ active: { $ne: false }, role: { $in: ["sales", "team_leader"] }, reportsTo: uid }).select("_id").lean();
+        subs.forEach(function(s){ agentOids.push(s._id); });
+      }
+      var qTarget = 0;
+      if (isManagerCard) {
+        var teamForTarget = await User.find({ active: { $ne: false }, role: { $in: ["sales", "team_leader"] }, reportsTo: uid }).select("qTargets").lean();
+        qTarget = teamForTarget.reduce(function(s,m){ return s + (readQTargetServer(m, year, quarter) || 0); }, 0);
+        if (!qTarget) qTarget = readQTargetServer(u, year, quarter) || 0;
+      } else {
+        qTarget = readQTargetServer(u, year, quarter) || 0;
+      }
+
+      var qLeads = await Lead.countDocuments({
+        archived: { $ne: true },
+        $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }],
+        createdAt: { $gte: qStart, $lt: qEnd },
+        source: { $ne: "Daily Request" }
+      });
+
+      var dealRows = await Lead.aggregate([
+        { $match: {
+          archived: { $ne: true },
+          $and: [
+            { $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }] },
+            { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] }
+          ]
+        }},
+        { $addFields: { _effDate: { $let: {
+          vars: { d1: { $convert: { input: "$dealDate", to: "date", onError: null, onNull: null } } },
+          in:   { $ifNull: ["$$d1", { $ifNull: [
+            { $convert: { input: "$eoiDate", to: "date", onError: null, onNull: null } },
+            { $ifNull: ["$updatedAt", "$createdAt"] }
+          ]}]}
+        }}}},
+        { $match: { _effDate: { $gte: qStart, $lt: qEnd } }},
+        { $project: { budget: 1, projectWeight: 1, project: 1, agentId: 1, splitAgent2Id: 1 } }
+      ]);
+
+      var agentOidSet = new Set(agentOids.map(function(o){ return String(o); }));
+      var qDeals = dealRows.length;
+      var qRev = 0;
+      for (var k = 0; k < dealRows.length; k++) {
+        var d = dealRows[k];
+        var w;
+        if (typeof d.projectWeight === "number" && d.projectWeight !== 1) w = d.projectWeight;
+        else if (d.project && pwMap[d.project] != null) w = Number(pwMap[d.project]) || 1;
+        else w = 1;
+        var bg = parseDealTotalFromBudget(d.budget);
+        var splitMult = 1;
+        if (d.splitAgent2Id) {
+          var pri = String(d.agentId || "");
+          var sec = String(d.splitAgent2Id || "");
+          splitMult = (agentOidSet.has(pri) && agentOidSet.has(sec)) ? 1 : 0.5;
+        }
+        qRev += bg * w * splitMult;
+      }
+
+      var qCalls = await Activity.countDocuments({
+        userId: { $in: agentOids },
+        type: "call",
+        createdAt: { $gte: qStart, $lt: qEnd }
+      });
+
+      var qProg = qTarget > 0 ? Math.min(100, Math.round((qRev / qTarget) * 100)) : 0;
+
+      results.push({
+        uid: String(uid),
+        name: u.name || "",
+        role: u.role,
+        isManagerCard: isManagerCard,
+        teamUids: agentOids.map(function(o){ return String(o); }),
+        qTarget: qTarget,
+        qLeads: qLeads,
+        qDeals: qDeals,
+        qCalls: qCalls,
+        qRev: qRev,
+        qProg: qProg
+      });
+    }
+
+    res.json({ year: year, quarter: quarter, members: results });
+  } catch (e) {
+    console.error("[GET /api/team/member-stats]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "member_stats_failed" });
+  }
+});
+
+// STEP 4-5 X2 — Dashboard AgentPerf table. Replaces the in-memory
+// agentPerfMemo (App.js L7336-7484) which scans p.leads + p.dailyReqs +
+// p.activities to build a per-agent stats table. Admin / sales_admin /
+// manager / team_leader / director only.
+//
+// Algorithm ports the FE memo's 4-pass structure to server-side JS using
+// the full collections the server already has access to. Filter range
+// passed via ?from=&to= (ms epoch — keeps the FE call site identical).
+app.get("/api/dashboard/agent-perf", auth, async function(req, res) {
+  try {
+    var role = req.user.role;
+    if (role === "sales" || role === "viewer" || role === "hr") {
+      return res.status(403).json({ error: "AgentPerf not available for this role" });
+    }
+    var rsA = parseInt(req.query.from) || 0;
+    var reA = parseInt(req.query.to) || Date.now();
+    console.log("[scope] /api/dashboard/agent-perf role=" + role + " uid=" + req.user.id + " from=" + rsA + " to=" + reA);
+
+    // Visible users — sales role for the rows (matches FE filter at L7367).
+    // Scope: admin / sales_admin sees every active sales agent; TL/manager/
+    // director sees their subtree.
+    var salesQuery = { active: { $ne: false }, role: "sales" };
+    if (role === "team_leader" || role === "manager" || role === "director") {
+      var scopedIds = await getScopedUserIds(req.user) || [];
+      if (scopedIds.length === 0) return res.status(403).json({ error: "Scope unavailable" });
+      salesQuery._id = { $in: scopedIds };
+    }
+    var users = await User.find(salesQuery).select("_id name").lean();
+    if (!users.length) return res.json({ rows: [] });
+
+    // Collection slices for the range. Same patterns as FE memo passes.
+    var leads = await Lead.find({
+      archived: { $ne: true }
+    }).select("_id name status callbackTime lastActivityTime agentId splitAgent2Id createdAt assignments agentHistory globalStatus").lean();
+
+    var dailyReqs = await DailyRequest.find({
+      archived: { $ne: true },
+      createdAt: { $gte: new Date(rsA), $lte: new Date(reA) }
+    }).select("_id name agentId createdAt").lean();
+
+    var activities = await Activity.find({
+      createdAt: { $gte: new Date(rsA), $lte: new Date(reA) }
+    }).select("_id userId leadId type note createdAt").lean();
+
+    var now = Date.now();
+    var interestedStatusesA = ["Interested", "Hot Case", "HotCase", "Potential"];
+
+    // Pass 1: bucket leads by agentId via assignments in range, plus
+    // rotation in/out tallies by NAME (agentHistory keys on name).
+    var alByAgent = new Map();
+    var rotOutByName = new Map(), rotInByName = new Map();
+    for (var i = 0; i < leads.length; i++) {
+      var l = leads[i];
+      var assigns = l.assignments;
+      if (assigns && assigns.length) {
+        var added = null;
+        for (var j = 0; j < assigns.length; j++) {
+          var a = assigns[j];
+          var rawAid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+          if (!rawAid) continue;
+          var aidStr = String(rawAid);
+          if (added && added.has(aidStr)) continue;
+          var t = a.assignedAt ? new Date(a.assignedAt).getTime() : 0;
+          if (!isNaN(t) && t >= rsA && t <= reA) {
+            if (!added) added = new Set();
+            added.add(aidStr);
+            var arr = alByAgent.get(aidStr);
+            if (!arr) { arr = []; alByAgent.set(aidStr, arr); }
+            arr.push(l);
+          }
+        }
+      }
+      var hist = l.agentHistory;
+      if (hist && hist.length) {
+        var froms = null, tos = null;
+        for (var k = 0; k < hist.length; k++) {
+          var h = hist[k];
+          if (!h || h.action !== "Rotation") continue;
+          if (h.fromAgent) { if (!froms) froms = new Set(); froms.add(h.fromAgent); }
+          if (h.toAgent)   { if (!tos)   tos   = new Set(); tos.add(h.toAgent); }
+        }
+        if (froms) froms.forEach(function(name){ rotOutByName.set(name, (rotOutByName.get(name)||0)+1); });
+        if (tos)   tos.forEach(function(name){   rotInByName.set(name,  (rotInByName.get(name)||0)+1); });
+      }
+    }
+
+    // Pass 2: DRs by agentId
+    var drsByAgent = new Map();
+    for (var d = 0; d < dailyReqs.length; d++) {
+      var r = dailyReqs[d];
+      var raid = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
+      if (!raid) continue;
+      var raidStr = String(raid);
+      var arrR = drsByAgent.get(raidStr);
+      if (!arrR) { arrR = []; drsByAgent.set(raidStr, arrR); }
+      arrR.push(r);
+    }
+
+    // Pass 3: activities by userId
+    var actsByAgent = new Map();
+    var actCallsByAgent = new Map();
+    for (var x = 0; x < activities.length; x++) {
+      var act = activities[x];
+      var xaid = act.userId && act.userId._id ? act.userId._id : act.userId;
+      if (!xaid) continue;
+      var xidStr = String(xaid);
+      var aarr = actsByAgent.get(xidStr);
+      if (!aarr) { aarr = []; actsByAgent.set(xidStr, aarr); }
+      aarr.push(act);
+      if (act.type === "call" || ((act.note || "").toLowerCase().indexOf("call") >= 0)) {
+        actCallsByAgent.set(xidStr, (actCallsByAgent.get(xidStr) || 0) + 1);
+      }
+    }
+
+    // Pass 4: per-user metrics
+    var rows = users.map(function(u){
+      var uid = String(u._id);
+      var uname = u.name || "";
+      var al = alByAgent.get(uid) || [];
+      var adr = drsByAgent.get(uid) || [];
+      var aActs = actsByAgent.get(uid) || [];
+      var acalls = actCallsByAgent.get(uid) || 0;
+      var arotOut = rotOutByName.get(uname) || 0;
+      var arotIn  = rotInByName.get(uname) || 0;
+
+      var aint = 0, ameet = 0, anoAns = 0, afup = 0, aover = 0, adeals = 0, aFbLeads = 0;
+      var rtSum = 0, rtCount = 0;
+      for (var ai = 0; ai < al.length; ai++) {
+        var lead = al[ai];
+        var hasInt = false, hasMeet = false, hasNoAns = false, hasAgentFb = false;
+        var lassigns = lead.assignments;
+        if (lassigns) {
+          for (var aj = 0; aj < lassigns.length; aj++) {
+            var asg = lassigns[aj];
+            var asgAid = asg.agentId && asg.agentId._id ? asg.agentId._id : asg.agentId;
+            if (String(asgAid) !== uid) continue;
+            var asgSt = asg.status;
+            if (!hasInt && interestedStatusesA.indexOf(asgSt) >= 0) hasInt = true;
+            if (!hasMeet && (asgSt === "Meeting Done" || asgSt === "MeetingDone")) hasMeet = true;
+            if (!hasNoAns && (asgSt === "NoAnswer" || asgSt === "No Answer")) hasNoAns = true;
+            if (!hasAgentFb) {
+              if ((asg.notes && String(asg.notes).trim().length > 0) || (asg.lastFeedback && String(asg.lastFeedback).trim().length > 0)) hasAgentFb = true;
+            }
+            if (asg.lastActionAt && lead.createdAt) {
+              var diff = new Date(asg.lastActionAt).getTime() - new Date(lead.createdAt).getTime();
+              if (diff >= 0) { rtSum += diff; rtCount++; }
+            }
+          }
+        }
+        if (hasInt) aint++;
+        if (hasMeet) ameet++;
+        if (hasNoAns) anoAns++;
+        if (lead.callbackTime) {
+          afup++;
+          if (new Date(lead.callbackTime).getTime() < now && ["MeetingDone","DoneDeal","EOI"].indexOf(lead.status) === -1) aover++;
+        }
+        if (lead.status === "DoneDeal" || lead.globalStatus === "donedeal") adeals++;
+        var leadLevelFb = (lead.notes && String(lead.notes).trim().length > 0) || (lead.lastFeedback && String(lead.lastFeedback).trim().length > 0);
+        if (leadLevelFb || hasAgentFb) aFbLeads++;
+      }
+
+      var fbPct = al.length > 0 ? (aFbLeads / al.length) : 0;
+      var respH = rtCount > 0 ? (rtSum / rtCount) / 3600000 : 0;
+      var ip = al.length > 0 ? Math.round(aint / al.length * 100) : 0;
+      var mp = al.length > 0 ? Math.round(ameet / al.length * 100) : 0;
+      var cbTotal = afup;
+      var cbOnTime = afup - aover;
+      var cbPct = cbTotal > 0 ? (cbOnTime / cbTotal) : (afup === 0 ? 1 : 0);
+      var qActivity = al.length > 0 ? Math.min(25, (aActs.length / al.length) * 25) : 0;
+      var qFeedback = fbPct * 20;
+      var qResp = respH > 0 ? Math.max(0, 20 - respH * 2) : (rtCount > 0 ? 20 : 10);
+      var qMeeting = al.length > 0 ? Math.min(15, (ameet / al.length) * 100 * 0.15) : 0;
+      var qCallback = cbPct * 20;
+      var qualityScore = Math.round(qActivity + qFeedback + qResp + qMeeting + qCallback);
+      if (qualityScore > 100) qualityScore = 100;
+      if (qualityScore < 0)   qualityScore = 0;
+      var actScore = Math.min(100, (al.length + adr.length) * 5);
+      var rtScore  = respH > 0 ? Math.max(0, 100 - respH * 2) : 50;
+      var score = Math.round(actScore * 0.4 + mp * 0.3 + ip * 0.2 + rtScore * 0.1);
+      return {
+        uid: uid, name: u.name, leads: al.length, dr: adr.length,
+        total: al.length + adr.length, calls: acalls, followups: afup,
+        overdue: aover, interested: aint, ip: ip, meetings: ameet, mp: mp,
+        deals: adeals, rotOut: arotOut, rotIn: arotIn, noAnswer: anoAns,
+        respTime: respH > 0 ? respH.toFixed(1) : "—",
+        score: score, quality: qualityScore
+      };
+    }).sort(function(a, b){ return b.quality - a.quality; });
+
+    res.json({ rows: rows });
+  } catch (e) {
+    console.error("[GET /api/dashboard/agent-perf]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "agent_perf_failed" });
+  }
+});
+
+// STEP 4-5 X2 — KPIsPage chart data + status distribution. Replaces the
+// in-memory myLeads.filter / myDeals.filter scans on KPIsPage that would
+// silently miss data after the X3 bootstrap shrink. Returns:
+//   { byStatus: { NewLead, Potential, HotCase, CallBack, MeetingDone,
+//                  NotInterested, NoAnswer, DoneDeal, EOI },
+//     totals:   { leads, deals, calls } }
+//
+// Access: self, OR admin/sales_admin, OR a TL/manager/director whose
+// getScopedUserIds() includes the target. For manager/TL targets, the
+// counts span the team subtree (matches FE KPIsPage TL/manager view).
+app.get("/api/agents/:id([0-9a-fA-F]{24})/my-stats", auth, async function(req, res) {
+  try {
+    var targetId = req.params.id;
+    var role = req.user.role;
+    var uid = String(req.user.id);
+    var isSelf = uid === targetId;
+    var isAdminTier = role === "admin" || role === "sales_admin";
+    var hasAccess = isSelf || isAdminTier;
+    if (!hasAccess && (role === "team_leader" || role === "manager" || role === "director")) {
+      var scopedIds = await getScopedUserIds(req.user) || [];
+      hasAccess = scopedIds.some(function(id){ return String(id) === targetId; });
+    }
+    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+
+    var target = await User.findById(targetId).select("_id name role").lean();
+    if (!target) return res.status(404).json({ error: "Agent not found" });
+
+    // Resolve agent set — subtree for manager/TL, self for sales.
+    var oid = new mongoose.Types.ObjectId(targetId);
+    var agentOids = [oid];
+    if (target.role === "manager" || target.role === "team_leader") {
+      var team = await User.find({ active: { $ne: false }, role: { $in: ["sales", "team_leader"] }, reportsTo: target._id }).select("_id").lean();
+      team.forEach(function(u){ agentOids.push(u._id); });
+    }
+    console.log("[scope] /api/agents/:id/my-stats role=" + role + " uid=" + uid + " target=" + targetId + " targetRole=" + target.role + " agentSetSize=" + agentOids.length);
+
+    // Aggregate status counts. archived excluded; "Daily Request" source
+    // excluded (matches FE myLeads filter at App.js L18954).
+    var match = {
+      archived: { $ne: true },
+      source: { $ne: "Daily Request" },
+      $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }]
+    };
+    var groupRows = await Lead.aggregate([
+      { $match: match },
+      { $group: { _id: "$status", count: { $sum: 1 } } }
+    ]);
+    var byStatus = { NewLead: 0, Potential: 0, HotCase: 0, CallBack: 0, MeetingDone: 0, NotInterested: 0, NoAnswer: 0, DoneDeal: 0, EOI: 0 };
+    var totalLeads = 0;
+    groupRows.forEach(function(g){
+      var key = g._id;
+      if (key === "Meeting Done") key = "MeetingDone";
+      if (key === "Hot Case")     key = "HotCase";
+      if (key === "Not Interested") key = "NotInterested";
+      if (key === "No Answer")    key = "NoAnswer";
+      if (byStatus[key] !== undefined) byStatus[key] = (byStatus[key] || 0) + (g.count || 0);
+      totalLeads += g.count || 0;
+    });
+    var deals = byStatus.DoneDeal || 0;
+    var calls = await Activity.countDocuments({ userId: { $in: agentOids }, type: "call" });
+
+    res.json({
+      uid: targetId, name: target.name || "", role: target.role || "",
+      byStatus: byStatus,
+      totals: { leads: totalLeads, deals: deals, calls: calls }
+    });
+  } catch (e) {
+    console.error("[GET /api/agents/:id/my-stats]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "my_stats_failed" });
   }
 });
 
