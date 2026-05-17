@@ -4977,13 +4977,6 @@ var LeadsPage = function(p) {
         </div>
       </Card>}
 
-      {/* Pagination Controls */}
-      {p.leadsTotalPages > 1 && <div style={{ display:"flex", justifyContent:"center", alignItems:"center", gap:10, marginTop:16, padding:"12px 16px", background:"#F8FAFC", borderRadius:12, border:"1px solid #E8ECF1" }}>
-        <button onClick={function(){if(p.leadsPage>1){p.setLeadsPage(p.leadsPage-1);}}} disabled={p.leadsPage<=1} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:p.leadsPage<=1?"#F1F5F9":"#fff", color:p.leadsPage<=1?C.textLight:C.text, fontSize:12, cursor:p.leadsPage<=1?"not-allowed":"pointer" }}>⬅️ Previous</button>
-        <span style={{ fontSize:12, color:C.textLight }}>Page {p.leadsPage} of {p.leadsTotalPages} ({p.leadsTotal} total)</span>
-        <button onClick={function(){if(p.leadsPage<p.leadsTotalPages){p.setLeadsPage(p.leadsPage+1);}}} disabled={p.leadsPage>=p.leadsTotalPages} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:p.leadsPage>=p.leadsTotalPages?"#F1F5F9":"#fff", color:p.leadsPage>=p.leadsTotalPages?C.textLight:C.text, fontSize:12, cursor:p.leadsPage>=p.leadsTotalPages?"not-allowed":"pointer" }}>Next ➡️</button>
-      </div>}
-
       {/* Side Panel — Fix B: require gid(selected) so a stale or partial
           `selected` value (e.g. the deep-link initSelected projection that
           shipped only {_id, phone, name}) doesn't paint an apparently-
