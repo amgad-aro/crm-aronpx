@@ -3586,6 +3586,11 @@ var LeadsPage = function(p) {
   // top-level lead.status when nothing has ever been recorded.
   var currentStatus = function(lead) {
     if (!lead) return "NewLead";
+    // STEP 3 — when the BE sent ?fields=summary, agentHistory[] has been
+    // stripped but `_currentStatus` is precomputed by summaryComputeCurrentStatus.
+    // Fall back to it before the original walk so list-view callers don't
+    // see "NewLead" everywhere just because agentHistory is empty.
+    if (typeof lead._currentStatus === "string" && lead._currentStatus) return lead._currentStatus;
     var latestStatus = null;
     var latestStatusTs = 0;
     (lead.assignments || []).forEach(function(a){
@@ -3618,6 +3623,10 @@ var LeadsPage = function(p) {
   };
   var currentFeedback = function(lead) {
     if (!lead) return "";
+    // STEP 3 — summary precompute fallback. `_currentFeedback` is the BE
+    // mirror of this walk; when present, agentHistory was stripped so we
+    // can't reproduce the search here without it.
+    if (typeof lead._currentFeedback === "string") return lead._currentFeedback;
     var latestFeedback = "";
     var latestFeedbackTs = 0;
     (lead.assignments || []).forEach(function(a){
@@ -3652,6 +3661,12 @@ var LeadsPage = function(p) {
   var isGenuineNewLead = function(lead) {
     if (!lead) return false;
     if (currentStatus(lead) !== "NewLead") return false;
+
+    // STEP 3 — when ?fields=summary was sent, `_hasAction` (true if ANY
+    // slice has had a user-visible action recorded) replaces the agentHistory
+    // walk below. _hasAction === undefined means the BE didn't precompute,
+    // so fall through to the original walk.
+    if (typeof lead._hasAction === "boolean") return !lead._hasAction;
 
     // Walk every slice (current and historical). If any slice shows any
     // action, the lead has been worked on and is no longer "new".
@@ -3718,6 +3733,15 @@ var LeadsPage = function(p) {
   // status_change in agentHistory[]. Returns array sorted oldest-first.
   var QUALIFYING = { HotCase:1, Potential:1, MeetingDone:1 };
   var qualifyingMarks = function(lead) {
+    // STEP 3 — when ?fields=summary was sent, the BE precomputed:
+    //   _qualifyingMarksCount: total count (number)
+    //   _qualifyingMarksFirst: the oldest mark object (or null)
+    // The Important tab filter at App.js below reads `.length > 0`; the
+    // table cell only ever renders `marks[0]`. So a one-element array
+    // built from the precomputed first mark is functionally equivalent.
+    if (typeof lead._qualifyingMarksCount === "number") {
+      return lead._qualifyingMarksFirst ? [lead._qualifyingMarksFirst] : [];
+    }
     var marks = [];
     var assignments = (lead && lead.assignments) || [];
     assignments.forEach(function(a){
@@ -10444,7 +10468,12 @@ var DailyRequestsPage = function(p) {
   var [editSaving,setEditSaving]=useState(false);
 
   useEffect(function(){
-    apiFetch("/api/daily-requests","GET",null,p.token)
+    // STEP 3 — summary projection strips eoiDocuments[] from the wire. DR
+    // side panel doesn't render eoiDocuments today, so no detail refetch is
+    // wired (GET /api/daily-requests/:id exists for future use). Legacy
+    // localStorage fallback preserved unchanged for browsers with stale
+    // pre-archived-field IDs.
+    apiFetch("/api/daily-requests?fields=summary","GET",null,p.token)
       .then(function(data){
         // Legacy localStorage archive list kept as a safety net for browsers that still have it set.
         var archivedIds=[];
@@ -23395,12 +23424,19 @@ export default function CRMApp() {
     if (!silent && isInitialLoadRef.current) setLoading(true);
     setDataError(null);
     try {
+      // STEP 3 — both list fetches request ?fields=summary so the bootstrap
+      // payload drops the heavy log arrays (agentHistory[], history[],
+      // privateNotes[] on Lead; eoiDocuments[] on DailyRequest). Precomputed
+      // fields (_qualifyingMarksCount, _qualifyingMarksFirst, _currentStatus,
+      // _currentFeedback, _hasAction) come back on each Lead and the FE
+      // helpers fall back to them. Side panels still refetch full docs via
+      // /api/leads/:id and /api/daily-requests/:id when needed.
       var results=await Promise.all([
-        apiFetch("/api/leads","GET",null,tok),
+        apiFetch("/api/leads?fields=summary","GET",null,tok),
         apiFetch("/api/users","GET",null,tok),
         apiFetch("/api/activities?page="+activitiesPage+"&limit=1000","GET",null,tok),
         apiFetch("/api/tasks","GET",null,tok),
-        apiFetch("/api/daily-requests","GET",null,tok).catch(function(e){ console.error("DR fetch failed:", e); return []; })
+        apiFetch("/api/daily-requests?fields=summary","GET",null,tok).catch(function(e){ console.error("DR fetch failed:", e); return []; })
       ]);
       // Use userOverride if passed (avoids React state timing issue)
       var effectiveUser = userOverride || currentUser;
@@ -23494,7 +23530,9 @@ export default function CRMApp() {
       }).catch(function(){});
     };
     var fetchDRs = function(){
-      apiFetch("/api/daily-requests","GET",null,token).then(function(d){ if(Array.isArray(d)) setDailyReqs(d); }).catch(function(){});
+      // STEP 3 — same summary projection as loadData so the refetch payload
+      // is consistent with what setDailyReqs originally holds.
+      apiFetch("/api/daily-requests?fields=summary","GET",null,token).then(function(d){ if(Array.isArray(d)) setDailyReqs(d); }).catch(function(){});
     };
     // Lightweight fallback for empty-payload lead_updated WS events. Mirrors
     // the existing fetchDRs() fallback used by the dr_updated handler. Without
@@ -23504,7 +23542,10 @@ export default function CRMApp() {
     // mirror Lead in p.leads — which surfaces as ghost rows on DealsPage,
     // EOIPage, and the dashboard KPI strip.
     var fetchLeadsLight = function(){
-      apiFetch("/api/leads","GET",null,token).then(function(r){
+      // STEP 3 — same summary projection as loadData. fetchSingleLead below
+      // still uses the full /api/leads/:id endpoint for side-panel hydration,
+      // so detail data continues to flow when individual rows are opened.
+      apiFetch("/api/leads?fields=summary","GET",null,token).then(function(r){
         if (r && Array.isArray(r.data)) setLeads(r.data);
       }).catch(function(){});
     };
