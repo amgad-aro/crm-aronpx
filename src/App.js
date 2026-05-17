@@ -9110,6 +9110,20 @@ var DashboardPage = function(p) {
 var EOIPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [eoiTab,setEoiTab]=useState("approved");
+  // STEP 4-4 — paginated EOI fetch from /api/eois?status=all. Replaces the
+  // in-memory p.leads.filter scan which would silently miss EOIs once
+  // STEP 4-5 shrinks the bootstrap. Falls back to the in-memory filter
+  // while the fetch is in flight so first paint shows the legacy data.
+  var [eoiAllData, setEoiAllData] = useState(null);
+  useEffect(function(){
+    if (!p.token) return;
+    var cancelled = false;
+    apiFetch("/api/eois?status=all&limit=1000","GET",null,p.token)
+      .then(function(r){ if (!cancelled && r && Array.isArray(r.data)) setEoiAllData(r.data); })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust]);
   // Scope: anything that has an eoiStatus (Pending / Approved / Deal Cancelled)
   // OR is currently status=EOI (legacy rows without eoiStatus set yet).
   // Hybrid: works before AND after the backend strips eoiImage/eoiDocuments
@@ -9117,7 +9131,18 @@ var EOIPage = function(p) {
   // computed) covers the doc-only-no-eoiDate case; before the strip, the raw
   // fields are still truthy. Either way, correct.
   var wasEOI = function(l){return l.eoiDate || l.eoiApproved || l.hasEoiArtifacts || l.eoiImage || (l.eoiDocuments||[]).length>0;};
-  var eoiScope=p.leads.filter(function(l){return !l.archived && ((l.eoiStatus && l.eoiStatus.length>0) || l.status==="EOI" || (l.status==="Deal Cancelled" && wasEOI(l)));});
+  // Overlay p.leads onto eoiAllData so inline mutations (archiveLead /
+  // toggleApproved / cancelEOI etc.) — which update p.leads instantly via
+  // setLeads — show up before the WS-bumped refetch lands. Each eoiAllData
+  // row is replaced by the matching p.leads version if present; rows that
+  // a mutation just archived are filtered out.
+  var pLeadsMap = useMemo(function(){
+    var m = {}; (p.leads||[]).forEach(function(l){ m[gid(l)] = l; }); return m;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.leads]);
+  var eoiScope = eoiAllData
+    ? eoiAllData.map(function(l){return pLeadsMap[gid(l)]||l;}).filter(function(l){return l && !l.archived;})
+    : p.leads.filter(function(l){return !l.archived && ((l.eoiStatus && l.eoiStatus.length>0) || l.status==="EOI" || (l.status==="Deal Cancelled" && wasEOI(l)));});
   var eoiPending = eoiScope.filter(function(l){ return l.eoiStatus ? l.eoiStatus==="Pending" : (l.status==="EOI" && !l.eoiApproved); });
   var eoiApprovedList = eoiScope.filter(function(l){ return l.eoiStatus ? l.eoiStatus==="Approved" : (l.status==="EOI" && l.eoiApproved); });
   var eoiCancelled = eoiScope.filter(function(l){ return l.eoiStatus==="EOI Cancelled" || l.eoiStatus==="Deal Cancelled" || l.status==="Deal Cancelled"; });
@@ -9741,13 +9766,36 @@ var DealsPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [dealTab,setDealTab]=useState("active"); // "active" | "cancelled"
   var [dealCancelling,setDealCancelling]=useState(false);
+  // STEP 4-4 — paginated Deals fetch from /api/deals?status=all. Replaces the
+  // in-memory p.leads.filter scan that would silently miss deals once STEP 4-5
+  // shrinks the bootstrap. Falls back to the in-memory filter while the fetch
+  // is in flight so first paint shows the legacy data unchanged. Same overlay
+  // pattern as EOIPage — p.leads mutations show through before the WS refetch.
+  var [dealAllData, setDealAllData] = useState(null);
+  useEffect(function(){
+    if (!p.token) return;
+    var cancelled = false;
+    apiFetch("/api/deals?status=all&limit=1000","GET",null,p.token)
+      .then(function(r){ if (!cancelled && r && Array.isArray(r.data)) setDealAllData(r.data); })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust]);
+  var pLeadsMapD = useMemo(function(){
+    var m = {}; (p.leads||[]).forEach(function(l){ m[gid(l)] = l; }); return m;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.leads]);
+  // Resolved source — server-fetched once available, in-memory fallback otherwise.
+  var dealsSource = dealAllData
+    ? dealAllData.map(function(l){return pLeadsMapD[gid(l)]||l;}).filter(function(l){return l && !l.archived;})
+    : p.leads;
   // Include every record that the rest of the CRM already treats as a deal:
   // newly-converted EOIs have status="DoneDeal", but older records may carry
   // only globalStatus="donedeal" (or vice-versa) depending on which path
   // stamped them. Mirroring the admin dashboard's rule here ensures existing
   // EOI records with Done Deal status show up alongside new ones.
-  var activeDeals=p.leads.filter(function(l){return (l.status==="DoneDeal"||l.globalStatus==="donedeal")&&!l.archived&&!(l.dealStatus==="Deal Cancelled"||l.status==="Deal Cancelled");}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
-  var cancelledDeals=p.leads.filter(function(l){return (l.dealStatus==="Deal Cancelled" || l.status==="Deal Cancelled") && !l.archived && !(l.eoiStatus==="EOI Cancelled");}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
+  var activeDeals=dealsSource.filter(function(l){return (l.status==="DoneDeal"||l.globalStatus==="donedeal")&&!l.archived&&!(l.dealStatus==="Deal Cancelled"||l.status==="Deal Cancelled");}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
+  var cancelledDeals=dealsSource.filter(function(l){return (l.dealStatus==="Deal Cancelled" || l.status==="Deal Cancelled") && !l.archived && !(l.eoiStatus==="EOI Cancelled");}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
   var deals = dealTab==="cancelled" ? cancelledDeals : activeDeals;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
