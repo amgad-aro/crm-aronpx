@@ -13,14 +13,14 @@ import {
 // (html5-qrcode, ~50 kB gz) is dynamic-imported inside the scan sub-view.
 import QRCode from "qrcode";
 
-// TableVirtuoso — STEP 2a of the leads/DR scalability work. Virtualizes the
-// two highest-volume desktop tables (LeadsPage main + DailyRequestsPage),
-// rendering only the visible viewport of <tr> rows instead of the full
-// 1000+. useWindowScroll keeps the page-level scroll bar as the single
-// scroll surface (no double scrollbars). ~25 KB gz one-time bundle cost.
-// Imported here at module scope so other STEP 2b branches (mobile cards +
-// important tab) can pick up Virtuoso/TableVirtuoso when they land.
-import { TableVirtuoso } from "react-virtuoso";
+// react-virtuoso — virtualization library used for the LeadsPage and
+// DailyRequestsPage tables/cards so only the visible viewport of rows mounts
+// in the DOM. TableVirtuoso handles the desktop <table> branches (L1, L3,
+// DR2 — landed in STEP 2a/2b). Virtuoso handles the mobile card branches
+// (L2 LeadsPage cards, DR1 DailyRequestsPage cards — STEP 2b). All call
+// sites use useWindowScroll so the page-level scroll bar is the single
+// scroll surface (no double scrollbars). ~25 KB gz total one-time cost.
+import { TableVirtuoso, Virtuoso } from "react-virtuoso";
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
@@ -4258,6 +4258,27 @@ var LeadsPage = function(p) {
     };
   }, [selected, selected2, isOnlyAdmin, p.isMobile, setSelected]);
 
+  // ===== STEP 2b — TableVirtuoso wiring for the "Important leads" tab (L1). =====
+  // Simpler than the main table — no checkbox column, no bulk-select, no
+  // VIP/rotated highlights. Single click → setSelected(lead). Background only
+  // toggles on the currently-selected row.
+  var leadsImportantTableComponents = useMemo(function(){
+    return {
+      Table: function TableEl(props){
+        return <table {...props} style={{ width:"100%", borderCollapse:"collapse", minWidth: p.isMobile?720:900 }}/>;
+      },
+      TableRow: function TableRowEl(props){
+        var lead = props.item;
+        if (!lead) return <tr {...props}/>;
+        var lid = gid(lead);
+        var isSel = selected && gid(selected) === lid;
+        var trProps = {};
+        Object.keys(props).forEach(function(k){ if (k !== "item" && k !== "context") trProps[k] = props[k]; });
+        return <tr {...trProps} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent" }}/>;
+      }
+    };
+  }, [selected, p.isMobile, setSelected]);
+
   var specialFilterLabel = (function(){
     if (!p.specialFilter||!p.specialFilter.type) return "";
     if (p.specialFilter.type === "aging") {
@@ -4476,21 +4497,44 @@ var LeadsPage = function(p) {
     {/* Table */}
       {p.leadFilter==="important"?<Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?720:900 }}>
-            <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.name}</th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.phone}</th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>First Marked By</th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>First Mark Date</th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>First Status</th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:160 }}>Feedback</th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>Current Status</th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>Current Agent</th>
-            </tr></thead>
-            <tbody>
-              {filtered.length===0&&<tr><td colSpan={8} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No important leads</td></tr>}
-              {filtered.map(function(lead){
-                var lid=gid(lead);
+          {/* STEP 2b — empty state renders the same chrome ("No important leads")
+              as before; non-empty state hands off to TableVirtuoso so the
+              "Important" tab also virtualizes when the qualifying-mark filter
+              admits hundreds of rows (rare, but the path exists). */}
+          {filtered.length === 0 ? (
+            <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?720:900 }}>
+              <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.name}</th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.phone}</th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>First Marked By</th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>First Mark Date</th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>First Status</th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:160 }}>Feedback</th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>Current Status</th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>Current Agent</th>
+              </tr></thead>
+              <tbody>
+                <tr><td colSpan={8} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No important leads</td></tr>
+              </tbody>
+            </table>
+          ) : (
+            <TableVirtuoso
+              useWindowScroll
+              data={filtered}
+              components={leadsImportantTableComponents}
+              fixedHeaderContent={function(){
+                return <tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120, background:"#F8FAFC" }}>{t.name}</th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120, background:"#F8FAFC" }}>{t.phone}</th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120, background:"#F8FAFC" }}>First Marked By</th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110, background:"#F8FAFC" }}>First Mark Date</th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110, background:"#F8FAFC" }}>First Status</th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:160, background:"#F8FAFC" }}>Feedback</th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110, background:"#F8FAFC" }}>Current Status</th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120, background:"#F8FAFC" }}>Current Agent</th>
+                </tr>;
+              }}
+              itemContent={function(idx, lead){
                 var marks=qualifyingMarks(lead);
                 var first=marks[0]||{};
                 var curSt=currentStatus(lead);
@@ -4498,8 +4542,7 @@ var LeadsPage = function(p) {
                 var firstSo=sc.find(function(s){return s.value===first.status;})||{label:first.status||"",bg:"#F1F5F9",color:"#64748B"};
                 var firstDate=first.date?new Date(first.date).toLocaleDateString("en-GB"):"—";
                 var curAgentName=lead.agentId&&lead.agentId.name?lead.agentId.name:(function(){var u=p.users.find(function(x){return gid(x)===lead.agentId;});return u?u.name:"—";})();
-                var isSel=selected&&gid(selected)===lid;
-                return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent" }}>
+                return <Fragment>
                   <td style={{ padding:"10px 12px", fontSize:13, fontWeight:600, color:C.text, textAlign:"left", whiteSpace:"nowrap" }}>{lead.name}</td>
                   <td style={{ padding:"10px 12px", fontSize:13, fontWeight:600, textAlign:"left", whiteSpace:"nowrap", direction:"ltr" }}><PhoneCell phone={lead.phone}/></td>
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.text, textAlign:"left", whiteSpace:"nowrap" }}>{first.agentName||"—"}</td>
@@ -4512,23 +4555,34 @@ var LeadsPage = function(p) {
                     <span style={{ background:curSo.bg, color:curSo.color, padding:"3px 9px", borderRadius:14, fontSize:11, fontWeight:600, whiteSpace:"nowrap", border:"1px dashed "+curSo.color }}>{curSo.label}</span>
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.text, textAlign:"left", whiteSpace:"nowrap" }}>{curAgentName}</td>
-                </tr>;
-              })}
-            </tbody>
-          </table>
+                </Fragment>;
+              }}
+            />
+          )}
         </div>
-      </Card>:p.isMobile&&!selected?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:"4px 16px", maxWidth:480, margin:"0 auto", width:"100%", boxSizing:"border-box" }}>
-        {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>No data</div>}
-        {filtered.map(function(lead){
-          var lid=gid(lead); var curSt=currentStatus(lead); var curFb=currentFeedback(lead); var so=sc.find(function(s){return s.value===curSt;})||sc[0]; var isVIP=lead.isVIP;
-          var lastAct=lead.lastActivityTime?timeAgo(lead.lastActivityTime,t):"—";
-          var actColor=lead.lastActivityTime&&(Date.now()-new Date(lead.lastActivityTime).getTime())>3*24*60*60*1000?C.danger:C.accent;
-          var borderCol=isVIP?"#F59E0B":so.color||"#E8ECF1";
-          var isRotated = isOnlyAdmin && lead.previousAgentIds && lead.previousAgentIds.filter(function(x){ return x != null; }).length > 0;
-          return <div key={lid} onClick={function(){setSelected(lead);}}
-            style={{ background:isRotated?"#FFF7ED":"#fff", borderRadius:16, padding:"16px",
-              border:"2px solid "+borderCol,
-              cursor:"pointer", boxShadow:"0 3px 12px "+borderCol+"35" }}>
+      </Card>:p.isMobile&&!selected?<div style={{ padding:"4px 16px", maxWidth:480, margin:"0 auto", width:"100%", boxSizing:"border-box" }}>
+        {/* STEP 2b — mobile cards virtualized via Virtuoso (not TableVirtuoso,
+            since these are divs not <tr>). useWindowScroll keeps page-level
+            scroll. The 12px vertical gap previously provided by flex `gap:12`
+            on the wrapper is rebuilt as `marginBottom:12` on each card item
+            (Virtuoso uses absolute positioning internally; flex gap doesn't
+            apply across virtualized siblings). */}
+        {filtered.length === 0 ? (
+          <div style={{ textAlign:"center", padding:40, color:C.textLight }}>No data</div>
+        ) : (
+          <Virtuoso
+            useWindowScroll
+            data={filtered}
+            itemContent={function(idx, lead){
+              var curSt=currentStatus(lead); var curFb=currentFeedback(lead); var so=sc.find(function(s){return s.value===curSt;})||sc[0]; var isVIP=lead.isVIP;
+              var lastAct=lead.lastActivityTime?timeAgo(lead.lastActivityTime,t):"—";
+              var actColor=lead.lastActivityTime&&(Date.now()-new Date(lead.lastActivityTime).getTime())>3*24*60*60*1000?C.danger:C.accent;
+              var borderCol=isVIP?"#F59E0B":so.color||"#E8ECF1";
+              var isRotated = isOnlyAdmin && lead.previousAgentIds && lead.previousAgentIds.filter(function(x){ return x != null; }).length > 0;
+              return <div onClick={function(){setSelected(lead);}}
+                style={{ background:isRotated?"#FFF7ED":"#fff", borderRadius:16, padding:"16px",
+                  border:"2px solid "+borderCol,
+                  cursor:"pointer", boxShadow:"0 3px 12px "+borderCol+"35", marginBottom:12 }}>
             {/* Header row */}
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
               <div style={{ flex:1, minWidth:0 }}>
@@ -4564,7 +4618,9 @@ var LeadsPage = function(p) {
               </button>
             </div>
           </div>;
-        })}
+            }}
+          />
+        )}
       </div>:<Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
           {/* STEP 2a — empty state renders as a plain table so the "No data"
@@ -10836,13 +10892,22 @@ var DailyRequestsPage = function(p) {
               </div>
             </div>
           </div>}
-          {filtered.map(function(r){
-            var rid=gid(r); var so=sc.find(function(s){return s.value===r.status;})||sc[0];
-            var lastAct=r.lastActivityTime?timeAgo(r.lastActivityTime,t):"—";
-            var actColor=(Date.now()-new Date(r.lastActivityTime||0).getTime())>3*24*60*60*1000?C.danger:C.accent;
-            var borderCol=so.color||"#E8ECF1";
-            return <div key={rid} onClick={function(){setSelected(r);loadDrHistory(rid);window.scrollTo({top:0,behavior:"smooth"});}}
-              style={{ background:"#fff", borderRadius:16, padding:"16px", border:"2px solid "+borderCol, cursor:"pointer", boxShadow:"0 3px 12px "+borderCol+"35" }}>
+          {/* STEP 2b — DR mobile cards virtualized via Virtuoso. The cards
+              include an inline expandable "Mobile History" section when the
+              row is the currently-selected one — Virtuoso auto-measures item
+              heights via ResizeObserver, so the expand/collapse Just Works
+              without any manual remeasure call. `marginBottom:12` on each
+              card replaces the wrapper's flex `gap:12`. */}
+          {filtered.length > 0 && <Virtuoso
+            useWindowScroll
+            data={filtered}
+            itemContent={function(idx, r){
+              var rid=gid(r); var so=sc.find(function(s){return s.value===r.status;})||sc[0];
+              var lastAct=r.lastActivityTime?timeAgo(r.lastActivityTime,t):"—";
+              var actColor=(Date.now()-new Date(r.lastActivityTime||0).getTime())>3*24*60*60*1000?C.danger:C.accent;
+              var borderCol=so.color||"#E8ECF1";
+              return <div onClick={function(){setSelected(r);loadDrHistory(rid);window.scrollTo({top:0,behavior:"smooth"});}}
+                style={{ background:"#fff", borderRadius:16, padding:"16px", border:"2px solid "+borderCol, cursor:"pointer", boxShadow:"0 3px 12px "+borderCol+"35", marginBottom:12 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
                 <div style={{ flex:1 }}>
                   <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:2 }}>{r.name}</div>
@@ -10890,7 +10955,8 @@ var DailyRequestsPage = function(p) {
                 })()}
               </div>}
             </div>;
-          })}
+            }}
+          />}
         </div>:<div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
           {/* STEP 2a — empty state stays as a plain table for the "No requests"
               placeholder; non-empty state hands off to TableVirtuoso. Wrapper
