@@ -10050,7 +10050,7 @@ var DealsPage = function(p) {
   var dealsExternalCount = deals.filter(function(d){ return d.dealType==="external"; }).length;
   var filteredDeals=deals.filter(function(d){
     if(dealQ!=="all"){var dd=getDealDate(d);if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
-    if(dealQ!=="all"&&new Date(getDealDate(d)||0).getFullYear()!==dealYear) return false;
+    if(new Date(getDealDate(d)||0).getFullYear()!==dealYear) return false;
     if(dateFrom&&new Date(d.updatedAt||d.createdAt)<new Date(dateFrom)) return false;
     if(dateTo&&new Date(d.updatedAt||d.createdAt)>new Date(dateTo+"T23:59:59")) return false;
     if(dealSearch){var q2=dealSearch.toLowerCase();var nm=d.name?d.name.toLowerCase():"";var pr=d.project?d.project.toLowerCase():"";var ph=d.phone||"";if(!nm.includes(q2)&&!pr.includes(q2)&&!ph.includes(q2))return false;}
