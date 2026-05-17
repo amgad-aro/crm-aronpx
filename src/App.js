@@ -7018,6 +7018,11 @@ var DashboardPage = function(p) {
   // in-memory derivation at the overdueUntouched useMemo below. Bound by
   // cbBust so any callback update refreshes the badge in real time.
   var [adminOverdueCount, setAdminOverdueCount] = useState(null);
+  // STEP 4-5 X2 — server-side AgentPerf table from /api/dashboard/agent-perf.
+  // Replaces the in-memory agentPerfMemo scan once resolved. Falls back to
+  // the in-memory computation while loading and during sales role render
+  // (which gets 403 from the endpoint and is never rendered anyway).
+  var [agentPerfState, setAgentPerfState] = useState(null);
   useEffect(function(){
     var onResize = function(){ setIsMobile(window.innerWidth<768); };
     window.addEventListener("resize", onResize);
@@ -7334,6 +7339,24 @@ var DashboardPage = function(p) {
     } else { rsA = todayStart.getTime(); reA = todayEnd.getTime(); }
     return { rsA: rsA, reA: reA };
   },[filter]);
+
+  // STEP 4-5 X2 — server-driven AgentPerf rows. Replaces the agentPerfMemo
+  // in-memory scans (which would silently undercount post-X3 bootstrap
+  // shrink). Endpoint requires admin/sales_admin/TL/manager/director —
+  // sales gets a 403 and we silently fall back to the in-memory result
+  // (which never renders for sales anyway). Keyed on cbBust so any lead/DR
+  // mutation refreshes the per-agent rows in real time.
+  useEffect(function(){
+    if (!p.token) return;
+    if (p.cu && p.cu.role === "sales") return;
+    var cancelled = false;
+    var rsA = agentPerfRange.rsA, reA = agentPerfRange.reA;
+    apiFetch("/api/dashboard/agent-perf?from=" + rsA + "&to=" + reA, "GET", null, p.token)
+      .then(function(r){ if (!cancelled && r && Array.isArray(r.rows)) setAgentPerfState(r.rows); })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust, agentPerfRange.rsA, agentPerfRange.reA]);
 
   // Agent Performance per-row data — previously computed inline inside
   // renderAgentPerformanceCard as O(users × leads × assignments). For 50
@@ -7669,7 +7692,10 @@ var DashboardPage = function(p) {
   // longer drive the compute; both call sites pass values that map to the
   // same memoized range (see agentPerfRange).
   var renderAgentPerformanceCard = function(/* rsA, reA */){
-    var fAgentPerfA = agentPerfMemo;
+    // STEP 4-5 X2 — prefer the server-rendered rows when present (the
+    // in-memory memo becomes wrong post-X3 bootstrap shrink). Same shape,
+    // already sorted by quality desc on the server.
+    var fAgentPerfA = agentPerfState || agentPerfMemo;
     return card(<>
       <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:6}}>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Agent Performance</div>
@@ -8308,21 +8334,33 @@ var DashboardPage = function(p) {
     drFiltered = statsCounts.drs.total;
   }
 
-  // Campaign performance (filtered)
-  var fCampMap={};
-  fLeads.forEach(function(l){
-    var k=(l.campaign||"\u2014")+"|"+(l.project||"\u2014")+"|"+(l.source||"\u2014");
-    if(!fCampMap[k]) fCampMap[k]={campaign:l.campaign||"",project:l.project||"",source:l.source||"",leads:0,int:0,meet:0,deals:0};
-    fCampMap[k].leads++;
-    if((l.assignments||[]).some(function(a){return interestedStatuses.includes(a.status);})||interestedStatuses.includes(l.status)) fCampMap[k].int++;
-    if((l.assignments||[]).some(function(a){return a.status==="Meeting Done"||a.status==="MeetingDone";})||l.status==="MeetingDone"||l.status==="DoneDeal") fCampMap[k].meet++;
-    if(l.status==="DoneDeal") fCampMap[k].deals++;
-  });
-  var fCamps=Object.values(fCampMap).sort(function(a,b){return b.leads-a.leads;}).slice(0,8).map(function(c){
-    var ip=c.leads>0?Math.round(c.int/c.leads*100):0;
-    var mp=c.leads>0?Math.round(c.meet/c.leads*100):0;
-    return Object.assign({},c,{ip:ip,mp:mp,quality:ip>30?"High":ip>15?"Medium":"Low"});
-  });
+  // Campaign performance (filtered). STEP 4-5 X2 \u2014 prefers
+  // statsCounts.leads.byCampaign when resolved (server aggregates top 12
+  // campaign|project|source buckets in range). Falls back to the in-memory
+  // fLeads scan during the first paint so existing numbers stay visible.
+  var fCamps;
+  if (statsCounts && statsCounts.leads && Array.isArray(statsCounts.leads.byCampaign)) {
+    fCamps = statsCounts.leads.byCampaign.slice(0, 8).map(function(c){
+      var ip = c.leads > 0 ? Math.round(c.interested / c.leads * 100) : 0;
+      var mp = c.leads > 0 ? Math.round(c.meet / c.leads * 100) : 0;
+      return Object.assign({}, c, { int: c.interested || 0, ip: ip, mp: mp, quality: ip > 30 ? "High" : ip > 15 ? "Medium" : "Low" });
+    });
+  } else {
+    var fCampMap={};
+    fLeads.forEach(function(l){
+      var k=(l.campaign||"\u2014")+"|"+(l.project||"\u2014")+"|"+(l.source||"\u2014");
+      if(!fCampMap[k]) fCampMap[k]={campaign:l.campaign||"",project:l.project||"",source:l.source||"",leads:0,int:0,meet:0,deals:0};
+      fCampMap[k].leads++;
+      if((l.assignments||[]).some(function(a){return interestedStatuses.includes(a.status);})||interestedStatuses.includes(l.status)) fCampMap[k].int++;
+      if((l.assignments||[]).some(function(a){return a.status==="Meeting Done"||a.status==="MeetingDone";})||l.status==="MeetingDone"||l.status==="DoneDeal") fCampMap[k].meet++;
+      if(l.status==="DoneDeal") fCampMap[k].deals++;
+    });
+    fCamps=Object.values(fCampMap).sort(function(a,b){return b.leads-a.leads;}).slice(0,8).map(function(c){
+      var ip=c.leads>0?Math.round(c.int/c.leads*100):0;
+      var mp=c.leads>0?Math.round(c.meet/c.leads*100):0;
+      return Object.assign({},c,{ip:ip,mp:mp,quality:ip>30?"High":ip>15?"Medium":"Low"});
+    });
+  }
 
   // Agent Performance compute moved to renderAgentPerformanceCard() helper
   // above so it can be shared between the admin and team-scoped dashboards.
@@ -18992,13 +19030,22 @@ var KPIsPage = function(p) {
   // handler). State stays null while loading — the existing in-memory derivs
   // serve as the bootstrap-time fallback so the page never flashes zeros.
   var [qStats, setQStats] = useState(null);
+  // STEP 4-5 X2 — status distribution + lifetime totals for KPIsPage charts.
+  // The page-wide myLeads scan becomes wrong post-X3 bootstrap shrink; this
+  // endpoint covers the chart data (byStatus + totals.leads/deals/calls).
+  var [myStats, setMyStats] = useState(null);
   useEffect(function(){
     if (!p.token || !uid) return;
     var cancelled = false;
     var qNum = parseInt(String(selQ).replace("Q","")) || 1;
-    apiFetch("/api/agents/"+uid+"/quarterly-stats?year="+selYear+"&quarter="+qNum,"GET",null,p.token)
-      .then(function(r){ if (!cancelled && r && typeof r === "object") setQStats(r); })
-      .catch(function(){});
+    Promise.all([
+      apiFetch("/api/agents/"+uid+"/quarterly-stats?year="+selYear+"&quarter="+qNum,"GET",null,p.token).catch(function(){return null;}),
+      apiFetch("/api/agents/"+uid+"/my-stats","GET",null,p.token).catch(function(){return null;})
+    ]).then(function(r){
+      if (cancelled) return;
+      if (r[0] && typeof r[0] === "object") setQStats(r[0]);
+      if (r[1] && typeof r[1] === "object") setMyStats(r[1]);
+    });
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token, uid, selQ, selYear, p.cbBust]);
