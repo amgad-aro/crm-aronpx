@@ -13,6 +13,15 @@ import {
 // (html5-qrcode, ~50 kB gz) is dynamic-imported inside the scan sub-view.
 import QRCode from "qrcode";
 
+// TableVirtuoso — STEP 2a of the leads/DR scalability work. Virtualizes the
+// two highest-volume desktop tables (LeadsPage main + DailyRequestsPage),
+// rendering only the visible viewport of <tr> rows instead of the full
+// 1000+. useWindowScroll keeps the page-level scroll bar as the single
+// scroll surface (no double scrollbars). ~25 KB gz one-time bundle cost.
+// Imported here at module scope so other STEP 2b branches (mobile cards +
+// important tab) can pick up Virtuoso/TableVirtuoso when they land.
+import { TableVirtuoso } from "react-virtuoso";
+
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
 const API = process.env.REACT_APP_API_URL || "https://crm-aro-backend-production.up.railway.app";
@@ -4222,6 +4231,33 @@ var LeadsPage = function(p) {
 
   var leadActs = selected ? p.activities.filter(function(a){ var lid=gid(selected); return a.leadId&&(gid(a.leadId)===lid||a.leadId===lid); }) : [];
 
+  // ===== STEP 2a — TableVirtuoso wiring for the main desktop table (L3). =====
+  // Defined per-page (closures over selected/selected2/isOnlyAdmin) and memoized
+  // so a stable identity is passed to Virtuoso's `components` prop — fresh
+  // identities every render would force Virtuoso to re-mount the list and lose
+  // scroll position. Deps cover every piece of state the render reads.
+  var leadsMainTableComponents = useMemo(function(){
+    return {
+      Table: function TableEl(props){
+        return <table {...props} style={{ width:"100%", borderCollapse:"collapse", minWidth: p.isMobile?600:900 }}/>;
+      },
+      TableRow: function TableRowEl(props){
+        var lead = props.item;
+        if (!lead) return <tr {...props}/>;
+        var lid = gid(lead);
+        var isSel = selected && gid(selected) === lid;
+        var isChk = selected2.includes(lid);
+        var isVIP = lead.isVIP;
+        var isRotated = isOnlyAdmin && lead.previousAgentIds && lead.previousAgentIds.filter(function(x){ return x != null; }).length > 0;
+        // Strip Virtuoso-only props ("item", "context") before spreading to <tr>;
+        // React 19 warns on unknown DOM attributes.
+        var trProps = {};
+        Object.keys(props).forEach(function(k){ if (k !== "item" && k !== "context") trProps[k] = props[k]; });
+        return <tr {...trProps} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":isRotated?"#FFF7ED":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}/>;
+      }
+    };
+  }, [selected, selected2, isOnlyAdmin, p.isMobile, setSelected]);
+
   var specialFilterLabel = (function(){
     if (!p.specialFilter||!p.specialFilter.type) return "";
     if (p.specialFilter.type === "aging") {
@@ -4531,28 +4567,59 @@ var LeadsPage = function(p) {
         })}
       </div>:<Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?600:900 }}>
-            <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-              <th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(l){return gid(l);}):[])}}/></th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.name}</th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.phone}</th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.phone2}</th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>Campaign</th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.project}</th>
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.status}</th>
-              {!p.isMobile&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>Last Feedback</th>}
-              {!p.isMobile&&isAdmin&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90 }}>{t.source}</th>}
-              {isAdmin&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.agent}</th>}
-              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90 }}>{t.lastActivity}</th>
-              {!p.isMobile&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.callbackTime}</th>}
-            </tr></thead>
-            <tbody>
-              {filtered.length===0&&<tr><td colSpan={10} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No data</td></tr>}
-              {filtered.map(function(lead){
+          {/* STEP 2a — empty state renders as a plain table so the "No data"
+              placeholder shows the same chrome (thead + colSpan cell) as before.
+              Non-empty state hands off to TableVirtuoso, which mounts only the
+              visible viewport of rows (~20 vs 1115) and uses useWindowScroll so
+              the page-level scroll bar remains the single scroll surface.
+              Wrapper `<div style="overflowX:auto">` is preserved so narrow
+              viewports still scroll the table horizontally without changing
+              the page width. */}
+          {filtered.length === 0 ? (
+            <table style={{ width:"100%", borderCollapse:"collapse", minWidth:p.isMobile?600:900 }}>
+              <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+                <th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" disabled/></th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.name}</th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.phone}</th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.phone2}</th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>Campaign</th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.project}</th>
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110 }}>{t.status}</th>
+                {!p.isMobile&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>Last Feedback</th>}
+                {!p.isMobile&&isAdmin&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90 }}>{t.source}</th>}
+                {isAdmin&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100 }}>{t.agent}</th>}
+                <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90 }}>{t.lastActivity}</th>
+                {!p.isMobile&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120 }}>{t.callbackTime}</th>}
+              </tr></thead>
+              <tbody>
+                <tr><td colSpan={10} style={{ padding:40, textAlign:"center", color:C.textLight, fontSize:13 }}>No data</td></tr>
+              </tbody>
+            </table>
+          ) : (
+            <TableVirtuoso
+              useWindowScroll
+              data={filtered}
+              components={leadsMainTableComponents}
+              fixedHeaderContent={function(){
+                return <tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+                  <th style={{ padding:"10px 8px", width:32, background:"#F8FAFC" }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(l){return gid(l);}):[])}}/></th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100, background:"#F8FAFC" }}>{t.name}</th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120, background:"#F8FAFC" }}>{t.phone}</th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110, background:"#F8FAFC" }}>{t.phone2}</th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110, background:"#F8FAFC" }}>Campaign</th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100, background:"#F8FAFC" }}>{t.project}</th>
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110, background:"#F8FAFC" }}>{t.status}</th>
+                  {!p.isMobile&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120, background:"#F8FAFC" }}>Last Feedback</th>}
+                  {!p.isMobile&&isAdmin&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90, background:"#F8FAFC" }}>{t.source}</th>}
+                  {isAdmin&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100, background:"#F8FAFC" }}>{t.agent}</th>}
+                  <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:90, background:"#F8FAFC" }}>{t.lastActivity}</th>
+                  {!p.isMobile&&<th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120, background:"#F8FAFC" }}>{t.callbackTime}</th>}
+                </tr>;
+              }}
+              itemContent={function(idx, lead){
                 var lid=gid(lead); var curSt=currentStatus(lead); var curFb=currentFeedback(lead); var so=sc.find(function(s){return s.value===curSt;})||sc[0];
-                var isSel=selected&&gid(selected)===lid; var isChk=selected2.includes(lid); var isVIP=lead.isVIP;
-                var isRotated = isOnlyAdmin && lead.previousAgentIds && lead.previousAgentIds.filter(function(x){ return x != null; }).length > 0;
-                return <tr key={lid} onClick={function(){setSelected(lead);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":isVIP?"#FFFBEB":isChk?"#F0FDF4":isRotated?"#FFF7ED":"transparent", transition:"background 0.12s", borderRight:isVIP?"3px solid #F59E0B":"3px solid transparent" }}>
+                var isChk=selected2.includes(lid);
+                return <Fragment>
                   <td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();setSelected2(function(prev){return prev.includes(lid)?prev.filter(function(x){return x!==lid;}):[...prev,lid];});}}><input type="checkbox" checked={isChk} readOnly/></td>
                   <td style={{ padding:"10px 12px", textAlign:"left" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
@@ -4639,10 +4706,10 @@ var LeadsPage = function(p) {
                       </span>;
                     })() : <span style={{ color:C.textLight }}>-</span>}
                   </td>}
-                </tr>;
-              })}
-            </tbody>
-          </table>
+                </Fragment>;
+              }}
+            />
+          )}
         </div>
       </Card>}
 
@@ -10649,6 +10716,29 @@ var DailyRequestsPage = function(p) {
 
   var getAgentName=function(r){if(!r.agentId)return"-";if(r.agentId.name)return r.agentId.name;var u=p.users.find(function(x){return gid(x)===r.agentId;});return u?u.name:"-";};
 
+  // ===== STEP 2a — TableVirtuoso wiring for the DR desktop table (DR2). =====
+  // Same pattern as LeadsPage: memoized components dict gives Virtuoso a stable
+  // identity (avoids re-mount-on-every-render scroll-jump). TableRow closes over
+  // selected / selected2 / setSelected / loadDrHistory so each row's highlight
+  // and click behavior match the pre-virtualization version exactly.
+  var drTableComponents = useMemo(function(){
+    return {
+      Table: function TableEl(props){
+        return <table {...props} style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}/>;
+      },
+      TableRow: function TableRowEl(props){
+        var r = props.item;
+        if (!r) return <tr {...props}/>;
+        var rid = gid(r);
+        var isSel = selected && gid(selected) === rid;
+        var isChk = selected2.includes(rid);
+        var trProps = {};
+        Object.keys(props).forEach(function(k){ if (k !== "item" && k !== "context") trProps[k] = props[k]; });
+        return <tr {...trProps} onClick={function(){setSelected(r);loadDrHistory(rid);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isChk?"#EFF6FF":isSel?"#EFF6FF":"transparent", borderRight:"3px solid "+(isSel?C.accent:"transparent") }}/>;
+      }
+    };
+  }, [selected, selected2, setSelected, loadDrHistory]);
+
   return <div style={{ padding:"18px 16px 40px" }}>
     <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} lead={selected} cu={p.cu} users={p.users} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
     {statusDrop&&<div data-overlay-above="true" style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
@@ -10802,17 +10892,36 @@ var DailyRequestsPage = function(p) {
             </div>;
           })}
         </div>:<div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}>
-            <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-              {p.cu.role==="admin"&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(r){return gid(r);}):[]);}}/></th>}
-              {["Name","Phone","Property Type","Location","Budget","Status","Last Feedback",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
-            </tr></thead>
-            <tbody>
-              {filtered.length===0&&<tr><td colSpan={10} style={{ padding:40, textAlign:"center", color:C.textLight }}>No requests</td></tr>}
-              {filtered.map(function(r){
-                var rid=gid(r); var so=sc.find(function(s){return s.value===r.status;})||sc[0]; var isSel=selected&&gid(selected)===rid;
+          {/* STEP 2a — empty state stays as a plain table for the "No requests"
+              placeholder; non-empty state hands off to TableVirtuoso. Wrapper
+              <div style="overflowX:auto"> preserved so narrow viewports still
+              scroll horizontally without changing page width. useWindowScroll
+              keeps the page-level scroll bar as the only vertical scroll. */}
+          {filtered.length === 0 ? (
+            <table style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}>
+              <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+                {p.cu.role==="admin"&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" disabled/></th>}
+                {["Name","Phone","Property Type","Location","Budget","Status","Last Feedback",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+              </tr></thead>
+              <tbody>
+                <tr><td colSpan={10} style={{ padding:40, textAlign:"center", color:C.textLight }}>No requests</td></tr>
+              </tbody>
+            </table>
+          ) : (
+            <TableVirtuoso
+              useWindowScroll
+              data={filtered}
+              components={drTableComponents}
+              fixedHeaderContent={function(){
+                return <tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
+                  {p.cu.role==="admin"&&<th style={{ padding:"10px 8px", width:32, background:"#F8FAFC" }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(r){return gid(r);}):[]);}}/></th>}
+                  {["Name","Phone","Property Type","Location","Budget","Status","Last Feedback",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap", background:"#F8FAFC" }}>{h}</th>;})}
+                </tr>;
+              }}
+              itemContent={function(idx, r){
+                var rid=gid(r); var so=sc.find(function(s){return s.value===r.status;})||sc[0];
                 var ci=callbackColor(r.callbackTime); var isChk=selected2.includes(rid);
-                return <tr key={rid} onClick={function(){setSelected(r);loadDrHistory(rid);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isChk?"#EFF6FF":isSel?"#EFF6FF":"transparent", borderRight:"3px solid "+(isSel?C.accent:"transparent") }}>
+                return <Fragment>
                   {p.cu.role==="admin"&&<td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();}}><input type="checkbox" checked={isChk} onChange={function(e){setSelected2(function(prev){return e.target.checked?prev.concat(rid):prev.filter(function(x){return x!==rid;});});}}/></td>}
                   <td style={{ padding:"10px 12px" }}><div style={{ fontSize:13, fontWeight:600 }}>{r.name}</div><div style={{ fontSize:10, color:C.textLight }}>{r.email}</div></td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr" }}>
@@ -10865,10 +10974,10 @@ var DailyRequestsPage = function(p) {
                   <td style={{ padding:"10px 12px", fontSize:11 }}>
                     {r.callbackTime?<span style={{ padding:"2px 8px", borderRadius:12, background:ci?ci.bg:"transparent", color:ci?ci.color:C.textLight, fontSize:10, fontWeight:ci?600:400 }}>{r.callbackTime.slice(0,16).replace("T"," ")}</span>:<span style={{ color:C.textLight }}>-</span>}
                   </td>
-                </tr>;
-              })}
-            </tbody>
-          </table>
+                </Fragment>;
+              }}
+            />
+          )}
         </div>}
       </Card>
 
