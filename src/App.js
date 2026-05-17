@@ -22836,7 +22836,7 @@ var CommissionsPage = function(p) {
         {(agents.length + brokers.length) === 0 && !payoutLoading && <div style={{
           padding:"30px 16px", textAlign:"center", color:C.textLight,
           background:"#fff", border:"1px solid #E8ECF1", borderRadius:10
-        }}>No payouts owed for this month.</div>}
+        }}>No payouts in this month.</div>}
 
         {(agents.length + brokers.length) > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
           <table style={{ width:"100%", minWidth:560, borderCollapse:"collapse", fontSize:12 }}>
@@ -22846,7 +22846,7 @@ var CommissionsPage = function(p) {
                 <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Recipient</th>
                 <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Role</th>
                 <th style={{ textAlign:"end",   padding:"10px 12px", fontWeight:700, color:C.textLight }}>Deals</th>
-                <th style={{ textAlign:"end",   padding:"10px 12px", fontWeight:700, color:C.textLight }}>Total owed (EGP)</th>
+                <th style={{ textAlign:"end",   padding:"10px 12px", fontWeight:700, color:C.textLight }}>Total paid (EGP)</th>
               </tr>
             </thead>
             <tbody>
@@ -22871,7 +22871,7 @@ var CommissionsPage = function(p) {
                     <td style={{ padding:"10px 12px", fontWeight:600 }}>{a.userName}</td>
                     <td style={{ padding:"10px 12px", color:C.textLight }}>{a.role}</td>
                     <td style={{ padding:"10px 12px", textAlign:"end" }}>{a.deals.length}</td>
-                    <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.success }}>{fmtMoney(a.totalOwed)}</td>
+                    <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.success }}>{fmtMoney(a.totalPaid)}</td>
                   </tr>
                   {expanded && <tr style={{ background:"#F8FAFC" }}>
                     <td colSpan={5} style={{ padding:"6px 12px 12px 44px" }}>
@@ -22884,7 +22884,7 @@ var CommissionsPage = function(p) {
                             <th style={{ textAlign:"end",   padding:"6px 8px", fontWeight:700 }}>Deal total</th>
                             <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Split</th>
                             <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Cycle</th>
-                            <th style={{ textAlign:"end",   padding:"6px 8px", fontWeight:700 }}>Owed (EGP)</th>
+                            <th style={{ textAlign:"end",   padding:"6px 8px", fontWeight:700 }}>Paid (EGP)</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -22896,7 +22896,7 @@ var CommissionsPage = function(p) {
                               <td style={{ padding:"6px 8px", textAlign:"end", color:C.textLight }}>{fmtMoney(d.dealTotal)}</td>
                               <td style={{ padding:"6px 8px", color: d.isSplit ? "#7C3AED" : C.textLight, fontWeight: d.isSplit ? 600 : 400 }}>{d.splitLabel || "Full deal"}</td>
                               <td style={{ padding:"6px 8px", color:C.textLight }}>{d.cycleRef ? "#" + d.cycleRef : "—"}</td>
-                              <td style={{ padding:"6px 8px", textAlign:"end", fontWeight:700, color:C.success }}>{fmtMoney(d.owedNet)}</td>
+                              <td style={{ padding:"6px 8px", textAlign:"end", fontWeight:700, color:C.success }}>{fmtMoney(d.paidThisMonth)}</td>
                             </tr>;
                           })}
                         </tbody>
@@ -22942,7 +22942,7 @@ var CommissionsPage = function(p) {
                     </td>
                     <td style={{ padding:"10px 12px", color:C.textLight }}>—</td>
                     <td style={{ padding:"10px 12px", textAlign:"end" }}>{b.deals.length}</td>
-                    <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:"#5B21B6" }}>{fmtMoney(b.totalOwed)}</td>
+                    <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:"#5B21B6" }}>{fmtMoney(b.totalPaid)}</td>
                   </tr>
                   {expanded && <tr style={{ background:"#F5F3FF" }}>
                     <td colSpan={5} style={{ padding:"6px 12px 12px 44px" }}>
@@ -22954,7 +22954,7 @@ var CommissionsPage = function(p) {
                             <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Deal date</th>
                             <th style={{ textAlign:"end",   padding:"6px 8px", fontWeight:700 }}>Deal total</th>
                             <th style={{ textAlign:"start", padding:"6px 8px", fontWeight:700 }}>Cycle</th>
-                            <th style={{ textAlign:"end",   padding:"6px 8px", fontWeight:700 }}>Owed (EGP)</th>
+                            <th style={{ textAlign:"end",   padding:"6px 8px", fontWeight:700 }}>Paid (EGP)</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -22965,7 +22965,7 @@ var CommissionsPage = function(p) {
                               <td style={{ padding:"6px 8px", color:C.textLight }}>{fmtDate(d.dealDate)}</td>
                               <td style={{ padding:"6px 8px", textAlign:"end", color:C.textLight }}>{fmtMoney(d.dealTotal)}</td>
                               <td style={{ padding:"6px 8px", color:C.textLight }}>{d.cycleRef ? "#" + d.cycleRef : "—"}</td>
-                              <td style={{ padding:"6px 8px", textAlign:"end", fontWeight:700, color:"#5B21B6" }}>{fmtMoney(d.owedNet)}</td>
+                              <td style={{ padding:"6px 8px", textAlign:"end", fontWeight:700, color:"#5B21B6" }}>{fmtMoney(d.paidThisMonth)}</td>
                             </tr>;
                           })}
                         </tbody>

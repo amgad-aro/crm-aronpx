@@ -18970,145 +18970,128 @@ app.get("/api/commissions/cash-flow", auth, salesAdminOnly, async function(req, 
 // Excludes recipients with non-positive owed (already paid or never owed).
 // Used by both the GET endpoint below AND the sweepPayoutReminders cron.
 async function computePayoutsForMonth(year, month) {
-  // monthKey is "YYYY-MM" — used for received.date prefix match.
+  // BUG #3 rewrite — the Payout Report is "log of commission PAID this
+  // month", not "what's still owed". Scope by payouts[].date (and the
+  // parallel externalSplit.brokerPayouts[].date for brokers) instead of
+  // cycles.received.date, and sum payout.amount in-month per recipient
+  // instead of computing owed-minus-lifetime-paid. Fully-paid deals now
+  // surface correctly — the prior `if (net > 0)` filter dropped them.
+  //
+  // Bucket key for internal recipients: payout.recipientUserId when
+  // present, else "name:<recipientUserName>" so manual_add recipients
+  // (which may carry only a name) still aggregate cleanly. Cancelled
+  // commissions stay excluded — a cancellation rolls back the deal.
   var monthKey = String(year) + "-" + String(month).padStart(2, "0");
+
   var docs = await Commission.find({
     status: { $ne: "cancelled" },
-    cycles: { $elemMatch: { "received.date": { $regex: "^" + monthKey } } }
+    $or: [
+      { payouts: { $elemMatch: { date: { $regex: "^" + monthKey } } } },
+      { "externalSplit.brokerPayouts": { $elemMatch: { date: { $regex: "^" + monthKey } } } }
+    ]
   })
     .select("leadId status snapshot cycles payouts externalSplit")
     .lean();
 
-  // byAgent: { userIdStr -> { userId, userName, role, totalOwed, deals: [...] } }
-  var byAgent = Object.create(null);
-  // Phase R-12 Part 8 — byBroker: { brokerKey -> { brokerId, brokerName,
-  // totalOwed, deals: [...] } }. Keyed by brokerId when present, else by
-  // a `name:<brokerName>` fallback so historical commissions whose Broker
-  // doc was hard-deleted still aggregate cleanly under their snapshot name.
+  var byAgent  = Object.create(null);
   var byBroker = Object.create(null);
 
   function ensureAgent(rec, key) {
-    // Phase R-13.1 — accepts an explicit key so name-only manual_add entries
-    // (no userId) get their own bucket under a synthetic "extra:<name>" key.
     if (!key) return null;
     if (!byAgent[key]) {
       byAgent[key] = {
         userId:    rec.userId ? String(rec.userId) : null,
         userName:  rec.userName || "(unknown)",
         role:      rec.role || "sales",
-        totalOwed: 0,
+        totalPaid: 0,
         deals:     []
       };
     }
     return byAgent[key];
   }
 
-  function paidToRecipient(payouts, row) {
-    // Phase R-13.1 — match by userId when available, else by userName. The
-    // payouts schema requires recipientUserName but recipientUserId is
-    // optional, so name-only entries can still be paid.
-    if (!Array.isArray(payouts)) return 0;
-    var matchId = row.userId ? String(row.userId) : null;
-    var matchName = row.userName || "";
-    var s = 0;
-    for (var i = 0; i < payouts.length; i++) {
-      var p = payouts[i];
-      if (!p) continue;
-      var hit = false;
-      if (matchId && p.recipientUserId && String(p.recipientUserId) === matchId) hit = true;
-      else if (!matchId && p.recipientUserName === matchName) hit = true;
-      if (hit) s += Number(p.amount || 0);
-    }
-    return s;
-  }
-
-  function pushDeal(row, doc, cycleNumberRef) {
-    // row is an applyRecipientOverrides() entry. Drops removed slots upstream;
-    // manual_zero rows already carry effectiveOwed=0 (filtered below).
-    if (!row) return;
-    if (!row.userId && !row.userName) return;
-    var owed = Number(row.effectiveOwed || 0);
-    if (!(owed > 0)) return;
-    var paid = paidToRecipient(doc.payouts, row);
-    var net = owed - paid;
-    if (!(net > 0)) return;
-    var bucketKey = row.userId ? String(row.userId) : ("extra:" + row.userName);
-    var bucket = ensureAgent({ userId: row.userId, userName: row.userName, role: row.role }, bucketKey);
-    if (!bucket) return;
-    var snap = doc.snapshot || {};
-    bucket.totalOwed += net;
-    bucket.deals.push({
-      commissionId:  String(doc._id),
-      leadId:        String(doc.leadId || ""),
-      customerName:  snap.customerName || "",
-      projectName:   snap.projectName  || "",
-      dealDate:      snap.dealDate     || "",
-      dealTotal:     Number(snap.dealTotal || 0),
-      isSplit:       !!snap.isSplitDeal,
-      splitLabel:    row.isExtra ? "Manual" : (row.isSplit ? "Split 50%" : "Full deal"),
-      role:          row.role,
-      computedShare: Number(row.computedShare || 0),
-      overrideAmount: row.overrideAmount,
-      paidToDate:    paid,
-      owedTotal:     owed,
-      owedNet:       net,
-      cycleRef:      cycleNumberRef,
-      // Phase R-13 — override provenance for FE display / tooltips.
-      overrideSource: row.overrideSource || null,
-      overrideAddedBy: row.addedBy || ""
-    });
-  }
-
   for (var di = 0; di < docs.length; di++) {
     var doc = docs[di];
-    // Find the first cycle that triggered match (display reference).
-    var cycleRef = null;
-    if (Array.isArray(doc.cycles)) {
-      for (var ci = 0; ci < doc.cycles.length; ci++) {
-        var cy = doc.cycles[ci];
-        var rd = cy && cy.received && cy.received.date;
-        if (typeof rd === "string" && rd.slice(0, 7) === monthKey) {
-          cycleRef = cy.cycleNumber;
-          break;
-        }
+    var snap = doc.snapshot || {};
+
+    // Two passes: aggregate this month's payouts per (recipient bucket,
+    // commission) so a recipient paid twice on the same deal in the same
+    // month surfaces as ONE deal row with the summed amount (not two).
+    var perDealByRecipient = Object.create(null);
+    var payouts = Array.isArray(doc.payouts) ? doc.payouts : [];
+    for (var pi = 0; pi < payouts.length; pi++) {
+      var p = payouts[pi];
+      if (!p) continue;
+      if (typeof p.date !== "string" || p.date.slice(0, 7) !== monthKey) continue;
+      var amt = Number(p.amount || 0);
+      if (!(amt > 0)) continue;
+      var bucketKey = p.recipientUserId
+        ? String(p.recipientUserId)
+        : ("name:" + String(p.recipientUserName || ""));
+      var bucket = ensureAgent({
+        userId:   p.recipientUserId,
+        userName: p.recipientUserName,
+        role:     p.recipientRole
+      }, bucketKey);
+      if (!bucket) continue;
+      bucket.totalPaid += amt;
+      var dealKey = bucketKey + "::" + String(doc._id);
+      if (!perDealByRecipient[dealKey]) {
+        perDealByRecipient[dealKey] = { bucket: bucket, paidThisMonth: 0, role: p.recipientRole };
       }
-    }
-    // Phase R-13 — replace direct snapshot reads with applyRecipientOverrides()
-    // so manual_remove drops the recipient, manual_zero zeroes them, and
-    // manual_add extras appear on the report.
-    var effective = applyRecipientOverrides(doc);
-    for (var ei = 0; ei < effective.length; ei++) {
-      pushDeal(effective[ei], doc, cycleRef);
+      perDealByRecipient[dealKey].paidThisMonth += amt;
     }
 
-    // Phase R-12 Part 8 — broker payout aggregation. brokerOwed is a
-    // running commission-level total (computeAllRecipientShares writes it
-    // from Σ cycle.claimAmount × pcts, see Part 5). brokerPaid is summed
-    // lifetime across externalSplit.brokerPayouts. brokerNet is what's
-    // owed RIGHT NOW. We bucket by brokerId (or name fallback for hard-
-    // deleted brokers) so multi-deal brokers consolidate into a single
-    // row. Same scoping as agents — only commissions whose received.date
-    // matched the month above are loaded.
+    // Materialize one deal row per (recipient × commission). customerName /
+    // projectName / dealDate / dealTotal come from the snapshot so they
+    // stay stable after lead renames. splitLabel is derived from the
+    // snapshot's isSplitDeal flag — accurate enough for the report; the
+    // old applyRecipientOverrides()-based "Manual" label is not portable
+    // here since payouts don't carry that provenance.
+    Object.keys(perDealByRecipient).forEach(function(k){
+      var entry = perDealByRecipient[k];
+      entry.bucket.deals.push({
+        commissionId:  String(doc._id),
+        leadId:        String(doc.leadId || ""),
+        customerName:  snap.customerName || "",
+        projectName:   snap.projectName  || "",
+        dealDate:      snap.dealDate     || "",
+        dealTotal:     Number(snap.dealTotal || 0),
+        isSplit:       !!snap.isSplitDeal,
+        splitLabel:    snap.isSplitDeal ? "Split 50%" : "Full deal",
+        role:          entry.role,
+        paidThisMonth: entry.paidThisMonth,
+        // payouts schema has no per-payout cycleRef — column renders "—".
+        cycleRef:      null
+      });
+    });
+
+    // Mirror the same in-month aggregation for broker payments. brokerPayouts
+    // is a separate sub-array (parallel to commission.payouts[]); each entry
+    // has amount + date + notes. There's only ever one broker per commission
+    // so we don't need a per-deal sub-key.
     var es = doc.externalSplit;
-    if (es && es.isExternal) {
-      // Phase R-13.2 — read brokerNetOwed when present (paidBy="broker" docs
-      // already had it deducted). Older docs (pre-13.2) have no brokerNetOwed
-      // field; fall back to brokerOwed so the report doesn't go negative.
-      var brokerOwed     = Number(es.brokerOwed || 0);
-      var brokerOwedRead = (es.brokerNetOwed != null) ? Number(es.brokerNetOwed) : brokerOwed;
-      var brokerPaid     = (es.brokerPayouts || []).reduce(function(s, bp){ return s + Number(bp.amount || 0); }, 0);
-      var brokerNet      = brokerOwedRead - brokerPaid;
-      if (brokerOwedRead > 0 && brokerNet > 0) {
+    if (es && es.isExternal && Array.isArray(es.brokerPayouts)) {
+      var brokerInMonth = 0;
+      for (var bi = 0; bi < es.brokerPayouts.length; bi++) {
+        var bp = es.brokerPayouts[bi];
+        if (!bp) continue;
+        if (typeof bp.date !== "string" || bp.date.slice(0, 7) !== monthKey) continue;
+        var bamt = Number(bp.amount || 0);
+        if (!(bamt > 0)) continue;
+        brokerInMonth += bamt;
+      }
+      if (brokerInMonth > 0) {
         var brokerKey = es.brokerId ? String(es.brokerId) : ("name:" + (es.brokerName || ""));
         if (!byBroker[brokerKey]) {
           byBroker[brokerKey] = {
-            brokerId:  es.brokerId ? String(es.brokerId) : null,
+            brokerId:   es.brokerId ? String(es.brokerId) : null,
             brokerName: es.brokerName || "(unnamed broker)",
-            totalOwed: 0,
-            deals:     []
+            totalPaid:  0,
+            deals:      []
           };
         }
-        byBroker[brokerKey].totalOwed += brokerNet;
+        byBroker[brokerKey].totalPaid += brokerInMonth;
         byBroker[brokerKey].deals.push({
           commissionId:  String(doc._id),
           leadId:        String(doc.leadId || ""),
@@ -19116,56 +19099,27 @@ async function computePayoutsForMonth(year, month) {
           projectName:   snap.projectName  || "",
           dealDate:      snap.dealDate     || "",
           dealTotal:     Number(snap.dealTotal || 0),
-          owedTotal:     brokerOwedRead,
-          paidToDate:    brokerPaid,
-          owedNet:       brokerNet,
-          cycleRef:      cycleRef
+          paidThisMonth: brokerInMonth,
+          cycleRef:      null
         });
       }
     }
   }
 
-  // Sort agents by totalOwed desc, and within each agent sort deals by
-  // dealDate desc (most recent first — matches admin's expected scan order).
-  // type:"user" added Phase R-12 Part 8 so the FE can branch on row shape
-  // without a brittle "does this object have brokerId?" check.
-  var agentList = Object.keys(byAgent).map(function(k){
-    var a = byAgent[k];
-    a.type = "user";
-    return a;
-  });
-  agentList.sort(function(a, b){ return b.totalOwed - a.totalOwed; });
-  agentList.forEach(function(a){
-    a.deals.sort(function(x, y){
-      if (x.dealDate !== y.dealDate) return x.dealDate < y.dealDate ? 1 : -1;
-      return 0;
-    });
-  });
-
-  // Phase R-12 Part 8 — same sort treatment for brokers. type:"broker" so
-  // the FE can render a violet badge + skip the split column.
-  var brokerList = Object.keys(byBroker).map(function(k){
-    var b = byBroker[k];
-    b.type = "broker";
-    return b;
-  });
-  brokerList.sort(function(a, b){ return b.totalOwed - a.totalOwed; });
-  brokerList.forEach(function(b){
-    b.deals.sort(function(x, y){
-      if (x.dealDate !== y.dealDate) return x.dealDate < y.dealDate ? 1 : -1;
-      return 0;
-    });
-  });
+  // Sort recipients by totalPaid desc; within each, deals by dealDate desc.
+  // type:"user"/"broker" lets the FE branch on row shape (violet badge +
+  // hidden split column for brokers) without sniffing for brokerId.
+  var agentList  = Object.keys(byAgent).map(function(k){ var a = byAgent[k];  a.type = "user";   return a; });
+  var brokerList = Object.keys(byBroker).map(function(k){ var b = byBroker[k]; b.type = "broker"; return b; });
+  agentList.sort(function(a, b){ return b.totalPaid - a.totalPaid; });
+  brokerList.sort(function(a, b){ return b.totalPaid - a.totalPaid; });
+  function dealDateDesc(x, y){ if (x.dealDate !== y.dealDate) return x.dealDate < y.dealDate ? 1 : -1; return 0; }
+  agentList.forEach(function(a){ a.deals.sort(dealDateDesc); });
+  brokerList.forEach(function(b){ b.deals.sort(dealDateDesc); });
 
   var totalPayout = 0, totalDeals = 0;
-  agentList.forEach(function(a){
-    totalPayout += a.totalOwed;
-    totalDeals  += a.deals.length;
-  });
-  brokerList.forEach(function(b){
-    totalPayout += b.totalOwed;
-    totalDeals  += b.deals.length;
-  });
+  agentList.forEach(function(a){  totalPayout += a.totalPaid; totalDeals += a.deals.length; });
+  brokerList.forEach(function(b){ totalPayout += b.totalPaid; totalDeals += b.deals.length; });
 
   return {
     monthKey: monthKey,
@@ -19175,8 +19129,6 @@ async function computePayoutsForMonth(year, month) {
       totalPayout:    totalPayout,
       agentCount:     agentList.length,
       brokerCount:    brokerList.length,
-      // recipientCount = agents + brokers, for the FE summary card. agentCount
-      // is preserved for any pre-Part-8 consumer of this endpoint.
       recipientCount: agentList.length + brokerList.length,
       dealCount:      totalDeals
     }
@@ -19202,38 +19154,32 @@ app.get("/api/commissions/payout-report", auth, salesAdminOnly, async function(r
       monthKey: result.monthKey,
       agents: result.agents.map(function(a){
         return {
-          type:              "user",
-          userId:            a.userId,
-          userName:          a.userName,
-          role:              a.role,
-          totalOwed:         round2(a.totalOwed),
+          type:      "user",
+          userId:    a.userId,
+          userName:  a.userName,
+          role:      a.role,
+          totalPaid: round2(a.totalPaid),
           deals: a.deals.map(function(d){
             return Object.assign({}, d, {
-              dealTotal:      round2(d.dealTotal),
-              computedShare:  round2(d.computedShare),
-              overrideAmount: d.overrideAmount != null ? round2(d.overrideAmount) : null,
-              paidToDate:     round2(d.paidToDate),
-              owedTotal:      round2(d.owedTotal),
-              owedNet:        round2(d.owedNet)
+              dealTotal:     round2(d.dealTotal),
+              paidThisMonth: round2(d.paidThisMonth)
             });
           })
         };
       }),
-      // Phase R-12 Part 8 — broker rows mirror the agent shape but with
-      // brokerId/brokerName + no role/split. The FE branches on `type` to
-      // render a violet badge and skip the split column.
+      // Broker rows mirror the agent shape but with brokerId/brokerName +
+      // no role/split. The FE branches on `type` to render a violet badge
+      // and skip the split column.
       brokers: (result.brokers || []).map(function(b){
         return {
           type:       "broker",
           brokerId:   b.brokerId,
           brokerName: b.brokerName,
-          totalOwed:  round2(b.totalOwed),
+          totalPaid:  round2(b.totalPaid),
           deals: b.deals.map(function(d){
             return Object.assign({}, d, {
-              dealTotal:  round2(d.dealTotal),
-              paidToDate: round2(d.paidToDate),
-              owedTotal:  round2(d.owedTotal),
-              owedNet:    round2(d.owedNet)
+              dealTotal:     round2(d.dealTotal),
+              paidThisMonth: round2(d.paidThisMonth)
             });
           })
         };
