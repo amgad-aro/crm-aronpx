@@ -22806,7 +22806,7 @@ var CommissionsPage = function(p) {
         <div style={{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" }}>
           <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
             <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Total payout</div>
-            <div style={{ fontSize:18, fontWeight:700, color:C.success }}>{fmtMoney(summary.totalPayout)} EGP</div>
+            <div style={{ fontSize:18, fontWeight:700, color:C.success }}>{fmtMoney(summary.totalPayout)}</div>
           </div>
           <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
             <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Recipients to pay</div>
@@ -22829,8 +22829,8 @@ var CommissionsPage = function(p) {
           background:"#fff", border:"1px solid #E8ECF1", borderRadius:10
         }}>No payouts owed for this month.</div>}
 
-        {(agents.length + brokers.length) > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+        {(agents.length + brokers.length) > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
+          <table style={{ width:"100%", minWidth:560, borderCollapse:"collapse", fontSize:12 }}>
             <thead>
               <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
                 <th className="no-print" style={{ width:32 }}></th>
@@ -22970,7 +22970,7 @@ var CommissionsPage = function(p) {
               <tr style={{ background:"#F8FAFC", borderTop:"2px solid #CBD5E1" }}>
                 <td colSpan={3} style={{ padding:"10px 12px", fontWeight:700, color:C.text }}>Total</td>
                 <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text }}>{summary.dealCount}</td>
-                <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.success }}>{fmtMoney(summary.totalPayout)} EGP</td>
+                <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.success }}>{fmtMoney(summary.totalPayout)}</td>
               </tr>
             </tfoot>
           </table>
