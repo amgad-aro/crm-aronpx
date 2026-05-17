@@ -7834,6 +7834,18 @@ app.get("/api/leads/counts", auth, async function(req, res) {
     }
     var baseInWindowAnd = [scope, { archived: { $ne: true } }];
     if (from || to) baseInWindowAnd.push(createdInWindow);
+    // STEP 4-5 follow-up — optional source filters so callers can honour
+    // their visibility rules without re-aggregating client-side.
+    //   ?excludeSource=Daily Request — LeadsPage tab counters exclude DR
+    //     mirror leads (those live on DailyRequestsPage).
+    //   ?source=Daily Request — DR-only counts. Symmetric for any future
+    //     "this-source-only" caller.
+    // Absent params = no source filter; existing Dashboard tile callers
+    // continue to see all-source counts.
+    var excludeSource = req.query.excludeSource ? String(req.query.excludeSource).trim() : null;
+    var sourceOnly    = req.query.source        ? String(req.query.source).trim()        : null;
+    if (excludeSource) baseInWindowAnd.push({ source: { $ne: excludeSource } });
+    if (sourceOnly)    baseInWindowAnd.push({ source: sourceOnly });
 
     var interestedSet = ["Interested", "HotCase", "Hot Case", "Potential", "MeetingDone", "Meeting Done", "DoneDeal"];
 
