@@ -218,7 +218,15 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   externalSalesAgentEnabled:{type:Boolean,default:false},
   externalSalesAgentId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
   externalSalesAgentName:{type:String,default:""},
-  externalSalesAgentManualAmount:{type:Number,default:null}
+  externalSalesAgentManualAmount:{type:Number,default:null},
+  // Phase R-13.2 — who funds the external sales agent's manual amount.
+  // "company" (default): company pays sales out of its net; broker's owed
+  //   is the original gross. Today's behavior.
+  // "broker": broker pays sales out of their share; commission.externalSplit
+  //   .brokerNetOwed downgrades to brokerOwed − manualAmount, and the
+  //   sales agent recipient still reads as owed manualAmount.
+  // Forced to "company" whenever externalSalesAgentEnabled is false.
+  externalSalesAgentPaidBy:{type:String,enum:["company","broker"],default:"company"}
 },{timestamps:true}));
 
 // Indexes for query performance
@@ -513,7 +521,17 @@ var commissionSchema = new mongoose.Schema({
     commissionTaxAmount: { type: Number, default: 0 },
     aroNetAmount:        { type: Number, default: 0 },
     brokerOwed:          { type: Number, default: 0 },
+    // Phase R-13.2 — broker's effective take-home after the optional sales
+    // agent deduction. Equals brokerOwed when salesAgentPaidBy==="company"
+    // (default) OR when the sales agent toggle is OFF. When paidBy==="broker",
+    // brokerNetOwed = max(0, brokerOwed - externalSalesAgentManualAmount).
+    // All payout/cash-flow/recipient reads should prefer this when present.
+    brokerNetOwed:       { type: Number, default: 0 },
     aroOwed:             { type: Number, default: 0 },
+    // Phase R-13.2 — snapshot of Lead.externalSalesAgentPaidBy at compute
+    // time. Drives the brokerNetOwed math above and the Broker Calc modal's
+    // screen/print branches.
+    salesAgentPaidBy:    { type: String, enum: ["company", "broker"], default: "company" },
     // Broker payment tracking (parallel to commission.payouts[] for internal
     // recipients). Append-only; brokerPaid (the running sum of amount) and
     // brokerRemaining (brokerOwed - brokerPaid) are derived at read time.
@@ -1483,6 +1501,38 @@ function salesAdminOnly(req, res, next) {
 }
 
 // ===== COMMISSION HELPERS =====
+// Phase R-13.2 — isLeadFrozen: invariant guard against any rotation or
+// auto-assignment touching a lead that is (or ever was) in a closed-deal
+// or EOI commitment state. The "amgad" incident: a DoneDeal lead got its
+// agentId silently rewritten 15 minutes after creation by the manual-
+// window sweeper (server.js: autoAssignQueuedLead/sweepExpiredQueue), which
+// at the time only filtered on archived/locked/rotationStopped — NOT on
+// status / eoiStatus / globalStatus.
+//
+// A frozen lead's Lead.agentId may ONLY be changed by an explicit admin /
+// sales_admin action via PUT /api/leads/:id (or DELETE the assignment).
+// Never by rotation, never by sweepers, never by any auto-assignment path.
+//
+// Four states qualify (any one is enough — belt-and-suspenders since
+// globalStatus is supposed to mirror status + eoiStatus, but legacy rows
+// from before the globalStatus invariant existed may have only one set):
+//   - lead.status === "DoneDeal" or "EOI"
+//   - lead.eoiStatus ∈ {"Pending","Approved"}
+//   - lead.globalStatus ∈ {"donedeal","eoi"}
+// Accepts either a real Lead doc or a plain { status, eoiStatus, globalStatus }
+// shape so it's callable from creation-time guards (where we only have the
+// incoming form payload, not yet a Lead doc).
+function isLeadFrozen(leadOrShape) {
+  if (!leadOrShape) return false;
+  var status       = leadOrShape.status || "";
+  var eoiStatus    = leadOrShape.eoiStatus || "";
+  var globalStatus = leadOrShape.globalStatus || "";
+  if (status === "DoneDeal" || status === "EOI") return true;
+  if (eoiStatus === "Pending" || eoiStatus === "Approved") return true;
+  if (globalStatus === "donedeal" || globalStatus === "eoi") return true;
+  return false;
+}
+
 // parseDealTotalFromBudget — Lead.budget is a free-form string (e.g.
 // "5,000,000", "5000000 EGP"). Strip non-digits/non-decimal chars and parseFloat.
 function parseDealTotalFromBudget(budget) {
@@ -1515,7 +1565,8 @@ async function validateAndNormalizeExternalDeal(body, oldLead) {
   var hasConfig   = body.externalDealConfig !== undefined;
   var hasExtSales = body.externalSalesAgentEnabled !== undefined
                  || body.externalSalesAgentId      !== undefined
-                 || body.externalSalesAgentManualAmount !== undefined;
+                 || body.externalSalesAgentManualAmount !== undefined
+                 || body.externalSalesAgentPaidBy  !== undefined;
   if (!hasDealType && !hasBroker && !hasConfig && !hasExtSales) return { ok: true };
 
   var dealType = hasDealType ? String(body.dealType) : (oldLead && oldLead.dealType) || "internal";
@@ -1531,6 +1582,7 @@ async function validateAndNormalizeExternalDeal(body, oldLead) {
     body.externalSalesAgentId           = null;
     body.externalSalesAgentName         = "";
     body.externalSalesAgentManualAmount = null;
+    body.externalSalesAgentPaidBy       = "company";
     return { ok: true };
   }
 
@@ -1584,15 +1636,46 @@ async function validateAndNormalizeExternalDeal(body, oldLead) {
     if (!isFinite(amt) || amt <= 0) {
       return { ok: false, error: "externalSalesAgentManualAmount must be > 0 when 'Sales Agent involved' is enabled" };
     }
+    // Phase R-13.2 — "Paid by" radio. Default "company"; "broker" triggers a
+    // cap check that the sales agent's manual amount cannot exceed the broker
+    // share (else the broker's net take-home would go negative).
+    var paidByRaw = (body.externalSalesAgentPaidBy !== undefined)
+      ? String(body.externalSalesAgentPaidBy)
+      : ((oldLead && oldLead.externalSalesAgentPaidBy) || "company");
+    if (paidByRaw !== "company" && paidByRaw !== "broker") {
+      return { ok: false, error: "externalSalesAgentPaidBy must be 'company' or 'broker'" };
+    }
+    if (paidByRaw === "broker") {
+      // Use effective budget + rate to estimate the broker share. Skip when
+      // either is missing — the downstream commission_rate_required guard
+      // catches the broken state anyway, and this cap only matters when the
+      // numbers exist.
+      var budgetEffRaw = (body.budget !== undefined && body.budget !== null && body.budget !== "")
+        ? body.budget
+        : (oldLead && oldLead.budget);
+      var budgetEff = parseDealTotalFromBudget(budgetEffRaw);
+      var rateEff = (body.commissionRate !== undefined && body.commissionRate !== null && body.commissionRate !== "")
+        ? Number(body.commissionRate)
+        : Number(oldLead && oldLead.commissionRate);
+      if (isFinite(budgetEff) && budgetEff > 0 && isFinite(rateEff) && rateEff > 0) {
+        var grossEff       = budgetEff * rateEff / 100;
+        var brokerShareEff = grossEff * (1 - (taxPct / 100)) * (brokerPct / 100);
+        if (amt > brokerShareEff + 0.5) {
+          return { ok: false, error: "sales_amount_exceeds_broker_share" };
+        }
+      }
+    }
     body.externalSalesAgentEnabled      = true;
     body.externalSalesAgentId           = agentId;
     body.externalSalesAgentName         = agentDoc.name || "";
     body.externalSalesAgentManualAmount = amt;
+    body.externalSalesAgentPaidBy       = paidByRaw;
   } else {
     body.externalSalesAgentEnabled      = false;
     body.externalSalesAgentId           = null;
     body.externalSalesAgentName         = "";
     body.externalSalesAgentManualAmount = null;
+    body.externalSalesAgentPaidBy       = "company";
   }
   return { ok: true };
 }
@@ -1780,10 +1863,32 @@ async function computeAllRecipientShares(c) {
     var aroNet = grossClaim - taxAmt;
     var brkOwd = aroNet     * (brokerPctEx / 100);
     var aroOwd = aroNet     - brkOwd;
+    // Phase R-13.2 — load the lead once: the "Sales Agent involved" toggle's
+    // manual amount AND the new "Paid by" flag both come off the Lead. Used
+    // for brokerNetOwed below AND for the salesAgent-slot block further down.
+    var manualAmt = 0;
+    var paidByExt = "company";
+    var lExt = null;
+    try {
+      lExt = await Lead.findById(c.leadId).select("externalSalesAgentEnabled externalSalesAgentManualAmount externalSalesAgentPaidBy").lean();
+      if (lExt && lExt.externalSalesAgentEnabled) {
+        manualAmt = Number(lExt.externalSalesAgentManualAmount) || 0;
+        paidByExt = String(lExt.externalSalesAgentPaidBy || "company");
+      }
+    } catch(e) { /* leave defaults */ }
+    // Phase R-13.2 — brokerNetOwed. When the sales agent is paid by the
+    // broker, the broker's actual take-home is reduced by the sales-agent
+    // manual amount. When paid by company (default) or toggle off, brokerNet
+    // equals brokerOwed. All payout/cash-flow/recipient consumers read
+    // brokerNetOwed when present, falling back to brokerOwed.
+    var brkNet = brkOwd;
+    if (paidByExt === "broker") brkNet = Math.max(0, brkOwd - manualAmt);
     c.externalSplit.commissionTaxAmount = round2Local(taxAmt);
     c.externalSplit.aroNetAmount        = round2Local(aroNet);
     c.externalSplit.brokerOwed          = round2Local(brkOwd);
+    c.externalSplit.brokerNetOwed       = round2Local(brkNet);
     c.externalSplit.aroOwed             = round2Local(aroOwd);
+    c.externalSplit.salesAgentPaidBy    = paidByExt;
     c.markModified("externalSplit");
     // Phase R-13 — External deals no longer route through the per-1000 chain.
     // Recipients for External: (1) broker (always, via externalSplit.brokerOwed
@@ -1792,13 +1897,6 @@ async function computeAllRecipientShares(c) {
     // slots (TL/manager/director/owner) are NEVER paid on External deals.
     // Short-circuit the chain math: set the salesAgent slot to either the
     // manual external-sales amount or 0, then bail out.
-    var manualAmt = 0;
-    try {
-      var lExt = await Lead.findById(c.leadId).select("externalSalesAgentEnabled externalSalesAgentManualAmount").lean();
-      if (lExt && lExt.externalSalesAgentEnabled) {
-        manualAmt = Number(lExt.externalSalesAgentManualAmount) || 0;
-      }
-    } catch(e) { /* leave manualAmt = 0 */ }
     if (c.snapshot.salesAgent) {
       c.snapshot.salesAgent.computedShare       = round2Local(manualAmt);
       c.snapshot.salesAgent.rate                = 0;
@@ -2209,20 +2307,20 @@ async function buildSnapshotForLead(leadDoc) {
   if (leadDoc.agentId) {
     try { primaryAgent = await User.findById(leadDoc.agentId).lean(); } catch(e){}
   }
-  // Phase R-13.1 — External+toggle ON deals legitimately have no Lead.agentId
-  // because the external sales agent fills the salesAgent slot. For Internal
-  // or External+toggle OFF, the primary agent is still required.
-  if (!primaryAgent && !externalToggleOn) {
+  // Phase R-13.1 — External deals legitimately may have no Lead.agentId:
+  //   - toggle ON  → external sales agent fills the salesAgent slot.
+  //   - toggle OFF → broker-only deal, salesAgent is null on the snapshot.
+  // For Internal deals, the primary agent is still required.
+  if (!primaryAgent && !isExternalDeal) {
     throw new Error("buildSnapshotForLead: lead has no resolvable primary agent");
   }
 
   // Phase R-13 — For External deals, the per-1000 chain (TL/manager/director/
   // owner) is NEVER paid. We null those slots at snapshot time (Q4 answer B).
-  // The salesAgent slot is preserved for audit but its computedShare becomes
-  // 0 in computeAllRecipientShares. When the "Sales Agent involved" toggle is
-  // ON, the salesAgent slot is REPLACED with the externalSalesAgent (paid
-  // manualAmount); the Lead's primary agentId is kept in Lead.agentId for
-  // audit/listing purposes but not stamped on the commission.
+  // When the "Sales Agent involved" toggle is ON, the salesAgent slot is
+  // populated by the externalSalesAgent (paid manualAmount). When the toggle
+  // is OFF and there's no Lead.agentId, the salesAgent slot is null — a
+  // broker-only deal has no internal sales recipient.
   var primaryRecipient;
   if (isExternalDeal && leadDoc.externalSalesAgentEnabled) {
     var extAgent = null;
@@ -2236,8 +2334,11 @@ async function buildSnapshotForLead(leadDoc) {
           userId: leadDoc.externalSalesAgentId || null,
           userActiveAtClose: false, role: "sales"
         };
-  } else {
+  } else if (primaryAgent) {
     primaryRecipient = recipientFromUser(primaryAgent, "sales");
+  } else {
+    // External broker-only — no internal sales recipient at all.
+    primaryRecipient = null;
   }
 
   var primaryChain;
@@ -2302,7 +2403,8 @@ async function buildExternalSplitForLead(leadDoc) {
     return {
       isExternal: false, brokerId: null, brokerName: "",
       commissionTaxPct: 0, brokerSharePct: 0,
-      commissionTaxAmount: 0, aroNetAmount: 0, brokerOwed: 0, aroOwed: 0,
+      commissionTaxAmount: 0, aroNetAmount: 0, brokerOwed: 0, brokerNetOwed: 0, aroOwed: 0,
+      salesAgentPaidBy: "company",
       brokerPayouts: []
     };
   }
@@ -2314,13 +2416,20 @@ async function buildExternalSplitForLead(leadDoc) {
     } catch(e) { /* fall back to placeholder */ }
   }
   var cfg = leadDoc.externalDealConfig || {};
+  // Phase R-13.2 — snapshot paidBy at build time. computeAllRecipientShares
+  // will use it to compute brokerNetOwed. Force "company" if the toggle is
+  // off so a flip-flop on the lead doesn't leave a stale "broker" value.
+  var paidByBuild = leadDoc.externalSalesAgentEnabled
+    ? String(leadDoc.externalSalesAgentPaidBy || "company")
+    : "company";
   return {
     isExternal:          true,
     brokerId:            leadDoc.externalBrokerId || null,
     brokerName:          brokerName,
     commissionTaxPct:    Number(cfg.commissionTaxPct) || 0,
     brokerSharePct:      Number(cfg.brokerSharePct)   || 0,
-    commissionTaxAmount: 0, aroNetAmount: 0, brokerOwed: 0, aroOwed: 0,
+    commissionTaxAmount: 0, aroNetAmount: 0, brokerOwed: 0, brokerNetOwed: 0, aroOwed: 0,
+    salesAgentPaidBy:    paidByBuild,
     brokerPayouts:       []
   };
 }
@@ -2334,18 +2443,28 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
       ? leadIdOrDoc
       : await Lead.findById(leadIdOrDoc).lean();
     if (!leadDoc) return null;
-    // Phase R-13.1 — External deals with "Sales Agent involved" toggle ON
-    // legitimately have a null Lead.agentId (the external sales agent fills
-    // the salesAgent slot). Bypass the agent-required check in that case;
-    // primaryAgentIdStr is derived from the external sales agent instead.
-    var extOnlyPrimary = leadDoc.dealType === "external"
+    // Phase R-13.1 — External deals legitimately may have a null Lead.agentId:
+    //   - toggle ON  → external sales agent fills the salesAgent slot.
+    //   - toggle OFF → broker-only deal, no internal sales recipient at all
+    //     (the broker takes everything; per-1000 chain is null per Q4-B).
+    // primaryAgentIdStr is the identifier used by the same-agent revival
+    // path; for broker-only deals it stays empty and revival keys off leadId
+    // alone (broker-only commissions can't collide on agent identity).
+    var isExternalLead = leadDoc.dealType === "external";
+    var extToggleOn = isExternalLead
       && !!leadDoc.externalSalesAgentEnabled
       && !!leadDoc.externalSalesAgentId;
-    if (!leadDoc.agentId && !extOnlyPrimary) return null;
+    var externalBrokerOnly = isExternalLead && !leadDoc.agentId && !extToggleOn
+      && !!leadDoc.externalBrokerId;
+    if (!leadDoc.agentId && !extToggleOn && !externalBrokerOnly) return null;
 
-    var primaryAgentIdStr = leadDoc.agentId
-      ? String(leadDoc.agentId._id || leadDoc.agentId)
-      : String(leadDoc.externalSalesAgentId._id || leadDoc.externalSalesAgentId);
+    var primaryAgentIdStr = "";
+    if (leadDoc.agentId) {
+      primaryAgentIdStr = String(leadDoc.agentId._id || leadDoc.agentId);
+    } else if (extToggleOn) {
+      primaryAgentIdStr = String(leadDoc.externalSalesAgentId._id || leadDoc.externalSalesAgentId);
+    }
+    // (externalBrokerOnly leaves primaryAgentIdStr empty by design.)
 
     // Check for any existing commissions on this lead.
     var existing = await Commission.find({ leadId: leadDoc._id }).sort({ createdAt: -1 }).lean();
@@ -2354,12 +2473,15 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
     var alreadyActive = existing.find(function(c){ return c.status === "active"; });
     if (alreadyActive) return alreadyActive; // already covered
 
-    // Same-agent revival path.
+    // Same-agent revival path. For broker-only deals there's no agent
+    // identifier, so revive the most recent cancelled commission whose
+    // snapshot.salesAgent is also null (matches the broker-only shape).
     if (existing.length) {
       var lastCancelled = existing.find(function(c){
         if (c.status !== "cancelled") return false;
         var sa = c.snapshot && c.snapshot.salesAgent;
         var saId = sa && sa.userId ? String(sa.userId) : "";
+        if (externalBrokerOnly) return !saId; // both sides agent-less
         return saId === primaryAgentIdStr;
       });
       if (lastCancelled) {
@@ -2464,7 +2586,14 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
         commissionTaxAmount: 0,
         aroNetAmount:        0,
         brokerOwed:          0,
+        brokerNetOwed:       0,
         aroOwed:             0,
+        // Phase R-13.2 — snapshot paidBy from the lead; forced "company" if
+        // the sales-agent toggle is off. computeAllRecipientShares (called
+        // immediately after Commission.create) then fills brokerNetOwed.
+        salesAgentPaidBy:    (leadDoc.externalSalesAgentEnabled
+                                ? String(leadDoc.externalSalesAgentPaidBy || "company")
+                                : "company"),
         brokerPayouts:       []
       };
     }
@@ -7346,15 +7475,30 @@ app.post("/api/leads", auth, async function(req, res) {
     // create-only), or a plain id string.
     var normalizedAgent = normId(req.body.agentId);
     var agentId = normalizedAgent ? new mongoose.Types.ObjectId(normalizedAgent) : null;
+    // Phase R-13.2 — frozen-at-create gate. A lead created directly in a
+    // closed-deal or EOI commitment state must NEVER enter the manual-
+    // assignment queue (the sweeper would later rewrite its agentId — see
+    // isLeadFrozen comment + "amgad" incident). Detect from the inbound
+    // form payload BEFORE the queue decision below. eoiStatus comes through
+    // PUT not POST normally, but include it for defense.
+    var frozenAtCreate = isLeadFrozen({
+      status:       req.body.status,
+      eoiStatus:    req.body.eoiStatus,
+      globalStatus: req.body.globalStatus
+    });
     // Manual Assignment Window: admin/sales_admin creating a lead without an
     // agent routes it to the queue for manual assignment. Sales/TL/manager
     // still default to themselves (unchanged) so their new lead stays visible
-    // in their own list.
+    // in their own list. Frozen-at-create leads skip the queue entirely.
     var rotSettings = null;
     try { rotSettings = await getRotationSettings(); } catch(e) {}
     var windowMins = rotSettings ? Number(rotSettings.manualAssignmentWindowMinutes || 0) : 0;
-    var queueLead = !agentId && windowMins > 0 && (req.user.role === "admin" || req.user.role === "sales_admin");
-    if (!agentId && !queueLead && (req.user.role === "sales" || req.user.role === "team_leader" || req.user.role === "manager") && mongoose.Types.ObjectId.isValid(req.user.id)) {
+    var queueLead = !agentId && windowMins > 0
+      && (req.user.role === "admin" || req.user.role === "sales_admin")
+      && !frozenAtCreate;
+    if (!agentId && !queueLead && !frozenAtCreate
+        && (req.user.role === "sales" || req.user.role === "team_leader" || req.user.role === "manager")
+        && mongoose.Types.ObjectId.isValid(req.user.id)) {
       agentId = new mongoose.Types.ObjectId(req.user.id);
     }
     if (agentId) {
@@ -7417,6 +7561,7 @@ app.post("/api/leads", auth, async function(req, res) {
       delete req.body.externalSalesAgentId;
       delete req.body.externalSalesAgentName;
       delete req.body.externalSalesAgentManualAmount;
+      delete req.body.externalSalesAgentPaidBy;
     }
     var extCheck = await validateAndNormalizeExternalDeal(req.body, null);
     if (!extCheck.ok) return res.status(400).json({ error: extCheck.error });
@@ -7438,21 +7583,34 @@ app.post("/api/leads", auth, async function(req, res) {
       req.body.commissionRate   = crNumCreate;
       req.body.commissionAmount = __round2(budgetNumCreate * crNumCreate / 100);
 
-      // Phase R-13.1 — DoneDeal must have a recipient identifier. For
-      // External+toggle-ON, the external sales agent fills the salesAgent
-      // slot. Else (Internal, or External+toggle-OFF), a primary agentId
-      // is required. Without this guard, a DoneDeal lead with no recipient
-      // identifier silently bypasses ensureCommissionForLead and no
-      // Commission record gets created (see "amgad" incident).
-      var hasAgent = !!normalizedAgent;
-      var hasExtSales = String(req.body.dealType) === "external"
-        && !!req.body.externalSalesAgentEnabled
-        && !!req.body.externalSalesAgentId;
-      if (!hasAgent && !hasExtSales) {
-        return res.status(400).json({
-          error: "primary_sales_recipient_required",
-          message: "A DoneDeal must have either a primary Agent or an External 'Sales Agent involved' assignment so the commission can be created."
-        });
+      // Phase R-13.1 — DoneDeal recipient guard. Rules differ by dealType:
+      //   - Internal: Lead.agentId required (primary sales agent).
+      //   - External: externalBrokerId required (validateAndNormalizeExternalDeal
+      //     already enforced this — re-checked here only for the cycle-stage
+      //     / commission narrative). The optional "Sales Agent involved"
+      //     toggle adds an internal sales recipient ON TOP of the broker;
+      //     when OFF, the broker takes everything and there is no internal
+      //     sales recipient — that's a valid External shape.
+      // Without per-type rules, a broker-only External deal (the most common
+      // External case) gets rejected here with primary_sales_recipient_required
+      // even though it's perfectly legal.
+      var isExt = String(req.body.dealType) === "external";
+      if (isExt) {
+        if (!req.body.externalBrokerId) {
+          return res.status(400).json({
+            error: "broker_required_for_external",
+            message: "An External DoneDeal must have a broker assigned."
+          });
+        }
+        // Toggle-on shape is already validated by validateAndNormalizeExternalDeal:
+        // it requires externalSalesAgentId + manualAmount > 0 when enabled.
+      } else {
+        if (!normalizedAgent) {
+          return res.status(400).json({
+            error: "primary_sales_recipient_required",
+            message: "An Internal DoneDeal must have a primary Agent so the commission can be created."
+          });
+        }
       }
     } else {
       delete req.body.commissionRate;
@@ -7494,6 +7652,7 @@ app.post("/api/leads", auth, async function(req, res) {
       externalSalesAgentId:           req.body.externalSalesAgentId || null,
       externalSalesAgentName:         req.body.externalSalesAgentName || "",
       externalSalesAgentManualAmount: (typeof req.body.externalSalesAgentManualAmount === "number") ? req.body.externalSalesAgentManualAmount : null,
+      externalSalesAgentPaidBy:       req.body.externalSalesAgentPaidBy || "company",
       assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "New Lead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: req.body.notes || "", budget: req.body.budget || "", callbackTime: req.body.callbackTime || "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
       expiresAt:        new Date(Date.now() + 30*24*60*60*1000),
       // Phase R-13.1 — globalStatus must mirror the initialStatus, otherwise a
@@ -7700,7 +7859,7 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
       agentHistory: []
     };
     var byName = req.user.name || "Admin";
-    var skippedSelf = 0, skippedPrevious = 0, reassigned = 0, notFound = 0;
+    var skippedSelf = 0, skippedPrevious = 0, skippedFrozen = 0, reassigned = 0, notFound = 0;
     // Update top-level fields AND push new assignments entry
     for (var i = 0; i < leadIds.length; i++) {
       var lead = await Lead.findById(leadIds[i]).lean();
@@ -7710,6 +7869,13 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
       // Force does NOT bypass same-agent: pushing a duplicate assignments[]
       // slice for the current owner serves no purpose.
       if (oldAgentId && String(oldAgentId) === String(agentId)) { skippedSelf++; continue; }
+      // Phase R-13.2 — frozen lead guard. DoneDeal / EOI / Pending EOI /
+      // Approved EOI leads have a committed agent (or are owned by an
+      // external-sales-agent / broker arrangement). Silent bulk reassign
+      // would corrupt the Deals-page Agent column. The admin `force` flag
+      // is the explicit override — same gate as the wasPreviouslyAssigned
+      // check below.
+      if (!isAdminForce && isLeadFrozen(lead)) { skippedFrozen++; continue; }
       // Skip: previously held this lead (Bug 3 — no return to past agent),
       // unless admin explicitly forced.
       if (!isAdminForce && wasPreviouslyAssigned(lead, agentId)) { skippedPrevious++; continue; }
@@ -7772,6 +7938,7 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
       reassigned: reassigned,
       skippedSelf: skippedSelf,
       skippedPrevious: skippedPrevious,
+      skippedFrozen: skippedFrozen,
       notFound: notFound,
       // Back-compat: older clients key off `count`.
       count: reassigned
@@ -8395,7 +8562,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // of the PUT.
     if (req.body.dealType !== undefined || req.body.externalBrokerId !== undefined || req.body.externalDealConfig !== undefined
         || req.body.externalSalesAgentEnabled !== undefined || req.body.externalSalesAgentId !== undefined
-        || req.body.externalSalesAgentManualAmount !== undefined) {
+        || req.body.externalSalesAgentManualAmount !== undefined || req.body.externalSalesAgentPaidBy !== undefined) {
       if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
         delete req.body.dealType;
         delete req.body.externalBrokerId;
@@ -8404,12 +8571,15 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         delete req.body.externalSalesAgentId;
         delete req.body.externalSalesAgentName;
         delete req.body.externalSalesAgentManualAmount;
+        delete req.body.externalSalesAgentPaidBy;
       } else {
         // Need oldLead.dealType when the body changes external-config or broker
         // without re-stating dealType (partial edit on an already-external lead).
         // The general oldLead load below is conditional on a different set of
-        // tracked fields, so do an early targeted fetch here.
-        var dtOldLead = await Lead.findById(req.params.id).select("dealType externalBrokerId externalDealConfig externalSalesAgentEnabled externalSalesAgentId externalSalesAgentManualAmount").lean();
+        // tracked fields, so do an early targeted fetch here. budget +
+        // commissionRate are also needed for the paidBy="broker" cap check in
+        // validateAndNormalizeExternalDeal.
+        var dtOldLead = await Lead.findById(req.params.id).select("dealType externalBrokerId externalDealConfig externalSalesAgentEnabled externalSalesAgentId externalSalesAgentManualAmount externalSalesAgentPaidBy budget commissionRate").lean();
         if (!dtOldLead) return res.status(404).json({ error: "Lead not found" });
         // Phase R-12 Part 5 — commission lock. Once an active commission
         // exists for this lead, the external-deal fields are frozen. Allowing
@@ -8466,24 +8636,32 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       req.body.commissionRate   = crNumPut;
       req.body.commissionAmount = __round2Put(budgetForCalcPut * crNumPut / 100);
 
-      // Phase R-13.1 — DoneDeal must have a recipient identifier. Mirror of
-      // the POST guard so a PUT that transitions a lead into DoneDeal without
-      // an agentId AND without External+toggle-ON gets rejected loudly.
-      // Pulls agentId/external-toggle from body if present, else from oldLead.
-      var ldForRecipCheck = await Lead.findById(req.params.id).select("agentId dealType externalSalesAgentEnabled externalSalesAgentId").lean();
+      // Phase R-13.1 — DoneDeal recipient guard, per-type. Mirror of the POST
+      // guard. Internal: agentId required. External: broker required (validator
+      // helper already enforced this earlier — re-checked for narrative); the
+      // optional Sales Agent toggle is layered on top via that helper's own
+      // checks. Broker-only External (no toggle) is a valid shape and must
+      // NOT be rejected here.
+      var ldForRecipCheck = await Lead.findById(req.params.id).select("agentId dealType externalBrokerId externalSalesAgentEnabled externalSalesAgentId").lean();
       var effAgent = (req.body.agentId !== undefined)
         ? normId(req.body.agentId)
         : (ldForRecipCheck && ldForRecipCheck.agentId ? String(ldForRecipCheck.agentId._id || ldForRecipCheck.agentId) : "");
       var effDealType = (req.body.dealType !== undefined) ? req.body.dealType : (ldForRecipCheck && ldForRecipCheck.dealType);
-      var effExtEnabled = (req.body.externalSalesAgentEnabled !== undefined) ? !!req.body.externalSalesAgentEnabled : !!(ldForRecipCheck && ldForRecipCheck.externalSalesAgentEnabled);
-      var effExtAgentId = (req.body.externalSalesAgentId !== undefined) ? req.body.externalSalesAgentId : (ldForRecipCheck && ldForRecipCheck.externalSalesAgentId);
-      var putHasAgent = !!effAgent;
-      var putHasExtSales = String(effDealType) === "external" && effExtEnabled && !!effExtAgentId;
-      if (!putHasAgent && !putHasExtSales) {
-        return res.status(400).json({
-          error: "primary_sales_recipient_required",
-          message: "A DoneDeal must have either a primary Agent or an External 'Sales Agent involved' assignment so the commission can be created."
-        });
+      var effExtBroker = (req.body.externalBrokerId !== undefined) ? req.body.externalBrokerId : (ldForRecipCheck && ldForRecipCheck.externalBrokerId);
+      if (String(effDealType) === "external") {
+        if (!effExtBroker) {
+          return res.status(400).json({
+            error: "broker_required_for_external",
+            message: "An External DoneDeal must have a broker assigned."
+          });
+        }
+      } else {
+        if (!effAgent) {
+          return res.status(400).json({
+            error: "primary_sales_recipient_required",
+            message: "An Internal DoneDeal must have a primary Agent so the commission can be created."
+          });
+        }
       }
     } else if (req.body.commissionRate !== undefined || req.body.commissionAmount !== undefined) {
       // Non-DoneDeal admin save with rate field present — coerce or drop.
@@ -8534,6 +8712,12 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       // paths today, but any future query that only checks globalStatus would
       // silently let EOI leads through.
       update.globalStatus = "eoi";
+      // Phase R-13.2 — kill any in-flight manual-window expiry so the
+      // sweeper can't rewrite agentId after the lead becomes frozen. The
+      // sweeper's own filter (sweepExpiredQueue) already excludes frozen
+      // leads, but clearing the timer too is belt-and-suspenders against
+      // any future query that doesn't.
+      update.manualWindowExpiresAt = null;
     }
     // Capture previous status when transitioning INTO DoneDeal, so deal cancel
     // can restore it. Also clear eoiStatus and set globalStatus to "donedeal"
@@ -8547,6 +8731,8 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       update.dealStatus = "";
       update.eoiStatus = "";
       update.globalStatus = "donedeal";
+      // Phase R-13.2 — same window-expiry kill as the EOI transition above.
+      update.manualWindowExpiresAt = null;
     }
     // Permanent meeting marker. Stamp hadMeeting + meetingDoneAt the first
     // time a lead reaches MeetingDone. Never re-stamp on subsequent visits —
@@ -8844,6 +9030,25 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         }
       }
     } catch(propErr) { console.error("[cycle 1 propagation]", propErr && propErr.message); }
+    // Phase R-13.2 — propagate "Paid by" / manualAmount / toggle edits into
+    // the active External commission. computeAllRecipientShares rewrites
+    // brokerNetOwed + salesAgentPaidBy on the snapshot. Skip when no relevant
+    // field is in the body (most edits) and when the commission is cancelled.
+    try {
+      var paidByTouched = req.body.externalSalesAgentPaidBy       !== undefined
+                       || req.body.externalSalesAgentManualAmount !== undefined
+                       || req.body.externalSalesAgentEnabled      !== undefined;
+      if (paidByTouched && lead && lead.dealType === "external") {
+        var commForRecompute = await Commission.findOne({ leadId: lead._id, status: "active" });
+        if (commForRecompute && commForRecompute.externalSplit && commForRecompute.externalSplit.isExternal) {
+          await computeAllRecipientShares(commForRecompute);
+          commForRecompute.markModified("snapshot");
+          commForRecompute.markModified("externalSplit");
+          commForRecompute.markModified("ratesSnapshot");
+          await commForRecompute.save();
+        }
+      }
+    } catch(paidByErr) { console.error("[paidBy recompute]", paidByErr && paidByErr.message); }
     res.json(lead);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -9126,8 +9331,18 @@ async function autoRotateLead(leadId, byName, opts) {
     if (lead.locked === true && role !== "admin" && role !== "sales_admin") {
       return { ok: false, status: 400, error: "locked", message: "Rotation blocked — lead is locked" };
     }
-    if (lead.globalStatus === "eoi")      return { ok: false, status: 400, error: "eoi",      message: "Rotation blocked — lead is EOI" };
-    if (lead.globalStatus === "donedeal") return { ok: false, status: 400, error: "donedeal", message: "Rotation blocked — lead is Done Deal" };
+    // Phase R-13.2 — tightened from globalStatus-only to the full
+    // isLeadFrozen predicate so a legacy row where globalStatus didn't get
+    // stamped (status was set to EOI/DoneDeal pre-globalStatus-invariant)
+    // still gets blocked. The two specific error codes below are preserved
+    // for client back-compat — pick the more specific one when available.
+    if (lead.globalStatus === "eoi" || lead.status === "EOI"
+        || lead.eoiStatus === "Pending" || lead.eoiStatus === "Approved") {
+      return { ok: false, status: 400, error: "eoi", message: "Rotation blocked — lead is EOI" };
+    }
+    if (lead.globalStatus === "donedeal" || lead.status === "DoneDeal") {
+      return { ok: false, status: 400, error: "donedeal", message: "Rotation blocked — lead is Done Deal" };
+    }
 
     // Load rotation settings once (normalized + migrated). Master switch and
     // pause window gate everything below — nothing rotates while disabled.
@@ -9690,7 +9905,7 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
     // filter on archived / agentId / source / globalStatus / rotationStopped /
     // createdAt / lastRotationAt — those are stage counters below.
     var allLeads = await Lead.find({})
-      .select("_id name agentId archived source globalStatus rotationStopped locked createdAt lastRotationAt assignments status lastActivityTime callbackTime previousAgentIds rotationCount")
+      .select("_id name agentId archived source globalStatus rotationStopped locked createdAt lastRotationAt assignments status eoiStatus lastActivityTime callbackTime previousAgentIds rotationCount")
       .lean();
 
     var excluded = {
@@ -9712,7 +9927,10 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
       if (l.archived === true)                                       { excluded.archived++; continue; }
       if (!l.agentId)                                                { excluded.noAgent++; continue; }
       if (l.source === "Daily Request")                              { excluded.dailyRequestSource++; continue; }
-      if (l.globalStatus === "eoi" || l.globalStatus === "donedeal") { excluded.eoiOrDoneDeal++; continue; }
+      // Phase R-13.2 — full freeze predicate (was globalStatus-only).
+      // Status + eoiStatus catch legacy rows where globalStatus didn't
+      // mirror the canonical state.
+      if (isLeadFrozen(l))                                           { excluded.eoiOrDoneDeal++; continue; }
       if (l.rotationStopped === true)                                { excluded.rotationStopped++; continue; }
       if (settings.maxRotationsPerLead > 0 && (l.rotationCount || 0) >= settings.maxRotationsPerLead) { excluded.rotationCountCapped++; continue; }
       // Top-level lock. The bulk op is a batch action, not a single-lead admin
@@ -9942,6 +10160,13 @@ async function autoAssignQueuedLead(leadId) {
     // Top-level lock. The sweeper runs as System (no user role), so no override
     // — a locked lead never auto-assigns from the queue.
     if (lead.locked === true) return { ok: false, error: "locked" };
+    // Phase R-13.2 — record-level freeze guard. Mirror of the sweeper's
+    // pre-filter at sweepExpiredQueue; this is defense-in-depth so a future
+    // caller (anything other than the sweeper) can't accidentally rotate a
+    // frozen lead. The "amgad" incident: a DoneDeal lead with manualWindowExpiresAt
+    // set and agentId=null silently got its agent rewritten 15 min after
+    // creation, corrupting the Deals-page Agent column.
+    if (isLeadFrozen(lead)) return { ok: false, error: "frozen_lead" };
 
     var settings = await getRotationSettings();
     // Manual window sweeper is first-assignment only (agentId=null), independent of master rotation switch and pause — those only gate agent-to-agent rotation.
@@ -10049,10 +10274,18 @@ async function autoAssignQueuedLead(leadId) {
 // One lead failing (no agent, paused rotation, etc.) never stops the loop.
 async function sweepExpiredQueue() {
   try {
+    // Phase R-13.2 — exclude frozen leads (DoneDeal / EOI / Pending EOI /
+    // Approved EOI) at query time. The original filter didn't, and a frozen
+    // lead created without an agent + a positive manualAssignmentWindow got
+    // its agentId silently rewritten 15 min later (the "amgad" incident).
+    // autoAssignQueuedLead also has a record-level guard for defense-in-depth.
     var expired = await Lead.find({
       agentId: null,
       archived: false,
-      manualWindowExpiresAt: { $ne: null, $lt: new Date() }
+      manualWindowExpiresAt: { $ne: null, $lt: new Date() },
+      status:       { $nin: ["DoneDeal", "EOI"] },
+      eoiStatus:    { $nin: ["Pending", "Approved"] },
+      globalStatus: { $nin: ["donedeal", "eoi"] }
     }).select("_id").limit(50).lean();
     if (!expired.length) return;
     var assigned = 0;
@@ -16651,10 +16884,14 @@ async function computePayoutsForMonth(year, month) {
     // matched the month above are loaded.
     var es = doc.externalSplit;
     if (es && es.isExternal) {
-      var brokerOwed = Number(es.brokerOwed || 0);
-      var brokerPaid = (es.brokerPayouts || []).reduce(function(s, bp){ return s + Number(bp.amount || 0); }, 0);
-      var brokerNet  = brokerOwed - brokerPaid;
-      if (brokerOwed > 0 && brokerNet > 0) {
+      // Phase R-13.2 — read brokerNetOwed when present (paidBy="broker" docs
+      // already had it deducted). Older docs (pre-13.2) have no brokerNetOwed
+      // field; fall back to brokerOwed so the report doesn't go negative.
+      var brokerOwed     = Number(es.brokerOwed || 0);
+      var brokerOwedRead = (es.brokerNetOwed != null) ? Number(es.brokerNetOwed) : brokerOwed;
+      var brokerPaid     = (es.brokerPayouts || []).reduce(function(s, bp){ return s + Number(bp.amount || 0); }, 0);
+      var brokerNet      = brokerOwedRead - brokerPaid;
+      if (brokerOwedRead > 0 && brokerNet > 0) {
         var brokerKey = es.brokerId ? String(es.brokerId) : ("name:" + (es.brokerName || ""));
         if (!byBroker[brokerKey]) {
           byBroker[brokerKey] = {
@@ -16672,7 +16909,7 @@ async function computePayoutsForMonth(year, month) {
           projectName:   snap.projectName  || "",
           dealDate:      snap.dealDate     || "",
           dealTotal:     Number(snap.dealTotal || 0),
-          owedTotal:     brokerOwed,
+          owedTotal:     brokerOwedRead,
           paidToDate:    brokerPaid,
           owedNet:       brokerNet,
           cycleRef:      cycleRef
@@ -18598,7 +18835,14 @@ app.post("/api/commissions/:id/broker-payouts", auth, salesAdminOnly, async func
     var date   = String(body.date || new Date().toISOString().slice(0,10));
     var notes  = String(body.notes || "");
     if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: "amount must be > 0" });
-    var owed = Number(c.externalSplit.brokerOwed || 0);
+    // Phase R-13.2 — cap against brokerNetOwed (paidBy-adjusted) when present;
+    // fall back to brokerOwed for legacy docs. Prevents accidentally paying
+    // the broker the full pre-deduction amount when they were supposed to
+    // fund the sales agent out of their share.
+    var owedGross = Number(c.externalSplit.brokerOwed || 0);
+    var owed      = (c.externalSplit.brokerNetOwed != null)
+      ? Number(c.externalSplit.brokerNetOwed)
+      : owedGross;
     var paidSoFar = (c.externalSplit.brokerPayouts || []).reduce(function(s, bp){ return s + Number(bp.amount || 0); }, 0);
     if (paidSoFar + amount > owed + 0.5) {
       return res.status(400).json({
