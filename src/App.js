@@ -3574,8 +3574,26 @@ var LeadsPage = function(p) {
 
   // ---- State declarations (must be before filter logic) ----
   var [selected, setSelected] = useState(null);
+  // Defensive belt-and-suspenders on top of Fix A + Fix B (commit c34cb44).
+  // After the STEP 4-5 bootstrap shrink, some users continued to see a
+  // blank panel on the right even with the gid(selected) guard. The
+  // hypothesis: `selected` is set to a degenerate value (e.g. a search-
+  // projection rehydration that ships only {_id} with no name/phone/etc.)
+  // and the gid() check passes — but the panel body has nothing to render.
+  // We now require a renderable identity field (name or phone) AND clear
+  // the degenerate state via the useEffect below so the page recovers on
+  // the next paint.
+  var hasRenderableSelected = !!(selected && gid(selected) && (selected.name || selected.phone));
+  useEffect(function(){
+    if (selected && !hasRenderableSelected) {
+      // eslint-disable-next-line no-console
+      console.warn("[LeadsPage] Clearing degenerate `selected`:", selected);
+      setSelected(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[selected, hasRenderableSelected]);
   // Close the side panel when the user clicks anywhere outside of it.
-  var panelRef = useOutsideClose(!!selected, function(){ setSelected(null); });
+  var panelRef = useOutsideClose(hasRenderableSelected, function(){ setSelected(null); });
   // Fix C — server-side counters for the tab strip. byStatus comes from
   // /api/leads/counts (the X2 endpoint) with ?excludeSource=Daily Request
   // applied so the numbers honour LeadsPage's "non-DR" visibility rule.
@@ -4672,7 +4690,7 @@ var LeadsPage = function(p) {
     </div>
     {importMsg&&<div style={{ marginBottom:10, padding:"9px 14px", background:importMsg.startsWith("✅")?"#DCFCE7":"#FEE2E2", color:importMsg.startsWith("✅")?"#15803D":"#B91C1C", borderRadius:9, fontSize:13 }}>{importMsg}</div>}
 
-    <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&selected&&gid(selected)?330:0, transition:"padding-right 0.25s" }}>
+    <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&hasRenderableSelected?330:0, transition:"padding-right 0.25s" }}>
       {/* Status dropdown overlay */}
       {statusDrop&&<div data-overlay-above="true" style={{ position:"fixed", inset:0, zIndex:499 }} onClick={function(){setStatusDrop(null);}}/>}
     {/* Table */}
@@ -4971,7 +4989,7 @@ var LeadsPage = function(p) {
           shipped only {_id, phone, name}) doesn't paint an apparently-
           blank Card. The paddingRight rule above uses the same guard so
           the wrapper offset matches the panel's actual rendering. */}
-      {selected&&gid(selected)&&<Card innerRef={panelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
+      {hasRenderableSelected&&<Card innerRef={panelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px", position:"sticky", top:0 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
@@ -9285,8 +9303,20 @@ var EOIPage = function(p) {
   var [editLead,setEditLead]=useState(null);
   var [showAdd,setShowAdd]=useState(false);
   var [selectedEOI,setSelectedEOI]=useState(null);
+  // Defensive guard mirroring LeadsPage hasRenderableSelected. Same risk
+  // surface: a degenerate selectedEOI (no name/phone) could paint an
+  // empty panel post-bootstrap-shrink. Auto-clear on detection.
+  var hasRenderableEOI = !!(selectedEOI && gid(selectedEOI) && (selectedEOI.name || selectedEOI.phone));
+  useEffect(function(){
+    if (selectedEOI && !hasRenderableEOI) {
+      // eslint-disable-next-line no-console
+      console.warn("[EOIPage] Clearing degenerate `selectedEOI`:", selectedEOI);
+      setSelectedEOI(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[selectedEOI, hasRenderableEOI]);
   // Click-outside closes the EOI side panel (docked drawer).
-  var eoiPanelRef = useOutsideClose(!!selectedEOI, function(){ setSelectedEOI(null); });
+  var eoiPanelRef = useOutsideClose(hasRenderableEOI, function(){ setSelectedEOI(null); });
   var [imgUploading,setImgUploading]=useState(false);
   var [docUploading,setDocUploading]=useState(false);
   var [cancelling,setCancelling]=useState(false);
@@ -9588,7 +9618,7 @@ var EOIPage = function(p) {
     </Card>}
 
     {/* EOI Side Panel */}
-    {selectedEOI&&<div ref={eoiPanelRef} style={ p.isMobile?{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }:{ flex:"0 0 260px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
+    {hasRenderableEOI&&<div ref={eoiPanelRef} style={ p.isMobile?{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }:{ flex:"0 0 260px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
       <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"14px 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
@@ -9951,8 +9981,18 @@ var DealsPage = function(p) {
   var [showAdd,setShowAdd]=useState(false);
   var [editDeal,setEditDeal]=useState(null);
   var [selectedDeal,setSelectedDeal]=useState(null);
+  // Defensive guard mirroring LeadsPage hasRenderableSelected.
+  var hasRenderableDeal = !!(selectedDeal && gid(selectedDeal) && (selectedDeal.name || selectedDeal.phone));
+  useEffect(function(){
+    if (selectedDeal && !hasRenderableDeal) {
+      // eslint-disable-next-line no-console
+      console.warn("[DealsPage] Clearing degenerate `selectedDeal`:", selectedDeal);
+      setSelectedDeal(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[selectedDeal, hasRenderableDeal]);
   // Click-outside closes the Deal side panel (docked drawer).
-  var dealPanelRef = useOutsideClose(!!selectedDeal, function(){ setSelectedDeal(null); });
+  var dealPanelRef = useOutsideClose(hasRenderableDeal, function(){ setSelectedDeal(null); });
   // Side-panel hydration tracker. The /api/leads bootstrap strips dealImages
   // to keep the payload small; we refetch the full doc when the panel opens.
   // panelHydratedDealId === selectedDeal._id once the refetch has populated
@@ -10477,7 +10517,7 @@ var DealsPage = function(p) {
       </tbody>
     </table></div></Card>
 
-    {selectedDeal&&(function(){
+    {hasRenderableDeal&&(function(){
       var extra=getDealExtra(String(selectedDeal._id||gid(selectedDeal)))||{};
       var downPct=extra.downPaymentPct||selectedDeal.downPaymentPct||"";
       var instYears=extra.installmentYears||selectedDeal.installmentYears||"";
@@ -10927,10 +10967,25 @@ var DailyRequestsPage = function(p) {
   var [showAdd,setShowAdd]=useState(false);
   var [saving,setSaving]=useState(false);
   var [selected,setSelected]=useState(null);
+  // Defensive guard mirroring LeadsPage (see hasRenderableSelected at
+  // App.js:3586). DRPage has TWO panel paths (mobile inline at the
+  // "no requests" branch AND the desktop side-panel Card at the end of
+  // the page) — both now gate on hasRenderableSelected so a degenerate
+  // `selected` value can't paint a full-screen white overlay (mobile
+  // path) or a 320px right-side blank panel (desktop path).
+  var hasRenderableSelected = !!(selected && gid(selected) && (selected.name || selected.phone));
+  useEffect(function(){
+    if (selected && !hasRenderableSelected) {
+      // eslint-disable-next-line no-console
+      console.warn("[DRPage] Clearing degenerate `selected`:", selected);
+      setSelected(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[selected, hasRenderableSelected]);
   // Close the DR side panel when the user clicks anywhere outside of it.
   // The same ref is attached to both the mobile and desktop panel renders;
   // only one is mounted at a time so a single ref is enough.
-  var drPanelRef = useOutsideClose(!!selected, function(){ setSelected(null); });
+  var drPanelRef = useOutsideClose(hasRenderableSelected, function(){ setSelected(null); });
   var [statusDrop,setStatusDrop]=useState(null);
   var [showStatusComment,setShowStatusComment]=useState(false);
   var [pendingStatus,setPendingStatus]=useState(null);
@@ -11373,11 +11428,11 @@ var DailyRequestsPage = function(p) {
       </select>
     </div>
 
-    <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&selected&&gid(selected)?330:0, transition:"padding-right 0.25s" }}>
+    <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&hasRenderableSelected?330:0, transition:"padding-right 0.25s" }}>
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
         {loading?<Loader/>:p.isMobile?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:"12px", maxWidth:500, margin:"0 auto" }}>
           {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>No requests</div>}
-          {selected&&<div ref={drPanelRef} style={{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }}>
+          {hasRenderableSelected&&<div ref={drPanelRef} style={{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }}>
             {/* Mobile detail panel - same as leads */}
             <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"16px 16px 20px" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -11570,7 +11625,7 @@ var DailyRequestsPage = function(p) {
       </Card>
 
       {/* Side Panel */}
-      {selected&&gid(selected)&&<Card innerRef={drPanelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
+      {hasRenderableSelected&&<Card innerRef={drPanelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
         <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
