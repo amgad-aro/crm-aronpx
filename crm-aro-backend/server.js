@@ -15147,6 +15147,14 @@ app.get("/api/reports/overview/aging", auth, reportsAuth, async function(req, re
           // History-side: max timestamp over diff-gated form-edit events.
           // $max ignores nulls, returns null on empty input — exactly what
           // we want so the $ifNull fallback chain below kicks in cleanly.
+          //
+          // Bugfix 2026-05-17 — 46 production leads have history[] entries
+          // whose timestamp was persisted as a String (legacy intake paths
+          // pre-Date normalisation). $max over a mixed string/Date list
+          // returns a string, which then propagated to $subtract below and
+          // triggered "PlanExecutor error :: can't $subtract string from
+          // Date" on the Lead Aging report. Coerce inside the $map so
+          // $max always operates on Dates (or nulls, which $max skips).
           historyContactMax: { $max: { $map: {
             input: { $filter: {
               input: { $ifNull: ["$history", []] },
@@ -15158,7 +15166,7 @@ app.get("/api/reports/overview/aging", auth, reportsAuth, async function(req, re
               cond: { $in: ["$$h.event", ["status_changed", "feedback_added"]] }
             }},
             as: "h",
-            in: "$$h.timestamp"
+            in: { $convert: { input: "$$h.timestamp", to: "date", onError: null, onNull: null } }
           }}},
           // Activity-side: extract the single-row lookup result above.
           activityContactMax: { $arrayElemAt: ["$lastContactAct.t", 0] }
@@ -15188,7 +15196,16 @@ app.get("/api/reports/overview/aging", auth, reportsAuth, async function(req, re
             ]}
           }}
       }},
-      { $addFields: { ageDays: { $divide: [{ $subtract: [nowDate, "$lastContact"] }, DAY_MS] }}},
+      // Defensive coerce — even with the in-$map fix above, any future
+      // regression that re-introduces a String-typed lastContact (legacy
+      // createdAt, hand-inserted history, etc.) falls through here without
+      // crashing the whole pipeline. onError/onNull → nowDate makes the
+      // affected row land in the "under3" bucket, indicating "we don't
+      // know — treat as recent" rather than failing the entire report.
+      { $addFields: {
+          _lastContactDate: { $convert: { input: "$lastContact", to: "date", onError: nowDate, onNull: nowDate } }
+      }},
+      { $addFields: { ageDays: { $divide: [{ $subtract: [nowDate, "$_lastContactDate"] }, DAY_MS] }}},
       { $addFields: {
           bucketKey: { $switch: {
             branches: [
