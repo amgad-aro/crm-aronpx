@@ -336,6 +336,13 @@ var Notification = mongoose.model("Notification", new mongoose.Schema({
   status:{type:String,default:""},
   budget:{type:String,default:""},
   reason:{type:String,default:""},
+  // 2026-05-18 — event time stored separately from createdAt. createdAt is
+  // when the Notification row was INSERTED (which for backfilled rows is
+  // ~identical across all of them, so every notification rendered as
+  // "1 day ago"); eventTime is when the underlying event actually happened
+  // (Lead.dealDate for DoneDeal, Lead.eoiDate for EOI, lead.lastRotationAt
+  // for rotation). FE renders timeAgo(n.eventTime || n.createdAt).
+  eventTime:{type:Date,default:null},
   seenBy:[{type:String}]
 },{timestamps:true}));
 
@@ -9619,6 +9626,25 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       update.hadMeeting = true;
       update.meetingDoneAt = new Date();
     }
+    // 2026-05-18 — auto-clear callbackTime when status advances past the
+    // callback-needed states. CallbackBell queries top-level Lead.callbackTime;
+    // before this hook, a lead whose status moved CallBack→Potential (or
+    // CallBack→MeetingDone) kept its old callbackTime, so it stayed on the
+    // bell forever. Atlas diagnostic on 2026-05-18 showed 346 of 433 bell
+    // rows (80%) were stale this way — primarily Potential/HotCase/MeetingDone.
+    // Conditions to auto-clear:
+    //   (a) status actually changed (req.body.status !== oldLead.status)
+    //   (b) new status is NOT CallBack (which needs a fresh callbackTime)
+    //       and NOT NoAnswer (where the rep still needs to retry the call)
+    //   (c) the caller did NOT explicitly set callbackTime in the same body
+    //       — a deliberate "advance status + schedule next callback" save wins
+    //   (d) the lead actually had a callbackTime to clear (avoid no-op writes)
+    if (req.body.status && oldLead && req.body.status !== oldLead.status &&
+        req.body.status !== "CallBack" && req.body.status !== "NoAnswer" &&
+        req.body.callbackTime === undefined &&
+        (oldLead.callbackTime || "") !== "") {
+      update.callbackTime = "";
+    }
     // Approve/un-approve toggles from the EOI page — mirror to eoiStatus
     if (req.body.eoiApproved === true) update.eoiStatus = "Approved";
     else if (req.body.eoiApproved === false && oldLead && oldLead.eoiStatus === "Approved") update.eoiStatus = "Pending";
@@ -9705,6 +9731,14 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       if (req.body.notes !== undefined) assignUpdate["assignments.$.notes"] = req.body.notes;
       if (req.body.budget !== undefined) assignUpdate["assignments.$.budget"] = req.body.budget;
       if (req.body.callbackTime !== undefined) assignUpdate["assignments.$.callbackTime"] = req.body.callbackTime;
+      // 2026-05-18 — mirror of the top-level callbackTime auto-clear above.
+      // Keeps the agent's own slice in sync so the per-agent UI cards don't
+      // keep rendering a stale "callback due" badge after the agent advances
+      // the status without rescheduling. Same predicate as the top-level clear.
+      else if (req.body.status && oldLead && req.body.status !== oldLead.status &&
+               req.body.status !== "CallBack" && req.body.status !== "NoAnswer") {
+        assignUpdate["assignments.$.callbackTime"] = "";
+      }
       if (req.body.lastFeedback !== undefined) assignUpdate["assignments.$.lastFeedback"] = req.body.lastFeedback;
       if (req.body.noRotation !== undefined) assignUpdate["assignments.$.noRotation"] = req.body.noRotation;
       // The agent themselves wrote it — clear any prior managerial author tag
@@ -13714,6 +13748,22 @@ app.post("/api/notifications", auth, async function(req, res) {
       }
     }
 
+    // 2026-05-18 — populate eventTime (the underlying event's real time, not
+    // the row's insert time). FE may pass body.eventTime explicitly (preferred
+    // — it's accurate to the moment of action); if absent, look up the lead and
+    // copy from dealDate/eoiDate. Final fallback: now. Without this, dropdown
+    // rows render "1 day ago" for every notification since createdAt clusters
+    // around the load time on backfilled rows (see commit 945aa84 regression).
+    if (!body.eventTime && body.leadId && mongoose.Types.ObjectId.isValid(body.leadId)) {
+      try {
+        var evLead = await Lead.findById(body.leadId).select("dealDate eoiDate createdAt").lean();
+        if (evLead) {
+          var raw = (body.status === "DoneDeal" ? evLead.dealDate : evLead.eoiDate) || evLead.dealDate || evLead.eoiDate || evLead.createdAt;
+          if (raw) body.eventTime = raw;
+        }
+      } catch(evErr) { /* non-fatal — fall through to default */ }
+    }
+    if (!body.eventTime) body.eventTime = new Date();
     var n = await Notification.create(body);
     // Notify every connected admin/sales_admin/team_leader so their deal-bell
     // unread badge increments in real time without waiting for the next bell

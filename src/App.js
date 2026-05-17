@@ -1683,7 +1683,7 @@ var Header = function(p) {
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}{n.leadName?" — "+n.leadName:""}</div>
                   <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
-                  <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{timeAgo(n.createdAt,p.t)}</div>
+                  <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{timeAgo(n.eventTime||n.createdAt,p.t)}</div>
                 </div>
                 {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#15803D", flexShrink:0 }}/>}
               </div>;
@@ -24032,8 +24032,13 @@ export default function CRMApp() {
   });
 
   // Deal notification helper — saves to DB, updates local state
+  // 2026-05-18 — eventTime stamps the moment of the action so the dropdown
+  // can render the deal's actual closure time (not the row's insert time).
+  // BE schema (Notification.eventTime) accepts this directly. Without it,
+  // every notification rendered as "1 day ago" since dropdown timeAgo()
+  // fell back to createdAt which clusters on row insertion.
   var addDealNotif = function(n){
-    var notif = {type:"deal",leadName:n.leadName||"",leadId:n.leadId||"",agentName:n.agentName||"",status:n.status||"",budget:n.budget||""};
+    var notif = {type:"deal",leadName:n.leadName||"",leadId:n.leadId||"",agentName:n.agentName||"",status:n.status||"",budget:n.budget||"",eventTime:n.eventTime||new Date().toISOString()};
     apiFetch("/api/notifications","POST",notif,token).then(function(saved){
       if(saved) setDealNotifs(function(prev){return [Object.assign({},saved,{seen:false})].concat(prev).slice(0,50);});
     }).catch(function(){});
