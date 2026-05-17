@@ -21278,19 +21278,26 @@ var CommissionsPage = function(p) {
         }}>
           💼 Broker Calculation
         </button>}
-        {/* Cancel Deal — mirrors the Deals-page ❌ Cancel button so admin can
-            drop a deal directly from here without navigating away. Uses the
-            existing /deal-cancel endpoint which already cascades the lead +
-            commission together via cascadeCommissionCancel (shipped in
-            527d5c3). Hidden once the commission is already cancelled, and
-            hidden for non-admin roles. */}
-        {!isCancelled && (p.cu.role === "admin" || p.cu.role === "sales_admin") && c.leadId && <button
+        {/* Cancel Deal — admin path to drop a deal directly from the
+            Commissions card. Hits POST /api/commissions/:id/cancel which
+            handles BOTH the live-lead path (full /deal-cancel behavior:
+            lead → HotCase, dealStatus → Deal Cancelled, DR mirror sync,
+            cascadeCommissionCancel) and the orphan path (lead missing,
+            archived, or already Deal Cancelled → flips just the commission
+            via cascadeCommissionCancel). The c.leadId guard is dropped
+            intentionally: orphans whose lead has been hard-deleted still
+            need a cancel path, and the BE endpoint tolerates a missing
+            Lead doc. Hidden once the commission is already cancelled and
+            for non-admin roles. */}
+        {!isCancelled && (p.cu.role === "admin" || p.cu.role === "sales_admin") && <button
           onClick={async function(){
             if(!window.confirm("Cancel this deal? The commission will be cancelled too (lockstep).")) return;
-            var leadIdStr = typeof c.leadId === "object" ? String(c.leadId._id || c.leadId) : String(c.leadId);
             try {
-              await apiFetch("/api/leads/" + leadIdStr + "/deal-cancel", "POST", {}, p.token);
-              setToast({ kind:"ok", msg:"Deal cancelled — commission moved to Cancelled tab" });
+              var res = await apiFetch("/api/commissions/" + c._id + "/cancel", "POST", {}, p.token);
+              var okMsg = (res && res.mode === "orphan")
+                ? "Orphan commission cancelled — lead was not live"
+                : "Deal cancelled — commission moved to Cancelled tab";
+              setToast({ kind:"ok", msg: okMsg });
               setReloadTick(function(v){ return v + 1; });
             } catch(e) {
               setToast({ kind:"err", msg: (e && e.message) || "Cancel failed" });
@@ -22738,8 +22745,6 @@ var DiagnosticsPage = function(p) {
         msg = "Fully-paid revert done — " + (summary.updated || 0) + " flipped back to active";
       } else if (type === "active_with_no_workable_cycle") {
         msg = "Revive-broken backfill done — " + (summary.updated || 0) + " fresh cycle(s) added";
-      } else if (type === "cleanup_orphans") {
-        msg = "Orphan cleanup done — " + (summary.count || 0) + " commission(s) cancelled";
       } else {
         msg = "Backfill done";
       }
@@ -22893,17 +22898,6 @@ var DiagnosticsPage = function(p) {
             cursor: bulkRunning ? "wait" : "pointer"
           }}>
           {bulkRunning === "active_with_no_workable_cycle" ? "Running revive-broken backfill…" : "Run revive-broken backfill"}
-        </button>
-        <button onClick={function(){ runBulk("cleanup_orphans"); }} disabled={!!bulkRunning}
-          title="Cancel any active commissions whose underlying lead is archived or marked Deal Cancelled (pre-527d5c3 orphans). Uses cascadeCommissionCancel — preserves paid_to_team history, fans out quarter siblings. Idempotent."
-          style={{
-            padding:"8px 14px", borderRadius:8, fontSize:12, fontWeight:600,
-            border: "1px solid " + C.danger,
-            background: bulkRunning === "cleanup_orphans" ? C.danger + "30" : C.danger + "12",
-            color: C.danger,
-            cursor: bulkRunning ? "wait" : "pointer"
-          }}>
-          {bulkRunning === "cleanup_orphans" ? "Cleaning orphan commissions…" : "Run orphan commission cleanup"}
         </button>
       </div>
       {bulkResult && <div style={{ marginTop:12, paddingTop:12, borderTop:"1px solid #F1F5F9" }}>

@@ -18404,53 +18404,8 @@ app.post("/api/admin/run-backfill", auth, strictAdminOnly, async function(req, r
         return res.status(400).json({ error: "commissionIds array required in body for delete_bogus_legacy_commissions" });
       }
       summary = await runDeleteBogusLegacyBackfill(ids);
-    } else if (type === "cleanup_orphans") {
-      // Pre-527d5c3 orphans: commissions still status=active whose underlying
-      // Lead has since been archived OR moved to dealStatus="Deal Cancelled".
-      // Before 527d5c3 the deal-archive / hard-delete paths didn't cascade
-      // to commission, so these rows kept showing on Commissions → External
-      // (or wherever) even though the deal was gone from the Deals page.
-      // Idempotent — running again finds zero work.
-      //
-      // Uses the SAME cascadeCommissionCancel helper as the live deal-cancel
-      // hook (server.js around L3033): flips status to "cancelled", closes
-      // open cycles, preserves paid_to_team cycle history, fans out quarter
-      // siblings (recompute may bump prior deals' shares now that this deal
-      // is removed from the agent's quarter achievement).
-      var orphanLeads = await Lead.find({
-        $or: [
-          { archived: true },
-          { dealStatus: "Deal Cancelled" },
-          { status: "Deal Cancelled" }
-        ]
-      }, { _id: 1, name: 1 }).lean();
-      var orphanLeadIds = orphanLeads.map(function(l){ return l._id; });
-      var leadNameById = {};
-      orphanLeads.forEach(function(l){ leadNameById[String(l._id)] = l.name || ""; });
-      var orphans = await Commission.find({
-        status: "active",
-        leadId: { $in: orphanLeadIds }
-      }, { _id: 1, leadId: 1, status: 1, "snapshot.customerName": 1 }).lean();
-      var touched = [];
-      for (var oi = 0; oi < orphans.length; oi++) {
-        var o = orphans[oi];
-        var n = await cascadeCommissionCancel(
-          o.leadId,
-          "Retroactive cleanup — pre-527d5c3 orphan, no live deal",
-          req.user
-        );
-        touched.push({
-          commId: String(o._id),
-          leadId: String(o.leadId),
-          leadName: (o.snapshot && o.snapshot.customerName) || leadNameById[String(o.leadId)] || "",
-          statusBefore: "active",
-          statusAfter: "cancelled",
-          cancelledCount: n
-        });
-      }
-      summary = { type: "cleanup_orphans", count: orphans.length, touched: touched };
     } else {
-      return res.status(400).json({ error: "type must be one of: zombies, missing, fully_paid_with_active_cycles, active_with_no_workable_cycle, delete_bogus_legacy_commissions, cleanup_orphans" });
+      return res.status(400).json({ error: "type must be one of: zombies, missing, fully_paid_with_active_cycles, active_with_no_workable_cycle, delete_bogus_legacy_commissions" });
     }
     res.json(summary);
   } catch(e) {
@@ -18484,6 +18439,82 @@ app.get("/api/commissions/:id", auth, salesAdminOnly, async function(req, res) {
   } catch (e) {
     console.error("[GET /api/commissions/:id]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "commission_get_failed" });
+  }
+});
+
+// Cancel a commission directly from the Commissions page. Handles both the
+// happy path (lead still live → behaves like POST /api/leads/:id/deal-cancel)
+// AND the orphan path (lead missing, archived, or already Deal Cancelled →
+// flips just the commission so the user can drop stuck rows that the Deals
+// page Cancel button can no longer reach). Always succeeds unless the
+// commission itself is missing or already cancelled.
+app.post("/api/commissions/:id/cancel", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id).lean();
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (c.status === "cancelled") return res.status(400).json({ error: "Already cancelled" });
+
+    var lead = c.leadId ? await Lead.findById(c.leadId).lean() : null;
+    var isLeadLive = !!lead
+      && !lead.archived
+      && lead.dealStatus !== "Deal Cancelled"
+      && lead.status !== "Deal Cancelled";
+
+    if (isLeadLive) {
+      // Live deal — replicate POST /api/leads/:id/deal-cancel so the Lead is
+      // restored to HotCase, the agent's assignment status syncs, and the DR
+      // mirror (if any) flips with it. cascadeCommissionCancel at the end
+      // flips this commission as a side effect of the lead state change.
+      var restored = "HotCase";
+      var update = { status: restored, dealStatus: "Deal Cancelled", dealApproved: false, preDealStatus: "", globalStatus: "active", lastActivityTime: new Date() };
+      await Lead.findByIdAndUpdate(lead._id, { $set: update });
+      await Lead.updateOne(
+        { _id: lead._id, "assignments.agentId": lead.agentId },
+        { $set: { "assignments.$.status": restored, "assignments.$.lastActionAt": new Date() } }
+      );
+      if (lead.source === "Daily Request" && lead.phone) {
+        try {
+          await DailyRequest.updateOne(
+            { phone: lead.phone },
+            { $set: { status: restored, dealStatus: "Deal Cancelled", preDealStatus: "", lastActivityTime: new Date() } }
+          );
+        } catch(syncErr) { console.error("DR sync (commission cancel) error:", syncErr.message); }
+      }
+      try {
+        await Activity.create({
+          userId: req.user.id, leadId: lead._id, type: "status_change",
+          note: "[HotCase] Deal cancelled from Commissions page — returned to Hot Case"
+        });
+      } catch(e){}
+      try {
+        await cascadeCommissionCancel(
+          lead._id,
+          "Deal cancelled from Commissions page by " + (req.user && req.user.name ? req.user.name : "admin"),
+          req.user
+        );
+      } catch(e){ console.error("[commission hook commission-cancel live]", e && e.message); }
+    } else {
+      // Orphan — lead is missing, archived, or already Deal Cancelled. Skip
+      // the Lead-side update (nothing live to restore) and flip just this
+      // commission via cascadeCommissionCancel. The helper queries by
+      // leadId so it still picks up THIS commission via c.leadId even when
+      // the Lead document is gone — snapshot-based fan-out doesn't need
+      // the Lead doc either (primaryAgentId + dealDate come from snapshot).
+      try {
+        await cascadeCommissionCancel(
+          c.leadId,
+          "Orphan commission cancelled directly — lead not live",
+          req.user
+        );
+      } catch(e){ console.error("[commission hook commission-cancel orphan]", e && e.message); }
+    }
+
+    var updated = await Commission.findById(req.params.id).lean();
+    res.json({ ok: true, mode: isLeadLive ? "live_lead" : "orphan", commission: updated });
+  } catch (e) {
+    console.error("[POST /api/commissions/:id/cancel]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "commission_cancel_failed" });
   }
 });
 
