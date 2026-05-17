@@ -7012,6 +7012,12 @@ var DashboardPage = function(p) {
   // through the first paint. Once STEP 4-5 shrinks the bootstrap, the
   // in-memory fallback becomes wrong but this state stays authoritative.
   var [statsCounts, setStatsCounts] = useState(null);
+  // STEP 4-5 X1 — admin Management Alerts "overdue callbacks" row. Caller #3
+  // from the STEP 4-2 migration list (deferred at the time). Counts every
+  // lead with callbackTime < now, regardless of status, to match the legacy
+  // in-memory derivation at the overdueUntouched useMemo below. Bound by
+  // cbBust so any callback update refreshes the badge in real time.
+  var [adminOverdueCount, setAdminOverdueCount] = useState(null);
   useEffect(function(){
     var onResize = function(){ setIsMobile(window.innerWidth<768); };
     window.addEventListener("resize", onResize);
@@ -7159,10 +7165,15 @@ var DashboardPage = function(p) {
     var toIso   = new Date(re).toISOString();
     Promise.all([
       apiFetch("/api/leads/counts?from="+encodeURIComponent(fromIso)+"&to="+encodeURIComponent(toIso),"GET",null,p.token).catch(function(){return null;}),
-      apiFetch("/api/daily-requests/counts?from="+encodeURIComponent(fromIso)+"&to="+encodeURIComponent(toIso),"GET",null,p.token).catch(function(){return null;})
+      apiFetch("/api/daily-requests/counts?from="+encodeURIComponent(fromIso)+"&to="+encodeURIComponent(toIso),"GET",null,p.token).catch(function(){return null;}),
+      // STEP 4-5 X1 — admin overdue alert. ?to=<nowIso>&count_only=true with
+      // excludeStatuses=none gets "all leads with callbackTime < now",
+      // matching the legacy overdueUntouched.overdue derivation.
+      apiFetch("/api/leads/callbacks?to="+encodeURIComponent(new Date().toISOString())+"&count_only=true&excludeStatuses=none","GET",null,p.token).catch(function(){return {count:null};})
     ]).then(function(r){
       if (cancelled) return;
       if (r[0] && r[1]) setStatsCounts({ leads: r[0], drs: r[1] });
+      if (r[2] && typeof r[2].count === "number") setAdminOverdueCount(r[2].count);
     });
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -7505,6 +7516,13 @@ var DashboardPage = function(p) {
   },[leads]);
   var overdue = overdueUntouched.overdue;
   var untouched = overdueUntouched.untouched;
+  // STEP 4-5 X1 — once /api/leads/callbacks?to=<now>&count_only resolves,
+  // prefer the server-aggregated overdue count over the in-memory scan.
+  // Bootstrap-time fallback keeps numbers visible during the first paint
+  // and survives the X3 bootstrap shrink (the in-memory derivation will
+  // undercount once p.leads has only 100 rows; the server count stays
+  // correct).
+  if (adminOverdueCount !== null) overdue = adminOverdueCount;
 
   var dayNames=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   var todayIdx=new Date().getDay();
