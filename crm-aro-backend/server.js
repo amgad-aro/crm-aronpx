@@ -6923,6 +6923,139 @@ function findAssignmentForAgent(lead, agentId) {
   return null;
 }
 
+// ===== STEP 3 — summary precompute helpers =====
+// Server-side mirrors of the FE helpers in src/App.js (currentStatus L3587,
+// currentFeedback L3619, isGenuineNewLead L3652, qualifyingMarks L3720).
+// Used when ?fields=summary is sent on GET /api/leads so the FE can fall
+// back to precomputed values once assignments[].agentHistory[] has been
+// stripped from the wire. Logic is transliterated from the FE to keep
+// outputs byte-equivalent — if the FE walks ever diverge, the precompute
+// must move with them (or the Important tab + currentStatus / Feedback
+// cells drift).
+var SUMMARY_QUALIFYING = { HotCase:1, Potential:1, MeetingDone:1 };
+
+function summaryComputeCurrentStatus(lead) {
+  if (!lead) return "NewLead";
+  var latestStatus = null;
+  var latestStatusTs = 0;
+  (lead.assignments || []).forEach(function(a){
+    if (!a) return;
+    var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
+    hist.forEach(function(h){
+      if (!h || h.type !== "status_change") return;
+      var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
+      if (ts <= latestStatusTs) return;
+      var s = h.status || h.toStatus;
+      if (!s && h.note) {
+        var m = String(h.note).match(/Status:\s*(\w+)/i);
+        if (m) s = m[1];
+      }
+      if (s) { latestStatus = s; latestStatusTs = ts; }
+    });
+    if (a.status && a.lastActionAt) {
+      var t = new Date(a.lastActionAt).getTime();
+      if (t > latestStatusTs) { latestStatus = a.status; latestStatusTs = t; }
+    }
+  });
+  if (latestStatus) return latestStatus;
+  return lead.status || "NewLead";
+}
+
+function summaryComputeCurrentFeedback(lead) {
+  if (!lead) return "";
+  var latestFeedback = "";
+  var latestFeedbackTs = 0;
+  (lead.assignments || []).forEach(function(a){
+    if (!a) return;
+    var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
+    hist.forEach(function(h){
+      if (!h) return;
+      if (h.type !== "feedback" && h.type !== "feedback_added") return;
+      var content = String(h.note || h.feedback || "").trim();
+      if (!content) return;
+      var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
+      if (ts > latestFeedbackTs) { latestFeedbackTs = ts; latestFeedback = content; }
+    });
+    if (a.lastFeedback && String(a.lastFeedback).trim() && a.lastActionAt) {
+      var t = new Date(a.lastActionAt).getTime();
+      if (t > latestFeedbackTs) { latestFeedbackTs = t; latestFeedback = String(a.lastFeedback).trim(); }
+    }
+  });
+  return latestFeedback;
+}
+
+// Inverse of FE isGenuineNewLead — returns TRUE when ANY slice has had a
+// user-visible action recorded. FE consumer reads `!l._hasAction` together
+// with `_currentStatus === "NewLead"` to decide NewLead-tab membership.
+function summaryComputeHasAction(lead) {
+  var slices = (lead && lead.assignments) || [];
+  for (var i = 0; i < slices.length; i++) {
+    var s = slices[i];
+    if (!s) continue;
+    if (s.lastFeedback && String(s.lastFeedback).trim()) return true;
+    if (s.notes && String(s.notes).trim()) return true;
+    if (s.callbackTime) return true;
+    var hist = Array.isArray(s.agentHistory) ? s.agentHistory : [];
+    var hasIt = hist.some(function(h){
+      if (!h || !h.type) return false;
+      var t = h.type;
+      return t === "status_change" || t === "feedback_added" || t === "feedback"
+          || t === "note" || t === "call" || t === "callback_scheduled";
+    });
+    if (hasIt) return true;
+  }
+  return false;
+}
+
+function summaryComputeQualifyingMarks(lead) {
+  var marks = [];
+  var assignments = (lead && lead.assignments) || [];
+  assignments.forEach(function(a){
+    if (!a) return;
+    var aName = (a.agentId && a.agentId.name) ? a.agentId.name : "";
+    var aId = a.agentId && a.agentId._id ? String(a.agentId._id) : String(a.agentId || "");
+    if (SUMMARY_QUALIFYING[a.status]) {
+      var ts = a.lastActionAt ? new Date(a.lastActionAt).getTime()
+             : a.assignedAt ? new Date(a.assignedAt).getTime() : 0;
+      marks.push({ status:a.status, agentName:aName, agentId:aId, date:ts, feedback:a.lastFeedback||"" });
+    }
+    (a.agentHistory || []).forEach(function(h){
+      if (!h) return;
+      var note = String(h.note || "");
+      Object.keys(SUMMARY_QUALIFYING).forEach(function(qs){
+        var spaced = qs.replace(/([A-Z])/g, " $1").trim();
+        if (note.indexOf(qs) >= 0 || note.indexOf(spaced) >= 0) {
+          var ts2 = h.createdAt ? new Date(h.createdAt).getTime() : 0;
+          marks.push({ status:qs, agentName:aName, agentId:aId, date:ts2, feedback:a.lastFeedback||"" });
+        }
+      });
+    });
+  });
+  return marks.sort(function(x,y){ return x.date - y.date; });
+}
+
+// Applies the four precompute fields + strips heavy log arrays. Mutates
+// obj. Caller must check req.query.fields === "summary" before calling.
+function applySummaryProjection(obj) {
+  if (!obj) return obj;
+  var marks = summaryComputeQualifyingMarks(obj);
+  obj._qualifyingMarksCount = marks.length;
+  obj._qualifyingMarksFirst = marks[0] || null;
+  obj._currentStatus    = summaryComputeCurrentStatus(obj)   || obj.status || "";
+  obj._currentFeedback  = summaryComputeCurrentFeedback(obj) || obj.lastFeedback || "";
+  obj._hasAction        = summaryComputeHasAction(obj);
+  // Strip the per-assignment history sub-arrays — biggest payload win.
+  // assignments[] itself stays so the FE filter/overlay logic keeps
+  // working; only the inner agentHistory[] vanishes.
+  (obj.assignments || []).forEach(function(a){ if (a) a.agentHistory = []; });
+  // Top-level history (event log) and privateNotes (admin-only) — neither
+  // is read by the list view. privateNotes is still per-author filtered
+  // upstream; setting to [] here is safe.
+  obj.history = [];
+  obj.privateNotes = [];
+  return obj;
+}
+
 app.get("/api/leads", auth, async function(req, res) {
   try {
     var query = {};
@@ -7030,6 +7163,12 @@ app.get("/api/leads", auth, async function(req, res) {
     if (req.query.lockedOnly === "true" && (role === "admin" || role === "sales_admin")) {
       query.locked = true;
     }
+
+    // STEP 3 — opt-in summary projection flag. When set, applySummaryProjection
+    // runs per-lead at the end of the per-role mapper (see calls below in both
+    // the sales branch and the admin/manager branch). Absent param = no
+    // change. Read once up front so both branches see the same value.
+    var summary = req.query.fields === "summary";
 
     // Pagination. If no ?limit= is provided (or limit=0), return all leads
     // unbounded — the bootstrap path uses this to avoid silent truncation when
@@ -7184,6 +7323,11 @@ app.get("/api/leads", auth, async function(req, res) {
         delete obj.eoiImage;
         delete obj.eoiDocuments;
         delete obj.dealImages;
+        // STEP 3 — opt-in summary projection. When ?fields=summary is sent,
+        // precompute the four FE helper outputs and strip agentHistory[] +
+        // history[] + privateNotes[]. Backward compatible: absent param =
+        // no precompute, no extra strip.
+        if (summary) applySummaryProjection(obj);
         return obj;
       });
     } else {
@@ -7220,6 +7364,8 @@ app.get("/api/leads", auth, async function(req, res) {
         delete obj.eoiImage;
         delete obj.eoiDocuments;
         delete obj.dealImages;
+        // STEP 3 — opt-in summary projection (see sales branch comment).
+        if (summary) applySummaryProjection(obj);
         return obj;
       });
     }
@@ -11525,6 +11671,16 @@ app.get("/api/daily-requests", auth, async function(req, res) {
     if (hasLimit) drQuery = drQuery.skip(skip).limit(limit);
     var requests = await drQuery;
 
+    // STEP 3 — opt-in summary projection. DR's only heavy field is
+    // eoiDocuments[] (Mixed array, present on EOI-converted DRs only).
+    // Stripping is mutation-safe because each request is a fresh Mongoose
+    // doc here; the in-memory representation is discarded after .json().
+    // Absent param = no strip; existing 4 callers continue to receive the
+    // full doc unchanged.
+    if (req.query.fields === "summary" && Array.isArray(requests)) {
+      requests.forEach(function(r){ if (r) r.eoiDocuments = undefined; });
+    }
+
     if (!wantsObjShape) return res.json(requests);
 
     // Smart-skip on countDocuments — same shape as /api/leads above.
@@ -11591,6 +11747,29 @@ app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req
     // upserts in place.
     var updated = await DailyRequest.find({ _id: { $in: leadIds } }).populate("agentId", "name title").lean();
     res.json({ ok: true, count: leadIds.length, drs: updated });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// STEP 3 — single-DR detail endpoint. Mirrors the role visibility of the
+// list handler so the FE can refetch a full DR (including eoiDocuments[])
+// after ?fields=summary has stripped them from the list response. Today
+// the DR side panel doesn't render heavy fields, so no FE caller is wired
+// to this yet — it ships available-for-future-use alongside the list
+// strip so the strip is reversible without an asymmetric API surface.
+app.get("/api/daily-requests/:id", auth, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var r = await DailyRequest.findById(req.params.id).populate("agentId", "name title").lean();
+    if (!r) return res.status(404).json({ error: "Not found" });
+    var role = req.user.role;
+    var aid = r.agentId && r.agentId._id ? String(r.agentId._id) : String(r.agentId || "");
+    if (role === "sales") {
+      if (aid !== String(req.user.id)) return res.status(404).json({ error: "Not found" });
+    } else if (role === "team_leader" || role === "manager" || role === "director") {
+      var scoped = new Set((await getScopedUserIds(req.user) || []).map(function(id){ return String(id); }));
+      if (!scoped.has(aid)) return res.status(403).json({ error: "Forbidden" });
+    }
+    res.json(r);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
