@@ -10218,10 +10218,8 @@ var DealsPage = function(p) {
     </div>
 
     {/* Phase R-12 Part 4 \u2014 All / Internal / External filter pill row.
-        Style mirrors the Commissions Claims tab STATUS_PILLS (the spec's
-        reference style). Counts reflect the current Active|Cancelled tab
-        scope \u2014 internal+external sum to deals.length. */}
-    <div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
+        Admin/sales_admin only \u2014 hidden for sales/team_leader/manager/director. */}
+    {isOnlyAdmin&&<div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
       {[["all","All",deals.length],["internal","\ud83c\udfe2 Internal",dealsInternalCount],["external","\ud83e\udd1d External",dealsExternalCount]].map(function(pill){
         var active=dealTypeFilter===pill[0];
         return <button key={pill[0]} onClick={function(){setDealTypeFilter(pill[0]);}} style={{
@@ -10232,7 +10230,7 @@ var DealsPage = function(p) {
           fontSize:12, fontWeight:600, cursor:"pointer"
         }}>{pill[1]} ({pill[2]})</button>;
       })}
-    </div>
+    </div>}
 
     {/* Deals Search + Filter bar */}
     <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:10, flexWrap:"wrap" }}>
