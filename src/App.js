@@ -1389,34 +1389,35 @@ var CallbackBell = function(p) {
     else { upcoming.push(l); cbIds.add(gid(l)); }
   });
 
-  // Effective-time DESC: callbackTime when present, lastActivityTime
-  // otherwise. Lets the All tab interleave callback-bearing rows with
-  // No Contact rows in true chronological order — the bucketed
-  // (overdue→now→upcoming→nocontact) concatenation that preceded this
-  // commit broke the "newest scheduled callback first" promise once a
-  // row from a later bucket had a more recent timestamp than rows in
-  // earlier buckets. Per-bucket tabs (Delay/Now/Upcoming) always have
-  // callbackTime set so this collapses to callbackTime DESC; No Contact
-  // rows have no callbackTime so it collapses to lastActivityTime DESC.
-  var byEffDesc = function(a,b){
-    var aT = a.callbackTime ? new Date(a.callbackTime).getTime() : new Date(a.lastActivityTime||0).getTime();
-    var bT = b.callbackTime ? new Date(b.callbackTime).getTime() : new Date(b.lastActivityTime||0).getTime();
-    return bT - aT;
+  // Urgency-first ordering. Delay/Now/Upcoming/All sort by callbackTime
+  // ASC so the row whose scheduled time is closest to "now from the
+  // past" (i.e. most overdue) sits at the top, then less overdue, then
+  // Now-window rows, then Upcoming rows in chronological order, with
+  // the furthest-future callback at the bottom. No Contact rows have no
+  // callbackTime, so they sort by lastActivityTime DESC (most recently
+  // abandoned first) — that's the urgency proxy for that tab.
+  var byCbAsc = function(a,b){
+    return new Date(a.callbackTime||0) - new Date(b.callbackTime||0);
   };
-  overdue.sort(byEffDesc);
-  nowItems.sort(byEffDesc);
-  upcoming.sort(byEffDesc);
+  var byLastActDesc = function(a,b){
+    return new Date(b.lastActivityTime||0) - new Date(a.lastActivityTime||0);
+  };
+  overdue.sort(byCbAsc);
+  nowItems.sort(byCbAsc);
+  upcoming.sort(byCbAsc);
 
   bellNoContact.forEach(function(l){
     if(l.callbackTime) return;
     if(!cbIds.has(gid(l))) noContact.push(l);
   });
-  noContact.sort(byEffDesc);
+  noContact.sort(byLastActDesc);
 
-  // The All tab sorts the full union, not the bucket concatenation —
-  // otherwise an upcoming row scheduled in 10 minutes would appear below
-  // a 2-week-overdue Delay row, breaking the "newest scheduled first" promise.
-  var allItems = overdue.concat(nowItems).concat(upcoming).concat(noContact).sort(byEffDesc);
+  // All tab: callback-bearing rows sorted callbackTime ASC (most
+  // overdue → closest upcoming → furthest future), then No Contact
+  // rows appended in their own lastActivityTime-DESC order at the end.
+  // Mixing No Contact into the cb-ASC stream would push every
+  // no-callback row to the very top (Date(0) < every real cbTime).
+  var allItems = overdue.concat(nowItems).concat(upcoming).sort(byCbAsc).concat(noContact);
 
   var filtered;
   if(tab==="overdue") filtered = overdue;
