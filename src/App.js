@@ -2251,8 +2251,11 @@ var LeadForm = function(p) {
             VAT 14%           = Gross − Net of VAT
             Withholding 5%    = Net of VAT × 0.05
             Net Due           = Gross − Withholding
-          Applies to BOTH Internal and External (state tax is dealType-agnostic). */}
+          Phase R-13.1 — Internal only. External relies on the informal
+          Broker Split preview inside the External branch (state tax handled
+          at year-end via Annual Summary). */}
       {(function(){
+        if (form.dealType === "external") return null;
         var budgetNum = (function(){
           var s = String(form.budget || "").replace(/,/g, "").replace(/[^0-9.]/g, "");
           var n = parseFloat(s);
@@ -19909,6 +19912,9 @@ var CommissionsPage = function(p) {
   var [addRecipRole, setAddRecipRole] = useState("sales");
   var [addRecipAmount, setAddRecipAmount] = useState("");
   var [addRecipUserId, setAddRecipUserId] = useState("");
+  // Phase R-13.1 — Broker Calculation modal state. Holds the External
+  // commission being viewed (or null when modal is closed).
+  var [brokerCalcFor, setBrokerCalcFor] = useState(null);
   // Phase R-9 — cashFlow state removed; the new Recipients breakdown computes
   // paid totals straight from c.payouts, so the global cash-flow endpoint is no
   // longer needed for card rendering.
@@ -20783,6 +20789,14 @@ var CommissionsPage = function(p) {
 
       {/* Footer */}
       <div style={{ marginTop:12, paddingTop:10, borderTop:"1px solid #F1F5F9", display:"flex", justifyContent:"flex-end", gap:8 }}>
+        {/* Phase R-13.1 — Broker Calculation modal trigger. External only. */}
+        {c.externalSplit && c.externalSplit.isExternal && <button onClick={function(){ setBrokerCalcFor(c); }} style={{
+          padding:"6px 12px", borderRadius:8, border:"1px solid #DDD6FE", background:"#F5F3FF",
+          cursor:"pointer", fontSize:12, fontWeight:600, color:"#5B21B6",
+          display:"inline-flex", alignItems:"center", gap:4
+        }}>
+          💼 Broker Calculation
+        </button>}
         <button onClick={function(){ goToDeal(c); }} style={{
           padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff",
           cursor:"pointer", fontSize:12, fontWeight:600, color:C.text,
@@ -21802,7 +21816,23 @@ var CommissionsPage = function(p) {
     {addRecipientFor && <Modal show={true} onClose={function(){ setAddRecipientFor(null); }} title={"➕ Add Manual Recipient — " + (addRecipientFor.snapshot && addRecipientFor.snapshot.customerName ? addRecipientFor.snapshot.customerName : "Commission")} w={460}>
       <div style={{ fontSize:11, color:C.textLight, marginBottom:12, lineHeight:1.5 }}>
         Add an extra recipient to this deal with a manual EGP commission. This appears alongside the chain recipients but is per-deal only — global rates are unchanged.
+        <br/><b>Tip:</b> picking an existing User links the payout to their User profile (so it shows on the Payout Report). Use the manual-name field below only for off-system recipients.
       </div>
+      {/* Phase R-13.1 — User picker. Linking the override to a User lets the
+          Payout Report aggregate paid amounts by userId. Selecting a user
+          autofills the Name field and overrides any manual name on submit. */}
+      <Inp label="User (recommended)" type="select" value={addRecipUserId} onChange={function(e){
+        setAddRecipUserId(e.target.value);
+        if (e.target.value) {
+          var u = (p.users || []).find(function(x){ return String(x._id || gid(x)) === String(e.target.value); });
+          if (u && u.name) setAddRecipName(u.name);
+        }
+      }} options={[{ value:"", label:"— Pick a User (recommended) —" }].concat(
+        (p.users || [])
+          .filter(function(u){ return u && u.active !== false; })
+          .map(function(u){ return { value: String(u._id || gid(u)), label: (u.name || "(unnamed)") + (u.role ? " · " + u.role : "") + (u.title ? " — " + u.title : "") }; })
+      )}/>
+      <div style={{ fontSize:10, color:C.textLight, margin:"-6px 0 8px 4px" }}>— or enter a name manually below (no User link; appears on Payout Report under the typed name) —</div>
       <Inp label="Name" req value={addRecipName} onChange={function(e){ setAddRecipName(e.target.value); }} placeholder="Full name"/>
       <Inp label="Role" type="select" value={addRecipRole} onChange={function(e){ setAddRecipRole(e.target.value); }} options={[
         { value:"sales", label:"Sales" },
@@ -21829,13 +21859,103 @@ var CommissionsPage = function(p) {
           var amtNum = Number(amtRaw);
           if (!nm) { alert("Name is required"); return; }
           if (!amtRaw || !isFinite(amtNum) || amtNum <= 0) { alert("Amount must be greater than 0"); return; }
+          var body = { name: nm, role: addRecipRole, amount: amtNum };
+          if (addRecipUserId) body.userId = addRecipUserId;
           try {
-            await writeCommission("POST", "/api/commissions/" + addRecipientFor._id + "/recipients", { name: nm, role: addRecipRole, amount: amtNum }, "Manual recipient added");
+            await writeCommission("POST", "/api/commissions/" + addRecipientFor._id + "/recipients", body, "Manual recipient added");
             setAddRecipientFor(null);
           } catch(_){}
         }} style={{ flex:1 }} loading={savingFlag}>Add</Btn>
       </div>
     </Modal>}
+    {/* Phase R-13.1 — Broker Calculation read-only modal. Shows the informal
+        broker split breakdown computed from commission.externalSplit + Lead
+        external-sales-agent fields. Includes a print-for-broker button that
+        injects a print-only stylesheet and triggers window.print(). */}
+    {brokerCalcFor && (function(){
+      var c = brokerCalcFor;
+      var es = c.externalSplit || {};
+      var gross = 0;
+      if (Array.isArray(c.cycles)) {
+        for (var i = 0; i < c.cycles.length; i++) {
+          var cy = c.cycles[i];
+          if (!cy || cy.state === "cancelled") continue;
+          gross += Number(cy.claimAmount || 0);
+        }
+      }
+      var taxPct = Number(es.commissionTaxPct || 0);
+      var taxAmount = gross * (taxPct / 100);
+      var grossAfterTax = gross - taxAmount;
+      var brokerPct = Number(es.brokerSharePct || 0);
+      var aroPct = Math.max(0, 100 - brokerPct);
+      var brokerShare = Number(es.brokerOwed || 0);
+      var aroTheoretical = Number(es.aroOwed || 0);
+      // Net Due derives from gross via the canonical state-tax formula.
+      var withholding = (gross / 1.14) * 0.05;
+      var netDue = gross - withholding;
+      // Sales-agent line — only when toggle was ON (snapshot.salesAgent has a
+      // positive computedShare). For toggle OFF, hide the line entirely.
+      var sa = c.snapshot && c.snapshot.salesAgent;
+      var salesAgentName = sa && sa.userName ? sa.userName : "";
+      var manualAmount = sa ? Number(sa.computedShare || 0) : 0;
+      var hasSales = manualAmount > 0;
+      var companyNet = netDue - brokerShare - (hasSales ? manualAmount : 0);
+      var fmt = function(n){ return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " EGP"; };
+      var leadName = (c.snapshot && c.snapshot.customerName) || "(deal)";
+      var printNow = function(){
+        try {
+          document.body.classList.add("printing-broker");
+          // Defer so the print CSS has a tick to apply before the dialog opens.
+          setTimeout(function(){
+            window.print();
+            // Cleanup runs after the dialog returns (print or cancel).
+            setTimeout(function(){ document.body.classList.remove("printing-broker"); }, 100);
+          }, 50);
+        } catch(_){
+          document.body.classList.remove("printing-broker");
+        }
+      };
+      return <Modal show={true} onClose={function(){ setBrokerCalcFor(null); }} title={"💼 Broker Calculation — " + leadName} w={520}>
+        <style>{
+          "@media print {" +
+          "  body.printing-broker > *:not([data-overlay-above=\"true\"]) { display: none !important; }" +
+          "  body.printing-broker .print-only-broker-modal { position: fixed !important; inset: 0 !important; background: #fff !important; padding: 32px !important; color: #000 !important; font-family: system-ui, sans-serif !important; z-index: 99999 !important; }" +
+          "  body.printing-broker .print-only-broker-modal button { display: none !important; }" +
+          "  body.printing-broker .print-only-broker-modal .modal-overlay { background: transparent !important; }" +
+          "}"
+        }</style>
+        <div className="print-only-broker-modal" style={{ fontSize:13, lineHeight:1.8, color:C.text }}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", borderBottom:"1px solid #E2E8F0" }}>
+            <span style={{ color:C.textLight }}>Gross Commission:</span><b style={{ textAlign:"right" }}>{fmt(gross)}</b>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", borderBottom:"1px solid #E2E8F0" }}>
+            <span style={{ color:C.textLight }}>Pre-deduction ({taxPct}%):</span><b style={{ textAlign:"right", color:"#B45309" }}>−{fmt(taxAmount)}</b>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"8px 0", borderTop:"2px solid #CBD5E1", borderBottom:"2px solid #CBD5E1", background:"#F8FAFC" }}>
+            <span style={{ color:C.text, fontWeight:600 }}>Amount after deduction:</span><b style={{ textAlign:"right" }}>{fmt(grossAfterTax)}</b>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", marginTop:4 }}>
+            <span style={{ color:C.textLight }}>Broker share ({brokerPct}%):</span><b style={{ textAlign:"right", color:"#5B21B6" }}>{fmt(brokerShare)}</b>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", borderBottom:"2px solid #CBD5E1" }}>
+            <span style={{ color:C.textLight }}>ARO theoretical ({aroPct}%):</span><b style={{ textAlign:"right" }}>{fmt(aroTheoretical)}</b>
+          </div>
+          {hasSales && <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", marginTop:8, color:C.textLight, fontSize:12 }}>
+            <span>Sales agent ({salesAgentName}):</span><b style={{ textAlign:"right" }}>{fmt(manualAmount)}</b>
+          </div>}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"10px 0 4px", borderTop:"2px solid #15803D", marginTop:hasSales ? 0 : 8, color:"#15803D", fontWeight:700 }}>
+            <span>Company net (after broker{hasSales ? " + sales" : ""}):</span><span style={{ textAlign:"right" }}>{fmt(companyNet)}</span>
+          </div>
+          <div style={{ fontSize:10, color:C.textLight, marginTop:14, fontStyle:"italic" }}>
+            Net Due is the gross commission minus 5% withholding tax (after 14% VAT is excluded). The pre-deduction is an informal broker-split convention; state tax is filed separately via Annual Summary.
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:10, marginTop:18 }}>
+          <Btn outline onClick={printNow} style={{ flex:1 }}>📄 Print for Broker</Btn>
+          <Btn onClick={function(){ setBrokerCalcFor(null); }} style={{ flex:1 }}>✕ Close</Btn>
+        </div>
+      </Modal>;
+    })()}
     {/* Phase R-6 polish — claim-data backfill modal for pre-R-5 cycles. */}
     {backfillTarget && <CommissionClaimBackfillModal
       commission={backfillTarget.commission}

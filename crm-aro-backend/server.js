@@ -2208,13 +2208,19 @@ function recipientFromUser(user, role) {
 // in both is fine; payouts SUM at paid_to_team time.
 async function buildSnapshotForLead(leadDoc) {
   if (!leadDoc) throw new Error("buildSnapshotForLead: leadDoc required");
+  var isExternalDeal = leadDoc.dealType === "external";
+  var externalToggleOn = isExternalDeal && !!leadDoc.externalSalesAgentEnabled;
+
   var primaryAgent = null;
   if (leadDoc.agentId) {
     try { primaryAgent = await User.findById(leadDoc.agentId).lean(); } catch(e){}
   }
-  if (!primaryAgent) throw new Error("buildSnapshotForLead: lead has no resolvable primary agent");
-
-  var isExternalDeal = leadDoc.dealType === "external";
+  // Phase R-13.1 — External+toggle ON deals legitimately have no Lead.agentId
+  // because the external sales agent fills the salesAgent slot. For Internal
+  // or External+toggle OFF, the primary agent is still required.
+  if (!primaryAgent && !externalToggleOn) {
+    throw new Error("buildSnapshotForLead: lead has no resolvable primary agent");
+  }
 
   // Phase R-13 — For External deals, the per-1000 chain (TL/manager/director/
   // owner) is NEVER paid. We null those slots at snapshot time (Q4 answer B).
@@ -2334,9 +2340,18 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
       ? leadIdOrDoc
       : await Lead.findById(leadIdOrDoc).lean();
     if (!leadDoc) return null;
-    if (!leadDoc.agentId) return null; // no agent => no snapshot possible
+    // Phase R-13.1 — External deals with "Sales Agent involved" toggle ON
+    // legitimately have a null Lead.agentId (the external sales agent fills
+    // the salesAgent slot). Bypass the agent-required check in that case;
+    // primaryAgentIdStr is derived from the external sales agent instead.
+    var extOnlyPrimary = leadDoc.dealType === "external"
+      && !!leadDoc.externalSalesAgentEnabled
+      && !!leadDoc.externalSalesAgentId;
+    if (!leadDoc.agentId && !extOnlyPrimary) return null;
 
-    var primaryAgentIdStr = String(leadDoc.agentId._id || leadDoc.agentId);
+    var primaryAgentIdStr = leadDoc.agentId
+      ? String(leadDoc.agentId._id || leadDoc.agentId)
+      : String(leadDoc.externalSalesAgentId._id || leadDoc.externalSalesAgentId);
 
     // Check for any existing commissions on this lead.
     var existing = await Commission.find({ leadId: leadDoc._id }).sort({ createdAt: -1 }).lean();
@@ -7453,6 +7468,23 @@ app.post("/api/leads", auth, async function(req, res) {
       }
       req.body.commissionRate   = crNumCreate;
       req.body.commissionAmount = __round2(budgetNumCreate * crNumCreate / 100);
+
+      // Phase R-13.1 — DoneDeal must have a recipient identifier. For
+      // External+toggle-ON, the external sales agent fills the salesAgent
+      // slot. Else (Internal, or External+toggle-OFF), a primary agentId
+      // is required. Without this guard, a DoneDeal lead with no recipient
+      // identifier silently bypasses ensureCommissionForLead and no
+      // Commission record gets created (see "amgad" incident).
+      var hasAgent = !!normalizedAgent;
+      var hasExtSales = String(req.body.dealType) === "external"
+        && !!req.body.externalSalesAgentEnabled
+        && !!req.body.externalSalesAgentId;
+      if (!hasAgent && !hasExtSales) {
+        return res.status(400).json({
+          error: "primary_sales_recipient_required",
+          message: "A DoneDeal must have either a primary Agent or an External 'Sales Agent involved' assignment so the commission can be created."
+        });
+      }
     } else {
       delete req.body.commissionRate;
       delete req.body.commissionAmount;
@@ -7495,7 +7527,11 @@ app.post("/api/leads", auth, async function(req, res) {
       externalSalesAgentManualAmount: (typeof req.body.externalSalesAgentManualAmount === "number") ? req.body.externalSalesAgentManualAmount : null,
       assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "New Lead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: req.body.notes || "", budget: req.body.budget || "", callbackTime: req.body.callbackTime || "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
       expiresAt:        new Date(Date.now() + 30*24*60*60*1000),
-      globalStatus:     "active",
+      // Phase R-13.1 — globalStatus must mirror the initialStatus, otherwise a
+      // POST creating a lead directly with status="DoneDeal" leaves
+      // globalStatus="active", which makes the lead eligible for auto-rotation
+      // (server.js:3534/4037 key on globalStatus === "donedeal"). Same for EOI.
+      globalStatus:     initialStatus === "DoneDeal" ? "donedeal" : (initialStatus === "EOI" ? "eoi" : "active"),
       manualWindowExpiresAt: queueLead ? new Date(Date.now() + windowMins*60000) : null,
     });
     console.log("SAVED phone2:", lead.phone2);
@@ -8460,6 +8496,26 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       }
       req.body.commissionRate   = crNumPut;
       req.body.commissionAmount = __round2Put(budgetForCalcPut * crNumPut / 100);
+
+      // Phase R-13.1 — DoneDeal must have a recipient identifier. Mirror of
+      // the POST guard so a PUT that transitions a lead into DoneDeal without
+      // an agentId AND without External+toggle-ON gets rejected loudly.
+      // Pulls agentId/external-toggle from body if present, else from oldLead.
+      var ldForRecipCheck = await Lead.findById(req.params.id).select("agentId dealType externalSalesAgentEnabled externalSalesAgentId").lean();
+      var effAgent = (req.body.agentId !== undefined)
+        ? normId(req.body.agentId)
+        : (ldForRecipCheck && ldForRecipCheck.agentId ? String(ldForRecipCheck.agentId._id || ldForRecipCheck.agentId) : "");
+      var effDealType = (req.body.dealType !== undefined) ? req.body.dealType : (ldForRecipCheck && ldForRecipCheck.dealType);
+      var effExtEnabled = (req.body.externalSalesAgentEnabled !== undefined) ? !!req.body.externalSalesAgentEnabled : !!(ldForRecipCheck && ldForRecipCheck.externalSalesAgentEnabled);
+      var effExtAgentId = (req.body.externalSalesAgentId !== undefined) ? req.body.externalSalesAgentId : (ldForRecipCheck && ldForRecipCheck.externalSalesAgentId);
+      var putHasAgent = !!effAgent;
+      var putHasExtSales = String(effDealType) === "external" && effExtEnabled && !!effExtAgentId;
+      if (!putHasAgent && !putHasExtSales) {
+        return res.status(400).json({
+          error: "primary_sales_recipient_required",
+          message: "A DoneDeal must have either a primary Agent or an External 'Sales Agent involved' assignment so the commission can be created."
+        });
+      }
     } else if (req.body.commissionRate !== undefined || req.body.commissionAmount !== undefined) {
       // Non-DoneDeal admin save with rate field present — coerce or drop.
       if (req.body.commissionRate === "" || req.body.commissionRate === null) {
@@ -8775,8 +8831,20 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // AND oldLead.status was not already DoneDeal. ensureCommissionForLead
     // is idempotent, but the explicit check skips wasted work on no-op edits.
     try {
-      if (req.body.status === "DoneDeal" && lead && lead.status === "DoneDeal" &&
-          oldLead && oldLead.status !== "DoneDeal") {
+      // Phase R-13.1 — commission backfill fallback. Standard trigger fires
+      // when the lead transitions into DoneDeal. The fallback also fires when
+      // the lead is ALREADY DoneDeal but has NO active commission (legacy
+      // leads stuck due to the prior agentId-null silent-fail at POST time;
+      // see "amgad" incident). ensureCommissionForLead is idempotent — it
+      // checks for an alreadyActive commission and bails early if one exists.
+      var dealTransition = req.body.status === "DoneDeal" && lead && lead.status === "DoneDeal" &&
+                           oldLead && oldLead.status !== "DoneDeal";
+      var needsBackfill = false;
+      if (!dealTransition && lead && lead.status === "DoneDeal") {
+        var activeComm = await Commission.findOne({ leadId: lead._id, status: "active" }).select("_id").lean();
+        if (!activeComm) needsBackfill = true;
+      }
+      if (dealTransition || needsBackfill) {
         await ensureCommissionForLead(lead, req.user);
       }
     } catch(e){ console.error("[commission hook put-leads]", e && e.message); }
@@ -16510,12 +16578,13 @@ async function computePayoutsForMonth(year, month) {
   // doc was hard-deleted still aggregate cleanly under their snapshot name.
   var byBroker = Object.create(null);
 
-  function ensureAgent(rec) {
-    if (!rec || !rec.userId) return null;
-    var key = String(rec.userId);
+  function ensureAgent(rec, key) {
+    // Phase R-13.1 — accepts an explicit key so name-only manual_add entries
+    // (no userId) get their own bucket under a synthetic "extra:<name>" key.
+    if (!key) return null;
     if (!byAgent[key]) {
       byAgent[key] = {
-        userId:    key,
+        userId:    rec.userId ? String(rec.userId) : null,
         userName:  rec.userName || "(unknown)",
         role:      rec.role || "sales",
         totalOwed: 0,
@@ -16525,15 +16594,21 @@ async function computePayoutsForMonth(year, month) {
     return byAgent[key];
   }
 
-  function paidToRecipient(payouts, userId) {
-    if (!Array.isArray(payouts) || !userId) return 0;
-    var key = String(userId);
+  function paidToRecipient(payouts, row) {
+    // Phase R-13.1 — match by userId when available, else by userName. The
+    // payouts schema requires recipientUserName but recipientUserId is
+    // optional, so name-only entries can still be paid.
+    if (!Array.isArray(payouts)) return 0;
+    var matchId = row.userId ? String(row.userId) : null;
+    var matchName = row.userName || "";
     var s = 0;
     for (var i = 0; i < payouts.length; i++) {
       var p = payouts[i];
-      if (p && p.recipientUserId && String(p.recipientUserId) === key) {
-        s += Number(p.amount || 0);
-      }
+      if (!p) continue;
+      var hit = false;
+      if (matchId && p.recipientUserId && String(p.recipientUserId) === matchId) hit = true;
+      else if (!matchId && p.recipientUserName === matchName) hit = true;
+      if (hit) s += Number(p.amount || 0);
     }
     return s;
   }
@@ -16541,13 +16616,15 @@ async function computePayoutsForMonth(year, month) {
   function pushDeal(row, doc, cycleNumberRef) {
     // row is an applyRecipientOverrides() entry. Drops removed slots upstream;
     // manual_zero rows already carry effectiveOwed=0 (filtered below).
-    if (!row || !row.userId) return;                  // userId-less rows (off-chain manual_add w/o user, deleted users) can't enter payout bucket
+    if (!row) return;
+    if (!row.userId && !row.userName) return;
     var owed = Number(row.effectiveOwed || 0);
     if (!(owed > 0)) return;
-    var paid = paidToRecipient(doc.payouts, row.userId);
+    var paid = paidToRecipient(doc.payouts, row);
     var net = owed - paid;
     if (!(net > 0)) return;
-    var bucket = ensureAgent({ userId: row.userId, userName: row.userName, role: row.role });
+    var bucketKey = row.userId ? String(row.userId) : ("extra:" + row.userName);
+    var bucket = ensureAgent({ userId: row.userId, userName: row.userName, role: row.role }, bucketKey);
     if (!bucket) return;
     var snap = doc.snapshot || {};
     bucket.totalOwed += net;
@@ -18628,13 +18705,24 @@ app.post("/api/commissions/:id/recipients", auth, salesAdminOnly, async function
     if (["sales","team_leader","manager","director"].indexOf(roleIn) < 0) {
       return res.status(400).json({ error: "role must be one of sales/team_leader/manager/director" });
     }
-    var userIdIn = body.userId && mongoose.Types.ObjectId.isValid(body.userId) ? new mongoose.Types.ObjectId(body.userId) : null;
+    // Phase R-13.1 — when userId is supplied, confirm the User exists and is
+    // active. Snapshot the User's name so a later rename doesn't change the
+    // commission's audit record. Without userId, fall back to the typed name.
+    var userIdIn = null;
+    var snapshotName = name;
+    if (body.userId && mongoose.Types.ObjectId.isValid(body.userId)) {
+      var uDoc = await User.findById(body.userId).select("name active").lean();
+      if (!uDoc) return res.status(400).json({ error: "User not found", code: "user_not_found" });
+      if (uDoc.active === false) return res.status(400).json({ error: "User is inactive", code: "user_inactive" });
+      userIdIn = new mongoose.Types.ObjectId(body.userId);
+      snapshotName = uDoc.name || name;
+    }
     if (!Array.isArray(c.recipientOverrides)) c.recipientOverrides = [];
     c.recipientOverrides.push({
       targetSlot:    "extra",
       source:        "manual_add",
       userId:        userIdIn,
-      name:          name,
+      name:          snapshotName,
       role:          roleIn,
       computedShare: Math.round(amount * 100) / 100,
       addedBy:       (req.user && req.user.name) || "",
