@@ -19576,6 +19576,85 @@ app.get("/api/commissions/payout-report", auth, salesAdminOnly, async function(r
   }
 });
 
+// TEMPORARY DIAGNOSTIC — to be removed once the user has verified what drives
+// the Payout Report month bucket. Read-only dump of one commission's raw
+// cycles[] / payouts[] / brokerPayouts[] arrays so we can compare payout
+// dates against cycle dates side-by-side. Admin-only.
+// Match is a case-insensitive contains on snapshot.customerName.
+//   GET /api/_diag/payout-trace?leadName=Yomna+Zakria
+//   GET /api/_diag/payout-trace?customer=Isola
+app.get("/api/_diag/payout-trace", auth, adminOnly, async function(req, res) {
+  try {
+    var name = String(req.query.leadName || req.query.customer || "").trim();
+    if (!name) return res.status(400).json({ error: "leadName or customer query param required" });
+    var safe = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    var docs = await Commission.find({
+      "snapshot.customerName": { $regex: safe, $options: "i" }
+    })
+      .select("leadId status snapshot cycles payouts externalSplit")
+      .lean();
+
+    var results = docs.map(function(doc){
+      return {
+        commissionId: String(doc._id),
+        leadId:       String(doc.leadId || ""),
+        customerName: (doc.snapshot && doc.snapshot.customerName) || "",
+        projectName:  (doc.snapshot && doc.snapshot.projectName)  || "",
+        dealDate:     (doc.snapshot && doc.snapshot.dealDate)     || "",
+        dealTotal:    Number((doc.snapshot && doc.snapshot.dealTotal) || 0),
+        status:       doc.status,
+        isExternal:   !!(doc.externalSplit && doc.externalSplit.isExternal),
+        cycles: (doc.cycles || []).map(function(c){
+          return {
+            _id:                  c._id ? String(c._id) : null,
+            cycleNumber:          c.cycleNumber,
+            state:                c.state,
+            claimSubmittedDate:   (c.claim_submitted   && c.claim_submitted.date)   || null,
+            invoiceSubmittedDate: (c.invoice_submitted && c.invoice_submitted.date) || null,
+            receivedDate:         (c.received          && c.received.date)          || null,
+            paidToTeamDate:       (c.paid_to_team      && c.paid_to_team.date)      || null,
+            claimUnitValue:       c.claimUnitValue,
+            commissionRate:       c.commissionRate,
+            claimAmount:          c.claimAmount,
+            receivedAmount:       c.receivedAmount,
+            closedAt:             c.closedAt
+          };
+        }),
+        payouts: (doc.payouts || []).map(function(p){
+          return {
+            _id:               p._id ? String(p._id) : null,
+            date:              p.date,
+            amount:            p.amount,
+            netPaid:           p.netPaid,
+            appliedToDebt:     p.appliedToDebt,
+            recipientUserName: p.recipientUserName,
+            recipientUserId:   p.recipientUserId ? String(p.recipientUserId) : null,
+            recipientRole:     p.recipientRole,
+            notes:             p.notes,
+            byUser:             p.byUser
+          };
+        }),
+        brokerPayouts: (doc.externalSplit && Array.isArray(doc.externalSplit.brokerPayouts))
+          ? doc.externalSplit.brokerPayouts.map(function(bp){
+              return {
+                _id:    bp._id ? String(bp._id) : null,
+                date:   bp.date,
+                amount: bp.amount,
+                notes:  bp.notes,
+                byUser: bp.byUser
+              };
+            })
+          : []
+      };
+    });
+
+    res.json({ query: name, matchCount: results.length, results: results });
+  } catch(e) {
+    console.error("[GET /api/_diag/payout-trace]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "diag_trace_failed" });
+  }
+});
+
 // ===== Phase R-5 annual summary + VAT payments =====
 // Annual summary aggregates ALL cycles (regardless of commission status)
 // whose claim_submitted.date falls in the selected year and which have
