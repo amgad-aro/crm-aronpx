@@ -12693,9 +12693,27 @@ var TeamPage = function(p) {
       },0);
       var mTarget=getEffectiveQTarget(mgr,p.users,viewQ);
       var mProg=mTarget>0?Math.min(100,Math.round(mRev/mTarget*100)):0;
+      // Server override — mirrors the MemberCard pattern at line 12540. The
+      // manager-bar header was left reading from `allDeals` (= p.leads slice)
+      // which post-bootstrap-shrink no longer contains the team's deals, so
+      // mRev would render 0.0M while the cards below show the correct number.
+      // memberStatsMap[muid] already exists because /api/team/member-stats
+      // returns one row per visible user including managers.
+      var serverMgr = memberStatsMap ? memberStatsMap[muid] : null;
+      if (serverMgr) {
+        mRev    = typeof serverMgr.qRev === "number" ? serverMgr.qRev : mRev;
+        mTarget = serverMgr.qTarget || mTarget;
+        mProg   = mTarget > 0 ? Math.min(100, Math.round(mRev / mTarget * 100)) : 0;
+      }
       var isOnline=mgr.lastSeen&&(Date.now()-new Date(mgr.lastSeen).getTime())<3*60*1000;
       var mgrInitials=(mgr.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
-      var mgrTotalLabel = (mRev/1000000).toFixed(1)+"M / "+(mTarget>0?(mTarget/1000000).toFixed(1)+"M":"—");
+      // Loading placeholder — same rule as the MemberCard. While the fetch
+      // is in flight AND mRev is still 0 from the shrunken fallback, show
+      // "…" instead of "0.0M". Target half always renders from p.users.qTargets
+      // (never shrunken) so its placeholder isn't needed.
+      var mgrBarPending = memberStatsMap === null;
+      var mgrRevPart = (mgrBarPending && mRev === 0) ? "…" : (mRev/1000000).toFixed(1)+"M";
+      var mgrTotalLabel = mgrRevPart + " / " + (mTarget>0?(mTarget/1000000).toFixed(1)+"M":"—");
       return <div key={muid} style={{ marginBottom:16 }}>
         {/* Manager group header — navy, redesigned */}
         <div onClick={function(){setExpandedManager(isExpanded?null:muid);}}
