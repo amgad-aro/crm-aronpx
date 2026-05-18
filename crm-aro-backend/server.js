@@ -19270,6 +19270,36 @@ async function computePayoutsForMonth(year, month) {
   var byAgent  = Object.create(null);
   var byBroker = Object.create(null);
 
+  // Resolve which cycle of a commission caused a payout to land in monthKey.
+  // Walks doc.cycles[] in order and returns the first cycle whose
+  // received.date OR paid_to_team.date falls in the target month. Accepts
+  // both ISO strings and Date objects (compares the YYYY-MM prefix). Returns
+  // "<n>/<total>" (e.g. "2/4", or "1/1" for single-cycle commissions), or
+  // null when no cycle date matches the month — FE renders that as "—".
+  function resolveCycleRef(cycles) {
+    if (!Array.isArray(cycles) || cycles.length === 0) return null;
+    var total = cycles.length;
+    function inTargetMonth(d) {
+      if (!d) return false;
+      if (typeof d === "string") return d.slice(0, 7) === monthKey;
+      if (d instanceof Date && !isNaN(d.getTime())) {
+        return d.toISOString().slice(0, 7) === monthKey;
+      }
+      return false;
+    }
+    for (var ci = 0; ci < cycles.length; ci++) {
+      var c = cycles[ci];
+      if (!c) continue;
+      var receivedDate   = c.received     && c.received.date;
+      var paidToTeamDate = c.paid_to_team && c.paid_to_team.date;
+      if (inTargetMonth(receivedDate) || inTargetMonth(paidToTeamDate)) {
+        var num = (c.cycleNumber != null) ? c.cycleNumber : (ci + 1);
+        return String(num) + "/" + String(total);
+      }
+    }
+    return null;
+  }
+
   function ensureAgent(rec, key) {
     if (!key) return null;
     if (!byAgent[key]) {
@@ -19335,8 +19365,7 @@ async function computePayoutsForMonth(year, month) {
         splitLabel:    snap.isSplitDeal ? "Split 50%" : "Full deal",
         role:          entry.role,
         paidThisMonth: entry.paidThisMonth,
-        // payouts schema has no per-payout cycleRef — column renders "—".
-        cycleRef:      null
+        cycleRef:      resolveCycleRef(doc.cycles)
       });
     });
 
@@ -19374,7 +19403,7 @@ async function computePayoutsForMonth(year, month) {
           dealDate:      snap.dealDate     || "",
           dealTotal:     Number(snap.dealTotal || 0),
           paidThisMonth: brokerInMonth,
-          cycleRef:      null
+          cycleRef:      resolveCycleRef(doc.cycles)
         });
       }
     }
