@@ -19396,6 +19396,19 @@ var KPIsPage = function(p) {
   var qProg = qTarget>0?Math.min(100,Math.round(qRev/qTarget*100)):0;
   var convRate = qLeadsCount>0?Math.round(qDealsCount/qLeadsCount*100):0;
 
+  // Loading placeholder. While qStats is still in flight AND the in-memory
+  // fallback also resolves to 0 (p.leads/p.activities not loaded yet), show
+  // an ellipsis instead of a literal 0 — the sales-role quarterly-stats fetch
+  // can take ~30s and a flash of "0" reads as bad data. Once qStats arrives
+  // (even with a real 0) the truthful value renders.
+  var pending = qStats === null;
+  var phLeads = (pending && qLeadsCount === 0) ? "…" : qLeadsCount;
+  var phDeals = (pending && qDealsCount === 0) ? "…" : qDealsCount;
+  var phCalls = (pending && qCallsCount === 0) ? "…" : qCallsCount;
+  var phRev1  = (pending && qRev === 0) ? "…" : (qRev/1000000).toFixed(1) + "M";
+  var phRev2  = (pending && qRev === 0) ? "…" : (qRev/1000000).toFixed(2) + "M";
+  var phConv  = (pending && qLeadsCount === 0) ? "…" : convRate + "%";
+
   var isOnlineNow = myUser.lastSeen&&(Date.now()-new Date(myUser.lastSeen).getTime())<3*60*1000;
 
   // Available years — current and past 2
@@ -19412,12 +19425,11 @@ var KPIsPage = function(p) {
   var kpiLastSeenStr = myUser.lastSeen ? ("Last seen: "+new Date(myUser.lastSeen).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" \u2014 "+timeAgo(myUser.lastSeen,p.t)) : "Never logged in";
   // Stat cells reflect the active Quarter+Year filter (was: all-time, which
   // diverged from the DealsPage Q-filtered total — see KPIs Q-filter bugfix).
-  var qRevM = (qRev/1000000).toFixed(1)+"M";
   var kpiMemberStats = [
-    { v: qLeadsCount, l: "Leads", isDeals:false },
-    { v: qDealsCount, l: "Deals", isDeals:true  },
-    { v: qRevM,       l: "Total", isDeals:false },
-    { v: qCallsCount, l: "Calls", isDeals:false }
+    { v: phLeads, l: "Leads", isDeals:false },
+    { v: phDeals, l: "Deals", isDeals:true  },
+    { v: phRev1,  l: "Total", isDeals:false },
+    { v: phCalls, l: "Calls", isDeals:false }
   ];
   return <div className="kpi-page-v2" style={{ padding:"18px 16px 40px" }}>
     {/* Inter font + the 8 gradient classes — mirrors Admin's Sales Team page. */}
@@ -19455,7 +19467,7 @@ var KPIsPage = function(p) {
             <div className={kpiGradClass} style={{ height:"100%", width:qProg+"%", borderRadius:2, transition:"width 0.6s" }}/>
           </div>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:12 }}>
-            <span style={{ fontSize:18, fontWeight:800, color:qRev>0?"#0f172a":"#94a3b8" }}>{(qRev/1000000).toFixed(2)}M</span>
+            <span style={{ fontSize:18, fontWeight:800, color:qRev>0?"#0f172a":"#94a3b8" }}>{phRev2}</span>
             <span style={{ fontSize:12, fontWeight:700, color:"#64748b" }}>{qProg}%</span>
           </div>
           <div style={{ height:1, background:"#e2e8f0", marginBottom:10, transform:"scaleY(0.5)" }}/>
@@ -19499,7 +19511,7 @@ var KPIsPage = function(p) {
         <div style={{ height:"100%", width:qProg+"%", borderRadius:5, background:qProg>=100?C.success:qProg>=50?C.accent:C.warning, transition:"width 0.6s" }}/>
       </div>
       <div style={{ display:"flex", justifyContent:"space-between" }}>
-        <span style={{ fontSize:13, color:C.success, fontWeight:700 }}>{(qRev/1000000).toFixed(2)}M EGP</span>
+        <span style={{ fontSize:13, color:C.success, fontWeight:700 }}>{phRev2} EGP</span>
         <span style={{ fontSize:13, fontWeight:700, color:qProg>=100?C.success:C.accent }}>{qProg}%</span>
       </div>
     </Card>
@@ -19507,10 +19519,10 @@ var KPIsPage = function(p) {
     {/* Q stats */}
     <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
       {[
-        {v:qDealsCount, l:"Deals", c:C.success, icon:"🏆"},
-        {v:qCallsCount, l:"Calls", c:C.info, icon:"📞"},
-        {v:qLeadsCount, l:"New Leads", c:C.accent, icon:"👤"},
-        {v:convRate+"%", l:"Conversion Rate", c:C.warning, icon:"📊"},
+        {v:phDeals, l:"Deals", c:C.success, icon:"🏆"},
+        {v:phCalls, l:"Calls", c:C.info, icon:"📞"},
+        {v:phLeads, l:"New Leads", c:C.accent, icon:"👤"},
+        {v:phConv,  l:"Conversion Rate", c:C.warning, icon:"📊"},
       ].map(function(s){return <Card key={s.l} style={{ flex:"1 1 120px", textAlign:"center", padding:"16px 12px" }}>
         <div style={{ fontSize:22, marginBottom:4 }}>{s.icon}</div>
         <div style={{ fontSize:22, fontWeight:800, color:s.c }}>{s.v}</div>
