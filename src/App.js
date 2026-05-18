@@ -1389,35 +1389,36 @@ var CallbackBell = function(p) {
     else { upcoming.push(l); cbIds.add(gid(l)); }
   });
 
-  // Urgency-first ordering. Delay/Now/Upcoming/All sort by callbackTime
-  // ASC so the row whose scheduled time is closest to "now from the
-  // past" (i.e. most overdue) sits at the top, then less overdue, then
-  // Now-window rows, then Upcoming rows in chronological order, with
-  // the furthest-future callback at the bottom. No Contact rows have no
-  // callbackTime, so they sort by lastActivityTime DESC (most recently
-  // abandoned first) — that's the urgency proxy for that tab.
-  var byCbAsc = function(a,b){
-    return new Date(a.callbackTime||0) - new Date(b.callbackTime||0);
-  };
-  var byLastActDesc = function(a,b){
-    return new Date(b.lastActivityTime||0) - new Date(a.lastActivityTime||0);
-  };
-  overdue.sort(byCbAsc);
-  nowItems.sort(byCbAsc);
-  upcoming.sort(byCbAsc);
-
   bellNoContact.forEach(function(l){
     if(l.callbackTime) return;
     if(!cbIds.has(gid(l))) noContact.push(l);
   });
-  noContact.sort(byLastActDesc);
 
-  // All tab: callback-bearing rows sorted callbackTime ASC (most
-  // overdue → closest upcoming → furthest future), then No Contact
-  // rows appended in their own lastActivityTime-DESC order at the end.
-  // Mixing No Contact into the cb-ASC stream would push every
-  // no-callback row to the very top (Date(0) < every real cbTime).
-  var allItems = overdue.concat(nowItems).concat(upcoming).sort(byCbAsc).concat(noContact);
+  // Single tab-aware sort. Delay/Now/Upcoming/All sort by callbackTime
+  // ASC (most overdue → closest upcoming → furthest future); rows with
+  // no callbackTime resolve to Infinity and fall to the end. No Contact
+  // sorts by lastActivityTime DESC (most recently active first) since
+  // those rows have no scheduled callback.
+  var sortForTab = function(items, activeTab){
+    var sorted = items.slice();
+    if (activeTab === "nocontact"){
+      sorted.sort(function(a,b){
+        var la = a.lastActivityTime ? new Date(a.lastActivityTime).getTime() : 0;
+        var lb = b.lastActivityTime ? new Date(b.lastActivityTime).getTime() : 0;
+        return lb - la;
+      });
+    } else {
+      sorted.sort(function(a,b){
+        var ta = a.callbackTime ? new Date(a.callbackTime).getTime() : Infinity;
+        var tb = b.callbackTime ? new Date(b.callbackTime).getTime() : Infinity;
+        return ta - tb;
+      });
+    }
+    return sorted;
+  };
+
+  // Unsorted superset for the All tab and the bell badge count.
+  var allItems = overdue.concat(nowItems).concat(upcoming).concat(noContact);
 
   var filtered;
   if(tab==="overdue") filtered = overdue;
@@ -1425,6 +1426,8 @@ var CallbackBell = function(p) {
   else if(tab==="upcoming") filtered = upcoming;
   else if(tab==="nocontact") filtered = noContact;
   else filtered = allItems;
+
+  filtered = sortForTab(filtered, tab);
 
   var visible = filtered.slice(0, limit);
   var totalCount = allItems.length;
