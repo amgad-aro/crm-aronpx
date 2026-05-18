@@ -12556,12 +12556,22 @@ var TeamPage = function(p) {
     var initials = (a.name||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();
     var grad = gradientForUid(uid);
     var roleLabel = a.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer"}[a.role]||"");
-    var qRevenueM = (qRevenue/1000000).toFixed(1)+"M";
+    // Loading placeholder. While /api/team/member-stats is in flight AND the
+    // in-memory fallback also resolves to 0 (p.leads / p.activities not loaded
+    // yet, or no matching rows in the bootstrap subset), show "…" instead of
+    // a literal 0. Mirrors the KPIsPage fix — member-stats does N×(3-5) queries
+    // serially and can take a few seconds on a full sales floor.
+    var pending = memberStatsMap === null;
+    var phLeads = (pending && qLeads.length === 0) ? "…" : qLeads.length;
+    var phDeals = (pending && qDeals.length === 0) ? "…" : qDeals.length;
+    var phCalls = (pending && qCalls === 0) ? "…" : qCalls;
+    var phRev1  = (pending && qRevenue === 0) ? "…" : (qRevenue/1000000).toFixed(1) + "M";
+    var phRev2  = (pending && qRevenue === 0) ? "…" : (qRevenue/1000000).toFixed(2) + "M";
     var stats = [
-      { v: qLeads.length,  l: "Leads", isDeals:false },
-      { v: qDeals.length,  l: "Deals", isDeals:true },
-      { v: qRevenueM,      l: "Total", isDeals:false },
-      { v: qCalls,         l: "Calls", isDeals:false }
+      { v: phLeads, l: "Leads", isDeals:false },
+      { v: phDeals, l: "Deals", isDeals:true },
+      { v: phRev1,  l: "Total", isDeals:false },
+      { v: phCalls, l: "Calls", isDeals:false }
     ];
     return <div key={uid} style={{ borderRadius:16, overflow:"hidden", background:"#fff", boxShadow:"0 2px 10px rgba(0,0,0,0.08)" }}>
       {/* Top — gradient hero */}
@@ -12603,7 +12613,7 @@ var TeamPage = function(p) {
           <div className={grad} style={{ height:"100%", width:qProg+"%", borderRadius:2, transition:"width 0.6s" }}/>
         </div>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:12 }}>
-          <span style={{ fontSize:18, fontWeight:800, color:qRevenue>0?"#0f172a":"#94a3b8" }}>{(qRevenue/1000000).toFixed(2)}M</span>
+          <span style={{ fontSize:18, fontWeight:800, color:qRevenue>0?"#0f172a":"#94a3b8" }}>{phRev2}</span>
           <span style={{ fontSize:12, fontWeight:700, color:"#64748b" }}>{qProg}%</span>
         </div>
         <div style={{ height:1, background:"#e2e8f0", marginBottom:10, transform:"scaleY(0.5)" }}/>
