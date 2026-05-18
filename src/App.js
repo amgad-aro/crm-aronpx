@@ -1165,15 +1165,23 @@ var Sidebar = function(p) {
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
-  // Fix C — prefer the server-reported total over the loaded slice count.
-  // Post-STEP-4-5 bootstrap shrink, p.leads is only the first paginated
-  // page (~100 rows); falling back to its length painted the badge with
-  // a growing number as the user scrolled. p.leadsTotal is set in
-  // loadData from /api/leads.total (the role-scoped count from the
-  // server) and is the user-facing "true" leads count.
-  var leadsCount = (typeof p.leadsTotal === "number" && p.leadsTotal > 0)
-    ? p.leadsTotal
-    : (Array.isArray(p.leads) ? p.leads.filter(function(l){return !l.archived;}).length : 0);
+  // Badge source priority:
+  //  1. p.sidebarLeadsTotal — strict current-owner count from /api/leads/counts
+  //     (uses buildLeadCurrentOwnerScopeQuery, server-side filter on
+  //     agentId/splitAgent2Id only — no historical assignments[]). This is
+  //     what a sales user expects "my leads" to mean.
+  //  2. p.leadsTotal — bootstrap /api/leads.total. Historical scope for sales
+  //     (matches assignments.agentId, so rotated-away leads are still
+  //     counted). Used while #1 is still in flight, and for any role where
+  //     the two scopes coincide.
+  //  3. p.leads filter — last-resort fallback before any fetch lands.
+  // typeof === "number" (not >0) so a legitimate 0 from /counts renders the
+  // hidden-badge state, not the historical fallback.
+  var leadsCount = (typeof p.sidebarLeadsTotal === "number")
+    ? p.sidebarLeadsTotal
+    : (typeof p.leadsTotal === "number" && p.leadsTotal > 0)
+      ? p.leadsTotal
+      : (Array.isArray(p.leads) ? p.leads.filter(function(l){return !l.archived;}).length : 0);
   var userName = p.cu.username==="amgad" ? "Amgad Mohamed" : p.cu.name;
   var userInitial = (userName||"?")[0];
   var userRole = p.cu.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer"}[p.cu.role]||"");
@@ -24096,6 +24104,12 @@ export default function CRMApp() {
   // deps so they refresh in real time without scanning the (soon-to-shrink)
   // p.leads / p.dailyRequests arrays in memory.
   var [cbBust,setCbBust]=useState(0);
+  // Sidebar Leads badge — strict current-owner scope. Separate from leadsTotal
+  // (which feeds LeadsPage pagination and keeps the historical scope so sales
+  // agents can still scroll rotated-away leads). Null until the first
+  // /api/leads/counts response lands; the Sidebar falls back to leadsTotal
+  // (then to p.leads filter) in the meantime.
+  var [sidebarLeadsTotal,setSidebarLeadsTotal]=useState(null);
   var [rotNotifs,setRotNotifs]=useState([]);
   // Off-site request bell — pending rows go to approvers, approved/rejected
   // rows go to the requester. Visibility is enforced server-side; this client
@@ -24301,6 +24315,33 @@ export default function CRMApp() {
       }
     }catch(e){}
   },[activitiesPage]);
+
+  // Sidebar Leads badge — fetch the strict-current-owner count from
+  // /api/leads/counts (uses buildLeadCurrentOwnerScopeQuery: agentId or
+  // splitAgent2Id matching the caller, no historical assignments[]). Fires
+  // on mount (when token resolves) and on every cbBust bump (WS lead_updated)
+  // so the badge stays live as leads rotate in/out of the caller's ownership.
+  // Distinct from the /api/leads bootstrap total, which keeps the historical
+  // scope used by LeadsPage pagination.
+  //
+  // Debounced 1000ms: cbBust bumps once per WS event, and a busy floor can
+  // fire 10-20 events in a few seconds. Without debounce the badge would
+  // issue a fetch per event; with debounce it issues one fetch 1s after the
+  // last event in any burst. The initial post-login fetch is also delayed
+  // by 1s — acceptable because the Sidebar falls back to leadsTotal (then
+  // p.leads.filter) until the strict-count lands.
+  useEffect(function(){
+    if (!token) return;
+    var cancelled = false;
+    var timer = setTimeout(function(){
+      if (cancelled) return;
+      apiFetch("/api/leads/counts","GET",null,token)
+        .then(function(r){ if (!cancelled && r && typeof r.total === "number") setSidebarLeadsTotal(r.total); })
+        .catch(function(){});
+    }, 1000);
+    return function(){ cancelled = true; clearTimeout(timer); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[token, cbBust]);
 
   // STEP 4-5 X3 — load-more helpers for LeadsPage / DRPage. Called by
   // TableVirtuoso's endReached when the user scrolls within ~256px of the
@@ -24870,7 +24911,7 @@ export default function CRMApp() {
   // refreshed the full 1000-lead list after each rotation, and produced the
   // 409 noise (server cron vs browser cron racing) tracked in MEMORY.md.
 
-  var handleLogout=function(){setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
+  var handleLogout=function(){setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);setSidebarLeadsTotal(null);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
 
   if(!currentUser) {
@@ -25003,7 +25044,7 @@ export default function CRMApp() {
       </div>
       <button onClick={function(){setShowPwaBanner(false);try{localStorage.setItem("crm_pwa_dismissed","1");}catch(e){}}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, color:"#fff", padding:"6px 12px", fontSize:12, cursor:"pointer", flexShrink:0 }}>Got it</button>
     </div>}
-    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads} leadsTotal={leadsTotal} attendanceSettings={attendanceSettings}/>
+    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads} leadsTotal={leadsTotal} sidebarLeadsTotal={sidebarLeadsTotal} attendanceSettings={attendanceSettings}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
       <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} token={token} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
