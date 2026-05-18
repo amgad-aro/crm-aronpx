@@ -9415,8 +9415,18 @@ var EOIPage = function(p) {
   var eoiScope = eoiAllData
     ? eoiAllData.map(function(l){return pLeadsMap[gid(l)]||l;}).filter(function(l){return l && !l.archived;})
     : p.leads.filter(function(l){return !l.archived && ((l.eoiStatus && l.eoiStatus.length>0) || l.status==="EOI" || (l.status==="Deal Cancelled" && wasEOI(l)));});
-  var eoiPending = eoiScope.filter(function(l){ return l.eoiStatus ? l.eoiStatus==="Pending" : (l.status==="EOI" && !l.eoiApproved); });
-  var eoiApprovedList = eoiScope.filter(function(l){ return l.eoiStatus ? l.eoiStatus==="Approved" : (l.status==="EOI" && l.eoiApproved); });
+  // Defensive guard — once a lead has been converted to a Done Deal it must
+  // not appear in EOI Pending/Approved tabs, regardless of any stale
+  // eoiStatus value. Today the conversion handlers (POST /api/leads/:id/
+  // eoi-to-deal and the generic PUT side-door) both clear eoiStatus to "",
+  // but legacy converts from before that clear was added still carry
+  // eoiStatus="Approved", and any future regression in those handlers would
+  // re-leak silently. Cancelled tab is intentionally exempt — its own
+  // predicate already rejects DoneDeal docs (matches only EOI Cancelled /
+  // Deal Cancelled status values).
+  var isConvertedDeal = function(l){ return !!(l && (l.status==="DoneDeal" || l.globalStatus==="donedeal")); };
+  var eoiPending = eoiScope.filter(function(l){ if(isConvertedDeal(l)) return false; return l.eoiStatus ? l.eoiStatus==="Pending" : (l.status==="EOI" && !l.eoiApproved); });
+  var eoiApprovedList = eoiScope.filter(function(l){ if(isConvertedDeal(l)) return false; return l.eoiStatus ? l.eoiStatus==="Approved" : (l.status==="EOI" && l.eoiApproved); });
   var eoiCancelled = eoiScope.filter(function(l){ return l.eoiStatus==="EOI Cancelled" || l.eoiStatus==="Deal Cancelled" || l.status==="Deal Cancelled"; });
   var eoiLeads = eoiTab==="pending" ? eoiPending : eoiTab==="approved" ? eoiApprovedList : eoiCancelled;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};

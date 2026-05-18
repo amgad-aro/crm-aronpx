@@ -8171,6 +8171,22 @@ app.get("/api/eois", auth, async function(req, res) {
     }
 
     var ands = [scope, { archived: { $ne: true } }, eoiScope];
+    // Defensive guard — mirrors the FE filter at App.js EOIPage L9418-L9419.
+    // A lead that has been converted to a Done Deal (status=DoneDeal or
+    // globalStatus=donedeal) must not surface on the EOI page regardless of
+    // any stale eoiStatus value. Today the conversion handlers (POST
+    // /api/leads/:id/eoi-to-deal and the generic PUT side-door) both clear
+    // eoiStatus to "", but legacy converts from before that clear was added
+    // still carry eoiStatus="Approved" and would leak into the approved tab.
+    // Cancelled is intentionally exempt — its tabFilter already rejects
+    // DoneDeal docs (matches only eoiStatus IN {EOI Cancelled, Deal Cancelled}
+    // or top-level status = Deal Cancelled).
+    // Note: reports/aggregates at server.js L16129, L16373, L17125, L18895
+    // also key on eoiStatus="Approved" and have the same gap — follow-up
+    // audit needed, not in this commit.
+    if (status !== "cancelled") {
+      ands.push({ $nor: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] });
+    }
     if (tabFilter) ands.push(tabFilter);
     var q = { $and: ands };
 
