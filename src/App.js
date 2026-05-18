@@ -22436,21 +22436,11 @@ var CommissionsPage = function(p) {
           });
         });
       });
+      var dealCount = data.dealCount || 0;
       return <>
-        <div style={{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" }}>
-          <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
-            <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Total due (EGP)</div>
-            <div style={{ fontSize:18, fontWeight:700, color:"#DC2626" }}>{fmtMoney(data.totalDue || 0)}</div>
-          </div>
-          <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
-            <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Recipients</div>
-            <div style={{ fontSize:18, fontWeight:700, color:C.text }}>{data.recipientCount || 0}</div>
-          </div>
-          <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
-            <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Deals</div>
-            <div style={{ fontSize:18, fontWeight:700, color:C.text }}>{data.dealCount || 0}</div>
-          </div>
-        </div>
+        {dealCount > 0 && <div style={{ marginBottom:14, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
+          <div style={{ fontSize:14, fontWeight:700, color:"#DC2626" }}>{dealCount + " deal" + (dealCount === 1 ? "" : "s") + " due for payment"}</div>
+        </div>}
 
         {dueLoading && rowsFlat.length === 0 && <div style={{
           padding:"30px 16px", textAlign:"center", color:C.textLight,
