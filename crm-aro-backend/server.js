@@ -19380,6 +19380,80 @@ async function computePayoutsForMonth(year, month) {
     }
   }
 
+  // Collapse-and-canonicalise pass — fixes the "one person, two rows" case
+  // that appears when a user has multiple payouts in the month with mixed
+  // recipientUserId / recipientUserName provenance, OR when the stored
+  // recipientRole differs across payouts (Yosra Sharaf incident — paid once
+  // as team_leader, again as manager). After this block:
+  //   - every bucket whose name matches a real User is keyed on that User's
+  //     _id (any "name:<...>" bucket gets merged into the userId bucket if
+  //     one exists, or reparented onto the userId key if it doesn't).
+  //   - every userId-keyed bucket's `role` is overwritten with the User's
+  //     CURRENT role from the Users collection. This means a person who
+  //     changed roles between two payouts surfaces with their present role,
+  //     not whatever was stamped on the first payout we saw.
+  // One Mongo round-trip covers both: $or fetches users matching ANY of the
+  // collected ids OR names. Failures are logged and tolerated — the existing
+  // bucket data still renders.
+  try {
+    var userIdsForLookup = new Set();
+    var userNamesForLookup = new Set();
+    Object.keys(byAgent).forEach(function(k){
+      var b = byAgent[k];
+      if (b.userId) userIdsForLookup.add(b.userId);
+      else if (b.userName) userNamesForLookup.add(b.userName);
+    });
+    if (userIdsForLookup.size > 0 || userNamesForLookup.size > 0) {
+      var idOids = Array.from(userIdsForLookup)
+        .filter(function(s){ return mongoose.Types.ObjectId.isValid(s); })
+        .map(function(s){ return new mongoose.Types.ObjectId(s); });
+      var nameList = Array.from(userNamesForLookup);
+      var users = await User.find({
+        $or: [
+          { _id:  { $in: idOids } },
+          { name: { $in: nameList } }
+        ]
+      }).select("_id name role").lean();
+      var userByName = {};
+      var userById   = {};
+      users.forEach(function(u){
+        if (u.name) userByName[u.name] = u;
+        userById[String(u._id)] = u;
+      });
+      // Pass 1: name-keyed buckets → fold into userId-keyed buckets when the
+      // name matches a real User. Carries totalPaid + deals over so nothing
+      // is lost.
+      Object.keys(byAgent).forEach(function(k){
+        if (k.indexOf("name:") !== 0) return;
+        var bucket = byAgent[k];
+        var u = userByName[bucket.userName];
+        if (!u) return;
+        var canonical = String(u._id);
+        if (byAgent[canonical]) {
+          byAgent[canonical].totalPaid += bucket.totalPaid;
+          byAgent[canonical].deals = byAgent[canonical].deals.concat(bucket.deals);
+        } else {
+          bucket.userId = canonical;
+          byAgent[canonical] = bucket;
+        }
+        delete byAgent[k];
+      });
+      // Pass 2: every userId-keyed bucket gets its `role` replaced with the
+      // current role from Users. Buckets whose userId isn't resolvable (e.g.
+      // a manual_add recipient with a fabricated id, or a deleted user) keep
+      // their stored role as a graceful fallback.
+      Object.keys(byAgent).forEach(function(k){
+        var bucket = byAgent[k];
+        if (!bucket.userId) return;
+        var u = userById[bucket.userId];
+        if (u && u.role) bucket.role = u.role;
+      });
+    }
+  } catch(roleLookupErr) {
+    console.error("[computePayoutsForMonth role-canonicalise]",
+                  roleLookupErr && roleLookupErr.message ? roleLookupErr.message : roleLookupErr);
+  }
+
   // Sort recipients by totalPaid desc; within each, deals by dealDate desc.
   // type:"user"/"broker" lets the FE branch on row shape (violet badge +
   // hidden split column for brokers) without sniffing for brokerId.
