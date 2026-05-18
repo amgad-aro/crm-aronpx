@@ -20357,6 +20357,133 @@ app.get("/api/diagnose/commissions-for-lead/:leadId", auth, strictAdminOnly, asy
   }
 });
 
+// ===========================================================================
+// GET /api/_diag/commission-dupes
+// ===========================================================================
+// TEMPORARY diagnostic endpoint — duplicate-commission investigation
+// (mona ali mohamed bug, 2026-05-18). Returns the same three sections as
+// crm-aro-backend/diagnose-commission-dupes.js, but server-side so admins
+// can run it from a network that can't reach Atlas directly.
+//
+// READ-ONLY. No writes, no aggregations that touch data. Only $group / $match
+// / $lookup / $project / $sort, plus a single Lead.findOne + Commission.find
+// for the mona block.
+//
+// strictAdminOnly: role === "admin" only (excludes sales_admin/manager/TL).
+// Every hit logs the caller for audit; the route should be deleted in a
+// follow-up commit once the investigation closes.
+// ===========================================================================
+app.get("/api/_diag/commission-dupes", auth, strictAdminOnly, async function(req, res) {
+  try {
+    console.log("[diag:commission-dupes] uid=" + req.user.id +
+                " name=" + (req.user.name || "") +
+                " role=" + req.user.role +
+                " ip=" + (req.ip || "") +
+                " at=" + new Date().toISOString());
+
+    // -------- Section 1: mona ali mohamed --------
+    var mona = await Lead.findOne(
+      { name: { $regex: /^mona\s+ali\s+mohamed$/i } },
+      { _id: 1, name: 1, status: 1, globalStatus: 1, dealDate: 1, dealStatus: 1,
+        preDealStatus: 1, agentId: 1, updatedAt: 1, createdAt: 1 }
+    ).lean();
+    var monaCommissions = [];
+    if (mona) {
+      monaCommissions = await Commission.find(
+        { leadId: mona._id },
+        {
+          _id: 1, leadId: 1, status: 1, createdAt: 1, updatedAt: 1,
+          cancelledAt: 1, cancelReason: 1,
+          "snapshot.customerName": 1, "snapshot.dealDate": 1, "snapshot.dealTotal": 1,
+          "snapshot.salesAgent.userId": 1, "snapshot.salesAgent.userName": 1,
+          cycles: 1
+        }
+      ).sort({ createdAt: 1 }).lean();
+    }
+
+    // -------- Section 2: systemic scan --------
+    var allDupes = await Commission.aggregate([
+      { $group: {
+          _id: "$leadId",
+          count:      { $sum: 1 },
+          statuses:   { $push: "$status" },
+          ids:        { $push: "$_id" },
+          dealDates:  { $push: "$snapshot.dealDate" },
+          createdAts: { $push: "$createdAt" },
+          agentIds:   { $push: "$snapshot.salesAgent.userId" }
+      }},
+      { $match: { count: { $gt: 1 } } },
+      { $lookup: {
+          from: "leads",
+          localField: "_id",
+          foreignField: "_id",
+          as: "lead"
+      }},
+      { $project: {
+          _id: 0,
+          leadId: "$_id",
+          count: 1,
+          statuses: 1,
+          ids: 1,
+          dealDates: 1,
+          createdAts: 1,
+          agentIds: 1,
+          leadName:   { $arrayElemAt: ["$lead.name", 0] },
+          leadStatus: { $arrayElemAt: ["$lead.status", 0] }
+      }},
+      { $sort: { count: -1 } }
+    ]);
+
+    // -------- Section 3: dangerous combos (≥ 2 non-cancelled commissions) --------
+    var dangerous = allDupes.filter(function(d){
+      var nonCancelled = (d.statuses || []).filter(function(s){ return s !== "cancelled"; });
+      return nonCancelled.length >= 2;
+    }).map(function(d){
+      var nonCancStatuses = [];
+      var nonCancIds = [];
+      var nonCancDealDates = [];
+      var nonCancCreatedAts = [];
+      for (var k = 0; k < (d.ids || []).length; k++) {
+        if (d.statuses[k] !== "cancelled") {
+          nonCancStatuses.push(d.statuses[k]);
+          nonCancIds.push(d.ids[k]);
+          nonCancDealDates.push(d.dealDates[k]);
+          nonCancCreatedAts.push(d.createdAts[k]);
+        }
+      }
+      return {
+        leadId: d.leadId,
+        leadName: d.leadName,
+        leadStatus: d.leadStatus,
+        nonCancelledCount: nonCancStatuses.length,
+        statuses: nonCancStatuses,
+        ids: nonCancIds,
+        dealDates: nonCancDealDates,
+        createdAts: nonCancCreatedAts
+      };
+    });
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      mona: mona ? {
+        lead: mona,
+        commissions: monaCommissions
+      } : { lead: null, commissions: [] },
+      allDupes: {
+        totalLeads: allDupes.length,
+        rows: allDupes
+      },
+      dangerous: {
+        totalLeads: dangerous.length,
+        rows: dangerous
+      }
+    });
+  } catch(e) {
+    console.error("[GET /api/_diag/commission-dupes]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "diag_failed" });
+  }
+});
+
 // POST /api/admin/run-backfill?type=zombies|missing — HTTP trigger for the
 // one-shot backfills. Same implementation as backfill-{zombies,missing}.js
 // (shared functions in this file). Used when Railway shell access is gone
