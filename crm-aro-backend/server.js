@@ -12800,49 +12800,61 @@ app.get("/api/team/member-stats", auth, async function(req, res) {
     var memberById = {};
     members.forEach(function(u){ memberById[String(u._id)] = u; });
 
-    var results = [];
-    for (var i = 0; i < members.length; i++) {
-      var u = members[i];
+    // Phase X3 perf — parallelize per-member work. Promise.all over members
+    // so every card's queries fly concurrently; inside each member the three
+    // count queries (qLeads / dealRows / qCalls) have no inter-dependencies
+    // so they Promise.all too. For manager/TL cards the two User.find lookups
+    // (subs + teamForTarget) feed agentOids/qTarget and must complete before
+    // the count queries can issue — but the two User.finds run in parallel
+    // with each other. Net serial chain per member drops from ~5 round-trips
+    // to 1 (sales) or 2 (manager/TL).
+    var results = await Promise.all(members.map(async function(u) {
       var uid = u._id;
       var isManagerCard = u.role === "manager" || u.role === "team_leader";
       var agentOids = [uid];
-      if (isManagerCard) {
-        var subs = await User.find({ active: { $ne: false }, role: { $in: ["sales", "team_leader"] }, reportsTo: uid }).select("_id").lean();
-        subs.forEach(function(s){ agentOids.push(s._id); });
-      }
       var qTarget = 0;
       if (isManagerCard) {
-        var teamForTarget = await User.find({ active: { $ne: false }, role: { $in: ["sales", "team_leader"] }, reportsTo: uid }).select("qTargets").lean();
+        var [subs, teamForTarget] = await Promise.all([
+          User.find({ active: { $ne: false }, role: { $in: ["sales", "team_leader"] }, reportsTo: uid }).select("_id").lean(),
+          User.find({ active: { $ne: false }, role: { $in: ["sales", "team_leader"] }, reportsTo: uid }).select("qTargets").lean()
+        ]);
+        subs.forEach(function(s){ agentOids.push(s._id); });
         qTarget = teamForTarget.reduce(function(s,m){ return s + (readQTargetServer(m, year, quarter) || 0); }, 0);
         if (!qTarget) qTarget = readQTargetServer(u, year, quarter) || 0;
       } else {
         qTarget = readQTargetServer(u, year, quarter) || 0;
       }
 
-      var qLeads = await Lead.countDocuments({
-        archived: { $ne: true },
-        $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }],
-        createdAt: { $gte: qStart, $lt: qEnd },
-        source: { $ne: "Daily Request" }
-      });
-
-      var dealRows = await Lead.aggregate([
-        { $match: {
+      var [qLeads, dealRows, qCalls] = await Promise.all([
+        Lead.countDocuments({
           archived: { $ne: true },
-          $and: [
-            { $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }] },
-            { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] }
-          ]
-        }},
-        { $addFields: { _effDate: { $let: {
-          vars: { d1: { $convert: { input: "$dealDate", to: "date", onError: null, onNull: null } } },
-          in:   { $ifNull: ["$$d1", { $ifNull: [
-            { $convert: { input: "$eoiDate", to: "date", onError: null, onNull: null } },
-            { $ifNull: ["$updatedAt", "$createdAt"] }
-          ]}]}
-        }}}},
-        { $match: { _effDate: { $gte: qStart, $lt: qEnd } }},
-        { $project: { budget: 1, projectWeight: 1, project: 1, agentId: 1, splitAgent2Id: 1 } }
+          $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }],
+          createdAt: { $gte: qStart, $lt: qEnd },
+          source: { $ne: "Daily Request" }
+        }),
+        Lead.aggregate([
+          { $match: {
+            archived: { $ne: true },
+            $and: [
+              { $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }] },
+              { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] }
+            ]
+          }},
+          { $addFields: { _effDate: { $let: {
+            vars: { d1: { $convert: { input: "$dealDate", to: "date", onError: null, onNull: null } } },
+            in:   { $ifNull: ["$$d1", { $ifNull: [
+              { $convert: { input: "$eoiDate", to: "date", onError: null, onNull: null } },
+              { $ifNull: ["$updatedAt", "$createdAt"] }
+            ]}]}
+          }}}},
+          { $match: { _effDate: { $gte: qStart, $lt: qEnd } }},
+          { $project: { budget: 1, projectWeight: 1, project: 1, agentId: 1, splitAgent2Id: 1 } }
+        ]),
+        Activity.countDocuments({
+          userId: { $in: agentOids },
+          type: "call",
+          createdAt: { $gte: qStart, $lt: qEnd }
+        })
       ]);
 
       var agentOidSet = new Set(agentOids.map(function(o){ return String(o); }));
@@ -12864,15 +12876,9 @@ app.get("/api/team/member-stats", auth, async function(req, res) {
         qRev += bg * w * splitMult;
       }
 
-      var qCalls = await Activity.countDocuments({
-        userId: { $in: agentOids },
-        type: "call",
-        createdAt: { $gte: qStart, $lt: qEnd }
-      });
-
       var qProg = qTarget > 0 ? Math.min(100, Math.round((qRev / qTarget) * 100)) : 0;
 
-      results.push({
+      return {
         uid: String(uid),
         name: u.name || "",
         role: u.role,
@@ -12884,8 +12890,8 @@ app.get("/api/team/member-stats", auth, async function(req, res) {
         qCalls: qCalls,
         qRev: qRev,
         qProg: qProg
-      });
-    }
+      };
+    }));
 
     res.json({ year: year, quarter: quarter, members: results });
   } catch (e) {
