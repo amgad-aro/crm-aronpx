@@ -21234,7 +21234,11 @@ var CommissionsPage = function(p) {
   // Phase R-9 — cashFlow state removed; the new Recipients breakdown computes
   // paid totals straight from c.payouts, so the global cash-flow endpoint is no
   // longer needed for card rendering.
-  var [commissionNotifs, setCommissionNotifs] = useState([]);   // Phase R-4: in-page banner items
+  // Due Payouts tab + day-10-to-15 red banner — admin/sales_admin only.
+  // Refetches on reloadTick so any in-tab mutation (payout recorded, cycle
+  // advanced) refreshes the list without a full page reload.
+  var [duePayouts, setDuePayouts] = useState(null);
+  var [dueLoading, setDueLoading] = useState(false);
   var [savingFlag, setSavingFlag] = useState(false);
   var [toast, setToast] = useState(null);                       // {kind, msg}
 
@@ -21389,23 +21393,19 @@ var CommissionsPage = function(p) {
     setAnnualYear(avail[0]);
   }, [activeTab, annualYear, stats]);
 
-  // Phase R-4: commission notifications banner — fetch on mount + on every
-  // websocket notification_updated event (server broadcasts this on create,
-  // dismiss, cancel cascade, and the cron sweeper).
+  // Due Payouts fetch — runs once on mount + on every reloadTick (mutations
+  // bump that counter). Gated to admin/sales_admin so the endpoint isn't
+  // hit by other roles. Drives both the Due Payouts tab table and the red
+  // banner at the top of the page.
   useEffect(function(){
+    if (!p.cu || (p.cu.role !== "admin" && p.cu.role !== "sales_admin")) return;
     var cancelled = false;
-    var load = function(){
-      apiFetch("/api/notifications/commission", "GET", null, p.token)
-        .then(function(d){ if (!cancelled && Array.isArray(d)) setCommissionNotifs(d); })
-        .catch(function(){});
-    };
-    load();
-    window.addEventListener("crm:notification_updated", load);
-    return function(){
-      cancelled = true;
-      window.removeEventListener("crm:notification_updated", load);
-    };
-  }, [p.token]);
+    setDueLoading(true);
+    apiFetch("/api/commissions/due-payouts", "GET", null, p.token)
+      .then(function(d){ if (!cancelled) { setDuePayouts(d || null); setDueLoading(false); } })
+      .catch(function(){ if (!cancelled) { setDuePayouts(null); setDueLoading(false); } });
+    return function(){ cancelled = true; };
+  }, [p.cu, p.token, reloadTick]);
 
   // Role-gate AFTER hooks.
   if (!p.cu || (p.cu.role !== "admin" && p.cu.role !== "sales_admin")) {
@@ -22247,11 +22247,31 @@ var CommissionsPage = function(p) {
       <h1 style={{ margin:0, fontSize:22, fontWeight:700, color:C.text }}>Commissions</h1>
     </div>
 
+    {/* Due Payouts banner — shows on Cairo days 10-15 when the latest
+        /api/commissions/due-payouts response carries dealCount > 0. Admin
+        and sales_admin only (matches the endpoint gate). Clicking jumps
+        to the Due Payouts tab. */}
+    {(function(){
+      if (!p.cu) return null;
+      if (p.cu.role !== "admin" && p.cu.role !== "sales_admin") return null;
+      var nowCairo = new Date(Date.now() + 3 * 3600 * 1000);
+      var day = nowCairo.getUTCDate();
+      if (day < 10 || day > 15) return null;
+      var deals = (duePayouts && duePayouts.dealCount) || 0;
+      if (!(deals > 0)) return null;
+      return <div onClick={function(){ setActiveTab("duePayouts"); }}
+        style={{ background:"#DC2626", color:"#fff", padding:"12px 16px", borderRadius:10, marginBottom:14, cursor:"pointer", fontSize:13, fontWeight:600, display:"flex", alignItems:"center", gap:10 }}>
+        <AlertCircle size={18} style={{ flexShrink:0 }}/>
+        <span style={{ flex:1 }}>{"في " + deals + " deals مستحقة الدفع — اضغط لتسجيل المدفوعات"}</span>
+      </div>;
+    })()}
+
     <div style={{ borderBottom:"1px solid #E8ECF1", marginBottom:14, display:"flex" }}>
       <TabBtn id="deals"      label="Claims"/>
       <TabBtn id="calculator" label="Calculator"/>
-      {p.cu && p.cu.role === "admin" && <TabBtn id="annual" label="Annual Summary"/>}
+      <TabBtn id="duePayouts" label="Due Payouts"/>
       <TabBtn id="payout"     label="Payout Report"/>
+      {p.cu && p.cu.role === "admin" && <TabBtn id="annual" label="Annual Summary"/>}
     </div>
 
     {activeTab === "deals" && <>
@@ -22260,67 +22280,6 @@ var CommissionsPage = function(p) {
       <StatCard label="Active Deals"          value={(stats && stats.dealsCount) != null ? stats.dealsCount : "—"} icon={Briefcase} c={C.info}/>
       <StatCard label="Active Cycles"         value={(stats && stats.activeCycles) != null ? stats.activeCycles : "—"} icon={Activity} c={C.accent}/>
     </div>
-
-    {/* Phase R-4: commission notifications banner. Only the unseen rows render
-        (the dismiss button adds the user to seenBy on the server). One card
-        per notification, severity color by type. */}
-    {(function(){
-      var unseen = (commissionNotifs || []).filter(function(n){ return !n.seen; });
-      if (unseen.length === 0) return null;
-      var style = function(type){
-        if (type === "commission_cancellation_impact") return { bg:"#FEF2F2", border:"#FCA5A5", fg:"#B91C1C", chip:"#FEE2E2" };
-        // Phase R-7 — payout reminders use a green/money palette so they're
-        // visually distinct from the amber "missing stage" alerts.
-        if (type === "commission_payout_reminder") return { bg:"#F0FDF4", border:"#86EFAC", fg:"#15803D", chip:"#DCFCE7" };
-        // commission_stage_missing + any future type → amber
-        return { bg:"#FFFBEB", border:"#FCD34D", fg:"#B45309", chip:"#FEF3C7" };
-      };
-      var dismiss = async function(id){
-        try {
-          await apiFetch("/api/notifications/" + id + "/dismiss", "POST", {}, p.token);
-          setCommissionNotifs(function(prev){ return prev.map(function(n){ return String(n._id) === String(id) ? Object.assign({}, n, { seen: true }) : n; }); });
-        } catch(e){
-          setToast({ kind:"err", msg:"Dismiss failed" });
-        }
-      };
-      var goToDeal = function(n){
-        if (!n.leadId) return;
-        if (p.navigateToCommission) { p.navigateToCommission(n.leadId); return; }
-        // Fallback within the same page: expand the matching commission card.
-        var match = (rows || []).find(function(c){ return String(c.leadId) === String(n.leadId); });
-        if (match) {
-          setExpandedId(String(match._id));
-          try { setTimeout(function(){ var el = document.getElementById("commission-card-" + String(match._id)); if (el && el.scrollIntoView) el.scrollIntoView({ behavior:"smooth", block:"center" }); }, 50); } catch(_e){}
-        }
-      };
-      // Phase R-7 — for commission_payout_reminder: jump to Payout Report tab.
-      // The notification carries fromName="<userId>:<YYYY-MM>"; we parse the
-      // month suffix and pre-select it so the admin lands on the right view.
-      var goToPayoutReport = function(n){
-        var parts = String(n.fromName || "").split(":");
-        if (parts.length === 2 && /^\d{4}-\d{2}$/.test(parts[1])) {
-          setPayoutMonth(parts[1]);
-        }
-        setActiveTab("payout");
-      };
-      return <div style={{ marginBottom:14, display:"flex", flexDirection:"column", gap:8 }}>
-        {unseen.map(function(n){
-          var s = style(n.type);
-          var isPayout = n.type === "commission_payout_reminder";
-          return <div key={String(n._id)} style={{ background:s.bg, border:"1px solid "+s.border, color:s.fg, padding:"10px 14px", borderRadius:10, display:"flex", alignItems:"center", gap:10, fontSize:13 }}>
-            <span style={{ fontSize:18, lineHeight:1 }}>{isPayout ? "💸" : "💰"}</span>
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontWeight:700 }}>{isPayout ? ("Payout reminder · " + (n.leadName || "Agent")) : (n.leadName || "Commission")}</div>
-              <div style={{ fontSize:12, marginTop:2 }}>{n.reason || ""}</div>
-              <div style={{ fontSize:10, marginTop:2, opacity:0.75 }}>{timeAgo(n.createdAt, p.t)}</div>
-            </div>
-            {isPayout && <button onClick={function(){ goToPayoutReport(n); }} style={{ padding:"4px 10px", borderRadius:6, border:"1px solid "+s.border, background:s.chip, color:s.fg, fontSize:11, fontWeight:600, cursor:"pointer" }}>View payout report</button>}
-            {!isPayout && n.leadId && <button onClick={function(){ goToDeal(n); }} style={{ padding:"4px 10px", borderRadius:6, border:"1px solid "+s.border, background:s.chip, color:s.fg, fontSize:11, fontWeight:600, cursor:"pointer" }}>Go to deal</button>}
-            <button onClick={function(){ dismiss(n._id); }} title="Dismiss" style={{ padding:"4px 8px", borderRadius:6, border:"1px solid "+s.border, background:"#fff", color:s.fg, fontSize:11, fontWeight:600, cursor:"pointer" }}>✕</button>
-          </div>;
-        })}
-      </div>;
-    })()}
 
     {/* Imminent alert banner */}
     {imminentCount > 0 && <div style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", color:"#B91C1C", padding:"10px 14px", borderRadius:10, marginBottom:14, display:"flex", alignItems:"center", gap:8, fontSize:13, fontWeight:600 }}>
@@ -22452,6 +22411,85 @@ var CommissionsPage = function(p) {
           <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #CBD5E1", color:C.success, fontWeight:700 }}><span>Net Due</span><span>{fmtMoney2(calcNetDue)}</span></div>
         </div>
       </div>;
+    })()}
+
+    {activeTab === "duePayouts" && (function(){
+      // Due Payouts — cycles in `received` state with team payouts not yet
+      // fully settled. Data is from /api/commissions/due-payouts; flatten
+      // items × recipients into one row per (cycle, recipient) so the table
+      // reads as a punch list of individual payments to make.
+      var data  = duePayouts || { totalDue:0, recipientCount:0, dealCount:0, items:[] };
+      var items = Array.isArray(data.items) ? data.items : [];
+      var rowsFlat = [];
+      items.forEach(function(it){
+        (it.recipients || []).forEach(function(r){
+          rowsFlat.push({
+            userName:     r.userName,
+            role:         r.role,
+            leadName:     it.leadName,
+            projectName:  it.projectName,
+            receivedDate: it.receivedDate,
+            amountDue:    r.amountDue,
+            commissionId: it.commissionId,
+            leadId:       it.leadId,
+            cycleNumber:  it.cycleNumber
+          });
+        });
+      });
+      return <>
+        <div style={{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" }}>
+          <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Total due (EGP)</div>
+            <div style={{ fontSize:18, fontWeight:700, color:"#DC2626" }}>{fmtMoney(data.totalDue || 0)}</div>
+          </div>
+          <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Recipients</div>
+            <div style={{ fontSize:18, fontWeight:700, color:C.text }}>{data.recipientCount || 0}</div>
+          </div>
+          <div style={{ flex:1, minWidth:160, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>Deals</div>
+            <div style={{ fontSize:18, fontWeight:700, color:C.text }}>{data.dealCount || 0}</div>
+          </div>
+        </div>
+
+        {dueLoading && rowsFlat.length === 0 && <div style={{
+          padding:"30px 16px", textAlign:"center", color:C.textLight,
+          background:"#fff", border:"1px solid #E8ECF1", borderRadius:10
+        }}>Loading…</div>}
+
+        {!dueLoading && rowsFlat.length === 0 && <div style={{
+          padding:"30px 16px", textAlign:"center", color:C.textLight,
+          background:"#fff", border:"1px solid #E8ECF1", borderRadius:10
+        }}>No due payouts.</div>}
+
+        {rowsFlat.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
+          <table style={{ width:"100%", minWidth:620, borderCollapse:"collapse", fontSize:12 }}>
+            <thead>
+              <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
+                <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Recipient</th>
+                <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Customer</th>
+                <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Project</th>
+                <th style={{ textAlign:"start", padding:"10px 12px", fontWeight:700, color:C.textLight }}>Received date</th>
+                <th style={{ textAlign:"end",   padding:"10px 12px", fontWeight:700, color:C.textLight }}>Amount due (EGP)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rowsFlat.map(function(r, idx){
+                return <tr key={r.commissionId + ":" + r.cycleNumber + ":" + idx} style={{ borderTop:"1px solid #F1F5F9" }}>
+                  <td style={{ padding:"10px 12px", color:C.text }}>
+                    <div style={{ fontWeight:600 }}>{r.userName || "(unknown)"}</div>
+                    <div style={{ fontSize:10, color:C.textLight, marginTop:2 }}>{r.role || "—"}</div>
+                  </td>
+                  <td style={{ padding:"10px 12px", color:C.text }}>{r.leadName || "(unknown)"}</td>
+                  <td style={{ padding:"10px 12px", color:C.text }}>{r.projectName || "—"}</td>
+                  <td style={{ padding:"10px 12px", color:C.textLight }}>{fmtDate(r.receivedDate)}</td>
+                  <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:"#DC2626" }}>{fmtMoney(r.amountDue)}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>}
+      </>;
     })()}
 
     {activeTab === "annual" && (function(){

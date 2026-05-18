@@ -19242,7 +19242,6 @@ app.get("/api/commissions/cash-flow", auth, salesAdminOnly, async function(req, 
 // be a guess; full-on-first-collection is the consistent rule.
 //
 // Excludes recipients with non-positive owed (already paid or never owed).
-// Used by both the GET endpoint below AND the sweepPayoutReminders cron.
 async function computePayoutsForMonth(year, month) {
   // BUG #3 rewrite — the Payout Report is "log of commission PAID this
   // month", not "what's still owed". Scope by payouts[].date (and the
@@ -19573,6 +19572,188 @@ app.get("/api/commissions/payout-report", auth, salesAdminOnly, async function(r
   } catch(e) {
     console.error("[GET /api/commissions/payout-report]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "payout_report_failed" });
+  }
+});
+
+// GET /api/commissions/due-payouts — cycles in `received` state. Powers
+// the Due Payouts tab and the month-10-to-15 red banner on the Commissions
+// page. Read-only — never mutates cycles[] or payouts[].
+//
+// Visibility rule (deliberately simple — admin-driven):
+//   cycle.state === "received"      → cycle appears
+//   cycle.state === "paid_to_team"  → cycle disappears (admin clicked Paid)
+//   anything else                   → ignored
+//
+// payouts[] aggregation is intentionally NOT consulted here. "Paid" is a
+// per-cycle admin click on the cycle state machine; the payouts[] log is
+// a parallel cash-flow record without per-cycle linkage, so reading it
+// would muddy the signal. The cycle.state advance is the authoritative
+// "this is paid" signal.
+//
+// Recipient list per cycle: applyRecipientOverrides(commission) (canonical
+// chain + manual_add), PLUS the broker as a synthetic recipient with role
+// "broker" for External commissions. Each recipient's amountDue for the
+// cycle is their lifetime effectiveOwed apportioned by the cycle's share
+// of totalClaim (claimAmount weighting, falling back to receivedAmount or
+// equal apportionment when claimAmount is missing).
+//
+// Must be declared BEFORE /api/commissions/:id so the literal path doesn't
+// get shadowed by the :id route.
+app.get("/api/commissions/due-payouts", auth, salesAdminOnly, async function(req, res) {
+  try {
+    function round2(n){ return Math.round(Number(n||0) * 100) / 100; }
+    function computeDueMonth(receivedDate){
+      // day 1-15 of M → dueMonth = M ; day 16-end → M+1. Returns "YYYY-MM".
+      if (typeof receivedDate !== "string" || receivedDate.length < 10) return "";
+      var y = parseInt(receivedDate.slice(0,4), 10);
+      var m = parseInt(receivedDate.slice(5,7), 10);
+      var d = parseInt(receivedDate.slice(8,10), 10);
+      if (!isFinite(y) || !isFinite(m) || !isFinite(d)) return "";
+      if (d <= 15) return receivedDate.slice(0,7);
+      m += 1;
+      if (m > 12) { m = 1; y += 1; }
+      return y + "-" + String(m).padStart(2, "0");
+    }
+
+    var docs = await Commission.find({ status: { $ne: "cancelled" } })
+      .select("leadId status snapshot cycles externalSplit recipientOverrides")
+      .lean();
+
+    var items = [];
+    var totalDue = 0;
+    var dealCountSet = Object.create(null);
+    var recipientCountSet = Object.create(null);
+
+    for (var di = 0; di < docs.length; di++) {
+      var doc = docs[di];
+      var snap = doc.snapshot || {};
+      var cycles = Array.isArray(doc.cycles) ? doc.cycles : [];
+      if (cycles.length === 0) continue;
+
+      // Skip docs with no received-state cycles up front — cheap predicate.
+      var anyReceived = false;
+      for (var sci = 0; sci < cycles.length; sci++) {
+        if (cycles[sci] && cycles[sci].state === "received") { anyReceived = true; break; }
+      }
+      if (!anyReceived) continue;
+
+      // Per-cycle weight for apportioning each recipient's lifetime owed:
+      // prefer claimAmount (gross billed). Pre-R-5 cycles have claimAmount=0;
+      // fall back to receivedAmount per-cycle, else equal apportionment when
+      // both are zero across the whole commission.
+      var totalClaim = 0;
+      var nonCancelledCount = 0;
+      var cycleWeights = [];
+      for (var ci = 0; ci < cycles.length; ci++) {
+        var cy0 = cycles[ci];
+        if (!cy0 || cy0.state === "cancelled") { cycleWeights.push(0); continue; }
+        nonCancelledCount++;
+        var w0 = Number(cy0.claimAmount || 0);
+        if (!(w0 > 0)) w0 = Number(cy0.receivedAmount || 0);
+        cycleWeights.push(w0);
+        totalClaim += w0;
+      }
+      var fallbackEqual = !(totalClaim > 0);
+      if (fallbackEqual && nonCancelledCount === 0) continue;
+
+      // Canonical recipient list (manual_remove drops a slot, manual_zero
+      // leaves it with effectiveOwed=0, manual_add appends an extra row).
+      var chain = applyRecipientOverrides(doc);
+
+      // External commissions: append broker as a synthetic recipient.
+      var brokerEntry = null;
+      if (doc.externalSplit && doc.externalSplit.isExternal) {
+        var es = doc.externalSplit;
+        var brkOwed = Number(es.brokerNetOwed || es.brokerOwed || 0);
+        if (brkOwed > 0) {
+          brokerEntry = {
+            userId:   es.brokerId ? String(es.brokerId) : null,
+            userName: es.brokerName || "",
+            role:     "broker",
+            lifetime: brkOwed
+          };
+        }
+      }
+
+      for (var k = 0; k < cycles.length; k++) {
+        var cy = cycles[k];
+        if (!cy || cy.state !== "received") continue;
+
+        var portion;
+        if (fallbackEqual) {
+          portion = 1 / nonCancelledCount;
+        } else {
+          var w = cycleWeights[k];
+          if (!(w > 0)) continue; // received-but-zero-weight: nothing to apportion
+          portion = w / totalClaim;
+        }
+
+        var cycleRecipients = [];
+        function pushRecipient(rec, lifetimeOwed){
+          if (!(lifetimeOwed > 0)) return;
+          var amountDue = round2(lifetimeOwed * portion);
+          if (amountDue <= 0.5) return;
+          cycleRecipients.push({
+            userId:    rec.userId || null,
+            userName:  rec.userName || "",
+            role:      rec.role || "",
+            amountDue: amountDue
+          });
+        }
+
+        for (var ri = 0; ri < chain.length; ri++) {
+          var r = chain[ri];
+          if (!r || !r.userName) continue;
+          pushRecipient(r, Number(r.effectiveOwed || 0));
+        }
+        if (brokerEntry) pushRecipient(brokerEntry, brokerEntry.lifetime);
+
+        if (cycleRecipients.length === 0) continue; // no payable recipients on this cycle
+
+        var receivedDate = (cy.received && cy.received.date) || "";
+        var sumDue = 0;
+        for (var rj = 0; rj < cycleRecipients.length; rj++) {
+          sumDue += Number(cycleRecipients[rj].amountDue || 0);
+          var rcKey = cycleRecipients[rj].userId
+            ? String(cycleRecipients[rj].userId)
+            : ("name:" + cycleRecipients[rj].userName);
+          recipientCountSet[rcKey] = true;
+        }
+        totalDue += sumDue;
+        dealCountSet[String(doc._id)] = true;
+
+        items.push({
+          commissionId: String(doc._id),
+          leadId:       String(doc.leadId || ""),
+          leadName:     snap.customerName || "",
+          projectName:  snap.projectName  || "",
+          dealDate:     snap.dealDate     || "",
+          cycleId:      String(cy._id || ""),
+          cycleNumber:  cy.cycleNumber || 0,
+          receivedDate: receivedDate,
+          dueMonth:     computeDueMonth(receivedDate),
+          recipients:   cycleRecipients
+        });
+      }
+    }
+
+    // Oldest receivedDate first — most overdue surfaces at the top.
+    items.sort(function(a, b){
+      if (a.receivedDate === b.receivedDate) return 0;
+      if (!a.receivedDate) return 1;
+      if (!b.receivedDate) return -1;
+      return a.receivedDate < b.receivedDate ? -1 : 1;
+    });
+
+    res.json({
+      totalDue:       round2(totalDue),
+      recipientCount: Object.keys(recipientCountSet).length,
+      dealCount:      Object.keys(dealCountSet).length,
+      items:          items
+    });
+  } catch(e) {
+    console.error("[GET /api/commissions/due-payouts]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "due_payouts_failed" });
   }
 });
 
@@ -21685,117 +21866,6 @@ async function sweepCommissionAlerts() {
 }
 setInterval(sweepCommissionAlerts, 6 * 60 * 60 * 1000); // every 6h
 setTimeout(sweepCommissionAlerts, 60 * 1000);            // first run 60s after boot
-
-// Phase R-7 — Monthly Commission Payout Reminder.
-// Fires on the 13th, 14th, and 15th of each Cairo calendar month, at the
-// hourly tick that falls inside the 09:00–09:59 Cairo window. Idempotent
-// per (agent, month): the first firing in the month creates one notification
-// per agent; subsequent firings find the existing rows and skip. The
-// notification type is `commission_payout_reminder` — surfaced via the
-// existing /api/notifications/commission banner (salesAdminOnly), not the
-// general bell. Click handler on the FE switches the Commissions page tab
-// to "Payout Report".
-//
-// IDEMPOTENCY: lookup is by (type, fromName = `<userId>:<YYYY-MM>`). The
-// payout date is always the 15th, so within a single month the same
-// notification doc covers all three reminder days.
-async function sweepPayoutReminders() {
-  try {
-    var nowCairo = new Date(Date.now() + 3 * 3600 * 1000);
-    var cairoDay  = nowCairo.getUTCDate();
-    var cairoHour = nowCairo.getUTCHours();
-    // 13/14/15 at 09:xx Cairo.
-    if (cairoDay < 13 || cairoDay > 15) return;
-    if (cairoHour !== 9) return;
-    var year  = nowCairo.getUTCFullYear();
-    var month = nowCairo.getUTCMonth() + 1;
-    var monthKey = String(year) + "-" + String(month).padStart(2, "0");
-    var report = await computePayoutsForMonth(year, month);
-    var hasAgents  = report.agents  && report.agents.length  > 0;
-    var hasBrokers = report.brokers && report.brokers.length > 0;
-    if (!hasAgents && !hasBrokers) return;
-    var created = 0;
-    for (var i = 0; i < (report.agents || []).length; i++) {
-      var a = report.agents[i];
-      if (!(a.totalOwed > 0)) continue;
-      var idemKey = a.userId + ":" + monthKey;
-      // Idempotency check — note the type+fromName composite index already
-      // exists on Notification (createdAt secondary), so this is one lookup.
-      var existing = await Notification.findOne({
-        type: "commission_payout_reminder",
-        fromName: idemKey
-      }).lean();
-      if (existing) continue;
-      try {
-        var totalRounded = Math.round(a.totalOwed);
-        await Notification.create({
-          type:      "commission_payout_reminder",
-          leadName:  a.userName,                 // agent name, surfaced as "lead" in the banner row
-          agentName: a.userName,
-          fromName:  idemKey,                    // composite key for idempotency
-          toName:    a.userId,                   // FE can use this to deep-link if needed
-          status:    a.role,
-          budget:    String(totalRounded),       // total owed EGP (rounded)
-          reason:    "Pay " + a.userName + " " + totalRounded.toLocaleString() +
-                     " EGP this month — from " + a.deals.length +
-                     " deal" + (a.deals.length === 1 ? "" : "s") +
-                     ". Click to view breakdown."
-        });
-        created++;
-      } catch(notifErr) {
-        console.error("[sweepPayoutReminders notify]", notifErr && notifErr.message);
-      }
-    }
-    // Phase R-12 Part 8 — broker reminders. Same banner format + idempotency
-    // approach as agents. Idempotency key prefixed with "broker:" so it can
-    // never collide with a user._id (which is a 24-char hex). status field
-    // carries the literal "broker" so the FE banner row can render a violet
-    // tag inline, matching the Payout Report visual.
-    for (var bi = 0; bi < (report.brokers || []).length; bi++) {
-      var b = report.brokers[bi];
-      if (!(b.totalOwed > 0)) continue;
-      var brokerKeyPart = b.brokerId ? b.brokerId : ("name:" + b.brokerName);
-      var bIdemKey = "broker:" + brokerKeyPart + ":" + monthKey;
-      var bExisting = await Notification.findOne({
-        type: "commission_payout_reminder",
-        fromName: bIdemKey
-      }).lean();
-      if (bExisting) continue;
-      try {
-        var bTotalRounded = Math.round(b.totalOwed);
-        await Notification.create({
-          type:      "commission_payout_reminder",
-          leadName:  b.brokerName,
-          agentName: b.brokerName,
-          fromName:  bIdemKey,
-          toName:    b.brokerId || "",
-          status:    "broker",
-          budget:    String(bTotalRounded),
-          reason:    "Pay broker " + b.brokerName + " " + bTotalRounded.toLocaleString() +
-                     " EGP this month — from " + b.deals.length +
-                     " deal" + (b.deals.length === 1 ? "" : "s") +
-                     ". Click to view breakdown."
-        });
-        created++;
-      } catch(notifErr) {
-        console.error("[sweepPayoutReminders notify-broker]", notifErr && notifErr.message);
-      }
-    }
-    if (created > 0) {
-      try { broadcast("notification_updated", {}); } catch(_){}
-      console.log("[sweepPayoutReminders] " + monthKey + " — " + created + " reminder(s) created");
-    }
-  } catch(e) {
-    console.error("[sweepPayoutReminders]", e && e.message);
-  }
-}
-// Hourly tick. The gate inside the function is the actual scheduling — we
-// don't try to schedule a precise 9am Cairo job because Railway's host clock
-// is UTC and Cairo is UTC+3 (no DST). Boot-time warm-up runs 60s after start
-// so a deploy on day 13/14/15 doesn't miss the window if Railway restarted
-// at 09:30 Cairo.
-setInterval(sweepPayoutReminders, 60 * 60 * 1000);
-setTimeout(sweepPayoutReminders, 60 * 1000);
 
 // ===== ASSET TRACKER — read/setup endpoints (S1) =====
 // Admin/owner only. Models + middleware + seeders live near the top of this
