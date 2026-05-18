@@ -7838,6 +7838,108 @@ app.get("/api/leads/counts", auth, async function(req, res) {
     var fromIso = from ? from.toISOString() : null;
     var toIso   = to   ? to.toISOString()   : null;
     var nowIso  = new Date().toISOString();
+
+    // ---- Sales historical-scope branch ----
+    // When the caller is sales role AND passes ?scope=historical, return a
+    // count that exactly matches what GET /api/leads (sales path) would
+    // surface to them — every lead they've ever held a slice on, minus the
+    // Phase P staleness hide, minus the LeadsPage allVisible exclusions
+    // (archived / Daily Request / EOI / DoneDeal / unresolved Deal Cancelled).
+    // Groups by the caller's slice status — same value the FE filters by
+    // (currentStatus(l) = lead._currentStatus after the sales overlay).
+    //
+    // Other roles (admin/sales_admin/manager/team_leader/director) and sales
+    // without ?scope=historical continue through the strict-current-owner
+    // branch below; behaviour unchanged for Dashboard tiles + other callers.
+    if (req.user.role === "sales" && req.query.scope === "historical") {
+      var saleUid = new mongoose.Types.ObjectId(req.user.id);
+      var historicalOr = [
+        { "assignments.agentId": saleUid },
+        { splitAgent2Id: saleUid },
+        { $and: [
+          { agentId: saleUid },
+          { $or: [
+            { globalStatus: { $in: ["eoi", "donedeal"] } },
+            { status: { $in: ["EOI", "DoneDeal", "Deal Cancelled"] } },
+            { eoiStatus: { $nin: [null, ""] } },
+            { dealStatus: "Deal Cancelled" }
+          ]}
+        ]}
+      ];
+      var matchAndH = [{ $or: historicalOr }, { archived: { $ne: true } }];
+      if (from || to) {
+        var winH = { createdAt: {} };
+        if (from) winH.createdAt.$gte = from;
+        if (to)   winH.createdAt.$lte = to;
+        matchAndH.push(winH);
+      }
+      var excludeSourceH = req.query.excludeSource ? String(req.query.excludeSource).trim() : null;
+      var sourceOnlyH    = req.query.source        ? String(req.query.source).trim()        : null;
+      if (excludeSourceH) matchAndH.push({ source: { $ne: excludeSourceH } });
+      if (sourceOnlyH)    matchAndH.push({ source: sourceOnlyH });
+
+      // Lean-fetch only the fields the overlay+helpers actually read. Heavy
+      // sub-arrays (history, privateNotes, eoiDocuments, dealImages) and
+      // unrelated detail fields stay on the server.
+      var docsH = await Lead.find({ $and: matchAndH })
+        .select('archived source status globalStatus eoiStatus dealStatus agentId splitAgent2Id assignments updatedAt createdAt')
+        .lean();
+
+      var STALE_LEAD_MS_H = await getStaleLeadMs(req.user.role);
+      var nowMsH = Date.now();
+      var byStatusH = {};
+      var totalH = 0;
+      var newLeadCountH = 0;
+      var uidStrH = String(req.user.id);
+
+      for (var di = 0; di < docsH.length; di++) {
+        var lH = docsH[di];
+        // ---- Mirror GET /api/leads sales-branch staleness filter ----
+        var splitIdH = lH.splitAgent2Id && lH.splitAgent2Id._id ? lH.splitAgent2Id._id : lH.splitAgent2Id;
+        var keepDoc = false;
+        var myAssignH = null;
+        if (splitIdH && String(splitIdH) === uidStrH) {
+          keepDoc = true;
+        } else {
+          myAssignH = findAssignmentForAgent(lH, req.user.id);
+          if (myAssignH) {
+            keepDoc = !isSliceHidden(lH, myAssignH, nowMsH, STALE_LEAD_MS_H);
+          } else {
+            var topAgentIdH = lH.agentId && lH.agentId._id ? lH.agentId._id : lH.agentId;
+            if (String(topAgentIdH || "") === uidStrH && isEoiOrDoneDeal(lH)) keepDoc = true;
+          }
+        }
+        if (!keepDoc) continue;
+
+        // ---- Mirror the sales overlay: effective status ----
+        var overlaidStatus = lH.status;
+        if (!isEoiOrDoneDeal(lH) && myAssignH) {
+          var assignStat = myAssignH.status === "New Lead" ? "NewLead" : myAssignH.status;
+          if (assignStat) overlaidStatus = assignStat;
+        }
+
+        // ---- Mirror the LeadsPage allVisible exclusions ----
+        if (overlaidStatus === "EOI" || overlaidStatus === "DoneDeal") continue;
+        if (overlaidStatus === "Deal Cancelled" && lH.eoiStatus !== "EOI Cancelled") continue;
+
+        // ---- currentStatus + hasAction over the caller's slice only ----
+        var leadForHelper = Object.assign({}, lH, {
+          assignments: myAssignH ? [myAssignH] : (lH.assignments || []),
+          status: overlaidStatus
+        });
+        var effStatus = summaryComputeCurrentStatus(leadForHelper);
+        var hasAction = summaryComputeHasAction(leadForHelper);
+
+        byStatusH[effStatus] = (byStatusH[effStatus] || 0) + 1;
+        totalH += 1;
+        if (effStatus === "NewLead" && !hasAction) newLeadCountH += 1;
+      }
+
+      console.log("[scope] /api/leads/counts scope=historical role=sales uid=" + req.user.id +
+                  " docs=" + docsH.length + " total=" + totalH + " newLeads=" + newLeadCountH);
+      return res.json({ total: totalH, byStatus: byStatusH, newLeadCount: newLeadCountH });
+    }
+
     // STRICT scope — counts reflect "my current leads", not historical.
     var scope = await buildLeadCurrentOwnerScopeQuery(req);
     if (scope === null) {

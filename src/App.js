@@ -1165,18 +1165,17 @@ var Sidebar = function(p) {
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
-  // Badge source priority:
-  //  1. p.sidebarLeadsTotal — strict current-owner count from /api/leads/counts
-  //     (uses buildLeadCurrentOwnerScopeQuery, server-side filter on
-  //     agentId/splitAgent2Id only — no historical assignments[]). This is
-  //     what a sales user expects "my leads" to mean.
-  //  2. p.leadsTotal — bootstrap /api/leads.total. Historical scope for sales
-  //     (matches assignments.agentId, so rotated-away leads are still
-  //     counted). Used while #1 is still in flight, and for any role where
-  //     the two scopes coincide.
-  //  3. p.leads filter — last-resort fallback before any fetch lands.
-  // typeof === "number" (not >0) so a legitimate 0 from /counts renders the
-  // hidden-badge state, not the historical fallback.
+  // Badge source priority — must agree with the LeadsPage "All" tab:
+  //  1. p.sidebarLeadsTotal — historical-scope count from /api/leads/counts
+  //     (for sales: ?scope=historical, which mirrors the LeadsPage filters
+  //     exactly; for other roles: the strict-current-owner /counts that
+  //     also matches what they see). Same fetch shape both pages use → one
+  //     number everywhere.
+  //  2. p.leadsTotal — bootstrap /api/leads.total. Coarser fallback while
+  //     #1 is still in flight (1s debounce window on first paint).
+  //  3. p.leads.filter — last-resort if neither has resolved.
+  // typeof === "number" (not >0) so a legitimate 0 from the server still
+  // renders the hidden-badge state rather than falling back.
   var leadsCount = (typeof p.sidebarLeadsTotal === "number")
     ? p.sidebarLeadsTotal
     : (typeof p.leadsTotal === "number" && p.leadsTotal > 0)
@@ -3701,22 +3700,34 @@ var LeadsPage = function(p) {
   },[selected, hasRenderableSelected]);
   // Close the side panel when the user clicks anywhere outside of it.
   var panelRef = useOutsideClose(hasRenderableSelected, function(){ setSelected(null); });
-  // Fix C — server-side counters for the tab strip. byStatus comes from
-  // /api/leads/counts (the X2 endpoint) with ?excludeSource=Daily Request
-  // applied so the numbers honour LeadsPage's "non-DR" visibility rule.
-  // Without these counts the tab strip showed the loaded-slice count
-  // (which grew as the user scrolled with infinite scroll) instead of
-  // the true Atlas total. Falls back to allVisible.length while loading.
+  // Tab-badge counts — server-side aggregation against the same scope the
+  // rendered table uses. Sales role passes ?scope=historical, which routes
+  // to the fetch-then-tally branch that mirrors GET /api/leads's sales
+  // overlay + Phase P staleness filter + LeadsPage allVisible exclusions,
+  // grouped by Jana's per-slice status. Other roles use the existing
+  // strict-current-owner /counts response. In both cases byStatus[k]
+  // matches what allVisible.filter(currentStatus===k) would compute, but
+  // server-side so badges are correct from first paint regardless of how
+  // many pages of /api/leads the FE has loaded so far.
+  //
+  // Debounced 1000ms so a burst of WS lead_updated events (cbBust) doesn't
+  // flood the endpoint — same pattern as the Sidebar fetch.
   var [leadsPageCounts, setLeadsPageCounts] = useState(null);
+  var isSalesRole = p.cu && p.cu.role === "sales";
   useEffect(function(){
     if (!p.token) return;
     var cancelled = false;
-    apiFetch("/api/leads/counts?excludeSource=" + encodeURIComponent("Daily Request"), "GET", null, p.token)
-      .then(function(r){ if (!cancelled && r && typeof r === "object") setLeadsPageCounts(r); })
-      .catch(function(){});
-    return function(){ cancelled = true; };
+    var timer = setTimeout(function(){
+      if (cancelled) return;
+      var url = "/api/leads/counts?excludeSource=" + encodeURIComponent("Daily Request");
+      if (isSalesRole) url += "&scope=historical";
+      apiFetch(url, "GET", null, p.token)
+        .then(function(r){ if (!cancelled && r && typeof r === "object") setLeadsPageCounts(r); })
+        .catch(function(){});
+    }, 1000);
+    return function(){ cancelled = true; clearTimeout(timer); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[p.token, p.cbBust]);
+  },[p.token, p.cbBust, isSalesRole]);
   var [statusDrop, setStatusDrop] = useState(null);
   var [showAdd, setShowAdd] = useState(false);
   var [editLead, setEditLead] = useState(null);
@@ -4679,32 +4690,43 @@ var LeadsPage = function(p) {
           if (isAdmin) base.push({v:"important",l:"⭐ Important"});
           return base;
         })().map(function(s){
+          // Prefer the server-aggregated counts when loaded (matches the
+          // rendered table's scope exactly — see leadsPageCounts effect
+          // above). Falls back to the in-memory `allVisible` slice during
+          // the 1s debounce window before the first fetch lands.
+          //   - sales:    /counts?scope=historical → byStatus keyed by the
+          //               caller's per-slice status, total already excludes
+          //               closed states (EOI/DoneDeal/Deal Cancelled).
+          //   - other:    strict /counts → byStatus keyed by top-level
+          //               status; "All" sums byStatus excluding closed.
+          //   - Important: no server equivalent (qualifyingMarks() walks
+          //               per-doc; admin-only tab). Always in-memory.
+          //   - NewLead:  server returns newLeadCount for sales scope=
+          //               historical (matches isGenuineNewLead); other
+          //               roles fall back to in-memory.
           var cnt;
-          // Fix C — server-side counts from leadsPageCounts (the
-          // /api/leads/counts?excludeSource=Daily Request response).
-          // byStatus is the all-time, role-scoped, non-DR-source per-status
-          // map. The "All" tab is sum(byStatus) minus closed-state buckets
-          // (EOI / DoneDeal / Deal Cancelled) — these have dedicated pages.
-          // Two predicates stay on the in-memory loaded slice because they
-          // aren't server-friendly:
-          //   - "important" (qualifyingMarks() walks each lead's
-          //     assignments / history for a date threshold)
-          //   - "NewLead" (isGenuineNewLead() rules — not just status)
-          // Both are admin-only views; the documented deferral covers them.
           var bs = leadsPageCounts && leadsPageCounts.byStatus;
-          if (bs) {
+          if (leadsPageCounts) {
             if (s.v === "all") {
-              cnt = 0;
-              Object.keys(bs).forEach(function(k){
-                if (k === "EOI" || k === "DoneDeal" || k === "Deal Cancelled") return;
-                cnt += bs[k] || 0;
-              });
+              if (isSalesRole) {
+                cnt = leadsPageCounts.total || 0;
+              } else {
+                cnt = 0;
+                Object.keys(bs || {}).forEach(function(k){
+                  if (k === "EOI" || k === "DoneDeal" || k === "Deal Cancelled") return;
+                  cnt += bs[k] || 0;
+                });
+              }
             } else if (s.v === "important") {
               cnt = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; }).length;
             } else if (s.v === "NewLead") {
-              cnt = allVisible.filter(isGenuineNewLead).length;
+              if (isSalesRole && typeof leadsPageCounts.newLeadCount === "number") {
+                cnt = leadsPageCounts.newLeadCount;
+              } else {
+                cnt = allVisible.filter(isGenuineNewLead).length;
+              }
             } else {
-              cnt = bs[s.v] || 0;
+              cnt = (bs && bs[s.v]) || 0;
             }
           } else {
             if (s.v==="all") cnt = allVisible.length;
@@ -24316,32 +24338,27 @@ export default function CRMApp() {
     }catch(e){}
   },[activitiesPage]);
 
-  // Sidebar Leads badge — fetch the strict-current-owner count from
-  // /api/leads/counts (uses buildLeadCurrentOwnerScopeQuery: agentId or
-  // splitAgent2Id matching the caller, no historical assignments[]). Fires
-  // on mount (when token resolves) and on every cbBust bump (WS lead_updated)
-  // so the badge stays live as leads rotate in/out of the caller's ownership.
-  // Distinct from the /api/leads bootstrap total, which keeps the historical
-  // scope used by LeadsPage pagination.
-  //
-  // Debounced 1000ms: cbBust bumps once per WS event, and a busy floor can
-  // fire 10-20 events in a few seconds. Without debounce the badge would
-  // issue a fetch per event; with debounce it issues one fetch 1s after the
-  // last event in any burst. The initial post-login fetch is also delayed
-  // by 1s — acceptable because the Sidebar falls back to leadsTotal (then
-  // p.leads.filter) until the strict-count lands.
+  // Sidebar Leads badge — fetch the same count the LeadsPage uses so the
+  // sidebar and the page agree. For sales role we pass ?scope=historical
+  // so the count covers every lead they've ever held a slice on (matches
+  // GET /api/leads's sales scope + LeadsPage allVisible filter). For other
+  // roles the existing strict-current-owner /counts response is what
+  // they're already used to. Debounced 1000ms so WS bursts (cbBust) don't
+  // flood the endpoint; matches the LeadsPage fetch debounce.
   useEffect(function(){
     if (!token) return;
     var cancelled = false;
+    var isSales = currentUser && currentUser.role === "sales";
+    var url = isSales ? "/api/leads/counts?scope=historical" : "/api/leads/counts";
     var timer = setTimeout(function(){
       if (cancelled) return;
-      apiFetch("/api/leads/counts","GET",null,token)
+      apiFetch(url,"GET",null,token)
         .then(function(r){ if (!cancelled && r && typeof r.total === "number") setSidebarLeadsTotal(r.total); })
         .catch(function(){});
     }, 1000);
     return function(){ cancelled = true; clearTimeout(timer); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[token, cbBust]);
+  },[token, cbBust, currentUser && currentUser.role]);
 
   // STEP 4-5 X3 — load-more helpers for LeadsPage / DRPage. Called by
   // TableVirtuoso's endReached when the user scrolls within ~256px of the
