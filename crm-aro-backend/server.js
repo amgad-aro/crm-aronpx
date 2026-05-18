@@ -2559,9 +2559,15 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
     // Check for any existing commissions on this lead.
     var existing = await Commission.find({ leadId: leadDoc._id }).sort({ createdAt: -1 }).lean();
 
-    // Find an active one — should never exist twice but safe-guard if it does.
-    var alreadyActive = existing.find(function(c){ return c.status === "active"; });
-    if (alreadyActive) return alreadyActive; // already covered
+    // "Already covered" = any non-cancelled commission, NOT just status="active".
+    // A fully_paid commission (cycles all advanced to paid_to_team) is also a
+    // covered state — re-firing Commission.create against a fully_paid lead
+    // was the mona-ali-mohamed duplicate cause (2026-05-18). Cancelled is the
+    // only state that allows fall-through to the revive/create branches below.
+    var alreadyExists = existing.find(function(c){
+      return c.status === "active" || c.status === "fully_paid";
+    });
+    if (alreadyExists) return alreadyExists; // already covered
 
     // Same-agent revival path. For broker-only deals there's no agent
     // identifier, so revive the most recent cancelled commission whose
@@ -10072,16 +10078,25 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     try {
       // Phase R-13.1 — commission backfill fallback. Standard trigger fires
       // when the lead transitions into DoneDeal. The fallback also fires when
-      // the lead is ALREADY DoneDeal but has NO active commission (legacy
+      // the lead is ALREADY DoneDeal but has NO existing commission (legacy
       // leads stuck due to the prior agentId-null silent-fail at POST time;
       // see "amgad" incident). ensureCommissionForLead is idempotent — it
-      // checks for an alreadyActive commission and bails early if one exists.
+      // checks for an alreadyExists commission and bails early if one exists.
+      //
+      // 2026-05-18 — query widened to include status="fully_paid". The prior
+      // status:"active" filter let a fully-paid commission slip past, which
+      // re-fired ensureCommissionForLead on any DoneDeal edit (e.g. dealDate
+      // touch-up) and minted a duplicate cycle-1 commission. mona ali mohamed
+      // bug. "Already exists" must mean "any non-cancelled commission".
       var dealTransition = req.body.status === "DoneDeal" && lead && lead.status === "DoneDeal" &&
                            oldLead && oldLead.status !== "DoneDeal";
       var needsBackfill = false;
       if (!dealTransition && lead && lead.status === "DoneDeal") {
-        var activeComm = await Commission.findOne({ leadId: lead._id, status: "active" }).select("_id").lean();
-        if (!activeComm) needsBackfill = true;
+        var existingComm = await Commission.findOne({
+          leadId: lead._id,
+          status: { $in: ["active", "fully_paid"] }
+        }).select("_id").lean();
+        if (!existingComm) needsBackfill = true;
       }
       if (dealTransition || needsBackfill) {
         await ensureCommissionForLead(lead, req.user);
