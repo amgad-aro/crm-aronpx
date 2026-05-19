@@ -1402,11 +1402,11 @@ var CallbackBell = function(p) {
     if(!cbIds.has(gid(l))) noContact.push(l);
   });
 
-  // Single tab-aware sort. Delay/Now/Upcoming/All sort by callbackTime
-  // ASC (most overdue → closest upcoming → furthest future); rows with
-  // no callbackTime resolve to Infinity and fall to the end. No Contact
-  // sorts by lastActivityTime DESC (most recently active first) since
-  // those rows have no scheduled callback.
+  // Tab-aware sort:
+  //   * Delay/All: callbackTime DESC — just-became-overdue at top, 7-days-overdue
+  //     at bottom. Missing callbackTime (No Contact rows in All) sinks to the end.
+  //   * Now/Upcoming: callbackTime ASC — closest-to-firing first.
+  //   * No Contact: lastActivityTime DESC — most recently inactive at top.
   var sortForTab = function(items, activeTab){
     var sorted = items.slice();
     if (activeTab === "nocontact"){
@@ -1414,6 +1414,12 @@ var CallbackBell = function(p) {
         var la = a.lastActivityTime ? new Date(a.lastActivityTime).getTime() : 0;
         var lb = b.lastActivityTime ? new Date(b.lastActivityTime).getTime() : 0;
         return lb - la;
+      });
+    } else if (activeTab === "overdue" || activeTab === "all"){
+      sorted.sort(function(a,b){
+        var ta = a.callbackTime ? new Date(a.callbackTime).getTime() : -Infinity;
+        var tb = b.callbackTime ? new Date(b.callbackTime).getTime() : -Infinity;
+        return tb - ta;
       });
     } else {
       sorted.sort(function(a,b){
