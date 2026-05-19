@@ -1312,12 +1312,14 @@ var CallbackBell = function(p) {
   //
   // Window: from = now - 7d (covers Delay tab — anything more than 7d overdue
   // is a "missed forever" lead and belongs on the Stale Lead surface, not the
-  // bell). to = now + 30d (Upcoming planning view). Tighter than the prior
-  // ±365d so the bell payload stays small and stale clutter is excluded.
+  // bell). to = end of today in local time (23:59:59.999) — the bell only
+  // surfaces callbacks due today; tomorrow's planning lives elsewhere.
   var bellQS = function(){
     var nowMs = Date.now();
     var fromIso = new Date(nowMs - 7 * 24 * 3600 * 1000).toISOString();
-    var toIso   = new Date(nowMs + 30 * 24 * 3600 * 1000).toISOString();
+    var endOfToday = new Date();
+    endOfToday.setHours(23, 59, 59, 999);
+    var toIso = endOfToday.toISOString();
     return "?from=" + encodeURIComponent(fromIso) + "&to=" + encodeURIComponent(toIso) + "&limit=2000";
   };
 
@@ -1403,11 +1405,14 @@ var CallbackBell = function(p) {
   });
 
   // Tab-aware sort:
-  //   * Delay/All: callbackTime DESC — just-became-overdue at top, 7-days-overdue
-  //     at bottom. Missing callbackTime (No Contact rows in All) sinks to the end.
+  //   * Delay: callbackTime DESC — just-became-overdue at top, oldest at bottom.
   //   * Now/Upcoming: callbackTime ASC — closest-to-firing first.
   //   * No Contact: lastActivityTime DESC — most recently inactive at top.
+  //   * All: passthrough — caller pre-builds the segmented order (Delay → Now
+  //     → Upcoming → No Contact); each segment is already sorted by its own
+  //     rule and must not be re-shuffled into a single global order.
   var sortForTab = function(items, activeTab){
+    if (activeTab === "all") return items.slice();
     var sorted = items.slice();
     if (activeTab === "nocontact"){
       sorted.sort(function(a,b){
@@ -1415,7 +1420,7 @@ var CallbackBell = function(p) {
         var lb = b.lastActivityTime ? new Date(b.lastActivityTime).getTime() : 0;
         return lb - la;
       });
-    } else if (activeTab === "overdue" || activeTab === "all"){
+    } else if (activeTab === "overdue"){
       sorted.sort(function(a,b){
         var ta = a.callbackTime ? new Date(a.callbackTime).getTime() : -Infinity;
         var tb = b.callbackTime ? new Date(b.callbackTime).getTime() : -Infinity;
@@ -1431,9 +1436,15 @@ var CallbackBell = function(p) {
     return sorted;
   };
 
-  // Unsorted superset for the All tab. Bell-icon badge uses allItems.length
-  // (total across all tabs), matching the count chip on the All tab.
-  var allItems = overdue.concat(nowItems).concat(upcoming).concat(noContact);
+  // Segmented superset for the All tab — each bucket pre-sorted in its own
+  // order, then concatenated in priority order (Delay → Now → Upcoming → No
+  // Contact). sortForTab("all") is a passthrough so this segmentation is
+  // preserved. Bell-icon badge uses allItems.length (total across all tabs),
+  // matching the count chip on the All tab.
+  var allItems = sortForTab(overdue, "overdue")
+    .concat(sortForTab(nowItems, "now"))
+    .concat(sortForTab(upcoming, "upcoming"))
+    .concat(sortForTab(noContact, "nocontact"));
 
   var filtered;
   if(tab==="overdue") filtered = overdue;
