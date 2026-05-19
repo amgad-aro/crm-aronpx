@@ -1436,15 +1436,23 @@ var CallbackBell = function(p) {
     return sorted;
   };
 
-  // Segmented superset for the All tab — each bucket pre-sorted in its own
-  // order, then concatenated in priority order (Delay → Now → Upcoming → No
-  // Contact). sortForTab("all") is a passthrough so this segmentation is
-  // preserved. Bell-icon badge uses allItems.length (total across all tabs),
-  // matching the count chip on the All tab.
-  var allItems = sortForTab(overdue, "overdue")
-    .concat(sortForTab(nowItems, "now"))
-    .concat(sortForTab(upcoming, "upcoming"))
-    .concat(sortForTab(noContact, "nocontact"));
+  // Interleaved superset for the All tab — items are sorted by proximity
+  // to "now" regardless of bucket. For callback rows the distance is
+  // |callbackTime − now|; for No Contact rows it's (now − lastActivityTime).
+  // No Contact rows tend to drift to the end (distance in days vs minutes
+  // for callbacks) but stay interleaved if they're recent. sortForTab("all")
+  // remains a passthrough so this order is preserved. Bell-icon badge uses
+  // allItems.length (total across all tabs), matching the All chip count.
+  var allItems = overdue.concat(nowItems).concat(upcoming).concat(noContact).sort(function(a,b){
+    var nowMs = Date.now();
+    var da = a.callbackTime
+      ? Math.abs(new Date(a.callbackTime).getTime() - nowMs)
+      : (a.lastActivityTime ? (nowMs - new Date(a.lastActivityTime).getTime()) : Infinity);
+    var db = b.callbackTime
+      ? Math.abs(new Date(b.callbackTime).getTime() - nowMs)
+      : (b.lastActivityTime ? (nowMs - new Date(b.lastActivityTime).getTime()) : Infinity);
+    return da - db;
+  });
 
   var filtered;
   if(tab==="overdue") filtered = overdue;
