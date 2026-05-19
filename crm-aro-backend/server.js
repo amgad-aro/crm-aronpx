@@ -159,6 +159,13 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
     lastFeedback:{type:String,default:""},
     lastActionAt:{type:Date,default:Date.now},
     rotationTimer:{type:Date,default:Date.now},
+    // Set ONLY when slice.status transitions to a different value. Used by
+    // the CallBack rotation rule to measure cbHours from the moment the
+    // agent (or admin) flipped this slice into CallBack — NOT from the
+    // user-typed callbackTime, NOT bumped by notes/budget edits. Legacy
+    // slices without this field fall back to lastActionAt / assignedAt /
+    // lead.createdAt at eligibility-evaluator read time.
+    statusChangedAt:{type:Date,default:null},
     noRotation:{type:Boolean,default:false},
     nextCallAt:{type:Date,default:null},
     assignedAt:{type:Date,default:Date.now},
@@ -8700,7 +8707,7 @@ app.post("/api/leads", auth, async function(req, res) {
       externalSalesAgentName:         req.body.externalSalesAgentName || "",
       externalSalesAgentManualAmount: (typeof req.body.externalSalesAgentManualAmount === "number") ? req.body.externalSalesAgentManualAmount : null,
       externalSalesAgentPaidBy:       req.body.externalSalesAgentPaidBy || "company",
-      assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "New Lead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: req.body.notes || "", budget: req.body.budget || "", callbackTime: req.body.callbackTime || "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
+      assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "New Lead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), statusChangedAt: new Date(), noRotation: false, notes: req.body.notes || "", budget: req.body.budget || "", callbackTime: req.body.callbackTime || "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
       expiresAt:        new Date(Date.now() + 30*24*60*60*1000),
       // Phase R-13.1 — globalStatus must mirror the initialStatus, otherwise a
       // POST creating a lead directly with status="DoneDeal" leaves
@@ -9396,7 +9403,7 @@ app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
     // Also sync the current agent's assignment.status so per-agent views reflect the restored state
     await Lead.updateOne(
       { _id: req.params.id, "assignments.agentId": existing.agentId },
-      { $set: { "assignments.$.status": restored, "assignments.$.lastActionAt": new Date() } }
+      { $set: { "assignments.$.status": restored, "assignments.$.lastActionAt": new Date(), "assignments.$.statusChangedAt": new Date() } }
     );
     // Mirror back to the originating Daily Request (if any)
     if (existing.source === "Daily Request" && existing.phone) {
@@ -9468,7 +9475,7 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
     if (existing.agentId) {
       await Lead.updateOne(
         { _id: req.params.id, "assignments.agentId": existing.agentId },
-        { $set: { "assignments.$.status": "DoneDeal", "assignments.$.lastActionAt": new Date() } }
+        { $set: { "assignments.$.status": "DoneDeal", "assignments.$.lastActionAt": new Date(), "assignments.$.statusChangedAt": new Date() } }
       );
     }
     // Mirror to the paired Daily Request (if any)
@@ -9500,7 +9507,7 @@ app.post("/api/leads/:id/deal-cancel", auth, async function(req, res) {
     // Sync current agent's assignment.status
     await Lead.updateOne(
       { _id: req.params.id, "assignments.agentId": existing.agentId },
-      { $set: { "assignments.$.status": restored, "assignments.$.lastActionAt": new Date() } }
+      { $set: { "assignments.$.status": restored, "assignments.$.lastActionAt": new Date(), "assignments.$.statusChangedAt": new Date() } }
     );
     // Mirror back to the originating Daily Request (if any)
     if (existing.source === "Daily Request" && existing.phone) {
@@ -9947,7 +9954,15 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // Sync agent's own assignments[] entry on any action
     if (req.user.role === "sales" || req.user.role === "team_leader") {
       var assignUpdate = { "assignments.$.lastActionAt": new Date(), "assignments.$.rotationTimer": new Date() };
-      if (req.body.status) assignUpdate["assignments.$.status"] = req.body.status;
+      if (req.body.status) {
+        assignUpdate["assignments.$.status"] = req.body.status;
+        // Only stamp statusChangedAt when the status actually transitions —
+        // saving notes/budget with an unchanged status must NOT reset the
+        // CallBack rotation clock (Phase R-13.x strict timer semantics).
+        if (!oldLead || oldLead.status !== req.body.status) {
+          assignUpdate["assignments.$.statusChangedAt"] = new Date();
+        }
+      }
       if (req.body.notes !== undefined) assignUpdate["assignments.$.notes"] = req.body.notes;
       if (req.body.budget !== undefined) assignUpdate["assignments.$.budget"] = req.body.budget;
       if (req.body.callbackTime !== undefined) assignUpdate["assignments.$.callbackTime"] = req.body.callbackTime;
@@ -10003,8 +10018,9 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       try {
         var holderObjId = new mongoose.Types.ObjectId(String(oldLead.agentId));
         var holderAssignUpdate = {
-          "assignments.$.status":       req.body.status,
-          "assignments.$.lastActionAt": new Date()
+          "assignments.$.status":          req.body.status,
+          "assignments.$.lastActionAt":    new Date(),
+          "assignments.$.statusChangedAt": new Date()
         };
         var holderAssignOps = {
           $set: holderAssignUpdate,
@@ -10322,7 +10338,7 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     var isFirstAssignment = !lead.agentId || (!lead.agentId._id && !mongoose.Types.ObjectId.isValid(String(lead.agentId))) || (lead.assignments && lead.assignments.length === 0);
     if (isFirstAssignment) {
       lead.agentId = new mongoose.Types.ObjectId(targetAgentId);
-      lead.assignments.push({ agentId: new mongoose.Types.ObjectId(targetAgentId), status: "NewLead", notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [], assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false });
+      lead.assignments.push({ agentId: new mongoose.Types.ObjectId(targetAgentId), status: "NewLead", notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [], assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), statusChangedAt: new Date(), noRotation: false });
       await lead.save();
       // Admin timeline — first-time assignment.
       var firstByName = (req.user && req.user.name) ? req.user.name : "System";
@@ -10574,6 +10590,15 @@ async function autoRotateLead(leadId, byName, opts) {
       var sliceStatus = (!rawSliceStatus || rawSliceStatus === "NewLead")
         ? String(lead.status || "NewLead")
         : rawSliceStatus;
+      // CallBack-only override: when lead.status === "CallBack", force the
+      // evaluator into the CallBack branch regardless of stale slice mirror.
+      // sales_admin status writes intentionally do NOT sync the holder slice
+      // (see L9971 — "sales_admin intentionally excluded"); without this
+      // override, those leads stay routed through their pre-CallBack rule
+      // and the rotation engine never sees them as CallBack.
+      if (String(lead.status || "") === "CallBack" && sliceStatus !== "CallBack") {
+        sliceStatus = "CallBack";
+      }
       var eligible = false;
       var notEligibleReason = null;
       // The actual rule that fires for this rotation. Overrides the caller's
@@ -10625,32 +10650,27 @@ async function autoRotateLead(leadId, byName, opts) {
           else { eligible = true; firedRule = "no_action_timeout"; }
           break;
         case "CallBack": {
-          // Phase R-13.3 — Callback rotates on EITHER:
-          //   (a) scheduled callbackTime overdue by cbHours (the original
-          //       intent — admin booked a callback, sales missed it), OR
-          //   (b) lastActionAt older than hotDays (fallback: the slice has
-          //       gone stale even though no callback time was set, or the
-          //       callback time was cleared on update).
-          // Pre-13.3 only (a) was checked, so Callback leads where the agent
-          // never set callbackTime sat forever. Frozen states (DoneDeal /
-          // EOI / Pending / Approved / locked / rotationStopped) are still
-          // hard-blocked above this switch — see isLeadFrozen / hard-stops
-          // at L9219-9242. Do NOT re-add status-level exclusions here.
+          // Phase R-13.x — CallBack timer is measured from slice.statusChangedAt
+          // (when the slice's status was last set to "CallBack"), NOT from the
+          // user-typed callbackTime. Strict semantics: saving notes/budget/
+          // feedback with the same status does NOT reset the clock — only an
+          // actual status transition does. Legacy slices without
+          // statusChangedAt fall back to lastActionAt → assignedAt →
+          // lead.createdAt, an over-estimate that delays rotation slightly
+          // until the next status change populates the field.
           //
-          // Slice mirror is only synced on sales/team_leader writes (see PUT
-          // /api/leads/:id ~L2433). When admin/sales_admin sets the callback
-          // time, lead.callbackTime updates but the slice stays blank — fall
-          // back to the lead-level value so those leads still rotate.
-          var effectiveCb = curSlice.callbackTime || lead.callbackTime || null;
-          var cbMs = effectiveCb ? new Date(effectiveCb).getTime() : 0;
-          var cbOverdue = cbMs > 0 && (nowTs.getTime() - cbMs) >= cbHours*HOUR_MS;
-          var staleByHot = hasClock && (ageMs >= hotDays*DAY_MS);
-          if (cbOverdue) { eligible = true; firedRule = "callback_overdue"; }
-          else if (staleByHot) { eligible = true; firedRule = "hot_no_action"; }
-          else if (!hasClock && !effectiveCb) notEligibleReason = "CallBack: no callbackTime, no lastActionAt";
-          else if (!hasClock)                  notEligibleReason = "CallBack: callbackTime not yet overdue (no lastActionAt)";
-          else if (!effectiveCb)               notEligibleReason = "CallBack: lastActionAt too recent (no callbackTime)";
-          else                                 notEligibleReason = "CallBack: callbackTime not yet overdue and lastActionAt too recent";
+          // Frozen states (DoneDeal / EOI / Pending / Approved / locked /
+          // rotationStopped) are hard-blocked above this switch. Do NOT
+          // re-add status-level exclusions here.
+          var statusChangedMs = curSlice.statusChangedAt ? new Date(curSlice.statusChangedAt).getTime()
+            : curSlice.lastActionAt ? new Date(curSlice.lastActionAt).getTime()
+            : curSlice.assignedAt   ? new Date(curSlice.assignedAt).getTime()
+            : lead.createdAt        ? new Date(lead.createdAt).getTime()
+            : 0;
+          var cbOverdue = statusChangedMs > 0 && (nowTs.getTime() - statusChangedMs) >= cbHours*HOUR_MS;
+          if (cbOverdue)               { eligible = true; firedRule = "callback_overdue"; }
+          else if (statusChangedMs === 0) notEligibleReason = "CallBack: no statusChangedAt and no fallback timestamp";
+          else                            notEligibleReason = "CallBack: in CallBack status for less than cbHours";
           break;
         }
         case "HotCase":
@@ -10809,6 +10829,7 @@ async function autoRotateLead(leadId, byName, opts) {
         notes: "", budget: "", callbackTime: "", lastFeedback: "",
         nextCallAt: null, agentHistory: [],
         assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(),
+        statusChangedAt: new Date(),
         noRotation: false
       };
       // First-assignment rotation log — counts toward the receiving agent's
@@ -10925,6 +10946,7 @@ async function autoRotateLead(leadId, byName, opts) {
       agentId: new mongoose.Types.ObjectId(targetAgentId),
       status: "NewLead",
       assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(),
+      statusChangedAt: new Date(),
       noRotation: false,
       notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null,
       agentHistory: []
@@ -11173,6 +11195,13 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
       var hasClock = lastAct > 0;
       var ageMs = hasClock ? (now.getTime() - lastAct) : 0;
       var status = String(cur.status || "");
+      // CallBack-only override: when lead.status is CallBack, force the
+      // diagnostics evaluator into the CallBack branch regardless of stale
+      // slice mirror (sales_admin writes don't sync the holder slice). Mirrors
+      // the same override in autoRotateLead.
+      if (String(l.status || "") === "CallBack" && status !== "CallBack") {
+        status = "CallBack";
+      }
 
       switch (status) {
         case "NoAnswer": {
@@ -11194,20 +11223,18 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
           byRule.newLead++; eligibleLeads.push(l); break;
         }
         case "CallBack": {
-          // Phase R-13.3 — same OR rule as autoRotateLead: eligible if
-          // callbackTime overdue OR lastActionAt > hotDays. Frozen states
-          // (DoneDeal / EOI / Pending / Approved / locked / rotationStopped)
-          // are hard-blocked above this switch via isLeadFrozen + the
-          // excluded.{archived,locked,rotationStopped,eoiOrDoneDeal} filters
-          // at ~L9967. Do NOT re-add status-level exclusions here.
-          var cbMs2 = cur.callbackTime ? new Date(cur.callbackTime).getTime() : 0;
-          var cbOverdue2 = cbMs2 > 0 && (now.getTime() - cbMs2) >= cbHours*HOUR;
-          var staleByHot2 = hasClock && (ageMs >= hotDays*DAY);
-          if (cbOverdue2 || staleByHot2) { byRule.callBack++; eligibleLeads.push(l); break; }
-          if (!hasClock && !cbMs2)       { bumpReason("CallBack: no callbackTime, no lastActionAt"); return; }
-          if (!cbMs2)                    { bumpReason("CallBack: lastActionAt too recent (no callbackTime)"); return; }
-          if (!hasClock)                 { bumpReason("CallBack: callbackTime not yet overdue (no lastActionAt)"); return; }
-          bumpReason("CallBack: callbackTime not yet overdue and lastActionAt too recent"); return;
+          // Phase R-13.x — same statusChangedAt rule as autoRotateLead.
+          // Measured strictly from when slice.status was set to CallBack.
+          // Legacy fallback chain mirrors the eligibility evaluator.
+          var statusChangedMs2 = cur.statusChangedAt ? new Date(cur.statusChangedAt).getTime()
+            : cur.lastActionAt ? new Date(cur.lastActionAt).getTime()
+            : cur.assignedAt   ? new Date(cur.assignedAt).getTime()
+            : l.createdAt      ? new Date(l.createdAt).getTime()
+            : 0;
+          var cbOverdue2 = statusChangedMs2 > 0 && (now.getTime() - statusChangedMs2) >= cbHours*HOUR;
+          if (cbOverdue2)                  { byRule.callBack++; eligibleLeads.push(l); break; }
+          if (statusChangedMs2 === 0)      { bumpReason("CallBack: no statusChangedAt and no fallback timestamp"); return; }
+          bumpReason("CallBack: in CallBack status for less than cbHours"); return;
         }
         case "HotCase":
         case "Potential":
@@ -11273,6 +11300,7 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
         agentId: new mongoose.Types.ObjectId(pickedId),
         status: "NewLead",
         assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(),
+        statusChangedAt: new Date(),
         noRotation: false,
         notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null,
         agentHistory: []
@@ -11403,6 +11431,7 @@ async function autoAssignQueuedLead(leadId) {
       notes: "", budget: "", callbackTime: "", lastFeedback: "",
       nextCallAt: null, agentHistory: [],
       assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(),
+      statusChangedAt: new Date(),
       noRotation: false
     };
     // Atomic: require the lead to still be unassigned. Clears the queue expiry
@@ -13671,13 +13700,17 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             });
             if (!hasAssign) {
               await Lead.findByIdAndUpdate(existingLead._id, {
-                $push: { assignments: { agentId: agentForMirror, status: req.body.status, assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [] } }
+                $push: { assignments: { agentId: agentForMirror, status: req.body.status, assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), statusChangedAt: new Date(), noRotation: false, notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [] } }
               });
             } else {
               // Sync the agent's assignments status so per-agent views reflect the mirror's new state.
+              // statusChangedAt is bumped here even though we can't cheaply read the prior slice
+              // status — DR-mirror writes are infrequent and almost always carry a real status
+              // change, so the conservative "always bump" approach can't reset the clock spuriously
+              // in any realistic flow.
               await Lead.updateOne(
                 { _id: existingLead._id, "assignments.agentId": agentForMirror },
-                { $set: { "assignments.$.status": req.body.status, "assignments.$.lastActionAt": new Date() } }
+                { $set: { "assignments.$.status": req.body.status, "assignments.$.lastActionAt": new Date(), "assignments.$.statusChangedAt": new Date() } }
               );
             }
           }
@@ -13688,6 +13721,7 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             assignedAt: new Date(),
             lastActionAt: new Date(),
             rotationTimer: new Date(),
+            statusChangedAt: new Date(),
             noRotation: false,
             notes: "",
             budget: "",
@@ -14341,7 +14375,7 @@ app.post("/api/fb-webhook", async function(req, res) {
                       agentId: agentId,
                       lastActivityTime: new Date(),
                       notes: "Facebook Lead Ads",
-                      assignments: agentId ? [{ agentId: agentId, status: "NewLead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), noRotation: false, notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
+                      assignments: agentId ? [{ agentId: agentId, status: "NewLead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), statusChangedAt: new Date(), noRotation: false, notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
                       manualWindowExpiresAt: (fbWindowMins > 0 && !agentId) ? new Date(Date.now() + fbWindowMins*60000) : null
                     });
                     if (agentId) {
@@ -20787,7 +20821,7 @@ app.post("/api/commissions/:id/cancel", auth, salesAdminOnly, async function(req
       await Lead.findByIdAndUpdate(lead._id, { $set: update });
       await Lead.updateOne(
         { _id: lead._id, "assignments.agentId": lead.agentId },
-        { $set: { "assignments.$.status": restored, "assignments.$.lastActionAt": new Date() } }
+        { $set: { "assignments.$.status": restored, "assignments.$.lastActionAt": new Date(), "assignments.$.statusChangedAt": new Date() } }
       );
       if (lead.source === "Daily Request" && lead.phone) {
         try {
