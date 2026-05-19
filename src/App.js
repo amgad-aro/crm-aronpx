@@ -3800,6 +3800,27 @@ var LeadsPage = function(p) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.leadFilter, p.token, p.cbBust, isOnlyAdmin]);
 
+  // Not Rotated chip — same targeted-fetch pattern as the rotation_stopped
+  // effect above. Pulls every "first-assignment, still with original agent"
+  // lead in scope.
+  useEffect(function(){
+    if (p.leadFilter !== "not_rotated") {
+      if (nrLeads !== null) setNrLeads(null);
+      return;
+    }
+    if (!p.token || !isOnlyAdmin) return;
+    var cancelled = false;
+    apiFetch("/api/leads?notRotated=true&fields=summary&limit=2000", "GET", null, p.token)
+      .then(function(r){
+        if (cancelled) return;
+        var rows = (r && Array.isArray(r.data)) ? r.data : (Array.isArray(r) ? r : []);
+        setNrLeads(rows);
+      })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.leadFilter, p.token, p.cbBust, isOnlyAdmin]);
+
   var [statusDrop, setStatusDrop] = useState(null);
   var [showAdd, setShowAdd] = useState(false);
   var [editLead, setEditLead] = useState(null);
@@ -3862,6 +3883,10 @@ var LeadsPage = function(p) {
   // BE ?rotationStopped=true param) populates this with all matching leads
   // in scope; null = not loaded yet, [] = loaded with no matches.
   var [rsLeads, setRsLeads] = useState(null);
+  // not_rotated chip results — same paginated-bootstrap problem as rsLeads.
+  // Targeted fetch (?notRotated=true, admin/SA only) populates this with
+  // every first-assignment lead in scope.
+  var [nrLeads, setNrLeads] = useState(null);
   // Phase A4-prep (2026-05-05): Source + Campaign filters for cohort
   // identification before the bulk source editor (next slice). Admin /
   // sales_admin only — gated in the UI. Apply additively on top of the
@@ -4141,6 +4166,21 @@ var LeadsPage = function(p) {
       });
     } else {
       filtered = allVisible.filter(function(l){ return l.rotationStopped === true; });
+    }
+  } else if (p.leadFilter === "not_rotated") {
+    // Same pattern as rotation_stopped above. Predicate is "rotationCount
+    // falsy AND agentId set" — leads that have never been rotated and are
+    // still with their original (first-assigned) agent.
+    if (nrLeads !== null) {
+      filtered = nrLeads.filter(function(l){
+        if (l.archived) return false;
+        if (l.source === "Daily Request") return false;
+        if (l.status === "EOI" || l.status === "DoneDeal") return false;
+        if (l.status === "Deal Cancelled" && l.eoiStatus !== "EOI Cancelled") return false;
+        return !l.rotationCount && l.agentId;
+      });
+    } else {
+      filtered = allVisible.filter(function(l){ return !l.rotationCount && l.agentId; });
     }
   } else if (p.leadFilter === "important") {
     // Important tab: every lead that EVER had a qualifying mark on any slice.
@@ -4787,6 +4827,7 @@ var LeadsPage = function(p) {
           var base = [{v:"all",l:t.all}].concat(tabSc.map(function(s){return{v:s.value,l:s.label};}));
           if (isAdmin) base.push({v:"important",l:"⭐ Important"});
           if (isOnlyAdmin) base.push({v:"rotation_stopped",l:"🛑 Rotation Stopped"});
+          if (isOnlyAdmin) base.push({v:"not_rotated",l:"🌱 Not Rotated"});
           return base;
         })().map(function(s){
           // Prefer the server-aggregated counts when loaded (matches the
@@ -4826,6 +4867,12 @@ var LeadsPage = function(p) {
               cnt = (typeof leadsPageCounts.rotationStoppedCount === "number")
                 ? leadsPageCounts.rotationStoppedCount
                 : allVisible.filter(function(l){ return l.rotationStopped === true; }).length;
+            } else if (s.v === "not_rotated") {
+              // Server-aggregated notRotatedCount, same precedent as the
+              // rotation_stopped branch above.
+              cnt = (typeof leadsPageCounts.notRotatedCount === "number")
+                ? leadsPageCounts.notRotatedCount
+                : allVisible.filter(function(l){ return !l.rotationCount && l.agentId; }).length;
             } else if (s.v === "NewLead") {
               if (isSalesRole && typeof leadsPageCounts.newLeadCount === "number") {
                 cnt = leadsPageCounts.newLeadCount;
@@ -4839,6 +4886,7 @@ var LeadsPage = function(p) {
             if (s.v==="all") cnt = allVisible.length;
             else if (s.v==="important") cnt = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; }).length;
             else if (s.v==="rotation_stopped") cnt = allVisible.filter(function(l){ return l.rotationStopped===true; }).length;
+            else if (s.v==="not_rotated") cnt = allVisible.filter(function(l){ return !l.rotationCount && l.agentId; }).length;
             else if (s.v==="NewLead") cnt = allVisible.filter(isGenuineNewLead).length;
             else cnt = allVisible.filter(function(l){ return currentStatus(l)===s.v; }).length;
           }

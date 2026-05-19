@@ -7211,6 +7211,15 @@ app.get("/api/leads", auth, async function(req, res) {
     if (req.query.rotationStopped === "true" && (role === "admin" || role === "sales_admin")) {
       query.rotationStopped = true;
     }
+    // Not Rotated filter — leads still held by their first agent (never
+    // rotated). Mirrors rotationStopped gating. Queued/unassigned leads
+    // (agentId=null with rotationCount=0) are excluded — they're "never
+    // rotated" trivially but don't fit the "still with original agent"
+    // semantic of the chip.
+    if (req.query.notRotated === "true" && (role === "admin" || role === "sales_admin")) {
+      query.rotationCount = { $in: [0, null] };
+      query.agentId = { $ne: null };
+    }
     // STEP 4-5 X2 — opt-in archived filter. ArchivePage uses this to fetch
     // its own list instead of scanning p.leads (which would be empty post-
     // X3 bootstrap shrink since the bootstrap sorts by createdAt desc and
@@ -8003,7 +8012,8 @@ app.get("/api/leads/counts", auth, async function(req, res) {
         { callbackTime: cbOverdueCond },
         { status: { $nin: ["MeetingDone", "DoneDeal", "EOI"] } }
       ]}),
-      Lead.countDocuments({ $and: baseInWindowAnd.concat([{ rotationStopped: true }]) })
+      Lead.countDocuments({ $and: baseInWindowAnd.concat([{ rotationStopped: true }]) }),
+      Lead.countDocuments({ $and: baseInWindowAnd.concat([{ rotationCount: { $in: [0, null] } }, { agentId: { $ne: null } }]) })
     ]);
 
     // STEP 4-5 X2 — extended breakdowns for adminMetrics migration:
@@ -8066,6 +8076,7 @@ app.get("/api/leads/counts", auth, async function(req, res) {
       callbacksInRange:     counts[4],
       overdueCallbacks:     counts[5],
       rotationStoppedCount: counts[6],
+      notRotatedCount:      counts[7],
       byStatus:   byStatus,
       bySource:   bySource,
       byCampaign: byCampaign
