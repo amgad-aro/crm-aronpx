@@ -3774,6 +3774,32 @@ var LeadsPage = function(p) {
     return function(){ cancelled = true; clearTimeout(timer); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token, p.cbBust, isSalesRole]);
+
+  // Rotation Stopped chip — targeted fetch when the chip becomes active.
+  // Bypasses the paginated p.leads bootstrap so every rotation-stopped lead
+  // in scope is surfaced, not just those that happen to be on the loaded
+  // page. Refetches on cbBust (WS-driven lead updates) so newly-halted
+  // leads appear without a manual refresh. Clears rsLeads when the chip
+  // is deactivated so the filter branch falls back to allVisible-derived
+  // results next time the chip is opened.
+  useEffect(function(){
+    if (p.leadFilter !== "rotation_stopped") {
+      if (rsLeads !== null) setRsLeads(null);
+      return;
+    }
+    if (!p.token || !isOnlyAdmin) return;
+    var cancelled = false;
+    apiFetch("/api/leads?rotationStopped=true&fields=summary&limit=2000", "GET", null, p.token)
+      .then(function(r){
+        if (cancelled) return;
+        var rows = (r && Array.isArray(r.data)) ? r.data : (Array.isArray(r) ? r : []);
+        setRsLeads(rows);
+      })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.leadFilter, p.token, p.cbBust, isOnlyAdmin]);
+
   var [statusDrop, setStatusDrop] = useState(null);
   var [showAdd, setShowAdd] = useState(false);
   var [editLead, setEditLead] = useState(null);
@@ -3830,6 +3856,12 @@ var LeadsPage = function(p) {
   var [agentFilter, setAgentFilter] = useState("");
   var [sortBy, setSortBy] = useState("lastActivity");
   var [lockedOnly, setLockedOnly] = useState(false);
+  // rotation_stopped chip results. The paginated /api/leads bootstrap only
+  // contains the loaded page slice, so rotation-stopped leads deeper in the
+  // DB never appear in allVisible. Targeted fetch (gated to admin/SA via the
+  // BE ?rotationStopped=true param) populates this with all matching leads
+  // in scope; null = not loaded yet, [] = loaded with no matches.
+  var [rsLeads, setRsLeads] = useState(null);
   // Phase A4-prep (2026-05-05): Source + Campaign filters for cohort
   // identification before the bulk source editor (next slice). Admin /
   // sales_admin only — gated in the UI. Apply additively on top of the
@@ -4093,7 +4125,23 @@ var LeadsPage = function(p) {
   } else if (p.leadFilter === "rotation_stopped") {
     // Cross-cut filter (independent of status): leads where the rotation
     // engine permanently halted (3 consecutive Not Interested rotations).
-    filtered = allVisible.filter(function(l){ return l.rotationStopped === true; });
+    // Targeted BE fetch (admin/SA via ?rotationStopped=true) holds the
+    // full in-scope list, bypassing the paginated p.leads. Falls back to
+    // a client-side filter on allVisible during the brief window before
+    // the fetch lands. The same exclusions allVisible applies (archived /
+    // Daily Request / EOI / DoneDeal / unresolved Deal Cancelled) are
+    // re-applied to BE-fetched rows so they match LeadsPage scope.
+    if (rsLeads !== null) {
+      filtered = rsLeads.filter(function(l){
+        if (l.archived) return false;
+        if (l.source === "Daily Request") return false;
+        if (l.status === "EOI" || l.status === "DoneDeal") return false;
+        if (l.status === "Deal Cancelled" && l.eoiStatus !== "EOI Cancelled") return false;
+        return l.rotationStopped === true;
+      });
+    } else {
+      filtered = allVisible.filter(function(l){ return l.rotationStopped === true; });
+    }
   } else if (p.leadFilter === "important") {
     // Important tab: every lead that EVER had a qualifying mark on any slice.
     filtered = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; });
@@ -4771,7 +4819,13 @@ var LeadsPage = function(p) {
             } else if (s.v === "important") {
               cnt = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; }).length;
             } else if (s.v === "rotation_stopped") {
-              cnt = allVisible.filter(function(l){ return l.rotationStopped === true; }).length;
+              // Server-aggregated total (rotationStoppedCount) reflects every
+              // matching lead in scope, not just the paginated p.leads slice.
+              // Falls back to in-memory derivation if the BE field is absent
+              // (sales-historical branch / pre-deploy FE).
+              cnt = (typeof leadsPageCounts.rotationStoppedCount === "number")
+                ? leadsPageCounts.rotationStoppedCount
+                : allVisible.filter(function(l){ return l.rotationStopped === true; }).length;
             } else if (s.v === "NewLead") {
               if (isSalesRole && typeof leadsPageCounts.newLeadCount === "number") {
                 cnt = leadsPageCounts.newLeadCount;

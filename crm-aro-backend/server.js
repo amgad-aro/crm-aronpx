@@ -7205,6 +7205,12 @@ app.get("/api/leads", auth, async function(req, res) {
     if (req.query.lockedOnly === "true" && (role === "admin" || role === "sales_admin")) {
       query.locked = true;
     }
+    // Rotation Stopped filter — mirrors lockedOnly. admin/sales_admin only;
+    // other roles silently have the param ignored so they can't bypass the
+    // hidden UI control (chip is rendered behind isOnlyAdmin on the FE).
+    if (req.query.rotationStopped === "true" && (role === "admin" || role === "sales_admin")) {
+      query.rotationStopped = true;
+    }
     // STEP 4-5 X2 — opt-in archived filter. ArchivePage uses this to fetch
     // its own list instead of scanning p.leads (which would be empty post-
     // X3 bootstrap shrink since the bootstrap sorts by createdAt desc and
@@ -7996,7 +8002,8 @@ app.get("/api/leads/counts", auth, async function(req, res) {
         { archived: { $ne: true } },
         { callbackTime: cbOverdueCond },
         { status: { $nin: ["MeetingDone", "DoneDeal", "EOI"] } }
-      ]})
+      ]}),
+      Lead.countDocuments({ $and: baseInWindowAnd.concat([{ rotationStopped: true }]) })
     ]);
 
     // STEP 4-5 X2 — extended breakdowns for adminMetrics migration:
@@ -8052,12 +8059,13 @@ app.get("/api/leads/counts", auth, async function(req, res) {
     });
 
     res.json({
-      total:            counts[0],
-      meetings:         counts[1],
-      deals:            counts[2],
-      interested:       counts[3],
-      callbacksInRange: counts[4],
-      overdueCallbacks: counts[5],
+      total:                counts[0],
+      meetings:             counts[1],
+      deals:                counts[2],
+      interested:           counts[3],
+      callbacksInRange:     counts[4],
+      overdueCallbacks:     counts[5],
+      rotationStoppedCount: counts[6],
       byStatus:   byStatus,
       bySource:   bySource,
       byCampaign: byCampaign
