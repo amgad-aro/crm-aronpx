@@ -1279,7 +1279,7 @@ var CB_CSS = "@keyframes cbBellShake{0%,100%{transform:rotate(0)}15%{transform:r
 var cbStyleInjected = false;
 
 var CallbackBell = function(p) {
-  var [tab, setTab] = useState("all");
+  var [tab, setTab] = useState("now");
   var [limit, setLimit] = useState(30);
   // STEP 4-2 — own state populated from /api/leads/callbacks +
   // /api/daily-requests/callbacks + /api/leads/no-contact. Rows are already
@@ -1310,16 +1310,14 @@ var CallbackBell = function(p) {
   // click handler below can route to lead vs DR without needing the parent's
   // p.dailyRequests array.
   //
-  // 2026-05-18 rebuild — window now spans 1 year back + 1 year forward.
-  // The previous 90d/+24h window cut off the new Upcoming tab's intent
-  // ("everything scheduled in the future") at 24h. The BE-side
-  // lastActivityTime <= callbackTime filter (this commit) keeps the
-  // payload small without the date squeeze, so the wider window costs
-  // nothing in practice while letting weeks/months-out callbacks render.
+  // Window: from = now - 7d (covers Delay tab — anything more than 7d overdue
+  // is a "missed forever" lead and belongs on the Stale Lead surface, not the
+  // bell). to = now + 30d (Upcoming planning view). Tighter than the prior
+  // ±365d so the bell payload stays small and stale clutter is excluded.
   var bellQS = function(){
     var nowMs = Date.now();
-    var fromIso = new Date(nowMs - 365 * 24 * 3600 * 1000).toISOString();
-    var toIso   = new Date(nowMs + 365 * 24 * 3600 * 1000).toISOString();
+    var fromIso = new Date(nowMs - 7 * 24 * 3600 * 1000).toISOString();
+    var toIso   = new Date(nowMs + 30 * 24 * 3600 * 1000).toISOString();
     return "?from=" + encodeURIComponent(fromIso) + "&to=" + encodeURIComponent(toIso) + "&limit=2000";
   };
 
@@ -1367,16 +1365,20 @@ var CallbackBell = function(p) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.showNotif]);
 
-  // 2026-05-18 rebuild — bell qualification, tab boundaries, sorting:
+  // Bell qualification, tab boundaries, sorting:
   //   * qualified: row has callbackTime (BE-side lastActivityTime ≤ callbackTime filter).
-  //   * Delay:    callbackTime < now - 1h (overdue by more than the Now window).
-  //   * Now:      |callbackTime - now| ≤ 1h.
-  //   * Upcoming: callbackTime > now + 1h.
+  //   * Delay:    callbackTime < now - 2h (overdue beyond the Now grace window).
+  //   * Now:      callbackTime ∈ [now - 2h, now + 30min] (act-now window).
+  //   * Upcoming: callbackTime > now + 30min.
   //   * No Contact: no callbackTime AND lastActivityTime > 24h ago
   //                 (from /api/leads/no-contact, deduped against the above).
-  //   * Sort: callbackTime DESC across every tab (newest scheduled first).
+  //   * Sort: callbackTime ASC for Delay/Now/Upcoming/All (most overdue first
+  //     → about to fire next); No Contact sorts by lastActivityTime DESC.
+  //   * Bell-icon badge: nowItems.length only — stale Delay/Upcoming entries
+  //     do not inflate the urgent-action counter.
   var now = Date.now();
-  var NOW_WINDOW_MS = 3600000;
+  var NOW_DELAY_MS    = 2 * 3600 * 1000;   // 2h overdue still counts as Now
+  var NOW_UPCOMING_MS = 30 * 60 * 1000;    // up to 30min ahead still counts as Now
 
   var myItems = bellLeads.concat(bellDRs);
 
@@ -1391,8 +1393,8 @@ var CallbackBell = function(p) {
     var cbT = new Date(l.callbackTime).getTime();
     if(isNaN(cbT)) return;
     var diff = cbT - now;
-    if(diff < -NOW_WINDOW_MS){ overdue.push(l); cbIds.add(gid(l)); }
-    else if(diff <= NOW_WINDOW_MS){ nowItems.push(l); cbIds.add(gid(l)); }
+    if(diff < -NOW_DELAY_MS){ overdue.push(l); cbIds.add(gid(l)); }
+    else if(diff <= NOW_UPCOMING_MS){ nowItems.push(l); cbIds.add(gid(l)); }
     else { upcoming.push(l); cbIds.add(gid(l)); }
   });
 
@@ -1424,7 +1426,9 @@ var CallbackBell = function(p) {
     return sorted;
   };
 
-  // Unsorted superset for the All tab and the bell badge count.
+  // Unsorted superset for the All tab. Bell-icon badge uses nowItems.length
+  // only (see totalCount below) so stale Delay/Upcoming entries don't inflate
+  // the urgent-action counter.
   var allItems = overdue.concat(nowItems).concat(upcoming).concat(noContact);
 
   var filtered;
@@ -1437,7 +1441,7 @@ var CallbackBell = function(p) {
   filtered = sortForTab(filtered, tab);
 
   var visible = filtered.slice(0, limit);
-  var totalCount = allItems.length;
+  var totalCount = nowItems.length;
 
   var tabs = [
     {key:"all", label:"All", count:totalCount},
@@ -1458,7 +1462,7 @@ var CallbackBell = function(p) {
     <button onClick={function(){
       var opening=!p.showNotif;
       p.setShowNotif(opening);
-      if(opening){p.setShowDealNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);setTab("all");}
+      if(opening){p.setShowDealNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);setTab("now");}
     }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:totalCount>0?"#FEF2F2":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
       <Bell size={16} color={totalCount>0?C.danger:C.textLight} className={totalCount>0?"cb-bell-shake":""}/>
       {totalCount>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{totalCount>99?"99+":totalCount}</span>}
