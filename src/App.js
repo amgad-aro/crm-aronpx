@@ -4090,6 +4090,10 @@ var LeadsPage = function(p) {
     // Standalone filter: ignore every other user-applied filter and show only
     // leads where the rotation-lock flag is set.
     filtered = allVisible.filter(function(l){return l.locked===true;});
+  } else if (p.leadFilter === "rotation_stopped") {
+    // Cross-cut filter (independent of status): leads where the rotation
+    // engine permanently halted (3 consecutive Not Interested rotations).
+    filtered = allVisible.filter(function(l){ return l.rotationStopped === true; });
   } else if (p.leadFilter === "important") {
     // Important tab: every lead that EVER had a qualifying mark on any slice.
     filtered = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; });
@@ -4734,6 +4738,7 @@ var LeadsPage = function(p) {
         {(function(){
           var base = [{v:"all",l:t.all}].concat(tabSc.map(function(s){return{v:s.value,l:s.label};}));
           if (isAdmin) base.push({v:"important",l:"⭐ Important"});
+          if (isOnlyAdmin) base.push({v:"rotation_stopped",l:"🛑 Rotation Stopped"});
           return base;
         })().map(function(s){
           // Prefer the server-aggregated counts when loaded (matches the
@@ -4765,6 +4770,8 @@ var LeadsPage = function(p) {
               }
             } else if (s.v === "important") {
               cnt = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; }).length;
+            } else if (s.v === "rotation_stopped") {
+              cnt = allVisible.filter(function(l){ return l.rotationStopped === true; }).length;
             } else if (s.v === "NewLead") {
               if (isSalesRole && typeof leadsPageCounts.newLeadCount === "number") {
                 cnt = leadsPageCounts.newLeadCount;
@@ -4777,6 +4784,7 @@ var LeadsPage = function(p) {
           } else {
             if (s.v==="all") cnt = allVisible.length;
             else if (s.v==="important") cnt = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; }).length;
+            else if (s.v==="rotation_stopped") cnt = allVisible.filter(function(l){ return l.rotationStopped===true; }).length;
             else if (s.v==="NewLead") cnt = allVisible.filter(isGenuineNewLead).length;
             else cnt = allVisible.filter(function(l){ return currentStatus(l)===s.v; }).length;
           }
