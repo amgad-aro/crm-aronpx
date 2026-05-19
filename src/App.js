@@ -1500,7 +1500,7 @@ var CallbackBell = function(p) {
           // which inverted the direction ("15 days ago") on rows visible
           // alongside future-direction siblings in the All tab.
           var timeStr=l.callbackTime?callbackTimeStr(l.callbackTime):"";
-          return <div key={gid(l)} className="cb-card" onClick={function(){p.setShowNotif(false);var isDR=l._kind==="dr";setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();return;}/* BUG #6 — /api/leads/callbacks returns only LEAD_CALLBACK_FIELDS (no project/campaign/budget). Fetch full doc before opening the panel; fail-soft to the bell's lite copy. */apiFetch("/api/leads/"+gid(l),"GET",null,p.token).then(function(fresh){p.onLeadClick((fresh&&fresh._id)?fresh:l);}).catch(function(){p.onLeadClick(l);});},50);}} style={{ background:cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
+          return <div key={gid(l)} className="cb-card" onClick={function(){p.setShowNotif(false);var isDR=l._kind==="dr";setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();return;}/* BUG #6 — /api/leads/callbacks returns only LEAD_CALLBACK_FIELDS (no project/campaign/budget). Fetch full doc before opening the panel; fail-soft to the bell's lite copy. */apiFetch("/api/leads/"+gid(l),"GET",null,p.token).then(function(fresh){p.onLeadClick((fresh&&fresh._id)?fresh:l);}).catch(function(err){console.warn("[CALLBACK_BELL_FETCH_FAILED]",{leadId:gid(l),row:l,error:err&&err.message});p.onLeadClick(l);});},50);}} style={{ background:cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
             <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{lType==="overdue"?"⏰":lType==="now"?"📞":lType==="upcoming"?"🔔":"😴"}</div>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ fontSize:15, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</div>
@@ -1573,7 +1573,13 @@ var HeaderSearch = function(p) {
     } else if (item.project) {
       sub = (item.phone||"") + " \u00b7 " + item.project;
     }
-    return <div key={(isDR?"dr-":"lead-")+gid(item)} onClick={function(){setOpen(false);onClick&&onClick(item);}} style={{ padding:"10px 14px", borderBottom:"1px solid #F1F5F9", cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}>
+    return <div key={(isDR?"dr-":"lead-")+gid(item)} onClick={function(){
+      setOpen(false);
+      if (isDR) { onClick && onClick(item); return; }
+      apiFetch("/api/leads/"+gid(item),"GET",null,p.token)
+        .then(function(fresh){ onClick && onClick((fresh && fresh._id) ? fresh : item); })
+        .catch(function(){ onClick && onClick(item); });
+    }} style={{ padding:"10px 14px", borderBottom:"1px solid #F1F5F9", cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:13, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{item.name||"\u2014"}</div>
         <div style={{ fontSize:11, color:C.textLight, marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sub}</div>
@@ -1744,7 +1750,8 @@ var Header = function(p) {
                 apiFetch("/api/leads/" + String(n.leadId), "GET", null, p.token).then(function(fresh){
                   var target = (fresh && fresh._id) ? fresh : { _id: n.leadId, name: n.leadName||"" };
                   p.onDealNotifClick(page, target);
-                }).catch(function(){
+                }).catch(function(err){
+                  console.warn("[DEAL_BELL_FETCH_FAILED]", { notification: n, error: err && err.message });
                   p.onDealNotifClick(page, { _id: n.leadId, name: n.leadName||"" });
                 });
               };
@@ -1798,7 +1805,8 @@ var Header = function(p) {
                 // may not even contain the lead. Fail-soft to a name shell.
                 apiFetch("/api/leads/" + String(n.leadId), "GET", null, p.token).then(function(fresh){
                   route((fresh && fresh._id) ? fresh : { _id: n.leadId, name: n.leadName||"" });
-                }).catch(function(){
+                }).catch(function(err){
+                  console.warn("[ROTATION_BELL_FETCH_FAILED]", { notification: n, error: err && err.message });
                   route({ _id: n.leadId, name: n.leadName||"" });
                 });
               };
@@ -2670,9 +2678,15 @@ var QuickPhoneSearch = function(p) {
   var sc=STATUSES(p.t);
   var drSc=DR_STATUSES(p.t);
   var totalResults=leadResults.length+drResults.length;
-  var renderCard=function(l,onClick,statuses){
+  var renderCard=function(l,onClick,statuses,isDR){
     var so=statuses.find(function(s){return s.value===l.status;})||statuses[0];
-    return <div key={gid(l)} onClick={function(){onClick(l);setShow(false);setQ("");}} style={{ padding:"12px 14px", borderRadius:12, border:"1px solid #E8ECF1", marginBottom:8, cursor:"pointer", background:"#FAFBFC" }}>
+    return <div key={gid(l)} onClick={function(){
+      setShow(false);setQ("");
+      if (isDR) { onClick(l); return; }
+      apiFetch("/api/leads/"+gid(l),"GET",null,p.token)
+        .then(function(fresh){ onClick((fresh && fresh._id) ? fresh : l); })
+        .catch(function(){ onClick(l); });
+    }} style={{ padding:"12px 14px", borderRadius:12, border:"1px solid #E8ECF1", marginBottom:8, cursor:"pointer", background:"#FAFBFC" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
         <div style={{ fontWeight:700, fontSize:14 }}>{l.name}</div>
         <span style={{ background:so.bg, color:so.color, padding:"2px 8px", borderRadius:12, fontSize:11, fontWeight:600 }}>{so.label}</span>
@@ -2697,11 +2711,11 @@ var QuickPhoneSearch = function(p) {
       {!searching&&totalResults===0&&q.length>=4&&<div style={{ fontSize:13, color:"#94A3B8", textAlign:"center", padding:20 }}>No results</div>}
       {leadResults.length>0&&<div>
         <div style={{ fontSize:12, fontWeight:700, color:"#64748B", textTransform:"uppercase", letterSpacing:1, marginBottom:8 }}>Leads ({leadResults.length})</div>
-        {leadResults.map(function(l){return renderCard(l,p.onSelect,sc);})}
+        {leadResults.map(function(l){return renderCard(l,p.onSelect,sc,false);})}
       </div>}
       {drResults.length>0&&<div style={{ marginTop:leadResults.length>0?12:0 }}>
         <div style={{ fontSize:12, fontWeight:700, color:"#8B5CF6", textTransform:"uppercase", letterSpacing:1, marginBottom:8 }}>Daily Requests ({drResults.length})</div>
-        {drResults.map(function(r){return renderCard(r,p.onSelectDR,drSc);})}
+        {drResults.map(function(r){return renderCard(r,p.onSelectDR,drSc,true);})}
       </div>}
     </div>
   </div>;
