@@ -13978,7 +13978,7 @@ app.post("/api/notifications", auth, async function(req, res) {
     // copy from dealDate/eoiDate. Final fallback: now. Without this, dropdown
     // rows render "1 day ago" for every notification since createdAt clusters
     // around the load time on backfilled rows (see commit 945aa84 regression).
-    if (!body.eventTime && body.leadId && mongoose.Types.ObjectId.isValid(body.leadId)) {
+    if (!body.eventTime && body.type === "deal" && body.leadId && mongoose.Types.ObjectId.isValid(body.leadId)) {
       try {
         var evLead = await Lead.findById(body.leadId).select("dealDate eoiDate createdAt").lean();
         if (evLead) {
