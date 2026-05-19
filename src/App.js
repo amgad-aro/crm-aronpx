@@ -25060,29 +25060,35 @@ export default function CRMApp() {
     return function(){clearInterval(interval);};
   },[token, currentUser, leads, tasks]);
 
-  // ===== DAILY REPORT NOTIFICATION (9 PM for admin) =====
+  // ===== DAILY REPORT NOTIFICATION (11 PM for admin / sales_admin) =====
   useEffect(function(){
     if(!token||!currentUser||(currentUser.role!=="admin"&&currentUser.role!=="sales_admin")) return;
     var checkDailyReport = function(){
       var now = new Date();
       var h = now.getHours(); var m = now.getMinutes();
-      if(h===21&&m<2){
+      if(h===23&&m<2){
         var key = "crm_daily_report_"+now.toDateString();
-        try{
-          if(!localStorage.getItem(key)){
+        try{ if(localStorage.getItem(key)) return; }catch(e){}
+        var dayStart = new Date(); dayStart.setHours(0,0,0,0);
+        var dayEnd   = new Date(); dayEnd.setHours(24,0,0,0);
+        var qs = "?from="+encodeURIComponent(dayStart.toISOString())+"&to="+encodeURIComponent(dayEnd.toISOString());
+        // Counts come from the backend — in-memory `leads`/`activities` are
+        // closure-stale (deps omit them) and `activities` is capped at 20
+        // records. The key is set only after success so a transient failure
+        // lets the minute=1 tick retry within the firing window.
+        apiFetch("/api/reports/daily-counts"+qs,"GET",null,token).then(function(r){
+          try{
+            if(localStorage.getItem(key)) return;
             localStorage.setItem(key,"1");
-            // Build report from activities today
-            var todayStart = new Date(); todayStart.setHours(0,0,0,0);
-            var todayActs = activities.filter(function(a){return new Date(a.createdAt)>=todayStart;});
-            var todayLeads = leads.filter(function(l){return l.createdAt&&new Date(l.createdAt)>=todayStart&&!l.archived;});
-            var todayDeals = leads.filter(function(l){return l.updatedAt&&new Date(l.updatedAt)>=todayStart&&l.status==="DoneDeal";});
-            var calls = todayActs.filter(function(a){return a.type==="call";}).length;
-            showBrowserNotif(
-              "📊 Daily Report — "+now.toLocaleDateString("en-GB"),
-              "New Leads: "+todayLeads.length+" | Calls: "+calls+" | Deals: "+todayDeals.length
-            );
-          }
-        }catch(e){}
+          }catch(e){}
+          var newLeads = (r && r.newLeads) || 0;
+          var calls    = (r && r.calls) || 0;
+          var deals    = (r && r.deals) || 0;
+          showBrowserNotif(
+            "📊 Daily Report — "+now.toLocaleDateString("en-GB"),
+            "New Leads: "+newLeads+" | Calls: "+calls+" | Deals: "+deals
+          );
+        }).catch(function(){});
       }
     };
     var rptInterval = setInterval(checkDailyReport, 60*1000);

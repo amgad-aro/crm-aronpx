@@ -15068,6 +15068,48 @@ app.get("/api/reports/callback-compliance", auth, reportsAuth, async function(re
   }
 });
 
+// Daily Report counts — used by the FE Daily Report notification (11 PM Cairo).
+// Filter semantics mirror /api/reports/overview/kpis so the daily numbers
+// reconcile against the dashboard: deals use the same dealAt $cond + dealStatus
+// guard, new leads exclude Daily Request mirrors. Calls = Activity.type "call".
+app.get("/api/reports/daily-counts", auth, reportsAuth, async function(req, res) {
+  try {
+    var from = new Date(req.query.from);
+    var to   = new Date(req.query.to);
+    if (isNaN(from.getTime()) || isNaN(to.getTime()) || from >= to) {
+      return res.status(400).json({ error: "Invalid from/to" });
+    }
+    var parts = await Promise.all([
+      Lead.aggregate([
+        { $match: { archived: false, status: "DoneDeal", dealStatus: { $ne: "Deal Cancelled" }}},
+        { $addFields: { dealAt: { $cond: [
+          { $and: [{ $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] }] },
+          { $toDate: "$dealDate" },
+          "$updatedAt"
+        ]}}},
+        { $match: { dealAt: { $gte: from, $lt: to }}},
+        { $count: "count" }
+      ]),
+      Lead.countDocuments({
+        archived: false,
+        source: { $ne: "Daily Request" },
+        createdAt: { $gte: from, $lt: to }
+      }),
+      Activity.countDocuments({
+        type: "call",
+        createdAt: { $gte: from, $lt: to }
+      })
+    ]);
+    var deals    = (parts[0][0] && parts[0][0].count) || 0;
+    var newLeads = parts[1] || 0;
+    var calls    = parts[2] || 0;
+    res.json({ newLeads: newLeads, calls: calls, deals: deals });
+  } catch (e) {
+    console.error("[GET /api/reports/daily-counts]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "daily_counts_failed" });
+  }
+});
+
 app.get("/api/reports/overview/kpis", auth, reportsAuth, async function(req, res) {
   try {
     var range = reportsParseRange(req.query.from, req.query.to);
