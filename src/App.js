@@ -1279,7 +1279,7 @@ var CB_CSS = "@keyframes cbBellShake{0%,100%{transform:rotate(0)}15%{transform:r
 var cbStyleInjected = false;
 
 var CallbackBell = function(p) {
-  var [tab, setTab] = useState("now");
+  var [tab, setTab] = useState("all");
   var [limit, setLimit] = useState(30);
   // STEP 4-2 — own state populated from /api/leads/callbacks +
   // /api/daily-requests/callbacks + /api/leads/no-contact. Rows are already
@@ -1367,17 +1367,16 @@ var CallbackBell = function(p) {
 
   // Bell qualification, tab boundaries, sorting:
   //   * qualified: row has callbackTime (BE-side lastActivityTime ≤ callbackTime filter).
-  //   * Delay:    callbackTime < now - 2h (overdue beyond the Now grace window).
-  //   * Now:      callbackTime ∈ [now - 2h, now + 30min] (act-now window).
+  //   * Delay:    callbackTime < now - 30min (overdue beyond the Now grace window).
+  //   * Now:      callbackTime ∈ [now - 30min, now + 30min] (symmetric act-now window).
   //   * Upcoming: callbackTime > now + 30min.
   //   * No Contact: no callbackTime AND lastActivityTime > 24h ago
   //                 (from /api/leads/no-contact, deduped against the above).
   //   * Sort: callbackTime ASC for Delay/Now/Upcoming/All (most overdue first
   //     → about to fire next); No Contact sorts by lastActivityTime DESC.
-  //   * Bell-icon badge: nowItems.length only — stale Delay/Upcoming entries
-  //     do not inflate the urgent-action counter.
+  //   * Bell-icon badge: allItems.length — total across all tabs.
   var now = Date.now();
-  var NOW_DELAY_MS    = 2 * 3600 * 1000;   // 2h overdue still counts as Now
+  var NOW_DELAY_MS    = 30 * 60 * 1000;    // 30min overdue still counts as Now
   var NOW_UPCOMING_MS = 30 * 60 * 1000;    // up to 30min ahead still counts as Now
 
   var myItems = bellLeads.concat(bellDRs);
@@ -1426,9 +1425,8 @@ var CallbackBell = function(p) {
     return sorted;
   };
 
-  // Unsorted superset for the All tab. Bell-icon badge uses nowItems.length
-  // only (see totalCount below) so stale Delay/Upcoming entries don't inflate
-  // the urgent-action counter.
+  // Unsorted superset for the All tab. Bell-icon badge uses allItems.length
+  // (total across all tabs), matching the count chip on the All tab.
   var allItems = overdue.concat(nowItems).concat(upcoming).concat(noContact);
 
   var filtered;
@@ -1441,7 +1439,7 @@ var CallbackBell = function(p) {
   filtered = sortForTab(filtered, tab);
 
   var visible = filtered.slice(0, limit);
-  var totalCount = nowItems.length;
+  var totalCount = allItems.length;
 
   var tabs = [
     {key:"all", label:"All", count:totalCount},
@@ -1462,7 +1460,7 @@ var CallbackBell = function(p) {
     <button onClick={function(){
       var opening=!p.showNotif;
       p.setShowNotif(opening);
-      if(opening){p.setShowDealNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);setTab("now");}
+      if(opening){p.setShowDealNotif(false);if(p.setShowRotNotif)p.setShowRotNotif(false);setTab("all");}
     }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:totalCount>0?"#FEF2F2":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
       <Bell size={16} color={totalCount>0?C.danger:C.textLight} className={totalCount>0?"cb-bell-shake":""}/>
       {totalCount>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{totalCount>99?"99+":totalCount}</span>}
@@ -1503,7 +1501,12 @@ var CallbackBell = function(p) {
           // No Contact tab used to fall back to timeAgo(lastActivityTime)
           // which inverted the direction ("15 days ago") on rows visible
           // alongside future-direction siblings in the All tab.
-          var timeStr=l.callbackTime?callbackTimeStr(l.callbackTime):"";
+          var timeStr;
+          if(l.callbackTime){ timeStr=callbackTimeStr(l.callbackTime); }
+          else if(l.lastActivityTime){
+            var ncDays=Math.floor((Date.now()-new Date(l.lastActivityTime).getTime())/86400000);
+            timeStr=ncDays+(ncDays===1?" day":" days");
+          } else { timeStr=""; }
           return <div key={gid(l)} className="cb-card" onClick={function(){p.setShowNotif(false);var isDR=l._kind==="dr";setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();return;}/* BUG #6 — /api/leads/callbacks returns only LEAD_CALLBACK_FIELDS (no project/campaign/budget). Fetch full doc before opening the panel; fail-soft to the bell's lite copy. */apiFetch("/api/leads/"+gid(l),"GET",null,p.token).then(function(fresh){p.onLeadClick((fresh&&fresh._id)?fresh:l);}).catch(function(err){console.warn("[CALLBACK_BELL_FETCH_FAILED]",{leadId:gid(l),row:l,error:err&&err.message});p.onLeadClick(l);});},50);}} style={{ background:cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
             <div style={{ width:36, height:36, borderRadius:"50%", background:cc.icon, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:16 }}>{lType==="overdue"?"⏰":lType==="now"?"📞":lType==="upcoming"?"🔔":"😴"}</div>
             <div style={{ flex:1, minWidth:0 }}>
