@@ -8012,8 +8012,27 @@ app.get("/api/leads/counts", auth, async function(req, res) {
         { callbackTime: cbOverdueCond },
         { status: { $nin: ["MeetingDone", "DoneDeal", "EOI"] } }
       ]}),
-      Lead.countDocuments({ $and: baseInWindowAnd.concat([{ rotationStopped: true }]) }),
-      Lead.countDocuments({ $and: baseInWindowAnd.concat([{ rotationCount: { $in: [0, null] } }, { agentId: { $ne: null } }]) })
+      // Both chip counts mirror the LeadsPage allVisible predicate (status
+      // !== EOI/DoneDeal, and Deal Cancelled excluded unless EOI Cancelled).
+      // Without these, closed deals with rotationCount=0 / rotationStopped=true
+      // inflate the chip badge above the rendered row count.
+      Lead.countDocuments({ $and: baseInWindowAnd.concat([
+        { rotationStopped: true },
+        { status: { $nin: ["EOI", "DoneDeal"] } },
+        { $or: [
+          { status: { $ne: "Deal Cancelled" } },
+          { eoiStatus: "EOI Cancelled" }
+        ]}
+      ]) }),
+      Lead.countDocuments({ $and: baseInWindowAnd.concat([
+        { rotationCount: { $in: [0, null] } },
+        { agentId: { $ne: null } },
+        { status: { $nin: ["EOI", "DoneDeal"] } },
+        { $or: [
+          { status: { $ne: "Deal Cancelled" } },
+          { eoiStatus: "EOI Cancelled" }
+        ]}
+      ]) })
     ]);
 
     // STEP 4-5 X2 — extended breakdowns for adminMetrics migration:
