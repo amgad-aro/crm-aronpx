@@ -18122,6 +18122,280 @@ function slugifyAssetName(name) {
   return s ? s + "-" : "";
 }
 
+// ===== Asset label printing (Xprinter XP-233B thermal label printer) =====
+// The 10 supported label sizes. `id` is the dropdown value; w/h are the exact
+// physical millimetres pushed into `@page { size: Wmm Hmm }` so the label
+// prints at true size on the thermal head.
+var LABEL_SIZES = [
+  { id: "25x15", w: 25, h: 15, label: "25 × 15 mm" },
+  { id: "30x20", w: 30, h: 20, label: "30 × 20 mm" },
+  { id: "40x30", w: 40, h: 30, label: "40 × 30 mm" },
+  { id: "40x40", w: 40, h: 40, label: "40 × 40 mm" },
+  { id: "50x30", w: 50, h: 30, label: "50 × 30 mm" },
+  { id: "50x40", w: 50, h: 40, label: "50 × 40 mm" },
+  { id: "55x40", w: 55, h: 40, label: "55 × 40 mm" },
+  { id: "60x40", w: 60, h: 40, label: "60 × 40 mm" },
+  { id: "70x40", w: 70, h: 40, label: "70 × 40 mm" },
+  { id: "80x50", w: 80, h: 50, label: "80 × 50 mm" }
+];
+
+// Per-label element toggles. `qr` is locked ON (a QR-less label is pointless).
+// `def` seeds the dialog's default checkbox state.
+var LABEL_ELEMENTS = [
+  { key: "qr",           label: "QR Code",                  def: true,  locked: true },
+  { key: "code",         label: "Asset Code",               def: true },
+  { key: "name",         label: "Asset Name",               def: true },
+  { key: "category",     label: "Category",                 def: true },
+  { key: "branch",       label: "Branch",                   def: true },
+  { key: "custodian",    label: "Custodian Name",           def: true },
+  { key: "purchaseDate", label: "Purchase Date",            def: false },
+  { key: "serialNumber", label: "Serial Number",            def: false },
+  { key: "logo",         label: "ARO Logo image",           def: true },
+  { key: "footer",       label: "\"ARO INVESTMENT\" footer", def: true }
+];
+
+// Which elements physically fit at a given size. Tiny labels can only carry the
+// QR + a line or two; everything 40×40 and up gets the full layout. The dialog
+// greys out checkboxes outside this set so the user can't toggle on something
+// that wouldn't render. QR is always allowed (locked elsewhere).
+function labelAllowedElements(sizeId) {
+  if (sizeId === "25x15") return { code: true };
+  if (sizeId === "30x20") return { code: true, name: true };
+  if (sizeId === "40x30") return { code: true, name: true, logo: true };
+  return { code: true, name: true, category: true, branch: true, custodian: true,
+           purchaseDate: true, serialNumber: true, logo: true, footer: true };
+}
+
+// HTML-escape for values dropped into the label markup string.
+function escapeLabelHtml(s) {
+  return String(s == null ? "" : s).replace(/[<>&"]/g, function(c) {
+    return ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[c];
+  });
+}
+
+// Traces a rounded-rectangle sub-path onto an existing canvas path (no
+// beginPath/fill of its own) so callers can compose ring shapes via evenodd.
+function qrRoundedRectPath(ctx, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// Renders a styled QR PNG (data URL) for the print label: the three finder
+// ("eye") patterns get gently rounded corners while every data module stays a
+// crisp square — squares rasterise cleanest on a thermal head. Error
+// correction H, quiet-zone margin 2, colour #0F172A. Returns "" on any failure
+// so the caller can fall back gracefully. Separate from the plain on-screen QR
+// (QRCode.toDataURL) — that one is intentionally left untouched.
+function generateStyledQR(text) {
+  return new Promise(function(resolve) {
+    if (!text) { resolve(""); return; }
+    var qr;
+    try { qr = QRCode.create(String(text), { errorCorrectionLevel: "H" }); }
+    catch (e) { resolve(""); return; }
+    try {
+      var count = qr.modules.size;
+      var get = function(r, c) {
+        if (r < 0 || c < 0 || r >= count || c >= count) return false;
+        return !!qr.modules.get(r, c);
+      };
+      var margin = 2;
+      var px = 16; // device px per module — high enough to stay crisp at print
+      var dim = (count + margin * 2) * px;
+      var canvas = document.createElement("canvas");
+      canvas.width = dim; canvas.height = dim;
+      var ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillRect(0, 0, dim, dim);
+      ctx.fillStyle = "#0F172A";
+      // Finder patterns occupy the three 7×7 corners.
+      var finders = [[0, 0], [0, count - 7], [count - 7, 0]];
+      var inFinder = function(r, c) {
+        for (var i = 0; i < finders.length; i++) {
+          var fr = finders[i][0], fc = finders[i][1];
+          if (r >= fr && r < fr + 7 && c >= fc && c < fc + 7) return true;
+        }
+        return false;
+      };
+      // Data modules — crisp squares, finder area skipped.
+      for (var r = 0; r < count; r++) {
+        for (var c = 0; c < count; c++) {
+          if (inFinder(r, c)) continue;
+          if (get(r, c)) ctx.fillRect((c + margin) * px, (r + margin) * px, px, px);
+        }
+      }
+      // Finder patterns — rounded outer ring + rounded inner dot.
+      finders.forEach(function(f) {
+        var x = (f[1] + margin) * px, y = (f[0] + margin) * px, sz = 7 * px;
+        ctx.beginPath();
+        qrRoundedRectPath(ctx, x, y, sz, sz, px * 1.7);
+        qrRoundedRectPath(ctx, x + px, y + px, sz - 2 * px, sz - 2 * px, px * 1.0);
+        ctx.fill("evenodd"); // outer minus inner = ring
+        ctx.beginPath();
+        qrRoundedRectPath(ctx, x + 2 * px, y + 2 * px, sz - 4 * px, sz - 4 * px, px * 0.85);
+        ctx.fill();
+      });
+      resolve(canvas.toDataURL("image/png"));
+    } catch (e) { resolve(""); }
+  });
+}
+
+// Builds the inner HTML string for ONE printed asset label. Pure + module-level
+// so the print popup and the in-dialog live preview render from the SAME code
+// path — preview fidelity is guaranteed because there is exactly one renderer.
+// Every style is inline (no class hooks) so the string drops straight into the
+// popup document AND into the React preview via dangerouslySetInnerHTML.
+// Authored in mm/pt (absolute units): the label prints at true physical size
+// and the on-screen preview stays proportional under a CSS scale().
+// Reference layout is 55×40mm; all other sizes scale off it.
+function buildAssetLabelHTML(o) {
+  var esc = escapeLabelHtml;
+  var w = o.size.w, h = o.size.h, show = o.show || {};
+
+  var s = Math.min(w / 55, h / 40);
+  s = Math.max(0.6, Math.min(1.3, s));
+
+  var pad = Math.max(0.9, Math.min(2.2, w * 0.042));
+  var gap = Math.max(0.8, pad * 0.9);
+
+  var hasFooter = !!show.footer;
+  var footerH = hasFooter ? (2.4 + 1.1 * Math.min(s, 1)) : 0; // mm
+
+  var innerW = w - pad * 2;
+  var bodyH  = h - pad * 2 - footerH;
+  var qrAreaW = innerW * 0.47;
+  var qrFrame = Math.max(4, Math.min(qrAreaW, bodyH));
+
+  // QR frame chrome scales with the symbol so proportions hold at every size.
+  var qrBorder = Math.max(0.25, Math.min(0.5, qrFrame * 0.035));
+  var qrRadius = Math.max(0.7, Math.min(2.4, qrFrame * 0.10));
+  var qrInPad  = Math.max(0.35, Math.min(1.3, qrFrame * 0.07));
+
+  var rightColW = Math.max(3, innerW - qrAreaW - gap);
+
+  // The asset code auto-fits its column width so it never overflows, even on
+  // the 25×15 label. On big labels the scaled font wins.
+  var codeStr = String(o.code || "");
+  var codeLen = Math.max(1, codeStr.length);
+  var fitCode = (rightColW * 0.94) / (codeLen * 0.62 * 0.3528);
+  var fCode   = Math.max(3.6, Math.min(10.5 * s, fitCode));
+  var fName   = Math.max(4,   8.6 * s);
+  var fMeta   = Math.max(3.6, 6.8 * s);
+  var fExtra  = Math.max(3.4, 6.2 * s);
+  var fFooter = Math.max(5,   Math.min(7.5, 7 * s));
+  var codeSpacing = fCode < 6 ? 0 : 0.3;
+  var logoW = Math.max(8, Math.min(15, 13 * s));
+
+  // ----- QR card (left half, always present) -----
+  var qrImg = o.qrUrl
+    ? '<img src="' + o.qrUrl + '" alt="QR" style="width:100%;height:100%;display:block;image-rendering:pixelated;image-rendering:crisp-edges;"/>'
+    : '';
+  var qrBlock =
+    '<div style="width:' + qrAreaW + 'mm;display:flex;align-items:center;justify-content:center;flex:0 0 auto;">' +
+      '<div style="width:' + qrFrame + 'mm;height:' + qrFrame + 'mm;box-sizing:border-box;' +
+        'border:' + qrBorder + 'mm solid #0F172A;border-radius:' + qrRadius + 'mm;' +
+        'padding:' + qrInPad + 'mm;background:#fff;">' + qrImg + '</div>' +
+    '</div>';
+
+  // ----- right column: logo (top) + text block (vertically centred) -----
+  var rightParts = [];
+  if (show.logo) {
+    if (o.logoOk) {
+      rightParts.push(
+        '<div style="display:flex;justify-content:flex-end;margin-bottom:' + (0.5 * s) + 'mm;flex:0 0 auto;">' +
+          '<img src="' + o.logoSrc + '" alt="ARO" onerror="this.style.display=\'none\'" ' +
+            'style="width:' + logoW + 'mm;height:auto;max-height:' + (logoW * 0.62) + 'mm;display:block;object-fit:contain;"/>' +
+        '</div>'
+      );
+    } else {
+      // public/aro-logo.png not available — visible placeholder, never broken.
+      rightParts.push(
+        '<div style="display:flex;justify-content:flex-end;margin-bottom:' + (0.5 * s) + 'mm;flex:0 0 auto;">' +
+          '<div style="width:' + logoW + 'mm;height:' + (logoW * 0.42) + 'mm;box-sizing:border-box;' +
+            'border:0.3mm dashed #94A3B8;border-radius:0.8mm;display:flex;align-items:center;' +
+            'justify-content:center;font-size:5pt;color:#94A3B8;font-family:Arial,sans-serif;">ARO logo</div>' +
+        '</div>'
+      );
+    }
+  }
+
+  var textParts = [];
+  if (show.code && codeStr) {
+    textParts.push(
+      '<div style="font-family:\'Courier New\',Courier,monospace;font-weight:700;' +
+        'font-size:' + fCode + 'pt;letter-spacing:' + codeSpacing + 'px;line-height:1.1;' +
+        'color:#0F172A;white-space:nowrap;overflow:hidden;">' + esc(codeStr) + '</div>'
+    );
+  }
+  if (show.name && o.name) {
+    textParts.push(
+      '<div style="font-weight:600;font-size:' + fName + 'pt;line-height:1.15;color:#0F172A;' +
+        'margin-top:' + (0.4 * s) + 'mm;overflow:hidden;display:-webkit-box;' +
+        '-webkit-line-clamp:2;-webkit-box-orient:vertical;">' + esc(o.name) + '</div>'
+    );
+  }
+
+  var secondary = [];
+  var metaBits = [];
+  if (show.category && o.category) metaBits.push(esc(o.category));
+  if (show.branch && o.branch)     metaBits.push(esc(o.branch));
+  var metaLine = function(content, mt) {
+    return '<div style="font-size:' + fMeta + 'pt;color:#64748B;line-height:1.2;' +
+      (mt ? 'margin-top:' + (0.25 * s) + 'mm;' : '') +
+      'overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">' + content + '</div>';
+  };
+  if (metaBits.length) secondary.push(metaLine(metaBits.join(' &middot; '), false));
+  if (show.custodian && o.custodian) secondary.push(metaLine(esc(o.custodian), secondary.length > 0));
+  if (show.serialNumber && o.serialNumber) {
+    secondary.push('<div style="font-size:' + fExtra + 'pt;color:#64748B;line-height:1.2;margin-top:' +
+      (0.25 * s) + 'mm;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">S/N ' + esc(o.serialNumber) + '</div>');
+  }
+  if (show.purchaseDate && o.purchaseDate) {
+    secondary.push('<div style="font-size:' + fExtra + 'pt;color:#64748B;line-height:1.2;margin-top:' +
+      (0.25 * s) + 'mm;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">Purchased ' + esc(o.purchaseDate) + '</div>');
+  }
+
+  if (secondary.length && textParts.length) {
+    textParts.push('<div style="border-top:0.18mm solid #CBD5E1;margin:' + (0.7 * s) + 'mm 0;"></div>');
+  }
+  textParts = textParts.concat(secondary);
+
+  rightParts.push(
+    '<div style="flex:1;display:flex;flex-direction:column;justify-content:center;min-width:0;overflow:hidden;">' +
+      textParts.join('') +
+    '</div>'
+  );
+
+  var rightBlock =
+    '<div style="flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden;">' +
+      rightParts.join('') +
+    '</div>';
+
+  // ----- footer: thin rule + "ARO INVESTMENT" (plain Arial Bold text) -----
+  var footerBlock = hasFooter
+    ? '<div style="flex:0 0 auto;margin-top:' + (0.6 * s) + 'mm;">' +
+        '<div style="border-top:0.25mm solid #0F172A;margin-bottom:' + (0.8 * s) + 'mm;"></div>' +
+        '<div style="text-align:center;font-family:Arial,Helvetica,sans-serif;font-weight:700;' +
+          'font-size:' + fFooter + 'pt;letter-spacing:1.5px;color:#0F172A;line-height:1;">ARO INVESTMENT</div>' +
+      '</div>'
+    : '';
+
+  return (
+    '<div style="width:' + w + 'mm;height:' + h + 'mm;box-sizing:border-box;padding:' + pad + 'mm;' +
+      'background:#fff;display:flex;flex-direction:column;overflow:hidden;' +
+      'font-family:Arial,Helvetica,sans-serif;color:#0F172A;">' +
+      '<div style="flex:1;display:flex;align-items:stretch;gap:' + gap + 'mm;min-height:0;overflow:hidden;">' +
+        qrBlock + rightBlock +
+      '</div>' +
+      footerBlock +
+    '</div>'
+  );
+}
+
 // ===== ASSET TRACKER PAGE (admin / isOwner only) =====
 // Single page id "assets" with three internal sub-views: list, new (also used
 // for edit), and detail. Custody actions (transfer/return/mark-status) ship
@@ -18207,6 +18481,24 @@ var AssetTrackerPage = function(p) {
   var [historyFilters, setHistoryFilters] = useState({ from: "", to: "", action: "" });
   var [exporting, setExporting] = useState(false);
 
+  // Print dialog (Xprinter XP-233B label printer). The configuration here
+  // drives both the live preview and the print popup — see buildAssetLabelHTML.
+  //   styledQrUrl  — the rounded-finder QR PNG for the printed label (the plain
+  //                  on-screen QR card keeps using qrDataUrl, untouched).
+  //   logoStatus   — "checking" | "ok" | "missing"; gates the missing-file
+  //                  warning and swaps the logo for a placeholder box.
+  //   printElements— per-element visibility, seeded from LABEL_ELEMENTS defaults.
+  var [showPrintDialog, setShowPrintDialog] = useState(false);
+  var [printSize, setPrintSize] = useState("40x30");
+  var [printCopies, setPrintCopies] = useState("1");
+  var [printElements, setPrintElements] = useState(function() {
+    var init = {};
+    LABEL_ELEMENTS.forEach(function(el) { init[el.key] = el.def; });
+    return init;
+  });
+  var [styledQrUrl, setStyledQrUrl] = useState("");
+  var [logoStatus, setLogoStatus] = useState("checking");
+
   useEffect(function() {
     var cancelled = false;
     setLoadError("");
@@ -18237,6 +18529,9 @@ var AssetTrackerPage = function(p) {
     if (subPage !== "detail" && p.initialAssetCode && typeof p.onInitialConsumed === "function") {
       p.onInitialConsumed();
     }
+    // The print dialog belongs to the detail view — drop it on any nav away so
+    // it can't reappear over an unrelated asset next time detail opens.
+    if (subPage !== "detail") setShowPrintDialog(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subPage]);
 
@@ -18265,6 +18560,30 @@ var AssetTrackerPage = function(p) {
       .catch(function(){ if (!cancelled) setQrDataUrl(""); });
     return function() { cancelled = true; };
   }, [detailAsset]);
+
+  // Styled QR for the PRINT label — rounded finder patterns, crisp data
+  // modules (see generateStyledQR). Kept separate from qrDataUrl so the
+  // on-screen QR card and the PNG download stay exactly as they were.
+  useEffect(function() {
+    if (!detailAsset || !detailAsset.qrCodeData) { setStyledQrUrl(""); return; }
+    var cancelled = false;
+    generateStyledQR(detailAsset.qrCodeData).then(function(url) {
+      if (!cancelled) setStyledQrUrl(url);
+    });
+    return function() { cancelled = true; };
+  }, [detailAsset]);
+
+  // One-time probe for public/aro-logo.png. If the file is absent the print
+  // dialog shows a clear warning and the label falls back to a placeholder box
+  // instead of a broken image.
+  useEffect(function() {
+    var settled = false;
+    var img = new Image();
+    img.onload  = function(){ if (!settled) { settled = true; setLogoStatus(img.naturalWidth > 0 ? "ok" : "missing"); } };
+    img.onerror = function(){ if (!settled) { settled = true; setLogoStatus("missing"); } };
+    img.src = "/aro-logo.png";
+    return function(){ settled = true; };
+  }, []);
 
   // Mount + tear down the html5-qrcode scanner when subPage flips to "scan".
   // Library is lazy-imported so it never lands in the main bundle. Browser
@@ -18482,65 +18801,86 @@ var AssetTrackerPage = function(p) {
     setStatusBusy(false);
   };
 
-  // Print the current asset's QR + label as a Phomemo M108 thermal card.
-  // Opens a popup with a size toggle (40×30 default, 40×40 alt roll) and a
-  // live preview. The size radio swaps the @page CSS rule and the card
-  // layout in one go — 40×30 uses a horizontal QR-left/text-right layout;
-  // 40×40 uses a vertical stack so the symbol can be ~30mm instead of 25mm.
-  //
-  // Uses a popup window so the rest of the CRM doesn't fight the print
-  // styles. The popup waits for the QR image to load before auto-triggering
-  // the first window.print() — otherwise Firefox/Safari sometimes print a
-  // blank page because the data URL hasn't decoded yet.
-  var printQR = function() {
-    if (!detailAsset || !qrDataUrl) return;
-    var w = window.open("", "_blank", "width=420,height=480");
+  // Print dialog open/close. Opening just flips the flag — size, element
+  // toggles and copy count persist across opens so a batch-printing session
+  // keeps the user's choices.
+  var openPrintDialog  = function() { setShowPrintDialog(true); };
+  var closePrintDialog = function() { setShowPrintDialog(false); };
+
+  // Single source of truth for the rendered label markup. Both the live
+  // preview (logoSrc "/aro-logo.png") and the print popup (absolute logoSrc
+  // so the about:blank popup resolves it) call this — guaranteeing the
+  // preview matches the print. Resolves the user's element toggles against
+  // what physically fits the chosen size (labelAllowedElements).
+  var currentLabelHTML = function(logoSrc) {
+    if (!detailAsset || !styledQrUrl) return "";
+    var a = detailAsset;
+    var sizeObj = LABEL_SIZES.filter(function(z){ return z.id === printSize; })[0] || LABEL_SIZES[2];
+    var allowed = labelAllowedElements(sizeObj.id);
+    var effShow = {};
+    LABEL_ELEMENTS.forEach(function(el) {
+      if (el.key === "qr") return;
+      effShow[el.key] = !!printElements[el.key] && !!allowed[el.key];
+    });
+    return buildAssetLabelHTML({
+      code: a.assetCode, name: a.name,
+      category:  (a.categoryId && a.categoryId.name) || "",
+      branch:    (a.branchId && a.branchId.name) || "",
+      custodian: (a.currentCustodian && a.currentCustodian.name) || "",
+      serialNumber: a.serialNumber || "",
+      purchaseDate: a.purchaseDate ? new Date(a.purchaseDate).toLocaleDateString("en-GB") : "",
+      size: sizeObj, show: effShow, qrUrl: styledQrUrl,
+      logoSrc: logoSrc, logoOk: logoStatus === "ok"
+    });
+  };
+
+  // Sends the configured label to the print queue N times. Uses a popup so the
+  // CRM's own styles don't fight the @page rule. One label is written into the
+  // source; the popup's own script clones it (copies − 1) more times — keeps
+  // the document small even when the QR data URL is large and copies is high.
+  // Auto-prints once every image (QR + logo) has settled, so the thermal head
+  // never receives a half-decoded label.
+  var doPrintLabels = function() {
+    if (!detailAsset || !styledQrUrl) return;
+    var sizeObj = LABEL_SIZES.filter(function(z){ return z.id === printSize; })[0] || LABEL_SIZES[2];
+    var copies = Math.max(1, Math.min(99, parseInt(printCopies, 10) || 1));
+    var labelHtml = currentLabelHTML(window.location.origin + "/aro-logo.png");
+    if (!labelHtml) return;
+    var w = window.open("", "_blank", "width=580,height=640");
     if (!w) { alert("Couldn't open the print window. Allow pop-ups for this site and try again."); return; }
-    var safeName = String(detailAsset.name || "").replace(/[<>&"]/g, function(c){ return ({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"})[c]; });
-    var html = '<!doctype html><html><head><meta charset="utf-8"><title>' + detailAsset.assetCode + '</title>'
-      + '<style>'
-      + '  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }'
-      + '  .qr img { width: 100%; height: 100%; display: block; }'
-      + '  .meta .name { font-weight: 600; }'
-      + '  .meta .code { font-family: ui-monospace, SFMono-Regular, monospace; margin-top: 1mm; }'
-      + '  @media screen {'
-      + '    body { background: #eee; padding: 16px; }'
-      + '    .controls { background: #fff; padding: 12px 14px; border-radius: 8px; margin-bottom: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }'
-      + '    .controls label { font-size: 13px; cursor: pointer; padding: 4px 10px; border-radius: 6px; border: 0.5px solid rgba(0,0,0,0.1); background: #fff; }'
-      + '    .controls input[type=radio]:checked + span { color: #185FA5; font-weight: 600; }'
-      + '    .controls label:has(input:checked) { border-color: #185FA5; background: #E6F1FB; }'
-      + '    .print-btn { margin-left: auto; padding: 6px 14px; border: 0.5px solid rgba(24,95,165,0.3); background: #185FA5; color: #fff; border-radius: 6px; font-size: 13px; cursor: pointer; font-family: inherit; }'
-      + '    .card { background: #fff; border: 1px dashed #999; }'
-      + '  }'
-      + '  @media print { .controls { display: none; } }'
-      + '  /* Layout variants — toggled by adding/removing the .size-40 class on body. */'
-      + '  body.size-30 .card { width: 40mm; height: 30mm; box-sizing: border-box; padding: 1.5mm; display: flex; align-items: center; justify-content: center; gap: 2mm; }'
-      + '  body.size-30 .qr { width: 25mm; height: 25mm; flex-shrink: 0; }'
-      + '  body.size-30 .meta { font-size: 7pt; line-height: 1.15; overflow: hidden; }'
-      + '  body.size-40 .card { width: 40mm; height: 40mm; box-sizing: border-box; padding: 2mm 1.5mm 1.5mm; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1mm; }'
-      + '  body.size-40 .qr { width: 30mm; height: 30mm; }'
-      + '  body.size-40 .meta { font-size: 7pt; line-height: 1.15; text-align: center; }'
-      + '</style>'
-      // <style> tag whose @page rule we swap from JS — Chrome/Firefox both
-      // honour live @page changes if they sit in their own sheet.
-      + '<style id="page-style">@page { size: 40mm 30mm; margin: 0; }</style>'
-      + '</head><body class="size-30">'
-      + '<div class="controls">'
-      + '  <span style="font-size:13px;color:#666;">Label size:</span>'
-      + '  <label><input type="radio" name="sz" value="30" checked onchange="setSize(this.value)"/> <span>40 × 30 mm</span></label>'
-      + '  <label><input type="radio" name="sz" value="40" onchange="setSize(this.value)"/> <span>40 × 40 mm</span></label>'
-      + '  <button type="button" class="print-btn" onclick="doPrint()">Print</button>'
-      + '</div>'
-      + '<div class="card">'
-      + '<div class="qr"><img id="qrimg" src="' + qrDataUrl + '" alt="QR"/></div>'
-      + '<div class="meta"><div class="name">' + safeName + '</div><div class="code">' + detailAsset.assetCode + '</div></div>'
-      + '</div>'
+    var copyLabel = copies + (copies === 1 ? " label" : " copies");
+    var html = '<!doctype html><html><head><meta charset="utf-8"><title>'
+      + escapeLabelHtml(detailAsset.assetCode) + ' — labels</title><style>'
+      + '@page { size: ' + sizeObj.w + 'mm ' + sizeObj.h + 'mm; margin: 0; }'
+      + 'html,body { margin:0; padding:0; background:#fff; }'
+      + '.pl { display:block; }'
+      + '.pl + .pl { page-break-before: always; }'
+      + '@media screen {'
+      + '  body { background:#e5e7eb; padding:16px; text-align:center; }'
+      + '  .pl { margin:0 auto 12px; box-shadow:0 1px 6px rgba(0,0,0,0.25); }'
+      + '  .toolbar { margin-bottom:14px; }'
+      + '  .toolbar button { padding:7px 16px; border:0.5px solid rgba(24,95,165,0.3); background:#185FA5; color:#fff; border-radius:6px; font-size:13px; cursor:pointer; font-family:sans-serif; }'
+      + '  .hint { font-size:12px; color:#666; margin-top:10px; font-family:sans-serif; }'
+      + '}'
+      + '@media print { .toolbar, .hint { display:none !important; } }'
+      + '</style></head><body>'
+      + '<div class="toolbar"><button type="button" onclick="window.print()">Print ' + copyLabel + '</button></div>'
+      + '<div id="pl-wrap"><div class="pl">' + labelHtml + '</div></div>'
+      + '<div class="hint">' + copyLabel + ' &middot; ' + sizeObj.label + ' &middot; Xprinter XP-233B</div>'
       + '<script>'
-      + 'function setSize(s){ document.body.className = "size-" + s; document.getElementById("page-style").textContent = "@page { size: 40mm " + s + "mm; margin: 0; }"; }'
-      + 'function doPrint(){ try { window.focus(); window.print(); } catch(e){} }'
-      + 'var img = document.getElementById("qrimg");'
-      + 'if (img.complete) setTimeout(doPrint, 80); else img.onload = function(){ setTimeout(doPrint, 80); };'
-      // eslint-disable-next-line no-useless-concat -- intentional split to keep the literal </script> from terminating any enclosing script tag a bundler may parse
+      + '(function(){'
+      + 'var COPIES=' + copies + ';'
+      + 'var wrap=document.getElementById("pl-wrap");'
+      + 'var first=wrap.firstChild;'
+      + 'for(var i=1;i<COPIES;i++){ wrap.appendChild(first.cloneNode(true)); }'
+      + 'var imgs=document.images, left=imgs.length;'
+      + 'function fire(){ try{ window.focus(); window.print(); }catch(e){} }'
+      + 'function done(){ left--; if(left<=0) setTimeout(fire,160); }'
+      + 'if(left===0){ setTimeout(fire,200); }'
+      + 'else { for(var j=0;j<imgs.length;j++){ var im=imgs[j];'
+      + '  if(im.complete){ done(); } else { im.addEventListener("load",done); im.addEventListener("error",done); } } }'
+      + '})();'
+      // eslint-disable-next-line no-useless-concat -- split so a literal </script> can't terminate an enclosing script tag a bundler may parse
       + '</' + 'script></body></html>';
     w.document.open(); w.document.write(html); w.document.close();
   };
@@ -19081,12 +19421,12 @@ var AssetTrackerPage = function(p) {
                   : <div style={{fontSize:12,color:"#888"}}>Generating…</div>
                 }
               </div>
-              {/* Print opens a popup with the size toggle (40×30 default,
-                  40×40 alt) and a live preview. PNG filename uses the
-                  slugified asset name as a prefix so a folder of downloaded
-                  labels is human-readable, not just code-soup. */}
+              {/* Print opens the label dialog (size dropdown, element toggles,
+                  copy count, live preview). PNG download is unchanged — its
+                  filename uses the slugified asset name as a prefix so a folder
+                  of downloaded labels is human-readable, not just code-soup. */}
               <div style={{display:"flex",gap:6,marginTop:10}}>
-                <button type="button" onClick={printQR} disabled={!qrDataUrl} style={Object.assign({}, btnPrimary, {flex:1, padding:"7px 12px", opacity:qrDataUrl?1:0.55, cursor:qrDataUrl?"pointer":"not-allowed"})}>Print QR</button>
+                <button type="button" onClick={openPrintDialog} disabled={!styledQrUrl} style={Object.assign({}, btnPrimary, {flex:1, padding:"7px 12px", opacity:styledQrUrl?1:0.55, cursor:styledQrUrl?"pointer":"not-allowed"})}>Print QR</button>
                 <a href={qrDataUrl || "#"} download={slugifyAssetName(a.name) + a.assetCode + ".png"} onClick={function(e){ if (!qrDataUrl) e.preventDefault(); }} style={Object.assign({}, btnGhost, {padding:"7px 12px", textDecoration:"none", textAlign:"center", display:"inline-flex", alignItems:"center", justifyContent:"center", opacity:qrDataUrl?1:0.55, pointerEvents:qrDataUrl?"auto":"none"})}>PNG</a>
               </div>
               <div style={{fontSize:10,color:"#888",marginTop:10,wordBreak:"break-all",fontFamily:"ui-monospace, SFMono-Regular, monospace",lineHeight:1.4}}>{a.qrCodeData}</div>
@@ -19244,6 +19584,103 @@ var AssetTrackerPage = function(p) {
                   {transferSaving ? "Transferring…" : "Transfer"}
                 </button>
               </div>
+            </div>
+          </div>}
+
+          {/* ---------- PRINT LABEL DIALOG (Xprinter XP-233B) ---------- */}
+          {showPrintDialog && <div className="crm-modal" style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20}} onClick={closePrintDialog}>
+            <div onClick={function(e){e.stopPropagation();}} style={{background:"#fff",borderRadius:12,width:840,maxWidth:"100%",maxHeight:"92vh",overflowY:"auto",border:"0.5px solid rgba(0,0,0,0.1)"}}>
+              {(function(){
+                var sizeObj = LABEL_SIZES.filter(function(z){ return z.id === printSize; })[0] || LABEL_SIZES[2];
+                var allowed = labelAllowedElements(sizeObj.id);
+                var copies = Math.max(1, Math.min(99, parseInt(printCopies, 10) || 1));
+                var previewHtml = currentLabelHTML("/aro-logo.png");
+                var PS = 1.3, MMPX = 3.7795;          // CSS px per mm × preview zoom
+                var boxW = sizeObj.w * MMPX * PS, boxH = sizeObj.h * MMPX * PS;
+                var suppressed = LABEL_ELEMENTS.some(function(el){
+                  return el.key !== "qr" && printElements[el.key] && !allowed[el.key];
+                });
+                var copyLabel = copies === 1 ? "Print label" : "Print " + copies + " copies";
+                var pill = { fontSize:10, fontWeight:600, padding:"1px 6px", borderRadius:5, marginLeft:"auto", whiteSpace:"nowrap" };
+                return <div style={{padding:22}}>
+                  {/* Header */}
+                  <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
+                    <div>
+                      <div style={{fontSize:16,fontWeight:500,color:"#1a1a1a"}}>Print label</div>
+                      <div style={{fontSize:12,color:"#666",marginTop:3}}>{a.name} · <span style={{fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>{a.assetCode}</span></div>
+                    </div>
+                    <button type="button" onClick={closePrintDialog} aria-label="Close" style={{border:"none",background:"transparent",fontSize:22,lineHeight:1,color:"#999",cursor:"pointer",padding:"0 4px"}}>×</button>
+                  </div>
+
+                  {/* Missing-logo warning */}
+                  {logoStatus === "missing" && printElements.logo && <div style={{fontSize:12,color:"#B45309",background:"#FFF4E5",border:"0.5px solid rgba(180,83,9,0.25)",borderRadius:8,padding:"8px 12px",marginTop:14}}>
+                    ⚠ <strong>aro-logo.png not found.</strong> Upload the brand logo to <span style={{fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>public/aro-logo.png</span> — until then the label prints a placeholder box where the logo would go.
+                  </div>}
+
+                  <div style={{display:"flex",gap:20,flexWrap:"wrap",marginTop:16}}>
+                    {/* ----- Controls ----- */}
+                    <div style={{flex:"1 1 260px",minWidth:240}}>
+                      <div style={{marginBottom:14}}>
+                        <label style={fieldLabel}>Label size</label>
+                        <select style={inputStyle} value={printSize} onChange={function(e){ setPrintSize(e.target.value); }}>
+                          {LABEL_SIZES.map(function(z){ return <option key={z.id} value={z.id}>{z.label}{z.id === "40x30" ? " (default)" : ""}</option>; })}
+                        </select>
+                      </div>
+
+                      <div style={{marginBottom:16}}>
+                        <label style={fieldLabel}>Number of copies</label>
+                        <input type="number" min="1" max="99" style={Object.assign({}, inputStyle, {width:120})}
+                          value={printCopies}
+                          onChange={function(e){ setPrintCopies(e.target.value); }}
+                          onBlur={function(e){ setPrintCopies(String(Math.max(1, Math.min(99, parseInt(e.target.value, 10) || 1)))); }}/>
+                      </div>
+
+                      <label style={fieldLabel}>Show on label</label>
+                      <div style={{display:"flex",flexDirection:"column",gap:1}}>
+                        {LABEL_ELEMENTS.map(function(el){
+                          var locked = !!el.locked;
+                          var fits = locked || !!allowed[el.key];
+                          var checked = locked ? true : !!printElements[el.key];
+                          var disabled = locked || !fits;
+                          return <label key={el.key} style={{display:"flex",alignItems:"center",gap:8,fontSize:13,padding:"5px 6px",borderRadius:6,cursor:disabled?"default":"pointer",color:disabled?"#9aa0a6":"#1a1a1a"}}>
+                            <input type="checkbox" checked={checked} disabled={disabled}
+                              onChange={function(){ if (disabled) return; setPrintElements(function(prev){ var n = Object.assign({}, prev); n[el.key] = !n[el.key]; return n; }); }}/>
+                            <span>{el.label}</span>
+                            {locked && <span style={Object.assign({}, pill, {color:"#185FA5",background:"#E6F1FB"})}>Required</span>}
+                            {!locked && !fits && <span style={Object.assign({}, pill, {color:"#888",background:"#F1F1F0"})}>Hidden at this size</span>}
+                          </label>;
+                        })}
+                      </div>
+                    </div>
+
+                    {/* ----- Live preview ----- */}
+                    <div style={{flex:"1 1 330px",minWidth:300}}>
+                      <label style={fieldLabel}>Live preview</label>
+                      <div style={{background:"#e5e7eb",borderRadius:10,padding:18,display:"flex",alignItems:"center",justifyContent:"center",minHeight:boxH+36}}>
+                        {styledQrUrl
+                          ? <div style={{width:boxW,height:boxH,position:"relative",flex:"0 0 auto"}}>
+                              <div style={{position:"absolute",top:0,left:0,transform:"scale("+PS+")",transformOrigin:"top left",boxShadow:"0 1px 8px rgba(0,0,0,0.28)"}}
+                                dangerouslySetInnerHTML={{__html: previewHtml}}/>
+                            </div>
+                          : <div style={{fontSize:12,color:"#666"}}>Generating QR…</div>
+                        }
+                      </div>
+                      <div style={{fontSize:11,color:"#888",marginTop:8,textAlign:"center"}}>
+                        {sizeObj.label}{suppressed ? " · some checked elements don't fit this size" : ""}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Footer */}
+                  <div style={{display:"flex",gap:8,justifyContent:"flex-end",alignItems:"center",marginTop:18,paddingTop:16,borderTop:"0.5px solid rgba(0,0,0,0.08)"}}>
+                    <button type="button" onClick={closePrintDialog} style={btnGhost}>Cancel</button>
+                    <button type="button" onClick={doPrintLabels} disabled={!styledQrUrl}
+                      style={Object.assign({}, btnPrimary, {opacity:styledQrUrl?1:0.55, cursor:styledQrUrl?"pointer":"not-allowed"})}>
+                      {copyLabel}
+                    </button>
+                  </div>
+                </div>;
+              })()}
             </div>
           </div>}
         </div>;
