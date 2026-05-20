@@ -525,7 +525,12 @@ var commissionSchema = new mongoose.Schema({
     projectName:     { type: String, default: "" },
     dealTotal:       { type: Number, default: 0 },      // EGP (parsed Lead.budget)
     dealDate:        { type: String, default: "" },     // ISO from Lead.dealDate
-    salesAgent:      { type: commissionRecipientSchema, required: true },
+    // Phase R-12 — broker-only external deals have NO internal sales agent
+    // (externalSalesAgentEnabled=false AND Lead.agentId=null). buildSnapshotForLead
+    // returns salesAgent:null for that shape, so this MUST default to null rather
+    // than required:true — otherwise Commission.create throws a ValidationError
+    // and the deal silently gets no commission.
+    salesAgent:      { type: commissionRecipientSchema, default: null },
     teamLeader:      { type: commissionRecipientSchema, default: null },
     manager:         { type: commissionRecipientSchema, default: null },
     director:        { type: commissionRecipientSchema, default: null },
@@ -2531,6 +2536,14 @@ async function buildExternalSplitForLead(leadDoc) {
   };
 }
 
+// Phase R-12 (2026-05-20) — in-process registry of leadIds whose commission
+// creation threw inside ensureCommissionForLead. The catch there must keep
+// returning null (callers depend on it not throwing), so without this a silent
+// failure is invisible — exactly how the broker-only external-deal bug went
+// unnoticed. Membership is logged loudly on every retry and cleared once a
+// commission is successfully created/revived; the whole Set resets on restart.
+var failedCommissionLeadIds = new Set();
+
 // ensureCommissionForLead — invoked from the four lifecycle hooks. Same-agent
 // revival flips a cancelled doc back to active. Different-agent close inserts
 // a NEW commission and leaves any prior cancelled one in place.
@@ -2540,6 +2553,12 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
       ? leadIdOrDoc
       : await Lead.findById(leadIdOrDoc).lean();
     if (!leadDoc) return null;
+    // Phase R-12 — surface retries of a lead that previously failed commission
+    // creation in this process, so a persistently-broken deal keeps showing up.
+    if (failedCommissionLeadIds.has(String(leadDoc._id))) {
+      console.warn("[ensureCommissionForLead] retrying lead " + leadDoc._id +
+        " (\"" + (leadDoc.name || "") + "\") — previously failed commission creation");
+    }
     // Phase R-13.1 — External deals legitimately may have a null Lead.agentId:
     //   - toggle ON  → external sales agent fills the salesAgent slot.
     //   - toggle OFF → broker-only deal, no internal sales recipient at all
@@ -2664,6 +2683,7 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
         } catch(rcErr) {
           console.error("[ensureCommissionForLead revive recompute]", rcErr && rcErr.message);
         }
+        failedCommissionLeadIds.delete(String(leadDoc._id));
         return lastCancelled;
       }
     }
@@ -2759,9 +2779,24 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
     } catch(rcErr2) {
       console.error("[ensureCommissionForLead create recompute]", rcErr2 && rcErr2.message);
     }
+    failedCommissionLeadIds.delete(String(leadDoc._id));
     return created;
   } catch (e) {
-    console.error("[ensureCommissionForLead]", e && e.message ? e.message : e);
+    // Phase R-12 — a swallowed failure here means a closed deal silently gets
+    // NO commission (the broker-only external-deal bug, 2026-05-20). Keep
+    // returning null so callers don't break, but log loud + grep-able with
+    // lead context, and remember the leadId so repeated failures keep surfacing.
+    var failLeadId = (typeof leadDoc !== "undefined" && leadDoc && leadDoc._id)
+      ? String(leadDoc._id)
+      : String((leadIdOrDoc && leadIdOrDoc._id) || leadIdOrDoc || "unknown");
+    var failName = (typeof leadDoc !== "undefined" && leadDoc && leadDoc.name)
+      ? leadDoc.name : "(unknown)";
+    var isRepeat = failedCommissionLeadIds.has(failLeadId);
+    failedCommissionLeadIds.add(failLeadId);
+    console.error("[ensureCommissionForLead CRITICAL] commission NOT created for lead " +
+      failLeadId + " (\"" + failName + "\")" +
+      (isRepeat ? " — REPEAT FAILURE this process" : "") +
+      " — " + (e && e.message ? e.message : e));
     return null;
   }
 }
