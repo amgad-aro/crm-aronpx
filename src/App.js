@@ -18150,7 +18150,6 @@ var LABEL_ELEMENTS = [
   { key: "custodian",    label: "Custodian Name",           def: true },
   { key: "purchaseDate", label: "Purchase Date",            def: false },
   { key: "serialNumber", label: "Serial Number",            def: false },
-  { key: "logo",         label: "ARO Logo image",           def: true },
   { key: "footer",       label: "\"ARO INVESTMENT\" footer", def: true }
 ];
 
@@ -18161,9 +18160,9 @@ var LABEL_ELEMENTS = [
 function labelAllowedElements(sizeId) {
   if (sizeId === "25x15") return { code: true };
   if (sizeId === "30x20") return { code: true, name: true };
-  if (sizeId === "40x30") return { code: true, name: true, logo: true };
+  if (sizeId === "40x30") return { code: true, name: true };
   return { code: true, name: true, category: true, branch: true, custodian: true,
-           purchaseDate: true, serialNumber: true, logo: true, footer: true };
+           purchaseDate: true, serialNumber: true, footer: true };
 }
 
 // HTML-escape for values dropped into the label markup string.
@@ -18287,8 +18286,8 @@ function buildAssetLabelHTML(o) {
   var fMeta   = Math.max(3.6, 6.8 * s);
   var fExtra  = Math.max(3.4, 6.2 * s);
   var fFooter = Math.max(5,   Math.min(7.5, 7 * s));
+  var fAro    = Math.max(8,   Math.min(15.5, 14 * s)); // "ARO" wordmark, 14pt @ ref
   var codeSpacing = fCode < 6 ? 0 : 0.3;
-  var logoW = Math.max(8, Math.min(15, 13 * s));
 
   // ----- QR card (left half, always present) -----
   var qrImg = o.qrUrl
@@ -18301,26 +18300,17 @@ function buildAssetLabelHTML(o) {
         'padding:' + qrInPad + 'mm;background:#fff;">' + qrImg + '</div>' +
     '</div>';
 
-  // ----- right column: logo (top) + text block (vertically centred) -----
+  // ----- right column: "ARO" wordmark (top) + text block (vertically centred) -----
+  // Plain Georgia serif text — no image, no toggle. Skipped on the two tiniest
+  // sizes (25×15 / 30×20), which have no room beside the QR for a brand mark.
   var rightParts = [];
-  if (show.logo) {
-    if (o.logoOk) {
-      rightParts.push(
-        '<div style="display:flex;justify-content:flex-end;margin-bottom:' + (0.5 * s) + 'mm;flex:0 0 auto;">' +
-          '<img src="' + o.logoSrc + '" alt="ARO" onerror="this.style.display=\'none\'" ' +
-            'style="width:' + logoW + 'mm;height:auto;max-height:' + (logoW * 0.62) + 'mm;display:block;object-fit:contain;"/>' +
-        '</div>'
-      );
-    } else {
-      // public/aro-logo.png not available — visible placeholder, never broken.
-      rightParts.push(
-        '<div style="display:flex;justify-content:flex-end;margin-bottom:' + (0.5 * s) + 'mm;flex:0 0 auto;">' +
-          '<div style="width:' + logoW + 'mm;height:' + (logoW * 0.42) + 'mm;box-sizing:border-box;' +
-            'border:0.3mm dashed #94A3B8;border-radius:0.8mm;display:flex;align-items:center;' +
-            'justify-content:center;font-size:5pt;color:#94A3B8;font-family:Arial,sans-serif;">ARO logo</div>' +
-        '</div>'
-      );
-    }
+  if (w >= 40 && h >= 30) {
+    rightParts.push(
+      '<div style="display:flex;justify-content:flex-end;margin-bottom:' + (0.5 * s) + 'mm;flex:0 0 auto;">' +
+        '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:' + fAro + 'pt;' +
+          'color:#0F172A;line-height:1;">ARO</div>' +
+      '</div>'
+    );
   }
 
   var textParts = [];
@@ -18485,8 +18475,6 @@ var AssetTrackerPage = function(p) {
   // drives both the live preview and the print popup — see buildAssetLabelHTML.
   //   styledQrUrl  — the rounded-finder QR PNG for the printed label (the plain
   //                  on-screen QR card keeps using qrDataUrl, untouched).
-  //   logoStatus   — "checking" | "ok" | "missing"; gates the missing-file
-  //                  warning and swaps the logo for a placeholder box.
   //   printElements— per-element visibility, seeded from LABEL_ELEMENTS defaults.
   var [showPrintDialog, setShowPrintDialog] = useState(false);
   var [printSize, setPrintSize] = useState("40x30");
@@ -18497,7 +18485,6 @@ var AssetTrackerPage = function(p) {
     return init;
   });
   var [styledQrUrl, setStyledQrUrl] = useState("");
-  var [logoStatus, setLogoStatus] = useState("checking");
 
   useEffect(function() {
     var cancelled = false;
@@ -18572,18 +18559,6 @@ var AssetTrackerPage = function(p) {
     });
     return function() { cancelled = true; };
   }, [detailAsset]);
-
-  // One-time probe for public/aro-logo.png. If the file is absent the print
-  // dialog shows a clear warning and the label falls back to a placeholder box
-  // instead of a broken image.
-  useEffect(function() {
-    var settled = false;
-    var img = new Image();
-    img.onload  = function(){ if (!settled) { settled = true; setLogoStatus(img.naturalWidth > 0 ? "ok" : "missing"); } };
-    img.onerror = function(){ if (!settled) { settled = true; setLogoStatus("missing"); } };
-    img.src = "/aro-logo.png";
-    return function(){ settled = true; };
-  }, []);
 
   // Mount + tear down the html5-qrcode scanner when subPage flips to "scan".
   // Library is lazy-imported so it never lands in the main bundle. Browser
@@ -18808,11 +18783,10 @@ var AssetTrackerPage = function(p) {
   var closePrintDialog = function() { setShowPrintDialog(false); };
 
   // Single source of truth for the rendered label markup. Both the live
-  // preview (logoSrc "/aro-logo.png") and the print popup (absolute logoSrc
-  // so the about:blank popup resolves it) call this — guaranteeing the
-  // preview matches the print. Resolves the user's element toggles against
-  // what physically fits the chosen size (labelAllowedElements).
-  var currentLabelHTML = function(logoSrc) {
+  // preview and the print popup call this — guaranteeing the preview matches
+  // the print. Resolves the user's element toggles against what physically
+  // fits the chosen size (labelAllowedElements).
+  var currentLabelHTML = function() {
     if (!detailAsset || !styledQrUrl) return "";
     var a = detailAsset;
     var sizeObj = LABEL_SIZES.filter(function(z){ return z.id === printSize; })[0] || LABEL_SIZES[2];
@@ -18829,8 +18803,7 @@ var AssetTrackerPage = function(p) {
       custodian: (a.currentCustodian && a.currentCustodian.name) || "",
       serialNumber: a.serialNumber || "",
       purchaseDate: a.purchaseDate ? new Date(a.purchaseDate).toLocaleDateString("en-GB") : "",
-      size: sizeObj, show: effShow, qrUrl: styledQrUrl,
-      logoSrc: logoSrc, logoOk: logoStatus === "ok"
+      size: sizeObj, show: effShow, qrUrl: styledQrUrl
     });
   };
 
@@ -18838,13 +18811,13 @@ var AssetTrackerPage = function(p) {
   // CRM's own styles don't fight the @page rule. One label is written into the
   // source; the popup's own script clones it (copies − 1) more times — keeps
   // the document small even when the QR data URL is large and copies is high.
-  // Auto-prints once every image (QR + logo) has settled, so the thermal head
-  // never receives a half-decoded label.
+  // Auto-prints once the QR image has settled, so the thermal head never
+  // receives a half-decoded label.
   var doPrintLabels = function() {
     if (!detailAsset || !styledQrUrl) return;
     var sizeObj = LABEL_SIZES.filter(function(z){ return z.id === printSize; })[0] || LABEL_SIZES[2];
     var copies = Math.max(1, Math.min(99, parseInt(printCopies, 10) || 1));
-    var labelHtml = currentLabelHTML(window.location.origin + "/aro-logo.png");
+    var labelHtml = currentLabelHTML();
     if (!labelHtml) return;
     var w = window.open("", "_blank", "width=580,height=640");
     if (!w) { alert("Couldn't open the print window. Allow pop-ups for this site and try again."); return; }
@@ -19594,7 +19567,7 @@ var AssetTrackerPage = function(p) {
                 var sizeObj = LABEL_SIZES.filter(function(z){ return z.id === printSize; })[0] || LABEL_SIZES[2];
                 var allowed = labelAllowedElements(sizeObj.id);
                 var copies = Math.max(1, Math.min(99, parseInt(printCopies, 10) || 1));
-                var previewHtml = currentLabelHTML("/aro-logo.png");
+                var previewHtml = currentLabelHTML();
                 var PS = 1.3, MMPX = 3.7795;          // CSS px per mm × preview zoom
                 var boxW = sizeObj.w * MMPX * PS, boxH = sizeObj.h * MMPX * PS;
                 var suppressed = LABEL_ELEMENTS.some(function(el){
@@ -19611,11 +19584,6 @@ var AssetTrackerPage = function(p) {
                     </div>
                     <button type="button" onClick={closePrintDialog} aria-label="Close" style={{border:"none",background:"transparent",fontSize:22,lineHeight:1,color:"#999",cursor:"pointer",padding:"0 4px"}}>×</button>
                   </div>
-
-                  {/* Missing-logo warning */}
-                  {logoStatus === "missing" && printElements.logo && <div style={{fontSize:12,color:"#B45309",background:"#FFF4E5",border:"0.5px solid rgba(180,83,9,0.25)",borderRadius:8,padding:"8px 12px",marginTop:14}}>
-                    ⚠ <strong>aro-logo.png not found.</strong> Upload the brand logo to <span style={{fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>public/aro-logo.png</span> — until then the label prints a placeholder box where the logo would go.
-                  </div>}
 
                   <div style={{display:"flex",gap:20,flexWrap:"wrap",marginTop:16}}>
                     {/* ----- Controls ----- */}
