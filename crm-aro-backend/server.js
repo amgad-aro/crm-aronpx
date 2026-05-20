@@ -8101,8 +8101,19 @@ app.get("/api/leads/counts", auth, async function(req, res) {
             { $in: ["$status", interestedSet] },
             { $anyElementTrue: { $map: { input: { $ifNull: ["$assignments", []] }, as: "a", in: { $in: ["$$a.status", interestedSet] } } } }
           ]}, 1, 0] } },
+          // A lead counts as a meeting only if its CURRENT status reached
+          // MeetingDone, or it progressed past a meeting into EOI/DoneDeal.
+          // NOTE: must be aggregation-expression syntax ($eq), not query
+          // syntax — spreading meetingsCond.$or (query-style {field:value}
+          // objects) here makes every operand a truthy document literal, so
+          // $or is always true and every lead is counted (100% meeting rate).
           meet: { $sum: { $cond: [{ $or: [
-            meetingsCond.$or[0], meetingsCond.$or[1], meetingsCond.$or[2]
+            { $eq: ["$status", "MeetingDone"] },
+            { $eq: ["$status", "Meeting Done"] },
+            { $eq: ["$status", "DoneDeal"] },
+            { $eq: ["$globalStatus", "donedeal"] },
+            { $eq: ["$status", "EOI"] },
+            { $eq: ["$globalStatus", "eoi"] }
           ]}, 1, 0] } },
           dealsC: { $sum: { $cond: [{ $or: [
             { $eq: ["$status", "DoneDeal"] }, { $eq: ["$globalStatus", "donedeal"] }
