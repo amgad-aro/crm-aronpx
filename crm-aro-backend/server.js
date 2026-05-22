@@ -20133,6 +20133,122 @@ app.delete("/api/vat-payments/:month", auth, salesAdminOnly, async function(req,
 });
 
 // =====================================================================
+// Phase R-15 — Net Profit by Deal. Per-commission breakdown that reconciles
+// to the Annual P&L: each deal's Revenue (R-14 net-revenue for cycles
+// received in the year), broker payouts and internal team payouts (both
+// dated in the year), and ARO Net = Revenue − Broker − Team.
+//
+// Reconciliation invariants (verified against /api/annual-pnl):
+//   Σ deals.revenue === annual-pnl revenue.netRevenue
+//   Σ deals.aroNet  === annual-pnl revenue.netRevenue − teamCommissions.total
+//
+// A commission is included when it has EITHER an in-year received cycle
+// (revenue) OR an in-year payout / brokerPayout (cost). The union — rather
+// than revenue-cycles alone — guarantees the totals still reconcile to the
+// P&L for the edge case of a deal whose cash arrived in one year and whose
+// team/broker was paid in another.
+//
+// Must be declared BEFORE /api/commissions/:id — the literal path would
+// otherwise be shadowed by the :id route (which has no regex guard). Same
+// constraint as /annual-summary above.
+// =====================================================================
+app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var nowCairo = new Date(Date.now() + 3 * 3600 * 1000); // UTC+3, Cairo, no DST
+    var year = String(req.query.year || "").trim();
+    if (!/^\d{4}$/.test(year)) year = String(nowCairo.getUTCFullYear());
+    function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
+    var yRegex = { $regex: "^" + year };
+
+    var docs = await Commission.find({
+      status: { $ne: "cancelled" },
+      $or: [
+        { cycles:                        { $elemMatch: { claimAmount: { $gt: 0 }, "received.date": yRegex } } },
+        { payouts:                       { $elemMatch: { date: yRegex } } },
+        { "externalSplit.brokerPayouts": { $elemMatch: { date: yRegex } } }
+      ]
+    }).select("snapshot.customerName externalSplit cycles payouts").lean();
+
+    var deals = [];
+    var tRev = 0, tBroker = 0, tTeam = 0;
+
+    for (var i = 0; i < docs.length; i++) {
+      var d = docs[i];
+      var snap = d.snapshot || {};
+      var es = d.externalSplit || {};
+
+      // Revenue — same per-cycle math as /api/annual-pnl: cycles with
+      // claimAmount > 0 whose received.date falls in the year. Net of VAT
+      // and 5% withholding; no broker netting.
+      var revenue = 0;
+      if (Array.isArray(d.cycles)) {
+        for (var j = 0; j < d.cycles.length; j++) {
+          var cy = d.cycles[j];
+          var ca = Number(cy.claimAmount || 0);
+          if (!(ca > 0)) continue;
+          var rd = cy.received && cy.received.date;
+          if (typeof rd !== "string" || rd.slice(0, 4) !== year) continue;
+          var nv = ca / 1.14;
+          var vt = ca - nv;
+          var wh = nv * 0.05;
+          revenue += (ca - vt - wh);
+        }
+      }
+
+      // Internal team payouts dated in the year (payouts[].amount).
+      var teamPayouts = 0;
+      if (Array.isArray(d.payouts)) {
+        for (var pj = 0; pj < d.payouts.length; pj++) {
+          var po = d.payouts[pj];
+          if (!po || typeof po.date !== "string" || po.date.slice(0, 4) !== year) continue;
+          var pa = Number(po.amount || 0);
+          if (pa > 0) teamPayouts += pa;
+        }
+      }
+
+      // Broker payouts dated in the year (externalSplit.brokerPayouts[].amount).
+      var brokerPayouts = 0;
+      var bpArr = (es && Array.isArray(es.brokerPayouts)) ? es.brokerPayouts : [];
+      for (var bj = 0; bj < bpArr.length; bj++) {
+        var bp = bpArr[bj];
+        if (!bp || typeof bp.date !== "string" || bp.date.slice(0, 4) !== year) continue;
+        var ba = Number(bp.amount || 0);
+        if (ba > 0) brokerPayouts += ba;
+      }
+
+      tRev += revenue; tBroker += brokerPayouts; tTeam += teamPayouts;
+
+      deals.push({
+        commissionId:  String(d._id),
+        customerName:  snap.customerName || "(unknown)",
+        type:          es.isExternal ? "external" : "internal",
+        revenue:       round2(revenue),
+        brokerPayouts: round2(brokerPayouts),
+        teamPayouts:   round2(teamPayouts),
+        aroNet:        round2(revenue - brokerPayouts - teamPayouts)
+      });
+    }
+
+    // Default sort: ARO Net descending (the FE re-sorts client-side).
+    deals.sort(function(a, b){ return b.aroNet - a.aroNet; });
+
+    res.json({
+      year: Number(year),
+      deals: deals,
+      totals: {
+        revenue:       round2(tRev),
+        brokerPayouts: round2(tBroker),
+        teamPayouts:   round2(tTeam),
+        aroNet:        round2(tRev - tBroker - tTeam)
+      }
+    });
+  } catch (e) {
+    console.error("[GET /api/commissions/profit-by-deal]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "profit_by_deal_failed" });
+  }
+});
+
+// =====================================================================
 // Phase R-6 endpoints — Expenses ledger, Profit Tax config, Annual P&L.
 // All gated by strictAdminOnly (admin role exclusively — sales_admin/manager/
 // team_leader rejected). The annual-pnl endpoint folds in the expense ledger

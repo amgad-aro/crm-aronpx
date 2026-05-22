@@ -21724,6 +21724,13 @@ var CommissionsPage = function(p) {
   // expense rows). Refetched on year change + after any expense/tax edit.
   var [pnl, setPnl] = useState(null);
   var [pnlLoading, setPnlLoading] = useState(false);
+  // Phase R-15 — Net Profit by Deal table (Annual Summary tab, above the P&L
+  // statement). Fed by /api/commissions/profit-by-deal; sorted + filtered
+  // client-side. Default sort: ARO Net descending.
+  var [profitByDeal, setProfitByDeal] = useState(null);
+  var [profitByDealLoading, setProfitByDealLoading] = useState(false);
+  var [pbdSort, setPbdSort] = useState({ col: "aroNet", dir: "desc" });
+  var [pbdFilter, setPbdFilter] = useState("all"); // all | internal | external
   var [expenseCategories, setExpenseCategories] = useState([]);
   var [addingExpense, setAddingExpense] = useState(false);
   var [editingExpense, setEditingExpense] = useState(null); // expense row or null
@@ -21852,6 +21859,11 @@ var CommissionsPage = function(p) {
     apiFetch("/api/annual-pnl?year=" + encodeURIComponent(effYear), "GET", null, p.token)
       .then(function(d){ if (!cancelled) { setPnl(d || null); setPnlLoading(false); pnlSilentReloadRef.current = false; } })
       .catch(function(){ if (!cancelled) { setPnl(null); setPnlLoading(false); pnlSilentReloadRef.current = false; } });
+    // Phase R-15 — Net Profit by Deal feed (admin-only, same year scope).
+    if (!silent) setProfitByDealLoading(true);
+    apiFetch("/api/commissions/profit-by-deal?year=" + encodeURIComponent(effYear), "GET", null, p.token)
+      .then(function(d){ if (!cancelled) { setProfitByDeal(d || null); setProfitByDealLoading(false); } })
+      .catch(function(){ if (!cancelled) { setProfitByDeal(null); setProfitByDealLoading(false); } });
     apiFetch("/api/expense-categories", "GET", null, p.token)
       .then(function(d){ if (!cancelled) setExpenseCategories((d && d.data) || []); })
       .catch(function(){ if (!cancelled) setExpenseCategories([]); });
@@ -23058,6 +23070,14 @@ var CommissionsPage = function(p) {
       var fmtDateShort = function(iso){ if (!iso) return "—"; try { return new Date(iso).toLocaleDateString("en-GB"); } catch(_){ return iso; } };
       var fmtDateUk = function(d){ if (!d) return ""; try { return new Date(d).toLocaleDateString("en-GB", { day:"2-digit", month:"short" }); } catch(_){ return ""; } };
 
+      // Change A — internal-scroll table chrome. Tables on this tab cap at
+      // TABLE_MAX_H and scroll internally; the header (and footer, where a
+      // table has one) stay pinned via position:sticky. boxShadow draws the
+      // divider so it survives borderCollapse:collapse.
+      var TABLE_MAX_H = 400;
+      var stickyTh = { position:"sticky", top:0, zIndex:2, background:"#F8FAFC", boxShadow:"inset 0 -1px 0 #E8ECF1" };
+      var stickyFoot = { position:"sticky", bottom:0, zIndex:2, background:"#F8FAFC", boxShadow:"inset 0 1px 0 #E8ECF1" };
+
       var summaryCard = function(label, value, color){
         return <div style={{ flex:1, minWidth:140, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
           <div style={{ fontSize:10, color:C.textLight, marginBottom:4 }}>{label}</div>
@@ -23096,15 +23116,15 @@ var CommissionsPage = function(p) {
           <div style={{ marginBottom:18 }}>
             <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>Monthly VAT</div>
             {byMonth.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>No claims for this year</div>}
-            {byMonth.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
+            {byMonth.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflowY:"auto", maxHeight:TABLE_MAX_H }}>
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                 <thead>
-                  <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
-                    <th style={{ width:30, padding:"8px 0 8px 12px" }}></th>
-                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Claim month</th>
-                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>VAT due</th>
-                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Payment month</th>
-                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>Status</th>
+                  <tr>
+                    <th style={Object.assign({}, stickyTh, { width:30, padding:"8px 0 8px 12px" })}></th>
+                    <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Claim month</th>
+                    <th style={Object.assign({}, stickyTh, { textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight })}>VAT due</th>
+                    <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Payment month</th>
+                    <th style={Object.assign({}, stickyTh, { textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight })}>Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -23172,15 +23192,15 @@ var CommissionsPage = function(p) {
           <div style={{ marginBottom:18 }}>
             <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>Withholding by deal</div>
             {byDeal.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>No claims for this year</div>}
-            {byDeal.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
+            {byDeal.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflowY:"auto", maxHeight:TABLE_MAX_H }}>
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                 <thead>
-                  <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
-                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Customer / Project</th>
-                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Cycle</th>
-                    <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Date</th>
-                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>Claim total</th>
-                    <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>Withholding 5%</th>
+                  <tr>
+                    <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Customer / Project</th>
+                    <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Cycle</th>
+                    <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Date</th>
+                    <th style={Object.assign({}, stickyTh, { textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight })}>Claim total</th>
+                    <th style={Object.assign({}, stickyTh, { textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight })}>Withholding 5%</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -23198,9 +23218,9 @@ var CommissionsPage = function(p) {
                   })}
                 </tbody>
                 <tfoot>
-                  <tr style={{ background:"#F8FAFC", borderTop:"1px solid #E8ECF1" }}>
-                    <td colSpan={4} style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text }}>Total withholding for year</td>
-                    <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.warning }}>{fmtMoneyAr(totalWh)}</td>
+                  <tr>
+                    <td colSpan={4} style={Object.assign({}, stickyFoot, { padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text })}>Total withholding for year</td>
+                    <td style={Object.assign({}, stickyFoot, { padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.warning })}>{fmtMoneyAr(totalWh)}</td>
                   </tr>
                 </tfoot>
               </table>
@@ -23392,6 +23412,115 @@ var CommissionsPage = function(p) {
                   <ExpenseBarChart rows={allExpenses} year={ay} mode={chartMode}/>
                 </div>
               </div>
+
+              {/* --- Sub-Block B.5: Net Profit by Deal (Phase R-15) ----
+                  Per-deal breakdown that reconciles to the P&L statement
+                  below: Σ Revenue === P&L Revenue, Σ ARO Net === P&L Revenue
+                  − Team & Broker Commissions. Sortable + filterable; internal
+                  scroll (Change A). Sits directly above the P&L statement. */}
+              {(function(){
+                var pbdEmpty = { revenue:0, brokerPayouts:0, teamPayouts:0, aroNet:0 };
+                var pbd = profitByDeal || { deals: [], totals: pbdEmpty };
+                var allDeals = Array.isArray(pbd.deals) ? pbd.deals : [];
+                var shown = pbdFilter === "all"
+                  ? allDeals
+                  : allDeals.filter(function(d){ return d.type === pbdFilter; });
+                var sorted = shown.slice().sort(function(a, b){
+                  var dir = pbdSort.dir === "asc" ? 1 : -1;
+                  return (Number(a[pbdSort.col] || 0) - Number(b[pbdSort.col] || 0)) * dir;
+                });
+                // Footer: "all" uses the endpoint totals (these reconcile to
+                // the P&L exactly); a filtered view recomputes from the
+                // visible rows.
+                var foot = pbdFilter === "all"
+                  ? (pbd.totals || pbdEmpty)
+                  : shown.reduce(function(s, d){
+                      return {
+                        revenue:       s.revenue       + Number(d.revenue || 0),
+                        brokerPayouts: s.brokerPayouts + Number(d.brokerPayouts || 0),
+                        teamPayouts:   s.teamPayouts   + Number(d.teamPayouts || 0),
+                        aroNet:        s.aroNet        + Number(d.aroNet || 0)
+                      };
+                    }, { revenue:0, brokerPayouts:0, teamPayouts:0, aroNet:0 });
+                var setSort = function(col){
+                  setPbdSort(function(prev){
+                    if (prev.col === col) return { col: col, dir: prev.dir === "desc" ? "asc" : "desc" };
+                    return { col: col, dir: "desc" };
+                  });
+                };
+                var sortTh = function(label, col){
+                  var active = pbdSort.col === col;
+                  return <th onClick={function(){ setSort(col); }}
+                    style={Object.assign({}, stickyTh, { textAlign:"end", padding:"8px 12px", fontWeight:700, color: active ? C.accent : C.textLight, cursor:"pointer", whiteSpace:"nowrap", userSelect:"none" })}>
+                    {label}{active ? (pbdSort.dir === "desc" ? " ↓" : " ↑") : ""}
+                  </th>;
+                };
+                var typeBadge = function(type){
+                  var ext = type === "external";
+                  return <span style={{
+                    display:"inline-block", padding:"2px 8px", borderRadius:10, fontSize:10, fontWeight:700,
+                    background: ext ? "#EDE9FE" : "#F1F5F9", color: ext ? "#5B21B6" : C.textLight
+                  }}>{ext ? "External" : "Internal"}</span>;
+                };
+                var filterChip = function(id, label){
+                  var active = pbdFilter === id;
+                  return <button onClick={function(){ setPbdFilter(id); }} style={{
+                    padding:"4px 12px", borderRadius:14, fontSize:11, fontWeight:600, cursor:"pointer",
+                    border:"1px solid " + (active ? C.accent : "#E2E8F0"),
+                    background: active ? C.accent + "12" : "#fff",
+                    color: active ? C.accent : C.textLight
+                  }}>{label}</button>;
+                };
+                return <div style={{ marginBottom:18 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8, flexWrap:"wrap" }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:C.text, flex:1, minWidth:140 }}>Net Profit by Deal</div>
+                    <div style={{ display:"flex", gap:6 }}>
+                      {filterChip("all", "All")}
+                      {filterChip("internal", "Internal")}
+                      {filterChip("external", "External")}
+                    </div>
+                  </div>
+                  {profitByDealLoading && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>Loading…</div>}
+                  {!profitByDealLoading && allDeals.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>No deals for this year</div>}
+                  {!profitByDealLoading && allDeals.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflowY:"auto", maxHeight:TABLE_MAX_H }}>
+                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                      <thead>
+                        <tr>
+                          <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Customer</th>
+                          <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Type</th>
+                          {sortTh("Revenue", "revenue")}
+                          {sortTh("Broker", "brokerPayouts")}
+                          {sortTh("Team", "teamPayouts")}
+                          {sortTh("ARO Net", "aroNet")}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sorted.map(function(d){
+                          var neg = Number(d.aroNet || 0) < 0;
+                          return <tr key={d.commissionId} style={{ borderTop:"1px solid #F1F5F9" }}>
+                            <td style={{ padding:"8px 12px", fontWeight:600, color:C.text }}>{d.customerName}</td>
+                            <td style={{ padding:"8px 12px" }}>{typeBadge(d.type)}</td>
+                            <td style={{ padding:"8px 12px", textAlign:"end" }}>{fmtMoneyAr(d.revenue)}</td>
+                            <td style={{ padding:"8px 12px", textAlign:"end", color: Number(d.brokerPayouts || 0) > 0 ? "#5B21B6" : C.textLight }}>{fmtMoneyAr(d.brokerPayouts)}</td>
+                            <td style={{ padding:"8px 12px", textAlign:"end", color: Number(d.teamPayouts || 0) > 0 ? "#B45309" : C.textLight }}>{fmtMoneyAr(d.teamPayouts)}</td>
+                            <td style={{ padding:"8px 12px", textAlign:"end", fontWeight:700, color: neg ? "#B91C1C" : C.success }}>{fmtMoneyAr(d.aroNet)}</td>
+                          </tr>;
+                        })}
+                        {sorted.length === 0 && <tr><td colSpan={6} style={{ padding:"16px 12px", textAlign:"center", color:C.textLight }}>No {pbdFilter} deals for this year</td></tr>}
+                      </tbody>
+                      <tfoot>
+                        <tr>
+                          <td colSpan={2} style={Object.assign({}, stickyFoot, { padding:"10px 12px", fontWeight:700, color:C.text })}>Total</td>
+                          <td style={Object.assign({}, stickyFoot, { padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text })}>{fmtMoneyAr(foot.revenue)}</td>
+                          <td style={Object.assign({}, stickyFoot, { padding:"10px 12px", textAlign:"end", fontWeight:700, color:"#5B21B6" })}>{fmtMoneyAr(foot.brokerPayouts)}</td>
+                          <td style={Object.assign({}, stickyFoot, { padding:"10px 12px", textAlign:"end", fontWeight:700, color:"#B45309" })}>{fmtMoneyAr(foot.teamPayouts)}</td>
+                          <td style={Object.assign({}, stickyFoot, { padding:"10px 12px", textAlign:"end", fontWeight:700, color: Number(foot.aroNet || 0) < 0 ? "#B91C1C" : C.success })}>{fmtMoneyAr(foot.aroNet)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>}
+                </div>;
+              })()}
 
               {/* --- Sub-Block C: P&L statement ----------------------- */}
               <div style={{ marginBottom:18 }}>
