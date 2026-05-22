@@ -14345,15 +14345,6 @@ app.put("/api/leads/:id/unarchive", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ===== PUSH NOTIFICATIONS =====
-var pushSubscriptions = [];
-app.post("/api/push/subscribe", auth, async function(req, res) {
-  var sub = req.body;
-  var exists = pushSubscriptions.find(function(s) { return s.endpoint === sub.endpoint; });
-  if (!exists) pushSubscriptions.push(Object.assign({ userId: req.user.id }, sub));
-  res.json({ ok: true });
-});
-
 // ===== FACEBOOK WEBHOOK =====
 app.get("/api/fb-webhook", function(req, res) {
   var mode = req.query["hub.mode"];

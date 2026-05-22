@@ -121,8 +121,6 @@ var TR = {
     bulkWhatsApp: "واتساب جماعي",
     waTemplates: "رسائل جاهزة",
     sendWa: "إرسال واتساب",
-    enableNotif: "تفعيل الإشعارات",
-    notifEnabled: "✅ الإشعارات مفعلة",
     selectAll: "تحديد الكل",
     selected: "محدد",
     msgCopied: "✅ تم نسخ الرسالة",
@@ -191,8 +189,6 @@ var TR = {
     bulkWhatsApp: "Bulk WhatsApp",
     waTemplates: "Message Templates",
     sendWa: "Send WhatsApp",
-    enableNotif: "Enable Notifications",
-    notifEnabled: "✅ Notifications Enabled",
     selectAll: "Select All",
     selected: "Selected",
     msgCopied: "✅ Message Copied",
@@ -2571,32 +2567,6 @@ var LeadForm = function(p) {
 
 
 
-// ===== BROWSER NOTIFICATIONS =====
-var requestNotifPermission = async function() {
-  if (!("Notification" in window)) {
-    alert("❌ Notifications are not supported on this browser.\n\nOn iPhone: use Safari and add the app to your Home Screen first (Share → Add to Home Screen), then try again.\n\nOn Android: use Chrome browser.");
-    return false;
-  }
-  if (Notification.permission === "granted") return true;
-  if (Notification.permission === "denied") {
-    alert("❌ Notifications are blocked.\n\nPlease go to your browser settings and allow notifications for this site.");
-    return false;
-  }
-  try {
-    var perm = await Notification.requestPermission();
-    if (perm === "granted") { alert("✅ Notifications enabled successfully!"); return true; }
-    else { alert("❌ Notification permission was denied."); return false; }
-  } catch(e) {
-    alert("❌ Could not request notification permission.\n\nTry opening the site in Chrome.");
-    return false;
-  }
-};
-var showBrowserNotif = function(title, body, onClick) {
-  if (Notification.permission !== "granted") return;
-  var n = new Notification(title, { body: body, icon: "/favicon.ico", badge: "/favicon.ico" });
-  if (onClick) n.onclick = onClick;
-  setTimeout(function() { n.close(); }, 8000);
-};
 var playAlertSound = function() {
   try {
     var ctx = new (window.AudioContext||window.webkitAudioContext)();
@@ -3871,7 +3841,6 @@ var LeadsPage = function(p) {
   };
   var [quickForm, setQuickForm] = useState({name:"",phone:"",project:PROJECTS[0],source:""});
   var [quickSaving, setQuickSaving] = useState(false);
-  var [notifGranted, setNotifGranted] = useState(typeof Notification!=="undefined"&&Notification.permission==="granted");
   var [vipFilter, setVipFilter] = useState(false);
   var [noAgentFilter, setNoAgentFilter] = useState(false);
   var [agentFilter, setAgentFilter] = useState("");
@@ -4924,7 +4893,6 @@ var LeadsPage = function(p) {
         {isOnlyAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
         {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 11px", fontSize:12 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
         {p.cu&&p.cu.role==="admin"&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
-        {!notifGranted&&<Btn outline onClick={async function(){var ok=await requestNotifPermission();setNotifGranted(ok);}} style={{ padding:"7px 11px", fontSize:12, color:C.warning, borderColor:C.warning }}><Bell size={13}/> {t.enableNotif}</Btn>}
         {!p.isMobile&&isOnlyAdmin&&<Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>}
       </div>
       </div>
@@ -5539,7 +5507,6 @@ var LeadsPage = function(p) {
             p.setLeads(function(prev){return [lead].concat(prev);});
             setShowQuickAdd(false);
             setQuickForm({name:"",phone:"",project:PROJECTS[0],source:""});
-            showBrowserNotif("✅ Lead Added",lead.name+" — "+lead.phone);
           }catch(e){alert(e.message);}
           setQuickSaving(false);
         }} style={{ flex:2 }}>⚡ {t.quickAdd}</Btn>
@@ -11409,10 +11376,6 @@ var DailyRequestsPage = function(p) {
           budget:updateData.budget||req.budget||"",
           time:new Date().toISOString()
         });
-        showBrowserNotif(
-          pendingStatus.newStatus==="DoneDeal"?"🏆 New Deal!":"📋 New EOI!",
-          (req.name||"leads")+" — "+(updateData.budget||req.budget||"")
-        );
       }
       // The backend creates/updates a Lead mirror for DR→EOI/DoneDeal, but the
       // mirror isn't in p.leads yet. Refetch so the EOI/Deals page sees it.
@@ -11609,10 +11572,6 @@ var DailyRequestsPage = function(p) {
             budget:form.dealBudget||"",
             time:new Date().toISOString()
           });
-          showBrowserNotif(
-            isDoneDeal?"🏆 New Deal!":"📋 New EOI!",
-            (r.name||"lead")+" — "+(form.dealBudget||"")
-          );
         }
       }
       // Dedupe by _id — the backend also broadcasts a dr_updated WS event for
@@ -24901,12 +24860,6 @@ export default function CRMApp() {
   var [selectedCommissionLeadId,setSelectedCommissionLeadId]=useState(null);
   var [search,setSearch]=useState("");
   var [isOnline,setIsOnline]=useState(navigator.onLine);
-  var [showPwaBanner,setShowPwaBanner]=useState(function(){
-    var isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
-    var isStandalone=window.navigator.standalone===true||window.matchMedia("(display-mode: standalone)").matches;
-    var isDismissed=false; try{isDismissed=localStorage.getItem("crm_pwa_dismissed")==="1";}catch(e){}
-    return isIOS&&!isStandalone&&!isDismissed;
-  });
 
   // Deal notification helper — saves to DB, updates local state
   // 2026-05-18 — eventTime stamps the moment of the action so the dropdown
@@ -24927,7 +24880,6 @@ export default function CRMApp() {
     apiFetch("/api/notifications","POST",notif,token).then(function(saved){
       if(saved) setRotNotifs(function(prev){return [Object.assign({},saved,{seen:false})].concat(prev).slice(0,50);});
     }).catch(function(){});
-    if (!(currentUser && currentUser.role === "sales")) showBrowserNotif("🔄 Auto Rotation", lead.name+" — from "+fromName+" to "+toName+" ("+reason+")");
   };
   // Fetch notifications from DB. Single combined fetch (was 3 separate
   // calls) — backend supports comma-separated types. Saves 2 HTTP round-
@@ -25494,152 +25446,6 @@ export default function CRMApp() {
   };
   // Auto-refresh disabled
 
-  // ===== NOTIFICATIONS SYSTEM =====
-  useEffect(function(){
-    if(!token||!currentUser) return;
-    var isAgent = currentUser.role==="sales"||currentUser.role==="manager"||currentUser.role==="team_leader";
-    if(!isAgent) return;
-    var uid = String(currentUser.id||"");
-
-    // Helper: get my leads
-    var getMyLeads = function(){
-      return leads.filter(function(l){
-        var aid=String(l.agentId&&l.agentId._id?l.agentId._id:l.agentId||"");
-        return aid===uid&&!l.archived;
-      });
-    };
-
-    // Helper: get my DR
-    var getMyDR = function(){
-      return dailyReqs.filter(function(r){
-        if (r.archived) return false; // unified archive rule (Divergence #7)
-        var aid=String(r.agentId&&r.agentId._id?r.agentId._id:r.agentId||"");
-        return aid===uid;
-      });
-    };
-
-    // 1. New lead assigned - track leads present at login time
-    var initialLeadIds = new Set(getMyLeads().map(function(l){return String(gid(l));}));
-    // Mark all current leads as seen so we don't notify for old ones
-    getMyLeads().forEach(function(l){
-      try{localStorage.setItem("crm_lead_seen_"+String(gid(l)),"1");}catch(e){}
-    });
-
-    var checkNewLeads = function(){
-      var myLeads = getMyLeads();
-      myLeads.forEach(function(l){
-        var lid = String(gid(l));
-        var key = "crm_lead_seen_"+lid;
-        try{
-          if(!localStorage.getItem(key)){
-            localStorage.setItem(key,"1");
-            showBrowserNotif("🆕 New Lead!", l.name+" has been assigned to you");
-          }
-        }catch(e){}
-      });
-    };
-
-    // 2. Callback notifications - all statuses with callbackTime
-    var checkCallbacks = function(){
-      var now = Date.now();
-      var allItems = getMyLeads().concat(getMyDR()).filter(function(l){return l.callbackTime&&l.status!=="DoneDeal"&&l.status!=="NotInterested";});
-      allItems.forEach(function(l){
-        var cbTime = new Date(l.callbackTime).getTime();
-        var diff = cbTime - now;
-        var key = "crm_cb_notif_"+gid(l)+"_"+l.callbackTime;
-        if(diff<=0 && diff>-60*60*1000){
-          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("📞 Callback Now!", l.name+" — "+new Date(l.callbackTime).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}));}}catch(e){}
-        } else if(diff>0&&diff<=5*60*1000){
-          var key5 = "crm_cb_5min_"+gid(l)+"_"+l.callbackTime;
-          try{if(!localStorage.getItem(key5)){localStorage.setItem(key5,"1");showBrowserNotif("⏰ Callback in "+Math.round(diff/60000)+" min", l.name);}}catch(e){}
-        } else if(diff>60*60*1000){
-          try{localStorage.removeItem(key);}catch(e){}
-        }
-      });
-    };
-
-    // 3. Upcoming tasks (within 1 hour)
-    var checkTasks = function(){
-      var now = Date.now();
-      var myTasks = tasks.filter(function(tk){
-        var tuid=String(tk.userId&&tk.userId._id?tk.userId._id:tk.userId||"");
-        return tuid===uid&&!tk.done&&tk.time;
-      });
-      myTasks.forEach(function(tk){
-        var tTime = new Date(tk.time).getTime();
-        var diff = tTime - now;
-        var key = "crm_task_notif_"+tk._id;
-        if(diff>0&&diff<=60*60*1000){
-          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");var lName=tk.leadId&&tk.leadId.name?tk.leadId.name:"";showBrowserNotif("✅ Task due in "+Math.round(diff/60000)+" min",tk.title+(lName?" — "+lName:""));}}catch(e){}
-        } else if(diff>60*60*1000){
-          try{localStorage.removeItem(key);}catch(e){}
-        }
-      });
-    };
-
-    // 4. Follow-up reminders — leads with no activity 2+ days
-    var checkFollowUps = function(){
-      var now = Date.now();
-      var twoDays = 2*24*60*60*1000;
-      var myLeads = getMyLeads().filter(function(l){
-        return l.status!=="DoneDeal"&&l.status!=="NotInterested"&&l.status!=="EOI";
-      });
-      myLeads.forEach(function(l){
-        var lastAct = l.lastActivityTime?new Date(l.lastActivityTime).getTime():0;
-        var idle = now - lastAct;
-        if(idle>=twoDays){
-          var key="crm_followup_"+gid(l)+"_"+Math.floor(idle/twoDays);
-          try{if(!localStorage.getItem(key)){localStorage.setItem(key,"1");showBrowserNotif("🔔 Follow-up Needed",l.name+" — no contact for "+Math.floor(idle/86400000)+" days");}}catch(e){}
-        }
-      });
-    };
-
-    checkCallbacks();
-    checkTasks();
-    checkFollowUps();
-    var interval = setInterval(function(){
-      checkCallbacks();
-      checkTasks();
-      checkNewLeads();
-      checkFollowUps();
-    }, 30*1000); // every 30 seconds for more accurate callback timing
-    return function(){clearInterval(interval);};
-  },[token, currentUser, leads, tasks]);
-
-  // ===== DAILY REPORT NOTIFICATION (11 PM for admin / sales_admin) =====
-  useEffect(function(){
-    if(!token||!currentUser||(currentUser.role!=="admin"&&currentUser.role!=="sales_admin")) return;
-    var checkDailyReport = function(){
-      var now = new Date();
-      var h = now.getHours(); var m = now.getMinutes();
-      if(h===23&&m<2){
-        var key = "crm_daily_report_"+now.toDateString();
-        try{ if(localStorage.getItem(key)) return; }catch(e){}
-        var dayStart = new Date(); dayStart.setHours(0,0,0,0);
-        var dayEnd   = new Date(); dayEnd.setHours(24,0,0,0);
-        var qs = "?from="+encodeURIComponent(dayStart.toISOString())+"&to="+encodeURIComponent(dayEnd.toISOString());
-        // Counts come from the backend — in-memory `leads`/`activities` are
-        // closure-stale (deps omit them) and `activities` is capped at 20
-        // records. The key is set only after success so a transient failure
-        // lets the minute=1 tick retry within the firing window.
-        apiFetch("/api/reports/daily-counts"+qs,"GET",null,token).then(function(r){
-          try{
-            if(localStorage.getItem(key)) return;
-            localStorage.setItem(key,"1");
-          }catch(e){}
-          var newLeads = (r && r.newLeads) || 0;
-          var calls    = (r && r.calls) || 0;
-          var deals    = (r && r.deals) || 0;
-          showBrowserNotif(
-            "📊 Daily Report — "+now.toLocaleDateString("en-GB"),
-            "New Leads: "+newLeads+" | Calls: "+calls+" | Deals: "+deals
-          );
-        }).catch(function(){});
-      }
-    };
-    var rptInterval = setInterval(checkDailyReport, 60*1000);
-    return function(){clearInterval(rptInterval);};
-  },[token, currentUser]);
 
   // ===== HEARTBEAT + ACTIVITY TRACKING =====
   useEffect(function(){
@@ -25800,13 +25606,6 @@ export default function CRMApp() {
 +   ".crm-dash h1, .crm-dash h2, .crm-dash h3 { max-width: 100%; overflow-wrap: anywhere; }"
 + "}"
 }</style>
-    {showPwaBanner&&<div data-overlay-above="true" style={{ position:"fixed", bottom:0, left:0, right:0, zIndex:9999, background:C.primary, color:"#fff", padding:"14px 16px", display:"flex", alignItems:"center", gap:10, boxShadow:"0 -4px 20px rgba(0,0,0,0.2)" }}>
-      <div style={{ flex:1 }}>
-        <div style={{ fontSize:13, fontWeight:700, marginBottom:3 }}>📲 Enable Notifications</div>
-        <div style={{ fontSize:11, color:"rgba(255,255,255,0.75)", lineHeight:1.4 }}>Tap <b>Share</b> → <b>Add to Home Screen</b> to install the app and receive notifications.</div>
-      </div>
-      <button onClick={function(){setShowPwaBanner(false);try{localStorage.setItem("crm_pwa_dismissed","1");}catch(e){}}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, color:"#fff", padding:"6px 12px", fontSize:12, cursor:"pointer", flexShrink:0 }}>Got it</button>
-    </div>}
     <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads} leadsTotal={leadsTotal} sidebarLeadsTotal={sidebarLeadsTotal} attendanceSettings={attendanceSettings}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
       <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} token={token} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
