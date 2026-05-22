@@ -21736,9 +21736,9 @@ var CommissionsPage = function(p) {
   var [editingExpense, setEditingExpense] = useState(null); // expense row or null
   var [managingCategories, setManagingCategories] = useState(false);
   var [expCatFilter, setExpCatFilter] = useState(""); // "" = all
-  // Phase R-6 polish — month grouping on the expenses table. Map keyed by
-  // yyyy-mm; presence === expanded. Multiple months can be expanded at once.
-  var [expandedExpMonths, setExpandedExpMonths] = useState({});
+  // Phase R-16 — per-month detail modal for the Monthly Expenses grid.
+  // Holds the clicked month index (0-11), or null when closed.
+  var [expenseMonthModal, setExpenseMonthModal] = useState(null);
   var [chartMode, setChartMode] = useState("total"); // "total" | "byCategory"
   var [pnlReloadTick, setPnlReloadTick] = useState(0);
   // Silent-reload ref: when an in-tab mutation refetches the P&L, this flag
@@ -23230,7 +23230,8 @@ var CommissionsPage = function(p) {
           {/* Phase R-6 — Expenses + P&L section. The Annual Summary tab is
               already gated to admin role (commit 0821637), so anyone reaching
               this point is admin. No redundant per-section check (judgment #5).
-              Three sub-blocks: Expenses table, Monthly chart, P&L statement. */}
+              Sections: merged Monthly Expenses (grid + chart), Net Profit by
+              Deal, P&L statement. */}
           {(function(){
             if (pnlLoading) return <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight }}>Loading P&amp;L…</div>;
             var pnlData      = pnl || { revenue:{netRevenue:0}, teamCommissions:{total:0,byMonth:[]}, expenses:{total:0,rows:[],byCategory:[]}, profitBeforeTax:0, profitTax:{mode:null,value:null,amount:0}, netProfit:0 };
@@ -23260,10 +23261,32 @@ var CommissionsPage = function(p) {
             </div>;
 
             return <>
-              {/* --- Sub-Block A: Expenses table ----------------------- */}
+              {/* --- Monthly Expenses (Phase R-16) — merged section ----
+                  One "Monthly Expenses" heading over a 4×3 month-card grid,
+                  the year total, and the chart. Replaces the old separate
+                  "Operating Expenses" 12-row table + "Monthly Expenses" chart
+                  sub-blocks. A month card opens a per-month detail modal
+                  (edit/delete inside). Empty months are dimmed + not
+                  clickable; the live month gets an accent highlight. */}
               <div style={{ marginTop:24, marginBottom:18 }}>
+                <style>{
+                  ".aro-exp-grid{display:grid;gap:10px;grid-template-columns:repeat(4,1fr);}" +
+                  "@media(max-width:1024px){.aro-exp-grid{grid-template-columns:repeat(3,1fr);}}" +
+                  "@media(max-width:768px){.aro-exp-grid{grid-template-columns:repeat(2,1fr);}}" +
+                  ".aro-exp-card{transition:border-color .15s ease,box-shadow .15s ease;}" +
+                  ".aro-exp-card:hover{border-color:" + C.accent + ";box-shadow:0 2px 10px rgba(15,23,42,0.10);}"
+                }</style>
                 <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
-                  <div style={{ fontSize:13, fontWeight:700, color:C.text, flex:1, minWidth:160 }}>Operating Expenses</div>
+                  <div style={{ fontSize:13, fontWeight:700, color:C.text, flex:1, minWidth:140 }}>Monthly Expenses</div>
+                  <div style={{ display:"inline-flex", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", fontSize:11 }}>
+                    {[{ id:"total", label:"Total" },{ id:"byCategory", label:"By category" }].map(function(opt){
+                      var active = chartMode === opt.id;
+                      return <button key={opt.id} onClick={function(){ setChartMode(opt.id); }} style={{
+                        padding:"4px 10px", border:"none", background: active ? C.accent + "12" : "#fff",
+                        color: active ? C.accent : C.textLight, fontWeight: active ? 700 : 500, cursor:"pointer"
+                      }}>{opt.label}</button>;
+                    })}
+                  </div>
                   <select value={expCatFilter} onChange={function(e){ setExpCatFilter(e.target.value); }} style={{
                     padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", minWidth:140
                   }}>
@@ -23283,10 +23306,9 @@ var CommissionsPage = function(p) {
                   }}>+ Add Expense</button>
                 </div>
                 {(function(){
-                  // Group filtered expenses into Cairo-local months (Jan-Dec of
-                  // the selected year). 12 rows always render; empty months are
-                  // greyed out. Each month row toggles a drill-down showing its
-                  // individual entries (with Edit/Delete actions retained).
+                  // Phase R-16 — Cairo-local month grouping of the (category-
+                  // filtered) expense rows for the selected year. Shared by the
+                  // 4×3 card grid and the per-month detail modal.
                   var monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
                   var yearStr = String(ay);
                   var buckets = monthNames.map(function(){ return []; });
@@ -23297,120 +23319,99 @@ var CommissionsPage = function(p) {
                     if (String(cairoLocal.getUTCFullYear()) !== yearStr) return;
                     buckets[cairoLocal.getUTCMonth()].push(r);
                   });
-                  var toggleMonth = function(monthKey){
-                    setExpandedExpMonths(function(prev){
-                      var next = Object.assign({}, prev);
-                      if (next[monthKey]) delete next[monthKey]; else next[monthKey] = true;
-                      return next;
-                    });
-                  };
-                  return <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
-                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-                      <thead>
-                        <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
-                          <th style={{ textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight }}>Month</th>
-                          <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight }}>Total</th>
-                          <th style={{ textAlign:"end",   padding:"8px 12px", fontWeight:700, color:C.textLight, width:40 }}></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {monthNames.map(function(mn, mi){
-                          var entries = buckets[mi];
-                          var hasEntries = entries.length > 0;
-                          var monthKey = yearStr + "-" + String(mi + 1).padStart(2, "0");
-                          var expanded = !!expandedExpMonths[monthKey];
-                          var monthTotal = entries.reduce(function(s, r){ return s + Number(r.amount || 0); }, 0);
-                          var rows = [
-                            <tr key={"m-" + mi}
-                              onClick={hasEntries ? function(){ toggleMonth(monthKey); } : null}
-                              style={{
-                                borderTop:"1px solid #F1F5F9",
-                                cursor: hasEntries ? "pointer" : "default",
-                                background: expanded ? "#F8FAFC" : "#fff"
-                              }}>
-                              <td style={{ padding:"10px 12px", fontWeight:600, color: hasEntries ? C.text : C.textLight }}>
-                                {mn}
-                                {hasEntries && <span style={{ fontSize:10, color:C.textLight, fontWeight:500, marginInlineStart:8 }}>{entries.length} entr{entries.length === 1 ? "y" : "ies"}</span>}
-                              </td>
-                              <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:hasEntries ? 700 : 400, color: hasEntries ? C.text : C.textLight }}>
-                                {hasEntries ? fmtMoneyAr(monthTotal) : "—"}
-                              </td>
-                              <td style={{ padding:"10px 12px", textAlign:"end", color:C.text, width:32 }}>
-                                {hasEntries && <ChevronDown size={16} style={{
-                                  display:"inline-block", verticalAlign:"middle",
-                                  transform: expanded ? "rotate(0deg)" : "rotate(-90deg)",
-                                  transition:"transform 0.2s ease"
-                                }}/>}
-                              </td>
-                            </tr>
-                          ];
-                          if (expanded && hasEntries) {
-                            // Sub-header for the indented rows.
-                            rows.push(<tr key={"mh-" + mi} style={{ background:"#FAFBFF", borderTop:"1px solid #F1F5F9" }}>
-                              <td colSpan={3} style={{ padding:0 }}>
-                                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
-                                  <thead>
-                                    <tr>
-                                      <th style={{ textAlign:"start", padding:"6px 12px 6px 32px", fontWeight:600, color:C.textLight, width:90 }}>Date</th>
-                                      <th style={{ textAlign:"start", padding:"6px 12px", fontWeight:600, color:C.textLight, width:140 }}>Category</th>
-                                      <th style={{ textAlign:"start", padding:"6px 12px", fontWeight:600, color:C.textLight }}>Description</th>
-                                      <th style={{ textAlign:"end",   padding:"6px 12px", fontWeight:600, color:C.textLight, width:120 }}>Amount</th>
-                                      <th style={{ textAlign:"end",   padding:"6px 12px", fontWeight:600, color:C.textLight, width:80 }}></th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {entries.map(function(r){
-                                      return <tr key={r._id} style={{ borderTop:"1px solid #F1F5F9" }}>
-                                        <td style={{ padding:"6px 12px 6px 32px" }}>{fmtDateShort(r.date)}</td>
-                                        <td style={{ padding:"6px 12px" }}>
-                                          {r.categoryName}
-                                          {r.categoryArchived && <span style={{ marginInlineStart:6, fontSize:9, color:"#B45309", background:"#FEF3C7", padding:"1px 6px", borderRadius:10, fontWeight:700 }}>archived</span>}
-                                        </td>
-                                        <td style={{ padding:"6px 12px", color:C.textLight }}>{r.description || "—"}</td>
-                                        <td style={{ padding:"6px 12px", textAlign:"end", fontWeight:600 }}>{fmtMoneyAr(r.amount)}</td>
-                                        <td style={{ padding:"6px 12px", textAlign:"end" }}>
-                                          <button onClick={function(e){ e.stopPropagation(); setEditingExpense(r); }} title="Edit" style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, padding:"2px 7px", fontSize:10, color:C.textLight, cursor:"pointer", marginInlineEnd:4 }}>✎</button>
-                                          <button onClick={function(e){ e.stopPropagation(); deleteExpense(r); }} title="Delete" style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:4, padding:"2px 7px", fontSize:10, color:"#B91C1C", cursor:"pointer" }}>✕</button>
-                                        </td>
-                                      </tr>;
-                                    })}
-                                  </tbody>
-                                </table>
-                              </td>
-                            </tr>);
-                          }
-                          return rows;
-                        })}
-                      </tbody>
-                      {filteredExp.length > 0 && <tfoot>
-                        <tr style={{ background:"#F8FAFC", borderTop:"1px solid #E8ECF1" }}>
-                          <td style={{ padding:"10px 12px", fontWeight:700, color:C.text }}>{expCatFilter ? "Filtered total" : "Total expenses for year"}</td>
-                          <td style={{ padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text }}>{fmtMoneyAr(filteredTotal)}</td>
-                          <td></td>
-                        </tr>
-                      </tfoot>}
-                    </table>
-                  </div>;
+                  // Current month accent — only when the displayed year is the
+                  // live Cairo year.
+                  var nowCairoM = new Date(Date.now() + 3 * 3600 * 1000);
+                  var curMonthIdx = (String(nowCairoM.getUTCFullYear()) === yearStr) ? nowCairoM.getUTCMonth() : -1;
+                  return <>
+                    {/* 4×3 month-card grid (responsive: 4/3/2 cols) */}
+                    <div className="aro-exp-grid">
+                      {monthNames.map(function(mn, mi){
+                        var entries = buckets[mi];
+                        var has = entries.length > 0;
+                        var monthTotal = entries.reduce(function(s, r){ return s + Number(r.amount || 0); }, 0);
+                        var isCur = mi === curMonthIdx;
+                        return <div key={mi}
+                          className={has ? "aro-exp-card" : undefined}
+                          onClick={has ? function(){ setExpenseMonthModal(mi); } : undefined}
+                          style={{
+                            border: isCur ? ("1.5px solid " + C.accent) : "1px solid #E8ECF1",
+                            borderRadius:10, padding:"12px 14px", minHeight:86,
+                            background: has ? "#fff" : "#F8FAFC",
+                            cursor: has ? "pointer" : "default",
+                            display:"flex", flexDirection:"column", gap:3
+                          }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                            <span style={{ fontSize:12, fontWeight:700, color: has ? C.text : C.textLight }}>{mn}</span>
+                            {isCur && <span style={{ fontSize:9, fontWeight:700, color:C.accent, background:C.accent + "16", padding:"1px 6px", borderRadius:8 }}>Current</span>}
+                          </div>
+                          <div style={{ fontSize:10, color:C.textLight }}>
+                            {has ? (entries.length + " entr" + (entries.length === 1 ? "y" : "ies")) : "—"}
+                          </div>
+                          <div style={{ fontSize:15, fontWeight:700, marginTop:"auto", color: has ? C.text : "#CBD5E1" }}>
+                            {has ? fmtMoneyAr(monthTotal) : "—"}
+                          </div>
+                        </div>;
+                      })}
+                    </div>
+                    {/* Year total */}
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:12, padding:"10px 14px", background:"#F8FAFC", border:"1px solid #E8ECF1", borderRadius:10 }}>
+                      <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{expCatFilter ? "Filtered total" : "Total expenses for year"}</span>
+                      <span style={{ fontSize:14, fontWeight:700, color:C.text }}>{fmtMoneyAr(filteredTotal)}</span>
+                    </div>
+                    {/* Monthly chart */}
+                    <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px", marginTop:18 }}>
+                      <ExpenseBarChart rows={allExpenses} year={ay} mode={chartMode}/>
+                    </div>
+                    {/* Per-month detail modal — entries with edit/delete */}
+                    {expenseMonthModal != null && buckets[expenseMonthModal] && (function(){
+                      var mi = expenseMonthModal;
+                      var entries = buckets[mi];
+                      var monthTotal = entries.reduce(function(s, r){ return s + Number(r.amount || 0); }, 0);
+                      return <Modal show={true} onClose={function(){ setExpenseMonthModal(null); }}
+                        title={monthNames[mi] + " " + yearStr + " — Expenses"} w={640}>
+                        {entries.length === 0 && <div style={{ padding:"24px 4px", textAlign:"center", color:C.textLight, fontSize:13 }}>No expense entries for this month.</div>}
+                        {entries.length > 0 && <div style={{ border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
+                          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                            <thead>
+                              <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
+                                <th style={{ textAlign:"start", padding:"7px 10px", fontWeight:700, color:C.textLight, width:92 }}>Date</th>
+                                <th style={{ textAlign:"start", padding:"7px 10px", fontWeight:700, color:C.textLight, width:150 }}>Category</th>
+                                <th style={{ textAlign:"start", padding:"7px 10px", fontWeight:700, color:C.textLight }}>Description</th>
+                                <th style={{ textAlign:"end",   padding:"7px 10px", fontWeight:700, color:C.textLight, width:118 }}>Amount</th>
+                                <th style={{ textAlign:"end",   padding:"7px 10px", fontWeight:700, color:C.textLight, width:78 }}></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {entries.map(function(r){
+                                return <tr key={r._id} style={{ borderTop:"1px solid #F1F5F9" }}>
+                                  <td style={{ padding:"7px 10px" }}>{fmtDateShort(r.date)}</td>
+                                  <td style={{ padding:"7px 10px" }}>
+                                    {r.categoryName}
+                                    {r.categoryArchived && <span style={{ marginInlineStart:6, fontSize:9, color:"#B45309", background:"#FEF3C7", padding:"1px 6px", borderRadius:10, fontWeight:700 }}>archived</span>}
+                                  </td>
+                                  <td style={{ padding:"7px 10px", color:C.textLight }}>{r.description || "—"}</td>
+                                  <td style={{ padding:"7px 10px", textAlign:"end", fontWeight:600 }}>{fmtMoneyAr(r.amount)}</td>
+                                  <td style={{ padding:"7px 10px", textAlign:"end", whiteSpace:"nowrap" }}>
+                                    <button onClick={function(){ setEditingExpense(r); }} title="Edit" style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, padding:"3px 8px", fontSize:10, color:C.textLight, cursor:"pointer", marginInlineEnd:4 }}>✎</button>
+                                    <button onClick={function(){ deleteExpense(r); }} title="Delete" style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:4, padding:"3px 8px", fontSize:10, color:"#B91C1C", cursor:"pointer" }}>✕</button>
+                                  </td>
+                                </tr>;
+                              })}
+                            </tbody>
+                            <tfoot>
+                              <tr style={{ background:"#F8FAFC", borderTop:"1px solid #E8ECF1" }}>
+                                <td colSpan={3} style={{ padding:"8px 10px", fontWeight:700, color:C.text }}>Month total</td>
+                                <td style={{ padding:"8px 10px", textAlign:"end", fontWeight:700, color:C.text }}>{fmtMoneyAr(monthTotal)}</td>
+                                <td/>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </div>}
+                      </Modal>;
+                    })()}
+                  </>;
                 })()}
-              </div>
-
-              {/* --- Sub-Block B: Monthly chart ----------------------- */}
-              <div style={{ marginBottom:18 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
-                  <div style={{ fontSize:13, fontWeight:700, color:C.text, flex:1 }}>Monthly Expenses</div>
-                  <div style={{ display:"inline-flex", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", fontSize:11 }}>
-                    {[{ id:"total", label:"Total" },{ id:"byCategory", label:"By category" }].map(function(opt){
-                      var active = chartMode === opt.id;
-                      return <button key={opt.id} onClick={function(){ setChartMode(opt.id); }} style={{
-                        padding:"4px 10px", border:"none", background: active ? C.accent + "12" : "#fff",
-                        color: active ? C.accent : C.textLight, fontWeight: active ? 700 : 500, cursor:"pointer"
-                      }}>{opt.label}</button>;
-                    })}
-                  </div>
-                </div>
-                <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"12px 14px" }}>
-                  <ExpenseBarChart rows={allExpenses} year={ay} mode={chartMode}/>
-                </div>
               </div>
 
               {/* --- Sub-Block B.5: Net Profit by Deal (Phase R-15) ----
@@ -23525,7 +23526,9 @@ var CommissionsPage = function(p) {
               {/* --- Sub-Block C: P&L statement ----------------------- */}
               <div style={{ marginBottom:18 }}>
                 <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>Annual P&amp;L Statement — {ay}</div>
-                <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"16px 18px", maxWidth:600 }}>
+                {/* Change A — full-width card (was maxWidth:600), matching
+                    the other Annual Summary sections. */}
+                <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"16px 18px" }}>
                   <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
                     {/* Phase R-14 — Revenue = Gross − VAT − Withholding, recognised
                         on cash receipt (cycle.received.date). Backend field
