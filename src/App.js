@@ -20396,7 +20396,7 @@ function applyRecipientOverridesFE(commission) {
 }
 
 // Phase R-5 — piaster-level precision helpers. Every derived tax value
-// (netOfVat, vat, withholding, netReceived) must round to 2 decimals so
+// (netOfVat, vat, withholding, netRevenue) must round to 2 decimals so
 // totals reconcile against Excel/government tax filings. claimAmount itself
 // stays as a clean product of admin-typed inputs; only the derivatives round.
 function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
@@ -23048,7 +23048,7 @@ var CommissionsPage = function(p) {
       // the backend default so the UI always shows what the endpoint returned.
       var effYear = annualYear || String(new Date(Date.now() + 3 * 3600 * 1000).getUTCFullYear());
       var ay = (annualSummary && annualSummary.year) || effYear;
-      var totals = (annualSummary && annualSummary.totals) || { grossClaim:0, netOfVat:0, vat:0, withholding5pct:0, netReceived:0 };
+      var totals = (annualSummary && annualSummary.totals) || { grossClaim:0, netOfVat:0, vat:0, withholding5pct:0, netRevenue:0 };
       var byMonth = (annualSummary && annualSummary.vatByMonth) || [];
       var byDeal  = (annualSummary && annualSummary.withholdingByDeal) || [];
       var totalWh = byDeal.reduce(function(s, r){ return s + Number(r.withholdingAmount || 0); }, 0);
@@ -23089,7 +23089,7 @@ var CommissionsPage = function(p) {
             {summaryCard("Net of VAT", totals.netOfVat, C.text)}
             {summaryCard("VAT 14%", totals.vat, C.warning)}
             {summaryCard("Withholding 5%", totals.withholding5pct, C.warning)}
-            {summaryCard("Net Received", totals.netReceived, C.success)}
+            {summaryCard("Net Revenue", totals.netRevenue, C.success)}
           </div>
 
           {/* Section 2 — VAT monthly table */}
@@ -23213,7 +23213,7 @@ var CommissionsPage = function(p) {
               Three sub-blocks: Expenses table, Monthly chart, P&L statement. */}
           {(function(){
             if (pnlLoading) return <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight }}>Loading P&amp;L…</div>;
-            var pnlData      = pnl || { revenue:{netDueTotal:0}, teamCommissions:{total:0,byMonth:[]}, expenses:{total:0,rows:[],byCategory:[]}, profitBeforeTax:0, profitTax:{mode:null,value:null,amount:0}, netProfit:0 };
+            var pnlData      = pnl || { revenue:{netRevenue:0}, teamCommissions:{total:0,byMonth:[]}, expenses:{total:0,rows:[],byCategory:[]}, profitBeforeTax:0, profitTax:{mode:null,value:null,amount:0}, netProfit:0 };
             var allExpenses  = (pnlData.expenses && Array.isArray(pnlData.expenses.rows)) ? pnlData.expenses.rows : [];
             var filteredExp  = expCatFilter
               ? allExpenses.filter(function(r){ return String(r.categoryId) === String(expCatFilter); })
@@ -23398,8 +23398,12 @@ var CommissionsPage = function(p) {
                 <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>Annual P&amp;L Statement — {ay}</div>
                 <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"16px 18px", maxWidth:600 }}>
                   <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
-                    <span style={{ fontSize:13, color:C.text }}>Revenue (Net Due Total)</span>
-                    <span style={{ fontSize:13, fontWeight:600, color:C.text }}>{fmtMoneyAr(pnlData.revenue && pnlData.revenue.netDueTotal)}</span>
+                    {/* Phase R-14 — Revenue = Gross − VAT − Withholding, recognised
+                        on cash receipt (cycle.received.date). Backend field
+                        revenue.netRevenue; equals the Annual Summary "Net
+                        Revenue" card. */}
+                    <span style={{ fontSize:13, color:C.text }}>Revenue</span>
+                    <span style={{ fontSize:13, fontWeight:600, color:C.text }}>{fmtMoneyAr(pnlData.revenue && pnlData.revenue.netRevenue)}</span>
                   </div>
                   <div style={{ borderTop:"1px solid #E2E8F0", marginTop:4, marginBottom:8 }}/>
                   <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
@@ -23849,27 +23853,32 @@ var CommissionsPage = function(p) {
       // deduction. The "Paid by" branch below shows how that splits.
       var brokerShare = Number(es.brokerOwed || 0);
       var aroTheoretical = Number(es.aroOwed || 0);
-      // Net Due derives from gross via the canonical state-tax formula.
+      // Phase R-14 — canonical state-tax split off gross. companyNet (below)
+      // is what ARO actually keeps in the bank: gross − VAT − withholding −
+      // broker share. The VAT term is the R-14 fix — it was previously
+      // omitted, so "Company net" overstated by the 14% VAT.
+      var vat = gross - (gross / 1.14);
       var withholding = (gross / 1.14) * 0.05;
-      var netDue = gross - withholding;
+      var netRevenue = gross - vat - withholding;
       // Sales-agent line — only when toggle was ON (snapshot.salesAgent has a
       // positive computedShare). For toggle OFF, hide the line entirely.
       var sa = c.snapshot && c.snapshot.salesAgent;
       var salesAgentName = sa && sa.userName ? sa.userName : "";
       var manualAmount = sa ? Number(sa.computedShare || 0) : 0;
       var hasSales = manualAmount > 0;
-      // Phase R-13.2 — paidBy semantics:
-      //   "company": company net = NetDue − broker − sales (today's behavior).
-      //   "broker":  company net = NetDue − broker (sales is paid by broker
-      //              from their share; the 100k stays with company).
+      // Phase R-13.2 — paidBy semantics (R-14: company net is off netRevenue
+      // = gross − VAT − withholding, the same basis as the P&L Revenue line):
+      //   "company": company net = netRevenue − broker − sales.
+      //   "broker":  company net = netRevenue − broker (sales is paid by the
+      //              broker from their share; that amount stays with company).
       //   Broker NET (the amount the broker actually takes home in the
       //   "broker" mode) is brokerShare − manualAmount; the print view uses
       //   this so the broker on paper sees their real take.
       var paidByBroker = String(es.salesAgentPaidBy || "company") === "broker";
       var brokerNetTake = paidByBroker ? Math.max(0, brokerShare - manualAmount) : brokerShare;
       var companyNet = paidByBroker
-        ? (netDue - brokerShare)
-        : (netDue - brokerShare - (hasSales ? manualAmount : 0));
+        ? (netRevenue - brokerShare)
+        : (netRevenue - brokerShare - (hasSales ? manualAmount : 0));
       var fmt = function(n){ return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " EGP"; };
       var leadName = (c.snapshot && c.snapshot.customerName) || "(deal)";
       // Phase R-13.3 — print path. Inject a body-level sibling of #root

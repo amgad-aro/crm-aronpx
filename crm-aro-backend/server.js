@@ -19918,11 +19918,18 @@ app.get("/api/commissions/due-payouts", auth, salesAdminOnly, async function(req
 });
 
 // ===== Phase R-5 annual summary + VAT payments =====
-// Annual summary aggregates ALL cycles (regardless of commission status)
-// whose claim_submitted.date falls in the selected year and which have
-// claimAmount > 0 (i.e. were created under R-5+). Old cycles created
-// before R-5 have claimAmount = 0 and are excluded by design — no
-// backfill, no migration.
+// Annual summary aggregates cycles with claimAmount > 0 (i.e. created under
+// R-5+). Old cycles created before R-5 have claimAmount = 0 and are excluded
+// by design — no backfill, no migration.
+//
+// Phase R-14 — split trigger per card. The CASH-realised cards (Total Claims,
+// Net of VAT, Withholding 5%, Net Revenue) and the Withholding-by-deal table
+// count a cycle only once the money has ARRIVED — keyed off cycle.received.date.
+// The VAT 14% card and the Monthly VAT table stay keyed off
+// invoice_submitted.date: VAT is owed to the tax authority when the formal
+// invoice is issued, regardless of whether the developer has paid yet. A
+// single cycle can therefore land in different year-buckets for VAT vs. the
+// cash cards (e.g. invoice 2026-04, money in 2027-01).
 //
 // Must be declared BEFORE /api/commissions/:id so the literal path doesn't
 // get shadowed by the :id route (the existing /:id has no regex guard).
@@ -19936,24 +19943,21 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
     // client rounds via round2 so tax filings reconcile against Excel exactly.
     function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
 
-    // Phase R-11 — VAT becomes due when the formal INVOICE is issued, not when
-    // the informal claim is sent to the developer. Egyptian tax law treats the
-    // invoice as the taxable event; the claim is a "please pay us" notice with
-    // no government implications. We therefore drive every number in this
-    // endpoint (the 5 summary cards, the Monthly VAT table, and the
-    // Withholding-by-deal table) off cycle.invoice_submitted.date. Cycles in
-    // claim_submitted state with no invoice yet are invisible to this view —
-    // they reappear once invoice_submitted is advanced. The same predicate is
-    // mirrored on /api/annual-pnl Revenue so the two views never diverge.
-    // status filter: exclude cancelled. Cancelled commissions are not part of
-    // the active book and must not be reflected in tax filings or the YoY
-    // totals the admin reconciles against Excel.
+    // Phase R-14 — fetch any commission with at least one in-year cycle on
+    // EITHER trigger: received.date (the cash cards) OR invoice_submitted.date
+    // (the VAT card + Monthly VAT table). The per-cycle loop below applies the
+    // correct trigger to each accumulator. status filter: exclude cancelled —
+    // cancelled commissions are not part of the active book and must not be
+    // reflected in tax filings or the YoY totals the admin reconciles.
     var docs = await Commission.find({
       status: { $ne: "cancelled" },
-      cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "invoice_submitted.date": { $regex: "^" + year } } }
+      $or: [
+        { cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "received.date":         { $regex: "^" + year } } } },
+        { cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "invoice_submitted.date": { $regex: "^" + year } } } }
+      ]
     }).select("snapshot.customerName snapshot.projectName cycles").lean();
 
-    var grossClaim = 0, netOfVatTotal = 0, vatTotal = 0, withholdingTotal = 0, netReceivedTotal = 0;
+    var grossClaim = 0, netOfVatTotal = 0, vatTotal = 0, withholdingTotal = 0, netRevenueTotal = 0;
     var vatByMonthMap = Object.create(null); // "YYYY-MM" -> { vatAmount, grossClaim, leads: [{name, claimAmount, vatAmount}] }
     var withholdingByDeal = [];
 
@@ -19965,51 +19969,57 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
         var cy = doc.cycles[j];
         var ca = Number(cy.claimAmount || 0);
         if (!(ca > 0)) continue;
-        // Phase R-11 — invoice date is the taxable event; cd holds it for both
-        // the year-membership check and the month-key + table row below. The
-        // response field is still called `claimDate` to avoid a frontend
-        // rename, but it semantically carries the invoice date now.
-        var cd = cy.invoice_submitted && cy.invoice_submitted.date;
-        if (typeof cd !== "string" || cd.slice(0, 4) !== year) continue;
 
-        var nv = ca / 1.14;
-        var vt = ca - nv;
-        var wh = nv * 0.05;
-        // Net Received is computed from the formula (gross claim − 5%
-        // withholding on the netOfVat portion), NOT from cy.receivedAmount.
-        // The raw field is admin-entered cash; historical entries on legacy
-        // cycles were unreliable (e.g. deal totals stored there), and the
-        // tax filing requires the theoretical net that mirrors the Excel
-        // reference. Same math as /api/annual-pnl netDueTotal.
-        var rcv = ca - wh;
+        // Canonical per-cycle state-tax split — same math everywhere.
+        var nv = ca / 1.14;   // net of VAT
+        var vt = ca - nv;     // VAT 14%
+        var wh = nv * 0.05;   // withholding 5% (base = net of VAT)
 
-        grossClaim       += ca;
-        netOfVatTotal    += nv;
-        vatTotal         += vt;
-        withholdingTotal += wh;
-        netReceivedTotal += rcv;
+        // Phase R-14 — CASH trigger: received.date. Drives Total Claims,
+        // Net of VAT, Withholding 5%, Net Revenue, and the Withholding-by-deal
+        // table. A cycle counts here only once the money has actually arrived.
+        var rd = cy.received && cy.received.date;
+        if (typeof rd === "string" && rd.slice(0, 4) === year) {
+          grossClaim       += ca;
+          netOfVatTotal    += nv;
+          withholdingTotal += wh;
+          // Net Revenue = Gross − VAT − Withholding. Same formula for internal
+          // AND external deals — no broker netting (the broker share is a cost
+          // on the P&L "Team & Broker Commissions" line, not a Revenue
+          // adjustment). Computed from the formula, NOT from cy.receivedAmount
+          // (legacy raw entries were unreliable; tax filings need the
+          // theoretical net that reconciles to Excel).
+          netRevenueTotal  += (ca - vt - wh);
 
-        var claimMonth = cd.slice(0, 7);
-        if (!vatByMonthMap[claimMonth]) vatByMonthMap[claimMonth] = { vatAmount: 0, grossClaim: 0, leads: [] };
-        vatByMonthMap[claimMonth].vatAmount  += vt;
-        vatByMonthMap[claimMonth].grossClaim += ca;
-        // Phase R-13 — per-month deal-name breakdown for the Monthly VAT table.
-        vatByMonthMap[claimMonth].leads.push({
-          name:         snap.customerName || "(unknown)",
-          claimAmount:  round2(ca),
-          vatAmount:    round2(vt)
-        });
+          withholdingByDeal.push({
+            cycleId:           String(cy._id),
+            commissionId:      String(doc._id),
+            customerName:      snap.customerName || "",
+            projectName:       snap.projectName || "",
+            cycleNumber:       cy.cycleNumber,
+            claimDate:         rd,   // received.date — the cash-in date
+            claimAmount:       ca,
+            withholdingAmount: wh
+          });
+        }
 
-        withholdingByDeal.push({
-          cycleId:           String(cy._id),
-          commissionId:      String(doc._id),
-          customerName:      snap.customerName || "",
-          projectName:       snap.projectName || "",
-          cycleNumber:       cy.cycleNumber,
-          claimDate:         cd,
-          claimAmount:       ca,
-          withholdingAmount: wh
-        });
+        // Phase R-14 — VAT trigger: invoice_submitted.date. VAT is owed to the
+        // tax authority when the formal invoice is issued, regardless of
+        // collection. Drives the VAT 14% card and the Monthly VAT table.
+        var id_ = cy.invoice_submitted && cy.invoice_submitted.date;
+        if (typeof id_ === "string" && id_.slice(0, 4) === year) {
+          vatTotal += vt;
+          var claimMonth = id_.slice(0, 7);
+          if (!vatByMonthMap[claimMonth]) vatByMonthMap[claimMonth] = { vatAmount: 0, grossClaim: 0, leads: [] };
+          vatByMonthMap[claimMonth].vatAmount  += vt;
+          vatByMonthMap[claimMonth].grossClaim += ca;
+          // Phase R-13 — per-month deal-name breakdown for the Monthly VAT table.
+          vatByMonthMap[claimMonth].leads.push({
+            name:         snap.customerName || "(unknown)",
+            claimAmount:  round2(ca),
+            vatAmount:    round2(vt)
+          });
+        }
       }
     }
 
@@ -20081,7 +20091,7 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
         netOfVat:        round2(netOfVatTotal),
         vat:             round2(vatTotal),
         withholding5pct: round2(withholdingTotal),
-        netReceived:     round2(netReceivedTotal)
+        netRevenue:      round2(netRevenueTotal)
       },
       vatByMonth: vatByMonth,
       withholdingByDeal: withholdingByDealRounded
@@ -20382,17 +20392,20 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
     var yNum = Number(year);
     function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
 
-    // --- Revenue: identical filter as R-5 annual-summary ----------------
+    // --- Revenue: mirrors the R-14 annual-summary cash cards ------------
     // status filter: exclude cancelled — must match annual-summary or the
     // two views diverge on the same year.
-    // Phase R-11 — predicate moved from claim_submitted.date to
-    // invoice_submitted.date so revenue recognition lines up with the
-    // taxable event (the issued invoice). Mirrored on /annual-summary.
+    // Phase R-14 — Revenue is recognised on the CASH trigger (received.date):
+    // a cycle contributes to Revenue only once the money has arrived. Revenue
+    // per cycle = Gross − VAT − Withholding, identical for internal AND
+    // external deals (no broker netting here — the broker share is subtracted
+    // on the Team & Broker Commissions line below). This equals the
+    // annual-summary "Net Revenue" card, so the two views never diverge.
     var commDocs = await Commission.find({
       status: { $ne: "cancelled" },
-      cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "invoice_submitted.date": { $regex: "^" + year } } }
+      cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "received.date": { $regex: "^" + year } } }
     }).select("cycles").lean();
-    var grossClaim = 0, netOfVatTotal = 0, vatTotal = 0, withholdingTotal = 0, netDueTotal = 0;
+    var grossClaim = 0, netOfVatTotal = 0, vatTotal = 0, withholdingTotal = 0, netRevenueTotal = 0;
     for (var i = 0; i < commDocs.length; i++) {
       var doc = commDocs[i];
       if (!Array.isArray(doc.cycles)) continue;
@@ -20400,7 +20413,7 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
         var cy = doc.cycles[j];
         var ca = Number(cy.claimAmount || 0);
         if (!(ca > 0)) continue;
-        var cd = cy.invoice_submitted && cy.invoice_submitted.date;
+        var cd = cy.received && cy.received.date;
         if (typeof cd !== "string" || cd.slice(0, 4) !== year) continue;
         var nv = ca / 1.14;
         var vt = ca - nv;
@@ -20409,7 +20422,7 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
         netOfVatTotal    += nv;
         vatTotal         += vt;
         withholdingTotal += wh;
-        netDueTotal      += ca - wh;
+        netRevenueTotal  += ca - vt - wh;
       }
     }
 
@@ -20422,10 +20435,10 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
     //
     // Phase R-12 Part 7 — folds externalSplit.brokerPayouts[] into the same
     // teamTotal + teamByMonth bucket as internal payouts. Per the agreed
-    // P&L treatment (Option A): broker share is an internal cost on ARO's
-    // books, so it lives on the same Team Commissions line and not as a
-    // Revenue adjustment. Total Revenue (P&L) === Total Claims (Annual
-    // Summary) is preserved.
+    // P&L treatment: the broker share is an internal cost on ARO's books, so
+    // it lives on the same Team & Broker Commissions line and is NOT netted
+    // out of Revenue. Phase R-14 keeps this — Revenue (P&L) === the
+    // annual-summary "Net Revenue" card.
     //
     // Both queries use the same year-prefix $regex on the date string. ISO
     // yyyy-mm-dd dates entered by admins are effectively Cairo-local (no
@@ -20507,7 +20520,7 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
       return { categoryId: c.categoryId, categoryName: c.categoryName, total: round2(c.total) };
     }).sort(function(a,b){ return b.total - a.total; });
 
-    var profitBeforeTax = netDueTotal - teamTotal - expTotal;
+    var profitBeforeTax = netRevenueTotal - teamTotal - expTotal;
 
     // --- Profit tax: clamp to ≥ 0 (judgment #2) ------------------------
     var taxCfg = await ProfitTaxConfig.findOne({ year: yNum }).lean();
@@ -20539,7 +20552,7 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
     res.json({
       year: year,
       revenue: {
-        netDueTotal:     round2(netDueTotal),
+        netRevenue:      round2(netRevenueTotal),
         grossClaimTotal: round2(grossClaim),
         vatTotal:        round2(vatTotal),
         withholdingTotal: round2(withholdingTotal),
