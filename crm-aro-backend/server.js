@@ -284,6 +284,24 @@ User.collection.createIndex({ reportsTo: 1 }).catch(function(){});
 Lead.collection.createIndex({ splitAgent2Id: 1 }).catch(function(){});
 Lead.collection.createIndex({ splitAgent2Id: 1, createdAt: -1 }).catch(function(){});
 
+// Rotation sweep — sweepAutoRotation sorts up-to-1000 candidates by
+// lastRotationAt asc; without a covering index the in-memory sort blew the
+// 32MB limit once the assigned-lead pool grew past ~1k and every tick was
+// exiting with "Sort exceeded memory limit". Partial filter only includes
+// the two predicates the planner can prove are implied by the sweep query
+// (archived: false equality, agentId: $ne null implies $exists: true);
+// locked/rotationStopped use $ne in the query and aren't planner-implied by
+// equality, so they get post-scan-filtered from the already-narrowed set.
+Lead.collection.createIndex(
+  { lastRotationAt: 1 },
+  {
+    partialFilterExpression: { archived: false, agentId: { $exists: true } },
+    name: "lastRotationAt_active_assigned"
+  }
+).catch(function(e){
+  console.error("[lastRotationAt index] not created:", e && e.message ? e.message : e);
+});
+
 // STEP 4-2 — callback migration indexes. callbackTime is a String (ISO 8601)
 // so range queries against ISO strings sort lexicographically. Partial filter
 // keeps the index small (only ~64% of leads have a non-empty callbackTime).
@@ -11607,7 +11625,7 @@ async function sweepAutoRotation() {
       locked: { $ne: true },
       rotationStopped: { $ne: true }
     }).select("_id name status callbackTime lastActivityTime agentId assignments lastRotationAt")
-      .populate("agentId", "name").sort({ lastRotationAt: 1 }).limit(1000).lean();
+      .populate("agentId", "name").sort({ lastRotationAt: 1 }).allowDiskUse(true).limit(1000).lean();
 
     if (!candidates.length) {
       await persistRotationRun(runStartedAt, 0, 0, 0, {}, [], []);
