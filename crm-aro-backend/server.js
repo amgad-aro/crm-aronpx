@@ -7036,54 +7036,68 @@ function findAssignmentForAgent(lead, agentId) {
 // cells drift).
 var SUMMARY_QUALIFYING = { HotCase:1, Potential:1, MeetingDone:1 };
 
-function summaryComputeCurrentStatus(lead) {
-  if (!lead) return "NewLead";
-  var latestStatus = null;
-  var latestStatusTs = 0;
+// Find the slice that owns the most-recent qualifying agentHistory entry
+// across all slices. "Qualifying" = type in {status_change, feedback,
+// feedback_added} — the three event types that represent a real action by
+// the agent. Used as the single source for the (status, feedback, action-
+// agent) coherent triple in applySummaryProjection so all three derive
+// from the same slice — the outer row shows one real action by one real
+// agent, not independent maxes that could mix slices.
+//
+// Rotation-fresh slices have empty agentHistory and never win, which fixes
+// the prior (slice.status, slice.lastActionAt) fallback that flipped the
+// row to "NewLead" after every rotation (rotation stamps lastActionAt=now
+// on the receiving slice with status="NewLead").
+function summaryComputeActionSlice(lead) {
+  if (!lead) return null;
+  var winnerSlice = null;
+  var winnerTs = 0;
   (lead.assignments || []).forEach(function(a){
     if (!a) return;
     var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
-    hist.forEach(function(h){
-      if (!h || h.type !== "status_change") return;
+    var sliceMaxTs = 0;
+    for (var i = 0; i < hist.length; i++) {
+      var h = hist[i];
+      if (!h) continue;
+      if (h.type !== "status_change" && h.type !== "feedback" && h.type !== "feedback_added") continue;
       var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
-      if (ts <= latestStatusTs) return;
-      var s = h.status || h.toStatus;
-      if (!s && h.note) {
-        var m = String(h.note).match(/Status:\s*(\w+)/i);
-        if (m) s = m[1];
-      }
-      if (s) { latestStatus = s; latestStatusTs = ts; }
-    });
-    if (a.status && a.lastActionAt) {
-      var t = new Date(a.lastActionAt).getTime();
-      if (t > latestStatusTs) { latestStatus = a.status; latestStatusTs = t; }
+      if (ts > sliceMaxTs) sliceMaxTs = ts;
+    }
+    if (sliceMaxTs > winnerTs) {
+      winnerTs = sliceMaxTs;
+      winnerSlice = a;
     }
   });
-  if (latestStatus) return latestStatus;
+  return winnerSlice;
+}
+
+function summaryComputeCurrentStatus(lead) {
+  if (!lead) return "NewLead";
+  var slice = summaryComputeActionSlice(lead);
+  if (slice && slice.status) return slice.status;
   return lead.status || "NewLead";
 }
 
 function summaryComputeCurrentFeedback(lead) {
   if (!lead) return "";
-  var latestFeedback = "";
-  var latestFeedbackTs = 0;
-  (lead.assignments || []).forEach(function(a){
-    if (!a) return;
-    var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
-    hist.forEach(function(h){
-      if (!h) return;
-      if (h.type !== "feedback" && h.type !== "feedback_added") return;
-      var content = String(h.note || h.feedback || "").trim();
-      if (!content) return;
-      var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
-      if (ts > latestFeedbackTs) { latestFeedbackTs = ts; latestFeedback = content; }
-    });
-    if (a.lastFeedback && String(a.lastFeedback).trim() && a.lastActionAt) {
-      var t = new Date(a.lastActionAt).getTime();
-      if (t > latestFeedbackTs) { latestFeedbackTs = t; latestFeedback = String(a.lastFeedback).trim(); }
-    }
-  });
-  return latestFeedback;
+  var slice = summaryComputeActionSlice(lead);
+  if (slice && slice.lastFeedback) return String(slice.lastFeedback).trim();
+  return "";
+}
+
+// Returns { _id, name } of the agent whose slice produced the winning
+// action, or null when no slice has qualifying agentHistory entries. Read
+// by the LeadsPage outer row to attribute the displayed status+feedback to
+// the agent who actually did the action (not the current owner, which can
+// differ after re-rotation).
+function summaryComputeCurrentActionAgent(lead) {
+  if (!lead) return null;
+  var slice = summaryComputeActionSlice(lead);
+  if (!slice || !slice.agentId) return null;
+  var aid  = (slice.agentId && slice.agentId._id) ? String(slice.agentId._id) : String(slice.agentId || "");
+  var name = (slice.agentId && slice.agentId.name) || "";
+  if (!aid && !name) return null;
+  return { _id: aid, name: name };
 }
 
 // Inverse of FE isGenuineNewLead — returns TRUE when ANY slice has had a
@@ -7143,9 +7157,10 @@ function applySummaryProjection(obj) {
   var marks = summaryComputeQualifyingMarks(obj);
   obj._qualifyingMarksCount = marks.length;
   obj._qualifyingMarksFirst = marks[0] || null;
-  obj._currentStatus    = summaryComputeCurrentStatus(obj)   || obj.status || "";
-  obj._currentFeedback  = summaryComputeCurrentFeedback(obj) || obj.lastFeedback || "";
-  obj._hasAction        = summaryComputeHasAction(obj);
+  obj._currentStatus       = summaryComputeCurrentStatus(obj)      || obj.status || "";
+  obj._currentFeedback     = summaryComputeCurrentFeedback(obj)    || obj.lastFeedback || "";
+  obj._currentActionAgent  = summaryComputeCurrentActionAgent(obj);
+  obj._hasAction           = summaryComputeHasAction(obj);
   // Strip the per-assignment history sub-arrays — biggest payload win.
   // assignments[] itself stays so the FE filter/overlay logic keeps
   // working; only the inner agentHistory[] vanishes.
