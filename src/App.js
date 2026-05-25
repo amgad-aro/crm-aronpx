@@ -1845,7 +1845,7 @@ var Header = function(p) {
                   <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.fromName} → {n.toName}</div>
                   <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:2 }}>
                     <span style={{ fontSize:10, color:"#EA580C", fontWeight:600, background:"#FFF7ED", padding:"1px 6px", borderRadius:4 }}>{(function(){ if(n.reason==="Manual reassign") return "Manual reassign"; var labels={no_answer_streak:"No Answer",callback_overdue:"Callback overdue",not_interested_return:"Not Interested return",no_action_timeout:"No action timeout",hot_no_action:"Hot Case +1 no contact"}; return "Auto rotation — "+(labels[n.reason]||n.reason||"auto"); })()}</span>
-                    <span style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.eventTime||n.createdAt||n.time, t)}</span>
+                    <span style={{ fontSize:10, color:C.textLight }}>{timeAgo(n.createdAt||n.eventTime||n.time, t)}</span>
                   </div>
                 </div>
                 {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#EA580C", flexShrink:0 }}/>}
