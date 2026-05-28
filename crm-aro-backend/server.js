@@ -6281,6 +6281,10 @@ app.patch("/api/users/:userId/base-salary", auth, async function(req, res) {
 // Per-employee monthly attendance (for the salary-sheet daily log). Owner /
 // anyone with manageSalaries can read; sales_admin/hr targets are gated to
 // Owner per doc §14.
+// Response shape: { attendance: [...], companyOffDays: [...] }. The off-days
+// are surfaced so SalarySheetPage can label off-day rows ("Off: Eid") instead
+// of falling through to "—". The salary engine still queries CompanyOffDay
+// directly server-side; this payload is for display only.
 app.get("/api/attendance/users/:userId/month", auth, async function(req, res) {
   try {
     var year  = parseInt(req.query.year,  10);
@@ -6296,10 +6300,11 @@ app.get("/api/attendance/users/:userId/month", auth, async function(req, res) {
 
     var start = new Date(Date.UTC(year, month - 1, 1));
     var end   = new Date(Date.UTC(year, month, 1));
-    var rows = await Attendance.find({
-      userId: target._id, date: { $gte: start, $lt: end }
-    }).sort({ date: 1 }).lean();
-    res.json(rows);
+    var results = await Promise.all([
+      Attendance.find({ userId: target._id, date: { $gte: start, $lt: end } }).sort({ date: 1 }).lean(),
+      CompanyOffDay.find({ date: { $gte: start, $lt: end } }).sort({ date: 1 }).lean()
+    ]);
+    res.json({ attendance: results[0], companyOffDays: results[1] });
   } catch (e) {
     console.error("[GET /attendance/users/:userId/month]", e);
     res.status(500).json({ error: e.message });

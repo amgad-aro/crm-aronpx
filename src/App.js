@@ -6795,6 +6795,7 @@ var SalarySheetPage = function(p) {
   var [month,setMonth] = useState(new Date().getMonth() + 1);
   var [data,setData]   = useState(null);
   var [attendance,setAttendance] = useState([]);
+  var [companyOffDays,setCompanyOffDays] = useState([]);
   var [loading,setLoading] = useState(false);
   var [error,setError] = useState("");
   // Phase 5C — Day Override modal state.
@@ -6830,7 +6831,9 @@ var SalarySheetPage = function(p) {
       apiFetch("/api/attendance/users/"+p.salaryViewUserId+"/month?year="+year+"&month="+month, "GET", null, p.token)
     ]).then(function(results){
       setData(results[0]);
-      setAttendance(Array.isArray(results[1]) ? results[1] : []);
+      var monthData = results[1] || {};
+      setAttendance(Array.isArray(monthData.attendance) ? monthData.attendance : []);
+      setCompanyOffDays(Array.isArray(monthData.companyOffDays) ? monthData.companyOffDays : []);
     }).catch(function(err){
       setError((err && err.message) || "Failed to load");
     }).finally(function(){ setLoading(false); });
@@ -6892,13 +6895,38 @@ var SalarySheetPage = function(p) {
     var d = new Date(a.date);
     attByKey[d.getUTCFullYear()+"-"+(d.getUTCMonth()+1)+"-"+d.getUTCDate()] = a;
   });
+  // Same key shape (year-month-day, NOT zero-padded) as attByKey so a single
+  // dayKey looks both up. Mirrors the server-side coffSet in salary calc.
+  var coffMap = {};
+  companyOffDays.forEach(function(o){
+    var d = new Date(o.date);
+    coffMap[d.getUTCFullYear()+"-"+(d.getUTCMonth()+1)+"-"+d.getUTCDate()] = o.name || "Off Day";
+  });
+
+  // Mirror of server-side isSaturdayWorkday (server.js around line 4676) so
+  // the calendar can label off-Saturdays without an extra round-trip. Saved
+  // saturdayPatternStartDate is a YYYY-MM-DD string → UTC midnight Date, and
+  // row.date is also UTC midnight, so UTC parts on both line up with Cairo.
+  var isSaturdayWorkdayFE = function(dateUTC){
+    var sched = (t && t.saturdaySchedule) || "always_work";
+    if (sched === "always_work") return true;
+    if (sched === "always_off")  return false;
+    if (sched === "alternating") {
+      if (!t.saturdayPatternStartDate) return true;
+      var anchor = new Date(t.saturdayPatternStartDate);
+      var anchorUTC  = Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate());
+      var weeksDiff = Math.round((dateUTC.getTime() - anchorUTC) / (7 * 86400000));
+      return Math.abs(weeksDiff) % 2 === 0;
+    }
+    return true;
+  };
 
   var rows = [];
   for (var d = 1; d <= daysInMonth; d++) {
     var dateUTC = new Date(Date.UTC(year, month - 1, d));
     var dayKey  = year + "-" + month + "-" + d;
     var att = attByKey[dayKey] || null;
-    rows.push({ date: dateUTC, attendance: att });
+    rows.push({ date: dateUTC, dayKey: dayKey, attendance: att });
   }
 
   var deductionFor = function(att){
@@ -6963,7 +6991,13 @@ var SalarySheetPage = function(p) {
       var weekday = row.date.toLocaleDateString("en-GB", { weekday:"short", timeZone:"UTC" });
       var a = row.attendance;
       var hasOverride = a && a.override && a.override.action;
-      var status = hasOverride ? "Override" : (a ? a.status : (weekday === "Fri" ? "friday_off" : "absent"));
+      var status;
+      if (hasOverride) status = "Override";
+      else if (a) status = a.status;
+      else if (weekday === "Fri") status = "friday_off";
+      else if (weekday === "Sat" && !isSaturdayWorkdayFE(row.date)) status = "saturday_off";
+      else if (coffMap[row.dayKey]) status = "company_off:" + coffMap[row.dayKey];
+      else status = "absent";
       var ovReason = hasOverride ? (a.override.reason || "") : "";
       var ded = a ? Math.round((Number(a.deductionFraction) || 0) * Number(s.dailyRate || 0)) : 0;
       lines.push([
@@ -7178,7 +7212,11 @@ var SalarySheetPage = function(p) {
                 var a = row.attendance;
                 var hasOverride = a && a.override && a.override.action;
                 var off = null;
-                if (!a && weekday === "Fri") off = "friday";
+                if (!a) {
+                  if (weekday === "Fri") off = "friday";
+                  else if (weekday === "Sat" && !isSaturdayWorkdayFE(row.date)) off = "saturday";
+                  else if (coffMap[row.dayKey]) off = "company:" + coffMap[row.dayKey];
+                }
                 var badge = attStatusBadge(a && a.status, off);
                 if (hasOverride) badge = { label:"Override", bg:"#F3E8FF", color:"#7C3AED" };
                 var ded = deductionFor(a);
