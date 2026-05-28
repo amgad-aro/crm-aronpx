@@ -4097,20 +4097,36 @@ var LeadsPage = function(p) {
   };
 
   // ---- Filter logic (uses state values above) ----
-  var allVisible = p.leads.filter(function(l){
-    if(l.archived) return false;
-    var matchSource = isReq?l.source==="Daily Request":l.source!=="Daily Request";
-    if(!matchSource) return false;
-    // Hide EOI and DoneDeal from Leads page — they have their own pages.
-    // Also hide Cancelled leads that came from EOI (they live in the EOI Cancelled tab).
-    if(!isReq && (l.status==="EOI"||l.status==="DoneDeal")) return false;
-    // Leads that were cancelled from EOI keep their restored status and reappear here for the rotated agent.
-    // Leads that were status-cancelled via the Deals/status dropdown stay hidden from the Leads page as before.
-    if(!isReq && l.status==="Deal Cancelled" && !(l.eoiStatus==="EOI Cancelled")) return false;
-    // Manager: hide leads with no agent in daily request
-    if(isReq && (p.cu.role==="manager"||p.cu.role==="team_leader") && !l.agentId) return false;
-    return true;
-  });
+  // Memoized so a fresh array reference isn't produced on every parent
+  // re-render (cbBust ticks, leadsPageCounts setState, etc.). Stable
+  // identity here lets the downstream `filtered` useMemo skip recomputing
+  // when nothing relevant changed, which in turn keeps Virtuoso's `data`
+  // prop reference stable and stops the row-remount → height-remeasure →
+  // window-scroll-anchor jitter during progressive load.
+  var allVisible = useMemo(function(){
+    return p.leads.filter(function(l){
+      if(l.archived) return false;
+      var matchSource = isReq?l.source==="Daily Request":l.source!=="Daily Request";
+      if(!matchSource) return false;
+      // Hide EOI and DoneDeal from Leads page — they have their own pages.
+      // Also hide Cancelled leads that came from EOI (they live in the EOI Cancelled tab).
+      if(!isReq && (l.status==="EOI"||l.status==="DoneDeal")) return false;
+      // Leads that were cancelled from EOI keep their restored status and reappear here for the rotated agent.
+      // Leads that were status-cancelled via the Deals/status dropdown stay hidden from the Leads page as before.
+      if(!isReq && l.status==="Deal Cancelled" && !(l.eoiStatus==="EOI Cancelled")) return false;
+      // Manager: hide leads with no agent in daily request
+      if(isReq && (p.cu.role==="manager"||p.cu.role==="team_leader") && !l.agentId) return false;
+      return true;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.leads, isReq, p.cu && p.cu.role]);
+  // Memoized for the same reason as `allVisible` above. Without this,
+  // every parent re-render (every cbBust tick, every leadsPageCounts
+  // setState) recomputed and re-sorted the array, handing Virtuoso a
+  // fresh `data` reference and forcing it to re-evaluate row layout.
+  // Combined with the new `computeItemKey` on each Virtuoso, this keeps
+  // row identity AND data reference stable across cosmetic re-renders.
+  var filtered = useMemo(function(){
   var filtered;
   if (lockedOnly) {
     // Standalone filter: ignore every other user-applied filter and show only
@@ -4315,6 +4331,9 @@ var LeadsPage = function(p) {
     if (sortBy==="name") return a.name.localeCompare(b.name,"ar");
     return 0;
   });
+  return filtered;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allVisible, p.leadFilter, p.specialFilter, p.activities, p.search, rsLeads, nrLeads, lockedOnly, vipFilter, noAgentFilter, agentFilter, sourceFilter, campaignMode, campaignText, dateRange, sortBy]);
 
   // Fix A — clear p.initSelected after consuming it (matches EOI/Deals/DR
   // patterns at L9246 / L9903 / L10911). Without this, the deep-link state
@@ -4974,6 +4993,7 @@ var LeadsPage = function(p) {
               useWindowScroll
               data={filtered}
               components={leadsImportantTableComponents}
+              computeItemKey={function(idx, lead){ return (lead && lead._id) ? String(lead._id) : idx; }}
               endReached={function(){ if (p.loadMoreLeads) p.loadMoreLeads(); }}
               fixedHeaderContent={function(){
                 return <tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
@@ -5026,6 +5046,7 @@ var LeadsPage = function(p) {
           <Virtuoso
             useWindowScroll
             data={filtered}
+            computeItemKey={function(idx, lead){ return (lead && lead._id) ? String(lead._id) : idx; }}
             endReached={function(){ if (p.loadMoreLeads) p.loadMoreLeads(); }}
             itemContent={function(idx, lead){
               var curSt=currentStatus(lead); var curFb=currentFeedback(lead); var so=sc.find(function(s){return s.value===curSt;})||sc[0]; var isVIP=lead.isVIP;
@@ -5110,6 +5131,7 @@ var LeadsPage = function(p) {
               useWindowScroll
               data={filtered}
               components={leadsMainTableComponents}
+              computeItemKey={function(idx, lead){ return (lead && lead._id) ? String(lead._id) : idx; }}
               endReached={function(){
                 // STEP 4-5 X3 — infinite scroll. Called by Virtuoso when the
                 // last visible item nears the bottom. loadMoreLeads short-
