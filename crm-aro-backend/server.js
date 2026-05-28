@@ -770,11 +770,14 @@ var Broker = mongoose.model("Broker", brokerSchema);
 
 // CompanyOffDay — a single calendar date that is off for everyone (e.g. Labor
 // Day, company anniversary). date stored as start-of-day Africa/Cairo. Removed
-// from each user's workingDays count when computing salary.
+// from each user's workingDays count when computing salary. Multi-day ranges
+// (e.g. Eid) share a rangeId so the UI can group them and cascade-delete;
+// salary calc remains per-day and ignores rangeId entirely.
 var CompanyOffDay = mongoose.model("CompanyOffDay", new mongoose.Schema({
   date:      { type: Date, required: true, unique: true },
   name:      { type: String, required: true },
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  rangeId:   { type: mongoose.Schema.Types.ObjectId, default: null, index: true }
 }, { timestamps: true }));
 
 // Attendance — one document per user per calendar day. Created on check-in;
@@ -5344,39 +5347,72 @@ app.get("/api/company-off-days", auth, async function(req, res) {
   }
 });
 
+// Accepts a date range {from, to, name}. `to` is optional — when omitted or
+// equal to `from`, creates one document. Multi-day ranges share a rangeId so
+// the UI can group rows for display and cascade-delete. Salary calc remains
+// per-day; rangeId is invisible to it. Past-month guard applies to `from`
+// only (ranges may cross into future months freely). Overlap with any
+// existing off-day in the range is rejected atomically — no partial insert.
 app.post("/api/company-off-days", auth, requireAttendancePermission("manageCompanyOffDays"),
 async function(req, res) {
   try {
-    var dateStr = (req.body && req.body.date) ? String(req.body.date) : "";
+    var fromStr = (req.body && req.body.from) ? String(req.body.from) : "";
+    var toStr   = (req.body && req.body.to)   ? String(req.body.to).trim() : "";
     var name    = (req.body && req.body.name) ? String(req.body.name).trim() : "";
-    if (!dateStr) return res.status(400).json({ error: "date required (YYYY-MM-DD)" });
+    if (!fromStr) return res.status(400).json({ error: "from required (YYYY-MM-DD)" });
+    if (!toStr)   toStr = fromStr;
     if (!name)    return res.status(400).json({ error: "name required" });
     if (name.length > 100) return res.status(400).json({ error: "name too long" });
 
-    var m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!m) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
-    var dateKey = new Date(Date.UTC(parseInt(m[1],10), parseInt(m[2],10) - 1, parseInt(m[3],10)));
+    var mf = fromStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    var mt = toStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!mf) return res.status(400).json({ error: "from must be YYYY-MM-DD" });
+    if (!mt) return res.status(400).json({ error: "to must be YYYY-MM-DD" });
+    var fromDate = new Date(Date.UTC(parseInt(mf[1],10), parseInt(mf[2],10) - 1, parseInt(mf[3],10)));
+    var toDate   = new Date(Date.UTC(parseInt(mt[1],10), parseInt(mt[2],10) - 1, parseInt(mt[3],10)));
+    if (toDate < fromDate) return res.status(400).json({ error: "to must be on or after from" });
 
-    // Doc §11: cannot add off-days in past months. We compute "first day of
-    // current Cairo month" as the floor.
+    // Doc §11: cannot add off-days in past months. Guard applies to `from`
+    // (the range start); `to` may freely cross into future months.
     var nowParts = getCairoDateParts(new Date());
     var monthFloor = new Date(Date.UTC(nowParts.year, nowParts.month - 1, 1));
-    if (dateKey < monthFloor) return res.status(400).json({ error: "Cannot add off-day in a past month" });
+    if (fromDate < monthFloor) return res.status(400).json({ error: "Cannot add off-day in a past month" });
+
+    // Atomic overlap pre-check — any existing off-day in [from, to] aborts
+    // the whole range. Listing the conflicting dates gives the admin enough
+    // info to fix without guessing.
+    var existing = await CompanyOffDay.find({ date: { $gte: fromDate, $lte: toDate } })
+      .sort({ date: 1 }).lean();
+    if (existing.length > 0) {
+      var conflicts = existing.map(function(e){ return new Date(e.date).toISOString().slice(0,10); });
+      return res.status(409).json({ error: "Off-days already exist on: " + conflicts.join(", ") });
+    }
+
+    var rangeId = new mongoose.Types.ObjectId();
+    var docs = [];
+    for (var ms = fromDate.getTime(); ms <= toDate.getTime(); ms += 86400000) {
+      docs.push({ date: new Date(ms), name: name, createdBy: req.user.id, rangeId: rangeId });
+    }
 
     try {
-      var off = await CompanyOffDay.create({ date: dateKey, name: name, createdBy: req.user.id });
+      var inserted = await CompanyOffDay.insertMany(docs, { ordered: true });
       try {
         await AuditLog.create({
           type: "COMPANY_OFFDAY_ADDED",
           performedBy: req.user.id,
-          after: { date: dateKey, name: name },
+          after: { from: fromDate, to: toDate, name: name, days: inserted.length, rangeId: rangeId },
           ipAddress: req.ip
         });
       } catch (e) {}
       try { broadcast("company_offdays_updated", {}); } catch (e) {}
-      res.json(off);
+      res.json({ rangeId: rangeId, days: inserted.length, from: fromDate, to: toDate, name: name });
     } catch (dupErr) {
-      if (dupErr && dupErr.code === 11000) return res.status(409).json({ error: "An off-day already exists for that date" });
+      // Race: another POST landed between pre-check and insertMany. Roll
+      // back any partial inserts so the range stays atomic.
+      if (dupErr && dupErr.code === 11000) {
+        try { await CompanyOffDay.deleteMany({ rangeId: rangeId }); } catch (e) {}
+        return res.status(409).json({ error: "Off-day conflict in range — try again" });
+      }
       throw dupErr;
     }
   } catch (e) {
@@ -5408,6 +5444,43 @@ async function(req, res) {
     res.json({ ok: true });
   } catch (e) {
     console.error("[DELETE /company-off-days/:id]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Cascade delete for a multi-day range. All-or-nothing: if any day in the
+// range has rolled into a past month, the whole delete is rejected so the
+// rangeId group never gets orphaned. Legacy single-day rows have
+// rangeId=null and use the :id route above.
+app.delete("/api/company-off-days/range/:rangeId", auth, requireAttendancePermission("manageCompanyOffDays"),
+async function(req, res) {
+  try {
+    var rangeId = req.params.rangeId;
+    if (!mongoose.Types.ObjectId.isValid(rangeId)) return res.status(400).json({ error: "Invalid rangeId" });
+    var docs = await CompanyOffDay.find({ rangeId: rangeId }).sort({ date: 1 }).lean();
+    if (docs.length === 0) return res.status(404).json({ error: "Range not found" });
+
+    var nowParts = getCairoDateParts(new Date());
+    var monthFloor = new Date(Date.UTC(nowParts.year, nowParts.month - 1, 1));
+    var hasPast = docs.some(function(d){ return new Date(d.date) < monthFloor; });
+    if (hasPast) return res.status(400).json({ error: "Cannot delete off-day(s) in a past month" });
+
+    var fromDate = new Date(docs[0].date);
+    var toDate   = new Date(docs[docs.length - 1].date);
+
+    await CompanyOffDay.deleteMany({ rangeId: rangeId });
+    try {
+      await AuditLog.create({
+        type: "COMPANY_OFFDAY_REMOVED",
+        performedBy: req.user.id,
+        before: { from: fromDate, to: toDate, name: docs[0].name, days: docs.length, rangeId: rangeId },
+        ipAddress: req.ip
+      });
+    } catch (e) {}
+    try { broadcast("company_offdays_updated", {}); } catch (e) {}
+    res.json({ ok: true, removed: docs.length });
+  } catch (e) {
+    console.error("[DELETE /company-off-days/range/:rangeId]", e);
     res.status(500).json({ error: e.message });
   }
 });

@@ -6464,7 +6464,8 @@ var CompanyOffDaysPage = function(p) {
   var [year,setYear] = useState(now.getFullYear());
   var [rows,setRows] = useState([]);
   var [loading,setLoading] = useState(false);
-  var [newDate,setNewDate] = useState("");
+  var [newDateFrom,setNewDateFrom] = useState("");
+  var [newDateTo,setNewDateTo] = useState("");
   var [newName,setNewName] = useState("");
   var [adding,setAdding] = useState(false);
   var [error,setError] = useState("");
@@ -6486,21 +6487,32 @@ var CompanyOffDaysPage = function(p) {
   },[refetch]);
 
   var doAdd = async function(){
-    if (!newDate || !newName) { setError("Date and name required"); return; }
+    if (!newDateFrom || !newName) { setError("From date and name required"); return; }
+    if (newDateTo && newDateTo < newDateFrom) { setError("To must be on or after From"); return; }
     setError(""); setAdding(true);
     try {
-      await apiFetch("/api/company-off-days","POST",{ date: newDate, name: newName }, p.token, p.csrfToken);
-      setNewDate(""); setNewName("");
+      await apiFetch("/api/company-off-days","POST",{
+        from: newDateFrom,
+        to: newDateTo || newDateFrom,
+        name: newName
+      }, p.token, p.csrfToken);
+      setNewDateFrom(""); setNewDateTo(""); setNewName("");
       refetch();
     } catch (err) {
       setError((err && err.message) || "Add failed");
     } finally { setAdding(false); }
   };
 
-  var doDelete = async function(id){
-    if (!window.confirm("Delete this off-day?")) return;
+  var doDelete = async function(group){
+    var msg = group.days > 1
+      ? "Delete this " + group.days + "-day off-day range (" + group.name + ")?"
+      : "Delete this off-day?";
+    if (!window.confirm(msg)) return;
     try {
-      await apiFetch("/api/company-off-days/"+id,"DELETE",null,p.token,p.csrfToken);
+      var url = group.rangeId
+        ? "/api/company-off-days/range/" + group.rangeId
+        : "/api/company-off-days/" + group._id;
+      await apiFetch(url,"DELETE",null,p.token,p.csrfToken);
       refetch();
     } catch (err) { alert((err && err.message) || "Delete failed"); }
   };
@@ -6515,6 +6527,50 @@ var CompanyOffDaysPage = function(p) {
 
   var monthFloor = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
   var todayKey = function(d){ var x = new Date(d); return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate())); };
+
+  // Group rows by rangeId. Legacy single-day docs (rangeId=null) render as
+  // their own one-day group keyed by _id so they keep working unchanged.
+  var groups = (function(){
+    var byRange = {};
+    var singles = [];
+    rows.forEach(function(r){
+      var rid = r.rangeId ? String(r.rangeId) : null;
+      if (rid) {
+        if (!byRange[rid]) byRange[rid] = [];
+        byRange[rid].push(r);
+      } else {
+        singles.push(r);
+      }
+    });
+    var ranges = Object.keys(byRange).map(function(k){
+      var sorted = byRange[k].slice().sort(function(a,b){ return new Date(a.date) - new Date(b.date); });
+      return {
+        key: "r:"+k,
+        rangeId: k,
+        from: sorted[0].date,
+        to: sorted[sorted.length-1].date,
+        name: sorted[0].name,
+        days: sorted.length,
+        _id: null
+      };
+    });
+    var solos = singles.map(function(s){
+      return {
+        key: "s:"+s._id,
+        rangeId: null,
+        from: s.date,
+        to: s.date,
+        name: s.name,
+        days: 1,
+        _id: s._id
+      };
+    });
+    return ranges.concat(solos).sort(function(a,b){ return new Date(a.from) - new Date(b.from); });
+  })();
+
+  var fmtDate = function(d){
+    return new Date(d).toLocaleDateString("en-GB", { weekday:"short", day:"2-digit", month:"short", year:"numeric", timeZone:"UTC" });
+  };
 
   return <div style={p.embedded ? {} : {padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
     <div style={{maxWidth:900, margin:"0 auto"}}>
@@ -6532,14 +6588,19 @@ var CompanyOffDaysPage = function(p) {
         </div>
 
         <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", background:"#FAFAF7", display:"flex", gap:8, alignItems:"flex-end", flexWrap:"wrap"}}>
-          <div style={{flex:"1 1 160px", minWidth:140}}>
-            <label style={{fontSize:11, color:C.textLight, display:"block", marginBottom:4}}>Date</label>
-            <input type="date" value={newDate} onChange={function(e){setNewDate(e.target.value);}}
+          <div style={{flex:"1 1 140px", minWidth:130}}>
+            <label style={{fontSize:11, color:C.textLight, display:"block", marginBottom:4}}>From</label>
+            <input type="date" value={newDateFrom} onChange={function(e){setNewDateFrom(e.target.value);}}
               style={{padding:"7px 10px", border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:6, fontSize:13, fontFamily:"inherit", width:"100%", boxSizing:"border-box"}}/>
           </div>
-          <div style={{flex:"2 1 240px", minWidth:200}}>
+          <div style={{flex:"1 1 140px", minWidth:130}}>
+            <label style={{fontSize:11, color:C.textLight, display:"block", marginBottom:4}}>To <span style={{fontSize:10, color:C.textLight}}>(optional)</span></label>
+            <input type="date" value={newDateTo} min={newDateFrom || undefined} onChange={function(e){setNewDateTo(e.target.value);}}
+              style={{padding:"7px 10px", border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:6, fontSize:13, fontFamily:"inherit", width:"100%", boxSizing:"border-box"}}/>
+          </div>
+          <div style={{flex:"2 1 220px", minWidth:180}}>
             <label style={{fontSize:11, color:C.textLight, display:"block", marginBottom:4}}>Name</label>
-            <input type="text" value={newName} onChange={function(e){setNewName(e.target.value);}} placeholder="e.g. Labor Day"
+            <input type="text" value={newName} onChange={function(e){setNewName(e.target.value);}} placeholder="e.g. Eid al-Adha"
               style={{padding:"7px 10px", border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:6, fontSize:13, fontFamily:"inherit", width:"100%", boxSizing:"border-box"}}/>
           </div>
           <button type="button" onClick={doAdd} disabled={adding}
@@ -6550,7 +6611,7 @@ var CompanyOffDaysPage = function(p) {
         </div>
 
         {loading ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
-          : rows.length === 0 ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>No off-days for {year}</div>
+          : groups.length === 0 ? <div style={{padding:32, textAlign:"center", color:C.textLight, fontSize:13}}>No off-days for {year}</div>
           : <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
             <thead>
               <tr style={{background:"#F7F7F5"}}>
@@ -6560,17 +6621,21 @@ var CompanyOffDaysPage = function(p) {
               </tr>
             </thead>
             <tbody>
-              {rows.map(function(off){
-                var d = new Date(off.date);
-                var dStr = d.toLocaleDateString("en-GB", { weekday:"short", day:"2-digit", month:"short", year:"numeric", timeZone:"UTC" });
-                var inPast = todayKey(off.date) < monthFloor;
-                return <tr key={String(off._id)} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
-                  <td style={{padding:"10px 16px"}}>{dStr}</td>
-                  <td style={{padding:"10px 16px"}}>{off.name}</td>
+              {groups.map(function(g){
+                var dateLabel = g.days > 1
+                  ? fmtDate(g.from) + "  →  " + fmtDate(g.to)
+                  : fmtDate(g.from);
+                var inPast = todayKey(g.from) < monthFloor;
+                return <tr key={g.key} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
+                  <td style={{padding:"10px 16px"}}>
+                    {dateLabel}
+                    {g.days > 1 && <span style={{fontSize:11, color:C.textLight, marginLeft:8}}>({g.days} days)</span>}
+                  </td>
+                  <td style={{padding:"10px 16px"}}>{g.name}</td>
                   <td style={{padding:"10px 16px", textAlign:"right"}}>
                     {inPast
                       ? <span style={{fontSize:11, color:C.textLight}}>locked</span>
-                      : <button type="button" onClick={function(){doDelete(off._id);}}
+                      : <button type="button" onClick={function(){doDelete(g);}}
                           style={{fontSize:11, padding:"4px 10px", border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:6, cursor:"pointer", color:C.danger, fontFamily:"inherit"}}>Delete</button>}
                   </td>
                 </tr>;
