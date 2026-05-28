@@ -3519,7 +3519,8 @@ app.post("/api/login", loginLimiter, async function(req, res) {
         phone: user.phone,
         teamId: user.teamId||"",
         teamName: user.teamName||"",
-        reportsTo: user.reportsTo||null
+        reportsTo: user.reportsTo||null,
+        isOwner: !!user.isOwner
       }
     });
   } catch (e) {
