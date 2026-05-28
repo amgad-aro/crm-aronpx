@@ -23138,6 +23138,23 @@ app.get("/api/assets/reports/history",     auth, requireAssetAccess, async funct
   try { res.json(await buildCustodyHistory(req.query)); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Total purchase value of all currently-active assets. Owner-only (isOwner
+// flag), not granted to admin or sales_admin. Non-owners get 403 so the
+// aggregate is never sent off the server — the AssetsList stat card gates its
+// fetch on the same flag, and the per-asset purchasePrice column in the list
+// is the only other way these recipients see prices (per-row only, never summed).
+app.get("/api/assets/stats/active-value", auth, requireAssetAccess, async function(req, res) {
+  try {
+    if (req.isOwnerLevel !== true) return res.status(403).json({ error: "Owner only" });
+    var agg = await Asset.aggregate([
+      { $match: { status: "active" } },
+      { $group: { _id: null, total: { $sum: "$purchasePrice" } } }
+    ]);
+    var total = (agg && agg[0] && Number(agg[0].total)) || 0;
+    res.json({ activeValue: total });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Excel export — single endpoint, dispatch on ?type. Each report type has a
 // dedicated builder above (build<Type>Workbook) that wires a summary sheet
 // plus a per-row detail sheet so admins can analyse the data offline.

@@ -18508,6 +18508,16 @@ var AssetTrackerPage = function(p) {
   var [statusFilter, setStatusFilter] = useState("");
   var [branchFilter, setBranchFilter] = useState("");
   var [searchQuery, setSearchQuery] = useState("");
+  // List grouping: collapse same-name assets (e.g. 24 chairs all named
+  // "متحرك اسود") into one row with a count badge. Expand state is per-name,
+  // client-side only — no backend change. Auto-flattens during active search
+  // so matches surface as individual rows.
+  var [expandedGroups, setExpandedGroups] = useState({});
+
+  // Owner-only aggregate of active assets' purchase value. Backend strips this
+  // for non-owners; the FE also gates the fetch behind isOwner so non-owners
+  // never even ask for it. null = not loaded yet / not applicable.
+  var [activeValueStat, setActiveValueStat] = useState(null);
 
   var emptyForm = { name:"", categoryId:"", branchId:"", purchasePrice:"", purchaseDate:"", supplier:"", serialNumber:"", assignmentType:"personal", currentCustodian:"", notes:"" };
   var [form, setForm] = useState(emptyForm);
@@ -18586,6 +18596,17 @@ var AssetTrackerPage = function(p) {
     });
     return function() { cancelled = true; };
   }, [p.token]);
+
+  // Owner-only: pull the total active-value aggregate. Backend returns 403 for
+  // non-owners, so we gate the call here on isOwner === true.
+  useEffect(function() {
+    if (!(p.cu && p.cu.isOwner === true)) { setActiveValueStat(null); return; }
+    var cancelled = false;
+    apiFetch("/api/assets/stats/active-value", "GET", null, p.token)
+      .then(function(d){ if (!cancelled) setActiveValueStat(d && typeof d.activeValue === "number" ? d.activeValue : 0); })
+      .catch(function(){ if (!cancelled) setActiveValueStat(null); });
+    return function() { cancelled = true; };
+  }, [p.token, p.cu, assets]);
 
   // Deep-link consumer — fires when subPage moves AWAY from "detail" (not on
   // mount). Reason: a loading-state flicker in App can unmount this component
@@ -19081,6 +19102,64 @@ var AssetTrackerPage = function(p) {
       return hayParts.join(" ").toLowerCase().indexOf(q) !== -1;
     });
   })();
+
+  // Grouped list view. Buckets are keyed by the trimmed asset name (case-sensitive)
+  // so e.g. 24 chairs all named "متحرك اسود" collapse into one parent row with a
+  // ×N badge. Singletons render as plain rows. During an active search we flatten
+  // grouping so the matching individual assets surface immediately.
+  var isSearching = (searchQuery || "").trim().length > 0;
+  var groupedRows = (function() {
+    if (isSearching) {
+      return filteredAssets.map(function(a){ return { kind:"single", asset:a }; });
+    }
+    var byName = [];
+    var idx = {};
+    filteredAssets.forEach(function(a) {
+      var key = (a.name || "").trim();
+      if (idx[key] == null) { idx[key] = byName.length; byName.push({ key:key, assets:[] }); }
+      byName[idx[key]].assets.push(a);
+    });
+    return byName.map(function(g) {
+      if (g.assets.length === 1) return { kind:"single", asset: g.assets[0] };
+      // Group summary fields. Branch / status surface "Multiple" / "Mixed" when
+      // not all members agree — keeps the parent row truthful at a glance.
+      var first = g.assets[0];
+      var branchIds = g.assets.map(function(a){ return String((a.branchId && (a.branchId._id || a.branchId)) || ""); });
+      var sameBranch = branchIds.every(function(id){ return id === branchIds[0]; });
+      var statuses = g.assets.map(function(a){ return a.status; });
+      var sameStatus = statuses.every(function(s){ return s === statuses[0]; });
+      var sumValue = g.assets.reduce(function(s,a){ return s + (Number(a.purchasePrice)||0); }, 0);
+      return {
+        kind: "group",
+        key: g.key,
+        name: g.key,
+        count: g.assets.length,
+        category: first.categoryId,
+        sameBranch: sameBranch,
+        branchName: sameBranch ? (first.branchId ? first.branchId.name : "—") : null,
+        sameStatus: sameStatus,
+        status: sameStatus ? statuses[0] : null,
+        sumValue: sumValue,
+        assets: g.assets
+      };
+    });
+  })();
+  var toggleGroup = function(key) {
+    setExpandedGroups(function(prev){
+      var next = Object.assign({}, prev);
+      if (next[key]) delete next[key]; else next[key] = true;
+      return next;
+    });
+  };
+  var mixedBadge = function(label) {
+    return <span style={{ fontSize:11, padding:"3px 8px", borderRadius:6, fontWeight:500, background:"#F4F4F4", color:"#666" }}>{label}</span>;
+  };
+  var countBadge = function(n) {
+    return <span style={{ fontSize:11, padding:"2px 8px", borderRadius:999, fontWeight:600, background:"#185FA5", color:"#fff", fontFamily:"ui-monospace, SFMono-Regular, monospace", marginLeft:8, flexShrink:0 }}>×{n}</span>;
+  };
+  var caret = function(open) {
+    return <span style={{ display:"inline-block", width:14, fontSize:11, color:"#888", transform: open ? "rotate(90deg)" : "none", transition:"transform 0.12s", flexShrink:0 }}>▶</span>;
+  };
   var stats = (function() {
     var total = assets.length;
     var totalValue = assets.reduce(function(s,a){ return s + (Number(a.purchasePrice)||0); }, 0);
@@ -19186,11 +19265,12 @@ var AssetTrackerPage = function(p) {
             </div>
           </div>
 
-          {/* Stat cards. Total purchase value is an aggregate — Owner-only
-              per the access spec. Sales_admin sees the remaining three cards. */}
+          {/* Stat cards. Total active value is an aggregate — Owner-only per
+              the access spec; backend strips it for non-owners. Sales_admin
+              sees the remaining three cards. */}
           <div className="at-stat-cards" style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:16}}>
+            {p.cu && p.cu.isOwner === true && statCard("Total Active Value", activeValueStat == null ? "—" : fmtEGP(activeValueStat))}
             {statCard("Total assets",         stats.total)}
-            {p.cu && p.cu.isOwner === true && statCard("Total purchase value", fmtEGP(stats.totalValue))}
             {statCard("Active custodies",     stats.activeCustodies)}
             {statCard("Needs attention",      stats.attention)}
           </div>
@@ -19234,36 +19314,75 @@ var AssetTrackerPage = function(p) {
             </div>
             {!loaded
               ? <div style={{padding:24,textAlign:"center",fontSize:13,color:"#666"}}>Loading…</div>
-              : filteredAssets.length === 0
+              : groupedRows.length === 0
                 ? <div style={{padding:32,textAlign:"center",fontSize:13,color:"#666"}}>No matching assets</div>
-                : filteredAssets.map(function(a) {
-                    var rowStyle = Object.assign({
-                      display:"grid",gridTemplateColumns:"2fr 1.5fr 1fr 120px 130px",gap:10,
-                      padding:"12px 16px",borderBottom:"0.5px solid rgba(0,0,0,0.05)",
-                      fontSize:13,alignItems:"center",cursor:"pointer"
-                    }, rowHighlight(a.status) || {});
-                    return <div key={a._id} onClick={function(){ openDetail(a); }}
-                      onMouseEnter={function(e){ if (!rowHighlight(a.status)) e.currentTarget.style.background = "#F7F7F5"; }}
-                      onMouseLeave={function(e){ if (!rowHighlight(a.status)) e.currentTarget.style.background = "#fff"; }}
-                      style={rowStyle}>
-                      <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
-                        {prefixBadge(a.categoryId)}
-                        <div style={{minWidth:0}}>
-                          <div style={{fontWeight:500,color:"#1a1a1a",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.name}</div>
-                          <div style={{fontSize:11,color:"#666",fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>{a.assetCode}</div>
+                : groupedRows.map(function(row) {
+                    var gridCols = "2fr 1.5fr 1fr 120px 130px";
+                    var renderAssetRow = function(a, isChild) {
+                      var rs = Object.assign({
+                        display:"grid", gridTemplateColumns: gridCols, gap:10,
+                        padding: isChild ? "10px 16px 10px 32px" : "12px 16px",
+                        borderBottom:"0.5px solid rgba(0,0,0,0.05)",
+                        fontSize:13, alignItems:"center", cursor:"pointer",
+                        background: isChild ? "#FAFAF9" : "#fff"
+                      }, rowHighlight(a.status) || {});
+                      return <div key={a._id} onClick={function(e){ e.stopPropagation(); openDetail(a); }}
+                        onMouseEnter={function(e){ if (!rowHighlight(a.status)) e.currentTarget.style.background = isChild ? "#F2F2EF" : "#F7F7F5"; }}
+                        onMouseLeave={function(e){ if (!rowHighlight(a.status)) e.currentTarget.style.background = isChild ? "#FAFAF9" : "#fff"; }}
+                        style={rs}>
+                        <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
+                          {!isChild && prefixBadge(a.categoryId)}
+                          {isChild && <span style={{width:30, flexShrink:0}}/>}
+                          <div style={{minWidth:0}}>
+                            <div style={{fontWeight:isChild?400:500,color:"#1a1a1a",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.name}</div>
+                            <div style={{fontSize:11,color:"#666",fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>{a.assetCode}</div>
+                          </div>
                         </div>
+                        <div style={{color:"#1a1a1a"}}>
+                          {a.currentCustodian
+                            ? a.currentCustodian.name
+                            : (a.assignmentType === "shared"
+                                ? <span style={{color:"#666",fontStyle:"italic"}}>Shared</span>
+                                : <span style={{color:"#A32D2D"}}>Unassigned</span>)
+                          }
+                        </div>
+                        <div style={{color:"#666"}}>{a.branchId ? a.branchId.name : "—"}</div>
+                        <div style={{textAlign:"center"}}>{statusBadge(a.status)}</div>
+                        <div style={{textAlign:"right",color:"#1a1a1a",fontFamily:"ui-monospace, SFMono-Regular, monospace",fontSize:12}}>{fmtEGP(a.purchasePrice)}</div>
+                      </div>;
+                    };
+                    if (row.kind === "single") return renderAssetRow(row.asset, false);
+                    // Group parent row: click toggles expand/collapse, children render below.
+                    var open = !!expandedGroups[row.key];
+                    var parentStyle = {
+                      display:"grid", gridTemplateColumns: gridCols, gap:10,
+                      padding:"12px 16px", borderBottom:"0.5px solid rgba(0,0,0,0.05)",
+                      fontSize:13, alignItems:"center", cursor:"pointer", background:"#fff"
+                    };
+                    return <div key={"g:"+row.key}>
+                      <div onClick={function(){ toggleGroup(row.key); }}
+                        onMouseEnter={function(e){ e.currentTarget.style.background = "#F7F7F5"; }}
+                        onMouseLeave={function(e){ e.currentTarget.style.background = "#fff"; }}
+                        style={parentStyle}>
+                        <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
+                          {prefixBadge(row.category)}
+                          <div style={{minWidth:0, display:"flex", alignItems:"center", gap:6}}>
+                            {caret(open)}
+                            <div style={{minWidth:0}}>
+                              <div style={{fontWeight:500,color:"#1a1a1a",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"flex",alignItems:"center"}}>
+                                <span style={{overflow:"hidden",textOverflow:"ellipsis"}}>{row.name}</span>
+                                {countBadge(row.count)}
+                              </div>
+                              <div style={{fontSize:11,color:"#666"}}>{open ? "Click to collapse" : "Click to expand"}</div>
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{color:"#666",fontStyle:"italic",fontSize:12}}>—</div>
+                        <div style={{color:"#666"}}>{row.sameBranch ? row.branchName : <span style={{fontStyle:"italic"}}>Multiple</span>}</div>
+                        <div style={{textAlign:"center"}}>{row.sameStatus ? statusBadge(row.status) : mixedBadge("Mixed")}</div>
+                        <div style={{textAlign:"right",color:"#1a1a1a",fontFamily:"ui-monospace, SFMono-Regular, monospace",fontSize:12,fontWeight:600}}>{fmtEGP(row.sumValue)}</div>
                       </div>
-                      <div style={{color:"#1a1a1a"}}>
-                        {a.currentCustodian
-                          ? a.currentCustodian.name
-                          : (a.assignmentType === "shared"
-                              ? <span style={{color:"#666",fontStyle:"italic"}}>Shared</span>
-                              : <span style={{color:"#A32D2D"}}>Unassigned</span>)
-                        }
-                      </div>
-                      <div style={{color:"#666"}}>{a.branchId ? a.branchId.name : "—"}</div>
-                      <div style={{textAlign:"center"}}>{statusBadge(a.status)}</div>
-                      <div style={{textAlign:"right",color:"#1a1a1a",fontFamily:"ui-monospace, SFMono-Regular, monospace",fontSize:12}}>{fmtEGP(a.purchasePrice)}</div>
+                      {open && row.assets.map(function(a){ return renderAssetRow(a, true); })}
                     </div>;
                   })
             }
@@ -19276,34 +19395,66 @@ var AssetTrackerPage = function(p) {
           <div className="at-list-mobile-cards" style={{ display: "none", flexDirection: "column", gap: 8 }}>
             {!loaded
               ? <div style={Object.assign({}, cardWrap, {padding:20, textAlign:"center", fontSize:13, color:"#666"})}>Loading…</div>
-              : filteredAssets.length === 0
+              : groupedRows.length === 0
                 ? <div style={Object.assign({}, cardWrap, {padding:24, textAlign:"center", fontSize:13, color:"#666"})}>No matching assets</div>
-                : filteredAssets.map(function(a) {
-                    var cardStyle = Object.assign({}, cardWrap, {
-                      padding: "12px 14px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 8
-                    }, rowHighlight(a.status) || {});
+                : groupedRows.map(function(row) {
                     var rowFlex = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, minWidth: 0 };
-                    var custodianBit = a.currentCustodian
-                      ? <span style={{fontSize:12, color:"#1a1a1a", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{a.currentCustodian.name}</span>
-                      : (a.assignmentType === "shared"
-                          ? <span style={{fontSize:12, color:"#666", fontStyle:"italic"}}>Shared</span>
-                          : <span style={{fontSize:12, color:"#A32D2D"}}>Unassigned</span>);
-                    return <div key={a._id} onClick={function(){ openDetail(a); }} style={cardStyle}>
-                      <div style={{display:"flex", alignItems:"center", gap:10, minWidth:0}}>
-                        {prefixBadge(a.categoryId)}
-                        <div style={{minWidth:0, flex:1}}>
-                          <div style={{fontSize:14, fontWeight:500, color:"#1a1a1a", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{a.name}</div>
-                          <div style={{fontSize:11, color:"#666", fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>{a.assetCode}</div>
+                    var renderAssetCard = function(a, isChild) {
+                      var cs = Object.assign({}, cardWrap, {
+                        padding: "12px 14px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 8,
+                        marginLeft: isChild ? 16 : 0,
+                        background: isChild ? "#FAFAF9" : "#fff"
+                      }, rowHighlight(a.status) || {});
+                      var custodianBit = a.currentCustodian
+                        ? <span style={{fontSize:12, color:"#1a1a1a", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{a.currentCustodian.name}</span>
+                        : (a.assignmentType === "shared"
+                            ? <span style={{fontSize:12, color:"#666", fontStyle:"italic"}}>Shared</span>
+                            : <span style={{fontSize:12, color:"#A32D2D"}}>Unassigned</span>);
+                      return <div key={a._id} onClick={function(e){ e.stopPropagation(); openDetail(a); }} style={cs}>
+                        <div style={{display:"flex", alignItems:"center", gap:10, minWidth:0}}>
+                          {!isChild && prefixBadge(a.categoryId)}
+                          <div style={{minWidth:0, flex:1}}>
+                            <div style={{fontSize:14, fontWeight:isChild?400:500, color:"#1a1a1a", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{a.name}</div>
+                            <div style={{fontSize:11, color:"#666", fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>{a.assetCode}</div>
+                          </div>
+                        </div>
+                        <div style={rowFlex}>
+                          {custodianBit}
+                          {statusBadge(a.status)}
+                        </div>
+                        <div style={rowFlex}>
+                          <span style={{fontSize:12, color:"#666", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{a.branchId ? a.branchId.name : "—"}</span>
+                          <span style={{fontSize:12, color:"#1a1a1a", fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>{fmtEGP(a.purchasePrice)}</span>
+                        </div>
+                      </div>;
+                    };
+                    if (row.kind === "single") return renderAssetCard(row.asset, false);
+                    var open = !!expandedGroups[row.key];
+                    var parentCard = Object.assign({}, cardWrap, {
+                      padding: "12px 14px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 8
+                    });
+                    return <div key={"g:"+row.key} style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                      <div onClick={function(){ toggleGroup(row.key); }} style={parentCard}>
+                        <div style={{display:"flex", alignItems:"center", gap:10, minWidth:0}}>
+                          {prefixBadge(row.category)}
+                          <div style={{minWidth:0, flex:1, display:"flex", alignItems:"center", gap:6}}>
+                            {caret(open)}
+                            <div style={{minWidth:0, flex:1, display:"flex", alignItems:"center"}}>
+                              <span style={{fontSize:14, fontWeight:500, color:"#1a1a1a", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{row.name}</span>
+                              {countBadge(row.count)}
+                            </div>
+                          </div>
+                        </div>
+                        <div style={rowFlex}>
+                          <span style={{fontSize:12, color:"#666", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{row.sameBranch ? row.branchName : "Multiple branches"}</span>
+                          {row.sameStatus ? statusBadge(row.status) : mixedBadge("Mixed")}
+                        </div>
+                        <div style={rowFlex}>
+                          <span style={{fontSize:12, color:"#666"}}>{open ? "Tap to collapse" : "Tap to expand"}</span>
+                          <span style={{fontSize:12, color:"#1a1a1a", fontFamily:"ui-monospace, SFMono-Regular, monospace", fontWeight:600}}>{fmtEGP(row.sumValue)}</span>
                         </div>
                       </div>
-                      <div style={rowFlex}>
-                        {custodianBit}
-                        {statusBadge(a.status)}
-                      </div>
-                      <div style={rowFlex}>
-                        <span style={{fontSize:12, color:"#666", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{a.branchId ? a.branchId.name : "—"}</span>
-                        <span style={{fontSize:12, color:"#1a1a1a", fontFamily:"ui-monospace, SFMono-Regular, monospace"}}>{fmtEGP(a.purchasePrice)}</span>
-                      </div>
+                      {open && row.assets.map(function(a){ return renderAssetCard(a, true); })}
                     </div>;
                   })
             }
