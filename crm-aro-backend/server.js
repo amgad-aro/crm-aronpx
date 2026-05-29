@@ -6522,6 +6522,11 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     var userExpr  = scopeIds.length > 1 ? { $in: scopeIds } : (scopeIds[0] || uid);
 
     // CARD 1 — My Leads: assigned to scope AND (createdAt OR any in-scope assignment) falls in range.
+    // Soft-remove: a removed slice must not surface in the agent's personal
+    // stats. $elemMatch pins agentId + assignedAt + removedAt:null to the same
+    // array element — a lead with a removed slice in the window and an active
+    // slice for a DIFFERENT agent would otherwise still count for the removed
+    // agent under the multi-element-AND semantics.
     var myLeadsPipeline = [
       { $match: { agentId: agentExpr, archived: { $ne: true }, source: { $ne: "Daily Request" } } }
     ];
@@ -6529,7 +6534,7 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
       myLeadsPipeline.push({ $match: {
         $or: [
           { createdAt: rangeMatch },
-          { assignments: { $elemMatch: { agentId: agentExpr, assignedAt: rangeMatch } } }
+          { assignments: { $elemMatch: { agentId: agentExpr, assignedAt: rangeMatch, removedAt: null } } }
         ]
       }});
     }
