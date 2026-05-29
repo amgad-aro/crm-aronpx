@@ -3211,6 +3211,72 @@ var LeadJourney = function(p) {
     if (i > 0) era.fromAgent = eras[i-1].agentName;
   });
 
+  // Phase 6 — merge tenures: collapse multiple eras owned by the same agent
+  // into a single card. Bucket by agentId (fallback to agentName) preserving
+  // first-touch order. Each bucket unions every tenure's events[] back into
+  // a single chronologically-sorted array so the downstream action-grouping
+  // pass produces correct 60-second clusters spanning all tenures.
+  //
+  // The header chrome (fromAgent at first-touch, assignType, source, reason,
+  // rotationMeta, actor) comes from the FIRST tenure — that's the predecessor
+  // who handed the lead in originally. Subsequent tenures' rotation metadata
+  // is preserved on tenureMeta[] so renderEra can render inline re-assignment
+  // markers at the chronological boundary between tenures.
+  var bucketOrder = [];
+  var bucketByKey = {};
+  eras.forEach(function(era){
+    var key = era.agentId ? ("id:" + era.agentId) : ("name:" + (era.agentName || "Unknown"));
+    if (!bucketByKey[key]) {
+      bucketOrder.push(key);
+      bucketByKey[key] = { first: era, tenures: [era] };
+    } else {
+      bucketByKey[key].tenures.push(era);
+    }
+  });
+  eras = bucketOrder.map(function(key){
+    var b = bucketByKey[key];
+    var first = b.first;
+    if (b.tenures.length === 1) {
+      first.tenureCount = 1;
+      first.tenureStarts = [first.startedAt];
+      first.tenureEnds = [first.endedAt];
+      first.tenureMeta = [];
+      return first;
+    }
+    var allEvents = [];
+    b.tenures.forEach(function(t){ allEvents = allEvents.concat(t.events); });
+    allEvents.sort(function(x, y){ return new Date(x.createdAt) - new Date(y.createdAt); });
+    // tenureMeta[i] describes the i-th re-takeover (i >= 1). tenureMeta[0]
+    // is intentionally empty — the first tenure's handoff is shown via the
+    // outer renderSeparator above the merged card, not inline.
+    var tenureMeta = b.tenures.map(function(t, ti){
+      if (ti === 0) return null;
+      return { startedAt: t.startedAt, fromAgent: t.fromAgent, rotationMeta: t.rotationMeta, actor: t.actor };
+    });
+    return {
+      agentName: first.agentName,
+      agentId:   first.agentId,
+      fromAgent: first.fromAgent,
+      assignType: first.assignType,
+      isRotation: first.isRotation,
+      reason: first.reason,
+      auto: first.auto,
+      rotationMeta: first.rotationMeta,
+      actor: first.actor,
+      source: first.source,
+      startedAt: first.startedAt,
+      endedAt:   b.tenures[b.tenures.length - 1].endedAt,
+      events: allEvents,
+      tenureCount: b.tenures.length,
+      tenureStarts: b.tenures.map(function(t){ return t.startedAt; }),
+      tenureEnds: b.tenures.map(function(t){ return t.endedAt; }),
+      tenureMeta: tenureMeta
+    };
+  });
+  // Re-thread fromAgent across merged eras — the rewire upstream may now
+  // point at an era that got absorbed into another bucket.
+  eras.forEach(function(era, i){ if (i > 0) era.fromAgent = eras[i-1].agentName; });
+
   // Group consecutive same-actor events written within 60s of each other into
   // a single composite "action". Backend frequently writes one user action as
   // 4-6 history rows (status_change + callback_scheduled + feedback_added +
@@ -3246,8 +3312,22 @@ var LeadJourney = function(p) {
     era.actions = groups;
   });
 
+  // Knock-on #1: after merge, bucket order is first-touch order, NOT last-
+  // touch. The agent currently holding the lead is the one whose LATEST
+  // tenureStart is the maximum across all eras, which may not be eras[-1].
+  var __latestStartMs = -Infinity;
+  var __latestIdx = -1;
   eras.forEach(function(era, i){
-    era.isCurrent = (i === eras.length - 1);
+    var starts = era.tenureStarts || [era.startedAt];
+    var maxStart = -Infinity;
+    for (var si = 0; si < starts.length; si++) {
+      var t = new Date(starts[si]).getTime();
+      if (!isNaN(t) && t > maxStart) maxStart = t;
+    }
+    if (maxStart > __latestStartMs) { __latestStartMs = maxStart; __latestIdx = i; }
+  });
+  eras.forEach(function(era, i){
+    era.isCurrent = (i === __latestIdx);
     var last = null;
     for (var j = era.events.length - 1; j >= 0; j--) {
       if (era.events[j].type === "status_change") { last = extractStatus(era.events[j]); break; }
@@ -3477,6 +3557,10 @@ var LeadJourney = function(p) {
   };
 
   var renderEra = function(era, idx){
+    // Knock-on #3: key expandedEras by agentId/name (stable across merges)
+    // rather than bucket index, so toggle state survives re-renders after
+    // the tenure-merge pass reorders eras.
+    var eraKey = era.agentId ? String(era.agentId) : ("name:" + (era.agentName || "Unknown"));
     var initials = (era.agentName||"?").split(/\s+/).filter(Boolean).map(function(w){return w[0]||"";}).slice(0,2).join("").toUpperCase() || "?";
     // Phase 4: era cards now match the "Agents on this lead" card chrome —
     // pure white background, 1px outer border, 3px left accent stripe whose
@@ -3547,7 +3631,27 @@ var LeadJourney = function(p) {
     // gap from the previous group's last sub-event to this group's first.
     var chronoItems = [];
     var GAP = 48 * 60 * 60 * 1000;
+    // Knock-on #5: inline tenure markers. Tenure 0's start is the era's own
+    // startedAt (rendered via the outer renderSeparator above the card), so
+    // we only need markers for tenures 1..N. Walk pendingTenureStarts in
+    // parallel with the actions loop; emit a marker BEFORE any action whose
+    // timestamp crosses the next pending tenure boundary.
+    var pendingTenureStarts = (era.tenureStarts || []).slice(1);
+    var pendingTenureMeta = (era.tenureMeta || []).slice(1);
+    var __tiCounter = 0;
     actions.forEach(function(action, i){
+      while (pendingTenureStarts.length > 0 && new Date(action.createdAt) >= new Date(pendingTenureStarts[0])) {
+        var markerStart = pendingTenureStarts.shift();
+        pendingTenureMeta.shift();
+        var ti = __tiCounter++;
+        chronoItems.push({ kind: "tenureMarker", node:
+          <div key={"tenure-"+idx+"-"+i+"-"+ti} style={{ display:"flex", justifyContent:"center", margin:"6px 0" }}>
+            <div style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"4px 10px", borderRadius:12, background:"#FAEEDA", color:"#633806", fontSize:10, fontWeight:600 }}>
+              ↻ Re-assigned · {new Date(markerStart).toLocaleString("en-US",{month:"short",day:"numeric"})}
+            </div>
+          </div>
+        });
+      }
       if (i > 0) {
         var prevAction = actions[i-1];
         var prevLast = prevAction.subEvents[prevAction.subEvents.length - 1];
@@ -3584,7 +3688,7 @@ var LeadJourney = function(p) {
     // pills that sit between two visible actions stay; pills that would land
     // adjacent to a hidden action are dropped (achieved naturally by slicing
     // up to and including the 5th action seen in display order).
-    var isExpanded = !!expandedEras[idx];
+    var isExpanded = !!expandedEras[eraKey];
     var visibleItems;
     if (actionsCount > 5 && !isExpanded) {
       visibleItems = [];
@@ -3611,6 +3715,7 @@ var LeadJourney = function(p) {
     var lastShownTs = null;
     visibleItems.forEach(function(item){
       if (item.kind === "silence") { rows.push(item.node); lastShownTs = null; return; }
+      if (item.kind === "tenureMarker") { rows.push(item.node); lastShownTs = null; return; }
       var noTopBorder = !firstEventSeen;
       firstEventSeen = true;
       var thisTs = fmtTs(item.action.createdAt);
@@ -3624,7 +3729,7 @@ var LeadJourney = function(p) {
       toggleBtn = <button key={"toggle-"+idx} onClick={function(){
         setExpandedEras(function(prev){
           var next = Object.assign({}, prev);
-          next[idx] = !prev[idx];
+          next[eraKey] = !prev[eraKey];
           return next;
         });
       }} onMouseEnter={function(e){ e.currentTarget.style.background = "#F8FAFC"; }}
@@ -3650,7 +3755,7 @@ var LeadJourney = function(p) {
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontSize:bodyFs, fontWeight:700, color:C.text }}>{era.agentName}</div>
           <div style={{ fontSize:metaFs, color:C.textLight, marginTop:1 }}>
-            {fmtRange(era.startedAt, era.endedAt, era.isCurrent)} · {actionsCount} action{actionsCount===1?"":"s"}{era.isCurrent ? "" : <> · ended at <span style={{ color:sColor(era.endedAtStatus), fontWeight:600 }}>{sLabel(era.endedAtStatus)}</span></>}
+            {fmtRange(era.startedAt, era.endedAt, era.isCurrent)} · {actionsCount} action{actionsCount===1?"":"s"}{era.isCurrent ? "" : <> · ended at <span style={{ color:sColor(era.endedAtStatus), fontWeight:600 }}>{sLabel(era.endedAtStatus)}</span></>}{(era.tenureCount > 1) ? (" · Held the lead " + era.tenureCount + " times") : ""}
           </div>
         </div>
         <div style={{ flexShrink:0, fontSize:metaFs, fontWeight:700, padding:"2px 8px", borderRadius:10, background:era.isCurrent?"#1D9E75":"#888780", color:"#fff" }}>{era.isCurrent?"Current":"Previous"}</div>
@@ -3700,12 +3805,41 @@ var LeadJourney = function(p) {
   };
   var buildSummary = function(){
     if (!eras.length) return null;
-    var rotations = eras.length - 1;
+    // Knock-on #2a: count rotations as the sum of tenures minus 1, NOT
+    // eras.length - 1. After merge a 3-rotation chain that revisits an
+    // agent collapses to 2 eras but still represents 2 rotations.
+    var totalTenures = 0;
+    eras.forEach(function(e){ totalTenures += (e.tenureCount || 1); });
+    var rotations = totalTenures - 1;
     var firstTs = new Date(eras[0].startedAt).getTime();
-    var lastTs = new Date(eras[eras.length-1].endedAt).getTime();
+    // Knock-on #2b: max endedAt across ALL eras — the "current" era may not
+    // be the last in bucket order after merge.
+    var lastTs = -Infinity;
+    eras.forEach(function(e){
+      var t = new Date(e.endedAt).getTime();
+      if (!isNaN(t) && t > lastTs) lastTs = t;
+    });
+    if (!isFinite(lastTs)) lastTs = firstTs;
     var spanDays = Math.max(1, Math.round((lastTs - firstTs) / (24*60*60*1000)));
+    // Knock-on #2c: bestEra scans events[] for highest-rank status, NOT
+    // just the era's endedAtStatus. After merge an agent who hit HotCase
+    // in tenure 1 then dropped to NoAnswer in tenure 2 would otherwise
+    // lose their HotCase peak from the summary.
     var bestEra = eras[0];
-    eras.forEach(function(e){ if (rankOf(e.endedAtStatus) > rankOf(bestEra.endedAtStatus)) bestEra = e; });
+    var bestRank = -1;
+    eras.forEach(function(e){
+      var localBest = -1;
+      (e.events || []).forEach(function(ev){
+        if (ev.type !== "status_change" && ev.type !== "status_changed") return;
+        var s = extractStatus(ev);
+        if (!s) return;
+        var r = rankOf(s);
+        if (r > localBest) localBest = r;
+      });
+      // Fallback: if this era has no status_change events, use endedAtStatus.
+      if (localBest < 0) localBest = rankOf(e.endedAtStatus);
+      if (localBest > bestRank) { bestRank = localBest; bestEra = e; }
+    });
     var curStatus = (lead && lead.status) || "NewLead";
     if (rotations === 0) {
       return "Never rotated. Held by " + eras[0].agentName + " for " + spanDays + " day" + (spanDays===1?"":"s") + " — currently " + sLabel(curStatus) + ".";
@@ -5739,7 +5873,22 @@ var LeadsPage = function(p) {
             </thead>
             <tbody>
               {compareEras.map(function(era, i){
-                var daysHeld = Math.max(1, Math.ceil((new Date(era.endedAt) - new Date(era.startedAt)) / (24*60*60*1000)));
+                // Knock-on #4: after merge, an era can span multiple non-
+                // contiguous tenures. Sum each tenure's individual span
+                // rather than computing earliest-start to latest-end (which
+                // would falsely count gaps when another agent held the lead).
+                var daysHeld = (function(){
+                  if (era.tenureStarts && era.tenureStarts.length > 1 && era.tenureEnds && era.tenureEnds.length === era.tenureStarts.length) {
+                    var totalMs = 0;
+                    for (var ti = 0; ti < era.tenureStarts.length; ti++) {
+                      var s = new Date(era.tenureStarts[ti]).getTime();
+                      var e = new Date(era.tenureEnds[ti]).getTime();
+                      if (!isNaN(s) && !isNaN(e) && e >= s) totalMs += (e - s);
+                    }
+                    return Math.max(1, Math.ceil(totalMs / (24*60*60*1000)));
+                  }
+                  return Math.max(1, Math.ceil((new Date(era.endedAt) - new Date(era.startedAt)) / (24*60*60*1000)));
+                })();
                 // Match the era header: count groups, including era-start
                 // assign groups. The number tracks distinct user actions.
                 var actions = (era.actions||[]).length;
