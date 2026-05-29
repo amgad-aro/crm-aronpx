@@ -5545,12 +5545,10 @@ var LeadsPage = function(p) {
             active.sort(function(x,y){ return topTs(y) - topTs(x); });
             removed.sort(function(x,y){ return topTs(y) - topTs(x); });
             var currentSliceId = active.length > 0 ? String(active[0].agentId && active[0].agentId._id ? active[0].agentId._id : active[0].agentId) : "";
-            var selOwnerId = String(selected.agentId && selected.agentId._id ? selected.agentId._id : selected.agentId);
             var renderSlice = function(a, i, arr, isActiveSection){
               var aName = a.agentId && a.agentId.name ? a.agentId.name : "Unknown";
               var aId   = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
               var isCurrentBadge = isActiveSection && String(aId) === currentSliceId;
-              var isHolder       = !a.removedAt && String(aId) === selOwnerId;
               var initial = String(aName || "?").charAt(0).toUpperCase();
               var statusColor = sliceStatusPillColor(a.status);
               return <div key={i} style={{ padding:"9px 0", borderBottom: i<arr.length-1 ? "1px solid #F1F5F9" : "none" }}>
@@ -5560,7 +5558,6 @@ var LeadsPage = function(p) {
                     <div style={{ minWidth:0 }}>
                       <span style={{ fontSize:12, fontWeight: isCurrentBadge?700:600, color: a.removedAt ? C.textLight : C.text, textDecoration:a.removedAt?"line-through":"none" }}>{aName}</span>
                       {isCurrentBadge && <span style={{ fontSize:9, background:"#DCFCE7", color:"#15803D", padding:"1px 6px", borderRadius:5, marginLeft:5, fontWeight:700, letterSpacing:".3px" }}>CURRENT</span>}
-                      {isHolder && !isCurrentBadge && <span style={{ fontSize:9, background:"#E0F2FE", color:"#0369A1", padding:"1px 6px", borderRadius:5, marginLeft:5, fontWeight:600 }}>holder</span>}
                       {a.removedAt && <span style={{ fontSize:9, background:"#FEE2E2", color:"#B91C1C", padding:"1px 6px", borderRadius:5, marginLeft:5, fontWeight:600 }} title={"Removed "+(new Date(a.removedAt).toLocaleDateString("en-GB"))}>removed</span>}
                     </div>
                   </div>
@@ -5573,7 +5570,11 @@ var LeadsPage = function(p) {
                   </div>
                 </div>
                 {/* Phase 2: per-slice feedback list — chronological replay with
-                    status-at-the-moment pill + relative timestamp. */}
+                    status-at-the-moment pill + relative timestamp. The slice's
+                    `notes` field is intentionally NOT rendered separately — it
+                    is always written to the same value as `lastFeedback` (which
+                    feedbacksForSlice already surfaces, either as a normal
+                    agentHistory entry or via the virtual fallback). */}
                 {(function(){
                   var fbs = feedbacksForSlice(a);
                   if (!fbs.length) return null;
@@ -5589,7 +5590,6 @@ var LeadsPage = function(p) {
                     })}
                   </div>;
                 })()}
-                {a.notes && <div style={{ fontSize:10, color:C.textLight, marginTop:4, padding:"2px 7px", marginLeft:34 }}>📝 {a.notes}</div>}
               </div>;
             };
             return <div style={{ background:"#fff", border:"1px solid "+C.border, borderRadius:10, padding:"11px 13px", marginBottom:12 }}>
