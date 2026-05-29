@@ -5739,9 +5739,9 @@ var LeadsPage = function(p) {
               replay with status-at-the-moment). CURRENT badge goes to the slice
               with the most-recent feedback in the active set. Removed slices
               render in a separate Previous sub-section without a Remove button. */}
-          {isOnlyAdmin && selected.assignments && selected.assignments.length > 1 && (function(){
+          {isOnlyAdmin && selected.assignments && (function(){
             var active  = selected.assignments.filter(function(a){ return !a.removedAt; });
-            var removed = selected.assignments.filter(function(a){ return  a.removedAt; });
+            if (active.length <= 1) return null;
             var topTs = function(a){ var top = feedbacksForSlice(a)[0]; return top && top.at ? new Date(top.at).getTime() : 0; };
             // Slice CREATION timestamp — primary key for the Currently Assigned
             // sort. Reads the Mongoose subdoc _id's embedded ObjectId
@@ -5768,8 +5768,6 @@ var LeadsPage = function(p) {
             // Currently Assigned: sort by slice creation timestamp desc (newest
             // rotated/assigned at top, oldest at bottom).
             active.sort(function(x,y){ return sliceCreatedTs(y) - sliceCreatedTs(x); });
-            // Previous · feedback kept: keep the original sort by latest-feedback desc.
-            removed.sort(function(x,y){ return topTs(y) - topTs(x); });
             var renderSlice = function(a, i, arr, isActiveSection){
               var aName = a.agentId && a.agentId.name ? a.agentId.name : "Unknown";
               var aId   = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
@@ -5793,13 +5791,13 @@ var LeadsPage = function(p) {
                   </div>
                 </div>
                 {/* Phase 2: per-slice feedback list — chronological replay with
-                    status-at-the-moment pill + relative timestamp. RENDERED ONLY
-                    in the "Previous · feedback kept" sub-section. In the Currently
-                    Assigned sub-section the per-agent feedback would duplicate
-                    what the Latest Feedback banner already shows at the top of
-                    the panel + what LeadJourney shows below; only the Previous
-                    section needs the preserved feedback (that's the section's
-                    whole purpose). */}
+                    status-at-the-moment pill + relative timestamp. The branch
+                    is now dead in the rendered tree (the only caller passes
+                    isActiveSection=true), kept as a guard so a future
+                    Previous-section reintroduction can flip the call site
+                    without re-wiring the renderer. The Latest Feedback banner
+                    at the top of the panel + LeadJourney below already cover
+                    every visible feedback for active agents. */}
                 {!isActiveSection && (function(){
                   var fbs = feedbacksForSlice(a);
                   if (!fbs.length) return null;
@@ -5819,18 +5817,12 @@ var LeadsPage = function(p) {
             };
             return <div style={{ background:"#fff", border:"1px solid "+C.border, borderRadius:10, padding:"11px 13px", marginBottom:12 }}>
               <div style={{ fontSize:11, fontWeight:600, color:C.textLight, marginBottom:10, padding:"5px 9px", background:"#F8FAFC", borderRadius:6, boxShadow:"0 1px 2px rgba(15, 23, 42, 0.04)", display:"inline-block", textTransform:"uppercase", letterSpacing:".4px" }}>👥 Agents on this lead</div>
-              {active.length > 0 && <div style={{ marginBottom: removed.length > 0 ? 10 : 0 }}>
+              {active.length > 0 && <div>
                 <div style={{ fontSize:10, fontWeight:700, color:"#15803D", marginBottom:4, display:"flex", alignItems:"center", gap:6, textTransform:"uppercase", letterSpacing:".3px" }}>
                   <span style={{ width:7, height:7, borderRadius:"50%", background:"#22C55E" }}/>
                   Currently assigned · {active.length}
                 </div>
                 {active.map(function(a,i){ return renderSlice(a,i,active,true); })}
-              </div>}
-              {removed.length > 0 && <div style={{ paddingTop: active.length>0 ? 10 : 0, borderTop: active.length>0 ? "1px dashed "+C.border : "none" }}>
-                <div style={{ fontSize:10, fontWeight:700, color:C.textLight, marginBottom:4, display:"flex", alignItems:"center", gap:6, textTransform:"uppercase", letterSpacing:".3px" }}>
-                  🕘 Previous · feedback kept · {removed.length}
-                </div>
-                {removed.map(function(a,i){ return renderSlice(a,i,removed,false); })}
               </div>}
             </div>;
           })()}
