@@ -7408,6 +7408,24 @@ app.get("/api/leads", auth, async function(req, res) {
       query.rotationCount = { $in: [0, null] };
       query.agentId = { $ne: null };
     }
+    // Status filter — lets a Leads-page status chip (Meeting Done, Hot Case,
+    // Call Back, Not Interested, …) fetch ONLY that status's leads directly
+    // from the DB instead of in-memory-filtering the paginated bootstrap slice
+    // (which left chips empty until the All bucket fully scrolled in). Current-
+    // holder status is per-slice (computed, not a single stored field), so this
+    // is a SUPERSET predicate — it matches either the top-level status OR any
+    // assignment slice's status. The FE re-applies currentStatus(l) === filter
+    // for exactness, same as the rotationStopped/notRotated chips do. ANDed
+    // with the role scope ($or) above via $and so visibility is never widened.
+    if (req.query.status) {
+      var statusVal = String(req.query.status).trim();
+      if (statusVal) {
+        query.$and = (query.$and || []).concat([{ $or: [
+          { status: statusVal },
+          { "assignments.status": statusVal }
+        ]}]);
+      }
+    }
     // STEP 4-5 X2 — opt-in archived filter. ArchivePage uses this to fetch
     // its own list instead of scanning p.leads (which would be empty post-
     // X3 bootstrap shrink since the bootstrap sorts by createdAt desc and

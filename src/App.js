@@ -4070,6 +4070,52 @@ var LeadsPage = function(p) {
   // Targeted fetch (?notRotated=true, admin/SA only) populates this with
   // every first-assignment lead in scope.
   var [nrLeads, setNrLeads] = useState(null);
+  // Status-chip results — same paginated-bootstrap problem as rsLeads/nrLeads,
+  // but for the ordinary status tabs (Meeting Done, Hot Case, Call Back, Not
+  // Interested, New Lead, …). Before this, clicking a status chip filtered only
+  // the loaded page slice of p.leads, so the chip looked empty until the All
+  // bucket scrolled in. The effect below fetches that one status's leads
+  // directly from BE (?status=…) for EVERY role (the chips aren't admin-gated,
+  // unlike rotation_stopped/not_rotated). null = not loaded / not a status chip;
+  // [] = loaded with no matches. The filtered memo uses this as the status
+  // base, re-applying allVisible exclusions + currentStatus() for exactness.
+  var [statusLeads, setStatusLeads] = useState(null);
+  // Status chip — targeted fetch when an ordinary status tab is active.
+  // Mirrors the rotation_stopped / not_rotated effects above but for the
+  // status tabs, and for ALL roles (those chips are visible to everyone, so
+  // no isOnlyAdmin gate — GET /api/leads scopes by role server-side and the
+  // ?status= param is ANDed within that scope). "all", "important",
+  // "rotation_stopped" and "not_rotated" are NOT status chips — they keep
+  // their existing behavior, so we clear statusLeads and skip the fetch for
+  // them. Refetches on cbBust (WS lead updates) so a lead that changes into
+  // (or out of) this status appears without a manual refresh. Declared after
+  // lockedOnly/statusLeads (not beside the rs/nr effects) because its dep
+  // array references lockedOnly — placing it earlier would read the hoisted
+  // var before useState assigns it, freezing the dep at undefined.
+  useEffect(function(){
+    var notAStatusChip = isReq
+      || p.leadFilter === "all"
+      || p.leadFilter === "important"
+      || p.leadFilter === "rotation_stopped"
+      || p.leadFilter === "not_rotated"
+      || lockedOnly
+      || !p.leadFilter;
+    if (notAStatusChip) {
+      if (statusLeads !== null) setStatusLeads(null);
+      return;
+    }
+    if (!p.token) return;
+    var cancelled = false;
+    apiFetch("/api/leads?status=" + encodeURIComponent(p.leadFilter) + "&fields=summary&limit=2000", "GET", null, p.token)
+      .then(function(r){
+        if (cancelled) return;
+        var rows = (r && Array.isArray(r.data)) ? r.data : (Array.isArray(r) ? r : []);
+        setStatusLeads(rows);
+      })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.leadFilter, p.token, p.cbBust, lockedOnly, isReq]);
   // Phase A4-prep (2026-05-05): Source + Campaign filters for cohort
   // identification before the bulk source editor (next slice). Admin /
   // sales_admin only — gated in the UI. Apply additively on top of the
@@ -4488,11 +4534,32 @@ var LeadsPage = function(p) {
     // Status tabs filter by the CURRENT holder's slice status, not the stale
     // top-level field. "Meeting Done" tab now strictly means "current holder's
     // slice is MeetingDone" per Phase S spec.
+    //
+    // statusBase: for a plain status chip, prefer the targeted BE fetch
+    // (statusLeads) over the paginated allVisible slice so the chip shows every
+    // matching lead in scope, not just those on the loaded page. The BE
+    // ?status= filter is a superset (top-level OR per-slice), so the same
+    // exclusions allVisible applies (archived / Daily Request / EOI / DoneDeal /
+    // unresolved Deal Cancelled) are re-applied here, and currentStatus() ===
+    // filter below re-narrows for exactness. "all" always uses allVisible
+    // (bootstrap + infinite scroll); the fetch effect doesn't populate it.
+    var statusBase = allVisible;
+    if (p.leadFilter !== "all" && statusLeads !== null) {
+      statusBase = statusLeads.filter(function(l){
+        if (l.archived) return false;
+        var matchSource = isReq ? l.source==="Daily Request" : l.source!=="Daily Request";
+        if (!matchSource) return false;
+        if (!isReq && (l.status==="EOI" || l.status==="DoneDeal")) return false;
+        if (!isReq && l.status==="Deal Cancelled" && !(l.eoiStatus==="EOI Cancelled")) return false;
+        if (isReq && (p.cu.role==="manager"||p.cu.role==="team_leader") && !l.agentId) return false;
+        return true;
+      });
+    }
     filtered = p.leadFilter==="all"
       ? allVisible
       : p.leadFilter==="NewLead"
-        ? allVisible.filter(isGenuineNewLead)
-        : allVisible.filter(function(l){ return currentStatus(l) === p.leadFilter; });
+        ? statusBase.filter(isGenuineNewLead)
+        : statusBase.filter(function(l){ return currentStatus(l) === p.leadFilter; });
     // Management-alerts special filter (from dashboard)
     if (p.specialFilter && p.specialFilter.type) {
       var spT = p.specialFilter.type;
@@ -4647,7 +4714,7 @@ var LeadsPage = function(p) {
   });
   return filtered;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allVisible, p.leadFilter, p.specialFilter, p.activities, p.search, rsLeads, nrLeads, lockedOnly, vipFilter, noAgentFilter, agentFilter, sourceFilter, campaignMode, campaignText, dateRange, sortBy]);
+  }, [allVisible, p.leadFilter, p.specialFilter, p.activities, p.search, rsLeads, nrLeads, statusLeads, lockedOnly, vipFilter, noAgentFilter, agentFilter, sourceFilter, campaignMode, campaignText, dateRange, sortBy]);
 
   // Fix A — clear p.initSelected after consuming it (matches EOI/Deals/DR
   // patterns at L9246 / L9903 / L10911). Without this, the deep-link state
@@ -25534,6 +25601,14 @@ export default function CRMApp() {
   var [drsPage,setDrsPage]=useState(1); var [drsTotal,setDrsTotal]=useState(0); var [drsTotalPages,setDrsTotalPages]=useState(0);
   var [leadsLoadingMore,setLeadsLoadingMore]=useState(false);
   var [drsLoadingMore,setDrsLoadingMore]=useState(false);
+  // Scroll-jitter fix (Plan C): TableVirtuoso re-fires endReached the instant a
+  // page fetch resolves and the new last row is still within its ~256px
+  // threshold, kicking off the next page immediately → rapid back-to-back
+  // height re-measures → window-scroll-anchor jump. The leadsLoadingMore flag
+  // only dedups DURING the fetch; this ref blocks the auto re-fire for 150ms
+  // AFTER each fetch completes. Below human-perceptual scroll continuation, so
+  // manual scrolling is unaffected (Virtuoso re-fires once the cooldown lapses).
+  var leadsLoadMoreBlockedUntilRef = useRef(0);
   var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
   var [dealNotifs,setDealNotifs]=useState([]);
@@ -25779,6 +25854,9 @@ export default function CRMApp() {
   // doesn't kick off a no-op fetch every frame.
   var loadMoreLeads = function(){
     if (leadsLoadingMore) return;
+    // Post-resolve cooldown — blocks the immediate endReached re-fire that
+    // causes scroll jitter. See leadsLoadMoreBlockedUntilRef declaration.
+    if (Date.now() < leadsLoadMoreBlockedUntilRef.current) return;
     if (leadsPage >= leadsTotalPages) return;
     if (!token) return;
     var nextPage = leadsPage + 1;
@@ -25802,7 +25880,11 @@ export default function CRMApp() {
         setLeadsPage(nextPage);
       })
       .catch(function(e){ console.error("[loadMoreLeads]", e && e.message); })
-      .finally(function(){ setLeadsLoadingMore(false); });
+      .finally(function(){
+        setLeadsLoadingMore(false);
+        // Re-arm the 150ms cooldown so endReached can't instantly re-fire.
+        leadsLoadMoreBlockedUntilRef.current = Date.now() + 150;
+      });
   };
   var loadMoreDRs = function(){
     if (drsLoadingMore) return;
