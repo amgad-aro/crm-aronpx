@@ -1677,6 +1677,86 @@ function parseDealTotalFromBudget(budget) {
   return isFinite(n) ? n : 0;
 }
 
+// computeAgentDealStats — SINGLE SOURCE OF TRUTH for per-agent (or per-team)
+// Leads / Deals / Revenue over a date window. Used by BOTH the Sales Team page
+// (/api/team/member-stats) and the Reports agent leaderboard
+// (/api/reports/overview/agents) so the two surfaces can never diverge again.
+//
+//   agentOids   array of ObjectId — the agent(s) this row/card covers. For a
+//               flat per-agent leaderboard row this is [agentId]; for a
+//               manager/TL card it is [self, ...subordinates].
+//   fromDate/toDate  half-open window [from, to).
+//   pwMap       projectWeights AppSetting map (project -> weight); default {}.
+//   sourceFilter (optional) restrict to a single Lead source. When omitted
+//               (member-stats), leads exclude DR-mirror intake and deals carry
+//               NO source constraint — byte-identical to the prior member-stats.
+//
+// Canonical rules (Lead-collection ONLY — the separate DailyRequest collection
+// is never queried; DR DoneDeals/EOIs are mirrored onto Lead with
+// source="Daily Request", so Lead.DoneDeal is the canonical deal superset):
+//   leads   = Lead docs, agentId|splitAgent2Id in set, createdAt in window,
+//             archived != true. Default excludes source="Daily Request" so DR
+//             conversions aren't counted as native intake.
+//   deals   = Lead with (status DoneDeal | globalStatus donedeal) and effective
+//             date (dealDate -> eoiDate -> updatedAt -> createdAt) in window.
+//   revenue = sum of budget * projectWeight * splitMult, where splitMult is 1
+//             for non-split deals, 1 for intra-set splits (both agents inside
+//             agentOids => full credit) and 0.5 for cross-set splits.
+async function computeAgentDealStats(agentOids, fromDate, toDate, pwMap, sourceFilter) {
+  pwMap = pwMap || {};
+  var leadMatch = {
+    archived: { $ne: true },
+    $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }],
+    createdAt: { $gte: fromDate, $lt: toDate },
+    source: sourceFilter ? sourceFilter : { $ne: "Daily Request" }
+  };
+  var dealMatch = {
+    archived: { $ne: true },
+    $and: [
+      { $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }] },
+      { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] }
+    ]
+  };
+  if (sourceFilter) dealMatch.source = sourceFilter;
+
+  var results = await Promise.all([
+    Lead.countDocuments(leadMatch),
+    Lead.aggregate([
+      { $match: dealMatch },
+      { $addFields: { _effDate: { $let: {
+        vars: { d1: { $convert: { input: "$dealDate", to: "date", onError: null, onNull: null } } },
+        in:   { $ifNull: ["$$d1", { $ifNull: [
+          { $convert: { input: "$eoiDate", to: "date", onError: null, onNull: null } },
+          { $ifNull: ["$updatedAt", "$createdAt"] }
+        ]}]}
+      }}}},
+      { $match: { _effDate: { $gte: fromDate, $lt: toDate } }},
+      { $project: { budget: 1, projectWeight: 1, project: 1, agentId: 1, splitAgent2Id: 1 } }
+    ])
+  ]);
+  var leads = results[0];
+  var dealRows = results[1];
+
+  var agentOidSet = new Set(agentOids.map(function(o){ return String(o); }));
+  var revenue = 0;
+  for (var k = 0; k < dealRows.length; k++) {
+    var d = dealRows[k];
+    var w;
+    if (typeof d.projectWeight === "number" && d.projectWeight !== 1) w = d.projectWeight;
+    else if (d.project && pwMap[d.project] != null) w = Number(pwMap[d.project]) || 1;
+    else w = 1;
+    var bg = parseDealTotalFromBudget(d.budget);
+    var splitMult = 1;
+    if (d.splitAgent2Id) {
+      var pri = String(d.agentId || "");
+      var sec = String(d.splitAgent2Id || "");
+      splitMult = (agentOidSet.has(pri) && agentOidSet.has(sec)) ? 1 : 0.5;
+    }
+    revenue += bg * w * splitMult;
+  }
+  return { leads: leads, deals: dealRows.length, revenue: revenue };
+}
+
 // Phase R-12 Part 3 — Write-site validation for the external-deal fields on
 // Lead. Schema-level required/min validators were intentionally NOT added
 // (Part 2 judgment #1) so the hundreds of partial PUTs that never touch
@@ -13417,56 +13497,21 @@ app.get("/api/team/member-stats", auth, async function(req, res) {
         qTarget = readQTargetServer(u, year, quarter) || 0;
       }
 
-      var [qLeads, dealRows, qCalls] = await Promise.all([
-        Lead.countDocuments({
-          archived: { $ne: true },
-          $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }],
-          createdAt: { $gte: qStart, $lt: qEnd },
-          source: { $ne: "Daily Request" }
-        }),
-        Lead.aggregate([
-          { $match: {
-            archived: { $ne: true },
-            $and: [
-              { $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }] },
-              { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] }
-            ]
-          }},
-          { $addFields: { _effDate: { $let: {
-            vars: { d1: { $convert: { input: "$dealDate", to: "date", onError: null, onNull: null } } },
-            in:   { $ifNull: ["$$d1", { $ifNull: [
-              { $convert: { input: "$eoiDate", to: "date", onError: null, onNull: null } },
-              { $ifNull: ["$updatedAt", "$createdAt"] }
-            ]}]}
-          }}}},
-          { $match: { _effDate: { $gte: qStart, $lt: qEnd } }},
-          { $project: { budget: 1, projectWeight: 1, project: 1, agentId: 1, splitAgent2Id: 1 } }
-        ]),
+      // Leads / Deals / Revenue via the shared helper (single source of truth,
+      // also used by /api/reports/overview/agents). Calls stay inline here.
+      var statsAndCalls = await Promise.all([
+        computeAgentDealStats(agentOids, qStart, qEnd, pwMap),
         Activity.countDocuments({
           userId: { $in: agentOids },
           type: "call",
           createdAt: { $gte: qStart, $lt: qEnd }
         })
       ]);
-
-      var agentOidSet = new Set(agentOids.map(function(o){ return String(o); }));
-      var qDeals = dealRows.length;
-      var qRev = 0;
-      for (var k = 0; k < dealRows.length; k++) {
-        var d = dealRows[k];
-        var w;
-        if (typeof d.projectWeight === "number" && d.projectWeight !== 1) w = d.projectWeight;
-        else if (d.project && pwMap[d.project] != null) w = Number(pwMap[d.project]) || 1;
-        else w = 1;
-        var bg = parseDealTotalFromBudget(d.budget);
-        var splitMult = 1;
-        if (d.splitAgent2Id) {
-          var pri = String(d.agentId || "");
-          var sec = String(d.splitAgent2Id || "");
-          splitMult = (agentOidSet.has(pri) && agentOidSet.has(sec)) ? 1 : 0.5;
-        }
-        qRev += bg * w * splitMult;
-      }
+      var dealStats = statsAndCalls[0];
+      var qCalls    = statsAndCalls[1];
+      var qLeads    = dealStats.leads;
+      var qDeals    = dealStats.deals;
+      var qRev      = dealStats.revenue;
 
       var qProg = qTarget > 0 ? Math.min(100, Math.round((qRev / qTarget) * 100)) : 0;
 
@@ -16342,27 +16387,34 @@ app.get("/api/reports/overview/source-roi", auth, reportsAuth, async function(re
 // GET /api/reports/overview/agents
 // Top-N agent leaderboard for the period, sorted by revenue desc.
 //
-// Per-agent metrics — FLOW semantics (events that happened in the period):
-//   leads     = Lead/DR docs createdAt-in-period assigned to agent
-//                (agentId or splitAgent2Id on Lead, agentId on DR;
-//                 Lead-side excludes source="Daily Request" mirrors so DR
-//                 creations aren't double-counted as native lead intake)
-//   calls     = Activity { userId: agent, type: "call", createdAt-in-period }
-//   meetings  = Lead/DR with hadMeeting === true AND meetingDoneAt-in-period
-//   eois      = Lead/DR with eoiStatus IN {Pending, Approved} AND parsed
-//               eoiDate-in-period (matches EOI page Pending+Approved tabs)
-//   deals     = Lead/DR with isDeal flag (mirrors DealsPage activeDeals)
-//               AND parsed dealDate (Lead) / updatedAt (DR fallback) in period
-//   revenue   = sum of deal budget; split deals halved per agent so the
-//               sum across agents reconciles with DealsPage gross. Mirrors
-//               existing TeamPage / KPIsPage / dashboard convention.
+// Leads / Deals / Revenue come from the shared computeAgentDealStats helper —
+// the SAME code that powers the Sales Team page (/api/team/member-stats) — so
+// the two surfaces can never diverge. The leaderboard is intentionally
+// Lead-collection-only (native-lead semantics): the separate DailyRequest
+// collection is no longer queried for ANY column. DR DoneDeals/EOIs are
+// mirrored onto Lead (source="Daily Request"), so DR-converted deals still
+// count via their Lead mirrors — the prior double-count (DR doc + Lead mirror)
+// is gone.
 //
-// Source filter case-split (same as kpis/funnel/source-roi):
-//   - null            → Lead native (source != DR) + DR
-//   - "Daily Request" → DR only for ALL metrics (mirrors deliberately
-//                       not double-counted; DR docs hold meeting/EOI/deal
-//                       state from the conversion path)
-//   - other           → Lead only with that source; DR skipped
+// Per-agent metrics — FLOW semantics (events that happened in the period):
+//   leads     = Lead.countDocuments, agentId|splitAgent2Id, createdAt-in-period,
+//               archived!=true, source!=Daily Request (helper).
+//   deals     = Lead DoneDeal|donedeal with effective date
+//               (dealDate->eoiDate->updatedAt->createdAt) in period (helper).
+//   revenue   = budget * projectWeight * splitMult (helper) — project-weighted,
+//               matching the canonical weighted-revenue model used everywhere
+//               else (TeamPage / KPIsPage / commissions / annual P&L).
+//   calls     = Activity { userId: agent, type: "call", createdAt-in-period }.
+//   meetings  = Lead with hadMeeting === true AND meetingDoneAt-in-period.
+//   eois      = Lead with (eoiStatus IN {Pending, Approved} AND eoiDate-in-
+//               period) OR (the lead is a deal counted in the deal column) —
+//               FORWARD-SUPERSET so eois >= deals always holds (every deal
+//               passed through EOI even if no EOI row was recorded).
+//
+// Source filter:
+//   - null  → leads exclude DR-mirror intake; deals/meetings/eois span the full
+//             Lead collection (DR mirrors included via Lead).
+//   - "X"   → every metric restricted to source = X.
 // Calls aren't source-filterable (Activity has no source). Always returned;
 // frontend hints "Calls shown for all sources" when a source filter is set.
 //
@@ -16370,9 +16422,8 @@ app.get("/api/reports/overview/source-roi", auth, reportsAuth, async function(re
 // targetProgressPct = clamped 0..100 (UI bar caps at 100).
 //
 // Eligible roles for the leaderboard: sales / team_leader / manager. Admin /
-// sales_admin / director / viewer activity is excluded post-aggregation so
-// non-revenue-bearing roles never appear. totalAgents reflects the same
-// eligibility filter.
+// sales_admin / director / viewer never appear. Rows with zero activity across
+// every metric are dropped so the roster matches the prior behaviour.
 app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, res) {
   try {
     var range = reportsParseRange(req.query.from, req.query.to);
@@ -16384,13 +16435,6 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
     var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
     var scopeIds = await getReportsTeamScope(req.query.team || null);
 
-    var includeLead = sourceFilter !== "Daily Request";
-    var includeDR   = !sourceFilter || sourceFilter === "Daily Request";
-
-    var budgetNumExpr = { $convert: {
-      input: { $replaceAll: { input: { $toString: { $ifNull: ["$budget", "0"] }}, find: ",", replacement: "" }},
-      to: "double", onError: 0, onNull: 0
-    }};
     var parseDateExpr = function(field) {
       return { $cond: [
         { $and: [{ $ne: ["$"+field, ""] }, { $ne: ["$"+field, null] }] },
@@ -16405,31 +16449,28 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
       cond: { $ne: ["$$a", null] }
     }};
 
-    // Lead base match — archived + source filter + scope. The scope $or
-    // stays at top level; downstream stages use $expr-based $match so they
-    // don't conflict.
+    // Resolve the eligible agent pool up front (the shared helper is called
+    // per-agent, so we need the roster before aggregating). Inactive agents are
+    // kept — they may carry deals/leads in a historical period — and dropped
+    // later only if they have zero activity.
+    var poolQuery = { role: { $in: ["sales", "team_leader", "manager"] } };
+    if (scopeIds) poolQuery._id = { $in: scopeIds };
+    var poolUsers = await User.find(poolQuery).select("name role qTargets active").lean();
+    var userMap = {};
+    poolUsers.forEach(function(u){ userMap[String(u._id)] = u; });
+
+    // Pre-fetch project-weights map once (shared with the helper's revenue calc).
+    var pwDoc = await AppSetting.findOne({ key: "projectWeights" }).lean();
+    var pwMap = (pwDoc && pwDoc.value && typeof pwDoc.value === "object") ? pwDoc.value : {};
+
+    // Lead base match — archived + source + scope — for the meetings/EOIs
+    // batched aggregations. Leads/deals/revenue are handled by the helper.
     var leadBaseMatch = { archived: false };
-    if (sourceFilter && sourceFilter !== "Daily Request") leadBaseMatch.source = sourceFilter;
-    else if (!sourceFilter) leadBaseMatch.source = { $ne: "Daily Request" };
+    if (sourceFilter) leadBaseMatch.source = sourceFilter;
     if (scopeIds) leadBaseMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
 
-    var drBaseMatch = { archived: { $ne: true } };
-    if (scopeIds) drBaseMatch.agentId = { $in: scopeIds };
-
-    // === LEADS RECEIVED (createdAt-in-period) ===
-    var leadsLeadP = includeLead ? Lead.aggregate([
-      { $match: Object.assign({}, leadBaseMatch, { createdAt: { $gte: fromDate, $lt: toDate }})},
-      { $project: { agentList: agentListProj }},
-      { $unwind: "$agentList" },
-      { $group: { _id: "$agentList", c: { $sum: 1 }}}
-    ]) : Promise.resolve([]);
-    var leadsDrP = includeDR ? DailyRequest.aggregate([
-      { $match: Object.assign({}, drBaseMatch, { createdAt: { $gte: fromDate, $lt: toDate }})},
-      { $group: { _id: "$agentId", c: { $sum: 1 }}}
-    ]) : Promise.resolve([]);
-
-    // === MEETINGS (meetingDoneAt-in-period) ===
-    var meetingsLeadP = includeLead ? Lead.aggregate([
+    // === MEETINGS (meetingDoneAt-in-period) — Lead only ===
+    var meetingsP = Lead.aggregate([
       { $match: Object.assign({}, leadBaseMatch, {
           hadMeeting: true,
           meetingDoneAt: { $gte: fromDate, $lt: toDate }
@@ -16437,86 +16478,47 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
       { $project: { agentList: agentListProj }},
       { $unwind: "$agentList" },
       { $group: { _id: "$agentList", c: { $sum: 1 }}}
-    ]) : Promise.resolve([]);
-    var meetingsDrP = includeDR ? DailyRequest.aggregate([
-      { $match: Object.assign({}, drBaseMatch, {
-          hadMeeting: true,
-          meetingDoneAt: { $gte: fromDate, $lt: toDate }
-      })},
-      { $group: { _id: "$agentId", c: { $sum: 1 }}}
-    ]) : Promise.resolve([]);
+    ]);
 
-    // === EOIs (eoiStatus Pending|Approved + parsed eoiDate in period) ===
-    var eoisLeadP = includeLead ? Lead.aggregate([
-      { $match: Object.assign({}, leadBaseMatch, { eoiStatus: { $in: ["Pending", "Approved"] }})},
-      { $addFields: { eoiAt: parseDateExpr("eoiDate") }},
-      { $match: { $expr: { $and: [
-          { $ne: ["$eoiAt", null] },
-          { $gte: ["$eoiAt", fromDate] },
-          { $lt:  ["$eoiAt", toDate] }
+    // === EOIs — FORWARD-SUPERSET (eois >= deals) — Lead only ===
+    // An EOI is counted when the lead has an explicit Pending/Approved EOI with
+    // eoiDate in period, OR when the lead is a deal counted in the deal column.
+    // The "isDeal" branch MUST mirror computeAgentDealStats' deal predicate
+    // (status DoneDeal|globalStatus donedeal + the dealDate->eoiDate->updatedAt
+    // ->createdAt effective date in period) so every counted deal also counts as
+    // an EOI — guaranteeing eois >= deals on every row.
+    var eoisP = Lead.aggregate([
+      { $match: leadBaseMatch },
+      { $addFields: {
+          eoiAt: parseDateExpr("eoiDate"),
+          _effDate: { $let: {
+            vars: { d1: { $convert: { input: "$dealDate", to: "date", onError: null, onNull: null } } },
+            in:   { $ifNull: ["$$d1", { $ifNull: [
+              { $convert: { input: "$eoiDate", to: "date", onError: null, onNull: null } },
+              { $ifNull: ["$updatedAt", "$createdAt"] }
+            ]}]}
+          }},
+          _isDeal: { $or: [{ $eq: ["$status", "DoneDeal"] }, { $eq: ["$globalStatus", "donedeal"] }] }
+      }},
+      { $match: { $expr: { $or: [
+          { $and: [
+            { $in: ["$eoiStatus", ["Pending", "Approved"]] },
+            { $ne: ["$eoiAt", null] },
+            { $gte: ["$eoiAt", fromDate] },
+            { $lt:  ["$eoiAt", toDate] }
+          ]},
+          { $and: [
+            "$_isDeal",
+            { $gte: ["$_effDate", fromDate] },
+            { $lt:  ["$_effDate", toDate] }
+          ]}
       ]}}},
       { $project: { agentList: agentListProj }},
       { $unwind: "$agentList" },
       { $group: { _id: "$agentList", c: { $sum: 1 }}}
-    ]) : Promise.resolve([]);
-    var eoisDrP = includeDR ? DailyRequest.aggregate([
-      { $match: Object.assign({}, drBaseMatch, { eoiStatus: { $in: ["Pending", "Approved"] }})},
-      { $addFields: { eoiAt: parseDateExpr("eoiDate") }},
-      { $match: { $expr: { $and: [
-          { $ne: ["$eoiAt", null] },
-          { $gte: ["$eoiAt", fromDate] },
-          { $lt:  ["$eoiAt", toDate] }
-      ]}}},
-      { $group: { _id: "$agentId", c: { $sum: 1 }}}
-    ]) : Promise.resolve([]);
+    ]);
 
-    // === DEALS + REVENUE (dealDate-in-period for Lead, updatedAt fallback for DR) ===
-    // Deal predicate mirrors DealsPage activeDeals exactly. Revenue is raw
-    // budget per Step 2; split deals halved per agent to match the existing
-    // per-agent achievement convention (TeamPage / KPIsPage / my-stats).
-    var dealsLeadP = includeLead ? Lead.aggregate([
-      { $match: leadBaseMatch },
-      { $addFields: {
-          isDeal: { $and: [
-            { $or: [{ $eq: ["$status", "DoneDeal"] }, { $eq: ["$globalStatus", "donedeal"] }]},
-            { $ne: ["$status", "Deal Cancelled"] },
-            { $ne: ["$dealStatus", "Deal Cancelled"] }
-          ]},
-          dealAt: parseDateExpr("dealDate"),
-          budgetNum: budgetNumExpr,
-          isSplit: { $cond: [{ $ne: [{ $ifNull: ["$splitAgent2Id", null] }, null] }, true, false] }
-      }},
-      { $match: { isDeal: true, $expr: { $and: [
-          { $ne: ["$dealAt", null] },
-          { $gte: ["$dealAt", fromDate] },
-          { $lt:  ["$dealAt", toDate] }
-      ]}}},
-      { $project: {
-          agentList: agentListProj,
-          revPerAgent: { $cond: ["$isSplit", { $multiply: ["$budgetNum", 0.5] }, "$budgetNum"] }
-      }},
-      { $unwind: "$agentList" },
-      { $group: { _id: "$agentList", deals: { $sum: 1 }, revenue: { $sum: "$revPerAgent" }}}
-    ]) : Promise.resolve([]);
-    // DR has no dealDate field — use updatedAt as the deal-transition timestamp.
-    var dealsDrP = includeDR ? DailyRequest.aggregate([
-      { $match: drBaseMatch },
-      { $addFields: {
-          isDeal: { $and: [
-            { $eq: ["$status", "DoneDeal"] },
-            { $ne: ["$dealStatus", "Deal Cancelled"] }
-          ]},
-          dealAt: "$updatedAt",
-          budgetNum: budgetNumExpr
-      }},
-      { $match: { isDeal: true, $expr: { $and: [
-          { $gte: ["$dealAt", fromDate] },
-          { $lt:  ["$dealAt", toDate] }
-      ]}}},
-      { $group: { _id: "$agentId", deals: { $sum: 1 }, revenue: { $sum: "$budgetNum" }}}
-    ]) : Promise.resolve([]);
-
-    // === CALLS (Activity; userId scoped if team filter set) ===
+    // === CALLS (Activity; userId scoped if team filter set) — UNCHANGED ===
     var callsMatch = { type: "call", createdAt: { $gte: fromDate, $lt: toDate }};
     if (scopeIds) callsMatch.userId = { $in: scopeIds };
     var callsP = Activity.aggregate([
@@ -16524,10 +16526,18 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
       { $group: { _id: "$userId", c: { $sum: 1 }}}
     ]);
 
-    var parts = await Promise.all([
-      leadsLeadP, leadsDrP, meetingsLeadP, meetingsDrP,
-      eoisLeadP, eoisDrP, dealsLeadP, dealsDrP, callsP
-    ]);
+    // Leads / deals / revenue: one shared-helper call per eligible agent (flat
+    // per-agent rows => agentOids is always [agentId], so intra-team split
+    // credit never applies and split deals are halved exactly as before).
+    var poolOids = poolUsers.map(function(u){ return u._id; });
+    var dealStatsP = Promise.all(poolUsers.map(function(u){
+      return computeAgentDealStats([u._id], fromDate, toDate, pwMap, sourceFilter)
+        .then(function(s){ return { id: String(u._id), stats: s }; });
+    }));
+
+    var parts = await Promise.all([meetingsP, eoisP, callsP, dealStatsP]);
+    var poolSet = {};
+    poolOids.forEach(function(o){ poolSet[String(o)] = true; });
 
     var byAgent = {};
     var get = function(id){
@@ -16536,27 +16546,17 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
       return byAgent[k];
     };
     var addCount = function(rows, key){
-      (rows || []).forEach(function(r){ if (r && r._id) get(r._id)[key] += Number(r.c) || 0; });
+      (rows || []).forEach(function(r){ if (r && r._id && poolSet[String(r._id)]) get(r._id)[key] += Number(r.c) || 0; });
     };
-    addCount(parts[0], "leads");
-    addCount(parts[1], "leads");
-    addCount(parts[2], "meetings");
-    addCount(parts[3], "meetings");
-    addCount(parts[4], "eois");
-    addCount(parts[5], "eois");
-    (parts[6] || []).forEach(function(r){ if (r && r._id){ var a = get(r._id); a.deals += Number(r.deals)||0; a.revenue += Number(r.revenue)||0; }});
-    (parts[7] || []).forEach(function(r){ if (r && r._id){ var a = get(r._id); a.deals += Number(r.deals)||0; a.revenue += Number(r.revenue)||0; }});
-    addCount(parts[8], "calls");
-
-    // Resolve user docs (eligible roles only). Drops admins/SAs/directors/
-    // viewers and deleted users from the leaderboard automatically.
-    var ids = Object.keys(byAgent);
-    var users = ids.length
-      ? await User.find({ _id: { $in: ids }, role: { $in: ["sales", "team_leader", "manager"] }})
-          .select("name role qTargets active").lean()
-      : [];
-    var userMap = {};
-    users.forEach(function(u){ userMap[String(u._id)] = u; });
+    addCount(parts[0], "meetings");
+    addCount(parts[1], "eois");
+    addCount(parts[2], "calls");
+    (parts[3] || []).forEach(function(r){
+      var a = get(r.id);
+      a.leads   = Number(r.stats.leads)   || 0;
+      a.deals   = Number(r.stats.deals)   || 0;
+      a.revenue = Number(r.stats.revenue) || 0;
+    });
 
     var qNum = Math.floor(new Date().getMonth()/3) + 1;
     var qKey = "Q" + qNum;
@@ -16567,6 +16567,9 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
       var u = userMap[k];
       if (!u) return;
       var a = byAgent[k];
+      // Drop agents with no activity at all (matches the prior behaviour where
+      // byAgent only held agents that appeared in some aggregation).
+      if (!a.leads && !a.calls && !a.meetings && !a.eois && !a.deals && !a.revenue) return;
       var qTarget = readQTargetServer(u, curYearNum, qNum);
       var convPct = a.leads > 0 ? Math.round((a.deals / a.leads) * 1000) / 10 : null;
       var progress = qTarget > 0 ? Math.min(100, Math.round((a.revenue / qTarget) * 1000) / 10) : 0;
