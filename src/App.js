@@ -3318,19 +3318,27 @@ var LeadJourney = function(p) {
   //   Note       — slate/white box, left-border slate, 📝 icon
   //   Status     — inline 🔄 + colored from→to labels
   //   Callback   — inline 📅 + scheduled-for label
-  //   Call       — inline 📞 + label
-  //   Meeting    — inline 🤝 + label
-  // The status pill on a feedback row IS the "while X" indicator — the old
-  // separate badge is dropped to declutter. Cluster timestamp is rendered by
-  // the outer row, not here.
+  //   Call       — inline 📞 + text
+  //   Meeting    — inline 🤝 + text
+  // The icon identifies the row type, so no "Status:" / "Call:" / etc. labels.
+  // Notes may arrive with leading emoji already baked into the text (e.g. the
+  // Call activity row writes "📞 Call initiated — +20..."); stripLeadingIcon
+  // removes that so the row doesn't double up its icon visually.
+  var ROW_ICON_STYLE = { fontSize:12, lineHeight:1, flexShrink:0, width:14, textAlign:"center", display:"inline-block" };
+  var stripLeadingIcon = function(text){
+    if (text == null) return "";
+    // Drop any leading emoji-ish run (variation selectors, ZWJ joins) plus
+    // following whitespace. Covers 📞 📅 📝 🤝 🔄 ⭐ 🛑 etc. Anything that
+    // isn't ASCII at the start of the string is treated as an icon char.
+    return String(text).replace(/^[^\x20-\x7E]+\s*/, "").trim();
+  };
   var renderSubLine = function(ev, era, group){
     var type = ev.type;
     if (type === "status_change" || type === "status_changed") {
       var to = extractStatus(ev) || "NewLead";
       var from = extractFromStatus(ev);
-      return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:5, flexWrap:"wrap" }}>
-        <span style={{ fontSize:11 }}>🔄</span>
-        <span style={{ fontWeight:600, color:C.textLight }}>Status:</span>
+      return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+        <span style={ROW_ICON_STYLE}>🔄</span>
         {from ? <><span style={{ color:sColor(from), fontWeight:700 }}>{sLabel(from)}</span><span style={{ color:C.textLight }}>→</span></> : null}
         <span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span>
       </div>;
@@ -3339,38 +3347,37 @@ var LeadJourney = function(p) {
       var ws = whileStatusFor(ev, era);
       var fbText = stripActorPrefix(ev.feedback || ev.note || "");
       return <div style={{ display:"flex", alignItems:"flex-start", gap:6, padding:"5px 8px", background:"#FFFBEB", borderRadius:6, borderLeft:"2px solid "+C.accent }}>
-        <span style={{ fontSize:9, fontWeight:700, color:"#fff", background:sliceStatusPillColor(ws), padding:"1px 5px", borderRadius:4, whiteSpace:"nowrap", marginTop:1, flexShrink:0 }}>{sLabel(ws)}</span>
+        <span style={{ fontSize:9, fontWeight:700, color:"#fff", background:sliceStatusPillColor(ws), padding:"2px 6px", borderRadius:4, whiteSpace:"nowrap", marginTop:1, flexShrink:0, lineHeight:1.2 }}>{sLabel(ws)}</span>
         <span style={{ flex:1, fontSize:bodyFs, color:C.text, wordBreak:"break-word", lineHeight:1.4 }}>{fbText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty feedback)</span>}</span>
       </div>;
     }
     if (type === "callback_scheduled") {
       var cbTime = ev.scheduledFor || ev.time || ev.callbackTime || null;
       var cbLabel = cbTime ? new Date(cbTime).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : (ev.note || "");
-      return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:5, flexWrap:"wrap" }}>
-        <span style={{ fontSize:11 }}>📅</span>
-        <span style={{ fontWeight:600, color:C.textLight }}>Callback:</span>
+      return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+        <span style={ROW_ICON_STYLE}>📅</span>
         <span style={{ fontWeight:600 }}>{cbLabel}</span>
       </div>;
     }
     if (type === "note") {
       var noteText = stripActorPrefix(ev.note || "");
       return <div style={{ display:"flex", alignItems:"flex-start", gap:6, padding:"5px 8px", background:"#F8FAFC", borderRadius:6, borderLeft:"2px solid #94A3B8" }}>
-        <span style={{ fontSize:11, marginTop:1, flexShrink:0 }}>📝</span>
+        <span style={Object.assign({}, ROW_ICON_STYLE, { marginTop:1 })}>📝</span>
         <span style={{ flex:1, fontSize:bodyFs, color:C.text, wordBreak:"break-word", lineHeight:1.4 }}>{noteText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty note)</span>}</span>
       </div>;
     }
     if (type === "call") {
-      return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:5, flexWrap:"wrap" }}>
-        <span style={{ fontSize:11 }}>📞</span>
-        <span style={{ fontWeight:600, color:C.textLight }}>Call:</span>
-        <span>{ev.note || "Call initiated"}</span>
+      var callText = stripLeadingIcon(ev.note || "");
+      return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+        <span style={ROW_ICON_STYLE}>📞</span>
+        <span>{callText || "Call initiated"}</span>
       </div>;
     }
     if (type === "meeting") {
-      return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:5, flexWrap:"wrap" }}>
-        <span style={{ fontSize:11 }}>🤝</span>
-        <span style={{ fontWeight:600, color:C.textLight }}>Meeting:</span>
-        <span>{ev.note || "Meeting"}</span>
+      var meetText = stripLeadingIcon(ev.note || "");
+      return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+        <span style={ROW_ICON_STYLE}>🤝</span>
+        <span>{meetText || "Meeting"}</span>
       </div>;
     }
     if (type === "assigned" || type === "first_assigned") {
@@ -3418,7 +3425,7 @@ var LeadJourney = function(p) {
       <div style={{ flexShrink:0, width:isPanel?84:96, fontSize:metaFs, color:C.textLight, paddingTop:2 }}>{suppressTs ? "" : fmtTs(action.createdAt)}</div>
       <div style={{ flex:1, minWidth:0 }}>
         {ordered.map(function(sub, si){
-          return <div key={si} style={{ padding:"3px 0", lineHeight:1.5 }}>
+          return <div key={si} style={{ padding: si === 0 ? "0" : "4px 0 0", lineHeight:1.4 }}>
             {renderSubLine(sub, era, action)}
           </div>;
         })}
@@ -3600,7 +3607,7 @@ var LeadJourney = function(p) {
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontSize:bodyFs, fontWeight:700, color:C.text }}>{era.agentName}</div>
           <div style={{ fontSize:metaFs, color:C.textLight, marginTop:1 }}>
-            {fmtRange(era.startedAt, era.endedAt, era.isCurrent)} · {actionsCount} action{actionsCount===1?"":"s"} · ended at <span style={{ color:sColor(era.endedAtStatus), fontWeight:600 }}>{sLabel(era.endedAtStatus)}</span>
+            {fmtRange(era.startedAt, era.endedAt, era.isCurrent)} · {actionsCount} action{actionsCount===1?"":"s"}{era.isCurrent ? "" : <> · ended at <span style={{ color:sColor(era.endedAtStatus), fontWeight:600 }}>{sLabel(era.endedAtStatus)}</span></>}
           </div>
         </div>
         <div style={{ flexShrink:0, fontSize:metaFs, fontWeight:700, padding:"2px 8px", borderRadius:10, background:era.isCurrent?"#1D9E75":"#888780", color:"#fff" }}>{era.isCurrent?"Current":"Previous"}</div>
@@ -5587,12 +5594,14 @@ var LeadsPage = function(p) {
                   </div>
                 </div>
                 {/* Phase 2: per-slice feedback list — chronological replay with
-                    status-at-the-moment pill + relative timestamp. The slice's
-                    `notes` field is intentionally NOT rendered separately — it
-                    is always written to the same value as `lastFeedback` (which
-                    feedbacksForSlice already surfaces, either as a normal
-                    agentHistory entry or via the virtual fallback). */}
-                {(function(){
+                    status-at-the-moment pill + relative timestamp. RENDERED ONLY
+                    in the "Previous · feedback kept" sub-section. In the Currently
+                    Assigned sub-section the per-agent feedback would duplicate
+                    what the Latest Feedback banner already shows at the top of
+                    the panel + what LeadJourney shows below; only the Previous
+                    section needs the preserved feedback (that's the section's
+                    whole purpose). */}
+                {!isActiveSection && (function(){
                   var fbs = feedbacksForSlice(a);
                   if (!fbs.length) return null;
                   return <div style={{ marginLeft:34 }}>
