@@ -69,13 +69,13 @@ var TR = {
     login: "تسجيل الدخول", loginBtn: "دخول", loginError: "Username أو كلمة المرور غلط",
     username: "Username", password: "Password", logout: "تسجيل خروج",
     dashboard: "الرئيسية", leads: "الLeads", deals: "الDeals", projects: "المشاريع",
-    tasks: "المهام", reports: "التقارير", team: "فريق المبيعات", users: "Users",
+    reports: "التقارير", team: "فريق المبيعات", users: "Users",
     units: "الوحدات", settings: "الإعدادات", channels: "القنوات", dailyReq: "Daily Request",
     archive: "الArchive", brokers: "Brokers",
     search: "Search...",
     all: "الكل", totalLeads: "Total الLeads", newLeads: "جدد",
     activeDeals: "Deals نشطة", doneDeals: "تم البيع",
-    addLead: "إضافة leads", addUser: "Add User", addTask: "إضافة مهمة", addRequest: "Add Number",
+    addLead: "إضافة leads", addUser: "Add User", addRequest: "Add Number",
     name: "Name", phone: "Phone", phone2: "هاتف إضافي", email: "Email", budget: "Budget",
     project: "المشروع", source: "المصدر", agent: "Agent",
     status: "Status", cancel: "إلغاء", save: "حفظ", add: "إضافة", edit: "تعديل",
@@ -91,7 +91,7 @@ var TR = {
     todayActivities: "أنشطة Today", callReminder: "تنبيهات",
     available: "متاح", reserved: "محجوز", sold: "مباع",
     language: "اللغة", calls: "Calls", meetings: "اجتماعات", followups: "متابعات",
-    taskTitle: "عنوان المهمة", taskType: "النوع", taskTime: "الوقت", relatedLead: "الleads",
+    relatedLead: "الleads",
     sourcePerf: "أداء المصادر", leadsByStatus: "الLeads حسب Status",
     agentPerf: "أداء Agentين", companyName: "اسم الشركة",
     welcome: "مرحباً", myLeads: "عملائي", allLeads: "كل الLeads",
@@ -137,13 +137,13 @@ var TR = {
     login: "Login", loginBtn: "Sign In", loginError: "Invalid username or password",
     username: "Username", password: "Password", logout: "Logout",
     dashboard: "Dashboard", leads: "Leads", deals: "Deals", projects: "Projects",
-    tasks: "Tasks", reports: "Reports", team: "Sales Team", users: "Users",
+    reports: "Reports", team: "Sales Team", users: "Users",
     units: "Units", settings: "Settings", channels: "Channels", dailyReq: "Daily Request",
     archive: "Archive", brokers: "Brokers",
     search: "Search...",
     all: "All", totalLeads: "Total Leads", newLeads: "New",
     activeDeals: "Active Deals", doneDeals: "Done Deals",
-    addLead: "Add Lead", addUser: "Add User", addTask: "Add Task", addRequest: "Add Number",
+    addLead: "Add Lead", addUser: "Add User", addRequest: "Add Number",
     name: "Name", phone: "Phone", phone2: "Alt. Phone", email: "Email", budget: "Budget",
     project: "Project", source: "Source", agent: "Agent",
     status: "Status", cancel: "Cancel", save: "Save", add: "Add", edit: "Edit",
@@ -159,7 +159,7 @@ var TR = {
     todayActivities: "Today Activities", callReminder: "Notifications",
     available: "Available", reserved: "Reserved", sold: "Sold",
     language: "Language", calls: "Calls", meetings: "Meetings", followups: "Follow-ups",
-    taskTitle: "Title", taskType: "Type", taskTime: "Time", relatedLead: "Lead",
+    relatedLead: "Lead",
     sourcePerf: "Source Performance", leadsByStatus: "Leads by Status",
     agentPerf: "Agent Performance", companyName: "Company Name",
     welcome: "Welcome", myLeads: "My Leads", allLeads: "All Leads",
@@ -1098,7 +1098,6 @@ var SidebarIcon = function(id, active){
       return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M15 6L9 2.5 3 6v7l6 3.5 6-3.5V6z" stroke={col} strokeWidth={sw} strokeLinejoin="round"/></svg>;
     case "eoi":
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7" stroke={col} strokeWidth={sw}/><path d="M9 6v3.5l2.5 2.5" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
-    case "tasks":
     case "kpis":
       if (id==="kpis") return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M2 14l4-5 3 3 4-7 3 4" stroke={col} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round"/></svg>;
       return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M3 5h12M3 9h8M3 13h10" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
@@ -1133,7 +1132,6 @@ var Sidebar = function(p) {
     {id:"dailyReq",label:t.dailyReq},
     {id:"eoi",label:"EOI"},
     {id:"deals",label:t.deals},
-    {id:"tasks",label:t.tasks},
     isSalesOrTL&&{id:"kpis",label:"KPIs"},
     isOnlyAdmin&&{id:"reports",label:t.reports,adminSection:true},
     isOnlyAdmin&&{id:"commissions",label:"Commissions",adminSection:true},
@@ -11545,137 +11543,6 @@ var DealsPage = function(p) {
     </div>
   </div>;
 };
-
-// ===== TASKS =====
-var TasksPage = function(p) {
-  var t=p.t;
-  var [showAdd,setShowAdd]=useState(false);
-  var [saving,setSaving]=useState(false);
-  var [nT,setNT]=useState({title:"",type:"call",time:"",notes:""});
-  var now=Date.now();
-  var today=new Date().toDateString();
-
-  // STEP 4-2 — today's callbacks + overdue-not-today count fetched from
-  // /api/leads/callbacks (role-scoped server-side). The previous
-  // myLeads.filter scan worked only because the bootstrap shipped every
-  // lead; once STEP 4-5 shrinks the bootstrap it would silently miss
-  // callbacks outside the page slice.
-  var [callbacksToday, setCallbacksToday] = useState([]);
-  var [overdueRows, setOverdueRows] = useState([]);
-  var [overdueCount, setOverdueCount] = useState(0);
-  useEffect(function(){
-    if (!p.token) return;
-    var cancelled = false;
-    var load = function(){
-      var nowD = new Date();
-      var cY=nowD.getFullYear(), cM=nowD.getMonth(), cD=nowD.getDate();
-      var todayStart = new Date(cY, cM, cD, 0,0,0,0);
-      var todayEnd   = new Date(cY, cM, cD, 23,59,59,999);
-      Promise.all([
-        apiFetch("/api/leads/callbacks?from="+encodeURIComponent(todayStart.toISOString())+"&to="+encodeURIComponent(todayEnd.toISOString())+"&limit=200&order=asc","GET",null,p.token).catch(function(){return [];}),
-        // Overdue-and-NOT-today: callbackTime < todayStart. Returns up to
-        // limit=200 rows for the top-5 list AND a separate count_only fetch
-        // for the badge — total Atlas overdue is ~280 leads so the list
-        // would saturate without the count_only round-trip.
-        apiFetch("/api/leads/callbacks?to="+encodeURIComponent(todayStart.toISOString())+"&limit=200&order=asc","GET",null,p.token).catch(function(){return [];}),
-        apiFetch("/api/leads/callbacks?to="+encodeURIComponent(todayStart.toISOString())+"&count_only=true","GET",null,p.token).catch(function(){return {count:0};})
-      ]).then(function(r){
-        if (cancelled) return;
-        setCallbacksToday(Array.isArray(r[0]) ? r[0] : []);
-        setOverdueRows(Array.isArray(r[1]) ? r[1] : []);
-        setOverdueCount((r[2] && typeof r[2].count==="number") ? r[2].count : 0);
-      });
-    };
-    load();
-    return function(){ cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[p.token, p.cbBust]);
-
-  var myLeads=p.leads.filter(function(l){
-    if(l.archived)return false;
-    var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;
-    return p.cu.role==="admin"||p.cu.role==="manager"||p.cu.role==="team_leader"||aid===p.cu.id;
-  });
-
-  // noActivity stays in-memory — it's about lastActivityTime AND status, not
-  // a callback query. Migrates with STEP 4-5.
-  var noActivity=myLeads.filter(function(l){return (!l.lastActivityTime||(now-new Date(l.lastActivityTime).getTime())>1*24*60*60*1000)&&l.status!=="DoneDeal"&&l.status!=="NotInterested";});
-
-  var myTasks=p.tasks.filter(function(tk){
-    if(tk.done) return false;
-    if(p.cu.role==="admin") return true;
-    if(p.cu.role==="manager"||p.cu.role==="team_leader"){
-      var taskUid=tk.userId&&tk.userId._id?String(tk.userId._id):String(tk.userId||"");
-      return (p.myTeamUsers||[]).some(function(u){return String(u._id)===taskUid;});
-    }
-    return tk.userId===p.cu.id;
-  });
-  var overdueTasks=myTasks.filter(function(tk){return tk.time&&new Date(tk.time)<new Date();});
-  var todayTasks=myTasks.filter(function(tk){return tk.time&&new Date(tk.time).toDateString()===today&&new Date(tk.time)>=new Date();});
-  var upcoming=myTasks.filter(function(tk){return !tk.time||(new Date(tk.time)>new Date()&&new Date(tk.time).toDateString()!==today);});
-
-  var addTask=async function(){if(!nT.title)return;setSaving(true);try{var tk=await apiFetch("/api/tasks","POST",Object.assign({},nT,{userId:p.cu.id}),p.token);p.setTasks(function(prev){return [tk].concat(prev);});setShowAdd(false);setNT({title:"",type:"call",time:"",notes:""});}catch(e){}setSaving(false);};
-  var doneTask=async function(tid){try{await apiFetch("/api/tasks/"+tid,"PUT",{done:true},p.token);p.setTasks(function(prev){return prev.map(function(tk){return tk._id===tid?Object.assign({},tk,{done:true}):tk;});});}catch(e){}};
-
-  var Sec=function(sp){return <div style={{ marginBottom:16 }}>
-    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
-      <span style={{ fontSize:18 }}>{sp.icon}</span>
-      <span style={{ fontWeight:700, fontSize:14 }}>{sp.title}</span>
-      <span style={{ background:sp.color+"18", color:sp.color, padding:"1px 8px", borderRadius:20, fontSize:11, fontWeight:700 }}>{sp.count}</span>
-    </div>
-    {sp.children}
-  </div>;};
-
-  var LRow=function(lp){var l=lp.lead;var ci=callbackColor(l.callbackTime);return <div onClick={function(){p.nav("leads");p.setInitSelected(l);}} style={{ padding:"10px 14px", borderRadius:10, background:"#FAFBFC", border:"1px solid #E8ECF1", marginBottom:8, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-    <div><div style={{ fontWeight:600, fontSize:13 }}>{l.name}</div><div style={{ fontSize:11, color:"#64748B", direction:"ltr" }}><PhoneCell phone={l.phone}/></div></div>
-    <div style={{ textAlign:"left" }}>{l.callbackTime&&<div style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:ci?ci.bg:"#F1F5F9", color:ci?ci.color:"#64748B", fontWeight:600 }}>{l.callbackTime.slice(11,16)}</div>}</div>
-  </div>;};
-
-  var TRow=function(tp){var tk=tp.task;return <div style={{ padding:"10px 14px", borderRadius:10, background:tp.bg||"#F8FAFC", border:"1px solid "+tp.border, marginBottom:8, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-    <div><div style={{ fontWeight:600, fontSize:13 }}>{tk.title}</div><div style={{ fontSize:11, color:tp.tc||"#64748B" }}>{tk.time?tk.time.slice(0,16).replace("T"," "):"No time set"}</div></div>
-    <button onClick={function(){doneTask(tk._id);}} style={{ padding:"4px 12px", borderRadius:7, border:"none", background:C.success, color:"#fff", fontSize:11, fontWeight:600, cursor:"pointer" }}>✓ Done</button>
-  </div>;};
-
-  return <div style={{ padding:"18px 16px 40px" }}>
-    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
-      <div>
-        <h2 style={{ margin:"0 0 2px", fontSize:18, fontWeight:800 }}>🌞 Tasks</h2>
-        <div style={{ fontSize:12, color:C.textLight }}>{new Date().toLocaleDateString("en-GB",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
-      </div>
-      <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> New Task</Btn>
-    </div>
-
-    <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
-      <StatCard icon={Phone} label={"Today's Calls"} value={callbacksToday.length+""} c={C.info} onClick={function(){var el=document.getElementById("t-callbacks");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
-      <StatCard icon={AlertCircle} label={"Overdue"} value={(overdueCount+overdueTasks.length)+""} c={C.danger} onClick={function(){var el=document.getElementById("t-overdue");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
-      <StatCard icon={Activity} label={"No Activity"} value={noActivity.length+""} c={C.warning} onClick={function(){var el=document.getElementById("t-noact");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
-      <StatCard icon={CheckCircle} label={"Today's Tasks"} value={todayTasks.length+""} c={"#8B5CF6"} onClick={function(){var el=document.getElementById("t-today");if(el)el.scrollIntoView({behavior:"smooth"});}}/>
-    </div>
-
-    {overdueCount>0&&<div id="t-overdue"><Sec icon="⚠️" title="Overdue Calls" color={C.danger} count={overdueCount}>{overdueRows.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
-    {overdueTasks.length>0&&<Sec icon="🔴" title="Overdue Tasks" color={C.danger} count={overdueTasks.length}>{overdueTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#FEF2F2" border="#FECACA" tc={C.danger}/>;})}</Sec>}
-    {callbacksToday.length>0&&<div id="t-callbacks"><Sec icon="📞" title="Today's Calls" color={C.info} count={callbacksToday.length}>{callbacksToday.map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
-    {todayTasks.length>0&&<div id="t-today"><Sec icon="📋" title="Today's Tasks" color={"#8B5CF6"} count={todayTasks.length}>{todayTasks.map(function(tk){return <TRow key={tk._id} task={tk} bg="#F5F3FF" border="#DDD6FE" tc={"#7C3AED"}/>;})}</Sec></div>}
-    {noActivity.length>0&&<div id="t-noact"><Sec icon="😴" title="No Activity +3 Days" color={C.warning} count={noActivity.length}>{noActivity.slice(0,5).map(function(l){return <LRow key={gid(l)} lead={l}/>;})}</Sec></div>}
-    {upcoming.length>0&&<Sec icon="📅" title="Upcoming Tasks" color={C.textLight} count={upcoming.length}>{upcoming.slice(0,5).map(function(tk){return <TRow key={tk._id} task={tk} bg="#F8FAFC" border="#E2E8F0"/>;})}</Sec>}
-
-    {callbacksToday.length===0&&overdueCount===0&&noActivity.length===0&&myTasks.length===0&&
-      <div style={{ textAlign:"center", padding:"60px 20px" }}>
-        <div style={{ fontSize:48, marginBottom:12 }}>🎉</div>
-        <div style={{ fontSize:16, fontWeight:700, marginBottom:8 }}>Clear day!</div>
-        <div style={{ fontSize:13, color:C.textLight }}>No pending tasks right now</div>
-      </div>}
-
-    <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={"➕ New Task"}>
-      <Inp label={"Task Title"} req value={nT.title} onChange={function(e){setNT(function(f){return Object.assign({},f,{title:e.target.value});});}}/>
-      <Inp label={"Type"} type="select" value={nT.type} onChange={function(e){setNT(function(f){return Object.assign({},f,{type:e.target.value});});}} options={[{value:"call",label:"📞 Call"},{value:"meeting",label:"🤝 Meeting"},{value:"followup",label:"🔔 Follow-up"},{value:"email",label:"📧 Email"}]}/>
-      <Inp label={"Time"} type="datetime-local" value={nT.time} onChange={function(e){setNT(function(f){return Object.assign({},f,{time:e.target.value});});}}/>
-      <Inp label={"Notes (optional)"} type="textarea" value={nT.notes} onChange={function(e){setNT(function(f){return Object.assign({},f,{notes:e.target.value});});}}/>
-      <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={addTask} loading={saving} style={{ flex:1 }}>Add</Btn></div>
-    </Modal>
-  </div>;
-};
-
 
 var ArchivePage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader";
@@ -25563,7 +25430,7 @@ export default function CRMApp() {
     } catch(e) {}
   }, []);
   var [leads,setLeads]=useState([]); var [users,setUsers]=useState([]);
-  var [activities,setActivities]=useState([]); var [tasks,setTasks]=useState([]);
+  var [activities,setActivities]=useState([]);
   var [dailyReqs,setDailyReqs]=useState([]);
   var [leadFilter,setLeadFilter]=useState("all");
   var [leadSpecialFilter,setLeadSpecialFilter]=useState(null);
@@ -25615,7 +25482,7 @@ export default function CRMApp() {
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
   // STEP 4-2 — bumped (debounced) on every lead/DR WS event. CallbackBell +
-  // DashboardPage's callback cards + TasksPage read this in their fetch effect
+  // DashboardPage's callback cards read this in their fetch effect
   // deps so they refresh in real time without scanning the (soon-to-shrink)
   // p.leads / p.dailyRequests arrays in memory.
   var [cbBust,setCbBust]=useState(0);
@@ -25763,7 +25630,6 @@ export default function CRMApp() {
         apiFetch("/api/leads?fields=summary&page=1&limit=100","GET",null,tok),
         apiFetch("/api/users","GET",null,tok),
         apiFetch("/api/activities?page="+activitiesPage+"&limit=1000","GET",null,tok),
-        apiFetch("/api/tasks","GET",null,tok),
         apiFetch("/api/daily-requests?fields=summary&page=1&limit=100","GET",null,tok).catch(function(e){ console.error("DR fetch failed:", e); return []; })
       ]);
       // Use userOverride if passed (avoids React state timing issue)
@@ -25785,12 +25651,11 @@ export default function CRMApp() {
       setActivities(results[2].data || []);
       setActivitiesTotal(results[2].total || 0);
       setActivitiesTotalPages(results[2].totalPages || 0);
-      setTasks(results[3]);
       // STEP 4-5 X3 — DR now returns the {data,total,page,totalPages} shape
       // because the request includes ?page=1&limit=100. Earlier callers
       // (fetchDRs WS fallback, ArchivePage's own fetch) still use the legacy
       // array shape — preserved by checking Array.isArray.
-      var drBootResult = results[4];
+      var drBootResult = results[3];
       var drBootRows = (drBootResult && Array.isArray(drBootResult.data)) ? drBootResult.data
                      : Array.isArray(drBootResult) ? drBootResult
                      : [];
@@ -26141,9 +26006,6 @@ export default function CRMApp() {
               if (data.leadId) fetchSingleLead(String(data.leadId));
               fetchNotifications();
               break;
-            case "task_updated":
-              apiFetch("/api/tasks","GET",null,token).then(function(t){ if(Array.isArray(t)) setTasks(t); }).catch(function(){});
-              break;
             case "attendance_settings_updated":
               // Phase 2 — Owner toggled permissions or office location. Update
               // local cache so any open settings tabs and (in later phases)
@@ -26281,7 +26143,7 @@ export default function CRMApp() {
   // refreshed the full 1000-lead list after each rotation, and produced the
   // 409 noise (server cron vs browser cron racing) tracked in MEMORY.md.
 
-  var handleLogout=function(){setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setTasks([]);setPage("dashboard");setSidebarOpen(false);setSidebarLeadsTotal(null);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
+  var handleLogout=function(){setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setPage("dashboard");setSidebarOpen(false);setSidebarLeadsTotal(null);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
 
   if(!currentUser) {
@@ -26297,7 +26159,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,tasks:t.tasks,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings,assets:"Assets"};
+  var titles={dashboard:t.dashboard,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings,assets:"Assets"};
   // Server already filters users by role — p.users IS the team
   var myId = String(currentUser.id||currentUser._id||"");
 
@@ -26328,7 +26190,7 @@ export default function CRMApp() {
     setPage("commissions");
     try { localStorage.setItem("crm_page","commissions"); } catch(e){}
   };
-  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,tasks,setTasks,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings,salaryViewUserId:salaryViewUserId,setSalaryViewUserId:setSalaryViewUserId,setPage:setPage,navigateToCommission:navigateToCommission,selectedCommissionLeadId:selectedCommissionLeadId,setSelectedCommissionLeadId:setSelectedCommissionLeadId,cbBust:cbBust,loadMoreLeads:loadMoreLeads,loadMoreDRs:loadMoreDRs,leadsLoadingMore:leadsLoadingMore,drsLoadingMore:drsLoadingMore,leadsTotal:leadsTotal,leadsTotalPages:leadsTotalPages,leadsPage:leadsPage,drsTotal:drsTotal,drsTotalPages:drsTotalPages,drsPage:drsPage};
+  var sp={t,leads:scopedLeads,setLeads,users:scopedUsers,setUsers,activities:scopedActivities,setActivities,cu:currentUser,token,csrfToken,nav,setFilter:setLeadFilter,leadFilter,specialFilter:leadSpecialFilter,setSpecialFilter:setLeadSpecialFilter,drInitFilter:drInitFilter,setDrInitFilter:setDrInitFilter,lang,setLang,search,setSearch,isMobile,initSelected,setInitSelected,initAgentFilter,setInitAgentFilter,isOnlyAdmin,myTeamUsers,addDealNotif:addDealNotif,notifyRotation:notifyRotation,rotNotifs:rotNotifs,dailyReqs:scopedDailyReqs,bumpProjectWeightsRev:bumpProjectWeightsRev,projectWeightsRev:projectWeightsRev,attendanceSettings:attendanceSettings,salaryViewUserId:salaryViewUserId,setSalaryViewUserId:setSalaryViewUserId,setPage:setPage,navigateToCommission:navigateToCommission,selectedCommissionLeadId:selectedCommissionLeadId,setSelectedCommissionLeadId:setSelectedCommissionLeadId,cbBust:cbBust,loadMoreLeads:loadMoreLeads,loadMoreDRs:loadMoreDRs,leadsLoadingMore:leadsLoadingMore,drsLoadingMore:drsLoadingMore,leadsTotal:leadsTotal,leadsTotalPages:leadsTotalPages,leadsPage:leadsPage,drsTotal:drsTotal,drsTotalPages:drsTotalPages,drsPage:drsPage};
 
   var renderPage=function(){
     switch(currentPage){
@@ -26342,7 +26204,6 @@ export default function CRMApp() {
       case "eoi": return <EOIPage {...sp}/>;
       case "commissions": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <CommissionsPage {...sp}/> : <DashboardPage {...sp}/>;
       case "projects": return <ProjectsPage {...sp}/>;
-      case "tasks": return <TasksPage {...sp}/>;
       case "reports": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <ReportsPage {...sp}/> : <DashboardPage {...sp}/>;
       case "team": return <TeamPage {...sp}/>;
       case "users": return <UsersPage {...sp}/>;

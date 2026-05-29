@@ -38,7 +38,6 @@ var emitUser = function(doc){ try{ if(doc) broadcast("user_updated", { userId: S
 var emitUserDeleted = function(doc){ try{ if(doc) broadcast("user_deleted", { userId: String(doc._id) }); }catch(e){} };
 var emitActivity = function(doc){ try{ if(doc) broadcast("activity_created", { activity: doc }); }catch(e){} };
 var emitNotification = function(){ try{ broadcast("notification_updated", {}); }catch(e){} };
-var emitTask = function(){ try{ broadcast("task_updated", {}); }catch(e){} };
 
 // ===== CORS OPTIONS =====
 var corsOptions = {
@@ -53,7 +52,6 @@ var corsOptions = {
 delete mongoose.models["User"];
 delete mongoose.models["Lead"];
 delete mongoose.models["Activity"];
-delete mongoose.models["Task"];
 delete mongoose.models["DailyRequest"];
 
 var User = mongoose.model("User", new mongoose.Schema({
@@ -360,12 +358,6 @@ var Activity = mongoose.model("Activity", new mongoose.Schema({
   // populate("leadId") only resolves Lead docs; DR-backed activities lose the
   // populated name, which is what made the "Note added" rows render "no client".
   clientName:{type:String,default:""}, clientPhone:{type:String,default:""}
-},{timestamps:true}));
-
-var Task = mongoose.model("Task", new mongoose.Schema({
-  title:{type:String,required:true}, type:{type:String,default:"call"},
-  time:{type:String,default:""}, leadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead"},
-  userId:{type:mongoose.Schema.Types.ObjectId,ref:"User"}, done:{type:Boolean,default:false}
 },{timestamps:true}));
 
 var Notification = mongoose.model("Notification", new mongoose.Schema({
@@ -1222,10 +1214,6 @@ app.use(function(req, res, next){
         // ----- Notifications -----
         else if (path.indexOf("/api/notifications") === 0) {
           broadcast("notification_updated", {});
-        }
-        // ----- Tasks -----
-        else if (path.indexOf("/api/tasks") === 0) {
-          broadcast("task_updated", { taskId: String((body&&body._id)||req.params.id||"") });
         }
         // ----- Daily Requests -----
         else if (path.indexOf("/api/daily-requests") === 0) {
@@ -6646,10 +6634,9 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     if (rangeMatch) intDrMatch.createdAt = rangeMatch;
     var intDrsP = DailyRequest.countDocuments(intDrMatch);
 
-    // CARD 5 — Meetings: Meeting Done OR Meeting Scheduled.
+    // CARD 5 — Meetings: Meeting Done.
     //   Done:       lead/DR with hadMeeting === true OR status === "MeetingDone"
     //               (dated by meetingDoneAt, falling back to updatedAt, within range).
-    //   Scheduled:  Task documents with type "meeting" authored in scope, createdAt in range.
     var meetLeadPipeline = [
       { $match: { agentId: agentExpr, archived: { $ne: true }, $or: [ { hadMeeting: true }, { status: "MeetingDone" } ] } },
       { $addFields: { meetAt: { $ifNull: ["$meetingDoneAt", "$updatedAt"] } } }
@@ -6664,9 +6651,6 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     if (rangeMatch) meetDrPipeline.push({ $match: { meetAt: rangeMatch } });
     meetDrPipeline.push({ $count: "c" });
     var meetDrsP = DailyRequest.aggregate(meetDrPipeline);
-    var meetTaskMatch = { userId: userExpr, type: "meeting" };
-    if (rangeMatch) meetTaskMatch.createdAt = rangeMatch;
-    var meetSchedP = Task.countDocuments(meetTaskMatch);
 
     // Per-status breakdown for the "My Leads — Status" + "Conversion Funnel"
     // cards. Same scope as Card 1.
@@ -6718,7 +6702,7 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     var parts = await Promise.all([
       myLeadsP, myDrsP, myFollowupsP,
       intLeadsP, intDrsP,
-      meetLeadsP, meetDrsP, meetSchedP,
+      meetLeadsP, meetDrsP,
       usersP, myDealsP, byStatusP
     ]);
     var pickCount = function(arr){ return (arr && arr[0] && arr[0].c) || 0; };
@@ -6726,11 +6710,11 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     var myDrsC      = parts[1] || 0;
     var myFupsC     = parts[2] || 0;
     var interestedC = (parts[3]||0) + (parts[4]||0);
-    var meetingsC   = pickCount(parts[5]) + pickCount(parts[6]) + (parts[7]||0);
-    var scopeUsers  = parts[8] || [];
-    var myDeals     = parts[9] || [];
+    var meetingsC   = pickCount(parts[5]) + pickCount(parts[6]);
+    var scopeUsers  = parts[7] || [];
+    var myDeals     = parts[8] || [];
     var byStatus = { NewLead:0, Potential:0, HotCase:0, CallBack:0, MeetingDone:0, NotInterested:0, NoAnswer:0, DoneDeal:0 };
-    (parts[10] || []).forEach(function(r){ if (r && r._id) byStatus[r._id] = r.c; });
+    (parts[9] || []).forEach(function(r){ if (r && r._id) byStatus[r._id] = r.c; });
 
     var parseBudget = function(b){ return parseFloat(String(b||"0").replace(/,/g,"")) || 0; };
     // Split-deal credit rule: if both agents are inside the caller's scope
@@ -12893,53 +12877,6 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
     }
     res.json(merged);
   } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// ===== TASK ROUTES =====
-app.get("/api/tasks", auth, async function(req, res) {
-  try {
-    var query = {};
-    if (req.user.role === "sales") { query.userId = req.user.id; }
-    var tasks = await Task.find(query).populate("userId", "name").populate("leadId", "name").sort({ createdAt: -1 });
-    res.json(tasks);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post("/api/tasks", auth, async function(req, res) {
-  try {
-    var task = await Task.create({
-      title: req.body.title,
-      type: req.body.type || "call",
-      time: req.body.time || "",
-      leadId: req.body.leadId || null,
-      userId: req.body.userId || req.user.id,
-      done: false,
-    });
-    task = await Task.findById(task._id).populate("userId", "name").populate("leadId", "name");
-    res.json(task);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.put("/api/tasks/:id", auth, async function(req, res) {
-  try {
-    var task = await Task.findByIdAndUpdate(req.params.id, req.body, { new: true }).populate("userId", "name").populate("leadId", "name");
-    res.json(task);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.delete("/api/tasks/:id", auth, async function(req, res) {
-  try {
-    await Task.findByIdAndDelete(req.params.id);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
 });
 
 // ===== STATS ROUTE =====
