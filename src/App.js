@@ -3156,16 +3156,17 @@ var LeadJourney = function(p) {
     era.events = keep;
   });
 
-  // Drop "phantom" eras with no actual sales work — these come from admin
-  // hops where the receiving agent never acted before the next rotation
-  // (or from misattributed history rows where the actor was an admin).
-  // Real eras have at least one work-type event. EXCEPTION: never drop the
-  // current (last) era — even an empty one is the present holder.
-  var workTypes = { status_change:1, feedback:1, feedback_added:1, call:1, meeting:1, callback_scheduled:1, note:1 };
-  eras = eras.filter(function(era, i, arr){
-    if (i === arr.length - 1) return true;
-    return era.events.some(function(ev){ return !!workTypes[ev.type]; });
-  });
+  // EVERY agent who held the lead must appear in the journey, regardless of
+  // whether they did any work during their tenure. Earlier code here dropped
+  // "phantom" eras whose only event was the rotation marker itself (i.e. an
+  // intermediate agent received the lead and then was rotated away with no
+  // status change / feedback / call / callback / note in between). That hid
+  // legitimate handoffs from admin view — a 4-agent chain where the middle
+  // agent did nothing would only show 3 eras, missing the silent middle hop.
+  // The current Phase 5 spec requires a 1:1 mapping between rotation events
+  // and visible eras; any noise reduction beyond that needs to be surgical
+  // (e.g. by actor role) and is deferred. Do not reintroduce a length-based
+  // or work-type-based filter without revisiting the spec.
 
   // Team_leader scope: drop any era whose agent isn't on this TL's team. The
   // backend already scopes leads/users to the TL's team, but the journey
