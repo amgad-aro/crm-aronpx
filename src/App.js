@@ -3346,13 +3346,16 @@ var LeadJourney = function(p) {
     if (type === "feedback" || type === "feedback_added") {
       var ws = whileStatusFor(ev, era);
       var fbText = stripActorPrefix(ev.feedback || ev.note || "");
-      // Phase 5 polish: drop the yellow accent palette in favour of a calm
-      // slate panel with a soft shadow. Pill is inline-block at the start of
-      // the text so wrapped lines flow under the pill using the FULL block
-      // width instead of indenting under a flex column.
-      return <div style={{ padding:"7px 10px", background:"#F8FAFC", borderRadius:6, border:"1px solid #EEF1F5", boxShadow:"0 1px 3px rgba(15, 23, 42, 0.06)", fontSize:bodyFs, color:C.text, lineHeight:1.45, wordBreak:"break-word" }}>
-        <span style={{ display:"inline-block", verticalAlign:"baseline", fontSize:9, fontWeight:700, color:"#fff", background:sliceStatusPillColor(ws), padding:"2px 6px", borderRadius:4, marginRight:7, whiteSpace:"nowrap", lineHeight:1.2 }}>{sLabel(ws)}</span>
-        {fbText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty feedback)</span>}
+      // Slate panel + soft shadow. Box is explicit display:block + width:100%
+      // + boxSizing:border-box so it always fills the body column (defensive
+      // against any future flex parent that might shrink-to-fit). Pill is
+      // inline-block at the start of the text so wrapped lines flow under
+      // the pill using the full width of the box. marginRight:8 + a leading
+      // space character in the text guarantees a visible gap between pill
+      // and content even on subpixel rounding.
+      return <div style={{ display:"block", width:"100%", boxSizing:"border-box", padding:"7px 10px", background:"#F8FAFC", borderRadius:6, border:"1px solid #EEF1F5", boxShadow:"0 1px 3px rgba(15, 23, 42, 0.06)", fontSize:bodyFs, color:C.text, lineHeight:1.45, wordBreak:"break-word" }}>
+        <span style={{ display:"inline-block", verticalAlign:"baseline", fontSize:9, fontWeight:700, color:"#fff", background:sliceStatusPillColor(ws), padding:"2px 6px", borderRadius:4, marginRight:8, whiteSpace:"nowrap", lineHeight:1.2 }}>{sLabel(ws)}</span>
+        <span>{fbText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty feedback)</span>}</span>
       </div>;
     }
     if (type === "callback_scheduled") {
@@ -3365,11 +3368,12 @@ var LeadJourney = function(p) {
     }
     if (type === "note") {
       var noteText = stripActorPrefix(ev.note || "");
-      // Same inline-flow treatment as feedback so wrapped lines use full width.
-      // Slight visual differentiation kept via the 📝 icon (vs the pill on feedback).
-      return <div style={{ padding:"7px 10px", background:"#F8FAFC", borderRadius:6, border:"1px solid #EEF1F5", boxShadow:"0 1px 3px rgba(15, 23, 42, 0.06)", fontSize:bodyFs, color:C.text, lineHeight:1.45, wordBreak:"break-word" }}>
-        <span style={{ display:"inline-block", verticalAlign:"baseline", marginRight:6, fontSize:12, lineHeight:1.2 }}>📝</span>
-        {noteText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty note)</span>}
+      // Same inline-flow + full-width treatment as feedback so wrapped lines
+      // use the full box width. Differentiation from feedback comes via the
+      // 📝 icon (vs the colored status pill on feedback).
+      return <div style={{ display:"block", width:"100%", boxSizing:"border-box", padding:"7px 10px", background:"#F8FAFC", borderRadius:6, border:"1px solid #EEF1F5", boxShadow:"0 1px 3px rgba(15, 23, 42, 0.06)", fontSize:bodyFs, color:C.text, lineHeight:1.45, wordBreak:"break-word" }}>
+        <span style={{ display:"inline-block", verticalAlign:"baseline", marginRight:8, fontSize:12, lineHeight:1.2 }}>📝</span>
+        <span>{noteText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty note)</span>}</span>
       </div>;
     }
     if (type === "call") {
@@ -5572,12 +5576,33 @@ var LeadsPage = function(p) {
             var active  = selected.assignments.filter(function(a){ return !a.removedAt; });
             var removed = selected.assignments.filter(function(a){ return  a.removedAt; });
             var topTs = function(a){ var top = feedbacksForSlice(a)[0]; return top && top.at ? new Date(top.at).getTime() : 0; };
-            var assignedTs = function(a){ return a.assignedAt ? new Date(a.assignedAt).getTime() : 0; };
+            // Slice CREATION timestamp — primary key for the Currently Assigned
+            // sort. Reads the Mongoose subdoc _id's embedded ObjectId
+            // timestamp (first 4 bytes = seconds since epoch). This is the
+            // slice's BIRTH time, immutable across reactivations. We avoid
+            // a.assignedAt because the Phase 1 soft-remove reactivation path
+            // RESETS assignedAt to "now" — which would put a recently-
+            // reactivated old slice above a never-removed newer slice.
+            // Fallback: a.assignedAt if _id is somehow missing.
+            var sliceCreatedTs = function(a){
+              if (a && a._id) {
+                var oidStr = String(a._id);
+                if (oidStr.length >= 8) {
+                  var sec = parseInt(oidStr.slice(0, 8), 16);
+                  if (!isNaN(sec) && sec > 0) return sec * 1000;
+                }
+              }
+              if (a && a.assignedAt) {
+                var t = new Date(a.assignedAt).getTime();
+                if (!isNaN(t) && t > 0) return t;
+              }
+              return 0;
+            };
             // CURRENT-badge target: agent with the most recent feedback in the
             // active set. Compute BEFORE re-sorting so the badge stays tied to
             // feedback recency even after we re-order the Currently section by
-            // assignedAt below (the badge agent may NOT be at the top — that's
-            // intentional and matches the Phase 3 invariant).
+            // slice creation below (the badge agent may NOT be at the top —
+            // that's intentional and matches the Phase 3 invariant).
             var currentSliceId = "";
             if (active.length > 0) {
               var bestActive = active[0];
@@ -5586,8 +5611,9 @@ var LeadsPage = function(p) {
               }
               currentSliceId = String(bestActive.agentId && bestActive.agentId._id ? bestActive.agentId._id : bestActive.agentId);
             }
-            // Currently Assigned: sort by assignedAt desc (most-recent assignment at top).
-            active.sort(function(x,y){ return assignedTs(y) - assignedTs(x); });
+            // Currently Assigned: sort by slice creation timestamp desc (newest
+            // rotated/assigned at top, oldest at bottom).
+            active.sort(function(x,y){ return sliceCreatedTs(y) - sliceCreatedTs(x); });
             // Previous · feedback kept: keep the original sort by latest-feedback desc.
             removed.sort(function(x,y){ return topTs(y) - topTs(x); });
             var renderSlice = function(a, i, arr, isActiveSection){
@@ -5601,7 +5627,7 @@ var LeadsPage = function(p) {
                   <div style={{ display:"flex", alignItems:"center", gap:8, minWidth:0, flex:1 }}>
                     <div style={{ width:26, height:26, borderRadius:"50%", background: a.removedAt ? "#CBD5E1" : C.accent, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, flexShrink:0 }}>{initial}</div>
                     <div style={{ minWidth:0 }}>
-                      <span style={{ fontSize:12, fontWeight: isCurrentBadge?700:600, color: a.removedAt ? C.textLight : C.text, textDecoration:a.removedAt?"line-through":"none" }}>{aName}</span>
+                      <span style={{ fontSize:12, fontWeight:600, color: a.removedAt ? C.textLight : C.text, textDecoration:a.removedAt?"line-through":"none" }}>{aName}</span>
                       {isCurrentBadge && <span style={{ fontSize:9, background:"#DCFCE7", color:"#15803D", padding:"1px 6px", borderRadius:5, marginLeft:5, fontWeight:700, letterSpacing:".3px" }}>CURRENT</span>}
                       {a.removedAt && <span style={{ fontSize:9, background:"#FEE2E2", color:"#B91C1C", padding:"1px 6px", borderRadius:5, marginLeft:5, fontWeight:600 }} title={"Removed "+(new Date(a.removedAt).toLocaleDateString("en-GB"))}>removed</span>}
                     </div>
