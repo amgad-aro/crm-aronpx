@@ -184,7 +184,18 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
     // "from <Manager>" tag for the agent.
     notesAuthorId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
     notesAuthorName:{type:String,default:""},
-    notesAuthorRole:{type:String,default:""}
+    notesAuthorRole:{type:String,default:""},
+    // Soft-remove marker. null = slice is active (currently assigned).
+    // Non-null Date = admin removed this agent from the lead; slice is
+    // preserved with all its feedback/notes/agentHistory but is excluded from
+    // every "current/active" read path (sales list/detail, feedback target,
+    // dup-check, scope gates) and from auto-rotation eligibility consideration.
+    // The agent stays in lead.previousAgentIds so auto-rotation will never
+    // re-route the lead to them automatically — the dedicated reactivation
+    // branch in POST /api/leads/:id/rotate is the only way back. Reactivation
+    // clears removedAt and refreshes assignedAt / lastActionAt / rotationTimer
+    // / statusChangedAt; notes / lastFeedback / agentHistory are preserved.
+    removedAt:{type:Date,default:null}
   }],
   // Author-scoped private notes. Each entry visible to its author only —
   // server filters at read time on every endpoint that returns the lead.
@@ -7091,6 +7102,12 @@ function isSliceHidden(lead, slice, nowMs, staleMs) {
   if (isAssignmentStale(slice, nowMs, staleMs)) return true;
   return false;
 }
+// Returns the ACTIVE slice (removedAt === null) for the given agent on a lead,
+// or null if no active slice exists. Soft-removed slices are intentionally
+// skipped — every caller is a visibility / staleness consumer that should
+// treat a removed slice as "no slice for this agent". Historical/financial
+// readers (commission build, sales-ranking, response-hours, agent-perf)
+// iterate lead.assignments directly without going through this helper.
 function findAssignmentForAgent(lead, agentId) {
   if (!lead || !agentId) return null;
   var aidStr = String(agentId && agentId._id ? agentId._id : agentId);
@@ -7098,6 +7115,7 @@ function findAssignmentForAgent(lead, agentId) {
   for (var i = 0; i < arr.length; i++) {
     var a = arr[i];
     if (!a) continue;
+    if (a.removedAt) continue;
     var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
     if (String(aid) === aidStr) return a;
   }
@@ -7275,8 +7293,19 @@ app.get("/api/leads", auth, async function(req, res) {
       // These have to remain visible for commission tracking. Scoped to deal/
       // EOI states only so legacy non-deal leads don't suddenly resurface.
       var saleUid = new mongoose.Types.ObjectId(uid);
+      // Phase 1 soft-remove: sales visibility hinges on an ACTIVE slice
+      // (removedAt: null). $elemMatch is the required form — dot-notation
+      // `assignments.agentId: uid` AND a sibling `assignments.removedAt: null`
+      // condition would match across DIFFERENT array elements (Mongo's
+      // implicit-AND-over-array-elements semantics), which would surface a
+      // lead to a removed agent as long as ANY other active slice exists.
+      // $elemMatch pins both predicates to the same element. Per the user's
+      // explicit decision, this rule is uniform — no EOI/DoneDeal exemption.
+      // A removed agent loses visibility regardless of the lead's final state;
+      // commission attribution is independent of this filter (commission rows
+      // live in the Commission collection and read snapshots, not slices).
       query.$or = [
-        { "assignments.agentId": saleUid },
+        { assignments: { $elemMatch: { agentId: saleUid, removedAt: null } } },
         { splitAgent2Id: saleUid },
         { $and: [
           { agentId: saleUid },
@@ -7474,7 +7503,10 @@ app.get("/api/leads", auth, async function(req, res) {
       var salesSelfName = salesSelf ? String(salesSelf.name || "") : "";
       data = leads.map(function(l) {
         var obj = Object.assign({}, l);
+        // Soft-remove: a removed slice should never overlay as the caller's
+        // own — it's hidden from sales visibility regardless of lead state.
         var myAssign = (obj.assignments || []).find(function(a) {
+          if (!a || a.removedAt) return false;
           var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
           return String(aid) === String(uid);
         });
@@ -7821,8 +7853,13 @@ async function buildLeadSearchScopeQuery(req) {
   var uid = req.user.id;
   if (role === "sales") {
     var saleUid = new mongoose.Types.ObjectId(uid);
+    // Phase 1 soft-remove: sales search / deal / by-phone scope keys on an
+    // ACTIVE slice. $elemMatch pins agentId + removedAt to the same array
+    // element (see GET /api/leads). Legacy deal/EOI owner branch is kept
+    // unchanged — that path is for leads with no slice at all, not a removed
+    // slice; the soft-remove rule has nothing to act on there.
     return { $or: [
-      { "assignments.agentId": saleUid },
+      { assignments: { $elemMatch: { agentId: saleUid, removedAt: null } } },
       { splitAgent2Id: saleUid },
       { $and: [
         { agentId: saleUid },
@@ -8028,8 +8065,11 @@ app.get("/api/leads/counts", auth, async function(req, res) {
     // branch below; behaviour unchanged for Dashboard tiles + other callers.
     if (req.user.role === "sales" && req.query.scope === "historical") {
       var saleUid = new mongoose.Types.ObjectId(req.user.id);
+      // Phase 1 soft-remove: mirror GET /api/leads sales-branch — only ACTIVE
+      // slices grant historical visibility. $elemMatch pins agentId + removedAt
+      // to the same element (see comment at the list query).
       var historicalOr = [
-        { "assignments.agentId": saleUid },
+        { assignments: { $elemMatch: { agentId: saleUid, removedAt: null } } },
         { splitAgent2Id: saleUid },
         { $and: [
           { agentId: saleUid },
@@ -8508,7 +8548,11 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       // blocking anyone who has never held it. Split agents (splitAgent2Id)
       // also get access — they may not have an assignments[] entry yet.
       var obj = Object.assign({}, lead);
+      // Soft-remove: a removed slice does not grant the caller access to the
+      // lead. The fallthrough to isLegacyOwner + 404 below correctly handles
+      // a sales user whose only slice was removed.
       var myAssign = (obj.assignments || []).find(function(a) {
+        if (!a || a.removedAt) return false;
         var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
         return String(aid) === uid;
       });
@@ -8640,9 +8684,11 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
     var dupQuery = { $or: [{ phone: phone }, { phone2: phone }], archived: false };
     if (req.user.role === "sales") {
       // Match the visibility rule used by GET /api/leads: sales can only learn
-      // about duplicates on leads they hold or have previously held, by looking
-      // inside assignments[] rather than the top-level agentId.
-      dupQuery["assignments.agentId"] = new mongoose.Types.ObjectId(req.user.id);
+      // about duplicates on leads they hold ACTIVELY (removedAt: null). Phase 1
+      // soft-remove: a removed agent must not be told a phone is in the system
+      // when their access to the underlying lead is gone. $elemMatch pins both
+      // predicates to the same array element (see comment at GET /api/leads).
+      dupQuery.assignments = { $elemMatch: { agentId: new mongoose.Types.ObjectId(req.user.id), removedAt: null } };
     }
     var lead = await Lead.findOne(dupQuery).populate("agentId", "name title");
     if (lead) res.json({ exists: true, lead: lead });
@@ -9246,7 +9292,10 @@ app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async f
       var leadSidL1 = sLeadL1.splitAgent2Id ? String(sLeadL1.splitAgent2Id) : "";
       if (roleL1 === "sales") {
         var uidStrL1 = String(req.user.id);
+        // Soft-remove: removed slice does not grant access. Split-agent path
+        // (separate field) is unaffected and continues to grant access.
         var hasSliceL1 = (sLeadL1.assignments || []).some(function(a){
+          if (!a || a.removedAt) return false;
           var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
           return String(aid) === uidStrL1;
         });
@@ -9290,7 +9339,9 @@ app.post("/api/leads/:id/eoi-documents", auth, async function(req, res) {
       var leadSidL2 = sLeadL2.splitAgent2Id ? String(sLeadL2.splitAgent2Id) : "";
       if (roleL2 === "sales") {
         var uidStrL2 = String(req.user.id);
+        // Soft-remove: removed slice does not grant access. See L1 above.
         var hasSliceL2 = (sLeadL2.assignments || []).some(function(a){
+          if (!a || a.removedAt) return false;
           var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
           return String(aid) === uidStrL2;
         });
@@ -9341,7 +9392,9 @@ app.post("/api/leads/:id/delete-eoi-document", auth, async function(req, res) {
       var leadSidL3 = sLeadL3.splitAgent2Id ? String(sLeadL3.splitAgent2Id) : "";
       if (roleL3 === "sales") {
         var uidStrL3 = String(req.user.id);
+        // Soft-remove: removed slice does not grant access. See L1 above.
         var hasSliceL3 = (sLeadL3.assignments || []).some(function(a){
+          if (!a || a.removedAt) return false;
           var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
           return String(aid) === uidStrL3;
         });
@@ -9385,7 +9438,9 @@ app.post("/api/leads/:id/delete-deal-image", auth, async function(req, res) {
       var leadSidL4 = sLeadL4.splitAgent2Id ? String(sLeadL4.splitAgent2Id) : "";
       if (roleL4 === "sales") {
         var uidStrL4 = String(req.user.id);
+        // Soft-remove: removed slice does not grant access. See L1 above.
         var hasSliceL4 = (sLeadL4.assignments || []).some(function(a){
+          if (!a || a.removedAt) return false;
           var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
           return String(aid) === uidStrL4;
         });
@@ -9486,9 +9541,12 @@ app.post("/api/leads/:id/feedback", auth, async function(req, res) {
       if (!mongoose.Types.ObjectId.isValid(targetAgentId)) {
         return res.status(400).json({ error: "invalid_target_agent" });
       }
-      // Target must have a slice on this lead.
+      // Target must have an ACTIVE slice on this lead (soft-remove: removed
+      // slices are not addressable targets — a manager can't send feedback
+      // to an agent whose access was removed).
       var hasSlice = (lead.assignments || []).some(function(a) {
-        var aid = a && a.agentId && a.agentId._id ? a.agentId._id : (a && a.agentId);
+        if (!a || a.removedAt) return false;
+        var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
         return String(aid || "") === targetAgentId;
       });
       if (!hasSlice) return res.status(400).json({ error: "target_has_no_slice", message: "Target sales agent has no slice on this lead" });
@@ -9522,7 +9580,12 @@ app.post("/api/leads/:id/feedback", auth, async function(req, res) {
             }
           }
         },
-        { arrayFilters: [{ "el.agentId": targetObjId }] }
+        // Soft-remove: arrayFilter pins to the ACTIVE slice for this agent.
+        // Defense-in-depth — the hasSlice gate above already prevents reaching
+        // here with only-removed slices, but pinning here means a future
+        // bypass can't accidentally overwrite a removed slice's preserved
+        // notes/feedback.
+        { arrayFilters: [{ "el.agentId": targetObjId, "el.removedAt": null }] }
       );
     }
 
@@ -9720,7 +9783,11 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       var leadSidL9 = sLeadL9.splitAgent2Id ? String(sLeadL9.splitAgent2Id) : "";
       if (roleL9 === "sales") {
         var uidStrL9 = String(req.user.id);
+        // Soft-remove: removed slice does not grant access. The sales PUT
+        // slice-sync further down also pins on removedAt:null so even if a
+        // caller bypassed this gate, the slice update would be a no-op.
         var hasSliceL9 = (sLeadL9.assignments || []).some(function(a){
+          if (!a || a.removedAt) return false;
           var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
           return String(aid) === uidStrL9;
         });
@@ -10152,7 +10219,14 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         histNote.createdAt = new Date();
         assignOps.$push = { "assignments.$.agentHistory": histNote };
       }
-      await Lead.updateOne({ _id: req.params.id, "assignments.agentId": new mongoose.Types.ObjectId(req.user.id) }, assignOps);
+      // Soft-remove: writes only land on the ACTIVE slice. A sales user with
+      // a removed slice would have 403'd at the scope gate already, but
+      // pinning removedAt:null here means a future bypass can't write into a
+      // preserved/removed slice and corrupt its archived state.
+      await Lead.updateOne(
+        { _id: req.params.id, assignments: { $elemMatch: { agentId: new mongoose.Types.ObjectId(req.user.id), removedAt: null } } },
+        assignOps
+      );
     }
     // Holder-slice status sync — when a non-holder caller (admin / manager /
     // team_leader / director) changes the status, mirror the new status onto
@@ -10408,7 +10482,16 @@ app.delete("/api/leads/:id", auth, async function(req, res) {
   }
 });
 
-// ===== REMOVE ASSIGNMENT =====
+// ===== REMOVE ASSIGNMENT (soft) =====
+// Phase 1 soft-remove: the slice is preserved with all its feedback / notes /
+// agentHistory / statusChangedAt; we only flip removedAt to now. Read paths
+// (sales list/detail/scope checks) filter out removedAt-set slices so the
+// agent loses visibility, and auto-rotation eligibility skips removed slices
+// via the previousAgentIds-based exclusion (left intact by design — admin can
+// only re-enable the agent via the dedicated reactivation branch in /rotate).
+// Hard-delete semantics are NEVER reintroduced here — every consumer that
+// needs historical attribution (commission build, deal/EOI snapshots,
+// response-hours, sales-ranking) keeps reading the slice.
 app.delete("/api/leads/:id/assignment/:agentId", auth, async function(req, res) {
   try {
     // BATCH 2.7 L11 — tightened from adminOnly (manager/TL admitted) to
@@ -10419,23 +10502,66 @@ app.delete("/api/leads/:id/assignment/:agentId", auth, async function(req, res) 
     }
     var lead = await Lead.findById(req.params.id);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
-    if (!lead.assignments || lead.assignments.length <= 1) {
+    var removeId = req.params.agentId;
+    // "≥1 active slice must remain" guard — counts ACTIVE slices only. A lead
+    // accumulates removed slices over its lifetime; the array can hold many,
+    // but at least one must stay active so the lead always has a holder.
+    var activeBefore = (lead.assignments || []).filter(function(a){ return !a.removedAt; });
+    if (activeBefore.length <= 1) {
       return res.status(400).json({ error: "Cannot remove last assignment" });
     }
-    var removeId = req.params.agentId;
-    var before = lead.assignments.length;
-    lead.assignments = lead.assignments.filter(function(a) { return String(a.agentId) !== String(removeId); });
-    if (lead.assignments.length === before) {
+    // Find the target active slice. If the agent only has removed slices
+    // already, we treat it as "not found" — the FE shouldn't reach this state
+    // because the Remove button only renders for active slices.
+    var targetIdx = -1;
+    for (var i = 0; i < lead.assignments.length; i++) {
+      var a = lead.assignments[i];
+      if (!a) continue;
+      var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+      if (String(aid) === String(removeId) && !a.removedAt) { targetIdx = i; break; }
+    }
+    if (targetIdx < 0) {
       return res.status(404).json({ error: "Assignment not found for this agent" });
     }
-    // Remove from previousAgentIds if present
-    lead.previousAgentIds = (lead.previousAgentIds || []).filter(function(id) { return String(id) !== String(removeId); });
-    // If removed agent was the current agentId, set to most recent remaining
+    lead.assignments[targetIdx].removedAt = new Date();
+    // Intentionally DO NOT clear previousAgentIds — keeping the entry there
+    // is what blocks auto-rotation from rotating the lead back to the removed
+    // agent automatically. Manual reactivation via POST /api/leads/:id/rotate
+    // is the only path back, and that branch bypasses the wasPreviouslyAssigned
+    // guard explicitly.
+    // If the removed agent was the current top-level holder, advance agentId
+    // to the most recent slice whose removedAt is null. Scan from the tail so
+    // we land on the latest active slice (matches the original "latest"
+    // semantics, just filtered to active).
     if (String(lead.agentId) === String(removeId)) {
-      var latest = lead.assignments[lead.assignments.length - 1];
-      lead.agentId = latest.agentId;
+      var nextHolder = null;
+      for (var j = lead.assignments.length - 1; j >= 0; j--) {
+        var s = lead.assignments[j];
+        if (!s) continue;
+        if (s.removedAt) continue;
+        nextHolder = s;
+        break;
+      }
+      // Guard above guarantees nextHolder is non-null (≥1 active slice remains
+      // after this remove), but if a future caller bypasses it, leave agentId
+      // alone rather than null it out.
+      if (nextHolder) lead.agentId = nextHolder.agentId;
     }
     await lead.save();
+    // Admin audit timeline — record who removed which agent. Distinct event
+    // verb so the LeadJourney can render a slice-end marker without confusing
+    // it with a regular rotation.
+    try {
+      var removedAgentDoc = await User.findById(removeId).select("name").lean();
+      var removedAgentName = (removedAgentDoc && removedAgentDoc.name) ? removedAgentDoc.name : "Unknown";
+      var byNameRem = (req.user && req.user.name) ? req.user.name : "Admin";
+      await pushHistory(req.params.id, historyEntry(
+        "agent_removed",
+        "Removed " + removedAgentName + " from lead by " + byNameRem + " (slice preserved, feedback kept)",
+        byNameRem,
+        removedAgentName
+      ));
+    } catch(hErr) { /* non-fatal */ }
     var populated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(populated);
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -10515,7 +10641,13 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
       return res.status(409).json({ error: "rotation_stopped", message: "Rotation permanently stopped on this lead (3 consecutive Not Interested)" });
     }
     // ── HARD STOP 1: noRotation flag on any assignment ──
-    var currentAssignment = (lead.assignments || []).find(function(a) { return String(a.agentId) === String(lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId); });
+    // Soft-remove: a removed slice is never the "current" slice for hard-stop
+    // evaluation. The DELETE handler always advances agentId to the most
+    // recent active slice on remove; this filter is defense-in-depth.
+    var currentAssignment = (lead.assignments || []).find(function(a) {
+      if (!a || a.removedAt) return false;
+      return String(a.agentId) === String(lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId);
+    });
     if (currentAssignment && currentAssignment.noRotation && req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(400).json({ error: "noRotation", message: "Rotation blocked — noRotation flag set" });
     }
@@ -10540,6 +10672,77 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     if (!isAdminForce && currentOwnerId && String(targetAgentId) === currentOwnerId) {
       return res.status(400).json({ error: "same_agent", message: "Target agent is already the current owner" });
     }
+    // ── REACTIVATION SHORT-CIRCUIT (Phase 1 soft-remove) ──
+    // If the target agent has an existing REMOVED slice on this lead, the
+    // admin's manual assign reactivates it rather than creating a duplicate.
+    // Runs BEFORE wasPreviouslyAssigned() because that guard would otherwise
+    // 400 (the agent IS in previousAgentIds / assignments[] — that's the
+    // whole point of the soft-remove model). The slice's notes / lastFeedback
+    // / agentHistory / statusChangedAt are preserved; only the timers reset
+    // so the agent gets fresh rotation clocks. This is the ONLY path that
+    // un-removes a slice — bulk reassign and PUT /api/leads/:id agent-change
+    // fallback intentionally do not reactivate (they always push fresh slices).
+    var existingRemovedSlice = (lead.assignments || []).find(function(a) {
+      if (!a || !a.removedAt) return false;
+      var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+      return String(aid) === String(targetAgentId);
+    });
+    if (existingRemovedSlice) {
+      var oldHolderIdR = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
+      var oldHolderNameR = lead.agentId && lead.agentId.name ? lead.agentId.name : "Unassigned";
+      var targetObjIdR = new mongoose.Types.ObjectId(targetAgentId);
+      var nowR = new Date();
+      var rotationReasonR = reason || "manual_reactivate";
+      var rotationLogR = {
+        action: "Rotation",
+        fromAgent: oldHolderNameR,
+        toAgent: targetUser.name || "Unknown",
+        agentId: targetObjIdR,
+        reason: rotationReasonR,
+        by: req.user.name || "System",
+        date: nowR
+      };
+      // Positional update on the matching removed slice. Filter requires
+      // removedAt non-null to guarantee we only touch a removed slice; the
+      // $set clears it and refreshes the four timers + status/noRotation.
+      // Existing notes / budget / callbackTime / lastFeedback / notesAuthor*
+      // / agentHistory[] all remain untouched — that's the feature.
+      await Lead.updateOne(
+        {
+          _id: req.params.id,
+          "assignments.agentId": targetObjIdR,
+          "assignments.removedAt": { $ne: null }
+        },
+        {
+          $set: {
+            agentId: targetObjIdR,
+            lastRotationAt: nowR,
+            "assignments.$.removedAt":       null,
+            "assignments.$.assignedAt":      nowR,
+            "assignments.$.lastActionAt":    nowR,
+            "assignments.$.rotationTimer":   nowR,
+            "assignments.$.statusChangedAt": nowR,
+            "assignments.$.status":          "NewLead",
+            "assignments.$.noRotation":      false,
+            "assignments.$.hiddenManually":  false
+          },
+          $inc: { rotationCount: 1 },
+          $push: { agentHistory: rotationLogR }
+        }
+      );
+      var reactMsg = "Reactivated previous assignment to " + (targetUser.name || "Unknown") +
+        " by " + (req.user.name || "System") + " (" + rotationReasonR + ")";
+      if (isAdminForce) reactMsg += " [admin force override]";
+      await pushHistory(req.params.id, historyEntry(
+        "reactivated",
+        reactMsg,
+        req.user.name || "System",
+        targetUser.name || ""
+      ));
+      var reactPopulated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+      return res.json(reactPopulated);
+    }
+
     // ── HARD STOP 6: previously assigned (Bug 3 — no return to a past agent) ──
     if (!isAdminForce && wasPreviouslyAssigned(lead, targetAgentId)) {
       return res.status(400).json({ error: "already_assigned", message: "Target agent already had this lead" });
@@ -10645,7 +10848,14 @@ async function autoRotateLead(leadId, byName, opts) {
 
     // Hard stops mirror the manual /rotate endpoint — same invariants apply.
     var currentAid = lead.agentId && lead.agentId._id ? String(lead.agentId._id) : String(lead.agentId||"");
-    var currentAssignment = (lead.assignments || []).find(function(a) { return String(a.agentId) === currentAid; });
+    // Soft-remove: defense-in-depth filter. agentId should never point at a
+    // removed slice (DELETE handler invariant); this skip guarantees we read
+    // statusChangedAt / lastActionAt off the active slice even if invariant
+    // is violated by a future code path.
+    var currentAssignment = (lead.assignments || []).find(function(a) {
+      if (!a || a.removedAt) return false;
+      return String(a.agentId) === currentAid;
+    });
     if (lead.rotationStopped === true) {
       return { ok: false, status: 409, error: "rotation_stopped", message: "Rotation permanently stopped on this lead (3 consecutive Not Interested)" };
     }
@@ -12434,14 +12644,15 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
     var role = req.user.role;
     var isSales = role === "sales";
 
-    // Sales: confirm the caller has an assignments[] entry for this lead.
-    // Using top-level agentId here would hide the history from the previous
-    // agent right after a rotation.
+    // Sales: confirm the caller has an ACTIVE assignments[] entry for this
+    // lead. Using top-level agentId here would hide the history from the
+    // previous agent right after a rotation; using ANY slice (including
+    // removed) would leak history to an agent whose access was soft-removed.
     if (isSales) {
-      var ownLead = await Lead.findById(oid).select({ "assignments.agentId": 1 }).lean();
+      var ownLead = await Lead.findById(oid).select({ "assignments.agentId": 1, "assignments.removedAt": 1 }).lean();
       if (!ownLead) return res.status(404).json({ error: "Not found" });
       var hasEntry = (ownLead.assignments || []).some(function(a){
-        return a && a.agentId && String(a.agentId) === uid;
+        return a && a.agentId && !a.removedAt && String(a.agentId) === uid;
       });
       if (!hasEntry) return res.status(404).json({ error: "Not found" });
     }
