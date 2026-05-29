@@ -2742,6 +2742,28 @@ var PhoneCell = function(p) {
   >{show ? p.phone : masked}</span>;
 };
 
+// Status → pill background color. Hoisted to module scope so both
+// LeadJourney (Phase 4 timeline rows) and LeadsPage (Phase 2 per-slice
+// feedback list + Phase 3 latest-feedback banner + agent-row pills) use
+// byte-identical colors across the side panel. Keep in sync with the
+// `sColor` palette inside LeadJourney — these are the new (post-Phase 2)
+// status colors used across the redesigned panel surfaces.
+var sliceStatusPillColor = function(s){
+  var map = {
+    NewLead:"#94A3B8", "New Lead":"#94A3B8",
+    Potential:"#185FA5",
+    HotCase:"#D85A30", "Hot Case":"#D85A30",
+    CallBack:"#BA7517", "Call Back":"#BA7517",
+    MeetingDone:"#0F6E56", "Meeting Done":"#0F6E56",
+    NotInterested:"#A32D2D", "Not Interested":"#A32D2D",
+    NoAnswer:"#854F0B", "No Answer":"#854F0B",
+    DoneDeal:"#04342C", "Done Deal":"#04342C",
+    EOI:"#04342C",
+    "Deal Cancelled":"#A32D2D"
+  };
+  return map[s] || "#5F5E5A";
+};
+
 // ===== LEAD JOURNEY =====
 // Unified grouped-by-agent-era view of a lead's audit trail. Replaces the old
 // rotation-history card, side-panel activity list, and full-history modal body.
@@ -3290,55 +3312,65 @@ var LeadJourney = function(p) {
   // The `group` arg gives access to sibling sub-events so we can suppress
   // the "while X" badge when a status_change in the same group already
   // shows the matching destination status (badge would be redundant).
+  // Phase 4: per-event-type body renderer. Inside an action group with 2+ sub-
+  // events. Visual conventions:
+  //   Feedback   — yellow box, left-border accent, status pill on left
+  //   Note       — slate/white box, left-border slate, 📝 icon
+  //   Status     — inline 🔄 + colored from→to labels
+  //   Callback   — inline 📅 + scheduled-for label
+  //   Call       — inline 📞 + label
+  //   Meeting    — inline 🤝 + label
+  // The status pill on a feedback row IS the "while X" indicator — the old
+  // separate badge is dropped to declutter. Cluster timestamp is rendered by
+  // the outer row, not here.
   var renderSubLine = function(ev, era, group){
     var type = ev.type;
-    var labelStyle = { fontWeight:700, color:C.text };
-    var mutedBox = { marginTop:4, padding:"6px 9px", background:"#F8FAFC", borderRadius:8, fontSize:bodyFs, color:C.text, border:"1px solid #EEF1F5" };
-    if (type === "status_change") {
+    if (type === "status_change" || type === "status_changed") {
       var to = extractStatus(ev) || "NewLead";
       var from = extractFromStatus(ev);
-      return <div style={{ fontSize:bodyFs, color:C.text }}>
-        <span style={labelStyle}>Status:</span>{" "}
-        {from ? <><span style={{ color:sColor(from), fontWeight:700 }}>{sLabel(from)}</span>{" → "}</> : null}
+      return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:5, flexWrap:"wrap" }}>
+        <span style={{ fontSize:11 }}>🔄</span>
+        <span style={{ fontWeight:600, color:C.textLight }}>Status:</span>
+        {from ? <><span style={{ color:sColor(from), fontWeight:700 }}>{sLabel(from)}</span><span style={{ color:C.textLight }}>→</span></> : null}
         <span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span>
       </div>;
     }
     if (type === "feedback" || type === "feedback_added") {
       var ws = whileStatusFor(ev, era);
-      var suppressBadge = !!(group && group.subEvents && group.subEvents.some(function(s){
-        return s.type === "status_change" && extractStatus(s) === ws;
-      }));
       var fbText = stripActorPrefix(ev.feedback || ev.note || "");
-      return <div>
-        <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
-          <span style={labelStyle}>Feedback:</span>
-          {!suppressBadge && <span style={{ fontSize:metaFs, padding:"1px 6px", borderRadius:5, background:sColor(ws)+"18", color:sColor(ws), fontWeight:600 }}>while {sLabel(ws)}</span>}
-        </div>
-        {fbText && <div style={mutedBox}>{fbText}</div>}
+      return <div style={{ display:"flex", alignItems:"flex-start", gap:6, padding:"5px 8px", background:"#FFFBEB", borderRadius:6, borderLeft:"2px solid "+C.accent }}>
+        <span style={{ fontSize:9, fontWeight:700, color:"#fff", background:sliceStatusPillColor(ws), padding:"1px 5px", borderRadius:4, whiteSpace:"nowrap", marginTop:1, flexShrink:0 }}>{sLabel(ws)}</span>
+        <span style={{ flex:1, fontSize:bodyFs, color:C.text, wordBreak:"break-word", lineHeight:1.4 }}>{fbText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty feedback)</span>}</span>
       </div>;
     }
     if (type === "callback_scheduled") {
       var cbTime = ev.scheduledFor || ev.time || ev.callbackTime || null;
       var cbLabel = cbTime ? new Date(cbTime).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : (ev.note || "");
-      return <div style={{ fontSize:bodyFs, color:C.text }}>
-        <span style={labelStyle}>Callback:</span> {cbLabel}
+      return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:5, flexWrap:"wrap" }}>
+        <span style={{ fontSize:11 }}>📅</span>
+        <span style={{ fontWeight:600, color:C.textLight }}>Callback:</span>
+        <span style={{ fontWeight:600 }}>{cbLabel}</span>
       </div>;
     }
     if (type === "note") {
       var noteText = stripActorPrefix(ev.note || "");
-      return <div>
-        <div style={{ fontSize:bodyFs, color:C.text }}><span style={labelStyle}>Note:</span></div>
-        {noteText && <div style={mutedBox}>{noteText}</div>}
+      return <div style={{ display:"flex", alignItems:"flex-start", gap:6, padding:"5px 8px", background:"#F8FAFC", borderRadius:6, borderLeft:"2px solid #94A3B8" }}>
+        <span style={{ fontSize:11, marginTop:1, flexShrink:0 }}>📝</span>
+        <span style={{ flex:1, fontSize:bodyFs, color:C.text, wordBreak:"break-word", lineHeight:1.4 }}>{noteText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty note)</span>}</span>
       </div>;
     }
     if (type === "call") {
-      return <div style={{ fontSize:bodyFs, color:C.text }}>
-        <span style={labelStyle}>Call:</span> {ev.note || "Call initiated"}
+      return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:5, flexWrap:"wrap" }}>
+        <span style={{ fontSize:11 }}>📞</span>
+        <span style={{ fontWeight:600, color:C.textLight }}>Call:</span>
+        <span>{ev.note || "Call initiated"}</span>
       </div>;
     }
     if (type === "meeting") {
-      return <div style={{ fontSize:bodyFs, color:C.text }}>
-        <span style={labelStyle}>Meeting:</span> {ev.note || "Meeting"}
+      return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:5, flexWrap:"wrap" }}>
+        <span style={{ fontSize:11 }}>🤝</span>
+        <span style={{ fontWeight:600, color:C.textLight }}>Meeting:</span>
+        <span>{ev.note || "Meeting"}</span>
       </div>;
     }
     if (type === "assigned" || type === "first_assigned") {
@@ -3351,50 +3383,16 @@ var LeadJourney = function(p) {
     return <div style={{ fontSize:bodyFs, color:C.text }}>{ev.note || type}</div>;
   };
 
-  // Render a single event the original way (label + muted panel for
-  // feedback / note text). Used when an action group has only one sub-event.
-  var renderEvent = function(ev, era, idx, noTopBorder){
-    var type = ev.type;
-    var body = null;
-    if (type === "assigned" || type === "first_assigned") {
-      var src = (type === "first_assigned" && era.source) ? " · source: " + era.source : "";
-      body = <div style={{ fontSize:bodyFs, color:C.text }}>Assigned fresh as <span style={{ color:sColor("NewLead"), fontWeight:700 }}>New Lead</span>{src}</div>;
-    } else if (type === "rotated" || type === "reassigned") {
-      body = <div style={{ fontSize:bodyFs, color:C.text }}>Assigned fresh as <span style={{ color:sColor("NewLead"), fontWeight:700 }}>New Lead</span></div>;
-    } else if (type === "status_change") {
-      var to = extractStatus(ev) || "NewLead";
-      var from = extractFromStatus(ev);
-      body = from
-        ? <div style={{ fontSize:bodyFs, color:C.text }}>Status <span style={{ color:sColor(from), fontWeight:700 }}>{sLabel(from)}</span>{" → "}<span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span></div>
-        : <div style={{ fontSize:bodyFs, color:C.text }}>Status set to <span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span></div>;
-    } else if (type === "feedback_added" || type === "feedback") {
-      var whileStatusS = whileStatusFor(ev, era);
-      var fbBody = stripActorPrefix(ev.feedback || ev.note || "");
-      body = <div>
-        <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
-          <span style={{ fontWeight:700 }}>Feedback</span>
-          <span style={{ fontSize:metaFs, padding:"1px 6px", borderRadius:5, background:sColor(whileStatusS)+"18", color:sColor(whileStatusS), fontWeight:600 }}>while {sLabel(whileStatusS)}</span>
-        </div>
-        {fbBody && <div style={{ marginTop:4, padding:"6px 9px", background:"#F8FAFC", borderRadius:8, fontSize:bodyFs, color:C.text, border:"1px solid #EEF1F5" }}>{fbBody}</div>}
-      </div>;
-    } else if (type === "callback_scheduled") {
-      var cbTime = ev.scheduledFor || ev.time || ev.callbackTime || null;
-      var cbLabel = cbTime ? new Date(cbTime).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : (ev.note || "");
-      body = <div style={{ fontSize:bodyFs, color:C.text }}>Callback scheduled for <span style={{ fontWeight:700 }}>{cbLabel}</span></div>;
-    } else if (type === "note") {
-      var noteBody = stripActorPrefix(ev.note || "");
-      body = <div>
-        <div style={{ fontSize:bodyFs, color:C.text, fontWeight:700 }}>Note</div>
-        {noteBody && <div style={{ marginTop:4, padding:"6px 9px", background:"#F8FAFC", borderRadius:8, fontSize:bodyFs, color:C.text, border:"1px solid #EEF1F5" }}>{noteBody}</div>}
-      </div>;
-    } else if (type === "call" || type === "meeting") {
-      body = <div style={{ fontSize:bodyFs, color:C.text }}>{ev.note || (type==="call"?"Call":"Meeting")}</div>;
-    } else {
-      body = <div style={{ fontSize:bodyFs, color:C.text }}>{ev.note || type}</div>;
-    }
+  // Phase 4: single-event row. Renders the typed body via renderSubLine (the
+  // unified per-type renderer above) and wraps it in a 2-col row whose left
+  // column carries the timestamp. When `suppressTs` is true (cluster-by-minute
+  // case — previous row already displayed the same fmtTs), the left column
+  // renders empty space to keep body alignment intact.
+  var renderEvent = function(ev, era, idx, noTopBorder, suppressTs){
+    var body = renderSubLine(ev, era, null);
     var hideTop = (typeof noTopBorder === "boolean") ? noTopBorder : (idx === 0);
     return <div key={ev._id || (era.agentName+"-"+idx)} style={{ display:"flex", gap:10, padding:"6px 0", borderTop:hideTop?"none":"1px solid rgba(0,0,0,0.04)" }}>
-      <div style={{ flexShrink:0, width:isPanel?84:96, fontSize:metaFs, color:C.textLight, paddingTop:2 }}>{fmtTs(ev.createdAt)}</div>
+      <div style={{ flexShrink:0, width:isPanel?84:96, fontSize:metaFs, color:C.textLight, paddingTop:2 }}>{suppressTs ? "" : fmtTs(ev.createdAt)}</div>
       <div style={{ flex:1, minWidth:0 }}>{body}</div>
     </div>;
   };
@@ -3404,10 +3402,10 @@ var LeadJourney = function(p) {
   // a single row whose right column is a stack of labeled sub-event blocks
   // ordered by category (Status → Feedback → Callback → Note → Call →
   // Meeting), with chronological order preserved within each category.
-  var SUB_CATEGORY_ORDER = { status_change:0, feedback:1, feedback_added:1, callback_scheduled:2, note:3, call:4, meeting:5 };
-  var renderAction = function(action, era, chronoIdx, noTopBorder){
+  var SUB_CATEGORY_ORDER = { status_change:0, status_changed:0, feedback:1, feedback_added:1, callback_scheduled:2, note:3, call:4, meeting:5 };
+  var renderAction = function(action, era, chronoIdx, noTopBorder, suppressTs){
     if (!action.isGroup) {
-      return renderEvent(action.subEvents[0], era, chronoIdx, noTopBorder);
+      return renderEvent(action.subEvents[0], era, chronoIdx, noTopBorder, suppressTs);
     }
     var hideTop = (typeof noTopBorder === "boolean") ? noTopBorder : (chronoIdx === 0);
     var ordered = action.subEvents.slice().sort(function(a, b){
@@ -3417,7 +3415,7 @@ var LeadJourney = function(p) {
       return new Date(a.createdAt) - new Date(b.createdAt);
     });
     return <div key={action._id} style={{ display:"flex", gap:10, padding:"6px 0", borderTop:hideTop?"none":"1px solid rgba(0,0,0,0.04)" }}>
-      <div style={{ flexShrink:0, width:isPanel?84:96, fontSize:metaFs, color:C.textLight, paddingTop:2 }}>{fmtTs(action.createdAt)}</div>
+      <div style={{ flexShrink:0, width:isPanel?84:96, fontSize:metaFs, color:C.textLight, paddingTop:2 }}>{suppressTs ? "" : fmtTs(action.createdAt)}</div>
       <div style={{ flex:1, minWidth:0 }}>
         {ordered.map(function(sub, si){
           return <div key={si} style={{ padding:"3px 0", lineHeight:1.5 }}>
@@ -3430,8 +3428,12 @@ var LeadJourney = function(p) {
 
   var renderEra = function(era, idx){
     var initials = (era.agentName||"?").split(/\s+/).filter(Boolean).map(function(w){return w[0]||"";}).slice(0,2).join("").toUpperCase() || "?";
-    var bgColor = era.isCurrent ? "#E1F5EE" : "#FBFBFA";
-    var borderColor = era.isCurrent ? "#1D9E75" : "#888780";
+    // Phase 4: era cards now match the "Agents on this lead" card chrome —
+    // pure white background, 1px outer border, 3px left accent stripe whose
+    // color carries the current/previous distinction. Conflict styling
+    // unchanged (red border + ⚠ Conflict tag from the existing logic below).
+    var leftAccent = era.isCurrent ? "#1D9E75" : "#94A3B8";
+    var outerBorder = era.isCurrent ? "#1D9E75" : C.border;
     var conflict = era.isConflict && isAdmin;
     var cardStyle = conflict ? {
       border:"2px solid #A32D2D",
@@ -3442,8 +3444,9 @@ var LeadJourney = function(p) {
       marginBottom:10,
       position:"relative"
     } : {
-      borderLeft:"3px solid "+borderColor,
-      background:bgColor,
+      border:"1px solid "+outerBorder,
+      borderLeft:"3px solid "+leftAccent,
+      background:"#fff",
       borderRadius:10,
       padding:eraPad,
       marginBottom:10,
@@ -3548,13 +3551,22 @@ var LeadJourney = function(p) {
       visibleItems = displayItems;
     }
 
+    // Phase 4: cluster-by-minute — when two consecutive visible action rows
+    // would display the same fmtTs string, hide the timestamp on the second
+    // (and subsequent) so the user sees the date+time once per cluster.
+    // Silence pills reset the tracker because they themselves delimit a time
+    // jump; the post-silence row always shows its timestamp.
     var rows = [];
     var firstEventSeen = false;
+    var lastShownTs = null;
     visibleItems.forEach(function(item){
-      if (item.kind === "silence") { rows.push(item.node); return; }
+      if (item.kind === "silence") { rows.push(item.node); lastShownTs = null; return; }
       var noTopBorder = !firstEventSeen;
       firstEventSeen = true;
-      rows.push(renderAction(item.action, era, item.chronoIdx, noTopBorder));
+      var thisTs = fmtTs(item.action.createdAt);
+      var suppressTs = (thisTs && thisTs === lastShownTs);
+      if (!suppressTs) lastShownTs = thisTs;
+      rows.push(renderAction(item.action, era, item.chronoIdx, noTopBorder, suppressTs));
     });
 
     var toggleBtn = null;
@@ -4016,21 +4028,8 @@ var LeadsPage = function(p) {
   // admin gets all. Private feedback (visibility="private") lives in
   // lead.privateNotes[] and never lands in agentHistory — so it can't leak
   // through this helper.
-  var sliceStatusPillColor = function(s){
-    var map = {
-      NewLead:"#94A3B8", "New Lead":"#94A3B8",
-      Potential:"#185FA5",
-      HotCase:"#D85A30", "Hot Case":"#D85A30",
-      CallBack:"#BA7517", "Call Back":"#BA7517",
-      MeetingDone:"#0F6E56", "Meeting Done":"#0F6E56",
-      NotInterested:"#A32D2D", "Not Interested":"#A32D2D",
-      NoAnswer:"#854F0B", "No Answer":"#854F0B",
-      DoneDeal:"#04342C", "Done Deal":"#04342C",
-      EOI:"#04342C",
-      "Deal Cancelled":"#A32D2D"
-    };
-    return map[s] || "#5F5E5A";
-  };
+  // sliceStatusPillColor hoisted to module scope above LeadJourney so both
+  // surfaces (timeline rows + agent-row pills) use byte-identical colors.
   var feedbacksForSlice = function(slice) {
     if (!slice) return [];
     var hist = Array.isArray(slice.agentHistory) ? slice.agentHistory : [];
