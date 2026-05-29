@@ -3979,6 +3979,97 @@ var LeadsPage = function(p) {
     });
     return latestFeedback;
   };
+  // Phase 2: full feedback history for ONE slice (assignments[] entry), newest
+  // first. Walks slice.agentHistory chronologically and replays status_change
+  // events to derive the slice's status AT THE MOMENT each feedback was
+  // written. Returns [{ text, at, status, authorName, authorRole, isVirtual }].
+  //
+  // Two agentHistory write paths exist (see BE server.js):
+  //   - Path A (managerial to_sales, /api/leads/:id/feedback): pushes a clean
+  //     { type:"feedback", note, createdAt, authorId, authorName, authorRole }.
+  //   - Path B (sales/TL PUT /api/leads/:id slice-sync): pushes ONE entry per
+  //     PUT with priority status_change > note > feedback. So when an agent
+  //     saves status + feedback together, only a status_change is logged — the
+  //     feedback text only lives in slice.lastFeedback. The virtual-entry
+  //     fallback below covers that case + legacy leads with no agentHistory.
+  //
+  // Visibility scoping is already handled BE-side (single-lead GET per-role
+  // overlay): sales gets only their own slice, managers/TL get subtree slices,
+  // admin gets all. Private feedback (visibility="private") lives in
+  // lead.privateNotes[] and never lands in agentHistory — so it can't leak
+  // through this helper.
+  var sliceStatusPillColor = function(s){
+    var map = {
+      NewLead:"#94A3B8", "New Lead":"#94A3B8",
+      Potential:"#185FA5",
+      HotCase:"#D85A30", "Hot Case":"#D85A30",
+      CallBack:"#BA7517", "Call Back":"#BA7517",
+      MeetingDone:"#0F6E56", "Meeting Done":"#0F6E56",
+      NotInterested:"#A32D2D", "Not Interested":"#A32D2D",
+      NoAnswer:"#854F0B", "No Answer":"#854F0B",
+      DoneDeal:"#04342C", "Done Deal":"#04342C",
+      EOI:"#04342C",
+      "Deal Cancelled":"#A32D2D"
+    };
+    return map[s] || "#5F5E5A";
+  };
+  var feedbacksForSlice = function(slice) {
+    if (!slice) return [];
+    var hist = Array.isArray(slice.agentHistory) ? slice.agentHistory : [];
+    // Sort ascending for chronological replay.
+    var asc = hist.slice().sort(function(a, b){
+      var ta = new Date((a && (a.createdAt || a.at || a.timestamp)) || 0).getTime();
+      var tb = new Date((b && (b.createdAt || b.at || b.timestamp)) || 0).getTime();
+      return ta - tb;
+    });
+    // Replay status: rotation seeds every new slice with "NewLead" (see BE
+    // newAssignment shapes). For lead-create first slices the initial status
+    // may differ — if it does, the slice.status reflects the LATEST value
+    // (after all replayed transitions), so we can't trivially recover it
+    // from slice.status alone. NewLead is the right starting point for the
+    // common rotation case; for the lead-create case the first status_change
+    // (if any) will correct it.
+    var st = "NewLead";
+    var out = [];
+    asc.forEach(function(h){
+      if (!h || !h.type) return;
+      if (h.type === "status_change") {
+        var m = String(h.note || "").match(/Status:\s*(\S+)/i);
+        if (m && m[1]) st = m[1];
+        return;
+      }
+      if (h.type !== "feedback" && h.type !== "feedback_added") return;
+      var text = String(h.note || h.feedback || "").trim();
+      if (!text) return;
+      out.push({
+        text: text,
+        at: h.createdAt || h.at || h.timestamp || null,
+        status: st,
+        authorName: h.authorName || "",
+        authorRole: h.authorRole || ""
+      });
+    });
+    // Path-B undercount fallback + legacy fallback: when no clean feedback
+    // entries exist but slice.lastFeedback is non-empty, surface it as one
+    // virtual entry stamped at the slice's last action time.
+    if (out.length === 0 && slice.lastFeedback && String(slice.lastFeedback).trim()) {
+      out.push({
+        text: String(slice.lastFeedback).trim(),
+        at: slice.lastActionAt || slice.assignedAt || null,
+        status: slice.status || "NewLead",
+        authorName: slice.notesAuthorName || "",
+        authorRole: slice.notesAuthorRole || "",
+        isVirtual: true
+      });
+    }
+    // Newest first for display.
+    out.sort(function(a, b){
+      var ta = new Date(a.at || 0).getTime();
+      var tb = new Date(b.at || 0).getTime();
+      return tb - ta;
+    });
+    return out;
+  };
   // "New Lead" tab is for first-time leads only — current status NewLead AND
   // never rotated AND no action yet taken on the slice. A lead with 2+
   // assignment slices, any non-zero rotationCount, or any feedback / notes /
@@ -5325,16 +5416,36 @@ var LeadsPage = function(p) {
               return <div key={i} style={{ padding:"6px 0", borderBottom:i<selected.assignments.length-1?"1px solid #DBEAFE":"none" }}>
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
                 <div>
-                  <span style={{ fontSize:12, fontWeight:isCurrent?700:400, color:isCurrent?C.accent:C.text }}>{aName}</span>
+                  <span style={{ fontSize:12, fontWeight:isCurrent?700:400, color:isCurrent?C.accent:(a.removedAt?C.textLight:C.text), textDecoration:a.removedAt?"line-through":"none" }}>{aName}</span>
                   {isCurrent&&<span style={{ fontSize:9, background:"#DCFCE7", color:"#15803D", padding:"1px 5px", borderRadius:6, marginLeft:4, fontWeight:600 }}>current</span>}
+                  {a.removedAt&&<span style={{ fontSize:9, background:"#FEE2E2", color:"#B91C1C", padding:"1px 5px", borderRadius:6, marginLeft:4, fontWeight:600 }} title={"Removed "+(new Date(a.removedAt).toLocaleDateString("en-GB"))}>removed</span>}
                   <span style={{ fontSize:10, color:C.textLight, marginLeft:4 }}>{a.status||""}</span>
                 </div>
-                <button onClick={async function(){
+                {!a.removedAt&&<button onClick={async function(){
                   if(!window.confirm("Remove "+aName+" from this lead?"))return;
                   try{var upd=await apiFetch("/api/leads/"+gid(selected)+"/assignment/"+aId,"DELETE",null,p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){alert(ex.message||"Failed");}
-                }} style={{ background:"none", border:"none", cursor:"pointer", color:"#EF4444", fontSize:14, padding:"2px 6px", borderRadius:6 }} title="Remove agent">🗑</button>
+                }} style={{ background:"none", border:"none", cursor:"pointer", color:"#EF4444", fontSize:14, padding:"2px 6px", borderRadius:6 }} title="Remove agent">🗑</button>}
                 </div>
-                {a.lastFeedback&&<div style={{ fontSize:11, color:C.text, marginTop:3, padding:"3px 7px", background:"#FFFBEB", borderRadius:6, borderLeft:"2px solid "+C.accent }}>💬 {a.lastFeedback}{a.notesAuthorRole && a.notesAuthorRole !== "sales" && a.notesAuthorName && <span style={{ marginLeft:6, fontSize:10, color:"#6D28D9", fontWeight:600 }}>· from {a.notesAuthorName}</span>}</div>}
+                {/* Phase 2: full feedback list for this slice — chronological replay of
+                    slice.agentHistory with status-at-the-moment pill + relative timestamp.
+                    Falls back to a single virtual entry from slice.lastFeedback when
+                    agentHistory has no feedback rows (legacy data + PUT-with-status-change
+                    case, which only logs status_change, not a feedback entry). */}
+                {(function(){
+                  var fbs = feedbacksForSlice(a);
+                  if (!fbs.length) return null;
+                  return <div style={{ marginTop:3 }}>
+                    {fbs.map(function(fb, fbi){
+                      var stColor = sliceStatusPillColor(fb.status);
+                      var ts = fb.at ? timeAgo(fb.at, t) : "";
+                      return <div key={fbi} style={{ display:"flex", alignItems:"flex-start", gap:6, padding:"4px 7px", marginTop: fbi>0?3:0, background:"#FFFBEB", borderRadius:6, borderLeft:"2px solid "+C.accent }}>
+                        <span style={{ fontSize:9, fontWeight:700, color:"#fff", background:stColor, padding:"1px 5px", borderRadius:4, whiteSpace:"nowrap", marginTop:1, flexShrink:0 }}>{fb.status||"NewLead"}</span>
+                        <span style={{ flex:1, fontSize:11, color:C.text, wordBreak:"break-word" }}>{fb.text}{fb.authorRole && fb.authorRole !== "sales" && fb.authorName && <span style={{ marginLeft:6, fontSize:10, color:"#6D28D9", fontWeight:600 }}>· from {fb.authorName}</span>}</span>
+                        {ts && <span style={{ fontSize:9, color:C.textLight, whiteSpace:"nowrap", marginTop:2, flexShrink:0 }}>{ts}</span>}
+                      </div>;
+                    })}
+                  </div>;
+                })()}
                 {a.notes&&<div style={{ fontSize:10, color:C.textLight, marginTop:2, padding:"2px 7px" }}>📝 {a.notes}</div>}
               </div>;
             })}
