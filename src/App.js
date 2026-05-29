@@ -2783,6 +2783,14 @@ var LeadJourney = function(p) {
     // when no prior status). Captures the destination status only.
     var m2 = note.match(/Status\s+changed\s+\S+\s+(?:→|->)\s+(\S+?)(?:\s+by\s+|\s*$)/i);
     if (m2) return m2[1].trim();
+    // Per-slice agentHistory form written by PUT /api/leads/:id slice-sync at
+    // server.js:10223 ("Status: " + req.body.status). Without this match the
+    // dedup's special status-change merger sees null from one side and falls
+    // through to the content-equality check, which fails because the three
+    // status-row note shapes differ in surface text — so the same status save
+    // surfaces two rows in the timeline.
+    var m3 = note.match(/^\s*Status\s*:\s*(\S+)\s*$/i);
+    if (m3) return m3[1].trim();
     return null;
   };
   var extractFromStatus = function(ev){
@@ -3106,7 +3114,17 @@ var LeadJourney = function(p) {
           if (!ALLOWED_CROSS_CAT[pair1]) continue;
         }
         var peContent = String(pe.note || pe.feedback || "").trim();
-        if (!dContent || !peContent || dContent !== peContent) continue;
+        // Normalize note prefixes BEFORE the equality check. The same logical
+        // feedback/note write surfaces in multiple stores with subtly different
+        // shapes — slice.lastFeedback / slice.agentHistory carry the raw text,
+        // but lead.history's audit row wraps it as "Feedback by NAME: text" or
+        // "Note by NAME: text" (server.js:10301-10310). The display renderer
+        // already runs stripActorPrefix at render time so both rows look
+        // identical visually; matching the same patterns here lets dedup
+        // collapse them as duplicates instead of letting both survive.
+        var dContentN  = stripActorPrefix(dContent);
+        var peContentN = stripActorPrefix(peContent);
+        if (!dContentN || !peContentN || dContentN !== peContentN) continue;
         if (!sameActor(pe, dEv)) continue;
         if (Math.abs(dT - peT) <= 10000) { isDup = true; break; }
       }
