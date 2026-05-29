@@ -2750,7 +2750,7 @@ var PhoneCell = function(p) {
 // status colors used across the redesigned panel surfaces.
 var sliceStatusPillColor = function(s){
   var map = {
-    NewLead:"#94A3B8", "New Lead":"#94A3B8",
+    NewLead:"#10B981", "New Lead":"#10B981",
     Potential:"#185FA5",
     HotCase:"#D85A30", "Hot Case":"#D85A30",
     CallBack:"#BA7517", "Call Back":"#BA7517",
@@ -3405,12 +3405,22 @@ var LeadJourney = function(p) {
   // column carries the timestamp. When `suppressTs` is true (cluster-by-minute
   // case — previous row already displayed the same fmtTs), the left column
   // renders empty space to keep body alignment intact.
+  //
+  // FULL-WIDTH GUARANTEE (Fix 4, third attempt): the outer wrapper uses CSS
+  // grid with a fixed-width timestamp column + a `1fr` body column. Grid's
+  // `1fr` is deterministic — it always grabs the remaining space — whereas
+  // `flex:1` can collapse to content under certain flex-basis interpretations.
+  // The body cell has minWidth:0 (so child text + ellipsis can shrink below
+  // intrinsic width) but no width:auto fallback that would let the box
+  // shrink-to-fit. Result: the feedback / note box below ALWAYS spans from
+  // the right edge of the timestamp column to the right edge of the era
+  // card's inner padding. Do not switch this back to flex without verifying.
   var renderEvent = function(ev, era, idx, noTopBorder, suppressTs){
     var body = renderSubLine(ev, era, null);
     var hideTop = (typeof noTopBorder === "boolean") ? noTopBorder : (idx === 0);
-    return <div key={ev._id || (era.agentName+"-"+idx)} style={{ display:"flex", gap:10, padding:"6px 0", borderTop:hideTop?"none":"1px solid rgba(0,0,0,0.04)" }}>
-      <div style={{ flexShrink:0, width:isPanel?84:96, fontSize:metaFs, color:C.textLight, paddingTop:2 }}>{suppressTs ? "" : fmtTs(ev.createdAt)}</div>
-      <div style={{ flex:1, minWidth:0 }}>{body}</div>
+    return <div key={ev._id || (era.agentName+"-"+idx)} style={{ display:"grid", gridTemplateColumns:(isPanel?"84px":"96px")+" 1fr", columnGap:10, padding:"6px 0", borderTop:hideTop?"none":"1px solid rgba(0,0,0,0.04)" }}>
+      <div style={{ fontSize:metaFs, color:C.textLight, paddingTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{suppressTs ? "" : fmtTs(ev.createdAt)}</div>
+      <div style={{ minWidth:0 }}>{body}</div>
     </div>;
   };
 
@@ -3431,11 +3441,14 @@ var LeadJourney = function(p) {
       if (ca !== cb) return ca - cb;
       return new Date(a.createdAt) - new Date(b.createdAt);
     });
-    return <div key={action._id} style={{ display:"flex", gap:10, padding:"6px 0", borderTop:hideTop?"none":"1px solid rgba(0,0,0,0.04)" }}>
-      <div style={{ flexShrink:0, width:isPanel?84:96, fontSize:metaFs, color:C.textLight, paddingTop:2 }}>{suppressTs ? "" : fmtTs(action.createdAt)}</div>
-      <div style={{ flex:1, minWidth:0 }}>
+    // Same CSS-grid 2-col layout as renderEvent (see FULL-WIDTH GUARANTEE
+    // comment there). The body cell uses `1fr` to deterministically fill the
+    // remaining space after the fixed-width timestamp column.
+    return <div key={action._id} style={{ display:"grid", gridTemplateColumns:(isPanel?"84px":"96px")+" 1fr", columnGap:10, padding:"6px 0", borderTop:hideTop?"none":"1px solid rgba(0,0,0,0.04)" }}>
+      <div style={{ fontSize:metaFs, color:C.textLight, paddingTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{suppressTs ? "" : fmtTs(action.createdAt)}</div>
+      <div style={{ minWidth:0 }}>
         {ordered.map(function(sub, si){
-          return <div key={si} style={{ padding: si === 0 ? "0" : "4px 0 0", lineHeight:1.4 }}>
+          return <div key={si} style={{ padding: si === 0 ? "0" : "4px 0 0", lineHeight:1.4, width:"100%", boxSizing:"border-box" }}>
             {renderSubLine(sub, era, action)}
           </div>;
         })}
@@ -5598,19 +5611,6 @@ var LeadsPage = function(p) {
               }
               return 0;
             };
-            // CURRENT-badge target: agent with the most recent feedback in the
-            // active set. Compute BEFORE re-sorting so the badge stays tied to
-            // feedback recency even after we re-order the Currently section by
-            // slice creation below (the badge agent may NOT be at the top —
-            // that's intentional and matches the Phase 3 invariant).
-            var currentSliceId = "";
-            if (active.length > 0) {
-              var bestActive = active[0];
-              for (var ai = 1; ai < active.length; ai++) {
-                if (topTs(active[ai]) > topTs(bestActive)) bestActive = active[ai];
-              }
-              currentSliceId = String(bestActive.agentId && bestActive.agentId._id ? bestActive.agentId._id : bestActive.agentId);
-            }
             // Currently Assigned: sort by slice creation timestamp desc (newest
             // rotated/assigned at top, oldest at bottom).
             active.sort(function(x,y){ return sliceCreatedTs(y) - sliceCreatedTs(x); });
@@ -5619,17 +5619,15 @@ var LeadsPage = function(p) {
             var renderSlice = function(a, i, arr, isActiveSection){
               var aName = a.agentId && a.agentId.name ? a.agentId.name : "Unknown";
               var aId   = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
-              var isCurrentBadge = isActiveSection && String(aId) === currentSliceId;
               var initial = String(aName || "?").charAt(0).toUpperCase();
               var statusColor = sliceStatusPillColor(a.status);
               return <div key={i} style={{ padding:"9px 0", borderBottom: i<arr.length-1 ? "1px solid #F1F5F9" : "none" }}>
-                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:8, minWidth:0, flex:1 }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6, gap:8 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, minWidth:0, flex:1, overflow:"hidden" }}>
                     <div style={{ width:26, height:26, borderRadius:"50%", background: a.removedAt ? "#CBD5E1" : C.accent, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, flexShrink:0 }}>{initial}</div>
-                    <div style={{ minWidth:0 }}>
-                      <span style={{ fontSize:12, fontWeight:600, color: a.removedAt ? C.textLight : C.text, textDecoration:a.removedAt?"line-through":"none" }}>{aName}</span>
-                      {isCurrentBadge && <span style={{ fontSize:9, background:"#DCFCE7", color:"#15803D", padding:"1px 6px", borderRadius:5, marginLeft:5, fontWeight:700, letterSpacing:".3px" }}>CURRENT</span>}
-                      {a.removedAt && <span style={{ fontSize:9, background:"#FEE2E2", color:"#B91C1C", padding:"1px 6px", borderRadius:5, marginLeft:5, fontWeight:600 }} title={"Removed "+(new Date(a.removedAt).toLocaleDateString("en-GB"))}>removed</span>}
+                    <div style={{ minWidth:0, flex:1, overflow:"hidden", display:"flex", alignItems:"center", gap:5 }}>
+                      <span style={{ fontSize:12, fontWeight:600, color: a.removedAt ? C.textLight : C.text, textDecoration:a.removedAt?"line-through":"none", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", minWidth:0, flex:"0 1 auto" }} title={aName}>{aName}</span>
+                      {a.removedAt && <span style={{ fontSize:9, background:"#FEE2E2", color:"#B91C1C", padding:"1px 6px", borderRadius:5, fontWeight:600, flexShrink:0, whiteSpace:"nowrap" }} title={"Removed "+(new Date(a.removedAt).toLocaleDateString("en-GB"))}>removed</span>}
                     </div>
                   </div>
                   <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
