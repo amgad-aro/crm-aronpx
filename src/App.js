@@ -3346,9 +3346,13 @@ var LeadJourney = function(p) {
     if (type === "feedback" || type === "feedback_added") {
       var ws = whileStatusFor(ev, era);
       var fbText = stripActorPrefix(ev.feedback || ev.note || "");
-      return <div style={{ display:"flex", alignItems:"flex-start", gap:6, padding:"5px 8px", background:"#FFFBEB", borderRadius:6, borderLeft:"2px solid "+C.accent }}>
-        <span style={{ fontSize:9, fontWeight:700, color:"#fff", background:sliceStatusPillColor(ws), padding:"2px 6px", borderRadius:4, whiteSpace:"nowrap", marginTop:1, flexShrink:0, lineHeight:1.2 }}>{sLabel(ws)}</span>
-        <span style={{ flex:1, fontSize:bodyFs, color:C.text, wordBreak:"break-word", lineHeight:1.4 }}>{fbText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty feedback)</span>}</span>
+      // Phase 5 polish: drop the yellow accent palette in favour of a calm
+      // slate panel with a soft shadow. Pill is inline-block at the start of
+      // the text so wrapped lines flow under the pill using the FULL block
+      // width instead of indenting under a flex column.
+      return <div style={{ padding:"7px 10px", background:"#F8FAFC", borderRadius:6, border:"1px solid #EEF1F5", boxShadow:"0 1px 3px rgba(15, 23, 42, 0.06)", fontSize:bodyFs, color:C.text, lineHeight:1.45, wordBreak:"break-word" }}>
+        <span style={{ display:"inline-block", verticalAlign:"baseline", fontSize:9, fontWeight:700, color:"#fff", background:sliceStatusPillColor(ws), padding:"2px 6px", borderRadius:4, marginRight:7, whiteSpace:"nowrap", lineHeight:1.2 }}>{sLabel(ws)}</span>
+        {fbText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty feedback)</span>}
       </div>;
     }
     if (type === "callback_scheduled") {
@@ -3361,9 +3365,11 @@ var LeadJourney = function(p) {
     }
     if (type === "note") {
       var noteText = stripActorPrefix(ev.note || "");
-      return <div style={{ display:"flex", alignItems:"flex-start", gap:6, padding:"5px 8px", background:"#F8FAFC", borderRadius:6, borderLeft:"2px solid #94A3B8" }}>
-        <span style={Object.assign({}, ROW_ICON_STYLE, { marginTop:1 })}>📝</span>
-        <span style={{ flex:1, fontSize:bodyFs, color:C.text, wordBreak:"break-word", lineHeight:1.4 }}>{noteText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty note)</span>}</span>
+      // Same inline-flow treatment as feedback so wrapped lines use full width.
+      // Slight visual differentiation kept via the 📝 icon (vs the pill on feedback).
+      return <div style={{ padding:"7px 10px", background:"#F8FAFC", borderRadius:6, border:"1px solid #EEF1F5", boxShadow:"0 1px 3px rgba(15, 23, 42, 0.06)", fontSize:bodyFs, color:C.text, lineHeight:1.45, wordBreak:"break-word" }}>
+        <span style={{ display:"inline-block", verticalAlign:"baseline", marginRight:6, fontSize:12, lineHeight:1.2 }}>📝</span>
+        {noteText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty note)</span>}
       </div>;
     }
     if (type === "call") {
@@ -5411,8 +5417,8 @@ var LeadsPage = function(p) {
           </div>
           {/* Call + WhatsApp — equal-width full-width row at bottom of header */}
           <div style={{ display:"flex", gap:8, marginTop:14 }}>
-            <a href={"tel:"+cleanPhone(selected.phone)} onClick={async function(){try{await apiFetch("/api/activities","POST",{leadId:gid(selected),type:"call",note:"📞 Call initiated — "+selected.phone},p.token,p.csrfToken);p.setActivities&&p.setActivities(function(prev){return [{_id:Date.now(),type:"call",note:"📞 Call initiated",leadId:selected,userId:p.cu,createdAt:new Date().toISOString()}].concat(prev);});}catch(ex){}}} style={{ flex:1, padding:"10px", borderRadius:10, background:"#fff", color:C.primary, fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}><Phone size={14}/> {t.call}</a>
-            <a href={"https://wa.me/"+waPhone(selected.phone)} target="_blank" rel="noreferrer" style={{ flex:1, padding:"10px", borderRadius:10, background:"#25D366", color:"#fff", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> {t.whatsapp}</a>
+            <a href={"tel:"+cleanPhone(selected.phone)} onClick={async function(){try{await apiFetch("/api/activities","POST",{leadId:gid(selected),type:"call",note:"📞 Call initiated — "+selected.phone},p.token,p.csrfToken);p.setActivities&&p.setActivities(function(prev){return [{_id:Date.now(),type:"call",note:"📞 Call initiated",leadId:selected,userId:p.cu,createdAt:new Date().toISOString()}].concat(prev);});}catch(ex){}}} style={{ flex:1, padding:"7px 10px", borderRadius:8, background:"#fff", color:C.primary, fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><Phone size={11}/> {t.call}</a>
+            <a href={"https://wa.me/"+waPhone(selected.phone)} target="_blank" rel="noreferrer" style={{ flex:1, padding:"7px 10px", borderRadius:8, background:"#25D366", color:"#fff", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><svg viewBox="0 0 24 24" width="11" height="11" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> {t.whatsapp}</a>
           </div>
         </div>
         {/* ─── PANEL BODY ─── */}
@@ -5566,9 +5572,24 @@ var LeadsPage = function(p) {
             var active  = selected.assignments.filter(function(a){ return !a.removedAt; });
             var removed = selected.assignments.filter(function(a){ return  a.removedAt; });
             var topTs = function(a){ var top = feedbacksForSlice(a)[0]; return top && top.at ? new Date(top.at).getTime() : 0; };
-            active.sort(function(x,y){ return topTs(y) - topTs(x); });
+            var assignedTs = function(a){ return a.assignedAt ? new Date(a.assignedAt).getTime() : 0; };
+            // CURRENT-badge target: agent with the most recent feedback in the
+            // active set. Compute BEFORE re-sorting so the badge stays tied to
+            // feedback recency even after we re-order the Currently section by
+            // assignedAt below (the badge agent may NOT be at the top — that's
+            // intentional and matches the Phase 3 invariant).
+            var currentSliceId = "";
+            if (active.length > 0) {
+              var bestActive = active[0];
+              for (var ai = 1; ai < active.length; ai++) {
+                if (topTs(active[ai]) > topTs(bestActive)) bestActive = active[ai];
+              }
+              currentSliceId = String(bestActive.agentId && bestActive.agentId._id ? bestActive.agentId._id : bestActive.agentId);
+            }
+            // Currently Assigned: sort by assignedAt desc (most-recent assignment at top).
+            active.sort(function(x,y){ return assignedTs(y) - assignedTs(x); });
+            // Previous · feedback kept: keep the original sort by latest-feedback desc.
             removed.sort(function(x,y){ return topTs(y) - topTs(x); });
-            var currentSliceId = active.length > 0 ? String(active[0].agentId && active[0].agentId._id ? active[0].agentId._id : active[0].agentId) : "";
             var renderSlice = function(a, i, arr, isActiveSection){
               var aName = a.agentId && a.agentId.name ? a.agentId.name : "Unknown";
               var aId   = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
@@ -5619,7 +5640,7 @@ var LeadsPage = function(p) {
               </div>;
             };
             return <div style={{ background:"#fff", border:"1px solid "+C.border, borderRadius:10, padding:"11px 13px", marginBottom:12 }}>
-              <div style={{ fontSize:11, fontWeight:700, color:C.text, marginBottom:9 }}>👥 Agents on this lead</div>
+              <div style={{ fontSize:11, fontWeight:600, color:C.textLight, marginBottom:10, padding:"5px 9px", background:"#F8FAFC", borderRadius:6, boxShadow:"0 1px 2px rgba(15, 23, 42, 0.04)", display:"inline-block", textTransform:"uppercase", letterSpacing:".4px" }}>👥 Agents on this lead</div>
               {active.length > 0 && <div style={{ marginBottom: removed.length > 0 ? 10 : 0 }}>
                 <div style={{ fontSize:10, fontWeight:700, color:"#15803D", marginBottom:4, display:"flex", alignItems:"center", gap:6, textTransform:"uppercase", letterSpacing:".3px" }}>
                   <span style={{ width:7, height:7, borderRadius:"50%", background:"#22C55E" }}/>
