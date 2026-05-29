@@ -1133,14 +1133,11 @@ var Sidebar = function(p) {
     {id:"dailyReq",label:t.dailyReq},
     {id:"eoi",label:"EOI"},
     {id:"deals",label:t.deals},
-    isOnlyAdmin&&{id:"commissions",label:"Commissions",adminSection:true},
     {id:"tasks",label:t.tasks},
     isSalesOrTL&&{id:"kpis",label:"KPIs"},
     isOnlyAdmin&&{id:"reports",label:t.reports,adminSection:true},
+    isOnlyAdmin&&{id:"commissions",label:"Commissions",adminSection:true},
     isAdmin&&{id:"team",label:t.team,adminSection:true},
-    isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
-    isOnlyAdmin&&{id:"brokers",label:t.brokers,adminSection:true},
-    isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
     // Single Attendance entry — visible to anyone who can use any attendance
     // tab. Inside the page, tabs are gated by the same per-action permissions.
     (p.cu.role!=="admin"
@@ -1149,6 +1146,9 @@ var Sidebar = function(p) {
       || hasAttendancePerm(p.cu.role, "approveOffSiteRequests", p.attendanceSettings)
       || hasAttendancePerm(p.cu.role, "manageCompanyOffDays",   p.attendanceSettings)
     ) && {id:"attendance",label:"Attendance",adminSection:true},
+    isOnlyAdmin&&{id:"users",label:t.users,adminSection:true},
+    isOnlyAdmin&&{id:"brokers",label:t.brokers,adminSection:true},
+    isOnlyAdmin&&{id:"archive",label:t.archive,adminSection:true},
     // AssetTracker — admin OR sales_admin OR isOwner=true flag. Placed above
     // Settings so the admin block reads inventory → settings. All other
     // roles (manager, team_leader, sales, hr, director, viewer) are blocked
