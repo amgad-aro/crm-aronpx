@@ -4070,6 +4070,28 @@ var LeadsPage = function(p) {
     });
     return out;
   };
+  // Phase 3: pick the lead's single most-recent feedback entry across every
+  // slice the caller can see (BE overlay already scopes which slices reach the
+  // FE per role). Returns null if no slice has any feedback (or virtual-
+  // fallback) entry. Reuses feedbacksForSlice for the chronological replay
+  // (so the returned entry's `status` is correct for the moment it was
+  // written, not the slice's current status).
+  var latestFeedbackForPanel = function(lead) {
+    if (!lead || !Array.isArray(lead.assignments)) return null;
+    var best = null;
+    lead.assignments.forEach(function(a){
+      var top = feedbacksForSlice(a)[0];
+      if (!top) return;
+      var ts = new Date(top.at || 0).getTime();
+      if (!best || ts > new Date(best.at || 0).getTime()) {
+        best = Object.assign({}, top, {
+          agentName: (a.agentId && a.agentId.name) || "Unknown",
+          agentId:   a.agentId && a.agentId._id ? a.agentId._id : a.agentId
+        });
+      }
+    });
+    return best;
+  };
   // "New Lead" tab is for first-time leads only — current status NewLead AND
   // never rotated AND no action yet taken on the slice. A lead with 2+
   // assignment slices, any non-zero rotationCount, or any feedback / notes /
@@ -5349,36 +5371,65 @@ var LeadsPage = function(p) {
           blank Card. The paddingRight rule above uses the same guard so
           the wrapper offset matches the panel's actual rendering. */}
       {hasRenderableSelected&&<Card innerRef={panelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
-        <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px", position:"sticky", top:0 }}>
-          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
-            <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
-            <div style={{ display:"flex", gap:5 }}>
-              {isOnlyAdmin&&<button onClick={function(){setEditLead(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.edit}><Edit size={11}/></button>}
-              {isOnlyAdmin&&<button onClick={function(){archiveLead(gid(selected));}} style={{ background:"rgba(255,165,0,0.3)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.archive}><Archive size={11}/></button>}
+        {/* ─── Phase 3 redesign ─── Section 1: HEADER (dark navy, kept) ─── */}
+        <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"16px 18px", position:"sticky", top:0, zIndex:5 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
+            <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, width:30, height:30, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.close||"Close"}><X size={14}/></button>
+            <div style={{ display:"flex", gap:6 }}>
+              {isOnlyAdmin&&<button onClick={function(){setEditLead(selected);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, width:30, height:30, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.edit}><Edit size={13}/></button>}
+              {isOnlyAdmin&&<button onClick={function(){archiveLead(gid(selected));}} style={{ background:"rgba(255,165,0,0.35)", border:"none", borderRadius:8, width:30, height:30, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.archive}><Archive size={13}/></button>}
             </div>
           </div>
-          <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selected.name}</div>
-          {isOnlyAdmin&&selected.rotationStopped&&<div style={{ marginTop:4, display:"inline-block", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:5, background:"rgba(255,255,255,0.95)", color:"#991B1B" }} title="Rotation permanently stopped — 3 consecutive Not Interested">🛑 Rotation Stopped</div>}
-          <div style={{ color:"rgba(255,255,255,0.6)", fontSize:11, marginTop:2 }}>
+          <div style={{ color:"#fff", fontSize:17, fontWeight:700, lineHeight:1.25, wordBreak:"break-word" }}>{selected.name}</div>
+          {isOnlyAdmin&&selected.rotationStopped&&<div style={{ marginTop:6, display:"inline-block", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:5, background:"rgba(255,255,255,0.95)", color:"#991B1B" }} title="Rotation permanently stopped — 3 consecutive Not Interested">🛑 Rotation Stopped</div>}
+          <div style={{ color:"rgba(255,255,255,0.75)", fontSize:12, marginTop:4, direction:"ltr" }}>
             <PhoneCell phone={selected.phone}/>{selected.phone2?<>{" / "}<PhoneCell phone={selected.phone2}/></>:""}
           </div>
-          {/* Quick action buttons */}
-          <div style={{ display:"flex", gap:6, marginTop:10 }}>
-            <a href={"tel:"+cleanPhone(selected.phone)} onClick={async function(){try{await apiFetch("/api/activities","POST",{leadId:gid(selected),type:"call",note:"📞 Call initiated — "+selected.phone},p.token,p.csrfToken);p.setActivities&&p.setActivities(function(prev){return [{_id:Date.now(),type:"call",note:"📞 Call initiated",leadId:selected,userId:p.cu,createdAt:new Date().toISOString()}].concat(prev);});}catch(ex){}}} style={{ flex:1, padding:"6px", borderRadius:8, background:"#EFF6FF", color:"#60A5FA", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Phone size={12}/> {t.call}</a>
-            <a href={"https://wa.me/"+waPhone(selected.phone)} target="_blank" rel="noreferrer" style={{ flex:1, padding:"6px", borderRadius:8, background:"rgba(37,211,102,0.2)", color:"#fff", fontSize:11, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> {t.whatsapp}</a>
+          {/* Call + WhatsApp — equal-width full-width row at bottom of header */}
+          <div style={{ display:"flex", gap:8, marginTop:14 }}>
+            <a href={"tel:"+cleanPhone(selected.phone)} onClick={async function(){try{await apiFetch("/api/activities","POST",{leadId:gid(selected),type:"call",note:"📞 Call initiated — "+selected.phone},p.token,p.csrfToken);p.setActivities&&p.setActivities(function(prev){return [{_id:Date.now(),type:"call",note:"📞 Call initiated",leadId:selected,userId:p.cu,createdAt:new Date().toISOString()}].concat(prev);});}catch(ex){}}} style={{ flex:1, padding:"10px", borderRadius:10, background:"#fff", color:C.primary, fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}><Phone size={14}/> {t.call}</a>
+            <a href={"https://wa.me/"+waPhone(selected.phone)} target="_blank" rel="noreferrer" style={{ flex:1, padding:"10px", borderRadius:10, background:"#25D366", color:"#fff", fontSize:13, fontWeight:700, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}><svg viewBox="0 0 24 24" width="14" height="14" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> {t.whatsapp}</a>
           </div>
         </div>
-        <div style={{ padding:"12px 14px" }}>
-          {/* Status */}
-          <div style={{ marginBottom:12, padding:10, background:"#F8FAFC", borderRadius:10 }}>
-            <div style={{ fontSize:11, color:C.textLight, marginBottom:7, fontWeight:600 }}>{t.changeStatus}</div>
-            <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
-              {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid", borderColor:selected.status===s.value?s.color:"#E2E8F0", background:selected.status===s.value?s.bg:"#fff", color:selected.status===s.value?s.color:C.textLight, fontSize:10, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
+        {/* ─── PANEL BODY ─── */}
+        <div style={{ padding:"14px 16px" }}>
+          {/* ─── Section 2: LATEST FEEDBACK banner (replaces the yellow Notes card) ───
+              Walks every slice the BE sent us (sales = own slice; admin/TL/manager = all
+              visible slices) and surfaces the single most-recent feedback entry with the
+              status replayed from agentHistory at that moment. */}
+          {(function(){
+            var lf = latestFeedbackForPanel(selected);
+            if (!lf) return null;
+            var pillColor = sliceStatusPillColor(lf.status);
+            var ts = lf.at ? timeAgo(lf.at, t) : "";
+            var initial = String(lf.agentName || "?").charAt(0).toUpperCase();
+            return <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:12, padding:"11px 13px", marginBottom:12 }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:9 }}>
+                  <div style={{ width:30, height:30, borderRadius:"50%", background:C.accent, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, fontWeight:700, flexShrink:0 }}>{initial}</div>
+                  <div>
+                    <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{lf.agentName}</div>
+                    <div style={{ fontSize:10, color:"#92400E", fontWeight:600 }}>💬 Latest feedback{ts?" · "+ts:""}</div>
+                  </div>
+                </div>
+                <span style={{ fontSize:10, fontWeight:700, color:"#fff", background:pillColor, padding:"3px 8px", borderRadius:6, whiteSpace:"nowrap" }}>{lf.status||"NewLead"}</span>
+              </div>
+              <div style={{ background:"#fff", borderRadius:8, padding:"8px 11px", fontSize:13, color:C.text, lineHeight:1.45, wordBreak:"break-word" }}>
+                {lf.text}
+                {lf.authorRole && lf.authorRole !== "sales" && lf.authorName && lf.authorName !== lf.agentName && <span style={{ marginLeft:6, fontSize:10, color:"#6D28D9", fontWeight:700 }}>· from {lf.authorName}</span>}
+              </div>
+            </div>;
+          })()}
+          {/* ─── Section 3: CHANGE STATUS pill row ─── */}
+          <div style={{ marginBottom:12, padding:11, background:"#F8FAFC", borderRadius:10, border:"1px solid "+C.border }}>
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:8, fontWeight:600 }}>{t.changeStatus}</div>
+            <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+              {sc.map(function(s){var on=selected.status===s.value;return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"5px 11px", borderRadius:14, border:"1px solid "+(on?s.color:C.border), background:on?s.bg:"#fff", color:on?s.color:C.textLight, fontSize:11, fontWeight:on?700:500, cursor:"pointer", transition:"all .15s" }}>{s.label}</button>;})}
             </div>
           </div>
-          {/* Assign */}
-          {isAdmin&&<div style={{ marginBottom:12, padding:10, background:"#F8FAFC", borderRadius:10 }}>
-            <div style={{ fontSize:11, color:C.textLight, marginBottom:6, fontWeight:600 }}>{t.assignTo}</div>
+          {/* ─── Section 4: ASSIGN TO dropdown ─── */}
+          {isAdmin&&<div style={{ marginBottom:12, padding:11, background:"#F8FAFC", borderRadius:10, border:"1px solid "+C.border }}>
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:7, fontWeight:600 }}>{t.assignTo}</div>
             <select value={selected.agentId&&selected.agentId._id?selected.agentId._id:(selected.agentId||"")} onChange={async function(e){
               var newAgent=e.target.value;
               if(!newAgent)return;
@@ -5387,7 +5438,7 @@ var LeadsPage = function(p) {
               var oldAgName=selected.agentId&&selected.agentId.name?selected.agentId.name:"";
               var newAgUser=p.users.find(function(u){return gid(u)===newAgent;});
               try{var rotRes=await apiFetch("/api/leads/"+gid(selected)+"/rotate","POST",{targetAgentId:newAgent,reason:"manual"},p.token);try{var freshLead=await apiFetch("/api/leads/"+gid(selected),"GET",null,p.token);if(freshLead&&freshLead._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?freshLead:l;});});setSelected(freshLead);}}catch(fe){}if(rotRes.firstAssignment)return;if(oldAgName&&p.notifyRotation)p.notifyRotation(selected,oldAgName,newAgUser?newAgUser.name:"","Manual reassign");}catch(ex){/* Phase R-13.3 — surface server errors instead of swallowing them. Refetch the lead so the assign-select reverts to the actual owner. */alert((ex&&ex.message)||"Rotation failed");try{var revert=await apiFetch("/api/leads/"+gid(selected),"GET",null,p.token);if(revert&&revert._id){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?revert:l;});});setSelected(revert);}}catch(_){}}
-            }} style={{ width:"100%", padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
+            }} style={{ width:"100%", padding:"8px 11px", borderRadius:8, border:"1px solid "+C.border, fontSize:13, background:"#fff", color:C.text, cursor:"pointer" }}>
               {isOnlyAdmin&&<option value="">— No Agent —</option>}
               {(function(){
                 // Include the current owner in options so the <select> can display
@@ -5406,80 +5457,49 @@ var LeadsPage = function(p) {
               })()}
             </select>
           </div>}
-          {/* Assigned Agents — admin remove + full feedback history */}
-          {isOnlyAdmin&&selected.assignments&&selected.assignments.length>1&&<div style={{ marginBottom:12, padding:10, background:"#F0F9FF", borderRadius:10, border:"1px solid #BFDBFE" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:"#1D4ED8", marginBottom:6 }}>👥 Assigned Agents ({selected.assignments.length})</div>
-            {selected.assignments.map(function(a,i){
-              var aName=a.agentId&&a.agentId.name?a.agentId.name:"Unknown";
-              var aId=a.agentId&&a.agentId._id?a.agentId._id:a.agentId;
-              var isCurrent=String(aId)===String(selected.agentId&&selected.agentId._id?selected.agentId._id:selected.agentId);
-              return <div key={i} style={{ padding:"6px 0", borderBottom:i<selected.assignments.length-1?"1px solid #DBEAFE":"none" }}>
-                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-                <div>
-                  <span style={{ fontSize:12, fontWeight:isCurrent?700:400, color:isCurrent?C.accent:(a.removedAt?C.textLight:C.text), textDecoration:a.removedAt?"line-through":"none" }}>{aName}</span>
-                  {isCurrent&&<span style={{ fontSize:9, background:"#DCFCE7", color:"#15803D", padding:"1px 5px", borderRadius:6, marginLeft:4, fontWeight:600 }}>current</span>}
-                  {a.removedAt&&<span style={{ fontSize:9, background:"#FEE2E2", color:"#B91C1C", padding:"1px 5px", borderRadius:6, marginLeft:4, fontWeight:600 }} title={"Removed "+(new Date(a.removedAt).toLocaleDateString("en-GB"))}>removed</span>}
-                  <span style={{ fontSize:10, color:C.textLight, marginLeft:4 }}>{a.status||""}</span>
-                </div>
-                {!a.removedAt&&<button onClick={async function(){
-                  if(!window.confirm("Remove "+aName+" from this lead?"))return;
-                  try{var upd=await apiFetch("/api/leads/"+gid(selected)+"/assignment/"+aId,"DELETE",null,p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){alert(ex.message||"Failed");}
-                }} style={{ background:"none", border:"none", cursor:"pointer", color:"#EF4444", fontSize:14, padding:"2px 6px", borderRadius:6 }} title="Remove agent">🗑</button>}
-                </div>
-                {/* Phase 2: full feedback list for this slice — chronological replay of
-                    slice.agentHistory with status-at-the-moment pill + relative timestamp.
-                    Falls back to a single virtual entry from slice.lastFeedback when
-                    agentHistory has no feedback rows (legacy data + PUT-with-status-change
-                    case, which only logs status_change, not a feedback entry). */}
-                {(function(){
-                  var fbs = feedbacksForSlice(a);
-                  if (!fbs.length) return null;
-                  return <div style={{ marginTop:3 }}>
-                    {fbs.map(function(fb, fbi){
-                      var stColor = sliceStatusPillColor(fb.status);
-                      var ts = fb.at ? timeAgo(fb.at, t) : "";
-                      return <div key={fbi} style={{ display:"flex", alignItems:"flex-start", gap:6, padding:"4px 7px", marginTop: fbi>0?3:0, background:"#FFFBEB", borderRadius:6, borderLeft:"2px solid "+C.accent }}>
-                        <span style={{ fontSize:9, fontWeight:700, color:"#fff", background:stColor, padding:"1px 5px", borderRadius:4, whiteSpace:"nowrap", marginTop:1, flexShrink:0 }}>{fb.status||"NewLead"}</span>
-                        <span style={{ flex:1, fontSize:11, color:C.text, wordBreak:"break-word" }}>{fb.text}{fb.authorRole && fb.authorRole !== "sales" && fb.authorName && <span style={{ marginLeft:6, fontSize:10, color:"#6D28D9", fontWeight:600 }}>· from {fb.authorName}</span>}</span>
-                        {ts && <span style={{ fontSize:9, color:C.textLight, whiteSpace:"nowrap", marginTop:2, flexShrink:0 }}>{ts}</span>}
-                      </div>;
-                    })}
+          {/* ─── Section 5: LEAD DETAILS — unified 2-col grid ───
+              Field order per Phase 3 spec: Campaign, Project, Source*, Budget,
+              Callback Time, Last Contact, Date Added*. Source admin-gated; Date
+              Added admin/sales_admin-only. Filter removes empty/null rows; row
+              borders are computed off the filtered array length. */}
+          <div style={{ background:"#fff", border:"1px solid "+C.border, borderRadius:10, marginBottom:12, overflow:"hidden" }}>
+            {(function(){
+              var fields = [
+                { l:"Campaign",       v: selected.campaign },
+                { l:t.project,         v: selected.project },
+                { l:t.source,          v: isAdmin ? selected.source : null },
+                { l:t.budget,          v: selected.budget },
+                { l:t.callbackTime,    v: selected.callbackTime ? selected.callbackTime.slice(0,16).replace("T"," ") : null },
+                { l:"Last Contact",   v: selected.lastActivityTime ? timeAgo(selected.lastActivityTime, t) : null },
+                { l:"Date Added",     v: isOnlyAdmin && selected.createdAt ? new Date(selected.createdAt).toLocaleDateString("en-GB") : null }
+              ].filter(function(f){ return f.v != null && f.v !== ""; });
+              if (!fields.length) return null;
+              return <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr" }}>
+                {fields.map(function(f, fi){
+                  var isRightCol = fi % 2 === 1;
+                  var rowOfLast  = Math.floor((fields.length - 1) / 2);
+                  var isLastRow  = Math.floor(fi / 2) === rowOfLast;
+                  return <div key={f.l} style={{
+                    padding:"10px 12px",
+                    borderRight: isRightCol ? "none" : "1px solid #F1F5F9",
+                    borderBottom: isLastRow ? "none" : "1px solid #F1F5F9"
+                  }}>
+                    <div style={{ fontSize:10, color:C.textLight, fontWeight:600, marginBottom:3, textTransform:"uppercase", letterSpacing:".3px" }}>{f.l}</div>
+                    <div style={{ fontSize:12, fontWeight:700, color:C.text, wordBreak:"break-word", lineHeight:1.35 }}>{f.v}</div>
                   </div>;
-                })()}
-                {a.notes&&<div style={{ fontSize:10, color:C.textLight, marginTop:2, padding:"2px 7px" }}>📝 {a.notes}</div>}
+                })}
               </div>;
-            })}
-          </div>}
-          {/* Notes (with optional "from <Manager>" tag when a managerial author
-              wrote the current note via the feedback endpoint). Rendered above
-              the Details split so both mobile and desktop layouts show it
-              identically — the desktop branch's plain key/value list can't
-              accommodate the tag. */}
-          {selected.notes&&<div style={{ background:"#FFFBEB", borderRadius:12, padding:"12px 14px", border:"1px solid #FDE68A", marginBottom:12 }}>
-            <div style={{ fontSize:10, color:"#92400E", fontWeight:600, marginBottom:4, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <span>📝 Notes</span>
-              {selected.notesAuthorRole && selected.notesAuthorRole !== "sales" && selected.notesAuthorName && <span style={{ fontSize:10, color:"#6D28D9", fontWeight:700 }}>· from {selected.notesAuthorName}</span>}
-            </div>
-            <div style={{ fontSize:13, color:C.text }}>{selected.notes}</div>
-          </div>}
-          {/* Details - grid on mobile, key/value list on desktop. Notes is
-              rendered above this block in both layouts so the tag shows. */}
-          {p.isMobile?<div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
-              {[{l:"Campaign",v:selected.campaign,icon:"📣"},{l:"Project",v:selected.project,icon:"🏗"},{l:t.budget,v:selected.budget,icon:"💰"},{l:t.source,v:isAdmin?selected.source:null,icon:"📢"},{l:t.agent,v:getAgentName(selected),icon:"👤"},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):null,icon:"📞"},{l:"Last Contact",v:selected.lastActivityTime?timeAgo(selected.lastActivityTime,t):null,icon:"🕐"},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):null:null,icon:"📅"}].map(function(f){return f.v?<div key={f.l} style={{ background:"#F8FAFC", borderRadius:12, padding:"10px 12px", border:"1px solid #E8ECF1" }}>
-                <div style={{ fontSize:10, color:C.textLight, marginBottom:3, fontWeight:600 }}>{f.icon} {f.l}</div>
-                <div style={{ fontSize:12, fontWeight:700, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
-              </div>:null;})}
-            </div>
-          </div>:[{l:"Campaign",v:selected.campaign},{l:t.project,v:selected.project},{l:t.budget,v:selected.budget},{l:t.source,v:isAdmin?selected.source:null},{l:t.agent,v:getAgentName(selected)},{l:t.callbackTime,v:selected.callbackTime?selected.callbackTime.slice(0,16).replace("T"," "):"-"},{l:"Last Contact",v:selected.lastActivityTime?new Date(selected.lastActivityTime).toLocaleDateString("en-GB")+" — "+timeAgo(selected.lastActivityTime,t):"-"},{l:"Date Added",v:isOnlyAdmin?selected.createdAt?new Date(selected.createdAt).toLocaleDateString("en-GB"):"-":null}].map(function(f){
-            return f.v?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}><span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.l}</span><span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span></div>:null;
-          })}
-          {/* WhatsApp Templates */}
-          <div style={{ marginTop:10, display:"flex", gap:6 }}>
-            <button onClick={function(){setWaLead(selected);setShowWaTemplates(true);}} style={{ flex:1, padding:"7px 8px", borderRadius:9, border:"1px solid #25D366", background:"#25D36610", color:"#25D366", fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>💬 {t.waTemplates}</button>
+            })()}
+          </div>
+          {/* ─── Section 6: ACTION ROW — 3 squares (Important, Lock, Notes) ───
+              Important (⭐) always visible; Lock (🔒) gated to admin/sales_admin/
+              manager/team_leader (sales hidden); Notes (📝) gated to admin/manager/
+              team_leader with TL-on-own excluded. WaTemplates + History modals are
+              still defined elsewhere; we just removed their entry buttons. */}
+          <div style={{ display:"flex", gap:8, marginBottom:14 }}>
             <button onClick={async function(){
               try{var newVip=!selected.isVIP;var upd=await apiFetch("/api/leads/"+gid(selected),"PUT",{isVIP:newVip},p.token);var merged=Object.assign({},selected,{isVIP:newVip});p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?Object.assign({},l,{isVIP:newVip}):l;});});setSelected(merged);}catch(e){console.error("VIP error",e);}
-            }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(selected.isVIP?"#F59E0B":"#E2E8F0"), background:selected.isVIP?"#FEF3C7":"#fff", fontSize:13, cursor:"pointer" }} title={selected.isVIP?t.removeVip:t.markVip}>⭐</button>
+            }} style={{ width:42, height:42, borderRadius:10, border:"1px solid "+(selected.isVIP?"#F59E0B":C.border), background:selected.isVIP?"#FEF3C7":"#fff", fontSize:18, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={selected.isVIP?t.removeVip:t.markVip}>⭐</button>
             {(p.cu && ["admin","sales_admin","team_leader","manager"].indexOf(p.cu.role) >= 0) && (function(){
               var lid=gid(selected);
               var isLocked=!!selected.locked;
@@ -5489,27 +5509,107 @@ var LeadsPage = function(p) {
                   p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?updLock:l;});});
                   setSelected(updLock);
                 }catch(e){console.error("lock error",e);}
-              }} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid "+(isLocked?"#EF4444":"#E2E8F0"), background:isLocked?"#FEE2E2":"#fff", fontSize:13, cursor:"pointer" }} title={isLocked?"Unlock — allow rotation":"Lock — prevent rotation"}>
+              }} style={{ width:42, height:42, borderRadius:10, border:"1px solid "+(isLocked?"#EF4444":C.border), background:isLocked?"#FEE2E2":"#fff", fontSize:18, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={isLocked?"Unlock — allow rotation":"Lock — prevent rotation"}>
                 {isLocked?"🔒":"🔓"}
               </button>;
             })()}
-            <button onClick={function(){openHistory(selected);}} style={{ padding:"7px 10px", borderRadius:9, border:"1px solid #E2E8F0", background:"#F3E8FF", fontSize:13, cursor:"pointer" }} title="History">📋</button>
             {(function(){
-              // Managerial "Add Feedback" — admin/manager always; TL only
-              // when the lead isn't their own personal book (then they use
-              // status change like a sales agent). sales_admin is excluded:
-              // read-only on feedback by design.
+              // Notes / Add Feedback — same gate as before (admin/manager/TL only;
+              // TL-on-own excluded). Visual rename: button now labelled Notes via
+              // tooltip; opens the existing FeedbackModal verbatim. Count badge
+              // sums feedbacksForSlice across every visible slice.
               if (!p.cu) return null;
               var role = p.cu.role;
               if (role !== "admin" && role !== "manager" && role !== "team_leader") return null;
               var leadAgentId = selected.agentId && selected.agentId._id ? selected.agentId._id : selected.agentId;
               if (role === "team_leader" && String(leadAgentId || "") === String(p.cu.id || "")) return null;
+              var fbCount = 0;
+              (selected.assignments || []).forEach(function(a){ fbCount += feedbacksForSlice(a).length; });
               return <button onClick={function(){ setFbForm({ text:"", visibility:"private", targetAgentId:"" }); setFbErr(""); setFeedbackModal({lead:selected}); }}
-                style={{ padding:"7px 10px", borderRadius:9, border:"1px solid #E2E8F0", background:"#FEF3C7", fontSize:13, cursor:"pointer" }} title="Add feedback (private or send to a sales)">📝</button>;
+                style={{ width:42, height:42, borderRadius:10, border:"1px solid "+C.border, background:"#FEF3C7", fontSize:18, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", position:"relative" }} title="Notes — view & add feedback">
+                📝
+                {fbCount > 0 && <span style={{ position:"absolute", top:-5, right:-5, background:C.accent, color:"#fff", fontSize:9, fontWeight:700, padding:"1px 5px", borderRadius:8, minWidth:14, textAlign:"center", lineHeight:"12px", boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>{fbCount}</span>}
+              </button>;
             })()}
           </div>
-
-          {/* Lead Journey — grouped by agent era */}
+          {/* ─── Section 7: AGENTS ON THIS LEAD — Currently / Previous split ───
+              Same outer gate as before (isOnlyAdmin && >1 slices). Each slice's
+              feedback list comes from Phase 2's feedbacksForSlice (chronological
+              replay with status-at-the-moment). CURRENT badge goes to the slice
+              with the most-recent feedback in the active set. Removed slices
+              render in a separate Previous sub-section without a Remove button. */}
+          {isOnlyAdmin && selected.assignments && selected.assignments.length > 1 && (function(){
+            var active  = selected.assignments.filter(function(a){ return !a.removedAt; });
+            var removed = selected.assignments.filter(function(a){ return  a.removedAt; });
+            var topTs = function(a){ var top = feedbacksForSlice(a)[0]; return top && top.at ? new Date(top.at).getTime() : 0; };
+            active.sort(function(x,y){ return topTs(y) - topTs(x); });
+            removed.sort(function(x,y){ return topTs(y) - topTs(x); });
+            var currentSliceId = active.length > 0 ? String(active[0].agentId && active[0].agentId._id ? active[0].agentId._id : active[0].agentId) : "";
+            var selOwnerId = String(selected.agentId && selected.agentId._id ? selected.agentId._id : selected.agentId);
+            var renderSlice = function(a, i, arr, isActiveSection){
+              var aName = a.agentId && a.agentId.name ? a.agentId.name : "Unknown";
+              var aId   = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+              var isCurrentBadge = isActiveSection && String(aId) === currentSliceId;
+              var isHolder       = !a.removedAt && String(aId) === selOwnerId;
+              var initial = String(aName || "?").charAt(0).toUpperCase();
+              var statusColor = sliceStatusPillColor(a.status);
+              return <div key={i} style={{ padding:"9px 0", borderBottom: i<arr.length-1 ? "1px solid #F1F5F9" : "none" }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, minWidth:0, flex:1 }}>
+                    <div style={{ width:26, height:26, borderRadius:"50%", background: a.removedAt ? "#CBD5E1" : C.accent, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, flexShrink:0 }}>{initial}</div>
+                    <div style={{ minWidth:0 }}>
+                      <span style={{ fontSize:12, fontWeight: isCurrentBadge?700:600, color: a.removedAt ? C.textLight : C.text, textDecoration:a.removedAt?"line-through":"none" }}>{aName}</span>
+                      {isCurrentBadge && <span style={{ fontSize:9, background:"#DCFCE7", color:"#15803D", padding:"1px 6px", borderRadius:5, marginLeft:5, fontWeight:700, letterSpacing:".3px" }}>CURRENT</span>}
+                      {isHolder && !isCurrentBadge && <span style={{ fontSize:9, background:"#E0F2FE", color:"#0369A1", padding:"1px 6px", borderRadius:5, marginLeft:5, fontWeight:600 }}>holder</span>}
+                      {a.removedAt && <span style={{ fontSize:9, background:"#FEE2E2", color:"#B91C1C", padding:"1px 6px", borderRadius:5, marginLeft:5, fontWeight:600 }} title={"Removed "+(new Date(a.removedAt).toLocaleDateString("en-GB"))}>removed</span>}
+                    </div>
+                  </div>
+                  <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
+                    <span style={{ fontSize:9, fontWeight:700, color:"#fff", background:statusColor, padding:"2px 7px", borderRadius:5, whiteSpace:"nowrap" }}>{a.status || "NewLead"}</span>
+                    {!a.removedAt && <button onClick={async function(){
+                      if (!window.confirm("Remove "+aName+" from this lead?")) return;
+                      try{var upd=await apiFetch("/api/leads/"+gid(selected)+"/assignment/"+aId,"DELETE",null,p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){alert(ex.message||"Failed");}
+                    }} style={{ background:"none", border:"none", cursor:"pointer", color:"#EF4444", fontSize:14, padding:"2px 6px", borderRadius:6 }} title="Remove agent">🗑</button>}
+                  </div>
+                </div>
+                {/* Phase 2: per-slice feedback list — chronological replay with
+                    status-at-the-moment pill + relative timestamp. */}
+                {(function(){
+                  var fbs = feedbacksForSlice(a);
+                  if (!fbs.length) return null;
+                  return <div style={{ marginLeft:34 }}>
+                    {fbs.map(function(fb, fbi){
+                      var stColor = sliceStatusPillColor(fb.status);
+                      var fbts = fb.at ? timeAgo(fb.at, t) : "";
+                      return <div key={fbi} style={{ display:"flex", alignItems:"flex-start", gap:6, padding:"4px 7px", marginTop: fbi>0?3:0, background:"#FFFBEB", borderRadius:6, borderLeft:"2px solid "+C.accent }}>
+                        <span style={{ fontSize:9, fontWeight:700, color:"#fff", background:stColor, padding:"1px 5px", borderRadius:4, whiteSpace:"nowrap", marginTop:1, flexShrink:0 }}>{fb.status||"NewLead"}</span>
+                        <span style={{ flex:1, fontSize:11, color:C.text, wordBreak:"break-word" }}>{fb.text}{fb.authorRole && fb.authorRole !== "sales" && fb.authorName && <span style={{ marginLeft:6, fontSize:10, color:"#6D28D9", fontWeight:600 }}>· from {fb.authorName}</span>}</span>
+                        {fbts && <span style={{ fontSize:9, color:C.textLight, whiteSpace:"nowrap", marginTop:2, flexShrink:0 }}>{fbts}</span>}
+                      </div>;
+                    })}
+                  </div>;
+                })()}
+                {a.notes && <div style={{ fontSize:10, color:C.textLight, marginTop:4, padding:"2px 7px", marginLeft:34 }}>📝 {a.notes}</div>}
+              </div>;
+            };
+            return <div style={{ background:"#fff", border:"1px solid "+C.border, borderRadius:10, padding:"11px 13px", marginBottom:12 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:C.text, marginBottom:9 }}>👥 Agents on this lead</div>
+              {active.length > 0 && <div style={{ marginBottom: removed.length > 0 ? 10 : 0 }}>
+                <div style={{ fontSize:10, fontWeight:700, color:"#15803D", marginBottom:4, display:"flex", alignItems:"center", gap:6, textTransform:"uppercase", letterSpacing:".3px" }}>
+                  <span style={{ width:7, height:7, borderRadius:"50%", background:"#22C55E" }}/>
+                  Currently assigned · {active.length}
+                </div>
+                {active.map(function(a,i){ return renderSlice(a,i,active,true); })}
+              </div>}
+              {removed.length > 0 && <div style={{ paddingTop: active.length>0 ? 10 : 0, borderTop: active.length>0 ? "1px dashed "+C.border : "none" }}>
+                <div style={{ fontSize:10, fontWeight:700, color:C.textLight, marginBottom:4, display:"flex", alignItems:"center", gap:6, textTransform:"uppercase", letterSpacing:".3px" }}>
+                  🕘 Previous · feedback kept · {removed.length}
+                </div>
+                {removed.map(function(a,i){ return renderSlice(a,i,removed,false); })}
+              </div>}
+            </div>;
+          })()}
+          {/* ─── Section 8: LeadJourney — UNCHANGED (out of scope) ─── */}
           <div style={{ marginTop:14 }}>
             <LeadJourney events={panelHistory} lead={selected} currentUser={p.cu} allUsers={p.users} isAdminRole={isAdmin} variant="panel" setShowCompare={openCompare} />
           </div>
