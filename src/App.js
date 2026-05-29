@@ -2750,18 +2750,37 @@ var PhoneCell = function(p) {
 // status colors used across the redesigned panel surfaces.
 var sliceStatusPillColor = function(s){
   var map = {
-    NewLead:"#10B981", "New Lead":"#10B981",
-    Potential:"#185FA5",
-    HotCase:"#D85A30", "Hot Case":"#D85A30",
-    CallBack:"#BA7517", "Call Back":"#BA7517",
-    MeetingDone:"#0F6E56", "Meeting Done":"#0F6E56",
-    NotInterested:"#A32D2D", "Not Interested":"#A32D2D",
-    NoAnswer:"#854F0B", "No Answer":"#854F0B",
-    DoneDeal:"#04342C", "Done Deal":"#04342C",
-    EOI:"#04342C",
-    "Deal Cancelled":"#A32D2D"
+    NewLead:"#DCFCE7", "New Lead":"#DCFCE7",
+    Potential:"#DBEAFE",
+    HotCase:"#FED7AA", "Hot Case":"#FED7AA",
+    CallBack:"#FEF3C7", "Call Back":"#FEF3C7",
+    MeetingDone:"#E9D5FF", "Meeting Done":"#E9D5FF",
+    EOI:"#CCFBF1",
+    NotInterested:"#FEE2E2", "Not Interested":"#FEE2E2",
+    NoAnswer:"#FFEDD5", "No Answer":"#FFEDD5",
+    DoneDeal:"#D1FAE5", "Done Deal":"#D1FAE5",
+    "Deal Cancelled":"#F1F5F9"
   };
-  return map[s] || "#5F5E5A";
+  return map[s] || "#F1F5F9";
+};
+
+// Parallel text-color map for the pastel-bg status pills above. Same key shape
+// as sliceStatusPillColor so consumers can do background:sliceStatusPillColor(s)
+// + color:sliceStatusPillTextColor(s) for a readable pastel pill with no border.
+var sliceStatusPillTextColor = function(s){
+  var map = {
+    NewLead:"#166534", "New Lead":"#166534",
+    Potential:"#1E40AF",
+    HotCase:"#9A3412", "Hot Case":"#9A3412",
+    CallBack:"#92400E", "Call Back":"#92400E",
+    MeetingDone:"#6B21A8", "Meeting Done":"#6B21A8",
+    EOI:"#115E59",
+    NotInterested:"#991B1B", "Not Interested":"#991B1B",
+    NoAnswer:"#9A3412", "No Answer":"#9A3412",
+    DoneDeal:"#065F46", "Done Deal":"#065F46",
+    "Deal Cancelled":"#475569"
+  };
+  return map[s] || "#475569";
 };
 
 // ===== LEAD JOURNEY =====
@@ -3355,7 +3374,7 @@ var LeadJourney = function(p) {
       // space character in the text guarantees a visible gap between pill
       // and content even on subpixel rounding.
       return <div style={{ display:"block", width:"100%", boxSizing:"border-box", padding:"7px 10px", background:"#F8FAFC", borderRadius:6, border:"1px solid #EEF1F5", boxShadow:"0 1px 3px rgba(15, 23, 42, 0.06)", fontSize:bodyFs, color:C.text, lineHeight:1.45, wordBreak:"break-word" }}>
-        <span style={{ display:"inline-block", verticalAlign:"baseline", fontSize:9, fontWeight:700, color:"#fff", background:sliceStatusPillColor(ws), padding:"2px 6px", borderRadius:4, marginRight:8, whiteSpace:"nowrap", lineHeight:1.2 }}>{sLabel(ws)}</span>
+        <span style={{ display:"inline-block", verticalAlign:"baseline", fontSize:9, fontWeight:600, color:sliceStatusPillTextColor(ws), background:sliceStatusPillColor(ws), padding:"2px 6px", borderRadius:4, marginRight:8, whiteSpace:"nowrap", lineHeight:1.2 }}>{sLabel(ws)}</span>
         <span>{fbText || <span style={{ color:C.textLight, fontStyle:"italic" }}>(empty feedback)</span>}</span>
       </div>;
     }
@@ -5460,7 +5479,7 @@ var LeadsPage = function(p) {
                     <div style={{ fontSize:10, color:"#92400E", fontWeight:600 }}>💬 Latest feedback{ts?" · "+ts:""}</div>
                   </div>
                 </div>
-                <span style={{ fontSize:10, fontWeight:700, color:"#fff", background:pillColor, padding:"3px 8px", borderRadius:6, whiteSpace:"nowrap" }}>{lf.status||"NewLead"}</span>
+                <span style={{ fontSize:10, fontWeight:600, color:sliceStatusPillTextColor(lf.status), background:pillColor, padding:"3px 8px", borderRadius:6, whiteSpace:"nowrap" }}>{lf.status||"NewLead"}</span>
               </div>
               <div style={{ background:"#fff", borderRadius:8, padding:"8px 11px", fontSize:13, color:C.text, lineHeight:1.45, wordBreak:"break-word" }}>
                 {lf.text}
@@ -5632,7 +5651,7 @@ var LeadsPage = function(p) {
                     </div>
                   </div>
                   <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
-                    <span style={{ fontSize:9, fontWeight:700, color:"#fff", background:statusColor, padding:"2px 7px", borderRadius:5, whiteSpace:"nowrap" }}>{a.status || "NewLead"}</span>
+                    <span style={{ fontSize:9, fontWeight:600, color:sliceStatusPillTextColor(a.status), background:statusColor, padding:"2px 7px", borderRadius:5, whiteSpace:"nowrap" }}>{a.status || "NewLead"}</span>
                     {!a.removedAt && <button onClick={async function(){
                       if (!window.confirm("Remove "+aName+" from this lead?")) return;
                       try{var upd=await apiFetch("/api/leads/"+gid(selected)+"/assignment/"+aId,"DELETE",null,p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){alert(ex.message||"Failed");}
@@ -5655,7 +5674,7 @@ var LeadsPage = function(p) {
                       var stColor = sliceStatusPillColor(fb.status);
                       var fbts = fb.at ? timeAgo(fb.at, t) : "";
                       return <div key={fbi} style={{ display:"flex", alignItems:"flex-start", gap:6, padding:"4px 7px", marginTop: fbi>0?3:0, background:"#FFFBEB", borderRadius:6, borderLeft:"2px solid "+C.accent }}>
-                        <span style={{ fontSize:9, fontWeight:700, color:"#fff", background:stColor, padding:"1px 5px", borderRadius:4, whiteSpace:"nowrap", marginTop:1, flexShrink:0 }}>{fb.status||"NewLead"}</span>
+                        <span style={{ fontSize:9, fontWeight:600, color:sliceStatusPillTextColor(fb.status), background:stColor, padding:"1px 5px", borderRadius:4, whiteSpace:"nowrap", marginTop:1, flexShrink:0 }}>{fb.status||"NewLead"}</span>
                         <span style={{ flex:1, fontSize:11, color:C.text, wordBreak:"break-word" }}>{fb.text}{fb.authorRole && fb.authorRole !== "sales" && fb.authorName && <span style={{ marginLeft:6, fontSize:10, color:"#6D28D9", fontWeight:600 }}>· from {fb.authorName}</span>}</span>
                         {fbts && <span style={{ fontSize:9, color:C.textLight, whiteSpace:"nowrap", marginTop:2, flexShrink:0 }}>{fbts}</span>}
                       </div>;
