@@ -97,6 +97,7 @@ async function sendPushNotification(userIds, title, body, data) {
     });
   });
   if (entries.length === 0) {
+    console.log("[notifications] no pushTokens for users:", userIds);
     return { sent: 0, failed: 0, invalidTokensRemoved: 0 };
   }
 
@@ -113,6 +114,7 @@ async function sendPushNotification(userIds, title, body, data) {
     console.error("[notifications] FCM send failed:", e.message);
     return { sent: 0, failed: entries.length, invalidTokensRemoved: 0, error: e.message };
   }
+  console.log("[notifications] FCM sent:", resp.successCount, "to", userIds.length, "users");
 
   // Group permanently-dead tokens by userId for $pull.
   var deadByUser = {};

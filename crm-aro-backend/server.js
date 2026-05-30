@@ -10721,6 +10721,13 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
         firstByName,
         firstToName
       ));
+      // Native push to the newly-assigned owner. Fire-and-forget; no-op if no tokens.
+      sendPushNotification(
+        [String(targetAgentId)],
+        "New lead assigned",
+        (lead.name || "A lead") + " was assigned to you",
+        { type: "rotation", leadId: String(req.params.id) }
+      ).catch(function(){});
       return res.json({ success: true, firstAssignment: true, lead: lead });
     }
 
@@ -10835,6 +10842,13 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
         targetUser.name || ""
       ));
       var reactPopulated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+      // Native push to the newly-assigned owner. Fire-and-forget; no-op if no tokens.
+      sendPushNotification(
+        [String(targetAgentId)],
+        "New lead assigned",
+        (lead.name || "A lead") + " was assigned to you",
+        { type: "rotation", leadId: String(req.params.id) }
+      ).catch(function(){});
       return res.json(reactPopulated);
     }
 
@@ -10907,6 +10921,13 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     ));
 
     var updated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+    // Native push to the newly-assigned owner. Fire-and-forget; no-op if no tokens.
+    sendPushNotification(
+      [String(targetAgentId)],
+      "New lead assigned",
+      (lead.name || "A lead") + " was assigned to you",
+      { type: "rotation", leadId: String(req.params.id) }
+    ).catch(function(){});
     res.json(updated);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
