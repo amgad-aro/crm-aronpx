@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ARO CRM</string>
+    <string name="title_activity_main">ARO CRM</string>
+    <string name="package_name">com.aroinvestment.crm</string>
+    <string name="custom_url_scheme">com.aroinvestment.crm</string>
+</resources>

@@ -23,3 +23,15 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Capacitor — native build artifacts
+/ios/App/Pods
+/ios/App/build
+/android/.gradle
+/android/build
+/android/app/build
+/android/local.properties
+/android/.idea
+
+# Firebase config — contains API keys; keep out of git history
+android/app/google-services.json
