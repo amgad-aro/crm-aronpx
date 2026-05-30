@@ -26168,7 +26168,17 @@ export default function CRMApp() {
                : (t.indexOf("deal") === 0 && status === "EOI")     ? "eoi"
                : (t.indexOf("deal") === 0)                          ? "deals"
                : "leads";
-      try { nav(page, { _id: String(leadId), name: "" }); } catch(e){}
+      // Mirror the notification bell (App.js ~1777): fetch the full lead first
+      // so nav() receives a complete object (name/phone present). A bare {_id}
+      // shell is rejected by LeadsPage's hasRenderableSelected guard and the
+      // panel never opens. On fetch failure (lead gone / no access) we stay on
+      // the page rather than forcing a broken panel.
+      try {
+        apiFetch("/api/leads/" + String(leadId), "GET", null, token).then(function(fresh){
+          if (fresh && fresh._id) { try { nav(page, fresh); } catch(e){} }
+        }).catch(function(){ /* lead gone or no access — stay on page */ });
+      } catch(e){}
+      // Consume the deep-link once regardless of fetch outcome.
       try {
         localStorage.removeItem("crm_pending_lead");
         localStorage.removeItem("crm_pending_lead_type");
