@@ -5605,7 +5605,7 @@ var LeadsPage = function(p) {
                         // the guard doesn't need to live in the UI.
                         // Inactive owners aren't in the pool — inject a disabled option so
                         // the SELECT renders their name instead of falling back to "— No Agent —".
-                        var pool = isOnlyAdmin ? salesUsers : (p.myTeamUsers||salesUsers).filter(function(u){return (u.role==="sales"||u.role==="team_leader")&&u.active;});
+                        var pool = (p.myTeamUsers||salesUsers).filter(function(u){return (u.role==="sales"||u.role==="team_leader"||u.role==="manager"||u.role==="director")&&u.active;});
                         var opts = pool.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
                         var ownerId = lead.agentId&&lead.agentId._id ? String(lead.agentId._id) : (lead.agentId ? String(lead.agentId) : "");
                         if (ownerId && !pool.some(function(u){return gid(u)===ownerId;})) {
@@ -5713,7 +5713,7 @@ var LeadsPage = function(p) {
                 // "same_agent" if an admin tries to rotate to the current owner.
                 // Inactive owners aren't in the pool — inject a disabled option so
                 // the SELECT renders their name instead of falling back to "— No Agent —".
-                var poolSel = isOnlyAdmin ? (p.myTeamUsers||salesUsers).filter(function(u){return u.active !== false;}) : (p.myTeamUsers||salesUsers).filter(function(u){return (u.role==="sales"||u.role==="team_leader")&&u.active;});
+                var poolSel = (p.myTeamUsers||salesUsers).filter(function(u){return (u.role==="sales"||u.role==="team_leader"||u.role==="manager"||u.role==="director")&&u.active;});
                 var opts = poolSel.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
                 var ownerId = selected.agentId&&selected.agentId._id ? String(selected.agentId._id) : (selected.agentId ? String(selected.agentId) : "");
                 if (ownerId && !poolSel.some(function(u){return gid(u)===ownerId;})) {

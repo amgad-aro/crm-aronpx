@@ -10698,11 +10698,11 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     var isAdminForce = force === true && (req.user.role === "admin" || req.user.role === "sales_admin");
 
     // Business rule: sales_admin is an administrative role and must NEVER receive rotated leads.
-    // Only sales / team_leader / manager are eligible; the target must also be active.
+    // Only sales / team_leader / manager / director are eligible; the target must also be active.
     var targetUser = await User.findById(targetAgentId).lean();
     if (!targetUser) return res.status(400).json({ error: "Target agent not found" });
     if (targetUser.active === false) return res.status(400).json({ error: "Target agent is inactive" });
-    if (["sales","team_leader","manager"].indexOf(targetUser.role) < 0) {
+    if (["sales","team_leader","manager","director"].indexOf(targetUser.role) < 0) {
       return res.status(400).json({ error: "ineligible_role", message: "Target agent role ("+targetUser.role+") cannot receive rotated leads" });
     }
 
@@ -10756,7 +10756,10 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
       return res.status(400).json({ error: "donedeal", message: "Rotation blocked — lead is Done Deal" });
     }
     // ── HARD STOP 4: older than 30 days ──
-    if (lead.createdAt && (new Date() - new Date(lead.createdAt)) > 30*24*60*60*1000) {
+    // Admin/sales_admin override: same escape-hatch policy as the rotationStopped /
+    // noRotation / locked checks above — manual admin reassignment is never age-gated.
+    if (lead.createdAt && (new Date() - new Date(lead.createdAt)) > 30*24*60*60*1000
+        && req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(400).json({ error: "expired", message: "Rotation blocked — lead older than 30 days" });
     }
     // ── HARD STOP 5: same agent (Bug 1 — can't rotate a lead to its current owner) ──
