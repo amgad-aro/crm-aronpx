@@ -26154,6 +26154,48 @@ export default function CRMApp() {
   var handleLogout=function(){try{disposePushNotifications();}catch(e){}setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setPage("dashboard");setSidebarOpen(false);setSidebarLeadsTotal(null);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
 
+  // Push tap-to-open: consume a pending leadId captured by the native push
+  // listener (pushNotifications.js writes crm_pending_lead* on tap). Mirrors
+  // the deepLinkAssetCode pattern: read once, navigate, clear. Two paths —
+  // (a) cold start / resume: read localStorage on mount; (b) already
+  // foreground: react to the crm:open-lead window event. No-op on web (the
+  // listener only fires in the native shell, so the keys are never set).
+  useEffect(function(){
+    var openPendingLead = function(leadId, type, status){
+      if (!leadId) return;
+      var t = type || "";
+      var page = (t.indexOf("eoi") === 0)                          ? "eoi"
+               : (t.indexOf("deal") === 0 && status === "EOI")     ? "eoi"
+               : (t.indexOf("deal") === 0)                          ? "deals"
+               : "leads";
+      try { nav(page, { _id: String(leadId), name: "" }); } catch(e){}
+      try {
+        localStorage.removeItem("crm_pending_lead");
+        localStorage.removeItem("crm_pending_lead_type");
+        localStorage.removeItem("crm_pending_lead_status");
+      } catch(e){}
+    };
+    // (a) cold start / resume — consume whatever the tap stored.
+    try {
+      var pendId = localStorage.getItem("crm_pending_lead");
+      if (pendId) openPendingLead(pendId, localStorage.getItem("crm_pending_lead_type"), localStorage.getItem("crm_pending_lead_status"));
+    } catch(e){}
+    // (b) foreground — tap while the app is already open.
+    var onOpenLead = function(ev){
+      var d = (ev && ev.detail) || {};
+      openPendingLead(d.leadId, d.type, d.status);
+    };
+    if (typeof window !== "undefined" && window.addEventListener) {
+      window.addEventListener("crm:open-lead", onOpenLead);
+    }
+    return function(){
+      if (typeof window !== "undefined" && window.removeEventListener) {
+        window.removeEventListener("crm:open-lead", onOpenLead);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   if(!currentUser) {
     // Unauthenticated reset routes. authPath is updated on popstate so
     // browser-back / pushState navigation between /, /forgot-password, and

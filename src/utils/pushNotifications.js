@@ -90,7 +90,28 @@ export async function initPushNotifications() {
     }));
     _listeners.push(PushNotifications.addListener("registrationError", function () { /* silent — retried next launch */ }));
     _listeners.push(PushNotifications.addListener("pushNotificationReceived", function () { /* foreground receipt; UI bell already polls */ }));
-    _listeners.push(PushNotifications.addListener("pushNotificationActionPerformed", function () { /* tap handling reserved for future deep-link */ }));
+    _listeners.push(PushNotifications.addListener("pushNotificationActionPerformed", function (action) {
+      try {
+        var data = (action && action.notification && action.notification.data) || {};
+        var lid  = data.leadId ? String(data.leadId) : "";
+        if (!lid) return;
+        // Durable bridge: App.js reads these on mount (cold start / resume from
+        // a tapped notification). type + status let it route to the right page.
+        try {
+          localStorage.setItem("crm_pending_lead", lid);
+          localStorage.setItem("crm_pending_lead_type", data.type ? String(data.type) : "");
+          localStorage.setItem("crm_pending_lead_status", data.status ? String(data.status) : "");
+        } catch (e) {}
+        // Instant path when the app is already foreground: App.js listens for this.
+        if (typeof window !== "undefined" && window.dispatchEvent) {
+          try {
+            window.dispatchEvent(new CustomEvent("crm:open-lead", {
+              detail: { leadId: lid, type: data.type || "", status: data.status || "" }
+            }));
+          } catch (e) {}
+        }
+      } catch (e) { /* never let tap handling throw */ }
+    }));
 
     await PushNotifications.register();
     _initialized = true;
