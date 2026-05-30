@@ -21,6 +21,7 @@ import QRCode from "qrcode";
 // sites use useWindowScroll so the page-level scroll bar is the single
 // scroll surface (no double scrollbars). ~25 KB gz total one-time cost.
 import { TableVirtuoso, Virtuoso } from "react-virtuoso";
+import { initPushNotifications, disposePushNotifications } from "./utils/pushNotifications";
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
@@ -26094,6 +26095,8 @@ export default function CRMApp() {
     if (savedSession && savedSession.token && savedSession.user) {
       loadData(savedSession.token, savedSession.user);
       loadNotifications(savedSession.token);
+      // Native push: re-register the device token on app rehydrate. No-op on web.
+      try { initPushNotifications(); } catch(e){}
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -26106,6 +26109,8 @@ export default function CRMApp() {
     var defaultPage = deepLinkAssetCode ? "assets" : "dashboard";
     setPage(defaultPage);
     try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok,csrfToken:csrfTok})); } catch(e){}
+    // Native push: request permission + register the device token. No-op on web.
+    try { initPushNotifications(); } catch(e){}
   };
   // Auto-refresh disabled
 
@@ -26143,7 +26148,7 @@ export default function CRMApp() {
   // refreshed the full 1000-lead list after each rotation, and produced the
   // 409 noise (server cron vs browser cron racing) tracked in MEMORY.md.
 
-  var handleLogout=function(){setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setPage("dashboard");setSidebarOpen(false);setSidebarLeadsTotal(null);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
+  var handleLogout=function(){try{disposePushNotifications();}catch(e){}setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setPage("dashboard");setSidebarOpen(false);setSidebarLeadsTotal(null);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
 
   if(!currentUser) {
