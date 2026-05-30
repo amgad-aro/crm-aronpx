@@ -23,6 +23,15 @@ var API = (typeof process !== "undefined" && process.env && process.env.REACT_AP
 var _listeners = [];
 var _initialized = false;
 
+// Cache the most recent FCM/APNs token so logout can deregister it (Capacitor
+// exposes no synchronous getter). Mirrored to localStorage so a cold logout
+// after a fresh module load can still find the token.
+var _lastToken = "";
+try {
+  _lastToken = (typeof window !== "undefined" && window.localStorage)
+    ? (localStorage.getItem("crm_push_token") || "") : "";
+} catch (e) { _lastToken = ""; }
+
 // Lazy-load @capacitor/core and report whether we're on a native platform.
 // Returns the Capacitor object on native, or null on web / if unavailable.
 async function _getNativeCapacitor() {
@@ -40,6 +49,8 @@ async function _getNativeCapacitor() {
 // Exported so a re-register flow can push a refreshed token directly.
 export async function sendTokenToBackend(token, platform) {
   if (!token) return;
+  _lastToken = token;
+  try { if (typeof window !== "undefined" && window.localStorage) localStorage.setItem("crm_push_token", token); } catch (e) {}
   var session = null;
   try {
     var raw = (typeof window !== "undefined" && window.localStorage)
@@ -59,6 +70,35 @@ export async function sendTokenToBackend(token, platform) {
       body: JSON.stringify({ token: token, platform: platform || "unknown", deviceId: deviceId })
     });
   } catch (e) { /* offline / transient — token re-syncs on next init */ }
+}
+
+// Deregister this device's token from the CURRENT user (logout cleanup).
+// MUST be called BEFORE the session is cleared — it needs a valid bearer.
+// Fire-and-forget: never blocks logout. Reads the cached token by default.
+export async function removeTokenFromBackend(token) {
+  var tok = token || _lastToken;
+  if (!tok) return;
+  var session = null;
+  try {
+    var raw = (typeof window !== "undefined" && window.localStorage)
+      ? localStorage.getItem("crm_aro_session") : null;
+    if (raw) session = JSON.parse(raw);
+  } catch (e) { session = null; }
+  if (!session || !session.token) return; // not logged in — nothing to deregister
+  try {
+    await fetch(API + "/api/users/push-token", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + session.token
+      },
+      body: JSON.stringify({ token: tok })
+    });
+  } catch (e) { /* best-effort — token is also reclaimed on next user's login */ }
+  try {
+    _lastToken = "";
+    if (typeof window !== "undefined" && window.localStorage) localStorage.removeItem("crm_push_token");
+  } catch (e) {}
 }
 
 // Request permission, register with APNs/FCM, wire listeners, and ship the

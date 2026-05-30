@@ -21,7 +21,7 @@ import QRCode from "qrcode";
 // sites use useWindowScroll so the page-level scroll bar is the single
 // scroll surface (no double scrollbars). ~25 KB gz total one-time cost.
 import { TableVirtuoso, Virtuoso } from "react-virtuoso";
-import { initPushNotifications, disposePushNotifications } from "./utils/pushNotifications";
+import { initPushNotifications, disposePushNotifications, removeTokenFromBackend } from "./utils/pushNotifications";
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
@@ -26151,7 +26151,7 @@ export default function CRMApp() {
   // refreshed the full 1000-lead list after each rotation, and produced the
   // 409 noise (server cron vs browser cron racing) tracked in MEMORY.md.
 
-  var handleLogout=function(){try{disposePushNotifications();}catch(e){}setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setPage("dashboard");setSidebarOpen(false);setSidebarLeadsTotal(null);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
+  var handleLogout=function(){try{removeTokenFromBackend();}catch(e){}try{disposePushNotifications();}catch(e){}setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setPage("dashboard");setSidebarOpen(false);setSidebarLeadsTotal(null);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
 
   // Push tap-to-open: consume a pending leadId captured by the native push

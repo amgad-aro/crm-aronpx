@@ -6962,6 +6962,14 @@ app.post("/api/users/push-token", auth, async function(req, res) {
     var platform = (req.body && req.body.platform) ? String(req.body.platform).trim() : "";
     var deviceId = (req.body && req.body.deviceId) ? String(req.body.deviceId).trim() : "";
 
+    // PRIVACY: a device token belongs to exactly ONE user — the last to log in
+    // on that device. Reclaim it from every OTHER user before attaching it here,
+    // so a stale/previous login can no longer receive this device's pushes.
+    await User.updateMany(
+      { _id: { $ne: uid }, "pushTokens.token": token },
+      { $pull: { pushTokens: { token: token } } }
+    );
+
     var user = await User.findById(uid);
     if (!user) return res.status(404).json({ error: "User not found" });
     user.pushTokens = user.pushTokens || [];
@@ -6971,6 +6979,26 @@ app.post("/api/users/push-token", auth, async function(req, res) {
       await user.save();
     }
     res.json({ success: true, tokenCount: user.pushTokens.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Logout cleanup — remove this device's token from the CALLER's registry so a
+// signed-out user stops receiving pushes on this device. Best-effort; the FE
+// fires this while the bearer token is still valid (before clearing session).
+// Note: the POST above already reclaims the token on the next user's login, so
+// this is defense-in-depth for the explicit-logout case. Literal path — MUST
+// stay registered before /api/users/:id below.
+app.delete("/api/users/push-token", auth, async function(req, res) {
+  try {
+    var token = (req.body && req.body.token) ? String(req.body.token).trim() : "";
+    if (!token) return res.status(400).json({ error: "token required" });
+    await User.updateOne(
+      { _id: req.user.id },
+      { $pull: { pushTokens: { token: token } } }
+    );
+    res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
