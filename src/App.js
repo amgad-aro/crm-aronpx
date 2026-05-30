@@ -12537,6 +12537,9 @@ var JOB_TITLES = [
   { label:"Sales Director",          role:"director" }
 ];
 var ROLE_FOR_TITLE = JOB_TITLES.reduce(function(a,j){ a[j.label]=j.role; return a; }, {});
+// Shared role <select> options for the Add/Edit User modals (so they can't drift).
+// Takes `t` because labels are translated. `admin` is intentionally excluded (owner-only, locked).
+var USER_ROLE_OPTIONS = function(t){ return [{value:"sales_admin",label:"Sales Admin"},{value:"hr",label:"HR"},{value:"director",label:"Sales Director"},{value:"manager",label:t.salesManager},{value:"team_leader",label:"Team Leader"},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]; };
 
 // Phase R-12 Part 1 — External brokers registry. Standalone page, admin
 // + sales_admin only (gated at sidebar, renderPage, AND backend salesAdminOnly).
@@ -12941,7 +12944,7 @@ var UsersPage = function(p) {
           </div>
         : <Inp label={t.role} type="select" value={editModal.role}
             onChange={function(e){setEditModal(function(prev){return Object.assign({},prev,{role:e.target.value});});}}
-            options={[{value:"sales_admin",label:"Sales Admin"},{value:"director",label:"Sales Director"},{value:"manager",label:t.salesManager},{value:"team_leader",label:"Team Leader"},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/>}
+            options={USER_ROLE_OPTIONS(t)}/>}
       {!editModal.isOwner&&<div style={{fontSize:11,color:C.textLight,marginTop:-6,marginBottom:12}}>Selecting a Job Title auto-sets the Role. You can override the Role for edge cases.</div>}
       <div style={{ marginBottom:12 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:5 }}>Starting Date</label>
@@ -13026,7 +13029,7 @@ var UsersPage = function(p) {
         <Inp label={"Team Name"} value={nU.teamName||""} onChange={function(e){setNU(Object.assign({},nU,{teamName:e.target.value}));}} placeholder="e.g. Team A"/>
         <Inp label={"Team Code"} value={nU.teamId||""} onChange={function(e){setNU(Object.assign({},nU,{teamId:e.target.value}));}} placeholder="team-a"/>
       </div>}
-        <div style={{ gridColumn:"1/-1" }}><Inp label={t.role} type="select" value={nU.role} onChange={function(e){setNU(Object.assign({},nU,{role:e.target.value}));}} options={[{value:"sales_admin",label:"Sales Admin"},{value:"director",label:"Sales Director"},{value:"manager",label:t.salesManager},{value:"team_leader",label:"Team Leader"},{value:"sales",label:t.salesAgent},{value:"viewer",label:t.viewer}]}/></div>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={t.role} type="select" value={nU.role} onChange={function(e){setNU(Object.assign({},nU,{role:e.target.value}));}} options={USER_ROLE_OPTIONS(t)}/></div>
       </div>
       <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowAdd(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={add} loading={saving} style={{ flex:1 }}>{t.add}</Btn></div>
     </Modal>
