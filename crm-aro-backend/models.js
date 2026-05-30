@@ -44,6 +44,7 @@ var leadSchema = new mongoose.Schema({
   lastActivityTime: { type: Date, default: Date.now },
   archived: { type: Boolean, default: false },
   isVIP: { type: Boolean, default: false },
+  callbackNotifiedAt: { type: Date, default: null },
 }, { timestamps: true });
 
 // ===== ACTIVITY MODEL =====

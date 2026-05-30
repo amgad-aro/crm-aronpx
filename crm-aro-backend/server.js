@@ -256,7 +256,11 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   //   .brokerNetOwed downgrades to brokerOwed − manualAmount, and the
   //   sales agent recipient still reads as owed manualAmount.
   // Forced to "company" whenever externalSalesAgentEnabled is false.
-  externalSalesAgentPaidBy:{type:String,enum:["company","broker"],default:"company"}
+  externalSalesAgentPaidBy:{type:String,enum:["company","broker"],default:"company"},
+  // Callback-reminder dedupe: timestamp of the last "callback due in 2 min"
+  // push for the lead's CURRENT callbackTime. sweepDueCallbacks fires only
+  // when this is null OR older than callbackTime, so rescheduling re-arms it.
+  callbackNotifiedAt:{type:Date,default:null}
 },{timestamps:true}));
 
 // Indexes for query performance
@@ -12299,6 +12303,77 @@ var ROTATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 setInterval(function(){
   if (mongoose.connection && mongoose.connection.readyState === 1) sweepAutoRotation();
 }, ROTATION_SWEEP_INTERVAL_MS);
+
+// ===== CALLBACK REMINDER SWEEPER =====
+// Fires a "callback due in 2 min" push to the owning agent shortly BEFORE the
+// scheduled callbackTime. Deduped per (lead, callbackTime) via callbackNotifiedAt
+// so it fires once per scheduled callback and re-arms when the agent reschedules.
+// Time-driven (no HTTP hook exists for "time passed"); independent of all other
+// sweepers; query is index-backed (callbackTime / agentId+callbackTime).
+async function sweepDueCallbacks() {
+  try {
+    var now = new Date();
+    var soon = new Date(now.getTime() + 2 * 60 * 1000); // now + 2 min
+    var nowIso  = now.toISOString();
+    var soonIso = soon.toISOString();
+    var due = await Lead.find({
+      archived: { $ne: true },
+      agentId: { $ne: null },
+      status: { $nin: ["DoneDeal", "NotInterested", "EOI"] },
+      callbackTime: { $type: "string", $gt: nowIso, $lte: soonIso },
+      $and: [
+        // not yet actioned: lastActivityTime <= callbackTime
+        { $expr: {
+          $let: {
+            vars: { cbDate: { $convert: { input: "$callbackTime", to: "date", onError: null, onNull: null } } },
+            in: { $and: [
+              { $ne: ["$$cbDate", null] },
+              { $lte: [{ $ifNull: ["$lastActivityTime", new Date(0)] }, "$$cbDate"] }
+            ]}
+          }
+        }},
+        // not yet notified for THIS callbackTime: null OR stamped before it
+        { $expr: {
+          $let: {
+            vars: { cbDate: { $convert: { input: "$callbackTime", to: "date", onError: null, onNull: null } } },
+            in: { $or: [
+              { $eq: ["$callbackNotifiedAt", null] },
+              { $lt: ["$callbackNotifiedAt", "$$cbDate"] }
+            ]}
+          }
+        }}
+      ]
+    }).select("_id name agentId callbackTime").limit(200).lean();
+
+    for (var i = 0; i < due.length; i++) {
+      var lead = due[i];
+      // Stamp FIRST so a push retry next tick can't double-send; the push is
+      // best-effort and must not block or revert the stamp. If the stamp fails
+      // we skip the push entirely (never push without having deduped).
+      try {
+        await Lead.updateOne({ _id: lead._id }, { $set: { callbackNotifiedAt: now } });
+      } catch (stampErr) {
+        console.error("[callback sweep] stamp failed", lead._id, stampErr && stampErr.message);
+        continue;
+      }
+      if (lead.agentId) {
+        sendPushNotification(
+          [String(lead.agentId)],
+          "Callback reminder",
+          "Callback for " + (lead.name || "a lead") + " in 2 minutes",
+          { type: "callback_due", leadId: String(lead._id) }
+        ).catch(function(){});
+      }
+    }
+  } catch (e) {
+    console.error("[callback sweep]", e && e.message ? e.message : e);
+  }
+}
+
+var CALLBACK_SWEEP_INTERVAL_MS = 60 * 1000; // every 1 min
+setInterval(function(){
+  if (mongoose.connection && mongoose.connection.readyState === 1) sweepDueCallbacks();
+}, CALLBACK_SWEEP_INTERVAL_MS);
 
 // ===== Phase R-13.3 — Rotation Diagnostics =====
 // One endpoint returns the five sections the Settings → Rotation Diagnostics
