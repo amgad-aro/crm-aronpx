@@ -11831,7 +11831,7 @@ async function autoAssignQueuedLead(leadId) {
 
     var allTierIds = [].concat(settings.tiers.tier1.agents, settings.tiers.tier2.agents, settings.tiers.tier3.agents);
     if (!allTierIds.length) return { ok: false, error: "no_rotation_order" };
-    var candidateDocs = await User.find({ _id: { $in: allTierIds } }).select("_id name title role active lastSeen").lean();
+    var candidateDocs = await User.find({ _id: { $in: allTierIds } }).select("_id name title role active lastSeen dailyLeadCap").lean();
     var byId = {};
     candidateDocs.forEach(function(u){ byId[String(u._id)] = u; });
 
@@ -11845,6 +11845,32 @@ async function autoAssignQueuedLead(leadId) {
       endDate:   { $gte: nowVac }
     }).select("agentId").lean();
     var onVacationIds = new Set(vacRows.map(function(r){ return String(r.agentId); }));
+
+    // Per-agent daily lead cap — same aggregation as autoRotateLead (server.js
+    // ~11187). Counts today's incoming Rotation receipts per candidate so a
+    // queued first-assignment can't push an agent past their dailyLeadCap.
+    // This MUST stay in lockstep with the agentHistory "Rotation" entry pushed
+    // on first-assignment below (Fix B) — without that entry these counts never
+    // see queue assignments and the cap silently does nothing.
+    var startOfToday = new Date(); startOfToday.setHours(0,0,0,0);
+    var todayCountMap = new Map();
+    try {
+      var allCandObjIds = allTierIds.map(function(id){ return new mongoose.Types.ObjectId(String(id)); });
+      var counts = await Lead.aggregate([
+        { $match: { "agentHistory.date": { $gte: startOfToday } } },
+        { $unwind: "$agentHistory" },
+        { $match: {
+            "agentHistory.action": "Rotation",
+            "agentHistory.date": { $gte: startOfToday },
+            "agentHistory.agentId": { $in: allCandObjIds }
+        } },
+        { $group: { _id: "$agentHistory.agentId", count: { $sum: 1 } } }
+      ]);
+      counts.forEach(function(c){ todayCountMap.set(String(c._id), c.count); });
+    } catch (aggErr) {
+      // Fail-open: an aggregation failure must not block first-assignment.
+      console.error("[queue cap aggregation]", aggErr && aggErr.message ? aggErr.message : aggErr);
+    }
 
     // Queued leads are always first-assignment (rotationCount=0), so the
     // count-based picker always lands in the "rotCount < 2" branch: try Tier 1
@@ -11860,6 +11886,13 @@ async function autoAssignQueuedLead(leadId) {
         if (!u || u.active === false) continue;
         if (["sales","team_leader"].indexOf(u.role) < 0) continue;
         if (onVacationIds.has(uid)) continue;
+        // Per-agent daily cap. null/undefined = unlimited. 0 = paused. Counted
+        // from today's Rotation entries in agentHistory[] (same source as
+        // autoRotateLead's cap + the FE "X/Y today" counter).
+        if (u.dailyLeadCap != null) {
+          var received = todayCountMap.get(uid) || 0;
+          if (received >= u.dailyLeadCap) continue;
+        }
         return { user: u, idx: idx };
       }
       return null;
@@ -11889,6 +11922,22 @@ async function autoAssignQueuedLead(leadId) {
       statusChangedAt: new Date(),
       noRotation: false
     };
+    // First-assignment rotation log — same shape as autoRotateLead's
+    // first_assignment branch (server.js ~11296). Counts toward the receiving
+    // agent's daily cap on the next tick AND feeds the FE "X/Y today" counter.
+    // fromAgent empty (no prior holder) so it registers only as inbound.
+    // Fix B: WITHOUT this entry the cap aggregation above (Fix A) never sees
+    // queue assignments and the cap does nothing — the two changes are
+    // interdependent and must ship together.
+    var firstRotationLog = {
+      action: "Rotation",
+      fromAgent: "",
+      toAgent: pick.user.name,
+      agentId: new mongoose.Types.ObjectId(targetAgentId),
+      reason: "first_assignment",
+      by: "System",
+      date: new Date()
+    };
     // Atomic: require the lead to still be unassigned. Clears the queue expiry
     // in the same write so another sweeper tick can't double-assign.
     var result = await Lead.findOneAndUpdate(
@@ -11899,7 +11948,7 @@ async function autoAssignQueuedLead(leadId) {
           lastRotationAt: new Date(),
           manualWindowExpiresAt: null
         },
-        $push: { assignments: firstAssignment }
+        $push: { assignments: firstAssignment, agentHistory: firstRotationLog }
       },
       { new: true }
     );
