@@ -25483,6 +25483,9 @@ export default function CRMApp() {
   var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
   var [dealNotifs,setDealNotifs]=useState([]);
+  // Foreground FCM alert — populated from the crm:push-received window event
+  // (pushNotifications.js). { title, body, type, leadId, status }. null = hidden.
+  var [pushBanner,setPushBanner]=useState(null);
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
   // STEP 4-2 — bumped (debounced) on every lead/DR WS event. CallbackBell +
@@ -26225,6 +26228,33 @@ export default function CRMApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Foreground push banner: pushNotifications.js dispatches crm:push-received
+  // when an FCM message arrives while the app is open (the OS suppresses its
+  // own banner then). Show a brief in-app banner. No-op on web — the event is
+  // only dispatched from the native shell.
+  useEffect(function(){
+    var onPush = function(ev){
+      var d = (ev && ev.detail) || {};
+      if (!d.title && !d.body) return; // nothing to show
+      setPushBanner({ title:d.title||"", body:d.body||"", type:d.type||"", leadId:d.leadId||"", status:d.status||"" });
+    };
+    if (typeof window !== "undefined" && window.addEventListener) {
+      window.addEventListener("crm:push-received", onPush);
+    }
+    return function(){
+      if (typeof window !== "undefined" && window.removeEventListener) {
+        window.removeEventListener("crm:push-received", onPush);
+      }
+    };
+  }, []);
+
+  // Auto-dismiss the push banner — mirrors the page-toast pattern.
+  useEffect(function(){
+    if (!pushBanner) return;
+    var h = setTimeout(function(){ setPushBanner(null); }, 3500);
+    return function(){ clearTimeout(h); };
+  }, [pushBanner]);
+
   if(!currentUser) {
     // Unauthenticated reset routes. authPath is updated on popstate so
     // browser-back / pushState navigation between /, /forgot-password, and
@@ -26356,5 +26386,25 @@ export default function CRMApp() {
       <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} token={token} cbBust={cbBust} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} navigateToCommission={navigateToCommission} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
+    {pushBanner && <div
+      onClick={function(){
+        if (pushBanner.leadId) {
+          // Reuse the existing deep-link machinery: the crm:open-lead listener
+          // runs openPendingLead → live-token fetch → nav (hardened path).
+          try { window.dispatchEvent(new CustomEvent("crm:open-lead", { detail: { leadId: pushBanner.leadId, type: pushBanner.type, status: pushBanner.status } })); } catch(e){}
+        }
+        setPushBanner(null);
+      }}
+      style={{
+        position:"fixed", top:80, right:16, zIndex:900, maxWidth:340,
+        padding:"12px 16px", borderRadius:10,
+        background:"#fff", color:C.text,
+        border:"1px solid "+C.border,
+        boxShadow:"0 8px 24px rgba(0,0,0,0.12)",
+        cursor: pushBanner.leadId ? "pointer" : "default"
+      }}>
+      <div style={{ fontSize:13, fontWeight:700, marginBottom: pushBanner.body ? 4 : 0 }}>{pushBanner.title || "Notification"}</div>
+      {pushBanner.body && <div style={{ fontSize:12, color:C.textLight, lineHeight:1.45 }}>{pushBanner.body}</div>}
+    </div>}
   </div>;
 }

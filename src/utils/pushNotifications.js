@@ -129,7 +129,27 @@ export async function initPushNotifications() {
       try { sendTokenToBackend(tokenData && tokenData.value, platform); } catch (e) {}
     }));
     _listeners.push(PushNotifications.addListener("registrationError", function () { /* silent — retried next launch */ }));
-    _listeners.push(PushNotifications.addListener("pushNotificationReceived", function () { /* foreground receipt; UI bell already polls */ }));
+    // Foreground receipt: the OS suppresses its own banner while the app is
+    // open, so we surface an in-app banner instead. Mirror the crm:open-lead
+    // bridge — dispatch a window event App.js listens for. Native-only (this
+    // listener is only wired inside the native shell), so web never fires it.
+    _listeners.push(PushNotifications.addListener("pushNotificationReceived", function (notification) {
+      try {
+        var n    = notification || {};
+        var data = n.data || {};
+        if (typeof window !== "undefined" && window.dispatchEvent) {
+          window.dispatchEvent(new CustomEvent("crm:push-received", {
+            detail: {
+              title:  n.title  ? String(n.title)  : "",
+              body:   n.body   ? String(n.body)   : "",
+              type:   data.type   ? String(data.type)   : "",
+              leadId: data.leadId ? String(data.leadId) : "",
+              status: data.status ? String(data.status) : ""
+            }
+          }));
+        }
+      } catch (e) { /* never let a foreground receipt throw */ }
+    }));
     _listeners.push(PushNotifications.addListener("pushNotificationActionPerformed", function (action) {
       try {
         var data = (action && action.notification && action.notification.data) || {};
