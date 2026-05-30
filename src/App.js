@@ -26168,16 +26168,35 @@ export default function CRMApp() {
                : (t.indexOf("deal") === 0 && status === "EOI")     ? "eoi"
                : (t.indexOf("deal") === 0)                          ? "deals"
                : "leads";
-      // Mirror the notification bell (App.js ~1777): fetch the full lead first
-      // so nav() receives a complete object (name/phone present). A bare {_id}
-      // shell is rejected by LeadsPage's hasRenderableSelected guard and the
-      // panel never opens. On fetch failure (lead gone / no access) we stay on
-      // the page rather than forcing a broken panel.
+      // Read the LIVE token at call time from the durable session — NOT the
+      // closure `token`. This effect has [] deps, so a closure token is frozen
+      // at first mount (null when the app mounted on the login screen). Firing
+      // apiFetch with a null token hits the global 401 handler, which deletes
+      // crm_aro_session and reloads to login — i.e. tapping a push would log the
+      // user out. Resolving the token fresh from localStorage every time avoids
+      // that and survives login-within-the-same-mount.
+      var liveToken = null;
       try {
-        apiFetch("/api/leads/" + String(leadId), "GET", null, token).then(function(fresh){
-          if (fresh && fresh._id) { try { nav(page, fresh); } catch(e){} }
-        }).catch(function(){ /* lead gone or no access — stay on page */ });
-      } catch(e){}
+        var raw = (typeof window !== "undefined" && window.localStorage) ? localStorage.getItem("crm_aro_session") : null;
+        if (raw) { var s = JSON.parse(raw); if (s && s.token) liveToken = s.token; }
+      } catch(e){ liveToken = null; }
+      // GUARD: with no valid token, NEVER fire the fetch — a null-token request
+      // would 401 and wipe the session. Just navigate to the right page so the
+      // tap lands somewhere sensible without ever triggering a logout.
+      if (!liveToken) {
+        try { nav(page); } catch(e){}
+      } else {
+        // Mirror the notification bell (App.js ~1777): fetch the full lead first
+        // so nav() receives a complete object (name/phone present). A bare {_id}
+        // shell is rejected by LeadsPage's hasRenderableSelected guard and the
+        // panel never opens. On fetch failure (lead gone / no access) we stay on
+        // the page rather than forcing a broken panel.
+        try {
+          apiFetch("/api/leads/" + String(leadId), "GET", null, liveToken).then(function(fresh){
+            if (fresh && fresh._id) { try { nav(page, fresh); } catch(e){} }
+          }).catch(function(){ /* lead gone or no access — stay on page */ });
+        } catch(e){}
+      }
       // Consume the deep-link once regardless of fetch outcome.
       try {
         localStorage.removeItem("crm_pending_lead");
