@@ -25483,9 +25483,12 @@ export default function CRMApp() {
   var [activitiesPage,setActivitiesPage]=useState(1); var [activitiesTotal,setActivitiesTotal]=useState(0); var [activitiesTotalPages,setActivitiesTotalPages]=useState(0);
   var [showNotif,setShowNotif]=useState(false);
   var [dealNotifs,setDealNotifs]=useState([]);
-  // Foreground FCM alert — populated from the crm:push-received window event
-  // (pushNotifications.js). { title, body, type, leadId, status }. null = hidden.
+  // Foreground FCM alert — { title, body, type, leadId, status }. null = unmounted.
   var [pushBanner,setPushBanner]=useState(null);
+  // Drives the slide transform: true → translateY(0), false → off-screen (-120%).
+  var [bannerShown,setBannerShown]=useState(false);
+  var pushTimer=useRef(null);        // auto-dismiss timer handle
+  var pushTouchStartY=useRef(null);  // swipe-up gesture start Y
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
   // STEP 4-2 — bumped (debounced) on every lead/DR WS event. CallbackBell +
@@ -26228,14 +26231,30 @@ export default function CRMApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Slide the banner up and out, then unmount after the transition (320ms).
+  var dismissPushBanner = function(){
+    if (pushTimer.current){ clearTimeout(pushTimer.current); pushTimer.current=null; }
+    setBannerShown(false);
+    setTimeout(function(){ setPushBanner(null); }, 320);
+  };
+  // Tap → open the lead via the hardened crm:open-lead path, then dismiss.
+  var openPushBanner = function(){
+    if (!bannerShown) return; // ignore taps once it's sliding out
+    if (pushBanner && pushBanner.leadId){
+      try { window.dispatchEvent(new CustomEvent("crm:open-lead", { detail:{ leadId:pushBanner.leadId, type:pushBanner.type, status:pushBanner.status } })); } catch(e){}
+    }
+    dismissPushBanner();
+  };
+
   // Foreground push banner: pushNotifications.js dispatches crm:push-received
   // when an FCM message arrives while the app is open (the OS suppresses its
-  // own banner then). Show a brief in-app banner. No-op on web — the event is
-  // only dispatched from the native shell.
+  // own banner then). Show a full-width slide-down banner. No-op on web — the
+  // event is only dispatched from the native shell.
   useEffect(function(){
     var onPush = function(ev){
       var d = (ev && ev.detail) || {};
       if (!d.title && !d.body) return; // nothing to show
+      setBannerShown(false); // start above the screen
       setPushBanner({ title:d.title||"", body:d.body||"", type:d.type||"", leadId:d.leadId||"", status:d.status||"" });
     };
     if (typeof window !== "undefined" && window.addEventListener) {
@@ -26248,11 +26267,18 @@ export default function CRMApp() {
     };
   }, []);
 
-  // Auto-dismiss the push banner — mirrors the page-toast pattern.
+  // Slide in on the next frame, then auto-dismiss after 5s.
   useEffect(function(){
     if (!pushBanner) return;
-    var h = setTimeout(function(){ setPushBanner(null); }, 3500);
-    return function(){ clearTimeout(h); };
+    var raf = (typeof window!=="undefined" && window.requestAnimationFrame)
+      ? window.requestAnimationFrame(function(){ setBannerShown(true); })
+      : setTimeout(function(){ setBannerShown(true); }, 20);
+    pushTimer.current = setTimeout(function(){ dismissPushBanner(); }, 5000);
+    return function(){
+      if (typeof window!=="undefined" && window.cancelAnimationFrame) window.cancelAnimationFrame(raf); else clearTimeout(raf);
+      if (pushTimer.current){ clearTimeout(pushTimer.current); pushTimer.current=null; }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pushBanner]);
 
   if(!currentUser) {
@@ -26387,24 +26413,37 @@ export default function CRMApp() {
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
     {pushBanner && <div
-      onClick={function(){
-        if (pushBanner.leadId) {
-          // Reuse the existing deep-link machinery: the crm:open-lead listener
-          // runs openPendingLead → live-token fetch → nav (hardened path).
-          try { window.dispatchEvent(new CustomEvent("crm:open-lead", { detail: { leadId: pushBanner.leadId, type: pushBanner.type, status: pushBanner.status } })); } catch(e){}
-        }
-        setPushBanner(null);
+      onClick={openPushBanner}
+      onTouchStart={function(e){ try { pushTouchStartY.current = e.touches[0].clientY; } catch(_){ pushTouchStartY.current = null; } }}
+      onTouchMove={function(e){
+        if (pushTouchStartY.current == null) return;
+        try {
+          var dy = e.touches[0].clientY - pushTouchStartY.current; // negative = swiping up
+          if (dy < -40){ pushTouchStartY.current = null; dismissPushBanner(); }
+        } catch(_){}
       }}
+      onTouchEnd={function(){ pushTouchStartY.current = null; }}
       style={{
-        position:"fixed", top:80, right:16, zIndex:900, maxWidth:340,
-        padding:"12px 16px", borderRadius:10,
-        background:"#fff", color:C.text,
-        border:"1px solid "+C.border,
-        boxShadow:"0 8px 24px rgba(0,0,0,0.12)",
+        position:"fixed", top:0, left:0, right:0, zIndex:1000,
+        padding:"calc(env(safe-area-inset-top, 0px) + 10px) 12px 0",
+        transform: bannerShown ? "translateY(0)" : "translateY(-120%)",
+        transition:"transform 0.32s cubic-bezier(0.22, 1, 0.36, 1)",
+        willChange:"transform",
+        pointerEvents: bannerShown ? "auto" : "none",
         cursor: pushBanner.leadId ? "pointer" : "default"
       }}>
-      <div style={{ fontSize:13, fontWeight:700, marginBottom: pushBanner.body ? 4 : 0 }}>{pushBanner.title || "Notification"}</div>
-      {pushBanner.body && <div style={{ fontSize:12, color:C.textLight, lineHeight:1.45 }}>{pushBanner.body}</div>}
+      <div style={{
+        maxWidth:560, margin:"0 auto",
+        background:"#fff", color:C.text,
+        border:"1px solid "+C.border, borderRadius:14,
+        boxShadow:"0 10px 30px rgba(0,0,0,0.18)",
+        padding:"12px 16px 14px"
+      }}>
+        {/* grab handle — hints swipe-up-to-dismiss */}
+        <div style={{ width:36, height:4, borderRadius:2, background:C.border, margin:"0 auto 10px" }}/>
+        <div style={{ fontSize:14, fontWeight:700, marginBottom: pushBanner.body ? 4 : 0 }}>{pushBanner.title || "Notification"}</div>
+        {pushBanner.body && <div style={{ fontSize:12.5, color:C.textLight, lineHeight:1.45 }}>{pushBanner.body}</div>}
+      </div>
     </div>}
   </div>;
 }
