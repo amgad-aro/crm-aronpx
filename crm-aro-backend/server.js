@@ -14555,6 +14555,19 @@ app.post("/api/notifications", auth, async function(req, res) {
     // broadcasts (rotation at 9108/9225, offsite at 5395, commission at
     // 2710/18305) — this brings the client-fired create into line.
     try { broadcast("notification_updated", {}); } catch(e) {}
+    // Submission confirmation: push the submitting agent that their deal/EOI
+    // is pending. type "deal" covers both (status distinguishes). Fire-and-forget.
+    if (body.type === "deal" && (body.status === "DoneDeal" || body.status === "EOI")) {
+      var isDoneDeal = body.status === "DoneDeal";
+      var ln = body.leadName || "a lead";
+      sendPushNotification(
+        [String(req.user.id)],
+        isDoneDeal ? "Deal submitted" : "EOI submitted",
+        isDoneDeal ? ("Your deal on " + ln + " is pending approval")
+                   : ("Your EOI on " + ln + " is pending approval"),
+        { type: "deal_submit", status: String(body.status), leadId: String(body.leadId || "") }
+      ).catch(function(){});
+    }
     res.json(n);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
