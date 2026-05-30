@@ -5713,7 +5713,7 @@ var LeadsPage = function(p) {
                 // "same_agent" if an admin tries to rotate to the current owner.
                 // Inactive owners aren't in the pool — inject a disabled option so
                 // the SELECT renders their name instead of falling back to "— No Agent —".
-                var poolSel = isOnlyAdmin ? (p.myTeamUsers||salesUsers) : (p.myTeamUsers||salesUsers).filter(function(u){return (u.role==="sales"||u.role==="team_leader")&&u.active;});
+                var poolSel = isOnlyAdmin ? (p.myTeamUsers||salesUsers).filter(function(u){return u.active !== false;}) : (p.myTeamUsers||salesUsers).filter(function(u){return (u.role==="sales"||u.role==="team_leader")&&u.active;});
                 var opts = poolSel.map(function(u){var uid=gid(u);return <option key={uid} value={uid}>{u.name}</option>;});
                 var ownerId = selected.agentId&&selected.agentId._id ? String(selected.agentId._id) : (selected.agentId ? String(selected.agentId) : "");
                 if (ownerId && !poolSel.some(function(u){return gid(u)===ownerId;})) {

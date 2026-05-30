@@ -10725,7 +10725,11 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
     }
 
     // ── HARD STOP 0: rotation permanently stopped (3 consecutive Not Interested) ──
-    if (lead.rotationStopped === true) {
+    // Admin/sales_admin override: rotationStopped blocks only the auto sweepers
+    // (autoRotateLead / attemptQueueAssignment). Manual admin reassignment is the
+    // intended escape hatch for a stopped lead — same policy as the noRotation /
+    // locked checks below.
+    if (lead.rotationStopped === true && req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(409).json({ error: "rotation_stopped", message: "Rotation permanently stopped on this lead (3 consecutive Not Interested)" });
     }
     // ── HARD STOP 1: noRotation flag on any assignment ──
