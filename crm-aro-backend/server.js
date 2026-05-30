@@ -9421,6 +9421,7 @@ app.post("/api/agents/:id/unassign-all-leads", auth, async function(req, res) {
       console.error("[unassign-all-leads activity]", e && e.message ? e.message : e);
     }
 
+    broadcast("lead_updated", {});
     res.json({ hidden: hidden, agentName: agentName });
   } catch (e) {
     res.status(500).json({ error: e.message });
