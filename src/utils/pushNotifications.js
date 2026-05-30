@@ -93,7 +93,6 @@ export async function initPushNotifications() {
     _listeners.push(PushNotifications.addListener("pushNotificationActionPerformed", function (action) {
       try {
         var data = (action && action.notification && action.notification.data) || {};
-        console.log("[TAP] action received, data=", JSON.stringify(action && action.notification && action.notification.data));
         var lid  = data.leadId ? String(data.leadId) : "";
         if (!lid) return;
         // Durable bridge: App.js reads these on mount (cold start / resume from
@@ -102,7 +101,6 @@ export async function initPushNotifications() {
           localStorage.setItem("crm_pending_lead", lid);
           localStorage.setItem("crm_pending_lead_type", data.type ? String(data.type) : "");
           localStorage.setItem("crm_pending_lead_status", data.status ? String(data.status) : "");
-          console.log("[TAP] wrote crm_pending_lead=", lid);
         } catch (e) {}
         // Instant path when the app is already foreground: App.js listens for this.
         if (typeof window !== "undefined" && window.dispatchEvent) {
@@ -110,7 +108,6 @@ export async function initPushNotifications() {
             window.dispatchEvent(new CustomEvent("crm:open-lead", {
               detail: { leadId: lid, type: data.type || "", status: data.status || "" }
             }));
-            console.log("[TAP] dispatched crm:open-lead");
           } catch (e) {}
         }
       } catch (e) { /* never let tap handling throw */ }

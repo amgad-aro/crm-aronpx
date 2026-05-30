@@ -26168,7 +26168,6 @@ export default function CRMApp() {
                : (t.indexOf("deal") === 0 && status === "EOI")     ? "eoi"
                : (t.indexOf("deal") === 0)                          ? "deals"
                : "leads";
-      console.log("[TAP] openPendingLead called, leadId=", leadId, "type=", type, "page=", page);
       try { nav(page, { _id: String(leadId), name: "" }); } catch(e){}
       try {
         localStorage.removeItem("crm_pending_lead");
@@ -26179,13 +26178,11 @@ export default function CRMApp() {
     // (a) cold start / resume — consume whatever the tap stored.
     try {
       var pendId = localStorage.getItem("crm_pending_lead");
-      console.log("[TAP] cold-start crm_pending_lead=", pendId);
       if (pendId) openPendingLead(pendId, localStorage.getItem("crm_pending_lead_type"), localStorage.getItem("crm_pending_lead_status"));
     } catch(e){}
     // (b) foreground — tap while the app is already open.
     var onOpenLead = function(ev){
       var d = (ev && ev.detail) || {};
-      console.log("[TAP] crm:open-lead event received", d);
       openPendingLead(d.leadId, d.type, d.status);
     };
     if (typeof window !== "undefined" && window.addEventListener) {
