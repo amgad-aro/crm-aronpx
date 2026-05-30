@@ -3382,6 +3382,41 @@ async function getScopedUserIds(user) {
   return Array.from(idSet.values());
 }
 
+// Recipient resolver for deal/EOI lifecycle push (approve). Mirrors the deal
+// visibility in getVisibleNotifications: the lead's agent + every ancestor in
+// the reportsTo chain (TL -> manager -> director) + all active admins/
+// sales_admins. actorId is removed from the final set so the person taking the
+// action (e.g. the approving admin) doesn't get their own push. Returns deduped
+// userId strings; best-effort -> [] on error.
+async function resolveDealRecipients(leadId, actorId) {
+  try {
+    var ids = new Set();
+    var lead = await Lead.findById(leadId).select("agentId").lean();
+    // 1. Agent + walk UP the reportsTo chain (hop-capped against cycles).
+    if (lead && lead.agentId) {
+      var cursor = await User.findById(lead.agentId).select("_id reportsTo").lean();
+      var hops = 0;
+      while (cursor && hops < 10) {
+        ids.add(String(cursor._id));
+        if (!cursor.reportsTo) break;
+        cursor = await User.findById(cursor.reportsTo).select("_id reportsTo").lean();
+        hops++;
+      }
+    }
+    // 2. All active admins + sales_admins (full-view roles).
+    var fullView = await User.find(
+      { role: { $in: ["admin", "sales_admin"] }, active: { $ne: false } }
+    ).select("_id").lean();
+    fullView.forEach(function(u){ ids.add(String(u._id)); });
+    // 3. Exclude the actor so they don't get pushed their own action.
+    if (actorId) ids.delete(String(actorId));
+    return Array.from(ids);
+  } catch (e) {
+    console.error("[resolveDealRecipients]", e && e.message);
+    return [];
+  }
+}
+
 // isOnVacation(agentId) — 30s cached lookup used outside the rotation picker.
 // Inside the picker we do a single bulk prefetch per sweep instead (see
 // auto-rotate / autoAssignQueuedLead). Cache is invalidated on any write to
@@ -10109,6 +10144,14 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     if (trackedBody) {
       oldLead = await Lead.findById(req.params.id).lean();
     }
+    // Approve-push pre-read: capture prior approve flags + name ONLY when an
+    // approve flag is present in the body (not in trackedBody, so the toggle-only
+    // PUT skips the load above). Lets the push below fire on a true falsy->true
+    // transition without re-pushing when an already-approved deal is re-saved.
+    var approvePre = null;
+    if (req.body.eoiApproved !== undefined || req.body.dealApproved !== undefined) {
+      approvePre = await Lead.findById(req.params.id).select("name eoiApproved dealApproved").lean();
+    }
     // CallbackBell auto-clear (2026-05-18 rebuild): when this PUT logs new
     // feedback / status_change activity AND the lead already has a scheduled
     // callbackTime in the past, clear callbackTime so the bell drops it on the
@@ -10542,6 +10585,28 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         }
       }
     } catch(paidByErr) { console.error("[paidBy recompute]", paidByErr && paidByErr.message); }
+    // Approve push -> agent + manager chain + admins (actor excluded). Fires
+    // ONLY on a true falsy->true transition (prior flag was not true), so a
+    // re-save of an already-approved deal/EOI does not re-push. Gate also can't
+    // trigger on any non-approve edit since it requires req.body.X === true.
+    // Fire-and-forget: never awaited, .catch swallows errors, no-op if no tokens.
+    if (approvePre) {
+      var _eoiApproveTransition  = req.body.eoiApproved  === true && approvePre.eoiApproved  !== true;
+      var _dealApproveTransition = req.body.dealApproved === true && approvePre.dealApproved !== true;
+      if (_eoiApproveTransition || _dealApproveTransition) {
+        var _isDealApprove = _dealApproveTransition;
+        var _ln = approvePre.name || "a lead";
+        resolveDealRecipients(req.params.id, req.user.id).then(function(userIds){
+          if (!userIds.length) return;
+          return sendPushNotification(
+            userIds,
+            _isDealApprove ? "Deal approved" : "EOI approved",
+            (_isDealApprove ? "Deal on " : "EOI on ") + _ln + " was approved",
+            { type: _isDealApprove ? "deal_approve" : "eoi_approve", leadId: String(req.params.id) }
+          );
+        }).catch(function(){});
+      }
+    }
     res.json(lead);
   } catch (e) {
     res.status(500).json({ error: e.message });
