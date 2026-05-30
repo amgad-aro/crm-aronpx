@@ -9720,6 +9720,16 @@ app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
       catch(syncErr){ console.error("DR sync (eoi-cancel) error:", syncErr.message); }
     }
     try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[HotCase] EOI cancelled — returned to Hot Case" }); } catch(e){}
+    // Native push to the ORIGINAL owning agent (captured pre-update in `existing`,
+    // before the FE's follow-up auto-rotate reassigns the lead). Fire-and-forget.
+    if (existing.agentId) {
+      sendPushNotification(
+        [String(existing.agentId)],
+        "EOI cancelled",
+        "Your EOI on " + (existing.name || "a lead") + " was cancelled",
+        { type: "eoi_cancel", leadId: String(req.params.id) }
+      ).catch(function(){});
+    }
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(lead);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -9825,6 +9835,16 @@ app.post("/api/leads/:id/deal-cancel", auth, async function(req, res) {
     }
     try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[HotCase] Deal cancelled — returned to Hot Case" }); } catch(e){}
     try { await cascadeCommissionCancel(req.params.id, "Deal cancelled by " + (req.user && req.user.name ? req.user.name : "admin"), req.user); } catch(e){ console.error("[commission hook deal-cancel]", e && e.message); }
+    // Native push to the ORIGINAL owning agent (captured pre-update in `existing`,
+    // before the FE's follow-up auto-rotate reassigns the lead). Fire-and-forget.
+    if (existing.agentId) {
+      sendPushNotification(
+        [String(existing.agentId)],
+        "Deal cancelled",
+        "Your deal on " + (existing.name || "a lead") + " was cancelled",
+        { type: "deal_cancel", leadId: String(req.params.id) }
+      ).catch(function(){});
+    }
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     res.json(lead);
   } catch (e) { res.status(500).json({ error: e.message }); }
