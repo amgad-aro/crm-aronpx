@@ -10,6 +10,7 @@ var http = require("http");
 var WebSocketLib = require("ws");
 var Resend = require("resend").Resend;
 var rateLimit = require("express-rate-limit");
+var { sendPushNotification } = require("./notifications");
 
 // Coerce anything the frontend sends for an ObjectId-typed field into a
 // 24-hex string or null. Handles: empty string, populated {_id, name, ...}
@@ -11345,6 +11346,14 @@ async function autoRotateLead(leadId, byName, opts) {
           reason: firedRule || reason || "auto"
         });
         broadcast("notification_updated", {});
+        // Native push to the newly-assigned owner. Fire-and-forget: never await,
+        // never let a push failure affect rotation. No-op if no pushTokens.
+        sendPushNotification(
+          [String(targetAgentId)],
+          "New lead assigned",
+          (lead.name || "A lead") + " was assigned to you",
+          { type: "rotation", leadId: String(leadId) }
+        ).catch(function(){});
       } catch (notifErr) {
         console.error("[rotation] notification write failed:", notifErr && notifErr.message);
       }
@@ -11469,6 +11478,14 @@ async function autoRotateLead(leadId, byName, opts) {
         reason: firedRule || reason || "auto"
       });
       broadcast("notification_updated", {});
+      // Native push to the newly-assigned owner. Fire-and-forget: never await,
+      // never let a push failure affect rotation. No-op if no pushTokens.
+      sendPushNotification(
+        [String(targetAgentId)],
+        "New lead assigned",
+        (lead.name || "A lead") + " was assigned to you",
+        { type: "rotation", leadId: String(leadId) }
+      ).catch(function(){});
     } catch (notifErr) {
       console.error("[rotation] notification write failed:", notifErr && notifErr.message);
     }
