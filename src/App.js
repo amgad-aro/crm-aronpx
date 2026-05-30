@@ -1082,6 +1082,69 @@ var ResetPasswordPage = function() {
   </div>;
 };
 
+// ===== PRIVACY POLICY (public, no auth) =====
+// Rendered for authPath === "/privacy" before the auth gate, so it is reachable
+// directly via URL whether logged in or out (app stores fetch this during review).
+// Self-contained static content: no API calls, no token, no hooks — renders
+// identically regardless of session state. English-only legal text → forced LTR.
+var PrivacyPolicyPage = function() {
+  var h2 = { margin:"28px 0 8px", fontSize:17, fontWeight:800, color:C.text };
+  var p  = { margin:"0 0 12px", fontSize:14.5, lineHeight:1.7, color:C.text };
+  var ul = { margin:"0 0 12px", padding:"0 0 0 20px", fontSize:14.5, lineHeight:1.7, color:C.text };
+  var li = { marginBottom:6 };
+  return <div dir="ltr" style={{ direction:"ltr", minHeight:"100vh", background:"#F0F2F5", fontFamily:"'Cairo','Segoe UI',sans-serif", padding:"32px 16px", boxSizing:"border-box" }}>
+    <div style={{ background:"#fff", borderRadius:16, padding:"40px 40px 48px", width:"100%", maxWidth:760, margin:"0 auto", boxShadow:"0 8px 32px rgba(0,0,0,0.08)" }}>
+      <div style={{ borderBottom:"1px solid #E2E8F0", paddingBottom:18, marginBottom:24 }}>
+        <div style={{ width:54, height:54, borderRadius:14, background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", display:"inline-flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:18, color:"#fff", marginBottom:14 }}>ARO</div>
+        <h1 style={{ margin:0, fontSize:26, fontWeight:800, color:C.text }}>Privacy Policy — ARO CRM</h1>
+        <div style={{ marginTop:8, fontSize:13, color:C.textLight }}>Last updated: 31 May 2026</div>
+      </div>
+
+      <p style={p}>ARO CRM ("the App") is operated by AROG For Real Estate Development and Marketing ("we", "us", "our"), a limited liability company. This Privacy Policy explains what information the App collects, how we use it, and your rights.</p>
+
+      <h2 style={h2}>1. Who This App Is For</h2>
+      <p style={p}>ARO CRM is an internal business application for our authorized employees and sales staff to manage real estate sales leads, deals, and related workflows. Access requires an account issued by us.</p>
+
+      <h2 style={h2}>2. Information We Collect</h2>
+      <ul style={ul}>
+        <li style={li}><strong>Account information:</strong> your name, email, role, and login credentials.</li>
+        <li style={li}><strong>Usage data:</strong> actions you take in the app (leads assigned, deals, status changes, callbacks) for business operations.</li>
+        <li style={li}><strong>Customer/lead data:</strong> contact details and notes about prospective real estate clients, entered by staff for business purposes.</li>
+        <li style={li}><strong>Device &amp; push token:</strong> when you enable notifications, we store a Firebase Cloud Messaging (FCM) device token to deliver push notifications to your device.</li>
+        <li style={li}><strong>Technical data:</strong> basic device/connection information necessary to operate the service.</li>
+      </ul>
+
+      <h2 style={h2}>3. How We Use Information</h2>
+      <ul style={ul}>
+        <li style={li}>To provide and operate the CRM (assign leads, track deals, send work notifications).</li>
+        <li style={li}>To send push notifications about leads, deals, approvals, and callback reminders relevant to your role.</li>
+        <li style={li}>To secure accounts and prevent unauthorized access.</li>
+      </ul>
+
+      <h2 style={h2}>4. Push Notifications</h2>
+      <p style={p}>We use Firebase Cloud Messaging (a Google service) to deliver notifications. A device token is associated with your account while you are logged in, and is removed or reassigned when you log out or another user logs in on the same device. You can disable notifications at any time in your device settings.</p>
+
+      <h2 style={h2}>5. Data Sharing</h2>
+      <p style={p}>We do not sell your personal information. Data is accessible only to authorized personnel within our organization according to their role. We use Google Firebase to deliver notifications, subject to Google's privacy practices.</p>
+
+      <h2 style={h2}>6. Data Retention</h2>
+      <p style={p}>We retain information for as long as necessary to operate the CRM and meet legal and business obligations.</p>
+
+      <h2 style={h2}>7. Security</h2>
+      <p style={p}>We apply reasonable technical and organizational measures to protect data, including access controls and rate limiting. No system is completely secure.</p>
+
+      <h2 style={h2}>8. Your Rights</h2>
+      <p style={p}>You may request access to, correction of, or deletion of your personal data by contacting us. Customer/lead data is managed by our organization as the data controller for business purposes.</p>
+
+      <h2 style={h2}>9. Contact</h2>
+      <p style={p}>AROG For Real Estate Development and Marketing<br/>Email: <a href="mailto:amgad.mohamed@aro-investment.com" style={{ color:C.primary, fontWeight:600 }}>amgad.mohamed@aro-investment.com</a></p>
+
+      <h2 style={h2}>10. Changes</h2>
+      <p style={p}>We may update this Policy; the "Last updated" date reflects the latest version.</p>
+    </div>
+  </div>;
+};
+
 // ===== SIDEBAR =====
 var SidebarIcon = function(id, active){
   var col = active ? "#fff" : "rgba(255,255,255,0.4)";
@@ -26280,6 +26343,11 @@ export default function CRMApp() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pushBanner]);
+
+  // Public privacy policy — no auth required. Checked before the auth/loading
+  // gates so it renders whether logged in or out (app stores fetch /privacy
+  // during review). authPath is updated on popstate (see effect above).
+  if (authPath === "/privacy") return <PrivacyPolicyPage/>;
 
   if(!currentUser) {
     // Unauthenticated reset routes. authPath is updated on popstate so
