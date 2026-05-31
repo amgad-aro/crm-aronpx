@@ -2787,15 +2787,28 @@ var QuickPhoneSearch = function(p) {
 
 
 // Phone cell with hover reveal
+// Mask a phone number for display — reveal first 3 + middle 2, hide the rest.
+// Single source of truth: used by PhoneCell (header hover-reveal) AND by
+// maskPhonesInText below, so every surface masks identically.
+var maskPhone = function(ph){
+  ph = String(ph == null ? "" : ph);
+  if (!ph) return ph;
+  if (ph.length < 7) return ph.slice(0,2) + "****";
+  // show first 3, mask 2, show 2, mask last 4
+  return ph.slice(0,3) + "**" + ph.slice(5,7) + "****";
+};
+// Scrub any phone-like run (9+ contiguous digits, optional leading +) out of a
+// free-text string, so stored notes / activity descriptions / call logs can
+// never leak a full number in any history / timeline / activity view. Values
+// that contain separators or are shorter (dates, times, budgets) stay intact.
+var maskPhonesInText = function(text){
+  if (text == null) return text;
+  return String(text).replace(/\+?\d{9,}/g, function(m){ return maskPhone(m); });
+};
 var PhoneCell = function(p) {
   var [show, setShow] = useState(false);
   if (!p.phone) return <span style={{ color:"#CBD5E1" }}>-</span>;
-  var masked = (function(){
-    var ph = p.phone;
-    if(ph.length < 7) return ph.slice(0,2) + "****";
-    // show first 3, mask 2, show 2, mask last 4
-    return ph.slice(0,3) + "**" + ph.slice(5,7) + "****";
-  })();
+  var masked = maskPhone(p.phone);
   return <span
     onMouseEnter={function(){setShow(true);}}
     onMouseLeave={function(){setShow(false);}}
@@ -3536,7 +3549,7 @@ var LeadJourney = function(p) {
         return s && (s.type === "feedback" || s.type === "feedback_added") &&
                String(s.feedback || s.note || "").trim();
       }));
-      var scFb = groupHasFb ? "" : extractEntryFeedback(ev);
+      var scFb = groupHasFb ? "" : maskPhonesInText(extractEntryFeedback(ev));
       return <div style={{ fontSize:bodyFs, color:C.text }}>
         <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
           <span style={ROW_ICON_STYLE}>🔄</span>
@@ -3547,7 +3560,7 @@ var LeadJourney = function(p) {
     }
     if (type === "feedback" || type === "feedback_added") {
       var ws = whileStatusFor(ev, era);
-      var fbText = stripActorPrefix(ev.feedback || ev.note || "");
+      var fbText = maskPhonesInText(stripActorPrefix(ev.feedback || ev.note || ""));
       // Slate panel + soft shadow. Box is explicit display:block + width:100%
       // + boxSizing:border-box so it always fills the body column (defensive
       // against any future flex parent that might shrink-to-fit). Pill is
@@ -3569,7 +3582,7 @@ var LeadJourney = function(p) {
       </div>;
     }
     if (type === "note") {
-      var noteText = stripActorPrefix(ev.note || "");
+      var noteText = maskPhonesInText(stripActorPrefix(ev.note || ""));
       // Same inline-flow + full-width treatment as feedback so wrapped lines
       // use the full box width. Differentiation from feedback comes via the
       // 📝 icon (vs the colored status pill on feedback).
@@ -3579,14 +3592,14 @@ var LeadJourney = function(p) {
       </div>;
     }
     if (type === "call") {
-      var callText = stripLeadingIcon(ev.note || "");
+      var callText = maskPhonesInText(stripLeadingIcon(ev.note || ""));
       return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
         <span style={ROW_ICON_STYLE}>📞</span>
         <span>{callText || "Call initiated"}</span>
       </div>;
     }
     if (type === "meeting") {
-      var meetText = stripLeadingIcon(ev.note || "");
+      var meetText = maskPhonesInText(stripLeadingIcon(ev.note || ""));
       return <div style={{ fontSize:bodyFs, color:C.text, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
         <span style={ROW_ICON_STYLE}>🤝</span>
         <span>{meetText || "Meeting"}</span>
@@ -3599,7 +3612,7 @@ var LeadJourney = function(p) {
     if (type === "rotated" || type === "reassigned") {
       return <div style={{ fontSize:bodyFs, color:C.text }}>Assigned fresh as <span style={{ color:sColor("NewLead"), fontWeight:700 }}>New Lead</span></div>;
     }
-    return <div style={{ fontSize:bodyFs, color:C.text }}>{ev.note || type}</div>;
+    return <div style={{ fontSize:bodyFs, color:C.text }}>{maskPhonesInText(ev.note || "") || type}</div>;
   };
 
   // Phase 4: single-event row. Renders the typed body via renderSubLine (the
@@ -5757,7 +5770,7 @@ var LeadsPage = function(p) {
           </div>
           {/* Call + WhatsApp — equal-width full-width row at bottom of header */}
           <div style={{ display:"flex", gap:8, marginTop:14 }}>
-            <a href={"tel:"+cleanPhone(selected.phone)} onClick={async function(){try{await apiFetch("/api/activities","POST",{leadId:gid(selected),type:"call",note:"📞 Call initiated — "+selected.phone},p.token,p.csrfToken);p.setActivities&&p.setActivities(function(prev){return [{_id:Date.now(),type:"call",note:"📞 Call initiated",leadId:selected,userId:p.cu,createdAt:new Date().toISOString()}].concat(prev);});}catch(ex){}}} style={{ flex:1, padding:"7px 10px", borderRadius:8, background:"#fff", color:C.primary, fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><Phone size={11}/> {t.call}</a>
+            <a href={"tel:"+cleanPhone(selected.phone)} onClick={async function(){try{await apiFetch("/api/activities","POST",{leadId:gid(selected),type:"call",note:"📞 Call initiated"},p.token,p.csrfToken);p.setActivities&&p.setActivities(function(prev){return [{_id:Date.now(),type:"call",note:"📞 Call initiated",leadId:selected,userId:p.cu,createdAt:new Date().toISOString()}].concat(prev);});}catch(ex){}}} style={{ flex:1, padding:"7px 10px", borderRadius:8, background:"#fff", color:C.primary, fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><Phone size={11}/> {t.call}</a>
             <a href={"https://wa.me/"+waPhone(selected.phone)} target="_blank" rel="noreferrer" style={{ flex:1, padding:"7px 10px", borderRadius:8, background:"#25D366", color:"#fff", fontSize:12, fontWeight:600, textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><svg viewBox="0 0 24 24" width="11" height="11" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> {t.whatsapp}</a>
           </div>
         </div>
@@ -9998,7 +10011,7 @@ var DashboardPage = function(p) {
             // Lead rows stay single-line with the existing 80-char cap so long notes
             // don't blow up the dashboard.
             var isDrRow = srcTag === "DR";
-            var feedbackTextDisplay = feedbackText;
+            var feedbackTextDisplay = maskPhonesInText(feedbackText);
             if (!isDrRow && feedbackTextDisplay && feedbackTextDisplay.length>80) {
               feedbackTextDisplay = feedbackTextDisplay.slice(0,80)+"\u2026";
             }
@@ -10201,7 +10214,7 @@ var DashboardPage = function(p) {
             else if (a.type==="meeting") { actionLabel = "Meeting booked"; }
             // Daily Request rows: show full feedback; Lead rows keep the 80-char cap.
             var isDrRowM = srcTagM === "DR";
-            var feedbackTextDisplayM = feedbackText;
+            var feedbackTextDisplayM = maskPhonesInText(feedbackText);
             if (!isDrRowM && feedbackTextDisplayM && feedbackTextDisplayM.length>80) feedbackTextDisplayM = feedbackTextDisplayM.slice(0,80)+"\u2026";
             var noteLc = aNote.toLowerCase();
             var ic;
@@ -12375,7 +12388,7 @@ var DailyRequestsPage = function(p) {
                           <span style={{ fontSize:10, fontWeight:700 }}>{icon} {who}</span>
                           <span style={{ fontSize:9, color:C.textLight }}>{timeAgo(a.createdAt,t)}</span>
                         </div>
-                        {a.note&&<div style={{ fontSize:11, color:C.textLight }}>{a.note}</div>}
+                        {a.note&&<div style={{ fontSize:11, color:C.textLight }}>{maskPhonesInText(a.note)}</div>}
                       </div>;
                     })}
                   </div>;
@@ -12519,7 +12532,7 @@ var DailyRequestsPage = function(p) {
                     <span style={{ fontSize:10, fontWeight:700, color:C.text }}>{icon} {who}</span>
                     <span style={{ fontSize:9, color:C.textLight }}>{timeAgo(a.createdAt,t)}</span>
                   </div>
-                  {a.note&&<div style={{ fontSize:11, color:C.textLight }}>{a.note}</div>}
+                  {a.note&&<div style={{ fontSize:11, color:C.textLight }}>{maskPhonesInText(a.note)}</div>}
                 </div>;
               })}
             </div>;
@@ -12539,7 +12552,7 @@ var DailyRequestsPage = function(p) {
             <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
               <span style={{ fontSize:16, flexShrink:0 }}>{a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="note"?"📝":"🔔"}</span>
               <div style={{ flex:1 }}>
-                <div style={{ fontSize:12, fontWeight:500, color:C.text }}>{a.note}</div>
+                <div style={{ fontSize:12, fontWeight:500, color:C.text }}>{maskPhonesInText(a.note)}</div>
                 <div style={{ fontSize:10, color:C.textLight, marginTop:3, display:"flex", gap:8 }}>
                   {uname&&<span style={{ fontWeight:600, color:C.accent }}>{uname}</span>}
                   <span>{a.createdAt?new Date(a.createdAt).toLocaleDateString("en-GB")+" — "+new Date(a.createdAt).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):""}</span>
@@ -13535,7 +13548,7 @@ var TeamPage = function(p) {
           <div style={{ flex:1, minWidth:0 }}>
             <span style={{ fontSize:12, fontWeight:600, color:C.accent }}>{a.uname}</span>
             {a.lname&&<span style={{ fontSize:12, color:C.textLight }}> — {a.lname}</span>}
-            {a.note&&<div style={{ fontSize:11, color:C.textLight, marginTop:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{a.note}</div>}
+            {a.note&&<div style={{ fontSize:11, color:C.textLight, marginTop:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{maskPhonesInText(a.note)}</div>}
           </div>
           <span style={{ fontSize:10, color:C.textLight, flexShrink:0 }}>{timeAgo(a.time,{ago:"ago",minutes:"min",hours:"hr",days:"days",just:"now"})}</span>
         </div>;})}
