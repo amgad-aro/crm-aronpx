@@ -4116,6 +4116,67 @@ var LeadsPage = function(p) {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[selected, hasRenderableSelected]);
+
+  // ===== TEMPORARY DEBUG — slice.status diagnosis (admin-only, deletable) =====
+  // When an admin opens a lead detail panel, fetch the FULL doc via
+  // GET /api/leads/:id (the list object has agentHistory[] stripped by the
+  // summary projection) and dump each slice's real .status alongside its
+  // agentHistory so we can see whether a "MeetingDone" slice carries a
+  // matching status_change entry (and whether that entry has author fields,
+  // distinguishing a genuine agent action from a holder-sync mirror write).
+  // Read-only (GET). Remove this whole block after diagnosis.
+  var debugLeadIdRef = useRef("");
+  useEffect(function(){
+    var isAdminOnly = p.cu && (p.cu.role === "admin" || p.cu.role === "sales_admin");
+    if (!isAdminOnly || !selected || !gid(selected) || !p.token) return;
+    var lid = gid(selected);
+    if (debugLeadIdRef.current === lid) return;   // only once per opened lead
+    debugLeadIdRef.current = lid;
+    apiFetch("/api/leads/" + lid, "GET", null, p.token).then(function(full){
+      if (!full || !full._id) return;
+      var holderId = full.agentId && full.agentId._id ? String(full.agentId._id) : String(full.agentId || "");
+      var rows = (full.assignments || []).map(function(a){
+        var aId = a.agentId && a.agentId._id ? String(a.agentId._id) : String(a.agentId || "");
+        var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
+        var statusChanges = hist.filter(function(h){ return h && h.type === "status_change"; }).map(function(h){
+          var m = String(h.note || "").match(/Status:\s*(.+)$/i);
+          return {
+            status: (m && m[1] ? m[1].trim() : (h.status || "?")),
+            at: h.createdAt || h.at || null,
+            hasAuthor: !!(h.authorId || h.authorName || h.authorRole),   // mirror writes lack these
+            authorName: h.authorName || "", authorRole: h.authorRole || ""
+          };
+        });
+        var matchesOwnStatus = statusChanges.some(function(e){ return String(e.status).replace(/\s/g,"") === String(a.status||"").replace(/\s/g,""); });
+        return {
+          agent: a.agentId && a.agentId.name ? a.agentId.name : aId,
+          agentId: aId,
+          sliceStatus: a.status || "(none)",
+          isCurrentHolder: !!(aId && holderId && aId === holderId),
+          removed: !!a.removedAt,
+          historyStatusChangeCount: statusChanges.length,
+          historyHasMatchingStatusChange: matchesOwnStatus,
+          statusChanges: statusChanges
+        };
+      });
+      /* eslint-disable no-console */
+      console.log("%c[SLICE-DEBUG] " + (full.name || "(no name)") + " · " + lid, "color:#B91C1C;font-weight:700");
+      console.log("[SLICE-DEBUG] current holder agentId:", holderId);
+      console.table(rows.map(function(r){ return {
+        agent: r.agent, sliceStatus: r.sliceStatus, holder: r.isCurrentHolder,
+        removed: r.removed, statusChanges: r.historyStatusChangeCount,
+        matchesOwnStatus: r.historyHasMatchingStatusChange
+      }; }));
+      console.log("[SLICE-DEBUG] full per-slice detail (with status_change author info):", rows);
+      console.log("[SLICE-DEBUG] raw assignments (full doc):", full.assignments);
+      /* eslint-enable no-console */
+    }).catch(function(err){
+      /* eslint-disable-next-line no-console */
+      console.warn("[SLICE-DEBUG] fetch failed:", err && err.message);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[selected, p.token]);
+
   // Close the side panel when the user clicks anywhere outside of it.
   var panelRef = useOutsideClose(hasRenderableSelected, function(){ setSelected(null); });
   // Tab-badge counts — server-side aggregation against the same scope the
