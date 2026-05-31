@@ -10400,6 +10400,19 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         else if (req.body.notes) histNote.type = "note";
         else histNote.type = "feedback";
         histNote.note = req.body.status ? "Status: " + req.body.status : (req.body.notes || req.body.lastFeedback || "");
+        // Feedback is mandatory when sales sets Potential / CallBack / HotCase /
+        // etc. Persist it ON the status_change entry so the per-slice
+        // agentHistory is self-contained and the Lead Journey timeline can
+        // render the feedback beside the status without depending on a separate
+        // feedback event pairing up by timestamp/actor. Additive only —
+        // slice.lastFeedback and the lead.history feedback_added audit row are
+        // unchanged (feedback is still stored where it always was).
+        if (histNote.type === "status_change") {
+          var scFb = (req.body.lastFeedback != null && String(req.body.lastFeedback).trim() !== "")
+                   ? String(req.body.lastFeedback)
+                   : (req.body.notes != null && String(req.body.notes).trim() !== "" ? String(req.body.notes) : "");
+          if (scFb) histNote.feedback = scFb;
+        }
         histNote.createdAt = new Date();
         assignOps.$push = { "assignments.$.agentHistory": histNote };
       }
@@ -13102,6 +13115,9 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
             agentName: agentObj ? agentObj.name : "Unknown",
             type: h.type || "note",
             note: h.note || "",
+            // Feedback now stamped onto status_change entries (PUT slice-sync) —
+            // surface it so the timeline can render it beside the status pills.
+            feedback: h.feedback || "",
             createdAt: h.createdAt || when,
             source: "assignment"
           });
