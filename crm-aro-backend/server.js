@@ -13369,6 +13369,90 @@ function detectPollutedHolderSlices(lead, nameOf, isSalesName) {
   return out;
 }
 
+// ===== Block-C (managerial holder-mirror) pollution detector — READ-ONLY =====
+// detectPollutedSlices skips holders; detectPollutedHolderSlices only flags
+// SALES-authored holder pollution. The OLD block C (PUT /api/leads/:id holder-
+// slice status sync, gated in commit a81f666) ran ONLY on managerial callers
+// and wrote onto the then-holder's slice:
+//   - assignments.$.status / statusChangedAt = the manager's picked status X
+//   - $push agentHistory { type:"status_change", note:"Status: <X>" }  (NO feedback)
+// plus the admin audit wrote a lead.history "...→ <X> by <Manager>" row.
+// This detector fills the gap. Scans EVERY active slice (the polluted slice was
+// the holder at write time, which may since have rotated to non-holder) on
+// leads with 2+ active assignments. Signature, in order:
+//   (sig)  a clean "Status: X" status_change (NO feedback) in the slice's own
+//          agentHistory whose parsed status == the slice's current status;
+//   (ev1)  NO self-authored lead.history status_changed row for X → else genuine;
+//   (ev2)  NO feedback-bearing agentHistory status_change for X → else genuine;
+//   (attr) the most-recent lead.history row producing X is MANAGERIAL-authored
+//          (not sales, not the agent) → confirms a block-C managerial write.
+// No repair value is proposed (this is detect-only) but the agent's real last
+// self-initiated status is surfaced for review. Reuses the shared poll* helpers
+// so the canon/evidence rule cannot drift from the other detectors.
+function detectBlockCPollutedSlices(lead, nameOf, isSalesName, isManagerialName) {
+  var out = [];
+  if (!lead) return out;
+  var active = (Array.isArray(lead.assignments) ? lead.assignments : []).filter(function (a) { return a && a.removedAt == null; });
+  if (active.length < 2) return out;                                   // split leads only
+  var holderId = lead.agentId ? String(lead.agentId._id ? lead.agentId._id : lead.agentId) : "";
+
+  var histRows = (Array.isArray(lead.history) ? lead.history : [])
+    .filter(function (h) { return h && h.event === "status_changed"; })
+    .map(function (h) { return { byUser: String(h.byUser || ""), newStatus: pollParseHistRowNew(h.description), ts: pollRowTs(h), description: String(h.description || "") }; })
+    .filter(function (r) { return r.newStatus; });
+
+  active.forEach(function (slice) {
+    var aId = slice.agentId ? String(slice.agentId._id ? slice.agentId._id : slice.agentId) : "";
+    var agentName = aId ? (nameOf[aId] || "") : "";
+    var Xc = pollCanon(slice.status);
+    var ah = Array.isArray(slice.agentHistory) ? slice.agentHistory : [];
+
+    // (sig) clean "Status: X" status_change with NO feedback, parsed == current status.
+    var sigEntries = ah
+      .filter(function (h) { return h && h.type === "status_change" && !pollHasFeedback(h) && pollCanon(pollParseHistStatus(h)) === Xc; })
+      .sort(function (a, b) { return pollRowTs(b) - pollRowTs(a); });
+    if (!sigEntries.length) return;
+
+    var selfRows = histRows.filter(function (r) { return agentName && pollNorm(r.byUser) === pollNorm(agentName); });
+    // (ev1) self-authored lead.history row for X → genuine.
+    if (selfRows.some(function (r) { return pollCanon(r.newStatus) === Xc; })) return;
+    // (ev2) feedback-bearing agentHistory status_change for X → genuine.
+    if (ah.some(function (h) { return h && h.type === "status_change" && pollHasFeedback(h) && pollCanon(pollParseHistStatus(h)) === Xc; })) return;
+
+    // (attr) most-recent history row producing X must be MANAGERIAL-authored.
+    var sameStatus = histRows.filter(function (r) { return pollCanon(r.newStatus) === Xc; }).sort(function (a, b) { return b.ts - a.ts; });
+    var causingRow = sameStatus[0] || null;
+    if (!causingRow) return;                                           // can't attribute → preserve
+    if (isSalesName(causingRow.byUser)) return;                        // sales-authored → covered by holder cleanup, not block C
+    if (!isManagerialName(causingRow.byUser)) return;                  // unknown author → preserve
+
+    // Agent's REAL last self-initiated status: latest self-authored lead.history
+    // row OR latest feedback-bearing agentHistory status_change; else NewLead.
+    var selfStatusEvents = selfRows.map(function (r) { return { status: r.newStatus, ts: r.ts, src: "lead.history(self)" }; })
+      .concat(ah.filter(function (h) { return h && h.type === "status_change" && pollHasFeedback(h); })
+                .map(function (h) { return { status: pollParseHistStatus(h), ts: pollRowTs(h), src: "agentHistory(feedback)" }; }))
+      .filter(function (e) { return e.status; })
+      .sort(function (a, b) { return b.ts - a.ts; });
+    var realLast = selfStatusEvents[0]
+      ? { status: selfStatusEvents[0].status, statusCanon: pollCanon(selfStatusEvents[0].status), at: new Date(selfStatusEvents[0].ts).toISOString(), source: selfStatusEvents[0].src }
+      : { status: "NewLead", statusCanon: "NewLead", at: null, source: "default (no self-authored status)" };
+
+    var off = sigEntries[0];
+    out.push({
+      sliceId: slice._id ? String(slice._id) : "",
+      agentId: aId,
+      agent: agentName || aId || "(no agentId)",
+      holderNow: aId === holderId ? "currently-holder" : "currently-non-holder",
+      pollutedStatus: slice.status,
+      pollutedStatusCanon: Xc,
+      realLastSelfStatus: realLast,
+      offendingEntry: { note: off.note != null ? String(off.note) : null, at: off.createdAt ? new Date(off.createdAt).toISOString() : (off.timestamp ? new Date(off.timestamp).toISOString() : null) },
+      causingHistoryRow: { byUser: causingRow.byUser, newStatus: causingRow.newStatus, at: new Date(causingRow.ts).toISOString(), description: causingRow.description }
+    });
+  });
+  return out;
+}
+
 // Diagnostic-only (used by ?leadIdFilter on the holder cleanup endpoint). Explains
 // how a holder slice's repair value was derived and — crucially — surfaces the
 // holder's own slice.agentHistory status entries, which the repair value does NOT
@@ -13461,6 +13545,76 @@ app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async fun
       byCurrent: byCurrent,
       byProposed: byProposed,
       samples: samples
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== TEMPORARY — block-C (managerial holder-mirror) pollution dry-run =====
+// READ-ONLY. Lists every slice polluted by the OLD managerial holder-slice
+// status mirror (gated in commit a81f666) — the case neither detectPollutedSlices
+// (non-holder only) nor detectPollutedHolderSlices (sales-authored only) reports.
+// NO WRITES of any kind. Optional ?leadId=<id> scopes to one lead. Temporary —
+// remove after the cleanup decision. Detection lives in detectBlockCPollutedSlices.
+app.get("/api/admin/blockc-pollution-dryrun", auth, strictAdminOnly, async function(req, res) {
+  try {
+    console.log("READ-ONLY DRY RUN (block-C) — NO WRITES");
+    var leadIdFilter = String(req.query.leadId || "").trim();
+    if (leadIdFilter && !mongoose.Types.ObjectId.isValid(leadIdFilter)) {
+      return res.status(400).json({ error: "invalid_lead_id" });
+    }
+
+    var users = await User.find({}, { name: 1, role: 1 }).lean();
+    var nameOf = {}, nameRoles = {};
+    users.forEach(function (u) {
+      nameOf[String(u._id)] = u.name || "(unknown)";
+      var n = pollNorm(u.name);
+      (nameRoles[n] = nameRoles[n] || {})[String(u.role || "")] = true;
+    });
+    var isSalesName = function (byUser) {
+      var roles = nameRoles[pollNorm(byUser)];
+      if (!roles) return false;
+      var keys = Object.keys(roles);
+      return keys.length === 1 && keys[0] === "sales";
+    };
+    var MANAGERIAL = { admin: 1, manager: 1, team_leader: 1, director: 1 };
+    var isManagerialName = function (byUser) {
+      var roles = nameRoles[pollNorm(byUser)];
+      if (!roles) return false;
+      return Object.keys(roles).some(function (k) { return MANAGERIAL[k]; });
+    };
+
+    var leadQuery = leadIdFilter
+      ? { _id: new mongoose.Types.ObjectId(leadIdFilter) }
+      : { "assignments.0": { $exists: true } };
+    var leads = await Lead.find(
+      leadQuery,
+      { name: 1, phone: 1, agentId: 1, status: 1, assignments: 1, history: 1 }
+    ).lean();
+
+    var results = [];
+    var leadsScanned = 0;
+    leads.forEach(function (lead) {
+      var active = (Array.isArray(lead.assignments) ? lead.assignments : []).filter(function (a) { return a && a.removedAt == null; });
+      if (active.length < 2) return;
+      leadsScanned++;
+      detectBlockCPollutedSlices(lead, nameOf, isSalesName, isManagerialName).forEach(function (s) {
+        results.push(Object.assign({ leadId: String(lead._id), leadName: lead.name || "(no name)", phone: lead.phone || "" }, s));
+      });
+    });
+
+    var byStatus = {}, leadsAffected = {};
+    results.forEach(function (r) { byStatus[r.pollutedStatusCanon] = (byStatus[r.pollutedStatusCanon] || 0) + 1; leadsAffected[r.leadId] = true; });
+
+    res.json({
+      mode: "block-C-managerial-holder-mirror",
+      readOnly: true,
+      scope: "every active slice on leads with 2+ active assignments",
+      rule: "clean 'Status: X' status_change (no feedback) matching slice.status, no agent self-evidence for X, and the most-recent lead.history row producing X is managerial-authored",
+      splitLeadsScanned: leadsScanned,
+      totalPollutedSlices: results.length,
+      leadsAffected: Object.keys(leadsAffected).length,
+      byStatus: byStatus,
+      results: results
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
