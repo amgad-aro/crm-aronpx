@@ -13474,6 +13474,110 @@ app.post("/api/admin/rotation-pollution-cleanup-all", auth, strictAdminOnly, asy
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== TEMPORARY — single-slice inspection (admin-only, READ-ONLY) =====
+// Dumps everything needed to explain why one agent's slice on one lead was or
+// wasn't flagged by detectPollutedSlices: holder status, raw slice, every
+// agentHistory entry (type, parsed status, FULL feedback text, authorRole/Name),
+// the agent's lead.history rows, and which exact entry satisfied condition 1
+// (self-authored history row) or condition 2 (feedback-bearing status_change).
+// No writes. Match by agentName (case-insensitive) or agentId. Temporary.
+app.get("/api/admin/inspect-slice", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var leadId = String(req.query.leadId || "").trim();
+    var agentName = String(req.query.agentName || "").trim();
+    var agentIdQ = String(req.query.agentId || "").trim();
+    if (!mongoose.Types.ObjectId.isValid(leadId)) return res.status(400).json({ error: "invalid_lead_id" });
+
+    var users = await User.find({}, { name: 1 }).lean();
+    var nameOf = {};
+    users.forEach(function (u) { nameOf[String(u._id)] = u.name || "(unknown)"; });
+
+    var lead = await Lead.findById(leadId, { name: 1, agentId: 1, status: 1, assignments: 1, history: 1 }).lean();
+    if (!lead) return res.status(404).json({ error: "lead_not_found" });
+
+    var holderId = lead.agentId ? String(lead.agentId._id ? lead.agentId._id : lead.agentId) : "";
+
+    // Resolve the target slice (active or removed) by name or id.
+    var assigns = Array.isArray(lead.assignments) ? lead.assignments : [];
+    var match = null;
+    assigns.forEach(function (a) {
+      if (match) return;
+      var aId = a && a.agentId ? String(a.agentId._id ? a.agentId._id : a.agentId) : "";
+      var aName = nameOf[aId] || "";
+      if (agentIdQ && aId === agentIdQ) { match = a; return; }
+      if (agentName && pollNorm(aName) === pollNorm(agentName)) { match = a; return; }
+    });
+    if (!match) return res.status(404).json({ error: "slice_not_found", message: "No slice for that agent on this lead", agentsOnLead: assigns.map(function(a){ var aId = a && a.agentId ? String(a.agentId._id ? a.agentId._id : a.agentId) : ""; return { agentId: aId, agent: nameOf[aId] || "", status: a && a.status, removed: !!(a && a.removedAt) }; }) });
+
+    var matchId = match.agentId ? String(match.agentId._id ? match.agentId._id : match.agentId) : "";
+    var matchName = nameOf[matchId] || "";
+    var isCurrentHolder = !!(matchId && holderId && matchId === holderId);
+
+    // Every agentHistory entry on the slice, fully expanded.
+    var agentHistory = (Array.isArray(match.agentHistory) ? match.agentHistory : []).map(function (h) {
+      return {
+        type: h && h.type,
+        parsedStatus: pollParseHistStatus(h),
+        feedback: (h && h.feedback != null) ? String(h.feedback) : null,
+        feedbackNonEmpty: pollHasFeedback(h),
+        note: (h && h.note != null) ? String(h.note) : null,
+        authorRole: (h && h.authorRole) || null,
+        authorName: (h && h.authorName) || null,
+        authorId: (h && h.authorId) ? String(h.authorId) : null,
+        createdAt: (h && h.createdAt) ? new Date(h.createdAt).toISOString() : null
+      };
+    });
+
+    // The agent's own lead.history rows + all status_changed rows for context.
+    var allStatusChanged = (Array.isArray(lead.history) ? lead.history : [])
+      .filter(function (h) { return h && h.event === "status_changed"; })
+      .map(function (h) { return { byUser: String(h.byUser || ""), newStatus: pollParseHistRowNew(h.description), description: String(h.description || ""), timestamp: h.timestamp ? new Date(h.timestamp).toISOString() : null }; });
+    var agentHistoryRows = allStatusChanged.filter(function (r) { return pollNorm(r.byUser) === pollNorm(matchName); });
+
+    // Recompute the two exemption conditions for THIS slice, surfacing the trigger.
+    var sliceStatus = match.status;
+    var condition1Entry = agentHistoryRows.filter(function (r) { return pollCanon(r.newStatus) === pollCanon(sliceStatus); })[0] || null;
+    var condition2Entry = (Array.isArray(match.agentHistory) ? match.agentHistory : []).filter(function (h) {
+      return h && h.type === "status_change" && pollHasFeedback(h) && pollCanon(pollParseHistStatus(h)) === pollCanon(sliceStatus);
+    }).map(function (h) {
+      return { parsedStatus: pollParseHistStatus(h), feedback: String(h.feedback), authorRole: h.authorRole || null, authorName: h.authorName || null, createdAt: h.createdAt ? new Date(h.createdAt).toISOString() : null };
+    })[0] || null;
+
+    // What the live detector says about this lead (does it flag this slice?).
+    var detected = detectPollutedSlices(lead, nameOf);
+    var detectedThisSlice = detected.filter(function (d) { return d.agentId === matchId; })[0] || null;
+
+    res.json({
+      leadId: leadId,
+      leadName: lead.name || "(no name)",
+      topLevelStatus: lead.status || null,
+      holderId: holderId,
+      holderName: nameOf[holderId] || "",
+      agent: matchName,
+      agentId: matchId,
+      isCurrentHolder: isCurrentHolder,
+      excludedReason: isCurrentHolder ? "current holder — detector never evaluates holder slices" : null,
+      slice: {
+        status: match.status,
+        removed: !!match.removedAt,
+        lastFeedback: match.lastFeedback != null ? String(match.lastFeedback) : null,
+        notes: match.notes != null ? String(match.notes) : null,
+        notesAuthorName: match.notesAuthorName || null,
+        notesAuthorRole: match.notesAuthorRole || null,
+        lastActionAt: match.lastActionAt ? new Date(match.lastActionAt).toISOString() : null,
+        assignedAt: match.assignedAt ? new Date(match.assignedAt).toISOString() : null
+      },
+      agentHistory: agentHistory,
+      agentLeadHistoryRows: agentHistoryRows,
+      allStatusChangedRows: allStatusChanged,
+      condition1_selfAuthoredHistoryRow: condition1Entry,        // exempts via rule (1)
+      condition2_feedbackBearingStatusChange: condition2Entry,   // exempts via rule (2) — INSPECT this
+      detectorFlagsThisSlice: !!detectedThisSlice,
+      detectorResult: detectedThisSlice || null
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== STATS ROUTE =====
 app.get("/api/stats", auth, async function(req, res) {
   try {

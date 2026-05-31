@@ -16517,6 +16517,23 @@ var RotationDiagnosticsTab = function(props) {
     }
     setAllBusy(false);
   };
+  // TEMPORARY — single-slice inspection state.
+  var [insLeadId, setInsLeadId] = useState("6a05a1a8cecaa45ad07c1c4b");
+  var [insAgent, setInsAgent] = useState("Ahmed Kassem");
+  var [insBusy, setInsBusy] = useState(false);
+  var [insError, setInsError] = useState("");
+  var [insData, setInsData] = useState(null);
+  var runInspect = async function() {
+    setInsBusy(true); setInsError(""); setInsData(null);
+    try {
+      var url = "/api/admin/inspect-slice?leadId=" + encodeURIComponent(String(insLeadId||"").trim()) + "&agentName=" + encodeURIComponent(String(insAgent||"").trim());
+      var d = await apiFetch(url, "GET", null, props.token);
+      setInsData(d);
+    } catch(e) {
+      setInsError((e && e.message) || "Failed");
+    }
+    setInsBusy(false);
+  };
   var load = async function() {
     setLoading(true); setError("");
     try {
@@ -16954,6 +16971,44 @@ var RotationDiagnosticsTab = function(props) {
             </table>
           </div> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:10 }}>No polluted slices detected.</div>}
           {Array.isArray(allData.errors) && allData.errors.length > 0 && <pre style={{ margin:0, padding:"8px 10px", background:"#FEF2F2", color:"#B91C1C", borderRadius:8, fontSize:11, overflowX:"auto" }}>{JSON.stringify(allData.errors, null, 2)}</pre>}
+        </div>}
+      </div>
+    </div>
+
+    {/* (9) Single-Slice Inspection (test) — TEMPORARY, read-only. Explains why
+        one agent's slice on one lead was/wasn't flagged by the detector. */}
+    <div style={{ marginBottom:16, border:"1px solid #CBD5E1", borderRadius:10, overflow:"hidden", background:"#fff" }}>
+      <div style={{ padding:"10px 14px", background:"#F1F5F9" }}>
+        <span style={{ fontSize:13, fontWeight:700, color:"#334155" }}>9. Single-Slice Inspection (read-only)</span>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>
+          Dumps one agent's slice + agentHistory + lead.history rows + the exact condition that exempted/flagged it.
+        </div>
+      </div>
+      <div style={{ padding:"12px 14px" }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", marginBottom:10 }}>
+          <input value={insLeadId} onChange={function(e){ setInsLeadId(e.target.value); }} placeholder="leadId"
+            style={{ padding:"7px 10px", border:"1px solid #CBD5E1", borderRadius:8, fontSize:12, width:300, fontFamily:"ui-monospace, monospace" }}/>
+          <input value={insAgent} onChange={function(e){ setInsAgent(e.target.value); }} placeholder="agent name"
+            style={{ padding:"7px 10px", border:"1px solid #CBD5E1", borderRadius:8, fontSize:12, width:180 }}/>
+          <button onClick={runInspect} disabled={insBusy || !String(insLeadId||"").trim()}
+            style={{ padding:"7px 14px", borderRadius:8, border:"1px solid #334155", background:insBusy?"#E2E8F0":"#fff", color:"#334155", fontSize:12, fontWeight:600, cursor:(insBusy||!String(insLeadId||"").trim())?"not-allowed":"pointer" }}>
+            {insBusy ? "Inspecting…" : "🔍 Inspect slice"}
+          </button>
+        </div>
+        {insError && <div style={{ padding:"10px 14px", marginBottom:12, background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8, color:"#B91C1C", fontSize:12 }}>{insError}</div>}
+        {insData && <div>
+          <div style={{ fontSize:12, marginBottom:8 }}>
+            <b>{insData.agent}</b> on <b>{insData.leadName}</b> · slice status: <span style={{ color:"#B91C1C", fontWeight:700 }}>{insData.slice && insData.slice.status}</span>
+            {" · "}holder: <b>{insData.holderName || "—"}</b>{insData.isCurrentHolder ? <span style={{ color:"#B45309", fontWeight:700 }}> (THIS AGENT IS HOLDER — skipped)</span> : null}
+            {" · "}detector flags: <b style={{ color: insData.detectorFlagsThisSlice ? "#B91C1C" : "#15803D" }}>{insData.detectorFlagsThisSlice ? "YES" : "no"}</b>
+          </div>
+          {insData.condition2_feedbackBearingStatusChange && <div style={{ padding:"8px 10px", marginBottom:8, background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:8, fontSize:11, color:"#92400E" }}>
+            <b>Exempted by condition 2 (feedback-bearing status_change):</b> status “{insData.condition2_feedbackBearingStatusChange.parsedStatus}” · authorRole={String(insData.condition2_feedbackBearingStatusChange.authorRole)} · authorName={String(insData.condition2_feedbackBearingStatusChange.authorName)} · feedback: “{insData.condition2_feedbackBearingStatusChange.feedback}”
+          </div>}
+          {insData.condition1_selfAuthoredHistoryRow && <div style={{ padding:"8px 10px", marginBottom:8, background:"#EFF6FF", border:"1px solid #BFDBFE", borderRadius:8, fontSize:11, color:"#1E40AF" }}>
+            <b>Exempted by condition 1 (self-authored lead.history row):</b> {insData.condition1_selfAuthoredHistoryRow.description}
+          </div>}
+          <pre style={{ margin:0, padding:"10px 12px", background:"#0F172A", color:"#E2E8F0", borderRadius:8, fontSize:11, lineHeight:1.5, overflowX:"auto", maxHeight:420, whiteSpace:"pre", fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace" }}>{JSON.stringify(insData, null, 2)}</pre>
         </div>}
       </div>
     </div>
