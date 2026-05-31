@@ -3526,11 +3526,12 @@ var LeadJourney = function(p) {
     var type = ev.type;
     if (type === "status_change" || type === "status_changed") {
       var to = extractStatus(ev) || "NewLead";
-      var from = extractFromStatus(ev);
-      // The mandatory feedback saved with this status change. Render it beneath
-      // the pills so it's visible on the status row — UNLESS a sibling feedback
-      // row in the same action group already renders the same text (avoid
-      // showing it twice). Single-event rows (group == null) always show it.
+      // Show ONLY the new (target) status — the "from" pill and arrow were
+      // dropped (read confusingly, e.g. "New Lead → Call Back"). The mandatory
+      // feedback saved with this status change still renders beneath the pill,
+      // UNLESS a sibling feedback row in the same action group already renders
+      // the same text (avoid showing it twice). Single-event rows
+      // (group == null) always show it.
       var groupHasFb = !!(group && group.subEvents && group.subEvents.some(function(s){
         return s && (s.type === "feedback" || s.type === "feedback_added") &&
                String(s.feedback || s.note || "").trim();
@@ -3539,7 +3540,6 @@ var LeadJourney = function(p) {
       return <div style={{ fontSize:bodyFs, color:C.text }}>
         <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
           <span style={ROW_ICON_STYLE}>🔄</span>
-          {from ? <><span style={{ color:sColor(from), fontWeight:700 }}>{sLabel(from)}</span><span style={{ color:C.textLight }}>→</span></> : null}
           <span style={{ color:sColor(to), fontWeight:700 }}>{sLabel(to)}</span>
         </div>
         {scFb ? <div style={{ marginTop:4, padding:"6px 9px", background:"#F8FAFC", borderRadius:6, border:"1px solid #EEF1F5", fontSize:bodyFs, color:C.text, lineHeight:1.4, wordBreak:"break-word" }}>💬 {scFb}</div> : null}
