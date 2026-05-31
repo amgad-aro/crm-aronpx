@@ -4135,34 +4135,67 @@ var LeadsPage = function(p) {
     apiFetch("/api/leads/" + lid, "GET", null, p.token).then(function(full){
       if (!full || !full._id) return;
       var holderId = full.agentId && full.agentId._id ? String(full.agentId._id) : String(full.agentId || "");
+      var canon = function(s){ return String(s || "").replace(/\s/g, ""); };
+      // Top-level lead.history "status_changed" rows — these ARE author-tagged
+      // (byUser = the name of whoever made the PUT). A genuine self-action by
+      // agent X produces a row with byUser === X. A pre-703ef2f mirror write
+      // onto X's slice produced its only history row under the ROTATED-OFF
+      // caller's name, NOT X — so X's mirror entry has no matching row here.
+      var histSC = (full.history || []).filter(function(h){ return h && h.event === "status_changed"; }).map(function(h){
+        var nm = String(h.description || "").match(/→\s*(.+?)\s+by\s+/i);
+        return {
+          byUser: String(h.byUser || ""),
+          newStatus: nm && nm[1] ? nm[1].trim() : "",
+          ts: new Date(h.timestamp || h.time || h.createdAt || 0).getTime(),
+          description: String(h.description || "")
+        };
+      });
       var rows = (full.assignments || []).map(function(a){
         var aId = a.agentId && a.agentId._id ? String(a.agentId._id) : String(a.agentId || "");
+        var aName = a.agentId && a.agentId.name ? a.agentId.name : aId;
         var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
         var statusChanges = hist.filter(function(h){ return h && h.type === "status_change"; }).map(function(h){
           var m = String(h.note || "").match(/Status:\s*(.+)$/i);
+          var st = (m && m[1] ? m[1].trim() : (h.status || "?"));
           var fb = (h.feedback != null && String(h.feedback).trim() !== "") ? String(h.feedback).trim() : "";
+          var entryTs = new Date(h.createdAt || h.at || 0).getTime();
+          // Cross-reference: is there an author-tagged top-level history row for
+          // THIS slice's own agent, same target status, within ±2 min?
+          var match = histSC.find(function(H){
+            return H.byUser === aName && canon(H.newStatus) === canon(st) && Math.abs(H.ts - entryTs) <= 120000;
+          });
           return {
-            status: (m && m[1] ? m[1].trim() : (h.status || "?")),
+            status: st,
             createdAt: h.createdAt || h.at || null,
             note: h.note != null ? String(h.note) : null,
             hasAuthorId: !!h.authorId,
             hasAuthorName: !!h.authorName,
             hasAuthorRole: !!h.authorRole,
-            hasAuthor: !!(h.authorId || h.authorName || h.authorRole),   // mirror writes lack ALL of these
-            authorName: h.authorName || "", authorRole: h.authorRole || "",
+            hasAuthor: !!(h.authorId || h.authorName || h.authorRole),   // (all false on this lead — unreliable)
             hasFeedback: !!fb,                                            // mirror writes carry no feedback
             feedback: fb,
-            // Mirror signature: a status_change with no author AND no feedback.
-            looksLikeMirror: !(h.authorId || h.authorName || h.authorRole) && !fb
+            // Author-tagged history row by THIS agent for this status+time?
+            historyMatchByOwnAgent: !!match,
+            historyMatchBy: match ? match.byUser : "",
+            // Refined mirror signature: feedback-less AND no self-authored
+            // history row corroborating it.
+            looksLikeMirror: !fb && !match
           };
         });
-        var matchesOwnStatus = statusChanges.some(function(e){ return String(e.status).replace(/\s/g,"") === String(a.status||"").replace(/\s/g,""); });
+        var matchesOwnStatus = statusChanges.some(function(e){ return canon(e.status) === canon(a.status); });
         return {
-          agent: a.agentId && a.agentId.name ? a.agentId.name : aId,
+          agent: aName,
           agentId: aId,
           sliceStatus: a.status || "(none)",
           isCurrentHolder: !!(aId && holderId && aId === holderId),
           removed: !!a.removedAt,
+          lastFeedback: a.lastFeedback != null ? String(a.lastFeedback) : "",
+          notes: a.notes != null ? String(a.notes) : "",
+          notesAuthorName: a.notesAuthorName || "",
+          notesAuthorRole: a.notesAuthorRole || "",
+          lastActionAt: a.lastActionAt || null,
+          statusChangedAt: a.statusChangedAt || null,
+          assignedAt: a.assignedAt || null,
           historyStatusChangeCount: statusChanges.length,
           historyHasMatchingStatusChange: matchesOwnStatus,
           statusChanges: statusChanges
@@ -4185,22 +4218,29 @@ var LeadsPage = function(p) {
       var strongRows = rows.filter(function(r){ return STRONG[r.sliceStatus]; });
       console.log("%c[SLICE-DEBUG] STRONG-status slices: " + strongRows.length, "color:#9A3412;font-weight:700");
       strongRows.forEach(function(r){
-        var matchEntries = r.statusChanges.filter(function(e){
-          return String(e.status).replace(/\s/g,"") === String(r.sliceStatus).replace(/\s/g,"");
-        });
-        var allMatchAreMirror = matchEntries.length > 0 && matchEntries.every(function(e){ return e.looksLikeMirror; });
+        var matchEntries = r.statusChanges.filter(function(e){ return canon(e.status) === canon(r.sliceStatus); });
+        // Polluted IFF every same-status entry is feedback-less AND has no
+        // self-authored history row — i.e. NO genuine evidence the agent set it.
+        var noGenuineEvidence = matchEntries.length > 0 && matchEntries.every(function(e){ return e.looksLikeMirror; });
         console.log(
           "%c  • " + r.agent + " → " + r.sliceStatus +
           "  | same-status entries: " + matchEntries.length +
-          " | ALL look like mirror (no author, no feedback): " + allMatchAreMirror,
-          "color:" + (allMatchAreMirror ? "#B91C1C" : "#15803D") + ";font-weight:600"
+          " | feedback-bearing: " + matchEntries.filter(function(e){return e.hasFeedback;}).length +
+          " | self-authored history rows: " + matchEntries.filter(function(e){return e.historyMatchByOwnAgent;}).length +
+          " | NO genuine evidence (→ polluted): " + noGenuineEvidence,
+          "color:" + (noGenuineEvidence ? "#B91C1C" : "#15803D") + ";font-weight:600"
         );
+        console.log("      lastFeedback:", JSON.stringify(r.lastFeedback), "| notes:", JSON.stringify(r.notes), "| notesAuthor:", r.notesAuthorName || "(none)", r.notesAuthorRole || "");
         console.table(r.statusChanges.map(function(e){ return {
           status: e.status, createdAt: e.createdAt,
-          hasAuthorId: e.hasAuthorId, hasAuthorName: e.hasAuthorName, hasAuthorRole: e.hasAuthorRole,
-          hasFeedback: e.hasFeedback, looksLikeMirror: e.looksLikeMirror, note: e.note
+          hasFeedback: e.hasFeedback,
+          selfAuthoredHistory: e.historyMatchByOwnAgent,
+          looksLikeMirror: e.looksLikeMirror,
+          feedback: e.feedback, note: e.note
         }; }));
       });
+      console.log("[SLICE-DEBUG] raw top-level lead.history:", full.history);
+      console.log("[SLICE-DEBUG] parsed status_changed history rows (author-tagged):", histSC);
       console.log("[SLICE-DEBUG] raw assignments (full doc):", full.assignments);
       /* eslint-enable no-console */
     }).catch(function(err){
