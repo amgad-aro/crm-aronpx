@@ -16725,25 +16725,36 @@ var RotationDiagnosticsTab = function(props) {
         {!pollData && !pollLoading && !pollError && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>Click “Run dry-run” to measure. This endpoint only reads (find().lean()) — it changes nothing.</div>}
         {pollData && <div>
           {/* Summary cards */}
-          <div style={{ display:"flex", gap:12, flexWrap:"wrap", marginBottom:14 }}>
-            <div style={{ background:"#FEF2F2", padding:"10px 14px", borderRadius:8, minWidth:130 }}>
-              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Polluted slices</div>
+          <div style={{ display:"flex", gap:12, flexWrap:"wrap", marginBottom:10 }}>
+            <div style={{ background:"#FEF2F2", padding:"10px 14px", borderRadius:8, minWidth:120 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Total flagged</div>
               <div style={{ fontSize:22, fontWeight:700, color:"#B91C1C" }}>{pollData.total || 0}</div>
+              <div style={{ fontSize:9, color:C.textLight }}>pure history rule</div>
             </div>
-            <div style={{ background:"#FFFBEB", padding:"10px 14px", borderRadius:8, minWidth:150 }}>
-              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Excl. feedback-bearing</div>
-              <div style={{ fontSize:22, fontWeight:700, color:"#B45309" }}>{pollData.totalExclFeedbackBearing != null ? pollData.totalExclFeedbackBearing : "—"}</div>
-              <div style={{ fontSize:9, color:C.textLight }}>safer count (false-positive guard)</div>
+            <div style={{ background:"#FEE2E2", padding:"10px 14px", borderRadius:8, minWidth:120, border:"1.5px solid #B91C1C" }}>
+              <div style={{ fontSize:10, color:"#B91C1C", textTransform:"uppercase", letterSpacing:0.3, fontWeight:700 }}>Confident</div>
+              <div style={{ fontSize:22, fontWeight:700, color:"#B91C1C" }}>{pollData.totalConfident != null ? pollData.totalConfident : "—"}</div>
+              <div style={{ fontSize:9, color:C.textLight }}>pre-fix · not ambiguous</div>
             </div>
-            <div style={{ background:"#FFF7ED", padding:"10px 14px", borderRadius:8, minWidth:130 }}>
+            <div style={{ background:"#FFFBEB", padding:"10px 14px", borderRadius:8, minWidth:120 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Ambiguous</div>
+              <div style={{ fontSize:22, fontWeight:700, color:"#B45309" }}>{pollData.totalAmbiguous != null ? pollData.totalAmbiguous : "—"}</div>
+              <div style={{ fontSize:9, color:C.textLight }}>possibly genuine</div>
+            </div>
+            <div style={{ background:"#ECFDF5", padding:"10px 14px", borderRadius:8, minWidth:120 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>After fix</div>
+              <div style={{ fontSize:22, fontWeight:700, color:"#047857" }}>{pollData.totalAssignedAfterFix != null ? pollData.totalAssignedAfterFix : "—"}</div>
+              <div style={{ fontSize:9, color:C.textLight }}>NOT pollution</div>
+            </div>
+            <div style={{ background:"#FFF7ED", padding:"10px 14px", borderRadius:8, minWidth:110 }}>
               <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Leads affected</div>
               <div style={{ fontSize:22, fontWeight:700, color:"#9A3412" }}>{pollData.leadsAffected || 0}</div>
             </div>
-            <div style={{ background:"#F8FAFC", padding:"10px 14px", borderRadius:8, minWidth:160 }}>
-              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Mode / scope</div>
-              <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{pollData.mode || "—"}{pollData.readOnly ? " · read-only" : ""}</div>
-              <div style={{ fontSize:9, color:C.textLight }}>{pollData.scope || ""}</div>
-            </div>
+          </div>
+          <div style={{ fontSize:10, color:C.textLight, marginBottom:14 }}>
+            {pollData.mode || "—"}{pollData.readOnly ? " · read-only" : ""} · {pollData.scope || ""}
+            {pollData.mirrorFixCutoff ? " · mirror-fix cutoff " + pollData.mirrorFixCutoff : ""}
+            {pollData.totalExclFeedbackBearing != null ? " · excl-feedback-bearing " + pollData.totalExclFeedbackBearing : ""}
           </div>
 
           {/* Breakdown by current (polluted) status */}
@@ -16764,30 +16775,47 @@ var RotationDiagnosticsTab = function(props) {
             })}
           </div>
 
-          {/* Sample affected leads */}
-          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Sample affected leads (up to 10)</div>
-          {Array.isArray(pollData.samples) && pollData.samples.length > 0 ? <div style={{ overflowX:"auto", border:"1px solid #E2E8F0", borderRadius:8, marginBottom:14 }}>
-            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
-              <thead><tr>
-                <th style={th}>Lead</th>
-                <th style={th}>Polluted agent</th>
-                <th style={th}>Current (slice)</th>
-                <th style={th}>Proposed (proven last)</th>
-                <th style={th}>FB-bearing same status?</th>
-                <th style={th}>Reasoning</th>
-              </tr></thead>
-              <tbody>{pollData.samples.map(function(s, i){
-                return <tr key={i}>
-                  <td style={td}>{s.leadName || "(no name)"}</td>
-                  <td style={td}>{s.agent || "—"}</td>
-                  <td style={Object.assign({}, td, { color:"#B91C1C", fontWeight:600 })}>{s.current || "—"}</td>
-                  <td style={Object.assign({}, td, { color:"#15803D", fontWeight:600 })}>{s.proposed || "—"}</td>
-                  <td style={Object.assign({}, td, { color: s.feedbackBearingSameStatus ? "#B45309" : C.textLight, fontWeight: s.feedbackBearingSameStatus ? 700 : 400 })}>{s.feedbackBearingSameStatus ? "YES (likely genuine)" : "no"}</td>
-                  <td style={Object.assign({}, td, { color:C.textLight, maxWidth:340, whiteSpace:"normal" })}>{s.reasoning || "—"}</td>
-                </tr>;
-              })}</tbody>
-            </table>
-          </div> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:14 }}>No samples (no pollution detected).</div>}
+          {/* Sample group 1 — distinct leads, status-spread, confident first */}
+          {(function(){
+            var gradeOf = function(s){ return s.sliceCreatedAfterMirrorFix ? {t:"after-fix",c:"#047857",b:"#ECFDF5"} : s.ambiguousReason ? {t:"ambiguous",c:"#B45309",b:"#FFFBEB"} : {t:"confident",c:"#B91C1C",b:"#FEE2E2"}; };
+            var renderSampleTable = function(list){
+              return <div style={{ overflowX:"auto", border:"1px solid #E2E8F0", borderRadius:8, marginBottom:14 }}>
+                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+                  <thead><tr>
+                    <th style={th}>Lead</th>
+                    <th style={th}>Agent</th>
+                    <th style={th}>Current</th>
+                    <th style={th}>Proposed</th>
+                    <th style={th}>Grade</th>
+                    <th style={th}>Hist row?</th>
+                    <th style={th}>Assigned / LastAction</th>
+                    <th style={th}>Reasoning</th>
+                  </tr></thead>
+                  <tbody>{list.map(function(s, i){
+                    var g = gradeOf(s);
+                    return <tr key={i}>
+                      <td style={td}>{s.leadName || "(no name)"}</td>
+                      <td style={td}>{s.agent || "—"}</td>
+                      <td style={Object.assign({}, td, { color:"#B91C1C", fontWeight:600 })}>{s.current || "—"}</td>
+                      <td style={Object.assign({}, td, { color:"#15803D", fontWeight:600 })}>{s.proposed || "—"}</td>
+                      <td style={td}><span style={{ fontSize:9, padding:"2px 6px", borderRadius:10, background:g.b, color:g.c, fontWeight:700 }}>{g.t}</span></td>
+                      <td style={Object.assign({}, td, { color: s.lastHistoryRowFound ? "#15803D" : "#B91C1C" })}>{s.lastHistoryRowFound ? "yes" : "NONE"}</td>
+                      <td style={Object.assign({}, td, { color:C.textLight, fontSize:10 })}>{(s.sliceAssignedAt||"?").slice(0,10)} / {(s.sliceLastActionAt||"?").slice(0,10)}</td>
+                      <td style={Object.assign({}, td, { color:C.textLight, maxWidth:320, whiteSpace:"normal" })}>{s.reasoning || "—"}</td>
+                    </tr>;
+                  })}</tbody>
+                </table>
+              </div>;
+            };
+            return <div>
+              <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Sample — distinct leads, status-spread (up to 10)</div>
+              {Array.isArray(pollData.samples) && pollData.samples.length > 0 ? renderSampleTable(pollData.samples)
+                : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:14 }}>No samples (no pollution detected).</div>}
+              <div style={{ fontSize:11, fontWeight:700, color:"#B45309", textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Ambiguous edge cases — manual review (up to 5)</div>
+              {Array.isArray(pollData.ambiguousSamples) && pollData.ambiguousSamples.length > 0 ? renderSampleTable(pollData.ambiguousSamples)
+                : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:14 }}>No ambiguous samples.</div>}
+            </div>;
+          })()}
 
           {/* Raw JSON — copy/paste back for analysis */}
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Raw JSON</div>

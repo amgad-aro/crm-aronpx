@@ -13206,12 +13206,19 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
 // NOT evaluated here. /feedback (to_sales) never writes slice.status, so a
 // non-holder slice's status can only come from its own agent's PUT or a mirror.
 //
-// Two totals: `total` is the pure history rule; `totalExclFeedbackBearing`
-// additionally drops any slice whose OWN agentHistory holds a feedback-bearing
-// status_change matching its current status (feedback-bearing = proven genuine,
-// guards the edge case where a real status change made no history row because
-// the top-level lead.status already equalled it). NO writes. To be removed
-// after the detection is finalized.
+// Confidence grading partitions polluted candidates into:
+//   - totalAssignedAfterFix : slice born AFTER 703ef2f → cannot be sales-mirror
+//                             pollution (NOT pollution).
+//   - totalAmbiguous        : possibly a genuine action with no history row —
+//                             feedback-bearing same-status entry, OR the lead's
+//                             top-level status was already == slice.status at/
+//                             before slice.lastActionAt (top-level-equal gate),
+//                             OR no lastActionAt to bound the check.
+//   - totalConfident        : pre-fix, non-ambiguous → confidently mirror pollution.
+// Plus totalExclFeedbackBearing (the prior guard) for continuity. Two sample
+// groups returned: `samples` (10 distinct leads, status-spread, confident first)
+// and `ambiguousSamples` (5 edge cases for manual review). NO writes. To be
+// removed after the detection is finalized.
 app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async function(req, res) {
   try {
     console.log("READ-ONLY DRY RUN — NO WRITES");
@@ -13236,17 +13243,26 @@ app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async fun
       return m && m[1] ? m[1].trim() : "";
     };
 
+    // 703ef2f (sales-caller holder-sync mirror fix) commit time was
+    // 2026-05-31T17:31:56Z; +buffer for Railway deploy. A slice BORN at/after
+    // this could not have been splashed by the (now-fixed) sales-caller mirror.
+    var MIRROR_FIX_TS = new Date("2026-05-31T18:00:00Z").getTime();
+    var sliceBirthTs = function (a) {                                    // immutable slice creation time (ObjectId)
+      if (a && a._id) { var s = String(a._id); if (s.length >= 8) { var sec = parseInt(s.slice(0, 8), 16); if (!isNaN(sec) && sec > 0) return sec * 1000; } }
+      if (a && a.assignedAt) { var t = new Date(a.assignedAt).getTime(); if (!isNaN(t) && t > 0) return t; }
+      return 0;
+    };
+
     var users = await User.find({}, { name: 1 }).lean();
     var nameOf = {};
     users.forEach(function (u) { nameOf[String(u._id)] = u.name || "(unknown)"; });
 
     var leads = await Lead.find(
       { "assignments.0": { $exists: true } },
-      { name: 1, agentId: 1, assignments: 1, history: 1 }
+      { name: 1, agentId: 1, status: 1, assignments: 1, history: 1 }
     ).lean();
 
-    var total = 0, totalExclFeedbackBearing = 0;
-    var byCurrent = {}, byProposed = {}, leadsAffected = {}, samples = [];
+    var polluted = [];                                                   // collect ALL candidates, grade + sample after
 
     leads.forEach(function (lead) {
       var holderId = lead.agentId ? String(lead.agentId._id ? lead.agentId._id : lead.agentId) : "";
@@ -13274,54 +13290,115 @@ app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async fun
         // Polluted iff the slice status disagrees with the agent's proven last status.
         if (canon(a.status) === canon(trueStatus)) return;               // genuine — leave alone
 
-        // Feedback-bearing same-status entry in the agent's OWN agentHistory =
-        // proven genuine despite no history row (top-level-equal edge case).
+        // --- Confidence grading ---
         var ownSC = (Array.isArray(a.agentHistory) ? a.agentHistory : [])
           .filter(function (h) { return h && h.type === "status_change"; });
+        // (g1) feedback-bearing same-status entry in own agentHistory = proven genuine.
         var feedbackBearingSameStatus = ownSC.some(function (h) {
           return hasFeedback(h) && canon(parseHistStatus(h)) === canon(a.status);
         });
         var ownLast = ownSC.map(function (h) { return { status: parseHistStatus(h), fb: hasFeedback(h), at: new Date(h.createdAt || 0).getTime() }; })
           .filter(function (e) { return e.status; })
           .sort(function (x, y) { return y.at - x.at; })[0] || null;
+        // (g2) slice born after the mirror fix → cannot be sales-mirror pollution.
+        var birthTs = sliceBirthTs(a);
+        var afterFix = birthTs > 0 && birthTs >= MIRROR_FIX_TS;
+        // (g3) was the lead's TOP-LEVEL status ever === slice.status at/before the
+        // agent's last action? If so the agent could have set the same status with
+        // NO status_changed history row written (top-level-equal gate) — ambiguous.
+        var laTs = a.lastActionAt ? new Date(a.lastActionAt).getTime() : 0;
+        var topEverEqualled = laTs > 0 && histRows.some(function (r) { return canon(r.newStatus) === canon(a.status) && r.ts <= laTs; });
 
-        total++;
-        if (!feedbackBearingSameStatus) totalExclFeedbackBearing++;
-        var pc = canon(a.status);
-        byCurrent[pc] = (byCurrent[pc] || 0) + 1;
-        var pr = canon(trueStatus);
-        byProposed[pr] = (byProposed[pr] || 0) + 1;
-        leadsAffected[String(lead._id)] = true;
+        var ambiguousReason = null;
+        if (feedbackBearingSameStatus) ambiguousReason = "Own agentHistory has a feedback-bearing same-status (" + a.status + ") entry — likely a genuine action.";
+        else if (!laTs)                ambiguousReason = "Slice has no lastActionAt to bound the top-level check — cannot confirm pollution.";
+        else if (topEverEqualled)      ambiguousReason = "Lead top-level status was already '" + a.status + "' at/before slice.lastActionAt — agent may have set it with no history row.";
 
-        if (samples.length < 10) {
-          samples.push({
-            leadId: String(lead._id),
-            leadName: lead.name || "(no name)",
-            agent: agentName || aId || "(no agentId)",
-            current: a.status,
-            proposed: trueStatus,
-            lastHistoryRowFound: lastRow ? { timestamp: new Date(lastRow.ts).toISOString(), newStatus: lastRow.newStatus, description: lastRow.description } : null,
-            ownAgentHistoryLastStatus: ownLast ? ownLast.status : null,
-            ownAgentHistoryLastWasFeedback: ownLast ? ownLast.fb : null,
-            feedbackBearingSameStatus: feedbackBearingSameStatus,
-            reasoning: lastRow
-              ? ("Last self-authored status_changed by " + agentName + " was " + lastRow.newStatus + "; slice.status is " + a.status + (feedbackBearingSameStatus ? " (BUT slice has a feedback-bearing same-status entry — likely genuine, excluded from totalExclFeedbackBearing)" : ""))
-              : ("No self-authored status_changed row for " + (agentName || aId) + " on this lead; slice.status is " + a.status + (feedbackBearingSameStatus ? " (BUT slice has a feedback-bearing same-status entry — likely genuine)" : ""))
-          });
-        }
+        var confident = !afterFix && ambiguousReason === null;
+
+        polluted.push({
+          leadId: String(lead._id),
+          leadName: lead.name || "(no name)",
+          agent: agentName || aId || "(no agentId)",
+          current: a.status,
+          currentCanon: canon(a.status),
+          proposed: trueStatus,
+          proposedCanon: canon(trueStatus),
+          lastHistoryRowFound: lastRow ? { timestamp: new Date(lastRow.ts).toISOString(), newStatus: lastRow.newStatus, description: lastRow.description } : null,
+          ownAgentHistoryLastStatus: ownLast ? ownLast.status : null,
+          ownAgentHistoryLastWasFeedback: ownLast ? ownLast.fb : null,
+          feedbackBearingSameStatus: feedbackBearingSameStatus,
+          sliceAssignedAt: a.assignedAt ? new Date(a.assignedAt).toISOString() : null,
+          sliceLastActionAt: a.lastActionAt ? new Date(a.lastActionAt).toISOString() : null,
+          sliceBirthAt: birthTs ? new Date(birthTs).toISOString() : null,
+          sliceCreatedAfterMirrorFix: afterFix,
+          ambiguousReason: ambiguousReason,
+          confident: confident,
+          reasoning: (lastRow
+            ? ("Last self-authored status_changed by " + agentName + " was " + lastRow.newStatus + "; slice.status is " + a.status + ".")
+            : ("No self-authored status_changed row for " + (agentName || aId) + "; slice.status is " + a.status + " → proposed NewLead.")
+          ) + (afterFix ? " [slice born AFTER mirror fix — NOT mirror pollution]" : ambiguousReason ? " [AMBIGUOUS: " + ambiguousReason + "]" : " [CONFIDENT pollution]")
+        });
       });
     });
 
+    // ---- Totals (partition: afterFix | preFix-ambiguous | preFix-confident) ----
+    var byCurrent = {}, byProposed = {}, leadsAffected = {};
+    var totalExclFeedbackBearing = 0, totalConfident = 0, totalAmbiguous = 0, totalAssignedAfterFix = 0;
+    polluted.forEach(function (r) {
+      byCurrent[r.currentCanon] = (byCurrent[r.currentCanon] || 0) + 1;
+      byProposed[r.proposedCanon] = (byProposed[r.proposedCanon] || 0) + 1;
+      leadsAffected[r.leadId] = true;
+      if (!r.feedbackBearingSameStatus) totalExclFeedbackBearing++;
+      if (r.sliceCreatedAfterMirrorFix) totalAssignedAfterFix++;
+      else if (r.confident) totalConfident++;
+      else totalAmbiguous++;
+    });
+
+    // ---- Sample group 1: 10 DISTINCT leads, spread across current statuses,
+    // confident pollution preferred (sorted first within each status bucket). ----
+    var buckets = {};
+    polluted.slice().sort(function (x, y) { return (y.confident ? 1 : 0) - (x.confident ? 1 : 0); })
+      .forEach(function (r) { (buckets[r.currentCanon] = buckets[r.currentCanon] || []).push(r); });
+    var statusKeys = Object.keys(buckets);
+    var usedLeads = {}, samples = [];
+    var guard = 0;
+    while (samples.length < 10 && guard < 1000) {
+      guard++;
+      var progressed = false;
+      for (var si = 0; si < statusKeys.length && samples.length < 10; si++) {
+        var arr = buckets[statusKeys[si]];
+        while (arr.length && usedLeads[arr[0].leadId]) arr.shift();
+        if (arr.length) { var pick = arr.shift(); usedLeads[pick.leadId] = true; samples.push(pick); progressed = true; }
+      }
+      if (!progressed) break;
+    }
+
+    // ---- Sample group 2: 5 AMBIGUOUS slices (possibly genuine), distinct leads. ----
+    var ambiguousSamples = [], usedAmb = {};
+    polluted.forEach(function (r) {
+      if (ambiguousSamples.length >= 5) return;
+      if (!r.ambiguousReason || r.sliceCreatedAfterMirrorFix) return;
+      if (usedAmb[r.leadId]) return;
+      usedAmb[r.leadId] = true;
+      ambiguousSamples.push(r);
+    });
+
     res.json({
-      mode: "history-xref",
+      mode: "history-xref-graded",
       readOnly: true,
       scope: "non-holder active slices",
-      total: total,
+      mirrorFixCutoff: new Date(MIRROR_FIX_TS).toISOString(),
+      total: polluted.length,
       totalExclFeedbackBearing: totalExclFeedbackBearing,
+      totalConfident: totalConfident,
+      totalAmbiguous: totalAmbiguous,
+      totalAssignedAfterFix: totalAssignedAfterFix,
       leadsAffected: Object.keys(leadsAffected).length,
       byCurrent: byCurrent,
       byProposed: byProposed,
-      samples: samples
+      samples: samples,
+      ambiguousSamples: ambiguousSamples
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
