@@ -13191,6 +13191,103 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== TEMPORARY — slice.status pollution dry-run (admin-only, READ-ONLY) =====
+// Measures pre-existing slice.status pollution from the holder-slice status sync
+// that fired for sales callers before commit 703ef2f. Performs NO writes — only
+// find().lean(). To be removed in a follow-up commit once the cleanup phase is
+// done. Strict mode: any same-status status_change in a slice's own agentHistory
+// (feedback-bearing or not) exempts the slice — we under-report rather than
+// over-fix. See diagnose-status-pollution.js for the standalone CLI twin.
+app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async function(req, res) {
+  try {
+    console.log("READ-ONLY DRY RUN — NO WRITES");
+    var STRONG = { MeetingDone: 1, "Meeting Done": 1, DoneDeal: 1, "Done Deal": 1, EOI: 1 };
+    var CANON = {
+      "Meeting Done": "MeetingDone", "Done Deal": "DoneDeal", "New Lead": "NewLead",
+      "No Answer": "NoAnswer", "Hot Case": "HotCase", "Call Back": "CallBack",
+      "Not Interested": "NotInterested"
+    };
+    var canon = function (s) { return CANON[s] || s || "NewLead"; };
+    var parseHistStatus = function (h) {
+      if (!h) return null;
+      if (h.note) { var m = String(h.note).match(/^Status:\s*(.+)$/i); if (m) return m[1].trim(); }
+      if (h.status) return String(h.status).trim();
+      return null;
+    };
+    var hasFeedback = function (h) { return h && h.feedback != null && String(h.feedback).trim() !== ""; };
+
+    var users = await User.find({}, { name: 1 }).lean();
+    var nameOf = {};
+    users.forEach(function (u) { nameOf[String(u._id)] = u.name || "(unknown)"; });
+
+    var leads = await Lead.find(
+      { "assignments.0": { $exists: true } },
+      { name: 1, agentId: 1, assignments: 1 }
+    ).lean();
+
+    var total = 0, byStatus = {}, byRepair = {}, leadsAffected = {}, samples = [];
+
+    leads.forEach(function (lead) {
+      var holderId = lead.agentId ? String(lead.agentId._id ? lead.agentId._id : lead.agentId) : "";
+      var assigns = Array.isArray(lead.assignments) ? lead.assignments : [];
+      assigns.forEach(function (a) {
+        if (!a || a.removedAt) return;                                  // (a) active only
+        var aId = a.agentId ? String(a.agentId._id ? a.agentId._id : a.agentId) : "";
+        if (aId && holderId && aId === holderId) return;                // (b) skip current holder
+        if (!STRONG[a.status]) return;                                  // (c) strong status only
+
+        var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
+        var statusChanges = hist
+          .filter(function (h) { return h && h.type === "status_change"; })
+          .map(function (h) { return { status: parseHistStatus(h), feedback: hasFeedback(h), at: new Date(h.createdAt || 0).getTime() }; })
+          .filter(function (e) { return e.status; });
+
+        // (d) STRICT: any same-status status_change (feedback optional) = genuine.
+        var genuine = statusChanges.some(function (e) { return canon(e.status) === canon(a.status); });
+        if (genuine) return;
+
+        total++;
+        var ps = canon(a.status);
+        byStatus[ps] = (byStatus[ps] || 0) + 1;
+        leadsAffected[String(lead._id)] = true;
+
+        var repair, signal;
+        var fb = statusChanges.filter(function (e) { return e.feedback; }).sort(function (x, y) { return y.at - x.at; });
+        if (fb.length) {
+          repair = canon(fb[0].status); signal = "last feedback-bearing status_change";
+        } else {
+          var ns = statusChanges.filter(function (e) { return !STRONG[e.status]; }).sort(function (x, y) { return y.at - x.at; });
+          if (ns.length) { repair = canon(ns[0].status); signal = "last non-strong status_change (no feedback-bearing entry)"; }
+          else { repair = "NewLead"; signal = "no usable status_change in agentHistory"; }
+        }
+        byRepair[repair] = (byRepair[repair] || 0) + 1;
+
+        if (samples.length < 10) {
+          samples.push({
+            leadId: String(lead._id),
+            leadName: lead.name || "(no name)",
+            agent: aId ? (nameOf[aId] || aId) : "(no agentId)",
+            current: a.status,
+            proposed: repair,
+            signal: signal,
+            historyStatusChanges: statusChanges.length
+          });
+        }
+      });
+    });
+
+    res.json({
+      mode: "strict",
+      readOnly: true,
+      total: total,
+      leadsAffected: Object.keys(leadsAffected).length,
+      byStatus: byStatus,
+      byRepair: byRepair,
+      samples: samples
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== STATS ROUTE =====
 app.get("/api/stats", auth, async function(req, res) {
   try {
