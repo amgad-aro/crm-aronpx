@@ -3415,6 +3415,38 @@ var LeadJourney = function(p) {
   // point at an era that got absorbed into another bucket.
   eras.forEach(function(era, i){ if (i > 0) era.fromAgent = eras[i-1].agentName; });
 
+  // ── De-duplicate feedback within each era (BUG 1 + BUG 2 fix) ────────────
+  // A status_change agentHistory entry now carries the feedback the agent
+  // wrote with it (commit 4f28831 stamps it on the slice entry), and the
+  // renderer shows that inline beneath the status pill. The SAME text ALSO
+  // arrives as a standalone "feedback" row — the slice.lastFeedback synth
+  // (server.js full-history, stamped at lastActionAt) and/or a lead.history
+  // "feedback_added" audit row. Left alone the feedback renders TWICE: once
+  // inline on its real status, and once as a floating row that grouping +
+  // whileStatusFor pair with whatever status is current — which is exactly the
+  // duplicate-on-a-second-pill (BUG 1) and, as its mirror image, a real status
+  // left showing no feedback (BUG 2). Render it ONCE: drop the standalone row
+  // when its text matches a status_change's own feedback in the SAME era.
+  // Managerial /feedback rows (to_sales / private writes carry a non-sales
+  // authorRole) are NEVER dropped — they're a distinct action and must stay
+  // visible (manager/admin/TL/director visibility in the slice).
+  eras.forEach(function(era){
+    var inlineFb = {};
+    (era.events || []).forEach(function(ev){
+      if ((ev.type === "status_change" || ev.type === "status_changed") && ev.feedback) {
+        var t = String(ev.feedback).trim();
+        if (t) inlineFb[t] = true;
+      }
+    });
+    if (!Object.keys(inlineFb).length) return;
+    era.events = (era.events || []).filter(function(ev){
+      if (ev.type !== "feedback" && ev.type !== "feedback_added") return true;
+      if (ev.authorRole && ev.authorRole !== "sales") return true; // keep managerial feedback
+      var txt = stripActorPrefix(String(ev.feedback || ev.note || "")).trim();
+      return !inlineFb[txt]; // drop the standalone duplicate of an inline status feedback
+    });
+  });
+
   // Group consecutive same-actor events written within 60s of each other into
   // a single composite "action". Backend frequently writes one user action as
   // 4-6 history rows (status_change + callback_scheduled + feedback_added +
@@ -3525,22 +3557,28 @@ var LeadJourney = function(p) {
   var whileStatusFor = function(ev, era){
     var tFb = new Date(ev.createdAt).getTime();
     var best = null; var bestT = -Infinity;
-    for (var ei = 0; ei < eras.length; ei++) {
-      var e = eras[ei];
-      for (var k = 0; k < e.events.length; k++) {
-        var ek = e.events[k];
-        var ekType = ek && ek.type;
-        if (ekType !== "status_change" && ekType !== "status_changed") continue;
-        var t = new Date(ek.createdAt).getTime();
-        if (!isFinite(t) || t > tFb) continue;
-        if (t > bestT) {
-          var s = extractStatus(ek);
-          if (s) { best = s; bestT = t; }
-        }
+    // SAME-ERA ONLY (BUG 3 fix). The "while X" pill on a feedback row must
+    // reflect the status THIS agent set during THIS tenure — never a status
+    // from another era. The old all-eras scan picked the most-recent
+    // status_change across the whole lead, so one agent's strong status (e.g.
+    // a MeetingDone) leaked onto every later slice's feedback rows, making it
+    // look as if every agent had that status.
+    var scan = (era && era.events) ? era.events : [];
+    for (var k = 0; k < scan.length; k++) {
+      var ek = scan[k];
+      var ekType = ek && ek.type;
+      if (ekType !== "status_change" && ekType !== "status_changed") continue;
+      var t = new Date(ek.createdAt).getTime();
+      if (!isFinite(t) || t > tFb) continue;
+      if (t > bestT) {
+        var s = extractStatus(ek);
+        if (s) { best = s; bestT = t; }
       }
     }
     if (best) return best;
-    if (lead && lead.status) return lead.status;
+    // No status set yet in this tenure → the era's starting status. Rotated
+    // eras begin at NewLead; do NOT fall back to lead.status (the current
+    // top-level value), which would itself be a cross-slice leak.
     return "NewLead";
   };
 
