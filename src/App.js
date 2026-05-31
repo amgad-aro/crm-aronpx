@@ -16331,6 +16331,21 @@ var RotationDiagnosticsTab = function(props) {
   var [expanded, setExpanded] = useState({
     recent: true, lastRun: true, tiers: true, available: true, locked: true
   });
+  // TEMPORARY — slice.status pollution dry-run (read-only). Separate state from
+  // the rotation-diagnostics `data` above; never auto-fires (explicit button only).
+  var [pollData, setPollData] = useState(null);
+  var [pollLoading, setPollLoading] = useState(false);
+  var [pollError, setPollError] = useState("");
+  var loadPoll = async function() {
+    setPollLoading(true); setPollError("");
+    try {
+      var d = await apiFetch("/api/admin/rotation-pollution-dryrun", "GET", null, props.token);
+      setPollData(d);
+    } catch(e) {
+      setPollError((e && e.message) || "Failed to run dry-run");
+    }
+    setPollLoading(false);
+  };
   var load = async function() {
     setLoading(true); setError("");
     try {
@@ -16555,6 +16570,91 @@ var RotationDiagnosticsTab = function(props) {
         </table>
       </div>;
     })())}
+
+    {/* (6) Slice Status Pollution — TEMPORARY read-only dry-run (admin-only endpoint) */}
+    <div style={{ marginBottom:16, border:"1px solid #FED7AA", borderRadius:10, overflow:"hidden", background:"#fff" }}>
+      <div style={{ padding:"10px 14px", background:"#FFF7ED", display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+        <div>
+          <span style={{ fontSize:13, fontWeight:700, color:"#9A3412" }}>6. Slice Status Pollution (dry-run)</span>
+          <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>
+            Strictly READ-ONLY — measures pre-existing slice.status pollution. Performs no writes.
+            {pollData && pollData.total != null && <span> · <b>{pollData.total}</b> polluted slices across <b>{pollData.leadsAffected}</b> leads</span>}
+          </div>
+        </div>
+        <button onClick={loadPoll} disabled={pollLoading}
+          style={{ padding:"8px 14px", borderRadius:8, border:"1px solid #EA580C", background:pollLoading?"#FFEDD5":"#fff", color:"#EA580C", fontSize:12, fontWeight:600, cursor:pollLoading?"wait":"pointer", flexShrink:0 }}>
+          {pollLoading ? "Running…" : "▶ Run dry-run"}
+        </button>
+      </div>
+      <div style={{ padding:"12px 14px" }}>
+        {pollError && <div style={{ padding:"10px 14px", marginBottom:12, background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8, color:"#B91C1C", fontSize:12 }}>{pollError}</div>}
+        {!pollData && !pollLoading && !pollError && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>Click “Run dry-run” to measure. This endpoint only reads (find().lean()) — it changes nothing.</div>}
+        {pollData && <div>
+          {/* Summary cards */}
+          <div style={{ display:"flex", gap:12, flexWrap:"wrap", marginBottom:14 }}>
+            <div style={{ background:"#FEF2F2", padding:"10px 14px", borderRadius:8, minWidth:130 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Polluted slices</div>
+              <div style={{ fontSize:22, fontWeight:700, color:"#B91C1C" }}>{pollData.total || 0}</div>
+            </div>
+            <div style={{ background:"#FFF7ED", padding:"10px 14px", borderRadius:8, minWidth:130 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Leads affected</div>
+              <div style={{ fontSize:22, fontWeight:700, color:"#9A3412" }}>{pollData.leadsAffected || 0}</div>
+            </div>
+            <div style={{ background:"#F8FAFC", padding:"10px 14px", borderRadius:8, minWidth:130 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Mode</div>
+              <div style={{ fontSize:14, fontWeight:700, color:C.text }}>{pollData.mode || "—"}{pollData.readOnly ? " · read-only" : ""}</div>
+            </div>
+          </div>
+
+          {/* Breakdown by polluted status */}
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Breakdown by polluted status</div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:14 }}>
+            {Object.keys(pollData.byStatus || {}).length === 0 && <span style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>—</span>}
+            {Object.keys(pollData.byStatus || {}).sort(function(a,b){ return pollData.byStatus[b]-pollData.byStatus[a]; }).map(function(k){
+              return <span key={k} style={{ fontSize:11, padding:"3px 8px", borderRadius:14, background:"#FEE2E2", color:"#B91C1C", fontWeight:600 }}>{k} · {pollData.byStatus[k]}</span>;
+            })}
+          </div>
+
+          {/* Breakdown by proposed repair (inferred real last action) */}
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Proposed repair target (inferred real status)</div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:14 }}>
+            {Object.keys(pollData.byRepair || {}).length === 0 && <span style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>—</span>}
+            {Object.keys(pollData.byRepair || {}).sort(function(a,b){ return pollData.byRepair[b]-pollData.byRepair[a]; }).map(function(k){
+              return <span key={k} style={{ fontSize:11, padding:"3px 8px", borderRadius:14, background:"#DCFCE7", color:"#15803D", fontWeight:600 }}>{k} · {pollData.byRepair[k]}</span>;
+            })}
+          </div>
+
+          {/* Sample affected leads */}
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Sample affected leads (up to 10)</div>
+          {Array.isArray(pollData.samples) && pollData.samples.length > 0 ? <div style={{ overflowX:"auto", border:"1px solid #E2E8F0", borderRadius:8, marginBottom:14 }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+              <thead><tr>
+                <th style={th}>Lead</th>
+                <th style={th}>Polluted agent</th>
+                <th style={th}>Current (slice)</th>
+                <th style={th}>Proposed real status</th>
+                <th style={th}>Signal</th>
+                <th style={Object.assign({}, th, { textAlign:"right" })}>Hist. status_changes</th>
+              </tr></thead>
+              <tbody>{pollData.samples.map(function(s, i){
+                return <tr key={i}>
+                  <td style={td}>{s.leadName || "(no name)"}</td>
+                  <td style={td}>{s.agent || "—"}</td>
+                  <td style={Object.assign({}, td, { color:"#B91C1C", fontWeight:600 })}>{s.current || "—"}</td>
+                  <td style={Object.assign({}, td, { color:"#15803D", fontWeight:600 })}>{s.proposed || "—"}</td>
+                  <td style={Object.assign({}, td, { color:C.textLight })}>{s.signal || "—"}</td>
+                  <td style={Object.assign({}, td, { textAlign:"right" })}>{s.historyStatusChanges != null ? s.historyStatusChanges : "—"}</td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:14 }}>No samples (no pollution detected).</div>}
+
+          {/* Raw JSON — copy/paste back for analysis */}
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Raw JSON</div>
+          <pre style={{ margin:0, padding:"10px 12px", background:"#0F172A", color:"#E2E8F0", borderRadius:8, fontSize:11, lineHeight:1.5, overflowX:"auto", maxHeight:360, whiteSpace:"pre", fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace" }}>{JSON.stringify(pollData, null, 2)}</pre>
+        </div>}
+      </div>
+    </div>
   </div>;
 };
 
