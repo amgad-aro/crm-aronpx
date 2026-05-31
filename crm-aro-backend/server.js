@@ -13191,68 +13191,106 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ===== TEMPORARY — slice.status pollution dry-run (admin-only, READ-ONLY) =====
-// Detection v2 (history cross-reference). For each NON-HOLDER active slice we
-// find that agent's LAST author-tagged lead.history "status_changed" row
-// (byUser === the slice agent's name). That row's newStatus is the agent's
-// proven true last status. If the slice.status differs → polluted (a pre-703ef2f
-// holder-sync mirror write left a foreign status on the slice; the mirror's
-// only history row carried the ROTATED-OFF caller's name, not this agent's, so
-// no self-authored row corroborates the slice status). If no self-authored row
-// exists at all → repair to "NewLead".
+// ===== TEMPORARY — slice.status pollution detection + cleanup (admin-only) =====
+// USER RULE (absolute): a NON-HOLDER active slice's status is POLLUTION unless
+// the agent has personal evidence they set it themselves — EITHER (1) a
+// lead.history "status_changed" row they authored (byUser === agent name) whose
+// newStatus equals the slice status, OR (2) a feedback-bearing status_change in
+// the slice's OWN agentHistory whose status equals the slice status. If neither
+// exists → no evidence the agent set it → repair to the agent's LAST
+// self-authored history status (or "NewLead" if they never authored one).
 //
-// Scope = NON-HOLDER slices only. The current holder's slice legitimately
-// carries manager-set statuses (the holder-sync is intended behavior), so it is
-// NOT evaluated here. /feedback (to_sales) never writes slice.status, so a
-// non-holder slice's status can only come from its own agent's PUT or a mirror.
+// Holder slices are NEVER evaluated: the managerial holder-sync (703ef2f intent)
+// legitimately writes the holder's status, and /feedback (to_sales) never writes
+// slice.status — so only non-holder slices can carry a foreign status.
 //
-// Confidence grading partitions polluted candidates into:
-//   - totalAssignedAfterFix : slice born AFTER 703ef2f → cannot be sales-mirror
-//                             pollution (NOT pollution).
-//   - totalAmbiguous        : possibly a genuine action with no history row —
-//                             feedback-bearing same-status entry, OR the lead's
-//                             top-level status was already == slice.status at/
-//                             before slice.lastActionAt (top-level-equal gate),
-//                             OR no lastActionAt to bound the check.
-//   - totalConfident        : pre-fix, non-ambiguous → confidently mirror pollution.
-// Plus totalExclFeedbackBearing (the prior guard) for continuity. Two sample
-// groups returned: `samples` (10 distinct leads, status-spread, confident first)
-// and `ambiguousSamples` (5 edge cases for manual review). NO writes. To be
-// removed after the detection is finalized.
+// The previous "confidence grading" (ambiguous / after-fix guards) is dropped by
+// explicit decision: a status the agent left no history row AND no feedback for
+// is treated as having no evidence → pollution. One shared detector below is
+// used by the dry-run AND both cleanup endpoints so the rule cannot drift.
+var POLL_CANON = {
+  "Meeting Done": "MeetingDone", "Done Deal": "DoneDeal", "New Lead": "NewLead",
+  "No Answer": "NoAnswer", "Hot Case": "HotCase", "Call Back": "CallBack",
+  "Not Interested": "NotInterested"
+};
+function pollCanon(s) { return POLL_CANON[s] || s || "NewLead"; }
+function pollNorm(s) { return String(s == null ? "" : s).trim().toLowerCase(); }
+function pollParseHistStatus(h) {                       // agentHistory status_change → status
+  if (!h) return null;
+  if (h.note) { var m = String(h.note).match(/^Status:\s*(.+)$/i); if (m) return m[1].trim(); }
+  if (h.status) return String(h.status).trim();
+  return null;
+}
+function pollHasFeedback(h) { return h && h.feedback != null && String(h.feedback).trim() !== ""; }
+function pollRowTs(h) { return new Date(h.timestamp || h.time || h.date || h.createdAt || 0).getTime(); }
+function pollParseHistRowNew(desc) {                    // lead.history "...→ NEW by NAME" → NEW
+  var m = String(desc || "").match(/→\s*(.+?)\s+by\s+/i);
+  return m && m[1] ? m[1].trim() : "";
+}
+// Returns the polluted non-holder slices for ONE lead (the single source of the
+// detection rule). Each entry: { sliceId, agentId, agent, current, currentCanon,
+// proposed, proposedCanon, lastHistoryRow }.
+function detectPollutedSlices(lead, nameOf) {
+  var out = [];
+  if (!lead) return out;
+  var holderId = lead.agentId ? String(lead.agentId._id ? lead.agentId._id : lead.agentId) : "";
+  var histRows = (Array.isArray(lead.history) ? lead.history : [])
+    .filter(function (h) { return h && h.event === "status_changed"; })
+    .map(function (h) { return { byUser: String(h.byUser || ""), newStatus: pollParseHistRowNew(h.description), ts: pollRowTs(h) }; })
+    .filter(function (r) { return r.newStatus; });
+  (Array.isArray(lead.assignments) ? lead.assignments : []).forEach(function (a) {
+    if (!a || a.removedAt) return;                                       // active only
+    var aId = a.agentId ? String(a.agentId._id ? a.agentId._id : a.agentId) : "";
+    if (aId && holderId && aId === holderId) return;                     // NON-HOLDER only
+    var agentName = aId ? (nameOf[aId] || "") : "";
+    var selfRows = histRows.filter(function (r) { return agentName && pollNorm(r.byUser) === pollNorm(agentName); });
+    // (1) agent self-authored a history row with THIS status → evidence, genuine.
+    if (selfRows.some(function (r) { return pollCanon(r.newStatus) === pollCanon(a.status); })) return;
+    // (2) feedback-bearing status_change with THIS status in own agentHistory → genuine.
+    var hasFeedbackEntry = (Array.isArray(a.agentHistory) ? a.agentHistory : []).some(function (h) {
+      return h && h.type === "status_change" && pollHasFeedback(h) && pollCanon(pollParseHistStatus(h)) === pollCanon(a.status);
+    });
+    if (hasFeedbackEntry) return;
+    // No evidence → polluted. Repair to last self-authored history status, else NewLead.
+    var lastSelf = selfRows.slice().sort(function (x, y) { return y.ts - x.ts; })[0] || null;
+    var proposed = lastSelf ? lastSelf.newStatus : "NewLead";
+    if (pollCanon(proposed) === pollCanon(a.status)) return;             // no-op safety (e.g. untouched NewLead slice)
+    out.push({
+      sliceId: a._id ? String(a._id) : "",
+      agentId: aId,
+      agent: agentName || aId || "(no agentId)",
+      current: a.status,
+      currentCanon: pollCanon(a.status),
+      proposed: proposed,
+      proposedCanon: pollCanon(proposed),
+      lastHistoryRow: lastSelf ? { newStatus: lastSelf.newStatus, timestamp: new Date(lastSelf.ts).toISOString() } : null
+    });
+  });
+  return out;
+}
+// Single repair op (for one slice) — used by both cleanup endpoints. Targets the
+// exact subdoc via arrayFilters el._id; appends an auditable status_cleanup entry.
+function buildPollutionRepairOp(leadId, slice) {
+  return { updateOne: {
+    filter: { _id: new mongoose.Types.ObjectId(leadId) },
+    update: {
+      $set: { "assignments.$[el].status": slice.proposed },
+      $push: { "assignments.$[el].agentHistory": {
+        type: "status_cleanup",
+        note: "Status corrected from " + slice.current + " to " + slice.proposed + " by cleanup. Reason: pre-703ef2f mirror pollution.",
+        oldStatus: slice.current,
+        newStatus: slice.proposed,
+        createdAt: new Date(),
+        authorRole: "system_cleanup"
+      }}
+    },
+    arrayFilters: [{ "el._id": new mongoose.Types.ObjectId(slice.sliceId) }]
+  }};
+}
+
 app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async function(req, res) {
   try {
     console.log("READ-ONLY DRY RUN — NO WRITES");
-    var STRONG = { MeetingDone: 1, "Meeting Done": 1, DoneDeal: 1, "Done Deal": 1, EOI: 1 };
-    var CANON = {
-      "Meeting Done": "MeetingDone", "Done Deal": "DoneDeal", "New Lead": "NewLead",
-      "No Answer": "NoAnswer", "Hot Case": "HotCase", "Call Back": "CallBack",
-      "Not Interested": "NotInterested"
-    };
-    var canon = function (s) { return CANON[s] || s || "NewLead"; };
-    var norm = function (s) { return String(s == null ? "" : s).trim().toLowerCase(); };
-    var parseHistStatus = function (h) {                                  // agentHistory entry → status
-      if (!h) return null;
-      if (h.note) { var m = String(h.note).match(/^Status:\s*(.+)$/i); if (m) return m[1].trim(); }
-      if (h.status) return String(h.status).trim();
-      return null;
-    };
-    var hasFeedback = function (h) { return h && h.feedback != null && String(h.feedback).trim() !== ""; };
-    var rowTs = function (h) { return new Date(h.timestamp || h.time || h.date || h.createdAt || 0).getTime(); };
-    var parseHistRowNew = function (desc) {                               // lead.history status_changed → newStatus
-      var m = String(desc || "").match(/→\s*(.+?)\s+by\s+/i);
-      return m && m[1] ? m[1].trim() : "";
-    };
-
-    // 703ef2f (sales-caller holder-sync mirror fix) commit time was
-    // 2026-05-31T17:31:56Z; +buffer for Railway deploy. A slice BORN at/after
-    // this could not have been splashed by the (now-fixed) sales-caller mirror.
-    var MIRROR_FIX_TS = new Date("2026-05-31T18:00:00Z").getTime();
-    var sliceBirthTs = function (a) {                                    // immutable slice creation time (ObjectId)
-      if (a && a._id) { var s = String(a._id); if (s.length >= 8) { var sec = parseInt(s.slice(0, 8), 16); if (!isNaN(sec) && sec > 0) return sec * 1000; } }
-      if (a && a.assignedAt) { var t = new Date(a.assignedAt).getTime(); if (!isNaN(t) && t > 0) return t; }
-      return 0;
-    };
-
     var users = await User.find({}, { name: 1 }).lean();
     var nameOf = {};
     users.forEach(function (u) { nameOf[String(u._id)] = u.name || "(unknown)"; });
@@ -13262,111 +13300,29 @@ app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async fun
       { name: 1, agentId: 1, status: 1, assignments: 1, history: 1 }
     ).lean();
 
-    var polluted = [];                                                   // collect ALL candidates, grade + sample after
-
+    var all = [];
     leads.forEach(function (lead) {
-      var holderId = lead.agentId ? String(lead.agentId._id ? lead.agentId._id : lead.agentId) : "";
-      var assigns = Array.isArray(lead.assignments) ? lead.assignments : [];
-
-      // Author-tagged status_changed rows for this lead, parsed once.
-      var histRows = (Array.isArray(lead.history) ? lead.history : [])
-        .filter(function (h) { return h && h.event === "status_changed"; })
-        .map(function (h) { return { byUser: String(h.byUser || ""), newStatus: parseHistRowNew(h.description), ts: rowTs(h), description: String(h.description || "") }; })
-        .filter(function (r) { return r.newStatus; });
-
-      assigns.forEach(function (a) {
-        if (!a || a.removedAt) return;                                   // active only
-        var aId = a.agentId ? String(a.agentId._id ? a.agentId._id : a.agentId) : "";
-        if (aId && holderId && aId === holderId) return;                 // NON-HOLDER only
-        var agentName = aId ? (nameOf[aId] || "") : "";
-
-        // Last self-authored status_changed row for this agent (by name).
-        var mine = histRows
-          .filter(function (r) { return agentName && norm(r.byUser) === norm(agentName); })
-          .sort(function (x, y) { return y.ts - x.ts; });
-        var lastRow = mine.length ? mine[0] : null;
-        var trueStatus = lastRow ? lastRow.newStatus : "NewLead";
-
-        // Polluted iff the slice status disagrees with the agent's proven last status.
-        if (canon(a.status) === canon(trueStatus)) return;               // genuine — leave alone
-
-        // --- Confidence grading ---
-        var ownSC = (Array.isArray(a.agentHistory) ? a.agentHistory : [])
-          .filter(function (h) { return h && h.type === "status_change"; });
-        // (g1) feedback-bearing same-status entry in own agentHistory = proven genuine.
-        var feedbackBearingSameStatus = ownSC.some(function (h) {
-          return hasFeedback(h) && canon(parseHistStatus(h)) === canon(a.status);
-        });
-        var ownLast = ownSC.map(function (h) { return { status: parseHistStatus(h), fb: hasFeedback(h), at: new Date(h.createdAt || 0).getTime() }; })
-          .filter(function (e) { return e.status; })
-          .sort(function (x, y) { return y.at - x.at; })[0] || null;
-        // (g2) slice born after the mirror fix → cannot be sales-mirror pollution.
-        var birthTs = sliceBirthTs(a);
-        var afterFix = birthTs > 0 && birthTs >= MIRROR_FIX_TS;
-        // (g3) was the lead's TOP-LEVEL status ever === slice.status at/before the
-        // agent's last action? If so the agent could have set the same status with
-        // NO status_changed history row written (top-level-equal gate) — ambiguous.
-        var laTs = a.lastActionAt ? new Date(a.lastActionAt).getTime() : 0;
-        var topEverEqualled = laTs > 0 && histRows.some(function (r) { return canon(r.newStatus) === canon(a.status) && r.ts <= laTs; });
-
-        var ambiguousReason = null;
-        if (feedbackBearingSameStatus) ambiguousReason = "Own agentHistory has a feedback-bearing same-status (" + a.status + ") entry — likely a genuine action.";
-        else if (!laTs)                ambiguousReason = "Slice has no lastActionAt to bound the top-level check — cannot confirm pollution.";
-        else if (topEverEqualled)      ambiguousReason = "Lead top-level status was already '" + a.status + "' at/before slice.lastActionAt — agent may have set it with no history row.";
-
-        var confident = !afterFix && ambiguousReason === null;
-
-        polluted.push({
-          leadId: String(lead._id),
-          leadName: lead.name || "(no name)",
-          agent: agentName || aId || "(no agentId)",
-          current: a.status,
-          currentCanon: canon(a.status),
-          proposed: trueStatus,
-          proposedCanon: canon(trueStatus),
-          lastHistoryRowFound: lastRow ? { timestamp: new Date(lastRow.ts).toISOString(), newStatus: lastRow.newStatus, description: lastRow.description } : null,
-          ownAgentHistoryLastStatus: ownLast ? ownLast.status : null,
-          ownAgentHistoryLastWasFeedback: ownLast ? ownLast.fb : null,
-          feedbackBearingSameStatus: feedbackBearingSameStatus,
-          sliceAssignedAt: a.assignedAt ? new Date(a.assignedAt).toISOString() : null,
-          sliceLastActionAt: a.lastActionAt ? new Date(a.lastActionAt).toISOString() : null,
-          sliceBirthAt: birthTs ? new Date(birthTs).toISOString() : null,
-          sliceCreatedAfterMirrorFix: afterFix,
-          ambiguousReason: ambiguousReason,
-          confident: confident,
-          reasoning: (lastRow
-            ? ("Last self-authored status_changed by " + agentName + " was " + lastRow.newStatus + "; slice.status is " + a.status + ".")
-            : ("No self-authored status_changed row for " + (agentName || aId) + "; slice.status is " + a.status + " → proposed NewLead.")
-          ) + (afterFix ? " [slice born AFTER mirror fix — NOT mirror pollution]" : ambiguousReason ? " [AMBIGUOUS: " + ambiguousReason + "]" : " [CONFIDENT pollution]")
-        });
+      detectPollutedSlices(lead, nameOf).forEach(function (r) {
+        r.leadId = String(lead._id); r.leadName = lead.name || "(no name)"; all.push(r);
       });
     });
 
-    // ---- Totals (partition: afterFix | preFix-ambiguous | preFix-confident) ----
     var byCurrent = {}, byProposed = {}, leadsAffected = {};
-    var totalExclFeedbackBearing = 0, totalConfident = 0, totalAmbiguous = 0, totalAssignedAfterFix = 0;
-    polluted.forEach(function (r) {
+    all.forEach(function (r) {
       byCurrent[r.currentCanon] = (byCurrent[r.currentCanon] || 0) + 1;
       byProposed[r.proposedCanon] = (byProposed[r.proposedCanon] || 0) + 1;
       leadsAffected[r.leadId] = true;
-      if (!r.feedbackBearingSameStatus) totalExclFeedbackBearing++;
-      if (r.sliceCreatedAfterMirrorFix) totalAssignedAfterFix++;
-      else if (r.confident) totalConfident++;
-      else totalAmbiguous++;
     });
 
-    // ---- Sample group 1: 10 DISTINCT leads, spread across current statuses,
-    // confident pollution preferred (sorted first within each status bucket). ----
+    // Diverse sampling: distinct leads, spread across current statuses.
     var buckets = {};
-    polluted.slice().sort(function (x, y) { return (y.confident ? 1 : 0) - (x.confident ? 1 : 0); })
-      .forEach(function (r) { (buckets[r.currentCanon] = buckets[r.currentCanon] || []).push(r); });
+    all.forEach(function (r) { (buckets[r.currentCanon] = buckets[r.currentCanon] || []).push(r); });
     var statusKeys = Object.keys(buckets);
-    var usedLeads = {}, samples = [];
-    var guard = 0;
-    while (samples.length < 10 && guard < 1000) {
+    var usedLeads = {}, samples = [], guard = 0;
+    while (samples.length < 12 && guard < 2000) {
       guard++;
       var progressed = false;
-      for (var si = 0; si < statusKeys.length && samples.length < 10; si++) {
+      for (var si = 0; si < statusKeys.length && samples.length < 12; si++) {
         var arr = buckets[statusKeys[si]];
         while (arr.length && usedLeads[arr[0].leadId]) arr.shift();
         if (arr.length) { var pick = arr.shift(); usedLeads[pick.leadId] = true; samples.push(pick); progressed = true; }
@@ -13374,44 +13330,25 @@ app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async fun
       if (!progressed) break;
     }
 
-    // ---- Sample group 2: 5 AMBIGUOUS slices (possibly genuine), distinct leads. ----
-    var ambiguousSamples = [], usedAmb = {};
-    polluted.forEach(function (r) {
-      if (ambiguousSamples.length >= 5) return;
-      if (!r.ambiguousReason || r.sliceCreatedAfterMirrorFix) return;
-      if (usedAmb[r.leadId]) return;
-      usedAmb[r.leadId] = true;
-      ambiguousSamples.push(r);
-    });
-
     res.json({
-      mode: "history-xref-graded",
+      mode: "evidence-rule",
       readOnly: true,
       scope: "non-holder active slices",
-      mirrorFixCutoff: new Date(MIRROR_FIX_TS).toISOString(),
-      total: polluted.length,
-      totalExclFeedbackBearing: totalExclFeedbackBearing,
-      totalConfident: totalConfident,
-      totalAmbiguous: totalAmbiguous,
-      totalAssignedAfterFix: totalAssignedAfterFix,
+      rule: "polluted unless the agent self-authored a lead.history status_changed row OR a feedback-bearing agentHistory entry with that status",
+      total: all.length,
       leadsAffected: Object.keys(leadsAffected).length,
       byCurrent: byCurrent,
       byProposed: byProposed,
-      samples: samples,
-      ambiguousSamples: ambiguousSamples
+      samples: samples
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ===== TEMPORARY — single-lead pollution cleanup (admin-only) =====
-// Phase 1 of the cleanup: operates on ONE lead. Reuses the EXACT same grading
-// as the dry-run (history-xref-graded) and repairs ONLY slices graded
-// confident === true (pre-fix, non-ambiguous). Ambiguous and after-fix slices
-// are skipped. dryRun:true performs NO writes (preview only). dryRun:false
-// applies the repair and is gated behind confirm === "yes-cleanup-this-lead".
-// Every applied change writes an auditable status_cleanup entry (old+new) to
-// the slice's own agentHistory so it can be traced / manually rolled back.
-// Does NOT touch the dry-run endpoint. Temporary — remove after cleanup phase.
+// Operates on ONE lead. Uses the shared detectPollutedSlices rule. dryRun:true
+// previews (no writes); dryRun:false applies and is gated behind
+// confirm === "yes-cleanup-this-lead". Each applied change writes an auditable
+// status_cleanup entry. Temporary — remove after cleanup phase.
 app.post("/api/admin/rotation-pollution-cleanup-single", auth, strictAdminOnly, async function(req, res) {
   try {
     var leadId = String((req.body && req.body.leadId) || "").trim();
@@ -13423,33 +13360,6 @@ app.post("/api/admin/rotation-pollution-cleanup-single", auth, strictAdminOnly, 
     }
     console.log("[POLLUTION-CLEANUP-SINGLE] lead=" + leadId + " dryRun=" + dryRun);
 
-    // ---- grading helpers (identical to the dry-run) ----
-    var CANON = {
-      "Meeting Done": "MeetingDone", "Done Deal": "DoneDeal", "New Lead": "NewLead",
-      "No Answer": "NoAnswer", "Hot Case": "HotCase", "Call Back": "CallBack",
-      "Not Interested": "NotInterested"
-    };
-    var canon = function (s) { return CANON[s] || s || "NewLead"; };
-    var norm = function (s) { return String(s == null ? "" : s).trim().toLowerCase(); };
-    var parseHistStatus = function (h) {
-      if (!h) return null;
-      if (h.note) { var m = String(h.note).match(/^Status:\s*(.+)$/i); if (m) return m[1].trim(); }
-      if (h.status) return String(h.status).trim();
-      return null;
-    };
-    var hasFeedback = function (h) { return h && h.feedback != null && String(h.feedback).trim() !== ""; };
-    var rowTs = function (h) { return new Date(h.timestamp || h.time || h.date || h.createdAt || 0).getTime(); };
-    var parseHistRowNew = function (desc) {
-      var m = String(desc || "").match(/→\s*(.+?)\s+by\s+/i);
-      return m && m[1] ? m[1].trim() : "";
-    };
-    var MIRROR_FIX_TS = new Date("2026-05-31T18:00:00Z").getTime();
-    var sliceBirthTs = function (a) {
-      if (a && a._id) { var s = String(a._id); if (s.length >= 8) { var sec = parseInt(s.slice(0, 8), 16); if (!isNaN(sec) && sec > 0) return sec * 1000; } }
-      if (a && a.assignedAt) { var t = new Date(a.assignedAt).getTime(); if (!isNaN(t) && t > 0) return t; }
-      return 0;
-    };
-
     var users = await User.find({}, { name: 1 }).lean();
     var nameOf = {};
     users.forEach(function (u) { nameOf[String(u._id)] = u.name || "(unknown)"; });
@@ -13457,89 +13367,19 @@ app.post("/api/admin/rotation-pollution-cleanup-single", auth, strictAdminOnly, 
     var lead = await Lead.findById(leadId, { name: 1, agentId: 1, status: 1, assignments: 1, history: 1 }).lean();
     if (!lead) return res.status(404).json({ error: "lead_not_found" });
 
-    var holderId = lead.agentId ? String(lead.agentId._id ? lead.agentId._id : lead.agentId) : "";
-    var histRows = (Array.isArray(lead.history) ? lead.history : [])
-      .filter(function (h) { return h && h.event === "status_changed"; })
-      .map(function (h) { return { byUser: String(h.byUser || ""), newStatus: parseHistRowNew(h.description), ts: rowTs(h), description: String(h.description || "") }; })
-      .filter(function (r) { return r.newStatus; });
-
-    // ---- grade each non-holder active slice; collect CONFIDENT repairs only.
-    // `skipped` records polluted-but-not-confident slices (ambiguous / after-fix)
-    // with the reason, so the single-lead preview shows the FULL per-slice picture
-    // (e.g. why a MeetingDone mirror slice on a lead that genuinely passed through
-    // MeetingDone is held back rather than repaired). Genuine slices are silent. ----
-    var confidentRepairs = [], skipped = [];
-    (Array.isArray(lead.assignments) ? lead.assignments : []).forEach(function (a) {
-      if (!a || a.removedAt) return;                                     // active only
-      var aId = a.agentId ? String(a.agentId._id ? a.agentId._id : a.agentId) : "";
-      if (aId && holderId && aId === holderId) return;                   // NON-HOLDER only
-      var agentName = aId ? (nameOf[aId] || "") : "";
-
-      var mine = histRows
-        .filter(function (r) { return agentName && norm(r.byUser) === norm(agentName); })
-        .sort(function (x, y) { return y.ts - x.ts; });
-      var lastRow = mine.length ? mine[0] : null;
-      var trueStatus = lastRow ? lastRow.newStatus : "NewLead";
-      if (canon(a.status) === canon(trueStatus)) return;                 // genuine — leave alone
-
-      var ownSC = (Array.isArray(a.agentHistory) ? a.agentHistory : [])
-        .filter(function (h) { return h && h.type === "status_change"; });
-      var feedbackBearingSameStatus = ownSC.some(function (h) {
-        return hasFeedback(h) && canon(parseHistStatus(h)) === canon(a.status);
-      });
-      var birthTs = sliceBirthTs(a);
-      var afterFix = birthTs > 0 && birthTs >= MIRROR_FIX_TS;
-      var laTs = a.lastActionAt ? new Date(a.lastActionAt).getTime() : 0;
-      var topEverEqualled = laTs > 0 && histRows.some(function (r) { return canon(r.newStatus) === canon(a.status) && r.ts <= laTs; });
-      var ambiguous = feedbackBearingSameStatus || !laTs || topEverEqualled;
-      var confident = !afterFix && !ambiguous;
-
-      if (!confident) {                                                  // skip ambiguous + afterFix (record why)
-        var reason = afterFix ? "slice born after mirror fix — not pollution"
-          : feedbackBearingSameStatus ? "feedback-bearing same-status (" + a.status + ") entry — likely genuine"
-          : !laTs ? "no slice.lastActionAt to bound the top-level check"
-          : "lead top-level was already '" + a.status + "' at/before slice.lastActionAt — possibly genuine";
-        skipped.push({ agent: agentName || aId || "(no agentId)", current: a.status, proposed: trueStatus, reason: reason });
-        return;
-      }
-
-      confidentRepairs.push({
-        sliceId: a._id ? String(a._id) : "",
-        agentId: aId,
-        agent: agentName || aId || "(no agentId)",
-        before: a.status,
-        after: trueStatus
-      });
-    });
-
-    // ---- apply (or preview) ----
+    var pollutedSlices = detectPollutedSlices(lead, nameOf);
     var repairs = [], errors = [], repaired = 0;
-    for (var i = 0; i < confidentRepairs.length; i++) {
-      var rep = confidentRepairs[i];
-      repairs.push({ agent: rep.agent, before: rep.before, after: rep.after });
+    for (var i = 0; i < pollutedSlices.length; i++) {
+      var s = pollutedSlices[i];
+      repairs.push({ agent: s.agent, before: s.current, after: s.proposed });
       if (dryRun) continue;
-      if (!rep.sliceId || !mongoose.Types.ObjectId.isValid(rep.sliceId)) { errors.push({ agent: rep.agent, error: "missing_slice_id" }); continue; }
+      if (!s.sliceId || !mongoose.Types.ObjectId.isValid(s.sliceId)) { errors.push({ agent: s.agent, error: "missing_slice_id" }); continue; }
       try {
-        var now = new Date();
-        var r = await Lead.updateOne(
-          { _id: leadId },
-          {
-            $set: { "assignments.$[el].status": rep.after },
-            $push: { "assignments.$[el].agentHistory": {
-              type: "status_cleanup",
-              note: "Status corrected from " + rep.before + " to " + rep.after + " by cleanup. Reason: pre-703ef2f mirror pollution.",
-              oldStatus: rep.before,
-              newStatus: rep.after,
-              createdAt: now,
-              authorRole: "system_cleanup"
-            }}
-          },
-          { arrayFilters: [{ "el._id": new mongoose.Types.ObjectId(rep.sliceId) }] }
-        );
-        if (r && (r.modifiedCount || r.nModified)) repaired++;
-        else errors.push({ agent: rep.agent, error: "no_document_modified" });
+        var r = await Lead.bulkWrite([ buildPollutionRepairOp(leadId, s) ], { ordered: false });
+        if (r && (r.modifiedCount || (r.result && r.result.nModified))) repaired++;
+        else errors.push({ agent: s.agent, error: "no_document_modified" });
       } catch (uErr) {
-        errors.push({ agent: rep.agent, error: uErr && uErr.message ? uErr.message : String(uErr) });
+        errors.push({ agent: s.agent, error: uErr && uErr.message ? uErr.message : String(uErr) });
       }
     }
 
@@ -13547,10 +13387,88 @@ app.post("/api/admin/rotation-pollution-cleanup-single", auth, strictAdminOnly, 
       leadId: leadId,
       leadName: lead.name || "(no name)",
       dryRun: dryRun,
-      totalConfidentSlices: confidentRepairs.length,
+      totalPollutedSlices: pollutedSlices.length,
       repaired: dryRun ? 0 : repaired,
       repairs: repairs,
-      skipped: skipped,
+      errors: errors
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== TEMPORARY — full-database pollution cleanup (admin-only) =====
+// Phase 2: processes ALL leads. Uses the shared detectPollutedSlices rule and
+// repairs every polluted non-holder slice. dryRun:true previews (no writes);
+// dryRun:false applies and is gated behind confirm === "yes-cleanup-all-polluted-slices".
+// Writes are batched via bulkWrite (chunks of 500) so a database-wide pass stays
+// within request limits. Each change carries an auditable status_cleanup entry.
+// Temporary — remove after the cleanup phase.
+app.post("/api/admin/rotation-pollution-cleanup-all", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var dryRun = !(req.body && req.body.dryRun === false);
+    var confirm = String((req.body && req.body.confirm) || "");
+    if (!dryRun && confirm !== "yes-cleanup-all-polluted-slices") {
+      return res.status(400).json({ error: "confirm_required", message: "Set confirm='yes-cleanup-all-polluted-slices' to apply (dryRun:false)" });
+    }
+    console.log("[POLLUTION-CLEANUP-ALL] dryRun=" + dryRun);
+
+    var users = await User.find({}, { name: 1 }).lean();
+    var nameOf = {};
+    users.forEach(function (u) { nameOf[String(u._id)] = u.name || "(unknown)"; });
+
+    var leads = await Lead.find(
+      { "assignments.0": { $exists: true } },
+      { name: 1, agentId: 1, status: 1, assignments: 1, history: 1 }
+    ).lean();
+
+    var totalLeadsProcessed = leads.length;
+    var leadsWithPollution = {};
+    var detected = [];                                                   // {leadId, leadName, slice}
+    leads.forEach(function (lead) {
+      detectPollutedSlices(lead, nameOf).forEach(function (s) {
+        leadsWithPollution[String(lead._id)] = true;
+        detected.push({ leadId: String(lead._id), leadName: lead.name || "(no name)", slice: s });
+      });
+    });
+
+    var sampleRepairs = detected.slice(0, 50).map(function (d) {
+      return { leadId: d.leadId, leadName: d.leadName, agent: d.slice.agent, before: d.slice.current, after: d.slice.proposed };
+    });
+
+    var totalSlicesRepaired = 0, totalErrors = 0, errors = [];
+    if (!dryRun) {
+      // Build all repair ops, then bulkWrite in chunks of 500.
+      var ops = [];
+      for (var d = 0; d < detected.length; d++) {
+        var s = detected[d].slice;
+        if (!s.sliceId || !mongoose.Types.ObjectId.isValid(s.sliceId)) {
+          totalErrors++; if (errors.length < 50) errors.push({ leadId: detected[d].leadId, agent: s.agent, error: "missing_slice_id" });
+          continue;
+        }
+        ops.push(buildPollutionRepairOp(detected[d].leadId, s));
+      }
+      var CHUNK = 500;
+      for (var c = 0; c < ops.length; c += CHUNK) {
+        var batch = ops.slice(c, c + CHUNK);
+        try {
+          var br = await Lead.bulkWrite(batch, { ordered: false });
+          totalSlicesRepaired += (br.modifiedCount || (br.result && br.result.nModified) || 0);
+        } catch (bErr) {
+          // ordered:false — some ops in the batch may still have applied.
+          if (bErr && bErr.result) totalSlicesRepaired += (bErr.result.nModified || bErr.result.modifiedCount || 0);
+          totalErrors += batch.length;
+          if (errors.length < 50) errors.push({ batchStart: c, error: bErr && bErr.message ? bErr.message : String(bErr) });
+        }
+      }
+    }
+
+    res.json({
+      dryRun: dryRun,
+      totalLeadsProcessed: totalLeadsProcessed,
+      totalLeadsWithPollution: Object.keys(leadsWithPollution).length,
+      totalSlicesDetected: detected.length,
+      totalSlicesRepaired: dryRun ? 0 : totalSlicesRepaired,
+      totalErrors: totalErrors,
+      sampleRepairs: sampleRepairs,
       errors: errors
     });
   } catch (e) { res.status(500).json({ error: e.message }); }

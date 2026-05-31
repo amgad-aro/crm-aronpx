@@ -16499,6 +16499,24 @@ var RotationDiagnosticsTab = function(props) {
     }
     setClBusy(false);
   };
+  // TEMPORARY — Phase 2 full-database cleanup state.
+  var [allBusy, setAllBusy] = useState(false);
+  var [allError, setAllError] = useState("");
+  var [allData, setAllData] = useState(null);
+  var [allConfirm, setAllConfirm] = useState("");
+  var runCleanupAll = async function(apply) {
+    setAllBusy(true); setAllError(""); setAllData(null);
+    try {
+      var body = { dryRun: !apply };
+      if (apply) body.confirm = "yes-cleanup-all-polluted-slices";
+      var d = await apiFetch("/api/admin/rotation-pollution-cleanup-all", "POST", body, props.token);
+      setAllData(d);
+      if (apply) setAllConfirm("");
+    } catch(e) {
+      setAllError((e && e.message) || "Failed");
+    }
+    setAllBusy(false);
+  };
   var load = async function() {
     setLoading(true); setError("");
     try {
@@ -16745,35 +16763,19 @@ var RotationDiagnosticsTab = function(props) {
         {pollData && <div>
           {/* Summary cards */}
           <div style={{ display:"flex", gap:12, flexWrap:"wrap", marginBottom:10 }}>
-            <div style={{ background:"#FEF2F2", padding:"10px 14px", borderRadius:8, minWidth:120 }}>
-              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Total flagged</div>
-              <div style={{ fontSize:22, fontWeight:700, color:"#B91C1C" }}>{pollData.total || 0}</div>
-              <div style={{ fontSize:9, color:C.textLight }}>pure history rule</div>
+            <div style={{ background:"#FEE2E2", padding:"10px 14px", borderRadius:8, minWidth:160, border:"1.5px solid #B91C1C" }}>
+              <div style={{ fontSize:10, color:"#B91C1C", textTransform:"uppercase", letterSpacing:0.3, fontWeight:700 }}>Polluted slices</div>
+              <div style={{ fontSize:26, fontWeight:700, color:"#B91C1C" }}>{pollData.total != null ? pollData.total : "—"}</div>
+              <div style={{ fontSize:9, color:C.textLight }}>will be cleaned</div>
             </div>
-            <div style={{ background:"#FEE2E2", padding:"10px 14px", borderRadius:8, minWidth:120, border:"1.5px solid #B91C1C" }}>
-              <div style={{ fontSize:10, color:"#B91C1C", textTransform:"uppercase", letterSpacing:0.3, fontWeight:700 }}>Confident</div>
-              <div style={{ fontSize:22, fontWeight:700, color:"#B91C1C" }}>{pollData.totalConfident != null ? pollData.totalConfident : "—"}</div>
-              <div style={{ fontSize:9, color:C.textLight }}>pre-fix · not ambiguous</div>
-            </div>
-            <div style={{ background:"#FFFBEB", padding:"10px 14px", borderRadius:8, minWidth:120 }}>
-              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Ambiguous</div>
-              <div style={{ fontSize:22, fontWeight:700, color:"#B45309" }}>{pollData.totalAmbiguous != null ? pollData.totalAmbiguous : "—"}</div>
-              <div style={{ fontSize:9, color:C.textLight }}>possibly genuine</div>
-            </div>
-            <div style={{ background:"#ECFDF5", padding:"10px 14px", borderRadius:8, minWidth:120 }}>
-              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>After fix</div>
-              <div style={{ fontSize:22, fontWeight:700, color:"#047857" }}>{pollData.totalAssignedAfterFix != null ? pollData.totalAssignedAfterFix : "—"}</div>
-              <div style={{ fontSize:9, color:C.textLight }}>NOT pollution</div>
-            </div>
-            <div style={{ background:"#FFF7ED", padding:"10px 14px", borderRadius:8, minWidth:110 }}>
+            <div style={{ background:"#FFF7ED", padding:"10px 14px", borderRadius:8, minWidth:130 }}>
               <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Leads affected</div>
-              <div style={{ fontSize:22, fontWeight:700, color:"#9A3412" }}>{pollData.leadsAffected || 0}</div>
+              <div style={{ fontSize:26, fontWeight:700, color:"#9A3412" }}>{pollData.leadsAffected || 0}</div>
             </div>
           </div>
           <div style={{ fontSize:10, color:C.textLight, marginBottom:14 }}>
             {pollData.mode || "—"}{pollData.readOnly ? " · read-only" : ""} · {pollData.scope || ""}
-            {pollData.mirrorFixCutoff ? " · mirror-fix cutoff " + pollData.mirrorFixCutoff : ""}
-            {pollData.totalExclFeedbackBearing != null ? " · excl-feedback-bearing " + pollData.totalExclFeedbackBearing : ""}
+            {pollData.rule ? <span> · rule: {pollData.rule}</span> : null}
           </div>
 
           {/* Breakdown by current (polluted) status */}
@@ -16794,47 +16796,28 @@ var RotationDiagnosticsTab = function(props) {
             })}
           </div>
 
-          {/* Sample group 1 — distinct leads, status-spread, confident first */}
-          {(function(){
-            var gradeOf = function(s){ return s.sliceCreatedAfterMirrorFix ? {t:"after-fix",c:"#047857",b:"#ECFDF5"} : s.ambiguousReason ? {t:"ambiguous",c:"#B45309",b:"#FFFBEB"} : {t:"confident",c:"#B91C1C",b:"#FEE2E2"}; };
-            var renderSampleTable = function(list){
-              return <div style={{ overflowX:"auto", border:"1px solid #E2E8F0", borderRadius:8, marginBottom:14 }}>
-                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
-                  <thead><tr>
-                    <th style={th}>Lead</th>
-                    <th style={th}>Agent</th>
-                    <th style={th}>Current</th>
-                    <th style={th}>Proposed</th>
-                    <th style={th}>Grade</th>
-                    <th style={th}>Hist row?</th>
-                    <th style={th}>Assigned / LastAction</th>
-                    <th style={th}>Reasoning</th>
-                  </tr></thead>
-                  <tbody>{list.map(function(s, i){
-                    var g = gradeOf(s);
-                    return <tr key={i}>
-                      <td style={td}>{s.leadName || "(no name)"}</td>
-                      <td style={td}>{s.agent || "—"}</td>
-                      <td style={Object.assign({}, td, { color:"#B91C1C", fontWeight:600 })}>{s.current || "—"}</td>
-                      <td style={Object.assign({}, td, { color:"#15803D", fontWeight:600 })}>{s.proposed || "—"}</td>
-                      <td style={td}><span style={{ fontSize:9, padding:"2px 6px", borderRadius:10, background:g.b, color:g.c, fontWeight:700 }}>{g.t}</span></td>
-                      <td style={Object.assign({}, td, { color: s.lastHistoryRowFound ? "#15803D" : "#B91C1C" })}>{s.lastHistoryRowFound ? "yes" : "NONE"}</td>
-                      <td style={Object.assign({}, td, { color:C.textLight, fontSize:10 })}>{(s.sliceAssignedAt||"?").slice(0,10)} / {(s.sliceLastActionAt||"?").slice(0,10)}</td>
-                      <td style={Object.assign({}, td, { color:C.textLight, maxWidth:320, whiteSpace:"normal" })}>{s.reasoning || "—"}</td>
-                    </tr>;
-                  })}</tbody>
-                </table>
-              </div>;
-            };
-            return <div>
-              <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Sample — distinct leads, status-spread (up to 10)</div>
-              {Array.isArray(pollData.samples) && pollData.samples.length > 0 ? renderSampleTable(pollData.samples)
-                : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:14 }}>No samples (no pollution detected).</div>}
-              <div style={{ fontSize:11, fontWeight:700, color:"#B45309", textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Ambiguous edge cases — manual review (up to 5)</div>
-              {Array.isArray(pollData.ambiguousSamples) && pollData.ambiguousSamples.length > 0 ? renderSampleTable(pollData.ambiguousSamples)
-                : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:14 }}>No ambiguous samples.</div>}
-            </div>;
-          })()}
+          {/* Sample — distinct leads, status-spread */}
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Sample — distinct leads, status-spread (up to 12)</div>
+          {Array.isArray(pollData.samples) && pollData.samples.length > 0 ? <div style={{ overflowX:"auto", border:"1px solid #E2E8F0", borderRadius:8, marginBottom:14 }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+              <thead><tr>
+                <th style={th}>Lead</th>
+                <th style={th}>Agent</th>
+                <th style={th}>Current (polluted)</th>
+                <th style={th}>Proposed (repair)</th>
+                <th style={th}>Self-authored history row?</th>
+              </tr></thead>
+              <tbody>{pollData.samples.map(function(s, i){
+                return <tr key={i}>
+                  <td style={td}>{s.leadName || "(no name)"}</td>
+                  <td style={td}>{s.agent || "—"}</td>
+                  <td style={Object.assign({}, td, { color:"#B91C1C", fontWeight:600 })}>{s.current || "—"}</td>
+                  <td style={Object.assign({}, td, { color:"#15803D", fontWeight:600 })}>{s.proposed || "—"}</td>
+                  <td style={Object.assign({}, td, { color: s.lastHistoryRow ? "#15803D" : "#B45309" })}>{s.lastHistoryRow ? ("yes → last was " + s.lastHistoryRow.newStatus) : "NONE → NewLead"}</td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:14 }}>No samples (no pollution detected).</div>}
 
           {/* Raw JSON — copy/paste back for analysis */}
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Raw JSON</div>
@@ -16876,7 +16859,7 @@ var RotationDiagnosticsTab = function(props) {
         {clData && <div>
           <div style={{ fontSize:12, marginBottom:8 }}>
             <b>{clData.leadName || clData.leadId}</b> · {clData.dryRun ? <span style={{ color:"#4F46E5", fontWeight:700 }}>PREVIEW (no writes)</span> : <span style={{ color:"#B91C1C", fontWeight:700 }}>APPLIED</span>}
-            {" · "}confident slices: <b>{clData.totalConfidentSlices != null ? clData.totalConfidentSlices : 0}</b>
+            {" · "}polluted slices: <b>{clData.totalPollutedSlices != null ? clData.totalPollutedSlices : 0}</b>
             {!clData.dryRun && <span> · repaired: <b>{clData.repaired}</b></span>}
             {Array.isArray(clData.errors) && clData.errors.length > 0 && <span style={{ color:"#B91C1C" }}> · errors: {clData.errors.length}</span>}
           </div>
@@ -16895,30 +16878,82 @@ var RotationDiagnosticsTab = function(props) {
                 </tr>;
               })}</tbody>
             </table>
-          </div> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:10 }}>No confident slices to repair on this lead.</div>}
-          {/* Skipped (ambiguous / after-fix) — shown so the full per-slice picture is visible */}
-          {Array.isArray(clData.skipped) && clData.skipped.length > 0 && <div>
-            <div style={{ fontSize:11, fontWeight:700, color:"#B45309", textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Skipped (held back — not repaired)</div>
-            <div style={{ overflowX:"auto", border:"1px solid #FDE68A", borderRadius:8, marginBottom:10 }}>
-              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
-                <thead><tr>
-                  <th style={th}>Agent</th>
-                  <th style={th}>Current</th>
-                  <th style={th}>Would-be</th>
-                  <th style={th}>Reason held back</th>
-                </tr></thead>
-                <tbody>{clData.skipped.map(function(s, i){
-                  return <tr key={i}>
-                    <td style={td}>{s.agent}</td>
-                    <td style={Object.assign({}, td, { fontWeight:600 })}>{s.current}</td>
-                    <td style={Object.assign({}, td, { color:C.textLight })}>{s.proposed}</td>
-                    <td style={Object.assign({}, td, { color:"#B45309", maxWidth:360, whiteSpace:"normal" })}>{s.reason}</td>
-                  </tr>;
-                })}</tbody>
-              </table>
-            </div>
-          </div>}
+          </div> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:10 }}>No polluted slices to repair on this lead.</div>}
           {Array.isArray(clData.errors) && clData.errors.length > 0 && <pre style={{ margin:0, padding:"8px 10px", background:"#FEF2F2", color:"#B91C1C", borderRadius:8, fontSize:11, overflowX:"auto" }}>{JSON.stringify(clData.errors, null, 2)}</pre>}
+        </div>}
+      </div>
+    </div>
+
+    {/* (8) Full-Database Cleanup — TEMPORARY. Phase 2: repairs ALL polluted
+        slices DB-wide. Preview (dry-run) makes no writes; Apply requires typing
+        CONFIRM-ALL and is gated server-side by a confirm string. */}
+    <div style={{ marginBottom:16, border:"2px solid #B91C1C", borderRadius:10, overflow:"hidden", background:"#fff" }}>
+      <div style={{ padding:"10px 14px", background:"#FEF2F2" }}>
+        <span style={{ fontSize:13, fontWeight:700, color:"#B91C1C" }}>8. Full-Database Cleanup (ALL polluted slices)</span>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>
+          Repairs EVERY polluted non-holder slice across all leads. Run Preview first to confirm the count matches the dry-run. Apply writes an auditable status_cleanup entry per change (reversible via the audit trail).
+        </div>
+      </div>
+      <div style={{ padding:"12px 14px" }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", marginBottom:10 }}>
+          <button onClick={function(){ runCleanupAll(false); }} disabled={allBusy}
+            style={{ padding:"7px 14px", borderRadius:8, border:"1px solid #4F46E5", background:allBusy?"#E0E7FF":"#fff", color:"#4F46E5", fontSize:12, fontWeight:600, cursor:allBusy?"wait":"pointer" }}>
+            {allBusy ? "Running…" : "▶ Preview ALL (dry-run)"}
+          </button>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", marginBottom:12, padding:"8px 10px", background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8 }}>
+          <span style={{ fontSize:11, color:"#B91C1C", fontWeight:700 }}>DANGER — writes to ALL leads:</span>
+          <input value={allConfirm} onChange={function(e){ setAllConfirm(e.target.value); }} placeholder="type CONFIRM-ALL"
+            style={{ padding:"6px 10px", border:"1px solid #FECACA", borderRadius:8, fontSize:12, width:160 }}/>
+          <button onClick={function(){ if(allConfirm==="CONFIRM-ALL") runCleanupAll(true); }} disabled={allBusy || allConfirm!=="CONFIRM-ALL"}
+            style={{ padding:"7px 14px", borderRadius:8, border:"none", background:(allConfirm==="CONFIRM-ALL"&&!allBusy)?"#B91C1C":"#FCA5A5", color:"#fff", fontSize:12, fontWeight:700, cursor:(allConfirm==="CONFIRM-ALL"&&!allBusy)?"pointer":"not-allowed" }}>
+            ✓ Apply cleanup to ALL polluted slices
+          </button>
+        </div>
+        {allError && <div style={{ padding:"10px 14px", marginBottom:12, background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8, color:"#B91C1C", fontSize:12 }}>{allError}</div>}
+        {allData && <div>
+          <div style={{ display:"flex", gap:12, flexWrap:"wrap", marginBottom:10 }}>
+            <div style={{ background:"#F8FAFC", padding:"8px 12px", borderRadius:8, minWidth:120 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase" }}>Leads processed</div>
+              <div style={{ fontSize:18, fontWeight:700, color:C.text }}>{allData.totalLeadsProcessed != null ? allData.totalLeadsProcessed : "—"}</div>
+            </div>
+            <div style={{ background:"#FEF2F2", padding:"8px 12px", borderRadius:8, minWidth:120 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase" }}>Slices detected</div>
+              <div style={{ fontSize:18, fontWeight:700, color:"#B91C1C" }}>{allData.totalSlicesDetected != null ? allData.totalSlicesDetected : "—"}</div>
+            </div>
+            <div style={{ background:"#ECFDF5", padding:"8px 12px", borderRadius:8, minWidth:120 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase" }}>{allData.dryRun ? "Would repair" : "Repaired"}</div>
+              <div style={{ fontSize:18, fontWeight:700, color:"#047857" }}>{allData.dryRun ? (allData.totalSlicesDetected != null ? allData.totalSlicesDetected : "—") : (allData.totalSlicesRepaired != null ? allData.totalSlicesRepaired : "—")}</div>
+            </div>
+            <div style={{ background:"#FFF7ED", padding:"8px 12px", borderRadius:8, minWidth:100 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase" }}>Errors</div>
+              <div style={{ fontSize:18, fontWeight:700, color: allData.totalErrors ? "#B91C1C" : C.text }}>{allData.totalErrors != null ? allData.totalErrors : "—"}</div>
+            </div>
+            <div style={{ background:"#EEF2FF", padding:"8px 12px", borderRadius:8, minWidth:120 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase" }}>Mode</div>
+              <div style={{ fontSize:14, fontWeight:700, color: allData.dryRun ? "#4F46E5" : "#B91C1C" }}>{allData.dryRun ? "PREVIEW" : "APPLIED"}</div>
+            </div>
+          </div>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Sample repairs (first 50)</div>
+          {Array.isArray(allData.sampleRepairs) && allData.sampleRepairs.length > 0 ? <div style={{ overflowX:"auto", border:"1px solid #E2E8F0", borderRadius:8, marginBottom:10, maxHeight:360, overflowY:"auto" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+              <thead><tr>
+                <th style={th}>Lead</th>
+                <th style={th}>Agent</th>
+                <th style={th}>Before</th>
+                <th style={th}>After</th>
+              </tr></thead>
+              <tbody>{allData.sampleRepairs.map(function(r, i){
+                return <tr key={i}>
+                  <td style={td}>{r.leadName || r.leadId}</td>
+                  <td style={td}>{r.agent}</td>
+                  <td style={Object.assign({}, td, { color:"#B91C1C", fontWeight:600 })}>{r.before}</td>
+                  <td style={Object.assign({}, td, { color:"#15803D", fontWeight:600 })}>{r.after}</td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:10 }}>No polluted slices detected.</div>}
+          {Array.isArray(allData.errors) && allData.errors.length > 0 && <pre style={{ margin:0, padding:"8px 10px", background:"#FEF2F2", color:"#B91C1C", borderRadius:8, fontSize:11, overflowX:"auto" }}>{JSON.stringify(allData.errors, null, 2)}</pre>}
         </div>}
       </div>
     </div>
