@@ -10445,7 +10445,27 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // the current holder's slice — the cross-agent leak. Managerial roles
     // (admin/manager/team_leader/director) still mirror onto the current holder,
     // which is the documented purpose of this block.
+    //
+    // SPLIT-LEAD GUARD: only mirror when the holder is the SOLE active agent on
+    // this lead. On a split lead (≥2 active slices belonging to different
+    // agents) the top-level holder is just one of several owners, and each
+    // agent's slice MUST reflect only that agent's own action. Mirroring a
+    // lead-level status pick onto one agent's per-agent slice (and injecting a
+    // matching status_change into their agentHistory) is the cross-slice leak:
+    // e.g. an admin setting MeetingDone splashes it onto the holder slice even
+    // though that agent set NotInterested. Cross-slice status is DISPLAY-ONLY
+    // (currentStatus / _currentStatus aggregation) and must never be persisted.
+    // Single-agent leads keep the mirror so a manager's status change still
+    // shows on that one agent's slice (the documented purpose above).
+    // "Active" = removedAt == null — the same definition used by the
+    // caller-slice $elemMatch above, findAssignmentForAgent, and the pollution
+    // detector. Fire ONLY when there is a single active assignment; skip the
+    // moment 2+ active assignments exist (a split lead).
+    var holderSyncActiveCount = (oldLead && Array.isArray(oldLead.assignments))
+      ? oldLead.assignments.filter(function(a){ return a && a.removedAt == null; }).length
+      : 0;
     if (req.body.status && oldLead && oldLead.agentId &&
+        holderSyncActiveCount <= 1 &&
         String(oldLead.agentId) !== String(req.user.id) &&
         req.body.status !== oldLead.status &&
         req.user.role !== "sales_admin" && req.user.role !== "sales") {
