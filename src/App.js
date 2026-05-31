@@ -4140,11 +4140,20 @@ var LeadsPage = function(p) {
         var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
         var statusChanges = hist.filter(function(h){ return h && h.type === "status_change"; }).map(function(h){
           var m = String(h.note || "").match(/Status:\s*(.+)$/i);
+          var fb = (h.feedback != null && String(h.feedback).trim() !== "") ? String(h.feedback).trim() : "";
           return {
             status: (m && m[1] ? m[1].trim() : (h.status || "?")),
-            at: h.createdAt || h.at || null,
-            hasAuthor: !!(h.authorId || h.authorName || h.authorRole),   // mirror writes lack these
-            authorName: h.authorName || "", authorRole: h.authorRole || ""
+            createdAt: h.createdAt || h.at || null,
+            note: h.note != null ? String(h.note) : null,
+            hasAuthorId: !!h.authorId,
+            hasAuthorName: !!h.authorName,
+            hasAuthorRole: !!h.authorRole,
+            hasAuthor: !!(h.authorId || h.authorName || h.authorRole),   // mirror writes lack ALL of these
+            authorName: h.authorName || "", authorRole: h.authorRole || "",
+            hasFeedback: !!fb,                                            // mirror writes carry no feedback
+            feedback: fb,
+            // Mirror signature: a status_change with no author AND no feedback.
+            looksLikeMirror: !(h.authorId || h.authorName || h.authorRole) && !fb
           };
         });
         var matchesOwnStatus = statusChanges.some(function(e){ return String(e.status).replace(/\s/g,"") === String(a.status||"").replace(/\s/g,""); });
@@ -4168,6 +4177,30 @@ var LeadsPage = function(p) {
         matchesOwnStatus: r.historyHasMatchingStatusChange
       }; }));
       console.log("[SLICE-DEBUG] full per-slice detail (with status_change author info):", rows);
+      // Focused view: strong-status slices (MeetingDone/DoneDeal/EOI) only —
+      // dump each of their status_change entries' raw fields so we can read
+      // the author/feedback signal that distinguishes a genuine agent action
+      // from a holder-sync mirror write.
+      var STRONG = { MeetingDone:1, "Meeting Done":1, DoneDeal:1, "Done Deal":1, EOI:1 };
+      var strongRows = rows.filter(function(r){ return STRONG[r.sliceStatus]; });
+      console.log("%c[SLICE-DEBUG] STRONG-status slices: " + strongRows.length, "color:#9A3412;font-weight:700");
+      strongRows.forEach(function(r){
+        var matchEntries = r.statusChanges.filter(function(e){
+          return String(e.status).replace(/\s/g,"") === String(r.sliceStatus).replace(/\s/g,"");
+        });
+        var allMatchAreMirror = matchEntries.length > 0 && matchEntries.every(function(e){ return e.looksLikeMirror; });
+        console.log(
+          "%c  • " + r.agent + " → " + r.sliceStatus +
+          "  | same-status entries: " + matchEntries.length +
+          " | ALL look like mirror (no author, no feedback): " + allMatchAreMirror,
+          "color:" + (allMatchAreMirror ? "#B91C1C" : "#15803D") + ";font-weight:600"
+        );
+        console.table(r.statusChanges.map(function(e){ return {
+          status: e.status, createdAt: e.createdAt,
+          hasAuthorId: e.hasAuthorId, hasAuthorName: e.hasAuthorName, hasAuthorRole: e.hasAuthorRole,
+          hasFeedback: e.hasFeedback, looksLikeMirror: e.looksLikeMirror, note: e.note
+        }; }));
+      });
       console.log("[SLICE-DEBUG] raw assignments (full doc):", full.assignments);
       /* eslint-enable no-console */
     }).catch(function(err){
