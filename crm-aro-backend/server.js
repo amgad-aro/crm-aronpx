@@ -13419,12 +13419,42 @@ function detectBlockCPollutedSlices(lead, nameOf, isSalesName, isManagerialName)
     // (ev2) feedback-bearing agentHistory status_change for X → genuine.
     if (ah.some(function (h) { return h && h.type === "status_change" && pollHasFeedback(h) && pollCanon(pollParseHistStatus(h)) === Xc; })) return;
 
-    // (attr) most-recent history row producing X must be MANAGERIAL-authored.
-    var sameStatus = histRows.filter(function (r) { return pollCanon(r.newStatus) === Xc; }).sort(function (a, b) { return b.ts - a.ts; });
-    var causingRow = sameStatus[0] || null;
-    if (!causingRow) return;                                           // can't attribute → preserve
-    if (isSalesName(causingRow.byUser)) return;                        // sales-authored → covered by holder cleanup, not block C
-    if (!isManagerialName(causingRow.byUser)) return;                  // unknown author → preserve
+    // Slice-centric pollution confirmed: the slice carries a foreign no-feedback
+    // "Status: X" mirror entry and the agent has NO self-evidence for X. The mirror
+    // entry has no author, so we ANNOTATE (not gate) the cause via the lead.history
+    // "→ X" row nearest in time to the mirror entry:
+    //   - within 10min → a real status-change write; report byUser + author class
+    //     (managerial = block-C mirror; sales = pre-703ef2f sales mirror).
+    //   - none within 10min → the mirror was written while top-level status already
+    //     equaled X (the audit row is gated on a status CHANGE, so none exists), or
+    //     by a non-status-change path. Still pollution; cause unattributable from
+    //     history. This is the canonical "Ahmed Shaaban" shape the old managerial
+    //     gate wrongly excluded.
+    var off = sigEntries[0];
+    var offTs = pollRowTs(off);
+    var NEAR_MS = 10 * 60 * 1000;
+    var xRows = histRows.filter(function (r) { return pollCanon(r.newStatus) === Xc; })
+      .map(function (r) { return { r: r, dist: Math.abs(r.ts - offTs) }; })
+      .sort(function (a, b) { return a.dist - b.dist; });
+    var near = (xRows[0] && xRows[0].dist <= NEAR_MS) ? xRows[0].r : null;
+    var cause;
+    if (near) {
+      var by = near.byUser;
+      cause = {
+        type: "history-row",
+        byUser: by,
+        authorClass: isSalesName(by) ? "sales" : (isManagerialName(by) ? "managerial" : "unknown"),
+        at: new Date(near.ts).toISOString(),
+        description: near.description
+      };
+    } else {
+      cause = {
+        type: "no-near-history-row",
+        note: "no '→ " + Xc + "' lead.history row within 10min of the mirror entry; written while top-level status already == " + Xc + " (audit skipped) or via a non-status-change path",
+        nearestAt: xRows[0] ? new Date(xRows[0].r.ts).toISOString() : null,
+        nearestByUser: xRows[0] ? xRows[0].r.byUser : null
+      };
+    }
 
     // Agent's REAL last self-initiated status: latest self-authored lead.history
     // row OR latest feedback-bearing agentHistory status_change; else NewLead.
@@ -13437,7 +13467,6 @@ function detectBlockCPollutedSlices(lead, nameOf, isSalesName, isManagerialName)
       ? { status: selfStatusEvents[0].status, statusCanon: pollCanon(selfStatusEvents[0].status), at: new Date(selfStatusEvents[0].ts).toISOString(), source: selfStatusEvents[0].src }
       : { status: "NewLead", statusCanon: "NewLead", at: null, source: "default (no self-authored status)" };
 
-    var off = sigEntries[0];
     out.push({
       sliceId: slice._id ? String(slice._id) : "",
       agentId: aId,
@@ -13447,7 +13476,7 @@ function detectBlockCPollutedSlices(lead, nameOf, isSalesName, isManagerialName)
       pollutedStatusCanon: Xc,
       realLastSelfStatus: realLast,
       offendingEntry: { note: off.note != null ? String(off.note) : null, at: off.createdAt ? new Date(off.createdAt).toISOString() : (off.timestamp ? new Date(off.timestamp).toISOString() : null) },
-      causingHistoryRow: { byUser: causingRow.byUser, newStatus: causingRow.newStatus, at: new Date(causingRow.ts).toISOString(), description: causingRow.description }
+      cause: cause
     });
   });
   return out;
