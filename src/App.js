@@ -16730,31 +16730,37 @@ var RotationDiagnosticsTab = function(props) {
               <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Polluted slices</div>
               <div style={{ fontSize:22, fontWeight:700, color:"#B91C1C" }}>{pollData.total || 0}</div>
             </div>
+            <div style={{ background:"#FFFBEB", padding:"10px 14px", borderRadius:8, minWidth:150 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Excl. feedback-bearing</div>
+              <div style={{ fontSize:22, fontWeight:700, color:"#B45309" }}>{pollData.totalExclFeedbackBearing != null ? pollData.totalExclFeedbackBearing : "—"}</div>
+              <div style={{ fontSize:9, color:C.textLight }}>safer count (false-positive guard)</div>
+            </div>
             <div style={{ background:"#FFF7ED", padding:"10px 14px", borderRadius:8, minWidth:130 }}>
               <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Leads affected</div>
               <div style={{ fontSize:22, fontWeight:700, color:"#9A3412" }}>{pollData.leadsAffected || 0}</div>
             </div>
-            <div style={{ background:"#F8FAFC", padding:"10px 14px", borderRadius:8, minWidth:130 }}>
-              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Mode</div>
-              <div style={{ fontSize:14, fontWeight:700, color:C.text }}>{pollData.mode || "—"}{pollData.readOnly ? " · read-only" : ""}</div>
+            <div style={{ background:"#F8FAFC", padding:"10px 14px", borderRadius:8, minWidth:160 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>Mode / scope</div>
+              <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{pollData.mode || "—"}{pollData.readOnly ? " · read-only" : ""}</div>
+              <div style={{ fontSize:9, color:C.textLight }}>{pollData.scope || ""}</div>
             </div>
           </div>
 
-          {/* Breakdown by polluted status */}
-          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Breakdown by polluted status</div>
+          {/* Breakdown by current (polluted) status */}
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Breakdown by current (polluted) status</div>
           <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:14 }}>
-            {Object.keys(pollData.byStatus || {}).length === 0 && <span style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>—</span>}
-            {Object.keys(pollData.byStatus || {}).sort(function(a,b){ return pollData.byStatus[b]-pollData.byStatus[a]; }).map(function(k){
-              return <span key={k} style={{ fontSize:11, padding:"3px 8px", borderRadius:14, background:"#FEE2E2", color:"#B91C1C", fontWeight:600 }}>{k} · {pollData.byStatus[k]}</span>;
+            {Object.keys(pollData.byCurrent || {}).length === 0 && <span style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>—</span>}
+            {Object.keys(pollData.byCurrent || {}).sort(function(a,b){ return pollData.byCurrent[b]-pollData.byCurrent[a]; }).map(function(k){
+              return <span key={k} style={{ fontSize:11, padding:"3px 8px", borderRadius:14, background:"#FEE2E2", color:"#B91C1C", fontWeight:600 }}>{k} · {pollData.byCurrent[k]}</span>;
             })}
           </div>
 
-          {/* Breakdown by proposed repair (inferred real last action) */}
-          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Proposed repair target (inferred real status)</div>
+          {/* Breakdown by proposed repair (agent's proven last status) */}
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Proposed repair target (agent's proven last status)</div>
           <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:14 }}>
-            {Object.keys(pollData.byRepair || {}).length === 0 && <span style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>—</span>}
-            {Object.keys(pollData.byRepair || {}).sort(function(a,b){ return pollData.byRepair[b]-pollData.byRepair[a]; }).map(function(k){
-              return <span key={k} style={{ fontSize:11, padding:"3px 8px", borderRadius:14, background:"#DCFCE7", color:"#15803D", fontWeight:600 }}>{k} · {pollData.byRepair[k]}</span>;
+            {Object.keys(pollData.byProposed || {}).length === 0 && <span style={{ fontSize:12, color:C.textLight, fontStyle:"italic" }}>—</span>}
+            {Object.keys(pollData.byProposed || {}).sort(function(a,b){ return pollData.byProposed[b]-pollData.byProposed[a]; }).map(function(k){
+              return <span key={k} style={{ fontSize:11, padding:"3px 8px", borderRadius:14, background:"#DCFCE7", color:"#15803D", fontWeight:600 }}>{k} · {pollData.byProposed[k]}</span>;
             })}
           </div>
 
@@ -16766,9 +16772,9 @@ var RotationDiagnosticsTab = function(props) {
                 <th style={th}>Lead</th>
                 <th style={th}>Polluted agent</th>
                 <th style={th}>Current (slice)</th>
-                <th style={th}>Proposed real status</th>
-                <th style={th}>Signal</th>
-                <th style={Object.assign({}, th, { textAlign:"right" })}>Hist. status_changes</th>
+                <th style={th}>Proposed (proven last)</th>
+                <th style={th}>FB-bearing same status?</th>
+                <th style={th}>Reasoning</th>
               </tr></thead>
               <tbody>{pollData.samples.map(function(s, i){
                 return <tr key={i}>
@@ -16776,8 +16782,8 @@ var RotationDiagnosticsTab = function(props) {
                   <td style={td}>{s.agent || "—"}</td>
                   <td style={Object.assign({}, td, { color:"#B91C1C", fontWeight:600 })}>{s.current || "—"}</td>
                   <td style={Object.assign({}, td, { color:"#15803D", fontWeight:600 })}>{s.proposed || "—"}</td>
-                  <td style={Object.assign({}, td, { color:C.textLight })}>{s.signal || "—"}</td>
-                  <td style={Object.assign({}, td, { textAlign:"right" })}>{s.historyStatusChanges != null ? s.historyStatusChanges : "—"}</td>
+                  <td style={Object.assign({}, td, { color: s.feedbackBearingSameStatus ? "#B45309" : C.textLight, fontWeight: s.feedbackBearingSameStatus ? 700 : 400 })}>{s.feedbackBearingSameStatus ? "YES (likely genuine)" : "no"}</td>
+                  <td style={Object.assign({}, td, { color:C.textLight, maxWidth:340, whiteSpace:"normal" })}>{s.reasoning || "—"}</td>
                 </tr>;
               })}</tbody>
             </table>

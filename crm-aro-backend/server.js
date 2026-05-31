@@ -13192,12 +13192,26 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
 });
 
 // ===== TEMPORARY — slice.status pollution dry-run (admin-only, READ-ONLY) =====
-// Measures pre-existing slice.status pollution from the holder-slice status sync
-// that fired for sales callers before commit 703ef2f. Performs NO writes — only
-// find().lean(). To be removed in a follow-up commit once the cleanup phase is
-// done. Strict mode: any same-status status_change in a slice's own agentHistory
-// (feedback-bearing or not) exempts the slice — we under-report rather than
-// over-fix. See diagnose-status-pollution.js for the standalone CLI twin.
+// Detection v2 (history cross-reference). For each NON-HOLDER active slice we
+// find that agent's LAST author-tagged lead.history "status_changed" row
+// (byUser === the slice agent's name). That row's newStatus is the agent's
+// proven true last status. If the slice.status differs → polluted (a pre-703ef2f
+// holder-sync mirror write left a foreign status on the slice; the mirror's
+// only history row carried the ROTATED-OFF caller's name, not this agent's, so
+// no self-authored row corroborates the slice status). If no self-authored row
+// exists at all → repair to "NewLead".
+//
+// Scope = NON-HOLDER slices only. The current holder's slice legitimately
+// carries manager-set statuses (the holder-sync is intended behavior), so it is
+// NOT evaluated here. /feedback (to_sales) never writes slice.status, so a
+// non-holder slice's status can only come from its own agent's PUT or a mirror.
+//
+// Two totals: `total` is the pure history rule; `totalExclFeedbackBearing`
+// additionally drops any slice whose OWN agentHistory holds a feedback-bearing
+// status_change matching its current status (feedback-bearing = proven genuine,
+// guards the edge case where a real status change made no history row because
+// the top-level lead.status already equalled it). NO writes. To be removed
+// after the detection is finalized.
 app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async function(req, res) {
   try {
     console.log("READ-ONLY DRY RUN — NO WRITES");
@@ -13208,13 +13222,19 @@ app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async fun
       "Not Interested": "NotInterested"
     };
     var canon = function (s) { return CANON[s] || s || "NewLead"; };
-    var parseHistStatus = function (h) {
+    var norm = function (s) { return String(s == null ? "" : s).trim().toLowerCase(); };
+    var parseHistStatus = function (h) {                                  // agentHistory entry → status
       if (!h) return null;
       if (h.note) { var m = String(h.note).match(/^Status:\s*(.+)$/i); if (m) return m[1].trim(); }
       if (h.status) return String(h.status).trim();
       return null;
     };
     var hasFeedback = function (h) { return h && h.feedback != null && String(h.feedback).trim() !== ""; };
+    var rowTs = function (h) { return new Date(h.timestamp || h.time || h.date || h.createdAt || 0).getTime(); };
+    var parseHistRowNew = function (desc) {                               // lead.history status_changed → newStatus
+      var m = String(desc || "").match(/→\s*(.+?)\s+by\s+/i);
+      return m && m[1] ? m[1].trim() : "";
+    };
 
     var users = await User.find({}, { name: 1 }).lean();
     var nameOf = {};
@@ -13222,67 +13242,85 @@ app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async fun
 
     var leads = await Lead.find(
       { "assignments.0": { $exists: true } },
-      { name: 1, agentId: 1, assignments: 1 }
+      { name: 1, agentId: 1, assignments: 1, history: 1 }
     ).lean();
 
-    var total = 0, byStatus = {}, byRepair = {}, leadsAffected = {}, samples = [];
+    var total = 0, totalExclFeedbackBearing = 0;
+    var byCurrent = {}, byProposed = {}, leadsAffected = {}, samples = [];
 
     leads.forEach(function (lead) {
       var holderId = lead.agentId ? String(lead.agentId._id ? lead.agentId._id : lead.agentId) : "";
       var assigns = Array.isArray(lead.assignments) ? lead.assignments : [];
+
+      // Author-tagged status_changed rows for this lead, parsed once.
+      var histRows = (Array.isArray(lead.history) ? lead.history : [])
+        .filter(function (h) { return h && h.event === "status_changed"; })
+        .map(function (h) { return { byUser: String(h.byUser || ""), newStatus: parseHistRowNew(h.description), ts: rowTs(h), description: String(h.description || "") }; })
+        .filter(function (r) { return r.newStatus; });
+
       assigns.forEach(function (a) {
-        if (!a || a.removedAt) return;                                  // (a) active only
+        if (!a || a.removedAt) return;                                   // active only
         var aId = a.agentId ? String(a.agentId._id ? a.agentId._id : a.agentId) : "";
-        if (aId && holderId && aId === holderId) return;                // (b) skip current holder
-        if (!STRONG[a.status]) return;                                  // (c) strong status only
+        if (aId && holderId && aId === holderId) return;                 // NON-HOLDER only
+        var agentName = aId ? (nameOf[aId] || "") : "";
 
-        var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
-        var statusChanges = hist
-          .filter(function (h) { return h && h.type === "status_change"; })
-          .map(function (h) { return { status: parseHistStatus(h), feedback: hasFeedback(h), at: new Date(h.createdAt || 0).getTime() }; })
-          .filter(function (e) { return e.status; });
+        // Last self-authored status_changed row for this agent (by name).
+        var mine = histRows
+          .filter(function (r) { return agentName && norm(r.byUser) === norm(agentName); })
+          .sort(function (x, y) { return y.ts - x.ts; });
+        var lastRow = mine.length ? mine[0] : null;
+        var trueStatus = lastRow ? lastRow.newStatus : "NewLead";
 
-        // (d) STRICT: any same-status status_change (feedback optional) = genuine.
-        var genuine = statusChanges.some(function (e) { return canon(e.status) === canon(a.status); });
-        if (genuine) return;
+        // Polluted iff the slice status disagrees with the agent's proven last status.
+        if (canon(a.status) === canon(trueStatus)) return;               // genuine — leave alone
+
+        // Feedback-bearing same-status entry in the agent's OWN agentHistory =
+        // proven genuine despite no history row (top-level-equal edge case).
+        var ownSC = (Array.isArray(a.agentHistory) ? a.agentHistory : [])
+          .filter(function (h) { return h && h.type === "status_change"; });
+        var feedbackBearingSameStatus = ownSC.some(function (h) {
+          return hasFeedback(h) && canon(parseHistStatus(h)) === canon(a.status);
+        });
+        var ownLast = ownSC.map(function (h) { return { status: parseHistStatus(h), fb: hasFeedback(h), at: new Date(h.createdAt || 0).getTime() }; })
+          .filter(function (e) { return e.status; })
+          .sort(function (x, y) { return y.at - x.at; })[0] || null;
 
         total++;
-        var ps = canon(a.status);
-        byStatus[ps] = (byStatus[ps] || 0) + 1;
+        if (!feedbackBearingSameStatus) totalExclFeedbackBearing++;
+        var pc = canon(a.status);
+        byCurrent[pc] = (byCurrent[pc] || 0) + 1;
+        var pr = canon(trueStatus);
+        byProposed[pr] = (byProposed[pr] || 0) + 1;
         leadsAffected[String(lead._id)] = true;
-
-        var repair, signal;
-        var fb = statusChanges.filter(function (e) { return e.feedback; }).sort(function (x, y) { return y.at - x.at; });
-        if (fb.length) {
-          repair = canon(fb[0].status); signal = "last feedback-bearing status_change";
-        } else {
-          var ns = statusChanges.filter(function (e) { return !STRONG[e.status]; }).sort(function (x, y) { return y.at - x.at; });
-          if (ns.length) { repair = canon(ns[0].status); signal = "last non-strong status_change (no feedback-bearing entry)"; }
-          else { repair = "NewLead"; signal = "no usable status_change in agentHistory"; }
-        }
-        byRepair[repair] = (byRepair[repair] || 0) + 1;
 
         if (samples.length < 10) {
           samples.push({
             leadId: String(lead._id),
             leadName: lead.name || "(no name)",
-            agent: aId ? (nameOf[aId] || aId) : "(no agentId)",
+            agent: agentName || aId || "(no agentId)",
             current: a.status,
-            proposed: repair,
-            signal: signal,
-            historyStatusChanges: statusChanges.length
+            proposed: trueStatus,
+            lastHistoryRowFound: lastRow ? { timestamp: new Date(lastRow.ts).toISOString(), newStatus: lastRow.newStatus, description: lastRow.description } : null,
+            ownAgentHistoryLastStatus: ownLast ? ownLast.status : null,
+            ownAgentHistoryLastWasFeedback: ownLast ? ownLast.fb : null,
+            feedbackBearingSameStatus: feedbackBearingSameStatus,
+            reasoning: lastRow
+              ? ("Last self-authored status_changed by " + agentName + " was " + lastRow.newStatus + "; slice.status is " + a.status + (feedbackBearingSameStatus ? " (BUT slice has a feedback-bearing same-status entry — likely genuine, excluded from totalExclFeedbackBearing)" : ""))
+              : ("No self-authored status_changed row for " + (agentName || aId) + " on this lead; slice.status is " + a.status + (feedbackBearingSameStatus ? " (BUT slice has a feedback-bearing same-status entry — likely genuine)" : ""))
           });
         }
       });
     });
 
     res.json({
-      mode: "strict",
+      mode: "history-xref",
       readOnly: true,
+      scope: "non-holder active slices",
       total: total,
+      totalExclFeedbackBearing: totalExclFeedbackBearing,
       leadsAffected: Object.keys(leadsAffected).length,
-      byStatus: byStatus,
-      byRepair: byRepair,
+      byCurrent: byCurrent,
+      byProposed: byProposed,
       samples: samples
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
