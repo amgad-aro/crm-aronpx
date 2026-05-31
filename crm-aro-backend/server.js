@@ -13349,6 +13349,46 @@ function detectPollutedHolderSlices(lead, nameOf, isSalesName) {
   return out;
 }
 
+// Diagnostic-only (used by ?leadIdFilter on the holder cleanup endpoint). Explains
+// how a holder slice's repair value was derived and — crucially — surfaces the
+// holder's own slice.agentHistory status entries, which the repair value does NOT
+// consult (repair reads lead.history only, see detectPollutedHolderSlices). Lets an
+// operator distinguish a NewLead repair that is (a) genuine — holder authored no
+// status — from (b) under-repair — holder DID author a status, recorded only in
+// agentHistory. Pure reporting; contains no detection logic so the rule can't drift.
+function holderRepairDerivation(lead, sliceEntry, nameOf) {
+  var out = { holderName: null, sliceStatus: null, historySelfRows: [], sliceAgentHistoryStatusRows: [], repairSource: null, possibleUnderRepair: false, note: "" };
+  if (!lead || !sliceEntry) { out.note = "lead or slice missing"; return out; }
+  var holderId = sliceEntry.agentId ? String(sliceEntry.agentId) : "";
+  var agentName = nameOf[holderId] || "";
+  out.holderName = agentName || holderId || null;
+  out.sliceStatus = sliceEntry.current != null ? sliceEntry.current : null;
+  var histRows = (Array.isArray(lead.history) ? lead.history : [])
+    .filter(function (h) { return h && h.event === "status_changed"; })
+    .map(function (h) { return { byUser: String(h.byUser || ""), newStatus: pollParseHistRowNew(h.description), ts: pollRowTs(h), description: String(h.description || "") }; })
+    .filter(function (r) { return r.newStatus; });
+  var selfRows = histRows.filter(function (r) { return agentName && pollNorm(r.byUser) === pollNorm(agentName); })
+    .sort(function (x, y) { return y.ts - x.ts; });
+  out.historySelfRows = selfRows.map(function (r) { return { newStatus: r.newStatus, timestamp: new Date(r.ts).toISOString(), description: r.description }; });
+  // The holder's active slice agentHistory — the source the repair value ignores.
+  var slice = (Array.isArray(lead.assignments) ? lead.assignments : []).filter(function (a) {
+    if (!a || a.removedAt) return false;
+    var aId = a.agentId ? String(a.agentId._id ? a.agentId._id : a.agentId) : "";
+    return aId === holderId;
+  })[0];
+  if (slice) {
+    out.sliceAgentHistoryStatusRows = (Array.isArray(slice.agentHistory) ? slice.agentHistory : [])
+      .filter(function (h) { return h && h.type === "status_change"; })
+      .map(function (h) { return { parsedStatus: pollParseHistStatus(h), hasFeedback: pollHasFeedback(h), note: h.note != null ? String(h.note) : null, createdAt: h.createdAt ? new Date(h.createdAt).toISOString() : null }; });
+  }
+  out.repairSource = selfRows.length ? "lead.history self-authored row (most recent)" : "default NewLead (no self-authored lead.history row)";
+  if (!selfRows.length && out.sliceAgentHistoryStatusRows.some(function (r) { return r.parsedStatus && pollCanon(r.parsedStatus) !== "NewLead"; })) {
+    out.possibleUnderRepair = true;
+    out.note = "POSSIBLE UNDER-REPAIR: holder has slice.agentHistory status entries that the history-only repair ignores. Inspect before applying.";
+  }
+  return out;
+}
+
 app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async function(req, res) {
   try {
     console.log("READ-ONLY DRY RUN — NO WRITES");
@@ -13654,6 +13694,21 @@ app.post("/api/admin/rotation-pollution-cleanup-holders", auth, strictAdminOnly,
     }
     console.log("[POLLUTION-CLEANUP-HOLDERS] dryRun=" + dryRun);
 
+    // Optional single-lead scoping for verification. When ?leadIdFilter=<id>
+    // (or body.leadIdFilter) is present, detection is restricted to that ONE
+    // lead and EVERY detected holder slice for it is returned (no 50-row sample
+    // cap), each annotated with a `derivation` block (holderRepairDerivation)
+    // so the repair value can be audited against BOTH lead.history AND the
+    // holder's slice.agentHistory. Apply (dryRun:false) is BLOCKED while a
+    // filter is set — this mode is read-only verification only.
+    var leadIdFilter = String((req.query && req.query.leadIdFilter) || (req.body && req.body.leadIdFilter) || "").trim();
+    if (leadIdFilter && !mongoose.Types.ObjectId.isValid(leadIdFilter)) {
+      return res.status(400).json({ error: "invalid_leadIdFilter", message: "leadIdFilter must be a 24-char hex ObjectId" });
+    }
+    if (leadIdFilter && !dryRun) {
+      return res.status(400).json({ error: "filter_is_readonly", message: "leadIdFilter is verification-only; omit it to apply, or set dryRun:true" });
+    }
+
     // Name → CURRENT role map. isSalesName is true ONLY when the byUser name
     // resolves unambiguously to a single user whose role is exactly "sales".
     var users = await User.find({}, { name: 1, role: 1 }).lean();
@@ -13670,8 +13725,11 @@ app.post("/api/admin/rotation-pollution-cleanup-holders", auth, strictAdminOnly,
       return keys.length === 1 && keys[0] === "sales";
     };
 
+    var leadQuery = leadIdFilter
+      ? { _id: new mongoose.Types.ObjectId(leadIdFilter) }
+      : { "assignments.0": { $exists: true } };
     var leads = await Lead.find(
-      { "assignments.0": { $exists: true } },
+      leadQuery,
       { name: 1, agentId: 1, status: 1, assignments: 1, history: 1 }
     ).lean();
 
@@ -13683,13 +13741,19 @@ app.post("/api/admin/rotation-pollution-cleanup-holders", auth, strictAdminOnly,
       });
     });
 
-    var sampleRepairs = detected.slice(0, 50).map(function (d) {
-      return {
+    var sampleLimit = leadIdFilter ? detected.length : 50;
+    var sampleRepairs = detected.slice(0, sampleLimit).map(function (d) {
+      var row = {
         leadId: d.leadId, leadName: d.leadName, agent: d.slice.agent,
         before: d.slice.current, after: d.slice.proposed,
         pollutedBy: d.slice.pollutedByRow ? d.slice.pollutedByRow.byUser : null,
         pollutedByRow: d.slice.pollutedByRow ? d.slice.pollutedByRow.description : null
       };
+      if (leadIdFilter) {
+        var lf = leads.filter(function (L) { return String(L._id) === d.leadId; })[0] || null;
+        row.derivation = holderRepairDerivation(lf, d.slice, nameOf);
+      }
+      return row;
     });
 
     var totalRepaired = 0, totalErrors = 0, errors = [];
@@ -13719,6 +13783,8 @@ app.post("/api/admin/rotation-pollution-cleanup-holders", auth, strictAdminOnly,
 
     res.json({
       dryRun: dryRun,
+      leadIdFilter: leadIdFilter || null,
+      allRepairsReturned: !!leadIdFilter,
       totalLeadsProcessed: totalLeadsProcessed,
       totalHolderSlicesDetected: detected.length,
       totalRepaired: dryRun ? 0 : totalRepaired,
