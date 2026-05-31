@@ -10438,12 +10438,17 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // caller. Restricted to status changes — feedback / callback / budget
     // routing through this PUT is already correctly handled by the
     // caller-slice sync above and the /feedback endpoint.
-    // sales_admin is excluded from this mirror (see one-liner below).
-    // sales_admin intentionally excluded — status changes on others' leads stay local to caller
+    // sales_admin AND sales are excluded from this mirror. A sales agent must
+    // only ever write their OWN slice (handled by the caller-slice sync above);
+    // a rotated-off sales agent still holds an active slice and can PUT a status,
+    // and without this exclusion the holder-sync would splash their status onto
+    // the current holder's slice — the cross-agent leak. Managerial roles
+    // (admin/manager/team_leader/director) still mirror onto the current holder,
+    // which is the documented purpose of this block.
     if (req.body.status && oldLead && oldLead.agentId &&
         String(oldLead.agentId) !== String(req.user.id) &&
         req.body.status !== oldLead.status &&
-        req.user.role !== "sales_admin") {
+        req.user.role !== "sales_admin" && req.user.role !== "sales") {
       try {
         var holderObjId = new mongoose.Types.ObjectId(String(oldLead.agentId));
         var holderAssignUpdate = {
