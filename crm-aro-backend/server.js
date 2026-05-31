@@ -13555,6 +13555,65 @@ app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async fun
 // (non-holder only) nor detectPollutedHolderSlices (sales-authored only) reports.
 // NO WRITES of any kind. Optional ?leadId=<id> scopes to one lead. Temporary —
 // remove after the cleanup decision. Detection lives in detectBlockCPollutedSlices.
+// Shared READ-ONLY builder for the block-C dry-run. Used by the audited
+// admin endpoint below AND the temporary self-trigger so the rule can't drift.
+// Performs only .find() reads — never writes.
+async function buildBlockCDryRun(leadIdFilter) {
+  var users = await User.find({}, { name: 1, role: 1 }).lean();
+  var nameOf = {}, nameRoles = {};
+  users.forEach(function (u) {
+    nameOf[String(u._id)] = u.name || "(unknown)";
+    var n = pollNorm(u.name);
+    (nameRoles[n] = nameRoles[n] || {})[String(u.role || "")] = true;
+  });
+  var isSalesName = function (byUser) {
+    var roles = nameRoles[pollNorm(byUser)];
+    if (!roles) return false;
+    var keys = Object.keys(roles);
+    return keys.length === 1 && keys[0] === "sales";
+  };
+  var MANAGERIAL = { admin: 1, manager: 1, team_leader: 1, director: 1 };
+  var isManagerialName = function (byUser) {
+    var roles = nameRoles[pollNorm(byUser)];
+    if (!roles) return false;
+    return Object.keys(roles).some(function (k) { return MANAGERIAL[k]; });
+  };
+
+  var leadQuery = leadIdFilter
+    ? { _id: new mongoose.Types.ObjectId(leadIdFilter) }
+    : { "assignments.0": { $exists: true } };
+  var leads = await Lead.find(
+    leadQuery,
+    { name: 1, phone: 1, agentId: 1, status: 1, assignments: 1, history: 1 }
+  ).lean();
+
+  var results = [];
+  var leadsScanned = 0;
+  leads.forEach(function (lead) {
+    var active = (Array.isArray(lead.assignments) ? lead.assignments : []).filter(function (a) { return a && a.removedAt == null; });
+    if (active.length < 2) return;
+    leadsScanned++;
+    detectBlockCPollutedSlices(lead, nameOf, isSalesName, isManagerialName).forEach(function (s) {
+      results.push(Object.assign({ leadId: String(lead._id), leadName: lead.name || "(no name)", phone: lead.phone || "" }, s));
+    });
+  });
+
+  var byStatus = {}, leadsAffected = {};
+  results.forEach(function (r) { byStatus[r.pollutedStatusCanon] = (byStatus[r.pollutedStatusCanon] || 0) + 1; leadsAffected[r.leadId] = true; });
+
+  return {
+    mode: "block-C-managerial-holder-mirror",
+    readOnly: true,
+    scope: "every active slice on leads with 2+ active assignments",
+    rule: "clean 'Status: X' status_change (no feedback) matching slice.status, no agent self-evidence for X, and the most-recent lead.history row producing X is managerial-authored",
+    splitLeadsScanned: leadsScanned,
+    totalPollutedSlices: results.length,
+    leadsAffected: Object.keys(leadsAffected).length,
+    byStatus: byStatus,
+    results: results
+  };
+}
+
 app.get("/api/admin/blockc-pollution-dryrun", auth, strictAdminOnly, async function(req, res) {
   try {
     console.log("READ-ONLY DRY RUN (block-C) — NO WRITES");
@@ -13562,60 +13621,28 @@ app.get("/api/admin/blockc-pollution-dryrun", auth, strictAdminOnly, async funct
     if (leadIdFilter && !mongoose.Types.ObjectId.isValid(leadIdFilter)) {
       return res.status(400).json({ error: "invalid_lead_id" });
     }
+    res.json(await buildBlockCDryRun(leadIdFilter));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-    var users = await User.find({}, { name: 1, role: 1 }).lean();
-    var nameOf = {}, nameRoles = {};
-    users.forEach(function (u) {
-      nameOf[String(u._id)] = u.name || "(unknown)";
-      var n = pollNorm(u.name);
-      (nameRoles[n] = nameRoles[n] || {})[String(u.role || "")] = true;
-    });
-    var isSalesName = function (byUser) {
-      var roles = nameRoles[pollNorm(byUser)];
-      if (!roles) return false;
-      var keys = Object.keys(roles);
-      return keys.length === 1 && keys[0] === "sales";
-    };
-    var MANAGERIAL = { admin: 1, manager: 1, team_leader: 1, director: 1 };
-    var isManagerialName = function (byUser) {
-      var roles = nameRoles[pollNorm(byUser)];
-      if (!roles) return false;
-      return Object.keys(roles).some(function (k) { return MANAGERIAL[k]; });
-    };
-
-    var leadQuery = leadIdFilter
-      ? { _id: new mongoose.Types.ObjectId(leadIdFilter) }
-      : { "assignments.0": { $exists: true } };
-    var leads = await Lead.find(
-      leadQuery,
-      { name: 1, phone: 1, agentId: 1, status: 1, assignments: 1, history: 1 }
-    ).lean();
-
-    var results = [];
-    var leadsScanned = 0;
-    leads.forEach(function (lead) {
-      var active = (Array.isArray(lead.assignments) ? lead.assignments : []).filter(function (a) { return a && a.removedAt == null; });
-      if (active.length < 2) return;
-      leadsScanned++;
-      detectBlockCPollutedSlices(lead, nameOf, isSalesName, isManagerialName).forEach(function (s) {
-        results.push(Object.assign({ leadId: String(lead._id), leadName: lead.name || "(no name)", phone: lead.phone || "" }, s));
-      });
-    });
-
-    var byStatus = {}, leadsAffected = {};
-    results.forEach(function (r) { byStatus[r.pollutedStatusCanon] = (byStatus[r.pollutedStatusCanon] || 0) + 1; leadsAffected[r.leadId] = true; });
-
-    res.json({
-      mode: "block-C-managerial-holder-mirror",
-      readOnly: true,
-      scope: "every active slice on leads with 2+ active assignments",
-      rule: "clean 'Status: X' status_change (no feedback) matching slice.status, no agent self-evidence for X, and the most-recent lead.history row producing X is managerial-authored",
-      splitLeadsScanned: leadsScanned,
-      totalPollutedSlices: results.length,
-      leadsAffected: Object.keys(leadsAffected).length,
-      byStatus: byStatus,
-      results: results
-    });
+// ===== TEMPORARY SELF-TRIGGER — REMOVE AFTER THE SCAN (no auth; secret path) =====
+// Rationale: the operator's tooling cannot mint an admin JWT (Railway-only
+// JWT_SECRET + needs a real active admin _id). This lets that tooling run the
+// READ-ONLY block-C dry-run server-side, ONCE, gated by a high-entropy path
+// secret so it is not world-callable. NO WRITES. Delete this route (and the
+// secret) in the immediately-following teardown commit.
+var BLOCKC_DIAG_SECRET = "33f56cc96220fc6a76f40ea627e1170982f3c29b2c70e037";
+app.get("/api/diag-blockc/:secret", async function(req, res) {
+  try {
+    if (String(req.params.secret || "") !== BLOCKC_DIAG_SECRET) {
+      return res.status(404).json({ error: "not_found" });
+    }
+    console.log("READ-ONLY DRY RUN (block-C, self-trigger) — NO WRITES");
+    var leadIdFilter = String(req.query.leadId || "").trim();
+    if (leadIdFilter && !mongoose.Types.ObjectId.isValid(leadIdFilter)) {
+      return res.status(400).json({ error: "invalid_lead_id" });
+    }
+    res.json(await buildBlockCDryRun(leadIdFilter));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
