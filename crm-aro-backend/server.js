@@ -13654,57 +13654,6 @@ app.get("/api/admin/blockc-pollution-dryrun", auth, strictAdminOnly, async funct
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ===== TEMPORARY SELF-TRIGGER — REMOVE AFTER THE SCAN (no auth; secret path) =====
-// READ-ONLY. Lets operator tooling run the block-C dry-run server-side (cannot
-// mint an admin JWT locally). Gated by a high-entropy path secret. NO WRITES.
-// ?inspectName=<substr> returns a read-only dump of matching leads' slices +
-// history so a non-surfacing known case can be explained. Torn down next commit.
-var BLOCKC_DIAG_SECRET = "33f56cc96220fc6a76f40ea627e1170982f3c29b2c70e037";
-app.get("/api/diag-blockc/:secret", async function(req, res) {
-  try {
-    if (String(req.params.secret || "") !== BLOCKC_DIAG_SECRET) {
-      return res.status(404).json({ error: "not_found" });
-    }
-    console.log("READ-ONLY DRY RUN (block-C, self-trigger) — NO WRITES");
-    var inspectName = String(req.query.inspectName || "").trim();
-    if (inspectName) {
-      var rx = new RegExp(inspectName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-      var matches = await Lead.find(
-        { name: rx },
-        { name: 1, phone: 1, agentId: 1, status: 1, assignments: 1, history: 1 }
-      ).limit(20).lean();
-      var users = await User.find({}, { name: 1, role: 1 }).lean();
-      var nameOf = {}; users.forEach(function (u) { nameOf[String(u._id)] = (u.name || "") + " [" + (u.role || "?") + "]"; });
-      var dump = matches.map(function (l) {
-        var holderId = l.agentId ? String(l.agentId._id ? l.agentId._id : l.agentId) : "";
-        return {
-          leadId: String(l._id), name: l.name, phone: l.phone || "", topStatus: l.status,
-          holder: nameOf[holderId] || holderId,
-          activeSlices: (l.assignments || []).filter(function (a) { return a && a.removedAt == null; }).map(function (a) {
-            var aid = a.agentId ? String(a.agentId._id ? a.agentId._id : a.agentId) : "";
-            return {
-              agent: nameOf[aid] || aid,
-              status: a.status,
-              statusChangedAt: a.statusChangedAt ? new Date(a.statusChangedAt).toISOString() : null,
-              statusChangeEntries: (a.agentHistory || []).filter(function (h) { return h && h.type === "status_change"; })
-                .map(function (h) { return { note: h.note != null ? String(h.note) : null, hasFeedback: !!(h.feedback && String(h.feedback).trim()), feedback: h.feedback != null ? String(h.feedback) : null, at: h.createdAt ? new Date(h.createdAt).toISOString() : null }; })
-            };
-          }),
-          removedSliceCount: (l.assignments || []).filter(function (a) { return a && a.removedAt != null; }).length,
-          historyStatusRows: (l.history || []).filter(function (h) { return h && h.event === "status_changed"; })
-            .map(function (h) { return { byUser: h.byUser || "", desc: h.description || "", at: h.timestamp ? new Date(h.timestamp).toISOString() : null }; })
-        };
-      });
-      return res.json({ inspectName: inspectName, matchCount: matches.length, leads: dump });
-    }
-    var leadIdFilter = String(req.query.leadId || "").trim();
-    if (leadIdFilter && !mongoose.Types.ObjectId.isValid(leadIdFilter)) {
-      return res.status(400).json({ error: "invalid_lead_id" });
-    }
-    res.json(await buildBlockCDryRun(leadIdFilter));
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 // ===== TEMPORARY — single-lead pollution cleanup (admin-only) =====
 // Operates on ONE lead. Uses the shared detectPollutedSlices rule. dryRun:true
 // previews (no writes); dryRun:false applies and is gated behind
