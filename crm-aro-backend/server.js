@@ -13403,6 +13403,159 @@ app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async fun
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== TEMPORARY — single-lead pollution cleanup (admin-only) =====
+// Phase 1 of the cleanup: operates on ONE lead. Reuses the EXACT same grading
+// as the dry-run (history-xref-graded) and repairs ONLY slices graded
+// confident === true (pre-fix, non-ambiguous). Ambiguous and after-fix slices
+// are skipped. dryRun:true performs NO writes (preview only). dryRun:false
+// applies the repair and is gated behind confirm === "yes-cleanup-this-lead".
+// Every applied change writes an auditable status_cleanup entry (old+new) to
+// the slice's own agentHistory so it can be traced / manually rolled back.
+// Does NOT touch the dry-run endpoint. Temporary — remove after cleanup phase.
+app.post("/api/admin/rotation-pollution-cleanup-single", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var leadId = String((req.body && req.body.leadId) || "").trim();
+    var dryRun = !(req.body && req.body.dryRun === false);              // default to dry-run unless explicitly false
+    var confirm = String((req.body && req.body.confirm) || "");
+    if (!mongoose.Types.ObjectId.isValid(leadId)) return res.status(400).json({ error: "invalid_lead_id" });
+    if (!dryRun && confirm !== "yes-cleanup-this-lead") {
+      return res.status(400).json({ error: "confirm_required", message: "Set confirm='yes-cleanup-this-lead' to apply (dryRun:false)" });
+    }
+    console.log("[POLLUTION-CLEANUP-SINGLE] lead=" + leadId + " dryRun=" + dryRun);
+
+    // ---- grading helpers (identical to the dry-run) ----
+    var CANON = {
+      "Meeting Done": "MeetingDone", "Done Deal": "DoneDeal", "New Lead": "NewLead",
+      "No Answer": "NoAnswer", "Hot Case": "HotCase", "Call Back": "CallBack",
+      "Not Interested": "NotInterested"
+    };
+    var canon = function (s) { return CANON[s] || s || "NewLead"; };
+    var norm = function (s) { return String(s == null ? "" : s).trim().toLowerCase(); };
+    var parseHistStatus = function (h) {
+      if (!h) return null;
+      if (h.note) { var m = String(h.note).match(/^Status:\s*(.+)$/i); if (m) return m[1].trim(); }
+      if (h.status) return String(h.status).trim();
+      return null;
+    };
+    var hasFeedback = function (h) { return h && h.feedback != null && String(h.feedback).trim() !== ""; };
+    var rowTs = function (h) { return new Date(h.timestamp || h.time || h.date || h.createdAt || 0).getTime(); };
+    var parseHistRowNew = function (desc) {
+      var m = String(desc || "").match(/→\s*(.+?)\s+by\s+/i);
+      return m && m[1] ? m[1].trim() : "";
+    };
+    var MIRROR_FIX_TS = new Date("2026-05-31T18:00:00Z").getTime();
+    var sliceBirthTs = function (a) {
+      if (a && a._id) { var s = String(a._id); if (s.length >= 8) { var sec = parseInt(s.slice(0, 8), 16); if (!isNaN(sec) && sec > 0) return sec * 1000; } }
+      if (a && a.assignedAt) { var t = new Date(a.assignedAt).getTime(); if (!isNaN(t) && t > 0) return t; }
+      return 0;
+    };
+
+    var users = await User.find({}, { name: 1 }).lean();
+    var nameOf = {};
+    users.forEach(function (u) { nameOf[String(u._id)] = u.name || "(unknown)"; });
+
+    var lead = await Lead.findById(leadId, { name: 1, agentId: 1, status: 1, assignments: 1, history: 1 }).lean();
+    if (!lead) return res.status(404).json({ error: "lead_not_found" });
+
+    var holderId = lead.agentId ? String(lead.agentId._id ? lead.agentId._id : lead.agentId) : "";
+    var histRows = (Array.isArray(lead.history) ? lead.history : [])
+      .filter(function (h) { return h && h.event === "status_changed"; })
+      .map(function (h) { return { byUser: String(h.byUser || ""), newStatus: parseHistRowNew(h.description), ts: rowTs(h), description: String(h.description || "") }; })
+      .filter(function (r) { return r.newStatus; });
+
+    // ---- grade each non-holder active slice; collect CONFIDENT repairs only.
+    // `skipped` records polluted-but-not-confident slices (ambiguous / after-fix)
+    // with the reason, so the single-lead preview shows the FULL per-slice picture
+    // (e.g. why a MeetingDone mirror slice on a lead that genuinely passed through
+    // MeetingDone is held back rather than repaired). Genuine slices are silent. ----
+    var confidentRepairs = [], skipped = [];
+    (Array.isArray(lead.assignments) ? lead.assignments : []).forEach(function (a) {
+      if (!a || a.removedAt) return;                                     // active only
+      var aId = a.agentId ? String(a.agentId._id ? a.agentId._id : a.agentId) : "";
+      if (aId && holderId && aId === holderId) return;                   // NON-HOLDER only
+      var agentName = aId ? (nameOf[aId] || "") : "";
+
+      var mine = histRows
+        .filter(function (r) { return agentName && norm(r.byUser) === norm(agentName); })
+        .sort(function (x, y) { return y.ts - x.ts; });
+      var lastRow = mine.length ? mine[0] : null;
+      var trueStatus = lastRow ? lastRow.newStatus : "NewLead";
+      if (canon(a.status) === canon(trueStatus)) return;                 // genuine — leave alone
+
+      var ownSC = (Array.isArray(a.agentHistory) ? a.agentHistory : [])
+        .filter(function (h) { return h && h.type === "status_change"; });
+      var feedbackBearingSameStatus = ownSC.some(function (h) {
+        return hasFeedback(h) && canon(parseHistStatus(h)) === canon(a.status);
+      });
+      var birthTs = sliceBirthTs(a);
+      var afterFix = birthTs > 0 && birthTs >= MIRROR_FIX_TS;
+      var laTs = a.lastActionAt ? new Date(a.lastActionAt).getTime() : 0;
+      var topEverEqualled = laTs > 0 && histRows.some(function (r) { return canon(r.newStatus) === canon(a.status) && r.ts <= laTs; });
+      var ambiguous = feedbackBearingSameStatus || !laTs || topEverEqualled;
+      var confident = !afterFix && !ambiguous;
+
+      if (!confident) {                                                  // skip ambiguous + afterFix (record why)
+        var reason = afterFix ? "slice born after mirror fix — not pollution"
+          : feedbackBearingSameStatus ? "feedback-bearing same-status (" + a.status + ") entry — likely genuine"
+          : !laTs ? "no slice.lastActionAt to bound the top-level check"
+          : "lead top-level was already '" + a.status + "' at/before slice.lastActionAt — possibly genuine";
+        skipped.push({ agent: agentName || aId || "(no agentId)", current: a.status, proposed: trueStatus, reason: reason });
+        return;
+      }
+
+      confidentRepairs.push({
+        sliceId: a._id ? String(a._id) : "",
+        agentId: aId,
+        agent: agentName || aId || "(no agentId)",
+        before: a.status,
+        after: trueStatus
+      });
+    });
+
+    // ---- apply (or preview) ----
+    var repairs = [], errors = [], repaired = 0;
+    for (var i = 0; i < confidentRepairs.length; i++) {
+      var rep = confidentRepairs[i];
+      repairs.push({ agent: rep.agent, before: rep.before, after: rep.after });
+      if (dryRun) continue;
+      if (!rep.sliceId || !mongoose.Types.ObjectId.isValid(rep.sliceId)) { errors.push({ agent: rep.agent, error: "missing_slice_id" }); continue; }
+      try {
+        var now = new Date();
+        var r = await Lead.updateOne(
+          { _id: leadId },
+          {
+            $set: { "assignments.$[el].status": rep.after },
+            $push: { "assignments.$[el].agentHistory": {
+              type: "status_cleanup",
+              note: "Status corrected from " + rep.before + " to " + rep.after + " by cleanup. Reason: pre-703ef2f mirror pollution.",
+              oldStatus: rep.before,
+              newStatus: rep.after,
+              createdAt: now,
+              authorRole: "system_cleanup"
+            }}
+          },
+          { arrayFilters: [{ "el._id": new mongoose.Types.ObjectId(rep.sliceId) }] }
+        );
+        if (r && (r.modifiedCount || r.nModified)) repaired++;
+        else errors.push({ agent: rep.agent, error: "no_document_modified" });
+      } catch (uErr) {
+        errors.push({ agent: rep.agent, error: uErr && uErr.message ? uErr.message : String(uErr) });
+      }
+    }
+
+    res.json({
+      leadId: leadId,
+      leadName: lead.name || "(no name)",
+      dryRun: dryRun,
+      totalConfidentSlices: confidentRepairs.length,
+      repaired: dryRun ? 0 : repaired,
+      repairs: repairs,
+      skipped: skipped,
+      errors: errors
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===== STATS ROUTE =====
 app.get("/api/stats", auth, async function(req, res) {
   try {

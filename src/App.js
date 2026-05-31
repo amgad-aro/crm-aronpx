@@ -16480,6 +16480,25 @@ var RotationDiagnosticsTab = function(props) {
     }
     setPollLoading(false);
   };
+  // TEMPORARY — Phase 1 single-lead cleanup state (separate from the dry-run).
+  var [clLeadId, setClLeadId] = useState("");
+  var [clBusy, setClBusy] = useState(false);
+  var [clError, setClError] = useState("");
+  var [clData, setClData] = useState(null);
+  var [clConfirm, setClConfirm] = useState("");
+  var runCleanupSingle = async function(apply) {
+    setClBusy(true); setClError(""); setClData(null);
+    try {
+      var body = { leadId: String(clLeadId || "").trim(), dryRun: !apply };
+      if (apply) body.confirm = "yes-cleanup-this-lead";
+      var d = await apiFetch("/api/admin/rotation-pollution-cleanup-single", "POST", body, props.token);
+      setClData(d);
+      if (apply) setClConfirm("");   // reset the confirm gate after an apply
+    } catch(e) {
+      setClError((e && e.message) || "Failed");
+    }
+    setClBusy(false);
+  };
   var load = async function() {
     setLoading(true); setError("");
     try {
@@ -16820,6 +16839,86 @@ var RotationDiagnosticsTab = function(props) {
           {/* Raw JSON — copy/paste back for analysis */}
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Raw JSON</div>
           <pre style={{ margin:0, padding:"10px 12px", background:"#0F172A", color:"#E2E8F0", borderRadius:8, fontSize:11, lineHeight:1.5, overflowX:"auto", maxHeight:360, whiteSpace:"pre", fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace" }}>{JSON.stringify(pollData, null, 2)}</pre>
+        </div>}
+      </div>
+    </div>
+
+    {/* (7) Single-Lead Cleanup (test) — TEMPORARY. Phase 1: repairs CONFIDENT
+        slices on ONE lead. Preview (dry-run) makes no writes; Apply requires
+        typing CONFIRM and is gated server-side by a confirm string. */}
+    <div style={{ marginBottom:16, border:"1px solid #C7D2FE", borderRadius:10, overflow:"hidden", background:"#fff" }}>
+      <div style={{ padding:"10px 14px", background:"#EEF2FF" }}>
+        <span style={{ fontSize:13, fontWeight:700, color:"#3730A3" }}>7. Single-Lead Cleanup (test)</span>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>
+          Repairs only CONFIDENT polluted slices on ONE lead (skips ambiguous + after-fix). Preview = no writes. Apply writes an auditable status_cleanup entry per change.
+        </div>
+      </div>
+      <div style={{ padding:"12px 14px" }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", marginBottom:10 }}>
+          <input value={clLeadId} onChange={function(e){ setClLeadId(e.target.value); }} placeholder="Paste leadId (24-hex)"
+            style={{ padding:"7px 10px", border:"1px solid #C7D2FE", borderRadius:8, fontSize:12, width:300, fontFamily:"ui-monospace, monospace" }}/>
+          <button onClick={function(){ runCleanupSingle(false); }} disabled={clBusy || !String(clLeadId||"").trim()}
+            style={{ padding:"7px 14px", borderRadius:8, border:"1px solid #4F46E5", background:clBusy?"#E0E7FF":"#fff", color:"#4F46E5", fontSize:12, fontWeight:600, cursor:(clBusy||!String(clLeadId||"").trim())?"not-allowed":"pointer" }}>
+            {clBusy ? "Running…" : "▶ Preview (dry-run)"}
+          </button>
+        </div>
+        {/* Apply gate */}
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", marginBottom:12, padding:"8px 10px", background:"#FEF2F2", border:"1px solid #FECACA", borderRadius:8 }}>
+          <span style={{ fontSize:11, color:"#B91C1C", fontWeight:600 }}>Apply (writes to DB):</span>
+          <input value={clConfirm} onChange={function(e){ setClConfirm(e.target.value); }} placeholder="type CONFIRM"
+            style={{ padding:"6px 10px", border:"1px solid #FECACA", borderRadius:8, fontSize:12, width:140 }}/>
+          <button onClick={function(){ if(clConfirm==="CONFIRM") runCleanupSingle(true); }} disabled={clBusy || clConfirm!=="CONFIRM" || !String(clLeadId||"").trim()}
+            style={{ padding:"7px 14px", borderRadius:8, border:"none", background:(clConfirm==="CONFIRM"&&!clBusy&&String(clLeadId||"").trim())?"#B91C1C":"#FCA5A5", color:"#fff", fontSize:12, fontWeight:700, cursor:(clConfirm==="CONFIRM"&&!clBusy&&String(clLeadId||"").trim())?"pointer":"not-allowed" }}>
+            ✓ Apply cleanup to this lead
+          </button>
+        </div>
+        {clError && <div style={{ padding:"10px 14px", marginBottom:12, background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8, color:"#B91C1C", fontSize:12 }}>{clError}</div>}
+        {clData && <div>
+          <div style={{ fontSize:12, marginBottom:8 }}>
+            <b>{clData.leadName || clData.leadId}</b> · {clData.dryRun ? <span style={{ color:"#4F46E5", fontWeight:700 }}>PREVIEW (no writes)</span> : <span style={{ color:"#B91C1C", fontWeight:700 }}>APPLIED</span>}
+            {" · "}confident slices: <b>{clData.totalConfidentSlices != null ? clData.totalConfidentSlices : 0}</b>
+            {!clData.dryRun && <span> · repaired: <b>{clData.repaired}</b></span>}
+            {Array.isArray(clData.errors) && clData.errors.length > 0 && <span style={{ color:"#B91C1C" }}> · errors: {clData.errors.length}</span>}
+          </div>
+          {Array.isArray(clData.repairs) && clData.repairs.length > 0 ? <div style={{ overflowX:"auto", border:"1px solid #E2E8F0", borderRadius:8, marginBottom:10 }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+              <thead><tr>
+                <th style={th}>Agent</th>
+                <th style={th}>Before</th>
+                <th style={th}>After</th>
+              </tr></thead>
+              <tbody>{clData.repairs.map(function(r, i){
+                return <tr key={i}>
+                  <td style={td}>{r.agent}</td>
+                  <td style={Object.assign({}, td, { color:"#B91C1C", fontWeight:600 })}>{r.before}</td>
+                  <td style={Object.assign({}, td, { color:"#15803D", fontWeight:600 })}>{r.after}</td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:10 }}>No confident slices to repair on this lead.</div>}
+          {/* Skipped (ambiguous / after-fix) — shown so the full per-slice picture is visible */}
+          {Array.isArray(clData.skipped) && clData.skipped.length > 0 && <div>
+            <div style={{ fontSize:11, fontWeight:700, color:"#B45309", textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Skipped (held back — not repaired)</div>
+            <div style={{ overflowX:"auto", border:"1px solid #FDE68A", borderRadius:8, marginBottom:10 }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+                <thead><tr>
+                  <th style={th}>Agent</th>
+                  <th style={th}>Current</th>
+                  <th style={th}>Would-be</th>
+                  <th style={th}>Reason held back</th>
+                </tr></thead>
+                <tbody>{clData.skipped.map(function(s, i){
+                  return <tr key={i}>
+                    <td style={td}>{s.agent}</td>
+                    <td style={Object.assign({}, td, { fontWeight:600 })}>{s.current}</td>
+                    <td style={Object.assign({}, td, { color:C.textLight })}>{s.proposed}</td>
+                    <td style={Object.assign({}, td, { color:"#B45309", maxWidth:360, whiteSpace:"normal" })}>{s.reason}</td>
+                  </tr>;
+                })}</tbody>
+              </table>
+            </div>
+          </div>}
+          {Array.isArray(clData.errors) && clData.errors.length > 0 && <pre style={{ margin:0, padding:"8px 10px", background:"#FEF2F2", color:"#B91C1C", borderRadius:8, fontSize:11, overflowX:"auto" }}>{JSON.stringify(clData.errors, null, 2)}</pre>}
         </div>}
       </div>
     </div>
