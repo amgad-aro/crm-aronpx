@@ -16517,6 +16517,24 @@ var RotationDiagnosticsTab = function(props) {
     }
     setAllBusy(false);
   };
+  // TEMPORARY — Phase 3 holder-slice cleanup state.
+  var [holdBusy, setHoldBusy] = useState(false);
+  var [holdError, setHoldError] = useState("");
+  var [holdData, setHoldData] = useState(null);
+  var [holdConfirm, setHoldConfirm] = useState("");
+  var runCleanupHolders = async function(apply) {
+    setHoldBusy(true); setHoldError(""); setHoldData(null);
+    try {
+      var body = { dryRun: !apply };
+      if (apply) body.confirm = "yes-cleanup-holder-pollution";
+      var d = await apiFetch("/api/admin/rotation-pollution-cleanup-holders", "POST", body, props.token);
+      setHoldData(d);
+      if (apply) setHoldConfirm("");
+    } catch(e) {
+      setHoldError((e && e.message) || "Failed");
+    }
+    setHoldBusy(false);
+  };
   // TEMPORARY — single-slice inspection state.
   var [insLeadId, setInsLeadId] = useState("6a05a1a8cecaa45ad07c1c4b");
   var [insAgent, setInsAgent] = useState("Ahmed Kassem");
@@ -16971,6 +16989,82 @@ var RotationDiagnosticsTab = function(props) {
             </table>
           </div> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:10 }}>No polluted slices detected.</div>}
           {Array.isArray(allData.errors) && allData.errors.length > 0 && <pre style={{ margin:0, padding:"8px 10px", background:"#FEF2F2", color:"#B91C1C", borderRadius:8, fontSize:11, overflowX:"auto" }}>{JSON.stringify(allData.errors, null, 2)}</pre>}
+        </div>}
+      </div>
+    </div>
+
+    {/* (10) Holder-Slice Cleanup (Phase 3) — TEMPORARY. Cleans ONLY holder
+        slices polluted by a pre-703ef2f SALES caller; managerial writes preserved.
+        Preview makes no writes; Apply requires typing CONFIRM-HOLDERS. */}
+    <div style={{ marginBottom:16, border:"2px solid #7C3AED", borderRadius:10, overflow:"hidden", background:"#fff" }}>
+      <div style={{ padding:"10px 14px", background:"#F5F3FF" }}>
+        <span style={{ fontSize:13, fontWeight:700, color:"#5B21B6" }}>10. Holder-Slice Cleanup (Phase 3 — sales-caller pollution only)</span>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>
+          Repairs holder slices whose status came from a pre-703ef2f SALES-caller mirror (most-recent producing history row authored by a current sales-role user). Managerial holder writes (admin/manager/TL/director) are preserved. Auditable + idempotent.
+        </div>
+      </div>
+      <div style={{ padding:"12px 14px" }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", marginBottom:10 }}>
+          <button onClick={function(){ runCleanupHolders(false); }} disabled={holdBusy}
+            style={{ padding:"7px 14px", borderRadius:8, border:"1px solid #7C3AED", background:holdBusy?"#EDE9FE":"#fff", color:"#7C3AED", fontSize:12, fontWeight:600, cursor:holdBusy?"wait":"pointer" }}>
+            {holdBusy ? "Running…" : "▶ Preview holders (dry-run)"}
+          </button>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", marginBottom:12, padding:"8px 10px", background:"#F5F3FF", border:"1px solid #DDD6FE", borderRadius:8 }}>
+          <span style={{ fontSize:11, color:"#5B21B6", fontWeight:700 }}>Writes to holder slices:</span>
+          <input value={holdConfirm} onChange={function(e){ setHoldConfirm(e.target.value); }} placeholder="type CONFIRM-HOLDERS"
+            style={{ padding:"6px 10px", border:"1px solid #DDD6FE", borderRadius:8, fontSize:12, width:180 }}/>
+          <button onClick={function(){ if(holdConfirm==="CONFIRM-HOLDERS") runCleanupHolders(true); }} disabled={holdBusy || holdConfirm!=="CONFIRM-HOLDERS"}
+            style={{ padding:"7px 14px", borderRadius:8, border:"none", background:(holdConfirm==="CONFIRM-HOLDERS"&&!holdBusy)?"#7C3AED":"#C4B5FD", color:"#fff", fontSize:12, fontWeight:700, cursor:(holdConfirm==="CONFIRM-HOLDERS"&&!holdBusy)?"pointer":"not-allowed" }}>
+            ✓ Apply holder cleanup
+          </button>
+        </div>
+        {holdError && <div style={{ padding:"10px 14px", marginBottom:12, background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8, color:"#B91C1C", fontSize:12 }}>{holdError}</div>}
+        {holdData && <div>
+          <div style={{ display:"flex", gap:12, flexWrap:"wrap", marginBottom:10 }}>
+            <div style={{ background:"#F8FAFC", padding:"8px 12px", borderRadius:8, minWidth:120 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase" }}>Leads processed</div>
+              <div style={{ fontSize:18, fontWeight:700, color:C.text }}>{holdData.totalLeadsProcessed != null ? holdData.totalLeadsProcessed : "—"}</div>
+            </div>
+            <div style={{ background:"#F5F3FF", padding:"8px 12px", borderRadius:8, minWidth:140 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase" }}>Holder slices detected</div>
+              <div style={{ fontSize:18, fontWeight:700, color:"#5B21B6" }}>{holdData.totalHolderSlicesDetected != null ? holdData.totalHolderSlicesDetected : "—"}</div>
+            </div>
+            <div style={{ background:"#ECFDF5", padding:"8px 12px", borderRadius:8, minWidth:120 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase" }}>{holdData.dryRun ? "Would repair" : "Repaired"}</div>
+              <div style={{ fontSize:18, fontWeight:700, color:"#047857" }}>{holdData.dryRun ? (holdData.totalHolderSlicesDetected != null ? holdData.totalHolderSlicesDetected : "—") : (holdData.totalRepaired != null ? holdData.totalRepaired : "—")}</div>
+            </div>
+            <div style={{ background:"#FFF7ED", padding:"8px 12px", borderRadius:8, minWidth:100 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase" }}>Errors</div>
+              <div style={{ fontSize:18, fontWeight:700, color: holdData.totalErrors ? "#B91C1C" : C.text }}>{holdData.totalErrors != null ? holdData.totalErrors : "—"}</div>
+            </div>
+            <div style={{ background:"#F5F3FF", padding:"8px 12px", borderRadius:8, minWidth:110 }}>
+              <div style={{ fontSize:10, color:C.textLight, textTransform:"uppercase" }}>Mode</div>
+              <div style={{ fontSize:14, fontWeight:700, color: holdData.dryRun ? "#7C3AED" : "#B91C1C" }}>{holdData.dryRun ? "PREVIEW" : "APPLIED"}</div>
+            </div>
+          </div>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>Sample holder repairs (first 50)</div>
+          {Array.isArray(holdData.sampleRepairs) && holdData.sampleRepairs.length > 0 ? <div style={{ overflowX:"auto", border:"1px solid #E2E8F0", borderRadius:8, marginBottom:10, maxHeight:360, overflowY:"auto" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+              <thead><tr>
+                <th style={th}>Lead</th>
+                <th style={th}>Holder</th>
+                <th style={th}>Before</th>
+                <th style={th}>After</th>
+                <th style={th}>Polluted by (sales caller)</th>
+              </tr></thead>
+              <tbody>{holdData.sampleRepairs.map(function(r, i){
+                return <tr key={i}>
+                  <td style={td}>{r.leadName || r.leadId}</td>
+                  <td style={td}>{r.agent}</td>
+                  <td style={Object.assign({}, td, { color:"#B91C1C", fontWeight:600 })}>{r.before}</td>
+                  <td style={Object.assign({}, td, { color:"#15803D", fontWeight:600 })}>{r.after}</td>
+                  <td style={Object.assign({}, td, { color:"#7C3AED" })}>{r.pollutedBy || "—"}</td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div> : <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", marginBottom:10 }}>No sales-caller-polluted holder slices detected.</div>}
+          {Array.isArray(holdData.errors) && holdData.errors.length > 0 && <pre style={{ margin:0, padding:"8px 10px", background:"#FEF2F2", color:"#B91C1C", borderRadius:8, fontSize:11, overflowX:"auto" }}>{JSON.stringify(holdData.errors, null, 2)}</pre>}
         </div>}
       </div>
     </div>

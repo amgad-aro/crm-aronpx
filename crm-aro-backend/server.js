@@ -13287,6 +13287,67 @@ function buildPollutionRepairOp(leadId, slice) {
     arrayFilters: [{ "el._id": new mongoose.Types.ObjectId(slice.sliceId) }]
   }};
 }
+// Phase 3 — holder-slice pollution (sales-caller mirror only). detectPollutedSlices
+// deliberately skips the holder because managers legitimately mirror their status
+// onto it. But a pre-703ef2f SALES caller could also have splashed a status onto
+// the holder. This detects ONLY that case, with the same evidence conditions PLUS
+// a third: the most-recent lead.history row that produced the holder's current
+// status was authored by a user whose CURRENT role is exactly "sales" (not a
+// manager/team_leader/director/admin). isSalesName(name) must return true only
+// when the name resolves unambiguously to a sales-role user. Managerial writes
+// are preserved. Returns the same shape as detectPollutedSlices entries, plus
+// pollutedByRow (the offending sales-authored history row).
+function detectPollutedHolderSlices(lead, nameOf, isSalesName) {
+  var out = [];
+  if (!lead) return out;
+  var holderId = lead.agentId ? String(lead.agentId._id ? lead.agentId._id : lead.agentId) : "";
+  if (!holderId) return out;
+  var holder = (Array.isArray(lead.assignments) ? lead.assignments : []).filter(function (a) {
+    if (!a || a.removedAt) return false;
+    var aId = a.agentId ? String(a.agentId._id ? a.agentId._id : a.agentId) : "";
+    return aId === holderId;
+  })[0];
+  if (!holder) return out;                                              // holder has no active slice
+  var agentName = nameOf[holderId] || "";
+  var sliceStatus = holder.status;
+
+  var histRows = (Array.isArray(lead.history) ? lead.history : [])
+    .filter(function (h) { return h && h.event === "status_changed"; })
+    .map(function (h) { return { byUser: String(h.byUser || ""), newStatus: pollParseHistRowNew(h.description), ts: pollRowTs(h), description: String(h.description || "") }; })
+    .filter(function (r) { return r.newStatus; });
+  var selfRows = histRows.filter(function (r) { return agentName && pollNorm(r.byUser) === pollNorm(agentName); });
+
+  // (1) holder self-authored a history row with THIS status → evidence, genuine.
+  if (selfRows.some(function (r) { return pollCanon(r.newStatus) === pollCanon(sliceStatus); })) return out;
+  // (2) feedback-bearing status_change with THIS status in holder's own agentHistory → genuine.
+  var hasFeedbackEntry = (Array.isArray(holder.agentHistory) ? holder.agentHistory : []).some(function (h) {
+    return h && h.type === "status_change" && pollHasFeedback(h) && pollCanon(pollParseHistStatus(h)) === pollCanon(sliceStatus);
+  });
+  if (hasFeedbackEntry) return out;
+  // (3) the most-recent history row that produced this status must be SALES-authored.
+  var sameStatusRows = histRows.filter(function (r) { return pollCanon(r.newStatus) === pollCanon(sliceStatus); })
+    .sort(function (x, y) { return y.ts - x.ts; });
+  var causingRow = sameStatusRows[0] || null;
+  if (!causingRow) return out;                                          // can't attribute the status → preserve
+  if (!isSalesName(causingRow.byUser)) return out;                     // managerial / unknown author → legit, preserve
+
+  // Sales-caller pollution → repair to holder's last self-authored status, else NewLead.
+  var lastSelf = selfRows.slice().sort(function (x, y) { return y.ts - x.ts; })[0] || null;
+  var proposed = lastSelf ? lastSelf.newStatus : "NewLead";
+  if (pollCanon(proposed) === pollCanon(sliceStatus)) return out;       // no-op safety
+  out.push({
+    sliceId: holder._id ? String(holder._id) : "",
+    agentId: holderId,
+    agent: agentName || holderId || "(no agentId)",
+    current: sliceStatus,
+    currentCanon: pollCanon(sliceStatus),
+    proposed: proposed,
+    proposedCanon: pollCanon(proposed),
+    lastHistoryRow: lastSelf ? { newStatus: lastSelf.newStatus, timestamp: new Date(lastSelf.ts).toISOString() } : null,
+    pollutedByRow: { byUser: causingRow.byUser, newStatus: causingRow.newStatus, timestamp: new Date(causingRow.ts).toISOString(), description: causingRow.description }
+  });
+  return out;
+}
 
 app.get("/api/admin/rotation-pollution-dryrun", auth, strictAdminOnly, async function(req, res) {
   try {
@@ -13574,6 +13635,96 @@ app.get("/api/admin/inspect-slice", auth, strictAdminOnly, async function(req, r
       condition2_feedbackBearingStatusChange: condition2Entry,   // exempts via rule (2) — INSPECT this
       detectorFlagsThisSlice: !!detectedThisSlice,
       detectorResult: detectedThisSlice || null
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== TEMPORARY — Phase 3: holder-slice pollution cleanup (admin-only) =====
+// Cleans ONLY holder slices polluted by a pre-703ef2f SALES-caller holder-sync
+// mirror (detectPollutedHolderSlices). Managerial holder writes are preserved.
+// dryRun:true previews (no writes); dryRun:false applies and is gated behind
+// confirm === "yes-cleanup-holder-pollution". Batched bulkWrite (chunks of 500);
+// each change carries an auditable status_cleanup entry. Temporary.
+app.post("/api/admin/rotation-pollution-cleanup-holders", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var dryRun = !(req.body && req.body.dryRun === false);
+    var confirm = String((req.body && req.body.confirm) || "");
+    if (!dryRun && confirm !== "yes-cleanup-holder-pollution") {
+      return res.status(400).json({ error: "confirm_required", message: "Set confirm='yes-cleanup-holder-pollution' to apply (dryRun:false)" });
+    }
+    console.log("[POLLUTION-CLEANUP-HOLDERS] dryRun=" + dryRun);
+
+    // Name → CURRENT role map. isSalesName is true ONLY when the byUser name
+    // resolves unambiguously to a single user whose role is exactly "sales".
+    var users = await User.find({}, { name: 1, role: 1 }).lean();
+    var nameOf = {}, nameRoles = {};
+    users.forEach(function (u) {
+      nameOf[String(u._id)] = u.name || "(unknown)";
+      var n = pollNorm(u.name);
+      (nameRoles[n] = nameRoles[n] || {})[String(u.role || "")] = true;
+    });
+    var isSalesName = function (byUser) {
+      var roles = nameRoles[pollNorm(byUser)];
+      if (!roles) return false;
+      var keys = Object.keys(roles);
+      return keys.length === 1 && keys[0] === "sales";
+    };
+
+    var leads = await Lead.find(
+      { "assignments.0": { $exists: true } },
+      { name: 1, agentId: 1, status: 1, assignments: 1, history: 1 }
+    ).lean();
+
+    var totalLeadsProcessed = leads.length;
+    var detected = [];                                                  // {leadId, leadName, slice}
+    leads.forEach(function (lead) {
+      detectPollutedHolderSlices(lead, nameOf, isSalesName).forEach(function (s) {
+        detected.push({ leadId: String(lead._id), leadName: lead.name || "(no name)", slice: s });
+      });
+    });
+
+    var sampleRepairs = detected.slice(0, 50).map(function (d) {
+      return {
+        leadId: d.leadId, leadName: d.leadName, agent: d.slice.agent,
+        before: d.slice.current, after: d.slice.proposed,
+        pollutedBy: d.slice.pollutedByRow ? d.slice.pollutedByRow.byUser : null,
+        pollutedByRow: d.slice.pollutedByRow ? d.slice.pollutedByRow.description : null
+      };
+    });
+
+    var totalRepaired = 0, totalErrors = 0, errors = [];
+    if (!dryRun) {
+      var ops = [];
+      for (var i = 0; i < detected.length; i++) {
+        var s = detected[i].slice;
+        if (!s.sliceId || !mongoose.Types.ObjectId.isValid(s.sliceId)) {
+          totalErrors++; if (errors.length < 50) errors.push({ leadId: detected[i].leadId, agent: s.agent, error: "missing_slice_id" });
+          continue;
+        }
+        ops.push(buildPollutionRepairOp(detected[i].leadId, s));
+      }
+      var CHUNK = 500;
+      for (var c = 0; c < ops.length; c += CHUNK) {
+        var batch = ops.slice(c, c + CHUNK);
+        try {
+          var br = await Lead.bulkWrite(batch, { ordered: false });
+          totalRepaired += (br.modifiedCount || (br.result && br.result.nModified) || 0);
+        } catch (bErr) {
+          if (bErr && bErr.result) totalRepaired += (bErr.result.nModified || bErr.result.modifiedCount || 0);
+          totalErrors += batch.length;
+          if (errors.length < 50) errors.push({ batchStart: c, error: bErr && bErr.message ? bErr.message : String(bErr) });
+        }
+      }
+    }
+
+    res.json({
+      dryRun: dryRun,
+      totalLeadsProcessed: totalLeadsProcessed,
+      totalHolderSlicesDetected: detected.length,
+      totalRepaired: dryRun ? 0 : totalRepaired,
+      totalErrors: totalErrors,
+      sampleRepairs: sampleRepairs,
+      errors: errors
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
