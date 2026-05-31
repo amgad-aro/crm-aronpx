@@ -13078,7 +13078,15 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
         // Sales: only surface THEIR OWN assignment slice, never other agents'.
         if (isSales && agentObjId !== uid) return;
 
-        var agentObj = ag._id ? { _id: ag._id, name: ag.name || "", title: ag.title || "" } : null;
+        // Always carry the slice's agent id on synthesized entries — even when
+        // assignments.agentId didn't populate (e.g. a removed user). The raw
+        // agentObjId is computed above; dropping it (the old `: null`) left the
+        // entry author-less, so the FE era router couldn't tie it to its own
+        // slice and leaked it into the current holder's era. Keeping the id
+        // makes every slice-owned entry attributable to its own agent.
+        var agentObj = ag._id
+          ? { _id: ag._id, name: ag.name || "", title: ag.title || "" }
+          : (agentObjId ? { _id: agentObjId, name: "", title: "" } : null);
         var when = a.lastActionAt || a.assignedAt || lead.createdAt || new Date();
         if (a.lastFeedback && String(a.lastFeedback).trim().length > 0) {
           assignmentEntries.push({

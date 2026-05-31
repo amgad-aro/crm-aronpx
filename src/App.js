@@ -3114,6 +3114,29 @@ var LeadJourney = function(p) {
     return "";
   };
 
+  // Normalize a person name for tolerant matching — Unicode NFC, collapsed
+  // whitespace, trimmed, lowercased. Era ownership is recovered from the
+  // rotation marker's h.toAgent, which is stored as a NAME string (server.js
+  // schema toAgent:String). resolveAgentId resolves it to an id via an EXACT
+  // allUsers.find(x => x.name === n), so any leading/trailing/doubled
+  // whitespace, case difference, Arabic diacritic / NFC-vs-NFD mismatch, or a
+  // name edited after the rotation was logged leaves era.agentId === "" — the
+  // Path-B cause of the cross-slice leak. Matching by normName tolerates all of
+  // these so an event still finds its author's era even when ids don't line up.
+  var normName = function(s){
+    return String(s == null ? "" : s).normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase();
+  };
+  // Display name of an event's author. Slice-synth entries carry the slice
+  // agent on userId (and agentName); history / Activity rows carry the actor on
+  // userId.name. Used to match an event to its author's era by name when the
+  // ids don't line up (see normName).
+  var resolveAuthorName = function(ev){
+    if (!ev) return "";
+    if (ev.userId && ev.userId.name) return ev.userId.name;
+    if (ev.agentName) return ev.agentName;
+    return "";
+  };
+
   var eras = [];
   var cur = null;
   sorted.forEach(function(ev){
@@ -3139,31 +3162,43 @@ var LeadJourney = function(p) {
       };
       eras.push(cur);
     } else if (cur) {
-      // Route the event to the era of the agent who actually authored it,
-      // not just the era that happens to be open at this timestamp. The
-      // backend sometimes surfaces a previous holder's slice writes (via
-      // assignments[] synthesis) at timestamps that fall inside a later
-      // holder's era — those rows belong in the prior holder's era, not
-      // the current one.
-      var evUid = resolveAuthorId(ev);
-      var curEraAgentId = cur.agentId ? String(cur.agentId) : "";
-      if (!evUid || !curEraAgentId || evUid === curEraAgentId) {
+      // Route the event to the era of the agent who actually AUTHORED it, not
+      // whichever era happens to be open at its timestamp. Match against every
+      // era (current or past) by author id first, then by normalized author
+      // name — the name fallback is essential because a rotation marker's
+      // agent is a NAME string (h.toAgent), and resolveAgentId's exact lookup
+      // can leave era.agentId === "" (Path B); without it an event with a
+      // resolvable author would never match such an era and would leak.
+      var evUid  = resolveAuthorId(ev);
+      var evName = normName(resolveAuthorName(ev));
+      var targetEra = null;
+      for (var bi = eras.length - 1; bi >= 0; bi--) {
+        var e = eras[bi];
+        var eId = e.agentId ? String(e.agentId) : "";
+        var eName = normName(e.agentName);
+        if ((evUid && eId && eId === evUid) || (evName && eName && eName === evName)) { targetEra = e; break; }
+      }
+      if (targetEra) {
+        targetEra.events.push(ev);
+        // Only extend the CURRENT era's boundary; past eras keep theirs.
+        if (targetEra === cur) cur.endedAt = ev.createdAt;
+      } else if (ev.source === "assignment") {
+        // A slice-OWNED entry we couldn't attribute to any era's agent. It
+        // belongs to a specific sales slice, NOT the current holder — dumping
+        // it into `cur` is exactly the sales-to-sales rotation leak. Drop it
+        // rather than misattribute it. (With the backend always stamping the
+        // slice agent id, real previous holders match above; only a genuinely
+        // orphaned slice entry — e.g. a removed user with no resolvable era —
+        // reaches here.)
+      } else {
+        // A GLOBAL event (lead.history / Activity) we couldn't tie to an era —
+        // a manager / admin / TL / director action (they never own a slice) or
+        // a system row. Keep the active-holder fallback: it lands in whichever
+        // slice was active when it occurred (we process chronologically, so
+        // `cur` IS that holder). This preserves manager/admin visibility in the
+        // holder's slice exactly as before.
         cur.events.push(ev);
         cur.endedAt = ev.createdAt;
-      } else {
-        var targetEra = null;
-        for (var bi = eras.length - 1; bi >= 0; bi--) {
-          var prevEra = eras[bi];
-          var prevAgentId = prevEra.agentId ? String(prevEra.agentId) : "";
-          if (prevAgentId && prevAgentId === evUid) { targetEra = prevEra; break; }
-        }
-        if (targetEra) {
-          targetEra.events.push(ev);
-          // Don't update endedAt of past era — preserve its boundary.
-        } else {
-          cur.events.push(ev);
-          cur.endedAt = ev.createdAt;
-        }
       }
     } else {
       cur = {
