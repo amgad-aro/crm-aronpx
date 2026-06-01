@@ -1993,7 +1993,7 @@ var LeadForm = function(p) {
   var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   var [form, setForm] = useState((function(){
-    var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"", agentId:"", callbackTime:"", notes:"", status:"Potential", dealDate:"", eoiDate:"", eoiDeposit:"", downPaymentPct:"", installmentYears:"" };
+    var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"", agentId:"", callbackTime:"", notes:"", status:"NewLead", dealDate:"", eoiDate:"", eoiDeposit:"", downPaymentPct:"", installmentYears:"" };
     // Load saved extra fields from localStorage if editing a deal
     if(p.editId){
       var extra=getDealExtra(String(p.editId));
