@@ -7538,7 +7538,25 @@ function summaryComputeActionSlice(lead) {
 function summaryComputeCurrentStatus(lead) {
   if (!lead) return "NewLead";
   var slice = summaryComputeActionSlice(lead);
-  if (slice && slice.status) return slice.status;
+  if (!slice) return lead.status || "NewLead";
+  // Replay the action slice's agentHistory status_change entries (latest wins)
+  // to recover the EFFECTIVE worked status instead of trusting the raw stored
+  // slice.status — which can lag (e.g. a slice worked to Potential but left
+  // stored as "NewLead"). Reuses the same "Status: X" note parse as the BE
+  // pollution helper (pollParseHistStatus) + canonicalizer (pollCanon). Falls
+  // back to raw slice.status only when the slice has no status_change entry.
+  var hist = Array.isArray(slice.agentHistory) ? slice.agentHistory : [];
+  var bestStatus = null, bestTs = -1;
+  for (var i = 0; i < hist.length; i++) {
+    var h = hist[i];
+    if (!h || h.type !== "status_change") continue;
+    var s = pollParseHistStatus(h);
+    if (!s) continue;
+    var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
+    if (ts >= bestTs) { bestTs = ts; bestStatus = s; }
+  }
+  if (bestStatus) return pollCanon(bestStatus);
+  if (slice.status) return slice.status;
   return lead.status || "NewLead";
 }
 
