@@ -5269,6 +5269,22 @@ var LeadsPage = function(p) {
 
   var confirmStatus = async function(comment, cbTime, extra, fb) {
     if(!pendingStatus) return;
+    // DoneDeal close requires a recipient. The StatusModal is always an internal
+    // close (no agent selector), so a lead with no assigned agent cannot be closed
+    // here. Pre-validate client-side and show a clear message — mirrors the BE
+    // guard (primary_sales_recipient_required) but avoids surfacing its raw error
+    // code via apiFetch. Applies ONLY to DoneDeal — EOI/other statuses untouched.
+    if (pendingStatus.newStatus === "DoneDeal") {
+      var leadForClose = (selected && gid(selected) === pendingStatus.leadId)
+        ? selected
+        : (p.leads || []).find(function(l){ return gid(l) === pendingStatus.leadId; });
+      var closeAgentId = (leadForClose && leadForClose.agentId)
+        ? (leadForClose.agentId._id || leadForClose.agentId) : null;
+      if (!closeAgentId) {
+        alert("يجب تعيين Agent للّيد قبل عمل Done Deal. عيّن Agent أولاً من Assign To أو من فورم الديل.");
+        return;
+      }
+    }
     try {
       // Determine whether feedback should be routed through the managerial
       // feedback endpoint (visibility selector) or saved inline via PUT

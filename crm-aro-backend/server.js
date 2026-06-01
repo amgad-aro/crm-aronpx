@@ -10410,15 +10410,40 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         delete req.body.commissionAmount;
       }
 
-      // DECOUPLED: the Phase R-13.1 recipient guard (broker_required_for_external /
-      // primary_sales_recipient_required) was removed here. Closing a deal must
-      // never block on a recipient — ANY user can set Done Deal and the lead
-      // lands on the Deals page unconditionally. The stored agentId is preserved
-      // (req.body.agentId is null-stripped at ~10457), so when an agent IS
-      // assigned, ensureCommissionForLead creates the commission with that agent;
-      // agent-less / broker-less deals close cleanly and are backfilled later
-      // (PUT backfill below, or POST /api/diagnose/create-commission). The
-      // ensureCommissionForLead agent gate stays the single safety net.
+      // Phase R-13.1 (re-introduced, FIXED) — DoneDeal recipient guard, per-type.
+      // Internal/legacy/ambassador: a primary Agent is required. External: a broker
+      // is required. A genuinely recipient-less DoneDeal is rejected so it can't be
+      // closed without anyone to attribute the commission to.
+      //
+      // FIX vs the original guard: effAgent is resolved by TRUTHINESS, not by
+      // (req.body.agentId !== undefined). normId at ~line 10266 already turns an
+      // absent agentId into null (not undefined), so the old `!== undefined` test
+      // always took req.body.agentId and never fell back to the lead's stored
+      // agent — wrongly rejecting a lead that already had an assigned agent (the
+      // "Sara" case). Using `req.body.agentId || <stored agentId>` makes a stored
+      // agent pass and rejects only a truly agent-less internal deal.
+      var ldForRecipCheck = await Lead.findById(req.params.id)
+        .select("agentId dealType externalBrokerId externalSalesAgentEnabled externalSalesAgentId").lean();
+      var effAgent = req.body.agentId
+        || (ldForRecipCheck && ldForRecipCheck.agentId
+              ? String(ldForRecipCheck.agentId._id || ldForRecipCheck.agentId) : "");
+      var effDealType  = (req.body.dealType !== undefined) ? req.body.dealType : (ldForRecipCheck && ldForRecipCheck.dealType);
+      var effExtBroker = (req.body.externalBrokerId !== undefined) ? req.body.externalBrokerId : (ldForRecipCheck && ldForRecipCheck.externalBrokerId);
+      if (String(effDealType) === "external") {
+        if (!effExtBroker) {
+          return res.status(400).json({
+            error: "broker_required_for_external",
+            message: "An External Done Deal must have a broker assigned."
+          });
+        }
+      } else {
+        if (!effAgent) {
+          return res.status(400).json({
+            error: "primary_sales_recipient_required",
+            message: "يجب تعيين Agent للّيد قبل عمل Done Deal."
+          });
+        }
+      }
     } else if (req.body.commissionRate !== undefined || req.body.commissionAmount !== undefined) {
       // Non-DoneDeal admin save with rate field present — coerce or drop.
       if (req.body.commissionRate === "" || req.body.commissionRate === null) {
