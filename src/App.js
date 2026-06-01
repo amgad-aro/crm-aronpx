@@ -5580,7 +5580,7 @@ var LeadsPage = function(p) {
     <WaChooser show={!!waChooser} phone={waChooser} onClose={function(){setWaChooser(null);}}/>
     {showStatusPicker&&selected&&!showStatusComment&&<Modal show={true} onClose={function(){setShowStatusPicker(false);}} title={t.changeStatus}>
       <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:16 }}>
-        {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"8px 14px", borderRadius:9, border:"1px solid "+s.color, background:selected.status===s.value?s.bg:"#fff", color:s.color, fontSize:13, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
+        {sc.map(function(s){return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"8px 14px", borderRadius:9, border:"1px solid "+s.color, background:currentStatus(selected)===s.value?s.bg:"#fff", color:s.color, fontSize:13, fontWeight:600, cursor:"pointer" }}>{s.label}</button>;})}
       </div>
       <Btn outline onClick={function(){setShowStatusPicker(false);}} style={{ width:"100%" }}>{t.cancel}</Btn>
     </Modal>}
@@ -6169,7 +6169,7 @@ var LeadsPage = function(p) {
           <div style={{ marginBottom:12, padding:11, background:"#F8FAFC", borderRadius:10, border:"1px solid "+C.border }}>
             <div style={{ fontSize:11, color:C.textLight, marginBottom:8, fontWeight:600 }}>{t.changeStatus}</div>
             <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
-              {sc.map(function(s){var on=selected.status===s.value;return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"5px 11px", borderRadius:14, border:"1px solid "+(on?s.color:C.border), background:on?s.bg:"#fff", color:on?s.color:C.textLight, fontSize:11, fontWeight:on?700:500, cursor:"pointer", transition:"all .15s" }}>{s.label}</button>;})}
+              {sc.map(function(s){var on=currentStatus(selected)===s.value;return <button key={s.value} onClick={function(){reqStatus(gid(selected),s.value);}} style={{ padding:"5px 11px", borderRadius:14, border:"1px solid "+(on?s.color:C.border), background:on?s.bg:"#fff", color:on?s.color:C.textLight, fontSize:11, fontWeight:on?700:500, cursor:"pointer", transition:"all .15s" }}>{s.label}</button>;})}
             </div>
           </div>
           {/* ─── Section 4: ASSIGN TO dropdown ─── */}
