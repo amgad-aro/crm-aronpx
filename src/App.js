@@ -4750,6 +4750,39 @@ var LeadsPage = function(p) {
     });
     return out;
   };
+  // Per-slice shown status for the in-card agents-block badge. Mirrors backend
+  // af54b52 (summaryComputeCurrentStatus): the latest status_change whose
+  // canonical status is NOT "NewLead" wins. NewLead is the seed state, and
+  // stale tools wrote bogus trailing "Status: NewLead" status_change entries on
+  // top of genuine ones — feedbacksForSlice replays them without skipping, so it
+  // resolves to NewLead. Falls back to the feedbacksForSlice replay / raw
+  // slice.status only when no non-NewLead status_change exists. Display-only;
+  // no write. Regex-free string parse (matches feedbacksForSlice's first-token
+  // behavior); collapsed-note check also catches the legacy spaced "New Lead".
+  var shownSliceStatus = function(slice) {
+    if (!slice) return "NewLead";
+    var sh = Array.isArray(slice.agentHistory) ? slice.agentHistory : [];
+    var best = null, bestTs = -1;
+    for (var hi = 0; hi < sh.length; hi++) {
+      var h = sh[hi];
+      if (!h || h.type !== "status_change") continue;
+      var note = String(h.note || "");
+      var ix = note.toLowerCase().indexOf("status:");
+      var parsed = "";
+      if (ix >= 0) {
+        parsed = note.slice(ix + 7).trim();
+        var sp = parsed.indexOf(" ");
+        if (sp >= 0) parsed = parsed.slice(0, sp);
+      }
+      if (!parsed) parsed = String(h.status || "").trim();
+      if (!parsed) continue;
+      var collapsedNote = note.toLowerCase().split(" ").join("");
+      if (parsed === "NewLead" || collapsedNote.indexOf("status:newlead") >= 0) continue;
+      var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
+      if (ts >= bestTs) { bestTs = ts; best = parsed; }
+    }
+    return best || (feedbacksForSlice(slice)[0] || {}).status || slice.status || "NewLead";
+  };
   // Phase 3: pick the lead's single most-recent feedback entry across every
   // slice the caller can see (BE overlay already scopes which slices reach the
   // FE per role). Returns null if no slice has any feedback (or virtual-
@@ -4978,7 +5011,7 @@ var LeadsPage = function(p) {
     // (bootstrap + infinite scroll); the fetch effect doesn't populate it.
     var statusBase = allVisible;
     if (p.leadFilter !== "all" && statusLeads !== null) {
-      statusBase = statusLeads.filter(function(l){
+      var passesStatusScope = function(l){
         if (l.archived) return false;
         var matchSource = isReq ? l.source==="Daily Request" : l.source!=="Daily Request";
         if (!matchSource) return false;
@@ -4986,7 +5019,18 @@ var LeadsPage = function(p) {
         if (!isReq && l.status==="Deal Cancelled" && !(l.eoiStatus==="EOI Cancelled")) return false;
         if (isReq && (p.cu.role==="manager"||p.cu.role==="team_leader") && !l.agentId) return false;
         return true;
-      });
+      };
+      var rawBase = statusLeads.filter(passesStatusScope);
+      // The ?status= fetch (statusLeads) matches RAW status/assignments.status
+      // on the backend, so a lead whose DERIVED currentStatus matches the chip
+      // but whose raw status does NOT (e.g. raw NewLead → derived Potential
+      // after the af54b52 trailing-NewLead rule) never enters statusLeads.
+      // Union the already-loaded visible set so those leads become candidates;
+      // the currentStatus(l)===chip narrow below makes final membership match
+      // the rows AND the /api/leads/counts (_currentStatus) count. Deduped by id.
+      var seenIds = {};
+      rawBase.forEach(function(l){ seenIds[gid(l)] = true; });
+      statusBase = rawBase.concat(allVisible.filter(function(l){ return !seenIds[gid(l)] && passesStatusScope(l); }));
     }
     filtered = p.leadFilter==="all"
       ? allVisible
@@ -6278,7 +6322,11 @@ var LeadsPage = function(p) {
               // which can lag (e.g. a reactivated/leaked slice stuck at "NewLead").
               // Falls back to the raw status only when the slice has no replayable
               // history/feedback (a genuinely fresh slice).
-              var sliceShownStatus = (feedbacksForSlice(a)[0] || {}).status || a.status || "NewLead";
+              // af54b52 parity: ignore status_change entries whose canonical status
+              // is "NewLead" (seed state + bogus trailing cleanup writes); take the
+              // latest non-NewLead status. Fall back to the feedbacksForSlice replay
+              // / raw a.status only when none exists. Display-only; no write.
+              var sliceShownStatus = shownSliceStatus(a);
               var statusColor = sliceStatusPillColor(sliceShownStatus);
               return <div key={i} style={{ padding:"9px 0", borderBottom: i<arr.length-1 ? "1px solid #F1F5F9" : "none" }}>
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6, gap:8 }}>
