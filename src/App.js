@@ -22792,6 +22792,14 @@ var CommissionCycleStageModal = function(p) {
   var vat      = gross - netOfVat;
   var with5    = netOfVat * 0.05;
   var netRcv   = gross > 0 ? gross - with5 : 0;
+  // Phase R-14 — ambassador deals pay NO VAT and NO withholding; the only
+  // deduction is the optional developer tax. The claim preview must reflect
+  // that (claim total → developer tax → ARO net), not the VAT/withholding chain.
+  var stgIsAmb     = !!(c && c.ambassadorSplit && c.ambassadorSplit.isAmbassador);
+  var stgAmbTaxOn  = stgIsAmb && !!c.ambassadorSplit.developerTaxEnabled && Number(c.ambassadorSplit.developerTaxRate || 0) > 0;
+  var stgAmbTaxPct = stgAmbTaxOn ? Number(c.ambassadorSplit.developerTaxRate) : 0;
+  var stgAmbTaxAmt = stgAmbTaxOn ? gross * stgAmbTaxPct / 100 : 0;
+  var stgAmbNet    = gross - stgAmbTaxAmt;
 
   // Phase R-1: per-recipient payouts moved off the cycle. The received-stage
   // modal now collects amount only (cash flow from the developer); recipient
@@ -22835,7 +22843,13 @@ var CommissionCycleStageModal = function(p) {
           placeholder="e.g. 3"
           style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
       </FormRow>
-      {gross > 0 && <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:C.text }}>
+      {gross > 0 && stgIsAmb && <div style={{ background:"#FFFBEB", border:"1px dashed #FDE68A", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:"#92400E" }}>
+        {/* Phase R-14 — ambassador claim preview: no VAT, no withholding. */}
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Claim Total</span><b>{fmtMoney2(gross)}</b></div>
+        {stgAmbTaxOn && <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Developer Tax ({stgAmbTaxPct}%)</span><span>−{fmtMoney2(stgAmbTaxAmt)}</span></div>}
+        <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #FDE68A", color:"#B45309", fontWeight:700 }}><span>ARO Net</span><span>{fmtMoney2(stgAmbNet)}</span></div>
+      </div>}
+      {gross > 0 && !stgIsAmb && <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:C.text }}>
         <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Claim Total (incl. VAT)</span><b>{fmtMoney2(gross)}</b></div>
         <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Net of VAT</span><span>{fmtMoney2(netOfVat)}</span></div>
         <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>VAT 14%</span><span>{fmtMoney2(vat)}</span></div>
@@ -22885,6 +22899,13 @@ var CommissionClaimBackfillModal = function(p) {
   var vat      = gross - netOfVat;
   var with5    = netOfVat * 0.05;
   var netRcv   = gross > 0 ? gross - with5 : 0;
+  // Phase R-14 — ambassador deals: no VAT / no withholding; only the optional
+  // developer tax. Mirror the stage-modal claim preview branch.
+  var bfIsAmb     = !!(c && c.ambassadorSplit && c.ambassadorSplit.isAmbassador);
+  var bfAmbTaxOn  = bfIsAmb && !!c.ambassadorSplit.developerTaxEnabled && Number(c.ambassadorSplit.developerTaxRate || 0) > 0;
+  var bfAmbTaxPct = bfAmbTaxOn ? Number(c.ambassadorSplit.developerTaxRate) : 0;
+  var bfAmbTaxAmt = bfAmbTaxOn ? gross * bfAmbTaxPct / 100 : 0;
+  var bfAmbNet    = gross - bfAmbTaxAmt;
 
   var claimDateStr = "—";
   try {
@@ -22926,7 +22947,13 @@ var CommissionClaimBackfillModal = function(p) {
         onChange={function(e){ setRatePct(e.target.value); }}
         style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }}/>
     </FormRow>
-    {gross > 0 && <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:C.text }}>
+    {gross > 0 && bfIsAmb && <div style={{ background:"#FFFBEB", border:"1px dashed #FDE68A", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:"#92400E" }}>
+      {/* Phase R-14 — ambassador claim preview: no VAT, no withholding. */}
+      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Claim Total</span><b>{fmtMoney2(gross)}</b></div>
+      {bfAmbTaxOn && <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Developer Tax ({bfAmbTaxPct}%)</span><span>−{fmtMoney2(bfAmbTaxAmt)}</span></div>}
+      <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #FDE68A", color:"#B45309", fontWeight:700 }}><span>ARO Net</span><span>{fmtMoney2(bfAmbNet)}</span></div>
+    </div>}
+    {gross > 0 && !bfIsAmb && <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:C.text }}>
       <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Claim Total (incl. VAT)</span><b>{fmtMoney2(gross)}</b></div>
       <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Net of VAT</span><span>{fmtMoney2(netOfVat)}</span></div>
       <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>VAT 14%</span><span>{fmtMoney2(vat)}</span></div>
