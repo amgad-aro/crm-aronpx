@@ -10410,36 +10410,15 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         delete req.body.commissionAmount;
       }
 
-      // Phase R-13.1 — DoneDeal recipient guard, per-type. Mirror of the POST
-      // guard. Internal: agentId required. External: broker required (validator
-      // helper already enforced this earlier — re-checked for narrative); the
-      // optional Sales Agent toggle is layered on top via that helper's own
-      // checks. Broker-only External (no toggle) is a valid shape and must
-      // NOT be rejected here.
-      var ldForRecipCheck = await Lead.findById(req.params.id).select("agentId dealType externalBrokerId externalSalesAgentEnabled externalSalesAgentId").lean();
-      var effAgent = (req.body.agentId !== undefined)
-        ? normId(req.body.agentId)
-        : (ldForRecipCheck && ldForRecipCheck.agentId ? String(ldForRecipCheck.agentId._id || ldForRecipCheck.agentId) : "");
-      var effDealType = (req.body.dealType !== undefined) ? req.body.dealType : (ldForRecipCheck && ldForRecipCheck.dealType);
-      var effExtBroker = (req.body.externalBrokerId !== undefined) ? req.body.externalBrokerId : (ldForRecipCheck && ldForRecipCheck.externalBrokerId);
-      if (String(effDealType) === "external") {
-        if (!effExtBroker) {
-          return res.status(400).json({
-            error: "broker_required_for_external",
-            message: "An External DoneDeal must have a broker assigned."
-          });
-        }
-      } else {
-        if (!effAgent) {
-          // Phase R-14 — type-aware wording (ambassador deals require the
-          // original sales agent for the recipients[] seed, same as internal).
-          var dtLabelPut = String(effDealType) === "ambassador" ? "Ambassador" : "Internal";
-          return res.status(400).json({
-            error: "primary_sales_recipient_required",
-            message: "An " + dtLabelPut + " DoneDeal must have a primary Agent (the original sales agent) so the commission can be created."
-          });
-        }
-      }
+      // DECOUPLED: the Phase R-13.1 recipient guard (broker_required_for_external /
+      // primary_sales_recipient_required) was removed here. Closing a deal must
+      // never block on a recipient — ANY user can set Done Deal and the lead
+      // lands on the Deals page unconditionally. The stored agentId is preserved
+      // (req.body.agentId is null-stripped at ~10457), so when an agent IS
+      // assigned, ensureCommissionForLead creates the commission with that agent;
+      // agent-less / broker-less deals close cleanly and are backfilled later
+      // (PUT backfill below, or POST /api/diagnose/create-commission). The
+      // ensureCommissionForLead agent gate stays the single safety net.
     } else if (req.body.commissionRate !== undefined || req.body.commissionAmount !== undefined) {
       // Non-DoneDeal admin save with rate field present — coerce or drop.
       if (req.body.commissionRate === "" || req.body.commissionRate === null) {
