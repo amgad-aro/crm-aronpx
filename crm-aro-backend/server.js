@@ -13915,6 +13915,13 @@ app.get("/api/admin/blockc-pollution-dryrun", auth, strictAdminOnly, async funct
 // status_cleanup entry. Temporary — remove after cleanup phase.
 app.post("/api/admin/rotation-pollution-cleanup-single", auth, strictAdminOnly, async function(req, res) {
   try {
+    // SAFETY (apply disabled 2026-06-01): the write/apply path would overwrite
+    // assignments[].status back to "NewLead" and undo the completed slice-status
+    // backfill. Block any apply request (dryRun:false) BEFORE any DB read/write.
+    // The read-only preview (dryRun default true) is unaffected.
+    if (req.body && req.body.dryRun === false) {
+      return res.status(403).json({ error: "disabled", message: "Disabled — see admin" });
+    }
     var leadId = String((req.body && req.body.leadId) || "").trim();
     var dryRun = !(req.body && req.body.dryRun === false);              // default to dry-run unless explicitly false
     var confirm = String((req.body && req.body.confirm) || "");
@@ -13968,6 +13975,13 @@ app.post("/api/admin/rotation-pollution-cleanup-single", auth, strictAdminOnly, 
 // Temporary — remove after the cleanup phase.
 app.post("/api/admin/rotation-pollution-cleanup-all", auth, strictAdminOnly, async function(req, res) {
   try {
+    // SAFETY (apply disabled 2026-06-01): the write/apply path would overwrite
+    // assignments[].status back to "NewLead" and undo the completed slice-status
+    // backfill. Block any apply request (dryRun:false) BEFORE any DB read/write.
+    // The read-only preview (dryRun default true) is unaffected.
+    if (req.body && req.body.dryRun === false) {
+      return res.status(403).json({ error: "disabled", message: "Disabled — see admin" });
+    }
     var dryRun = !(req.body && req.body.dryRun === false);
     var confirm = String((req.body && req.body.confirm) || "");
     if (!dryRun && confirm !== "yes-cleanup-all-polluted-slices") {
@@ -14150,6 +14164,13 @@ app.get("/api/admin/inspect-slice", auth, strictAdminOnly, async function(req, r
 // each change carries an auditable status_cleanup entry. Temporary.
 app.post("/api/admin/rotation-pollution-cleanup-holders", auth, strictAdminOnly, async function(req, res) {
   try {
+    // SAFETY (apply disabled 2026-06-01): the write/apply path would overwrite
+    // assignments[].status back to "NewLead" and undo the completed slice-status
+    // backfill. Block any apply request (dryRun:false) BEFORE any DB read/write.
+    // The read-only preview (dryRun default true) is unaffected.
+    if (req.body && req.body.dryRun === false) {
+      return res.status(403).json({ error: "disabled", message: "Disabled — see admin" });
+    }
     var dryRun = !(req.body && req.body.dryRun === false);
     var confirm = String((req.body && req.body.confirm) || "");
     if (!dryRun && confirm !== "yes-cleanup-holder-pollution") {

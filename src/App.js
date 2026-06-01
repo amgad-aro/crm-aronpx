@@ -6272,7 +6272,14 @@ var LeadsPage = function(p) {
               var aName = a.agentId && a.agentId.name ? a.agentId.name : "Unknown";
               var aId   = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
               var initial = String(aName || "?").charAt(0).toUpperCase();
-              var statusColor = sliceStatusPillColor(a.status);
+              // Display the per-agent EFFECTIVE status via the existing
+              // feedbacksForSlice agentHistory-replay (same value the card's
+              // Latest Feedback banner derives), NOT the raw stored slice.status —
+              // which can lag (e.g. a reactivated/leaked slice stuck at "NewLead").
+              // Falls back to the raw status only when the slice has no replayable
+              // history/feedback (a genuinely fresh slice).
+              var sliceShownStatus = (feedbacksForSlice(a)[0] || {}).status || a.status || "NewLead";
+              var statusColor = sliceStatusPillColor(sliceShownStatus);
               return <div key={i} style={{ padding:"9px 0", borderBottom: i<arr.length-1 ? "1px solid #F1F5F9" : "none" }}>
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6, gap:8 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:8, minWidth:0, flex:1, overflow:"hidden" }}>
@@ -6283,7 +6290,7 @@ var LeadsPage = function(p) {
                     </div>
                   </div>
                   <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
-                    <span style={{ fontSize:9, fontWeight:600, color:sliceStatusPillTextColor(a.status), background:statusColor, padding:"2px 7px", borderRadius:5, whiteSpace:"nowrap" }}>{a.status || "NewLead"}</span>
+                    <span style={{ fontSize:9, fontWeight:600, color:sliceStatusPillTextColor(sliceShownStatus), background:statusColor, padding:"2px 7px", borderRadius:5, whiteSpace:"nowrap" }}>{sliceShownStatus}</span>
                     {!a.removedAt && <button onClick={async function(){
                       if (!window.confirm("Remove "+aName+" from this lead?")) return;
                       try{var upd=await apiFetch("/api/leads/"+gid(selected)+"/assignment/"+aId,"DELETE",null,p.token);p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selected)?upd:l;});});setSelected(upd);}catch(ex){alert(ex.message||"Failed");}
@@ -17007,7 +17014,7 @@ var RotationDiagnosticsTab = function(props) {
           <span style={{ fontSize:11, color:"#B91C1C", fontWeight:600 }}>Apply (writes to DB):</span>
           <input value={clConfirm} onChange={function(e){ setClConfirm(e.target.value); }} placeholder="type CONFIRM"
             style={{ padding:"6px 10px", border:"1px solid #FECACA", borderRadius:8, fontSize:12, width:140 }}/>
-          <button onClick={function(){ if(clConfirm==="CONFIRM") runCleanupSingle(true); }} disabled={clBusy || clConfirm!=="CONFIRM" || !String(clLeadId||"").trim()}
+          <button onClick={function(){}} disabled={true} title="Disabled — see admin"
             style={{ padding:"7px 14px", borderRadius:8, border:"none", background:(clConfirm==="CONFIRM"&&!clBusy&&String(clLeadId||"").trim())?"#B91C1C":"#FCA5A5", color:"#fff", fontSize:12, fontWeight:700, cursor:(clConfirm==="CONFIRM"&&!clBusy&&String(clLeadId||"").trim())?"pointer":"not-allowed" }}>
             ✓ Apply cleanup to this lead
           </button>
@@ -17062,7 +17069,7 @@ var RotationDiagnosticsTab = function(props) {
           <span style={{ fontSize:11, color:"#B91C1C", fontWeight:700 }}>DANGER — writes to ALL leads:</span>
           <input value={allConfirm} onChange={function(e){ setAllConfirm(e.target.value); }} placeholder="type CONFIRM-ALL"
             style={{ padding:"6px 10px", border:"1px solid #FECACA", borderRadius:8, fontSize:12, width:160 }}/>
-          <button onClick={function(){ if(allConfirm==="CONFIRM-ALL") runCleanupAll(true); }} disabled={allBusy || allConfirm!=="CONFIRM-ALL"}
+          <button onClick={function(){}} disabled={true} title="Disabled — see admin"
             style={{ padding:"7px 14px", borderRadius:8, border:"none", background:(allConfirm==="CONFIRM-ALL"&&!allBusy)?"#B91C1C":"#FCA5A5", color:"#fff", fontSize:12, fontWeight:700, cursor:(allConfirm==="CONFIRM-ALL"&&!allBusy)?"pointer":"not-allowed" }}>
             ✓ Apply cleanup to ALL polluted slices
           </button>
@@ -17136,7 +17143,7 @@ var RotationDiagnosticsTab = function(props) {
           <span style={{ fontSize:11, color:"#5B21B6", fontWeight:700 }}>Writes to holder slices:</span>
           <input value={holdConfirm} onChange={function(e){ setHoldConfirm(e.target.value); }} placeholder="type CONFIRM-HOLDERS"
             style={{ padding:"6px 10px", border:"1px solid #DDD6FE", borderRadius:8, fontSize:12, width:180 }}/>
-          <button onClick={function(){ if(holdConfirm==="CONFIRM-HOLDERS") runCleanupHolders(true); }} disabled={holdBusy || holdConfirm!=="CONFIRM-HOLDERS"}
+          <button onClick={function(){}} disabled={true} title="Disabled — see admin"
             style={{ padding:"7px 14px", borderRadius:8, border:"none", background:(holdConfirm==="CONFIRM-HOLDERS"&&!holdBusy)?"#7C3AED":"#C4B5FD", color:"#fff", fontSize:12, fontWeight:700, cursor:(holdConfirm==="CONFIRM-HOLDERS"&&!holdBusy)?"pointer":"not-allowed" }}>
             ✓ Apply holder cleanup
           </button>
