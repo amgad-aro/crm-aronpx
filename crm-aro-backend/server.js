@@ -7543,8 +7543,15 @@ function summaryComputeCurrentStatus(lead) {
   // to recover the EFFECTIVE worked status instead of trusting the raw stored
   // slice.status — which can lag (e.g. a slice worked to Potential but left
   // stored as "NewLead"). Reuses the same "Status: X" note parse as the BE
-  // pollution helper (pollParseHistStatus) + canonicalizer (pollCanon). Falls
-  // back to raw slice.status only when the slice has no status_change entry.
+  // pollution helper (pollParseHistStatus) + canonicalizer (pollCanon).
+  //
+  // IGNORE entries whose canonical status is "NewLead": NewLead is the seed /
+  // initial slice state, not a real worked action, and stale tools wrote bogus
+  // "Status: NewLead" status_change entries on top of genuine ones. We take the
+  // latest status_change whose canonical status is NOT NewLead, so a worked
+  // lead surfaces its real status (e.g. Potential) rather than a trailing
+  // NewLead. Only when there is NO non-NewLead status_change at all do we fall
+  // back to raw slice.status / "NewLead".
   var hist = Array.isArray(slice.agentHistory) ? slice.agentHistory : [];
   var bestStatus = null, bestTs = -1;
   for (var i = 0; i < hist.length; i++) {
@@ -7552,6 +7559,7 @@ function summaryComputeCurrentStatus(lead) {
     if (!h || h.type !== "status_change") continue;
     var s = pollParseHistStatus(h);
     if (!s) continue;
+    if (pollCanon(s) === "NewLead") continue;
     var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
     if (ts >= bestTs) { bestTs = ts; bestStatus = s; }
   }
