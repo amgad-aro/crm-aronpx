@@ -227,11 +227,25 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // Broker model is declared further down (~line 540); the "Broker" ref
   // string is resolved at populate-time, not schema-define-time, so the
   // forward reference is fine.
-  dealType:{type:String,enum:["internal","external"],default:"internal"},
+  dealType:{type:String,enum:["internal","external","ambassador"],default:"internal"},
   externalBrokerId:{type:mongoose.Schema.Types.ObjectId,ref:"Broker",default:null},
   externalDealConfig:{
     commissionTaxPct:{type:Number,default:0},
     brokerSharePct:{type:Number,default:0}
+  },
+  // Phase R-14 — Ambassador deal config. Only meaningful when
+  // dealType==="ambassador"; cleared (rate null, tax disabled) for
+  // internal/external by validateAndNormalizeExternalDeal. The commission
+  // rate itself reuses the canonical top-level `commissionRate` input —
+  // ambassadorConfig.commissionRate is a convenience mirror kept in sync by
+  // the validator. Ambassador deals pay NO VAT 14% and NO Withholding 5%;
+  // the only deduction is the optional developer tax (a % of gross commission,
+  // taken by the developer before paying ARO). developerTaxRate is null when
+  // developerTaxEnabled is false.
+  ambassadorConfig:{
+    commissionRate:{type:Number,default:null},
+    developerTaxEnabled:{type:Boolean,default:false},
+    developerTaxRate:{type:Number,default:null}
   },
   // Commission claim from the developer for this deal.
   // commissionRate: percent value typed in the deal form (e.g. 3 for 3%).
@@ -620,6 +634,36 @@ var commissionSchema = new mongoose.Schema({
       date:   { type: String, default: "" },     // ISO yyyy-mm-dd
       notes:  { type: String, default: "" },
       byUser: { type: String, default: "" }      // SNAPSHOT of admin name
+    }]
+  },
+
+  // Phase R-14 — Ambassador-deal split. isAmbassador is the master flag;
+  // when false, every other field is ignored and the commission behaves as
+  // an internal/external deal. Ambassador deals pay NO VAT and NO withholding;
+  // the only deduction is the optional developer tax. The per-1000 chain and
+  // externalSplit are NOT used — payouts[] / externalSplit.* stay empty/null.
+  // Recipients are admin-assigned MANUAL EGP amounts (not rate-derived), each
+  // with its own payouts[] sub-array. grossCommission / developerTaxAmount /
+  // aroNetTotal are snapshots computed at close (Phase 2 ensureCommissionForLead).
+  ambassadorSplit: {
+    isAmbassador:        { type: Boolean, default: false },
+    commissionRate:      { type: Number, default: 0 },   // percent, snapshot of Lead.commissionRate
+    developerTaxEnabled: { type: Boolean, default: false },
+    developerTaxRate:    { type: Number, default: null }, // percent, null when disabled
+    grossCommission:     { type: Number, default: 0 },   // dealTotal × rate / 100
+    developerTaxAmount:  { type: Number, default: 0 },   // gross × developerTaxRate / 100 (0 when disabled)
+    aroNetTotal:         { type: Number, default: 0 },   // gross − developerTaxAmount
+    recipients: [{
+      userId:    { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      userName:  { type: String, default: "" },          // SNAPSHOT
+      userRole:  { type: String, default: "" },          // SNAPSHOT ("sales","team_leader",...)
+      amount:    { type: Number, default: 0 },           // fixed EGP owed
+      amountPaid:{ type: Number, default: 0 },           // running sum of payouts (derived/cached)
+      payouts: [{
+        date:   { type: String, default: "" },           // ISO yyyy-mm-dd
+        amount: { type: Number, required: true },
+        note:   { type: String, default: "" }
+      }]
     }]
   },
 
@@ -1767,18 +1811,26 @@ async function computeAgentDealStats(agentOids, fromDate, toDate, pwMap, sourceF
 // - mutates body in place so the existing $set update flow propagates the
 //   normalized values without further changes
 async function validateAndNormalizeExternalDeal(body, oldLead) {
-  var hasDealType = body.dealType         !== undefined;
-  var hasBroker   = body.externalBrokerId !== undefined;
-  var hasConfig   = body.externalDealConfig !== undefined;
+  var hasDealType  = body.dealType         !== undefined;
+  var hasBroker    = body.externalBrokerId !== undefined;
+  var hasConfig    = body.externalDealConfig !== undefined;
+  var hasAmbConfig = body.ambassadorConfig !== undefined;   // Phase R-14
   var hasExtSales = body.externalSalesAgentEnabled !== undefined
                  || body.externalSalesAgentId      !== undefined
                  || body.externalSalesAgentManualAmount !== undefined
                  || body.externalSalesAgentPaidBy  !== undefined;
-  if (!hasDealType && !hasBroker && !hasConfig && !hasExtSales) return { ok: true };
+  if (!hasDealType && !hasBroker && !hasConfig && !hasAmbConfig && !hasExtSales) return { ok: true };
 
   var dealType = hasDealType ? String(body.dealType) : (oldLead && oldLead.dealType) || "internal";
-  if (dealType !== "internal" && dealType !== "external") {
-    return { ok: false, error: "dealType must be 'internal' or 'external'" };
+  if (dealType !== "internal" && dealType !== "external" && dealType !== "ambassador") {
+    return { ok: false, error: "dealType must be 'internal', 'external', or 'ambassador'" };
+  }
+
+  // Phase R-14 — helper to clear ambassador config when the deal is NOT
+  // ambassador (mirrors how internal clears external fields, keeping no stale
+  // sub-config on the lead after a type flip).
+  function clearAmbassador() {
+    body.ambassadorConfig = { commissionRate: null, developerTaxEnabled: false, developerTaxRate: null };
   }
 
   if (dealType === "internal") {
@@ -1790,10 +1842,53 @@ async function validateAndNormalizeExternalDeal(body, oldLead) {
     body.externalSalesAgentName         = "";
     body.externalSalesAgentManualAmount = null;
     body.externalSalesAgentPaidBy       = "company";
+    clearAmbassador();
+    return { ok: true };
+  }
+
+  // Phase R-14 — dealType === "ambassador". No broker, no per-1000 chain, no
+  // external sales-agent toggle. The commission rate reuses the canonical
+  // top-level `commissionRate` input (validated/recomputed on the DoneDeal
+  // save path); ambassadorConfig.commissionRate is mirrored from it here so
+  // the lead's sub-config stays self-consistent. The only ambassador-specific
+  // inputs are the developer-tax checkbox + rate.
+  if (dealType === "ambassador") {
+    // Clear all external-deal fields (defensive against a type flip).
+    body.externalBrokerId   = null;
+    body.externalDealConfig = { commissionTaxPct: 0, brokerSharePct: 0 };
+    body.externalSalesAgentEnabled      = false;
+    body.externalSalesAgentId           = null;
+    body.externalSalesAgentName         = "";
+    body.externalSalesAgentManualAmount = null;
+    body.externalSalesAgentPaidBy       = "company";
+
+    var ambCfg = hasAmbConfig ? (body.ambassadorConfig || {}) : ((oldLead && oldLead.ambassadorConfig) || {});
+    var taxEnabled = !!ambCfg.developerTaxEnabled;
+    var taxRate = null;
+    if (taxEnabled) {
+      taxRate = Number(ambCfg.developerTaxRate);
+      if (!isFinite(taxRate) || taxRate <= 0 || taxRate > 100) {
+        return { ok: false, error: "ambassadorConfig.developerTaxRate must be > 0 and ≤ 100 when developer tax is enabled" };
+      }
+    }
+    // Mirror the canonical commission rate (body wins; fall back to oldLead).
+    var ambRateRaw = (body.commissionRate !== undefined && body.commissionRate !== null && body.commissionRate !== "")
+      ? body.commissionRate
+      : (oldLead && oldLead.commissionRate);
+    var ambRate = Number(ambRateRaw);
+    var ambRateClean = (isFinite(ambRate) && ambRate > 0) ? ambRate : null;
+
+    body.dealType         = "ambassador";
+    body.ambassadorConfig = {
+      commissionRate:      ambRateClean,
+      developerTaxEnabled: taxEnabled,
+      developerTaxRate:    taxEnabled ? taxRate : null
+    };
     return { ok: true };
   }
 
   // dealType === "external"
+  clearAmbassador();
   var brokerIdRaw = hasBroker ? body.externalBrokerId : (oldLead && oldLead.externalBrokerId);
   var brokerId    = brokerIdRaw ? String(brokerIdRaw) : "";
   if (!brokerId || !mongoose.Types.ObjectId.isValid(brokerId)) {
@@ -2031,6 +2126,45 @@ async function computeAllRecipientShares(c) {
   var bounds    = qBoundsFromDate(dealDate);
   var isSplit   = !!c.snapshot.isSplitDeal;
   var splitMult = isSplit ? 0.5 : 1;
+
+  // Phase R-14 — ambassador-deal computed block. Populates the three derived
+  // fields on commission.ambassadorSplit. Ambassador deals pay NO VAT and NO
+  // withholding; the only deduction is the optional developer tax (a % of
+  // gross commission). GROSS basis is Σ non-cancelled cycle.claimAmount — the
+  // same source the external block + Annual Summary use; cycle 1 is seeded to
+  // budget × rate at close, so gross = the full commission immediately.
+  //   gross              = Σ cycle.claimAmount (excl. cancelled)
+  //   developerTaxAmount = developerTaxEnabled ? gross × devRate% : 0
+  //   aroNetTotal        = gross − developerTaxAmount
+  // recipients[].amount is admin-assigned (Edit Collection) and is NEVER
+  // written here — this block only refreshes the gross/tax/net snapshots.
+  var isAmbassador = !!(c.ambassadorSplit && c.ambassadorSplit.isAmbassador);
+  if (isAmbassador) {
+    var round2Amb = function(n){ return Math.round(Number(n||0) * 100) / 100; };
+    var grossAmb = 0;
+    if (Array.isArray(c.cycles)) {
+      for (var ai = 0; ai < c.cycles.length; ai++) {
+        var ay = c.cycles[ai];
+        if (!ay || ay.state === "cancelled") continue;
+        grossAmb += Number(ay.claimAmount || 0);
+      }
+    }
+    var taxEnAmb = !!c.ambassadorSplit.developerTaxEnabled;
+    var taxRtAmb = Number(c.ambassadorSplit.developerTaxRate) || 0;
+    var devTaxAmb = taxEnAmb ? (grossAmb * taxRtAmb / 100) : 0;
+    c.ambassadorSplit.grossCommission    = round2Amb(grossAmb);
+    c.ambassadorSplit.developerTaxAmount = round2Amb(devTaxAmb);
+    c.ambassadorSplit.aroNetTotal        = round2Amb(grossAmb - devTaxAmb);
+    c.markModified("ambassadorSplit");
+    // Keep ratesSnapshot consistent with the other paths (per-1000 rates are
+    // irrelevant to ambassador payouts but the field is part of every commission).
+    c.ratesSnapshot = {
+      sales: { base: rates.sales.base, target_met: rates.sales.target_met, double_target: rates.sales.double_target },
+      team_leader: rates.team_leader, manager: rates.manager, director: rates.director
+    };
+    c.computedAt = new Date();
+    return c;
+  }
 
   // Phase R-12 Part 5 — external-deal computed block. Populates the four
   // derived fields on commission.externalSplit so the FE card + Annual
@@ -2508,6 +2642,11 @@ function recipientFromUser(user, role) {
 async function buildSnapshotForLead(leadDoc) {
   if (!leadDoc) throw new Error("buildSnapshotForLead: leadDoc required");
   var isExternalDeal = leadDoc.dealType === "external";
+  // Phase R-14 — Ambassador deals, like external broker-only deals, do NOT use
+  // the per-1000 chain or the split mechanic. Recipients live entirely in
+  // commission.ambassadorSplit.recipients[] (admin-assigned manual amounts),
+  // so every snapshot recipient slot is nulled below and no reportsTo walk runs.
+  var isAmbassadorDeal = leadDoc.dealType === "ambassador";
   var externalToggleOn = isExternalDeal && !!leadDoc.externalSalesAgentEnabled;
 
   var primaryAgent = null;
@@ -2517,8 +2656,10 @@ async function buildSnapshotForLead(leadDoc) {
   // Phase R-13.1 — External deals legitimately may have no Lead.agentId:
   //   - toggle ON  → external sales agent fills the salesAgent slot.
   //   - toggle OFF → broker-only deal, salesAgent is null on the snapshot.
-  // For Internal deals, the primary agent is still required.
-  if (!primaryAgent && !isExternalDeal) {
+  // For Internal deals, the primary agent is still required. Ambassador deals
+  // null the chain regardless, so a missing agent here is not fatal (the
+  // original agent is seeded onto ambassadorSplit.recipients[] instead).
+  if (!primaryAgent && !isExternalDeal && !isAmbassadorDeal) {
     throw new Error("buildSnapshotForLead: lead has no resolvable primary agent");
   }
 
@@ -2529,7 +2670,10 @@ async function buildSnapshotForLead(leadDoc) {
   // is OFF and there's no Lead.agentId, the salesAgent slot is null — a
   // broker-only deal has no internal sales recipient.
   var primaryRecipient;
-  if (isExternalDeal && leadDoc.externalSalesAgentEnabled) {
+  if (isAmbassadorDeal) {
+    // Ambassador — no snapshot sales recipient; recipients live in ambassadorSplit.
+    primaryRecipient = null;
+  } else if (isExternalDeal && leadDoc.externalSalesAgentEnabled) {
     var extAgent = null;
     if (leadDoc.externalSalesAgentId) {
       try { extAgent = await User.findById(leadDoc.externalSalesAgentId).lean(); } catch(e){}
@@ -2549,14 +2693,14 @@ async function buildSnapshotForLead(leadDoc) {
   }
 
   var primaryChain;
-  if (isExternalDeal) {
+  if (isExternalDeal || isAmbassadorDeal) {
     primaryChain = { teamLeader: null, manager: null, director: null };
   } else {
     primaryChain = await walkReportsToChain(primaryAgent._id);
   }
 
-  // External deals never run the split-chain mechanic either.
-  var isSplit = !isExternalDeal && !!leadDoc.splitAgent2Id;
+  // External and ambassador deals never run the split-chain mechanic either.
+  var isSplit = !isExternalDeal && !isAmbassadorDeal && !!leadDoc.splitAgent2Id;
   var splitChainOut = {
     salesAgent2: null, teamLeader2: null, manager2: null, director2: null
   };
@@ -2641,6 +2785,58 @@ async function buildExternalSplitForLead(leadDoc) {
   };
 }
 
+// Phase R-14 — buildAmbassadorSplitForLead. Snapshots Lead.ambassadorConfig
+// (+ commissionRate) onto a Commission's ambassadorSplit block, and seeds the
+// recipients[] list with the lead's ORIGINAL sales agent at amount=0 (admin
+// fills the value via Edit Collection later). Mirrors buildExternalSplitForLead:
+// - { isAmbassador: false, ...zeros..., recipients: [] } when not an ambassador
+//   deal, so schema defaults populate cleanly without a create-time special case.
+// - { isAmbassador: true, commissionRate, developerTax*, recipients:[agentSeed] }
+//   otherwise. The three computed amounts (gross / developerTax / aroNet) stay 0
+//   here; computeAllRecipientShares fills them from Σ cycle.claimAmount.
+// developerTaxRate snapshots null when the toggle is off so a later flip-flop
+// on the lead can't leave a stale rate. The agent's userName/userRole are
+// SNAPSHOTS (same convention as recipientFromUser). If Lead.agentId is missing
+// or unresolvable, recipients[] is left empty (the DoneDeal guard makes this
+// unreachable for a real ambassador close).
+async function buildAmbassadorSplitForLead(leadDoc) {
+  if (!leadDoc || leadDoc.dealType !== "ambassador") {
+    return {
+      isAmbassador: false, commissionRate: 0,
+      developerTaxEnabled: false, developerTaxRate: null,
+      grossCommission: 0, developerTaxAmount: 0, aroNetTotal: 0,
+      recipients: []
+    };
+  }
+  var cfg = leadDoc.ambassadorConfig || {};
+  var taxEnabled = !!cfg.developerTaxEnabled;
+  var recipients = [];
+  if (leadDoc.agentId) {
+    var agentDoc = null;
+    try { agentDoc = await User.findById(leadDoc.agentId._id || leadDoc.agentId).lean(); } catch(e){}
+    if (agentDoc) {
+      recipients.push({
+        userId:     agentDoc._id || null,
+        userName:   agentDoc.name || "(unknown)",
+        userRole:   agentDoc.role || "",
+        amount:     0,
+        amountPaid: 0,
+        payouts:    []
+      });
+    }
+  }
+  return {
+    isAmbassador:        true,
+    commissionRate:      Number(leadDoc.commissionRate) || 0,
+    developerTaxEnabled: taxEnabled,
+    developerTaxRate:    taxEnabled ? (Number(cfg.developerTaxRate) || 0) : null,
+    grossCommission:     0,
+    developerTaxAmount:  0,
+    aroNetTotal:         0,
+    recipients:          recipients
+  };
+}
+
 // Phase R-12 (2026-05-20) — in-process registry of leadIds whose commission
 // creation threw inside ensureCommissionForLead. The catch there must keep
 // returning null (callers depend on it not throwing), so without this a silent
@@ -2672,6 +2868,11 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
     // path; for broker-only deals it stays empty and revival keys off leadId
     // alone (broker-only commissions can't collide on agent identity).
     var isExternalLead = leadDoc.dealType === "external";
+    // Phase R-14 — ambassador deals always have a primary Lead.agentId (the
+    // original sales agent, enforced by the DoneDeal guard). It's seeded onto
+    // ambassadorSplit.recipients[] rather than the snapshot, so it passes the
+    // agent-presence gate below via leadDoc.agentId like an internal deal.
+    var isAmbassadorLead = leadDoc.dealType === "ambassador";
     var extToggleOn = isExternalLead
       && !!leadDoc.externalSalesAgentEnabled
       && !!leadDoc.externalSalesAgentId;
@@ -2706,6 +2907,12 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
     if (existing.length) {
       var lastCancelled = existing.find(function(c){
         if (c.status !== "cancelled") return false;
+        // Phase R-14 — ambassador commissions have a null snapshot.salesAgent
+        // (recipients live in ambassadorSplit), so the agent-id match below
+        // never fires. Revive the most recent cancelled ambassador commission
+        // for this lead — a lead has at most one logical deal, so the leadId +
+        // isAmbassador flag uniquely identify it.
+        if (isAmbassadorLead) return !!(c.ambassadorSplit && c.ambassadorSplit.isAmbassador);
         var sa = c.snapshot && c.snapshot.salesAgent;
         var saId = sa && sa.userId ? String(sa.userId) : "";
         if (externalBrokerOnly) return !saId; // both sides agent-less
@@ -2775,6 +2982,22 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
             }
             revived.externalSplit = refreshedSplit;
             revived.markModified("externalSplit");
+            // Phase R-14 — refresh ambassadorSplit from the lead on revive, same
+            // rationale as externalSplit: the dealType lock was lifted while
+            // cancelled, so the rate/tax config may have changed. The recipients[]
+            // list (admin-assigned amounts) AND each recipient's payouts[] are
+            // PRESERVED — parallel to brokerPayouts above. buildAmbassadorSplitForLead
+            // would otherwise re-seed recipients to just the original agent at 0,
+            // wiping any admin assignments, so we splice the preserved list back
+            // in. computeAllRecipientShares below recomputes gross/tax/net.
+            var refreshedAmb = await buildAmbassadorSplitForLead(leadDoc);
+            if (refreshedAmb.isAmbassador) {
+              var preservedRecips = (revived.ambassadorSplit && Array.isArray(revived.ambassadorSplit.recipients))
+                ? revived.ambassadorSplit.recipients : [];
+              if (preservedRecips.length) refreshedAmb.recipients = preservedRecips;
+            }
+            revived.ambassadorSplit = refreshedAmb;
+            revived.markModified("ambassadorSplit");
             await computeAllRecipientShares(revived);
             revived.markModified("snapshot");
             revived.markModified("ratesSnapshot");
@@ -2825,6 +3048,12 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
         brokerPayouts:       []
       };
     }
+    // Phase R-14 — ambassador split snapshot at create time (mirrors
+    // externalSplitInit). isAmbassador:false for non-ambassador deals so schema
+    // defaults populate cleanly. The helper also seeds recipients[] with the
+    // original sales agent at amount=0. Computed gross/tax/net stay 0 here and
+    // get filled by computeAllRecipientShares() below.
+    var ambassadorSplitInit = await buildAmbassadorSplitForLead(leadDoc);
     // Phase R-13 — cycle 1 seeded from Lead.commissionRate / commissionAmount.
     // claimUnitValue = parsed Lead.budget (= dealTotal); commissionRate stored
     // as DECIMAL (e.g. 0.03 for 3%) to match the cycle-stage modal convention;
@@ -2856,7 +3085,8 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
       cycles: [cycle1],
       payouts: [],
       incentive: { recipients: [] },
-      externalSplit: externalSplitInit
+      externalSplit: externalSplitInit,
+      ambassadorSplit: ambassadorSplitInit
     });
     try {
       await Activity.create({
@@ -8958,6 +9188,7 @@ app.post("/api/leads", auth, async function(req, res) {
       delete req.body.dealType;
       delete req.body.externalBrokerId;
       delete req.body.externalDealConfig;
+      delete req.body.ambassadorConfig;
       delete req.body.commissionRate;
       delete req.body.commissionAmount;
       delete req.body.externalSalesAgentEnabled;
@@ -9009,9 +9240,13 @@ app.post("/api/leads", auth, async function(req, res) {
         // it requires externalSalesAgentId + manualAmount > 0 when enabled.
       } else {
         if (!normalizedAgent) {
+          // Phase R-14 — type-aware wording. Ambassador deals also require a
+          // primary agent (it seeds ambassadorSplit.recipients[] as the
+          // original sales agent at amount=0).
+          var dtLabel = String(req.body.dealType) === "ambassador" ? "Ambassador" : "Internal";
           return res.status(400).json({
             error: "primary_sales_recipient_required",
-            message: "An Internal DoneDeal must have a primary Agent so the commission can be created."
+            message: "An " + dtLabel + " DoneDeal must have a primary Agent (the original sales agent) so the commission can be created."
           });
         }
       }
@@ -9059,6 +9294,7 @@ app.post("/api/leads", auth, async function(req, res) {
       dealType:           req.body.dealType,
       externalBrokerId:   req.body.externalBrokerId,
       externalDealConfig: req.body.externalDealConfig,
+      ambassadorConfig:   req.body.ambassadorConfig,
       commissionRate:     (typeof req.body.commissionRate === "number") ? req.body.commissionRate : null,
       commissionAmount:   (typeof req.body.commissionAmount === "number") ? req.body.commissionAmount : null,
       externalSalesAgentEnabled:      !!req.body.externalSalesAgentEnabled,
@@ -10026,12 +10262,14 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // either a bug or a bypass. Strip silently and continue with the rest
     // of the PUT.
     if (req.body.dealType !== undefined || req.body.externalBrokerId !== undefined || req.body.externalDealConfig !== undefined
+        || req.body.ambassadorConfig !== undefined
         || req.body.externalSalesAgentEnabled !== undefined || req.body.externalSalesAgentId !== undefined
         || req.body.externalSalesAgentManualAmount !== undefined || req.body.externalSalesAgentPaidBy !== undefined) {
       if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
         delete req.body.dealType;
         delete req.body.externalBrokerId;
         delete req.body.externalDealConfig;
+        delete req.body.ambassadorConfig;
         delete req.body.externalSalesAgentEnabled;
         delete req.body.externalSalesAgentId;
         delete req.body.externalSalesAgentName;
@@ -10044,7 +10282,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         // tracked fields, so do an early targeted fetch here. budget +
         // commissionRate are also needed for the paidBy="broker" cap check in
         // validateAndNormalizeExternalDeal.
-        var dtOldLead = await Lead.findById(req.params.id).select("dealType externalBrokerId externalDealConfig externalSalesAgentEnabled externalSalesAgentId externalSalesAgentManualAmount externalSalesAgentPaidBy budget commissionRate").lean();
+        var dtOldLead = await Lead.findById(req.params.id).select("dealType externalBrokerId externalDealConfig ambassadorConfig externalSalesAgentEnabled externalSalesAgentId externalSalesAgentManualAmount externalSalesAgentPaidBy budget commissionRate").lean();
         if (!dtOldLead) return res.status(404).json({ error: "Lead not found" });
         // Phase R-12 Part 5 — commission lock. Once an active commission
         // exists for this lead, the external-deal fields are frozen. Allowing
@@ -10067,9 +10305,22 @@ app.put("/api/leads/:id", auth, async function(req, res) {
           return Number(n.commissionTaxPct || 0) !== Number(o.commissionTaxPct || 0)
               || Number(n.brokerSharePct   || 0) !== Number(o.brokerSharePct   || 0);
         })();
+        // Phase R-14 — ambassadorConfig deep-compare (same false-positive guard
+        // as cfgChanged: the edit-deal form re-sends the existing config on
+        // every save, so only a real rate/tax change counts as a lock-worthy
+        // flip). developerTaxRate null↔number is normalized via Number(...||0).
+        var ambCfgChanged = (function(){
+          if (req.body.ambassadorConfig === undefined) return false;
+          var n = req.body.ambassadorConfig || {};
+          var o = dtOldLead.ambassadorConfig || {};
+          return Number(n.commissionRate    || 0) !== Number(o.commissionRate    || 0)
+              || (!!n.developerTaxEnabled)         !== (!!o.developerTaxEnabled)
+              || Number(n.developerTaxRate   || 0) !== Number(o.developerTaxRate   || 0);
+        })();
         var hasNoiseInBody = (req.body.dealType         !== undefined && String(req.body.dealType)         !== String(dtOldLead.dealType || "internal"))
                           || (req.body.externalBrokerId !== undefined && String(req.body.externalBrokerId || "") !== String(dtOldLead.externalBrokerId || ""))
-                          || cfgChanged;
+                          || cfgChanged
+                          || ambCfgChanged;
         if (hasNoiseInBody) {
           var lockingComm = await Commission.findOne({
             leadId: req.params.id,
@@ -10137,9 +10388,12 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         }
       } else {
         if (!effAgent) {
+          // Phase R-14 — type-aware wording (ambassador deals require the
+          // original sales agent for the recipients[] seed, same as internal).
+          var dtLabelPut = String(effDealType) === "ambassador" ? "Ambassador" : "Internal";
           return res.status(400).json({
             error: "primary_sales_recipient_required",
-            message: "An Internal DoneDeal must have a primary Agent so the commission can be created."
+            message: "An " + dtLabelPut + " DoneDeal must have a primary Agent (the original sales agent) so the commission can be created."
           });
         }
       }
@@ -20835,10 +21089,13 @@ async function computePayoutsForMonth(year, month) {
     status: { $ne: "cancelled" },
     $or: [
       { payouts: { $elemMatch: { date: { $regex: "^" + monthKey } } } },
-      { "externalSplit.brokerPayouts": { $elemMatch: { date: { $regex: "^" + monthKey } } } }
+      { "externalSplit.brokerPayouts": { $elemMatch: { date: { $regex: "^" + monthKey } } } },
+      // Phase R-14 — ambassador recipient payouts. These aggregate into the
+      // regular agents section (byAgent), NOT a separate brokers section.
+      { "ambassadorSplit.recipients.payouts": { $elemMatch: { date: { $regex: "^" + monthKey } } } }
     ]
   })
-    .select("leadId status snapshot cycles payouts externalSplit")
+    .select("leadId status snapshot cycles payouts externalSplit ambassadorSplit")
     .lean();
 
   var byAgent  = Object.create(null);
@@ -20977,6 +21234,51 @@ async function computePayoutsForMonth(year, month) {
           dealDate:      snap.dealDate     || "",
           dealTotal:     Number(snap.dealTotal || 0),
           paidThisMonth: brokerInMonth,
+          cycleRef:      resolveCycleRef(doc.cycles)
+        });
+      }
+    }
+
+    // Phase R-14 — ambassador recipient payouts. Per the spec, ambassador
+    // recipients appear as REGULAR AGENTS (byAgent), not in a separate brokers
+    // section. Each recipient is unique per commission, so we sum that
+    // recipient's in-month payouts into one deal row (no per-deal sub-key
+    // needed, unlike internal payouts which can have mixed userId/name
+    // provenance). Buckets key on userId (or name: fallback) and are folded +
+    // role-canonicalised by the same pass that handles internal recipients.
+    var ambS = doc.ambassadorSplit;
+    if (ambS && ambS.isAmbassador && Array.isArray(ambS.recipients)) {
+      for (var ari = 0; ari < ambS.recipients.length; ari++) {
+        var rec = ambS.recipients[ari];
+        if (!rec) continue;
+        var recPaidInMonth = 0;
+        var recPayouts = Array.isArray(rec.payouts) ? rec.payouts : [];
+        for (var rpi = 0; rpi < recPayouts.length; rpi++) {
+          var rp = recPayouts[rpi];
+          if (!rp || typeof rp.date !== "string" || rp.date.slice(0, 7) !== monthKey) continue;
+          var rpa = Number(rp.amount || 0);
+          if (rpa > 0) recPaidInMonth += rpa;
+        }
+        if (!(recPaidInMonth > 0)) continue;
+        var ambBucketKey = rec.userId ? String(rec.userId) : ("name:" + String(rec.userName || ""));
+        var ambBucket = ensureAgent({
+          userId:   rec.userId,
+          userName: rec.userName,
+          role:     rec.userRole || "sales"
+        }, ambBucketKey);
+        if (!ambBucket) continue;
+        ambBucket.totalPaid += recPaidInMonth;
+        ambBucket.deals.push({
+          commissionId:  String(doc._id),
+          leadId:        String(doc.leadId || ""),
+          customerName:  snap.customerName || "",
+          projectName:   snap.projectName  || "",
+          dealDate:      snap.dealDate     || "",
+          dealTotal:     Number(snap.dealTotal || 0),
+          isSplit:       false,
+          splitLabel:    "Full deal",
+          role:          rec.userRole || "sales",
+          paidThisMonth: recPaidInMonth,
           cycleRef:      resolveCycleRef(doc.cycles)
         });
       }
@@ -21332,6 +21634,19 @@ app.get("/api/commissions/due-payouts", auth, salesAdminOnly, async function(req
   }
 });
 
+// Phase R-14 — ambassador developer-tax fraction for a commission doc. Returns
+// the decimal rate (e.g. 0.10 for 10%) when the deal is an ambassador deal with
+// developer tax enabled, else 0. Used by annual-summary / annual-pnl /
+// profit-by-deal to compute per-cycle ambassador net = claimAmount × (1 − frac).
+// Ambassador deals pay NO VAT and NO withholding — the developer tax is the
+// only deduction, so net revenue = gross − developerTax.
+function ambDevTaxFraction(doc) {
+  var a = doc && doc.ambassadorSplit;
+  if (!a || !a.isAmbassador || !a.developerTaxEnabled) return 0;
+  var r = Number(a.developerTaxRate || 0);
+  return (isFinite(r) && r > 0) ? (r / 100) : 0;
+}
+
 // ===== Phase R-5 annual summary + VAT payments =====
 // Annual summary aggregates cycles with claimAmount > 0 (i.e. created under
 // R-5+). Old cycles created before R-5 have claimAmount = 0 and are excluded
@@ -21370,7 +21685,7 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
         { cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "received.date":         { $regex: "^" + year } } } },
         { cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "invoice_submitted.date": { $regex: "^" + year } } } }
       ]
-    }).select("snapshot.customerName snapshot.projectName cycles").lean();
+    }).select("snapshot.customerName snapshot.projectName cycles ambassadorSplit").lean();
 
     var grossClaim = 0, netOfVatTotal = 0, vatTotal = 0, withholdingTotal = 0, netRevenueTotal = 0;
     var vatByMonthMap = Object.create(null); // "YYYY-MM" -> { vatAmount, grossClaim, leads: [{name, claimAmount, vatAmount}] }
@@ -21380,6 +21695,10 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
       var doc = docs[i];
       var snap = doc.snapshot || {};
       if (!Array.isArray(doc.cycles)) continue;
+      // Phase R-14 — ambassador deals pay NO VAT and NO withholding; the only
+      // deduction is the developer tax. Branch the per-cycle accumulation.
+      var isAmb = !!(doc.ambassadorSplit && doc.ambassadorSplit.isAmbassador);
+      var ambFrac = ambDevTaxFraction(doc);
       for (var j = 0; j < doc.cycles.length; j++) {
         var cy = doc.cycles[j];
         var ca = Number(cy.claimAmount || 0);
@@ -21395,34 +21714,44 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
         // table. A cycle counts here only once the money has actually arrived.
         var rd = cy.received && cy.received.date;
         if (typeof rd === "string" && rd.slice(0, 4) === year) {
-          grossClaim       += ca;
-          netOfVatTotal    += nv;
-          withholdingTotal += wh;
-          // Net Revenue = Gross − VAT − Withholding. Same formula for internal
-          // AND external deals — no broker netting (the broker share is a cost
-          // on the P&L "Team & Broker Commissions" line, not a Revenue
-          // adjustment). Computed from the formula, NOT from cy.receivedAmount
-          // (legacy raw entries were unreliable; tax filings need the
-          // theoretical net that reconciles to Excel).
-          netRevenueTotal  += (ca - vt - wh);
+          if (isAmb) {
+            // Ambassador: Net of VAT == gross (no VAT to remove); withholding 0;
+            // Net Revenue = gross − developer tax. NOT added to withholdingByDeal.
+            var devTaxCyc = ca * ambFrac;
+            grossClaim      += ca;
+            netOfVatTotal   += ca;
+            netRevenueTotal += (ca - devTaxCyc);
+          } else {
+            grossClaim       += ca;
+            netOfVatTotal    += nv;
+            withholdingTotal += wh;
+            // Net Revenue = Gross − VAT − Withholding. Same formula for internal
+            // AND external deals — no broker netting (the broker share is a cost
+            // on the P&L "Team & Broker Commissions" line, not a Revenue
+            // adjustment). Computed from the formula, NOT from cy.receivedAmount
+            // (legacy raw entries were unreliable; tax filings need the
+            // theoretical net that reconciles to Excel).
+            netRevenueTotal  += (ca - vt - wh);
 
-          withholdingByDeal.push({
-            cycleId:           String(cy._id),
-            commissionId:      String(doc._id),
-            customerName:      snap.customerName || "",
-            projectName:       snap.projectName || "",
-            cycleNumber:       cy.cycleNumber,
-            claimDate:         rd,   // received.date — the cash-in date
-            claimAmount:       ca,
-            withholdingAmount: wh
-          });
+            withholdingByDeal.push({
+              cycleId:           String(cy._id),
+              commissionId:      String(doc._id),
+              customerName:      snap.customerName || "",
+              projectName:       snap.projectName || "",
+              cycleNumber:       cy.cycleNumber,
+              claimDate:         rd,   // received.date — the cash-in date
+              claimAmount:       ca,
+              withholdingAmount: wh
+            });
+          }
         }
 
         // Phase R-14 — VAT trigger: invoice_submitted.date. VAT is owed to the
         // tax authority when the formal invoice is issued, regardless of
         // collection. Drives the VAT 14% card and the Monthly VAT table.
+        // Ambassador deals never issue a government invoice → no VAT, skip.
         var id_ = cy.invoice_submitted && cy.invoice_submitted.date;
-        if (typeof id_ === "string" && id_.slice(0, 4) === year) {
+        if (!isAmb && typeof id_ === "string" && id_.slice(0, 4) === year) {
           vatTotal += vt;
           var claimMonth = id_.slice(0, 7);
           if (!vatByMonthMap[claimMonth]) vatByMonthMap[claimMonth] = { vatAmount: 0, grossClaim: 0, leads: [] };
@@ -21580,9 +21909,12 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
       $or: [
         { cycles:                        { $elemMatch: { claimAmount: { $gt: 0 }, "received.date": yRegex } } },
         { payouts:                       { $elemMatch: { date: yRegex } } },
-        { "externalSplit.brokerPayouts": { $elemMatch: { date: yRegex } } }
+        { "externalSplit.brokerPayouts": { $elemMatch: { date: yRegex } } },
+        // Phase R-14 — ambassador deals whose only in-year activity is a
+        // recipient payout still need a row so the totals reconcile to the P&L.
+        { "ambassadorSplit.recipients.payouts": { $elemMatch: { date: yRegex } } }
       ]
-    }).select("snapshot.customerName externalSplit cycles payouts").lean();
+    }).select("snapshot.customerName externalSplit ambassadorSplit cycles payouts").lean();
 
     var deals = [];
     var tRev = 0, tBroker = 0, tTeam = 0;
@@ -21591,10 +21923,14 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
       var d = docs[i];
       var snap = d.snapshot || {};
       var es = d.externalSplit || {};
+      // Phase R-14 — ambassador branch. Revenue = gross − developer tax (no
+      // VAT / withholding); broker = 0; team = ambassador recipient payouts.
+      var isAmbD = !!(d.ambassadorSplit && d.ambassadorSplit.isAmbassador);
+      var ambFracD = ambDevTaxFraction(d);
 
       // Revenue — same per-cycle math as /api/annual-pnl: cycles with
-      // claimAmount > 0 whose received.date falls in the year. Net of VAT
-      // and 5% withholding; no broker netting.
+      // claimAmount > 0 whose received.date falls in the year. Internal/external:
+      // net of VAT and 5% withholding. Ambassador: gross − developer tax.
       var revenue = 0;
       if (Array.isArray(d.cycles)) {
         for (var j = 0; j < d.cycles.length; j++) {
@@ -21603,16 +21939,32 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
           if (!(ca > 0)) continue;
           var rd = cy.received && cy.received.date;
           if (typeof rd !== "string" || rd.slice(0, 4) !== year) continue;
-          var nv = ca / 1.14;
-          var vt = ca - nv;
-          var wh = nv * 0.05;
-          revenue += (ca - vt - wh);
+          if (isAmbD) {
+            revenue += (ca - ca * ambFracD);
+          } else {
+            var nv = ca / 1.14;
+            var vt = ca - nv;
+            var wh = nv * 0.05;
+            revenue += (ca - vt - wh);
+          }
         }
       }
 
-      // Internal team payouts dated in the year (payouts[].amount).
+      // Team payouts dated in the year. Internal/external: payouts[].amount.
+      // Ambassador: ambassadorSplit.recipients[].payouts[].amount.
       var teamPayouts = 0;
-      if (Array.isArray(d.payouts)) {
+      if (isAmbD) {
+        var ambRecipsD = (d.ambassadorSplit && Array.isArray(d.ambassadorSplit.recipients)) ? d.ambassadorSplit.recipients : [];
+        for (var arD = 0; arD < ambRecipsD.length; arD++) {
+          var aPaysD = Array.isArray(ambRecipsD[arD].payouts) ? ambRecipsD[arD].payouts : [];
+          for (var apD = 0; apD < aPaysD.length; apD++) {
+            var apoD = aPaysD[apD];
+            if (!apoD || typeof apoD.date !== "string" || apoD.date.slice(0, 4) !== year) continue;
+            var aamtD = Number(apoD.amount || 0);
+            if (aamtD > 0) teamPayouts += aamtD;
+          }
+        }
+      } else if (Array.isArray(d.payouts)) {
         for (var pj = 0; pj < d.payouts.length; pj++) {
           var po = d.payouts[pj];
           if (!po || typeof po.date !== "string" || po.date.slice(0, 4) !== year) continue;
@@ -21622,6 +21974,7 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
       }
 
       // Broker payouts dated in the year (externalSplit.brokerPayouts[].amount).
+      // Ambassador deals never have a broker → stays 0.
       var brokerPayouts = 0;
       var bpArr = (es && Array.isArray(es.brokerPayouts)) ? es.brokerPayouts : [];
       for (var bj = 0; bj < bpArr.length; bj++) {
@@ -21636,7 +21989,7 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
       deals.push({
         commissionId:  String(d._id),
         customerName:  snap.customerName || "(unknown)",
-        type:          es.isExternal ? "external" : "internal",
+        type:          isAmbD ? "ambassador" : (es.isExternal ? "external" : "internal"),
         revenue:       round2(revenue),
         brokerPayouts: round2(brokerPayouts),
         teamPayouts:   round2(teamPayouts),
@@ -21935,25 +22288,35 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
     var commDocs = await Commission.find({
       status: { $ne: "cancelled" },
       cycles: { $elemMatch: { claimAmount: { $gt: 0 }, "received.date": { $regex: "^" + year } } }
-    }).select("cycles").lean();
+    }).select("cycles ambassadorSplit").lean();
     var grossClaim = 0, netOfVatTotal = 0, vatTotal = 0, withholdingTotal = 0, netRevenueTotal = 0;
     for (var i = 0; i < commDocs.length; i++) {
       var doc = commDocs[i];
       if (!Array.isArray(doc.cycles)) continue;
+      // Phase R-14 — ambassador deals: no VAT / no withholding; net = gross −
+      // developer tax. Matches the annual-summary cards so the two never diverge.
+      var isAmbP = !!(doc.ambassadorSplit && doc.ambassadorSplit.isAmbassador);
+      var ambFracP = ambDevTaxFraction(doc);
       for (var j = 0; j < doc.cycles.length; j++) {
         var cy = doc.cycles[j];
         var ca = Number(cy.claimAmount || 0);
         if (!(ca > 0)) continue;
         var cd = cy.received && cy.received.date;
         if (typeof cd !== "string" || cd.slice(0, 4) !== year) continue;
-        var nv = ca / 1.14;
-        var vt = ca - nv;
-        var wh = nv * 0.05;
-        grossClaim       += ca;
-        netOfVatTotal    += nv;
-        vatTotal         += vt;
-        withholdingTotal += wh;
-        netRevenueTotal  += ca - vt - wh;
+        if (isAmbP) {
+          grossClaim      += ca;
+          netOfVatTotal   += ca;
+          netRevenueTotal += (ca - ca * ambFracP);
+        } else {
+          var nv = ca / 1.14;
+          var vt = ca - nv;
+          var wh = nv * 0.05;
+          grossClaim       += ca;
+          netOfVatTotal    += nv;
+          vatTotal         += vt;
+          withholdingTotal += wh;
+          netRevenueTotal  += ca - vt - wh;
+        }
       }
     }
 
@@ -21984,9 +22347,11 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
       status: { $ne: "cancelled" },
       $or: [
         { payouts:                       { $elemMatch: { date: { $regex: "^" + year } } } },
-        { "externalSplit.brokerPayouts": { $elemMatch: { date: { $regex: "^" + year } } } }
+        { "externalSplit.brokerPayouts": { $elemMatch: { date: { $regex: "^" + year } } } },
+        // Phase R-14 — ambassador recipient payouts are an internal team cost.
+        { "ambassadorSplit.recipients.payouts": { $elemMatch: { date: { $regex: "^" + year } } } }
       ]
-    }).select("payouts externalSplit.brokerPayouts").lean();
+    }).select("payouts externalSplit.brokerPayouts ambassadorSplit.recipients").lean();
     var teamTotal = 0;
     var teamByMonthMap = Object.create(null);
     for (var pi = 0; pi < payDocs.length; pi++) {
@@ -22015,6 +22380,22 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
         teamTotal += bamt;
         var bmk = bp.date.slice(0, 7);
         teamByMonthMap[bmk] = (teamByMonthMap[bmk] || 0) + bamt;
+      }
+      // Phase R-14 — ambassador recipient payouts. Folded into the same
+      // Team & Broker Commissions line as internal/broker payouts.
+      var ambRecips = pdoc.ambassadorSplit && Array.isArray(pdoc.ambassadorSplit.recipients)
+        ? pdoc.ambassadorSplit.recipients : [];
+      for (var ar = 0; ar < ambRecips.length; ar++) {
+        var aPays = Array.isArray(ambRecips[ar].payouts) ? ambRecips[ar].payouts : [];
+        for (var ap = 0; ap < aPays.length; ap++) {
+          var apo = aPays[ap];
+          if (!apo || typeof apo.date !== "string" || apo.date.slice(0,4) !== year) continue;
+          var aamt = Number(apo.amount || 0);
+          if (!isFinite(aamt) || aamt <= 0) continue;
+          teamTotal += aamt;
+          var amk = apo.date.slice(0, 7);
+          teamByMonthMap[amk] = (teamByMonthMap[amk] || 0) + aamt;
+        }
       }
     }
     var teamByMonth = Object.keys(teamByMonthMap).sort().map(function(m){
@@ -23514,6 +23895,242 @@ app.patch("/api/commissions/:id/recipients/:slot/zero", auth, salesAdminOnly, fu
 });
 app.patch("/api/commissions/:id/recipients/:slot/remove", auth, salesAdminOnly, function(req, res) {
   return applyChainOverride(req, res, "manual_remove");
+});
+
+// ===== Phase R-14 — Ambassador deal admin endpoints =====
+// All admin/sales_admin only. Each guards isAmbassador + non-cancelled, mutates
+// commission.ambassadorSplit in place, and returns the fresh commission so the
+// Edit Collection modal can refresh live (immediate-apply, not batched).
+//   PUT    /api/commissions/:id/ambassador-config                       — edit developer-tax (rate read-only)
+//   POST   /api/commissions/:id/ambassador-recipients                   — add a manual recipient
+//   PUT    /api/commissions/:id/ambassador-recipients/:recipientId      — edit a recipient's amount
+//   DELETE /api/commissions/:id/ambassador-recipients/:recipientId      — remove a recipient (blocked if paid)
+//   POST   /api/commissions/:id/ambassador-payouts                      — add a payout to a recipient
+//   PUT    /api/commissions/:id/ambassador-payouts/:payoutId            — edit a payout
+//   DELETE /api/commissions/:id/ambassador-payouts/:payoutId            — delete a payout
+// recipients[].amount is the admin-assigned owed EGP; amountPaid is ALWAYS
+// recomputed from Σ payouts.amount (source of truth, never incremented).
+
+// Shared loader — fetch + guard an ambassador commission for mutation.
+async function loadAmbassadorCommission(req, res) {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) { res.status(400).json({ error: "Invalid id" }); return null; }
+  var c = await Commission.findById(req.params.id);
+  if (!c) { res.status(404).json({ error: "Commission not found" }); return null; }
+  if (c.status === "cancelled") { res.status(400).json({ error: "cannot edit a cancelled commission" }); return null; }
+  if (!c.ambassadorSplit || !c.ambassadorSplit.isAmbassador) {
+    res.status(400).json({ error: "not_ambassador", message: "this commission is not flagged as an ambassador deal" });
+    return null;
+  }
+  return c;
+}
+// Recompute one recipient's amountPaid from its payouts (source of truth).
+function recomputeAmbRecipientPaid(recipient) {
+  if (!recipient) return;
+  var paid = (recipient.payouts || []).reduce(function(s, po){ return s + Number(po.amount || 0); }, 0);
+  recipient.amountPaid = Math.round(paid * 100) / 100;
+}
+
+app.put("/api/commissions/:id/ambassador-config", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var c = await loadAmbassadorCommission(req, res); if (!c) return;
+    var body = req.body || {};
+    var enabled = !!body.developerTaxEnabled;
+    var rate = null;
+    if (enabled) {
+      rate = Number(body.developerTaxRate);
+      if (!isFinite(rate) || rate <= 0 || rate > 100) {
+        return res.status(400).json({ error: "developerTaxRate must be > 0 and ≤ 100 when developer tax is enabled" });
+      }
+    }
+    c.ambassadorSplit.developerTaxEnabled = enabled;
+    c.ambassadorSplit.developerTaxRate    = enabled ? rate : null;
+    c.markModified("ambassadorSplit");
+    // Recompute gross/tax/net from cycles against the new tax config.
+    try { await computeAllRecipientShares(c); } catch(rcErr) { console.error("[ambassador-config recompute]", rcErr && rcErr.message); }
+    c.markModified("ambassadorSplit");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_ambassador_config_edit",
+      "[Commission] ambassador developer tax " + (enabled ? rate + "%" : "disabled") +
+      " · tax " + Math.round(Number(c.ambassadorSplit.developerTaxAmount || 0)).toLocaleString() +
+      " EGP · ARO net " + Math.round(Number(c.ambassadorSplit.aroNetTotal || 0)).toLocaleString() + " EGP");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PUT /api/commissions/:id/ambassador-config]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "ambassador_config_failed" });
+  }
+});
+
+app.post("/api/commissions/:id/ambassador-recipients", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var c = await loadAmbassadorCommission(req, res); if (!c) return;
+    var body = req.body || {};
+    var amount = Number(body.amount);
+    if (!isFinite(amount) || amount < 0) return res.status(400).json({ error: "amount must be ≥ 0" });
+    if (!body.userId || !mongoose.Types.ObjectId.isValid(body.userId)) {
+      return res.status(400).json({ error: "userId required" });
+    }
+    var uDoc = await User.findById(body.userId).select("name role active").lean();
+    if (!uDoc) return res.status(400).json({ error: "User not found", code: "user_not_found" });
+    if (uDoc.active === false) return res.status(400).json({ error: "User is inactive", code: "user_inactive" });
+    if (!Array.isArray(c.ambassadorSplit.recipients)) c.ambassadorSplit.recipients = [];
+    // Dedupe by userId — the original sales agent is pre-seeded, and a manual
+    // duplicate would split one person's owed across two confusing rows.
+    var dup = c.ambassadorSplit.recipients.find(function(r){ return r.userId && String(r.userId) === String(body.userId); });
+    if (dup) return res.status(400).json({ error: "recipient_exists", message: (uDoc.name || "This user") + " is already a recipient on this deal" });
+    c.ambassadorSplit.recipients.push({
+      userId:     new mongoose.Types.ObjectId(body.userId),
+      userName:   uDoc.name || "(unknown)",
+      userRole:   uDoc.role || "",
+      amount:     Math.round(amount * 100) / 100,
+      amountPaid: 0,
+      payouts:    []
+    });
+    c.markModified("ambassadorSplit");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_ambassador_recipient_add",
+      "[Commission] ambassador recipient '" + (uDoc.name || "") + "' (" + (uDoc.role || "") + ") added with " + Math.round(amount).toLocaleString() + " EGP");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[POST /api/commissions/:id/ambassador-recipients]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "ambassador_recipient_add_failed" });
+  }
+});
+
+app.put("/api/commissions/:id/ambassador-recipients/:recipientId", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var c = await loadAmbassadorCommission(req, res); if (!c) return;
+    var amount = Number((req.body || {}).amount);
+    if (!isFinite(amount) || amount < 0) return res.status(400).json({ error: "amount must be ≥ 0" });
+    var rec = (c.ambassadorSplit.recipients && c.ambassadorSplit.recipients.id) ? c.ambassadorSplit.recipients.id(req.params.recipientId) : null;
+    if (!rec) return res.status(404).json({ error: "Recipient not found" });
+    rec.amount = Math.round(amount * 100) / 100;
+    c.markModified("ambassadorSplit");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_ambassador_recipient_edit",
+      "[Commission] ambassador recipient '" + (rec.userName || "") + "' amount set to " + Math.round(amount).toLocaleString() + " EGP");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PUT /api/commissions/:id/ambassador-recipients/:recipientId]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "ambassador_recipient_edit_failed" });
+  }
+});
+
+app.delete("/api/commissions/:id/ambassador-recipients/:recipientId", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var c = await loadAmbassadorCommission(req, res); if (!c) return;
+    var rec = (c.ambassadorSplit.recipients && c.ambassadorSplit.recipients.id) ? c.ambassadorSplit.recipients.id(req.params.recipientId) : null;
+    if (!rec) return res.status(404).json({ error: "Recipient not found" });
+    // Block deletion while payouts exist — removing would lose payment history.
+    if ((rec.payouts || []).length > 0 || Number(rec.amountPaid || 0) > 0) {
+      return res.status(400).json({ error: "recipient_has_payouts", message: "Delete this recipient's payouts before removing them." });
+    }
+    var nm = rec.userName || "";
+    rec.deleteOne();
+    c.markModified("ambassadorSplit");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_ambassador_recipient_remove",
+      "[Commission] ambassador recipient '" + nm + "' removed");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[DELETE /api/commissions/:id/ambassador-recipients/:recipientId]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "ambassador_recipient_remove_failed" });
+  }
+});
+
+// Locate a payout by _id across all recipients. Returns { rec, payout } or null.
+function findAmbassadorPayout(c, payoutId) {
+  var recips = (c.ambassadorSplit && c.ambassadorSplit.recipients) || [];
+  for (var i = 0; i < recips.length; i++) {
+    var po = (recips[i].payouts && recips[i].payouts.id) ? recips[i].payouts.id(payoutId) : null;
+    if (po) return { rec: recips[i], payout: po };
+  }
+  return null;
+}
+
+app.post("/api/commissions/:id/ambassador-payouts", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var c = await loadAmbassadorCommission(req, res); if (!c) return;
+    var body = req.body || {};
+    var amount = Number(body.amount);
+    var date   = String(body.date || new Date().toISOString().slice(0,10));
+    var note   = String(body.note || "");
+    if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: "amount must be > 0" });
+    if (!body.recipientId) return res.status(400).json({ error: "recipientId required" });
+    var rec = (c.ambassadorSplit.recipients && c.ambassadorSplit.recipients.id) ? c.ambassadorSplit.recipients.id(body.recipientId) : null;
+    if (!rec) return res.status(404).json({ error: "Recipient not found" });
+    // Cap against the recipient's owed amount (mirrors the broker-payout cap).
+    var paidSoFar = (rec.payouts || []).reduce(function(s, po){ return s + Number(po.amount || 0); }, 0);
+    var owed = Number(rec.amount || 0);
+    if (paidSoFar + amount > owed + 0.5) {
+      return res.status(400).json({
+        error: "exceeds_recipient_owed",
+        message: "exceeds owed: " + Math.round(owed).toLocaleString() + " EGP owed, " +
+                 Math.round(paidSoFar).toLocaleString() + " EGP already paid, " +
+                 Math.round(amount).toLocaleString() + " EGP requested"
+      });
+    }
+    if (!Array.isArray(rec.payouts)) rec.payouts = [];
+    rec.payouts.push({ date: date, amount: Math.round(amount * 100) / 100, note: note });
+    recomputeAmbRecipientPaid(rec);
+    c.markModified("ambassadorSplit");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_ambassador_payout_create",
+      "[Commission] ambassador payout " + Math.round(amount).toLocaleString() + " EGP to " + (rec.userName || "recipient") + " on " + date);
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[POST /api/commissions/:id/ambassador-payouts]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "ambassador_payout_create_failed" });
+  }
+});
+
+app.put("/api/commissions/:id/ambassador-payouts/:payoutId", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var c = await loadAmbassadorCommission(req, res); if (!c) return;
+    var hit = findAmbassadorPayout(c, req.params.payoutId);
+    if (!hit) return res.status(404).json({ error: "Payout not found" });
+    var body = req.body || {};
+    var amount = Number(body.amount);
+    if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: "amount must be > 0" });
+    // Cap against owed, excluding this payout's current amount from the running sum.
+    var others = (hit.rec.payouts || []).reduce(function(s, po){
+      return s + (String(po._id) === String(req.params.payoutId) ? 0 : Number(po.amount || 0));
+    }, 0);
+    var owed = Number(hit.rec.amount || 0);
+    if (others + amount > owed + 0.5) {
+      return res.status(400).json({ error: "exceeds_recipient_owed", message: "edited amount would exceed the recipient's owed total" });
+    }
+    hit.payout.amount = Math.round(amount * 100) / 100;
+    if (body.date !== undefined) hit.payout.date = String(body.date || "");
+    if (body.note !== undefined) hit.payout.note = String(body.note || "");
+    recomputeAmbRecipientPaid(hit.rec);
+    c.markModified("ambassadorSplit");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_ambassador_payout_edit",
+      "[Commission] ambassador payout to " + (hit.rec.userName || "recipient") + " set to " + Math.round(amount).toLocaleString() + " EGP");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PUT /api/commissions/:id/ambassador-payouts/:payoutId]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "ambassador_payout_edit_failed" });
+  }
+});
+
+app.delete("/api/commissions/:id/ambassador-payouts/:payoutId", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var c = await loadAmbassadorCommission(req, res); if (!c) return;
+    var hit = findAmbassadorPayout(c, req.params.payoutId);
+    if (!hit) return res.status(404).json({ error: "Payout not found" });
+    var snap = { amount: Number(hit.payout.amount || 0), date: hit.payout.date || "", name: hit.rec.userName || "" };
+    hit.payout.deleteOne();
+    recomputeAmbRecipientPaid(hit.rec);
+    c.markModified("ambassadorSplit");
+    await c.save();
+    await logCommissionActivity(req.user, c.leadId, "commission_ambassador_payout_delete",
+      "[Commission] ambassador payout " + Math.round(snap.amount).toLocaleString() + " EGP to " + snap.name + " (" + (snap.date || "—") + ") deleted");
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[DELETE /api/commissions/:id/ambassador-payouts/:payoutId]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "ambassador_payout_delete_failed" });
+  }
 });
 
 // ===== COMMISSIONS — Phase D.3 cron sweeper =====

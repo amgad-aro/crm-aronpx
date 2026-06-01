@@ -2008,6 +2008,10 @@ var LeadForm = function(p) {
       dealType: "internal",
       externalBrokerId: "",
       externalDealConfig: { commissionTaxPct: 0, brokerSharePct: 0 },
+      // Phase R-14 — ambassador-deal config. developerTaxRate is a string in the
+      // controlled input; coerced to number on submit. Cleared by the backend
+      // validator whenever dealType !== "ambassador".
+      ambassadorConfig: { developerTaxEnabled: false, developerTaxRate: "" },
       commissionRate: "",
       externalSalesAgentEnabled: false,
       externalSalesAgentId: "",
@@ -2027,6 +2031,15 @@ var LeadForm = function(p) {
     base.externalDealConfig = {
       commissionTaxPct: Number(seedCfg.commissionTaxPct) || 0,
       brokerSharePct:   Number(seedCfg.brokerSharePct)   || 0
+    };
+    // Phase R-14 — normalize ambassadorConfig from an existing lead. developerTaxRate
+    // is a Number on the DB but a string in the controlled input (allows decimals).
+    var seedAmb = (base.ambassadorConfig && typeof base.ambassadorConfig === "object") ? base.ambassadorConfig : {};
+    base.ambassadorConfig = {
+      developerTaxEnabled: !!seedAmb.developerTaxEnabled,
+      developerTaxRate: (typeof seedAmb.developerTaxRate === "number" && isFinite(seedAmb.developerTaxRate) && seedAmb.developerTaxRate > 0)
+        ? String(seedAmb.developerTaxRate)
+        : ""
     };
     // commissionRate is a Number on the DB (percent), but a string in the
     // controlled input (allows decimals). Leave empty for old deals that
@@ -2177,6 +2190,20 @@ var LeadForm = function(p) {
         }
       }
     }
+    // Phase R-14 — ambassador validation. Commission Rate is enforced by the
+    // shared DoneDeal check below; here we only validate the developer-tax rate
+    // when the toggle is ON (mirrors the backend validator).
+    if (isDoneDealForm && form.dealType === "ambassador") {
+      var ambCfg = form.ambassadorConfig || {};
+      if (ambCfg.developerTaxEnabled) {
+        var dtRaw = String(ambCfg.developerTaxRate || "").trim();
+        var dtNum = Number(dtRaw);
+        if (!dtRaw || !isFinite(dtNum) || dtNum <= 0 || dtNum > 100) {
+          alert("Please enter a valid Developer Tax Rate (%) between 0 and 100, or uncheck the developer-tax option");
+          return;
+        }
+      }
+    }
     // Commission Rate (%) — required > 0 for any DoneDeal save (Internal +
     // External). Mirrors backend rejection at POST/PUT /api/leads. BE computes
     // commissionAmount = budget × rate / 100 server-side; FE only sends rate.
@@ -2224,6 +2251,19 @@ var LeadForm = function(p) {
           payload.externalSalesAgentManualAmount = null;
           payload.externalSalesAgentPaidBy       = "company";
         }
+      })();
+      // Phase R-14 — ambassadorConfig coercion. developerTaxRate is a string in
+      // the input; send a number (or null when disabled). The backend validator
+      // re-normalizes + mirrors commissionRate into ambassadorConfig.commissionRate,
+      // and clears the whole sub-config when dealType !== "ambassador".
+      (function(){
+        var amb = payload.ambassadorConfig || {};
+        var on = !!amb.developerTaxEnabled;
+        var r = Number(String(amb.developerTaxRate || "").replace(/,/g, "").trim());
+        payload.ambassadorConfig = {
+          developerTaxEnabled: on,
+          developerTaxRate: (on && isFinite(r) && r > 0) ? r : null
+        };
       })();
       // Strip client-only fields the API doesn't need
       delete payload.documentFiles;
@@ -2381,16 +2421,23 @@ var LeadForm = function(p) {
       {commissionLock===true&&<div style={{ marginBottom:10, padding:"8px 12px", background:"#FEF3C7", border:"1px solid #FDE68A", borderRadius:8, fontSize:12, color:"#92400E", lineHeight:1.5 }}>
         🔒 <b>Locked.</b> An active commission exists for this deal. Cancel the commission first if you need to change the deal type, broker, or split percentages.
       </div>}
-      <div style={{ display:"flex", gap:8, marginBottom: form.dealType==="external" ? 14 : 0 }}>
-        {[["internal","🏢 Internal","Managed by ARO team"],["external","🤝 External","Brought in by a broker"]].map(function(opt){
+      <div style={{ display:"flex", gap:8, marginBottom: (form.dealType==="external"||form.dealType==="ambassador") ? 14 : 0 }}>
+        {/* Phase R-14 — third option "Ambassador" (amber). Per-option theme
+            color: Internal blue, External violet, Ambassador amber. Switching
+            type clears the other type's sub-config so the live preview + payload
+            stay clean (the backend validator re-normalizes regardless). The
+            Ambassador radio is gated to admin/sales_admin by isOnlyAdmin, which
+            already wraps this whole block. */}
+        {[["internal","🏢 Internal","Managed by ARO team",C.accent],["external","🤝 External","Brought in by a broker","#7C3AED"],["ambassador","🎯 Ambassador","Manual team commissions","#D97706"]].map(function(opt){
           var active = form.dealType === opt[0];
           var locked = commissionLock===true;
+          var theme = opt[3];
           return <button key={opt[0]} type="button" disabled={locked}
             title={locked ? "Locked — active commission exists" : ""}
             onClick={function(){
               if (locked) return;
               upd("dealType", opt[0]);
-              if (opt[0] === "internal") {
+              if (opt[0] !== "external") {
                 upd("externalBrokerId", "");
                 upd("externalDealConfig", { commissionTaxPct: 0, brokerSharePct: 0 });
                 upd("externalSalesAgentEnabled", false);
@@ -2398,9 +2445,12 @@ var LeadForm = function(p) {
                 upd("externalSalesAgentManualAmount", "");
                 upd("externalSalesAgentPaidBy", "company");
               }
+              if (opt[0] !== "ambassador") {
+                upd("ambassadorConfig", { developerTaxEnabled: false, developerTaxRate: "" });
+              }
             }}
-            style={{ flex:1, padding:"10px 12px", borderRadius:9, border:"1px solid", borderColor: active ? C.accent : "#E2E8F0", background: active ? C.accent+"12" : "#fff", cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.55 : 1, textAlign:"left" }}>
-            <div style={{ fontSize:13, fontWeight:600, color: active ? C.accent : C.text }}>{opt[1]}</div>
+            style={{ flex:1, padding:"10px 12px", borderRadius:9, border:"1px solid", borderColor: active ? theme : "#E2E8F0", background: active ? theme+"12" : "#fff", cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.55 : 1, textAlign:"left" }}>
+            <div style={{ fontSize:13, fontWeight:600, color: active ? theme : C.text }}>{opt[1]}</div>
             <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{opt[2]}</div>
           </button>;
         })}
@@ -2570,6 +2620,66 @@ var LeadForm = function(p) {
 
       </div>}
 
+      {/* Phase R-14 — Ambassador config block. Amber-themed. Reuses the canonical
+          top-level Commission Rate (%) input above (no separate rate field).
+          Ambassador deals pay NO VAT and NO withholding; the only deduction is
+          the optional developer tax (a % of gross commission). Team commissions
+          are assigned manually later in Edit Collection — not here. */}
+      {form.dealType==="ambassador"&&<div style={{ marginBottom:13, padding:"12px 14px", background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:10 }}>
+        <div style={{ fontSize:11, fontWeight:700, color:"#B45309", textTransform:"uppercase", letterSpacing:0.3, marginBottom:8 }}>
+          Ambassador Deal
+        </div>
+        <label style={{ display:"flex", alignItems:"center", gap:8, fontSize:13, fontWeight:600, color:C.text, cursor:"pointer" }}>
+          <input type="checkbox" checked={!!(form.ambassadorConfig && form.ambassadorConfig.developerTaxEnabled)}
+            onChange={function(e){
+              var on = e.target.checked;
+              upd("ambassadorConfig", Object.assign({}, form.ambassadorConfig||{}, {
+                developerTaxEnabled: on,
+                developerTaxRate: on ? (form.ambassadorConfig && form.ambassadorConfig.developerTaxRate) || "" : ""
+              }));
+            }}/>
+          Developer takes tax from commission
+        </label>
+        {(form.ambassadorConfig && form.ambassadorConfig.developerTaxEnabled) && <div style={{ marginTop:10, maxWidth:220 }}>
+          <Inp label="Developer Tax Rate (%)" req
+            value={(form.ambassadorConfig && form.ambassadorConfig.developerTaxRate) || ""}
+            onChange={function(e){
+              var raw = e.target.value.replace(/[^0-9.]/g, "");
+              var firstDot = raw.indexOf(".");
+              if (firstDot >= 0) raw = raw.slice(0, firstDot+1) + raw.slice(firstDot+1).replace(/\./g, "");
+              upd("ambassadorConfig", Object.assign({}, form.ambassadorConfig||{}, { developerTaxRate: raw }));
+            }}
+            placeholder="e.g. 10"/>
+        </div>}
+        {/* Ambassador live preview — Gross − developer tax = ARO Net. */}
+        {(function(){
+          var budgetNum = (function(){
+            var s = String(form.budget || "").replace(/,/g, "").replace(/[^0-9.]/g, "");
+            var n = parseFloat(s);
+            return isFinite(n) ? n : 0;
+          })();
+          var rateNum = Number(form.commissionRate);
+          var fmt = function(n){ return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); };
+          if (!(budgetNum > 0) || !(isFinite(rateNum) && rateNum > 0)) {
+            return <div style={{ marginTop:10, padding:"6px 10px", background:"#FEF9C3", border:"1px solid #FDE68A", borderRadius:6, fontSize:11, color:"#92400E" }}>
+              Set Budget (EGP) + Commission Rate (%) above to preview the ambassador commission.
+            </div>;
+          }
+          var gross = budgetNum * rateNum / 100;
+          var taxOn = !!(form.ambassadorConfig && form.ambassadorConfig.developerTaxEnabled);
+          var taxRate = Number(form.ambassadorConfig && form.ambassadorConfig.developerTaxRate) || 0;
+          var taxAmt = taxOn ? gross * taxRate / 100 : 0;
+          var aroNet = gross - taxAmt;
+          return <div style={{ marginTop:10, padding:"10px 12px", background:"#FEF3C7", border:"1px solid #FCD34D", borderRadius:8, fontSize:12, color:"#92400E", lineHeight:1.6 }}>
+            <div style={{ fontWeight:600, marginBottom:4 }}>🎯 Ambassador Commission:</div>
+            <div>Deal Total ({fmt(budgetNum)}) × {rateNum}% = <b>{fmt(gross)} EGP</b> gross</div>
+            {taxOn && <div>− Developer Tax ({taxRate}%) = <b>{fmt(taxAmt)} EGP</b></div>}
+            <div style={{ marginTop:4, paddingTop:4, borderTop:"1px solid #FCD34D", color:"#B45309", fontWeight:700 }}>ARO Net = {fmt(aroNet)} EGP</div>
+            <div style={{ fontSize:10, color:"#A16207", marginTop:6, fontStyle:"italic" }}>Team commissions are assigned manually in Edit Collection.</div>
+          </div>;
+        })()}
+      </div>}
+
       {/* Phase R-13 — Canonical Live Preview (state-tax flow).
           Same math the Commission Calculator and Annual Summary use:
             Gross (incl. VAT) = Budget × Rate / 100
@@ -2579,9 +2689,10 @@ var LeadForm = function(p) {
             Net Due           = Gross − Withholding
           Phase R-13.1 — Internal only. External relies on the informal
           Broker Split preview inside the External branch (state tax handled
-          at year-end via Annual Summary). */}
+          at year-end via Annual Summary). Phase R-14 — Ambassador uses its own
+          amber preview above (no VAT / withholding). */}
       {(function(){
-        if (form.dealType === "external") return null;
+        if (form.dealType === "external" || form.dealType === "ambassador") return null;
         var budgetNum = (function(){
           var s = String(form.budget || "").replace(/,/g, "").replace(/[^0-9.]/g, "");
           var n = parseFloat(s);
@@ -11265,8 +11376,9 @@ var DealsPage = function(p) {
   // Deal-type counts on the current Active|Cancelled tab. Computed BEFORE
   // the user's other filters so the pill badges reflect the full tab scope —
   // matches the Active/Cancelled tab badges above which also show full counts.
-  var dealsInternalCount = deals.filter(function(d){ return (d.dealType||"internal")!=="external"; }).length;
+  var dealsInternalCount = deals.filter(function(d){ return (d.dealType||"internal")==="internal"; }).length;
   var dealsExternalCount = deals.filter(function(d){ return d.dealType==="external"; }).length;
+  var dealsAmbassadorCount = deals.filter(function(d){ return d.dealType==="ambassador"; }).length; // Phase R-14
   var filteredDeals=deals.filter(function(d){
     if(dealQ!=="all"){var dd=getDealDate(d);if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
     if(new Date(getDealDate(d)||0).getFullYear()!==dealYear) return false;
@@ -11274,8 +11386,9 @@ var DealsPage = function(p) {
     if(dateTo&&new Date(d.updatedAt||d.createdAt)>new Date(dateTo+"T23:59:59")) return false;
     if(dealSearch){var q2=dealSearch.toLowerCase();var nm=d.name?d.name.toLowerCase():"";var pr=d.project?d.project.toLowerCase():"";var ph=d.phone||"";if(!nm.includes(q2)&&!pr.includes(q2)&&!ph.includes(q2))return false;}
     if(dealAgent){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;if(aid!==dealAgent)return false;}
-    if(dealTypeFilter==="internal" && (d.dealType||"internal")==="external") return false;
+    if(dealTypeFilter==="internal" && (d.dealType||"internal")!=="internal") return false;
     if(dealTypeFilter==="external" && d.dealType!=="external") return false;
+    if(dealTypeFilter==="ambassador" && d.dealType!=="ambassador") return false; // Phase R-14
     return true;
   });
   var filteredTotal=filteredDeals.reduce(function(s,d){
@@ -11341,15 +11454,18 @@ var DealsPage = function(p) {
     </div>
 
     {/* Phase R-12 Part 4 \u2014 All / Internal / External filter pill row.
-        Admin/sales_admin only \u2014 hidden for sales/team_leader/manager/director. */}
+        Phase R-14 \u2014 + Ambassador (amber). Admin/sales_admin only \u2014 hidden
+        for sales/team_leader/manager/director. Each pill carries its own active
+        theme color so the type accents stay consistent with the deal-type toggle. */}
     {isOnlyAdmin&&<div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
-      {[["all","All",deals.length],["internal","\ud83c\udfe2 Internal",dealsInternalCount],["external","\ud83e\udd1d External",dealsExternalCount]].map(function(pill){
+      {[["all","All",deals.length,C.accent],["internal","\ud83c\udfe2 Internal",dealsInternalCount,C.accent],["external","\ud83e\udd1d External",dealsExternalCount,"#7C3AED"],["ambassador","\ud83c\udfaf Ambassador",dealsAmbassadorCount,"#D97706"]].map(function(pill){
         var active=dealTypeFilter===pill[0];
+        var theme=pill[3];
         return <button key={pill[0]} onClick={function(){setDealTypeFilter(pill[0]);}} style={{
           padding:"5px 12px", borderRadius:8, border:"1px solid",
-          borderColor: active ? C.accent : "#E2E8F0",
-          background: active ? C.accent+"12" : "#fff",
-          color: active ? C.accent : C.textLight,
+          borderColor: active ? theme : "#E2E8F0",
+          background: active ? theme+"12" : "#fff",
+          color: active ? theme : C.textLight,
           fontSize:12, fontWeight:600, cursor:"pointer"
         }}>{pill[1]} ({pill[2]})</button>;
       })}
@@ -11600,7 +11716,13 @@ var DealsPage = function(p) {
           var stages=getStages(gid(d));
           var isSel=selectedDeal&&gid(selectedDeal)===gid(d);
           return <tr key={gid(d)} onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent", transition:"background 0.1s" }}>
-            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}</td>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>
+              {d.name}
+              {/* Phase R-14 — Ambassador badge. The classification is internal to
+                  admin/sales_admin: gated by isOnlyAdmin so sales/TL/manager/
+                  director see a plain deal row with no Ambassador indicator. */}
+              {isOnlyAdmin && d.dealType==="ambassador" && <span style={{ marginLeft:6, fontSize:9, padding:"1px 6px", borderRadius:9, background:"#FEF3C7", color:"#B45309", fontWeight:700, verticalAlign:"middle" }}>🎯 Ambassador</span>}
+            </td>
             {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}><PhoneCell phone={d.phone}/></td>}
             {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight, textAlign:"left" }}>
               {d.phone2&&d.phone2!==d.phone?<PhoneCell phone={d.phone2}/>:<span style={{ color:"#CBD5E1" }}>-</span>}
@@ -21781,6 +21903,12 @@ var CommissionEditCollectionModal = function(p) {
   var snap = (c && c.snapshot) || {};
   var token = p.token;
   var users = p.users || [];
+  // Phase R-14 — role + ambassador flag. The modal is only reachable from the
+  // admin/sales_admin-gated Commissions page, but we still derive isOnlyAdmin
+  // (defense-in-depth) to gate the AMBASSADOR DETAILS section explicitly.
+  var cu = p.cu || {};
+  var isOnlyAdmin = cu.role === "admin" || cu.role === "sales_admin";
+  var isAmbassador = !!(c && c.ambassadorSplit && c.ambassadorSplit.isAmbassador);
 
   // ---------- SECTION 1 — snapshot ----------
   var [dealTotal, setDealTotal] = useState(Number(snap.dealTotal || 0) > 0 ? Number(snap.dealTotal).toLocaleString() : "");
@@ -21925,6 +22053,30 @@ var CommissionEditCollectionModal = function(p) {
   var removeIncRow = function(idx){
     setIncentiveRows(function(prev){ return prev.filter(function(_, i){ return i !== idx; }); });
   };
+
+  // ---------- Phase R-14 — ambassador edit state (immediate-apply) ----------
+  // Unlike the internal/external sections (batched into Save All), ambassador
+  // recipient/payout/config actions hit their endpoints immediately and refresh
+  // liveC in place — this sidesteps the new-recipient → payout ordering problem
+  // (a payout needs a persisted recipient _id) and keeps the nested CRUD robust.
+  var [liveC, setLiveC] = useState(c);
+  var ambSplit = (liveC && liveC.ambassadorSplit) || {};
+  var [ambBusy, setAmbBusy] = useState(false);
+  // Developer-tax draft (the only editable AMBASSADOR DETAILS field; rate is RO).
+  var [taxEnabledDraft, setTaxEnabledDraft] = useState(!!ambSplit.developerTaxEnabled);
+  var [taxRateDraft, setTaxRateDraft] = useState(ambSplit.developerTaxRate != null ? String(ambSplit.developerTaxRate) : "");
+  // Add-recipient draft.
+  var [showAddRecip, setShowAddRecip] = useState(false);
+  var [addRecipUserId, setAddRecipUserId] = useState("");
+  var [addRecipAmount, setAddRecipAmount] = useState("");
+  // Inline recipient amount edit (recipientId being edited + draft amount).
+  var [editRecipId, setEditRecipId] = useState("");
+  var [editRecipAmount, setEditRecipAmount] = useState("");
+  // Add-payout draft, scoped to one recipient at a time.
+  var [payoutForRecip, setPayoutForRecip] = useState("");
+  var [payoutAmount, setPayoutAmount] = useState("");
+  var [payoutDate, setPayoutDate] = useState(new Date().toISOString().slice(0,10));
+  var [payoutNote, setPayoutNote] = useState("");
 
   // ---------- save-all flow ----------
   var [saving, setSaving] = useState(false);
@@ -22148,6 +22300,199 @@ var CommissionEditCollectionModal = function(p) {
         style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:6, color:"#B91C1C", padding:"4px 8px", cursor:"pointer", fontSize:11 }}>×</button>
     </div>;
   };
+
+  // ===== Phase R-14 — Ambassador edit layout (immediate-apply) =====
+  var ambParse = function(s){ var n = Number(String(s||"").replace(/,/g,"").replace(/[^0-9.]/g,"")); return isFinite(n) ? n : NaN; };
+  var ambCall = async function(method, path, body){
+    setAmbBusy(true);
+    try {
+      var fresh = await apiFetch("/api/commissions/" + c._id + path, method, body || null, token);
+      if (fresh && fresh._id) { setLiveC(fresh); if (p.onSaved) p.onSaved(fresh, true); }
+      return true;
+    } catch(e){ alert((e && e.message) || "Action failed"); return false; }
+    finally { setAmbBusy(false); }
+  };
+  var saveTaxConfig = async function(){
+    var body = { developerTaxEnabled: !!taxEnabledDraft, developerTaxRate: null };
+    if (taxEnabledDraft) {
+      var r = ambParse(taxRateDraft);
+      if (!isFinite(r) || r <= 0 || r > 100) { alert("Developer Tax Rate must be between 0 and 100"); return; }
+      body.developerTaxRate = r;
+    }
+    await ambCall("PUT", "/ambassador-config", body);
+  };
+  var addRecipient = async function(){
+    if (!addRecipUserId) { alert("Select a staff member"); return; }
+    var a = ambParse(addRecipAmount);
+    if (addRecipAmount !== "" && (!isFinite(a) || a < 0)) { alert("Amount must be ≥ 0"); return; }
+    var ok = await ambCall("POST", "/ambassador-recipients", { userId: addRecipUserId, amount: isFinite(a) ? a : 0 });
+    if (ok) { setShowAddRecip(false); setAddRecipUserId(""); setAddRecipAmount(""); }
+  };
+  var startEditRecip = function(r){ setEditRecipId(String(r._id)); setEditRecipAmount(Number(r.amount||0) > 0 ? Number(r.amount).toLocaleString() : ""); };
+  var saveEditRecip = async function(rid){
+    var a = ambParse(editRecipAmount);
+    if (!isFinite(a) || a < 0) { alert("Amount must be ≥ 0"); return; }
+    var ok = await ambCall("PUT", "/ambassador-recipients/" + rid, { amount: a });
+    if (ok) { setEditRecipId(""); setEditRecipAmount(""); }
+  };
+  var removeRecip = async function(r){
+    if (!window.confirm("Remove " + (r.userName || "this recipient") + " from this deal?")) return;
+    await ambCall("DELETE", "/ambassador-recipients/" + r._id);
+  };
+  var addPayout = async function(rid){
+    var a = ambParse(payoutAmount);
+    if (!isFinite(a) || a <= 0) { alert("Payout amount must be > 0"); return; }
+    if (!payoutDate) { alert("Date required"); return; }
+    var ok = await ambCall("POST", "/ambassador-payouts", { recipientId: rid, amount: a, date: payoutDate, note: payoutNote });
+    if (ok) { setPayoutForRecip(""); setPayoutAmount(""); setPayoutNote(""); }
+  };
+  var deletePayout = async function(payoutId){
+    if (!window.confirm("Delete this payout?")) return;
+    await ambCall("DELETE", "/ambassador-payouts/" + payoutId);
+  };
+
+  if (isAmbassador) {
+    var amb = ambSplit;
+    var recips = (amb.recipients || []);
+    var fmtA = function(n){ return Math.round(Number(n||0)).toLocaleString(); };
+    var totalTeam = recips.reduce(function(s, r){ return s + Number(r.amount || 0); }, 0);
+    var aroNetA = Number(amb.aroNetTotal || 0);
+    var aroKeeps = aroNetA - totalTeam;
+    var ambStaff = users.filter(function(u){ return u && u.active && ["sales","team_leader","manager","director"].indexOf(u.role) >= 0; });
+    var amberHeader = Object.assign({}, sectionHeaderStyle, { color:"#B45309" });
+    var roleLabel = function(role){ return role === "team_leader" ? "Team Lead" : role === "manager" ? "Manager" : role === "director" ? "Director" : "Sales"; };
+    return <Modal show={true} onClose={p.onClose} title={"Edit Collection — " + (snap.customerName || "(unknown)")} w={720}>
+      {/* SECTION 1 — Snapshot (read-only for ambassador: gross derives from the
+          cycle's claimAmount, so editing dealTotal here would be inert). */}
+      <div style={sectionHeaderStyle}>Deal Snapshot</div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:4 }}>
+        <FormRow label="Deal Total (EGP)"><input type="text" value={Number(snap.dealTotal || 0).toLocaleString()} readOnly disabled style={roFieldStyle}/></FormRow>
+        <FormRow label="Project Name"><input type="text" value={snap.projectName || ""} readOnly disabled style={roFieldStyle}/></FormRow>
+      </div>
+
+      {/* AMBASSADOR DETAILS — admin/sales_admin only (defense-in-depth on top of
+          the page-level admin gate). The classification is internal to admins. */}
+      {isOnlyAdmin && <>
+        <div style={dividerStyle}/>
+        <div style={amberHeader}>🎯 Ambassador Details</div>
+        <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:8, padding:"12px 14px" }}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
+            <FormRow label="Commission Rate (%)"><input type="text" value={String(amb.commissionRate != null ? amb.commissionRate : "")} readOnly disabled style={roFieldStyle}/></FormRow>
+            <FormRow label="Gross Commission (EGP)"><input type="text" value={fmtA(amb.grossCommission)} readOnly disabled style={roFieldStyle}/></FormRow>
+          </div>
+          <label style={{ display:"flex", alignItems:"center", gap:8, fontSize:13, fontWeight:600, color:C.text, cursor: ambBusy ? "wait" : "pointer", marginBottom: taxEnabledDraft ? 8 : 0 }}>
+            <input type="checkbox" checked={taxEnabledDraft} disabled={ambBusy}
+              onChange={function(e){ setTaxEnabledDraft(e.target.checked); }}/>
+            Developer takes tax from commission
+          </label>
+          {taxEnabledDraft && <div style={{ maxWidth:200, marginBottom:10 }}>
+            <FormRow label="Developer Tax Rate (%)">
+              <input type="text" inputMode="decimal" value={taxRateDraft} disabled={ambBusy}
+                onChange={function(e){
+                  var raw = e.target.value.replace(/[^0-9.]/g, "");
+                  var fd = raw.indexOf("."); if (fd >= 0) raw = raw.slice(0, fd+1) + raw.slice(fd+1).replace(/\./g, "");
+                  setTaxRateDraft(raw);
+                }}
+                style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13 }} placeholder="e.g. 10"/>
+            </FormRow>
+          </div>}
+          <div style={{ background:"#FEF3C7", border:"1px solid #FCD34D", borderRadius:8, padding:"8px 12px", fontSize:12, color:"#92400E", lineHeight:1.7, marginBottom:10 }}>
+            <div>Developer Tax: <b>{fmtA(amb.developerTaxAmount)} EGP</b>{amb.developerTaxEnabled ? " (" + (amb.developerTaxRate || 0) + "%)" : " (disabled)"}</div>
+            <div style={{ color:"#B45309", fontWeight:700 }}>ARO Net Total: {fmtA(amb.aroNetTotal)} EGP</div>
+          </div>
+          <button onClick={saveTaxConfig} disabled={ambBusy}
+            style={{ padding:"6px 14px", borderRadius:8, border:"none", background:"#D97706", color:"#fff", fontSize:12, fontWeight:600, cursor: ambBusy ? "wait" : "pointer" }}>
+            {ambBusy ? "Saving…" : "Update Developer Tax"}
+          </button>
+        </div>
+      </>}
+
+      {/* RECIPIENTS — manual EGP amounts, replaces the standard payouts table. */}
+      <div style={dividerStyle}/>
+      <div style={Object.assign({}, amberHeader, { display:"flex", justifyContent:"space-between", alignItems:"center" })}>
+        <span>Recipients ({recips.length})</span>
+        {isOnlyAdmin && <button onClick={function(){ setShowAddRecip(function(v){ return !v; }); }} disabled={ambBusy}
+          style={{ padding:"3px 10px", borderRadius:6, border:"1px solid #D97706", background:"#FEF3C7", color:"#B45309", fontSize:11, fontWeight:600, cursor: ambBusy ? "wait" : "pointer", textTransform:"none", letterSpacing:0 }}>+ Add Recipient</button>}
+      </div>
+      {showAddRecip && isOnlyAdmin && <div style={{ display:"flex", gap:6, alignItems:"center", marginBottom:8, padding:"8px 10px", background:"#FFFBEB", borderRadius:6, border:"1px dashed #FDE68A" }}>
+        <select value={addRecipUserId} onChange={function(e){ setAddRecipUserId(e.target.value); }}
+          style={{ flex:1, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}>
+          <option value="">— Select staff —</option>
+          {ambStaff.map(function(u){ return <option key={gid(u)} value={gid(u)}>{u.name} ({roleLabel(u.role)})</option>; })}
+        </select>
+        <input type="text" inputMode="numeric" placeholder="Amount EGP" value={addRecipAmount}
+          onChange={function(e){ var raw = e.target.value.replace(/,/g,"").replace(/[^0-9]/g,""); setAddRecipAmount(raw === "" ? "" : Number(raw).toLocaleString()); }}
+          style={{ width:120, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>
+        <button onClick={addRecipient} disabled={ambBusy} style={{ padding:"5px 10px", borderRadius:6, border:"none", background:"#D97706", color:"#fff", fontSize:11, fontWeight:600, cursor: ambBusy ? "wait" : "pointer" }}>Add</button>
+      </div>}
+      {recips.length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 10px" }}>No recipients yet.</div>}
+      {recips.length > 0 && <div style={{ border:"1px solid #F1F5F9", borderRadius:8, overflow:"hidden" }}>
+        <div style={{ display:"flex", padding:"6px 10px", background:"#F8FAFC", fontSize:10, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>
+          <div style={{ flex:2 }}>Name</div><div style={{ flex:1 }}>Role</div><div style={{ flex:1, textAlign:"right" }}>Amount</div><div style={{ flex:1, textAlign:"right" }}>Paid</div><div style={{ flex:1, textAlign:"right" }}>Remaining</div>{isOnlyAdmin && <div style={{ width:90, textAlign:"right" }}>Actions</div>}
+        </div>
+        {recips.map(function(r){
+          var rid = String(r._id);
+          var paid = Number(r.amountPaid || 0);
+          var remaining = Number(r.amount || 0) - paid;
+          var editing = editRecipId === rid;
+          return <div key={rid} style={{ borderTop:"1px solid #F1F5F9", padding:"7px 10px", fontSize:12 }}>
+            <div style={{ display:"flex", alignItems:"center" }}>
+              <div style={{ flex:2, fontWeight:600, color:C.text }}>{r.userName || "(unknown)"}</div>
+              <div style={{ flex:1, color:C.textLight, textTransform:"capitalize" }}>{roleLabel(r.userRole)}</div>
+              <div style={{ flex:1, textAlign:"right", fontWeight:600 }}>
+                {editing
+                  ? <input type="text" inputMode="numeric" value={editRecipAmount} autoFocus
+                      onChange={function(e){ var raw = e.target.value.replace(/,/g,"").replace(/[^0-9]/g,""); setEditRecipAmount(raw === "" ? "" : Number(raw).toLocaleString()); }}
+                      style={{ width:90, padding:"3px 6px", borderRadius:5, border:"1px solid #E2E8F0", fontSize:12, textAlign:"right" }}/>
+                  : fmtA(r.amount)}
+              </div>
+              <div style={{ flex:1, textAlign:"right", color:C.success }}>{fmtA(paid)}</div>
+              <div style={{ flex:1, textAlign:"right", color: remaining > 0 ? "#B45309" : C.textLight }}>{fmtA(remaining)}</div>
+              {isOnlyAdmin && <div style={{ width:90, textAlign:"right", display:"flex", gap:4, justifyContent:"flex-end" }}>
+                {editing
+                  ? <><button onClick={function(){ saveEditRecip(rid); }} disabled={ambBusy} style={{ background:"#D97706", border:"none", borderRadius:4, color:"#fff", padding:"3px 7px", fontSize:10, cursor:"pointer" }}>✓</button>
+                       <button onClick={function(){ setEditRecipId(""); }} disabled={ambBusy} style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, color:C.textLight, padding:"3px 7px", fontSize:10, cursor:"pointer" }}>×</button></>
+                  : <><button onClick={function(){ startEditRecip(r); }} disabled={ambBusy} title="Edit amount" style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:4, color:C.text, padding:"3px 7px", fontSize:10, cursor:"pointer" }}>✎</button>
+                       <button onClick={function(){ removeRecip(r); }} disabled={ambBusy} title="Remove" style={{ background:"#fff", border:"1px solid #FCA5A5", borderRadius:4, color:"#B91C1C", padding:"3px 7px", fontSize:10, cursor:"pointer" }}>🗑</button></>}
+              </div>}
+            </div>
+            {/* Per-recipient payouts */}
+            <div style={{ marginTop:6, marginLeft:8, paddingLeft:10, borderLeft:"2px solid #FDE68A" }}>
+              {(r.payouts || []).map(function(po){
+                return <div key={String(po._id)} style={{ display:"flex", alignItems:"center", gap:8, fontSize:11, color:C.textLight, padding:"2px 0" }}>
+                  <span style={{ minWidth:78 }}>{po.date ? new Date(po.date).toLocaleDateString("en-GB") : "—"}</span>
+                  <span style={{ fontWeight:600, color:C.success }}>{fmtA(po.amount)} EGP</span>
+                  {po.note && <span style={{ fontStyle:"italic" }}>· {po.note}</span>}
+                  {isOnlyAdmin && <button onClick={function(){ deletePayout(String(po._id)); }} disabled={ambBusy} title="Delete payout" style={{ marginLeft:"auto", background:"#fff", border:"1px solid #FCA5A5", borderRadius:4, color:"#B91C1C", padding:"1px 6px", fontSize:10, cursor:"pointer" }}>✕</button>}
+                </div>;
+              })}
+              {isOnlyAdmin && (payoutForRecip === rid
+                ? <div style={{ display:"flex", gap:5, alignItems:"center", marginTop:4 }}>
+                    <input type="date" value={payoutDate} onChange={function(e){ setPayoutDate(e.target.value); }} style={{ padding:"3px 6px", borderRadius:5, border:"1px solid #E2E8F0", fontSize:11 }}/>
+                    <input type="text" inputMode="numeric" placeholder="Amount" value={payoutAmount} onChange={function(e){ var raw = e.target.value.replace(/,/g,"").replace(/[^0-9]/g,""); setPayoutAmount(raw === "" ? "" : Number(raw).toLocaleString()); }} style={{ width:90, padding:"3px 6px", borderRadius:5, border:"1px solid #E2E8F0", fontSize:11 }}/>
+                    <input type="text" placeholder="Note" value={payoutNote} onChange={function(e){ setPayoutNote(e.target.value); }} style={{ flex:1, padding:"3px 6px", borderRadius:5, border:"1px solid #E2E8F0", fontSize:11 }}/>
+                    <button onClick={function(){ addPayout(rid); }} disabled={ambBusy} style={{ background:"#16A34A", border:"none", borderRadius:5, color:"#fff", padding:"3px 9px", fontSize:11, cursor:"pointer" }}>Save</button>
+                    <button onClick={function(){ setPayoutForRecip(""); }} disabled={ambBusy} style={{ background:"#fff", border:"1px solid #E2E8F0", borderRadius:5, color:C.textLight, padding:"3px 7px", fontSize:11, cursor:"pointer" }}>×</button>
+                  </div>
+                : <button onClick={function(){ setPayoutForRecip(rid); setPayoutAmount(""); setPayoutDate(new Date().toISOString().slice(0,10)); setPayoutNote(""); }} disabled={ambBusy}
+                    style={{ marginTop:4, background:"none", border:"none", color:"#B45309", fontSize:11, fontWeight:600, cursor:"pointer", padding:0 }}>+ Add payout</button>)}
+            </div>
+          </div>;
+        })}
+      </div>}
+      {/* Footer totals + ARO keeps (admin/SA only — money breakdown is internal) */}
+      {isOnlyAdmin && <div style={{ marginTop:10, padding:"8px 12px", background:"#F8FAFC", borderRadius:8, fontSize:12, fontWeight:600, color:C.text, display:"flex", justifyContent:"space-between" }}>
+        <span>Total to team: <b>{fmtA(totalTeam)} EGP</b></span>
+        <span style={{ color: aroKeeps < 0 ? "#B91C1C" : "#B45309" }}>ARO keeps: <b>{fmtA(aroKeeps)} EGP</b></span>
+      </div>}
+
+      {/* FOOTER — actions apply immediately, so this just closes. */}
+      <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:16, paddingTop:14, borderTop:"1px solid "+C.border }}>
+        <button onClick={p.onClose} disabled={ambBusy}
+          style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: ambBusy ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>Done</button>
+      </div>
+    </Modal>;
+  }
 
   return <Modal show={true} onClose={p.onClose} title={"Edit Collection — " + (snap.customerName || "(unknown)")} w={720}>
     {/* SECTION 1 — Snapshot */}
@@ -22385,10 +22730,22 @@ var CommissionCycleStageModal = function(p) {
       return Number(initial.amount).toLocaleString();
     }
     if (mode === "advance" && stageKey === "received" && cyc && Number(cyc.claimAmount || 0) > 0) {
+      var ca = Number(cyc.claimAmount);
+      // Phase R-14 — ambassador deals pay NO VAT and NO withholding. The only
+      // deduction is the optional developer tax (a % of gross commission). So
+      // the received-stage pre-fill is gross − developer tax (or gross when the
+      // developer tax is disabled), NOT the 5%-withholding net used for
+      // internal/external deals.
+      var ambS = c && c.ambassadorSplit;
+      if (ambS && ambS.isAmbassador) {
+        var ambNr = (ambS.developerTaxEnabled && Number(ambS.developerTaxRate || 0) > 0)
+          ? ca - (ca * Number(ambS.developerTaxRate) / 100)
+          : ca;
+        return round2(ambNr).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
       // Phase R-5 — exact formula: netReceived = grossClaim − (grossClaim / 1.14) × 0.05.
       // Pre-fill at piaster precision; MoneyInput preserves the decimal until the
       // admin edits the field (its onChange strip is integer-only — pre-R-5 behavior).
-      var ca = Number(cyc.claimAmount);
       var nr = ca - (ca / 1.14) * 0.05;
       return round2(nr).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
@@ -23155,6 +23512,8 @@ var CommissionsPage = function(p) {
   // Phase R-13.1 — Broker Calculation modal state. Holds the External
   // commission being viewed (or null when modal is closed).
   var [brokerCalcFor, setBrokerCalcFor] = useState(null);
+  // Phase R-14 — Ambassador Calculation modal state (parallel to brokerCalcFor).
+  var [ambassadorCalcFor, setAmbassadorCalcFor] = useState(null);
   // Phase R-9 — cashFlow state removed; the new Recipients breakdown computes
   // paid totals straight from c.payouts, so the global cash-flow endpoint is no
   // longer needed for card rendering.
@@ -23611,6 +23970,10 @@ var CommissionsPage = function(p) {
                 differentiate from the amber/green/gray status badges below.
                 Only shows when commission.externalSplit.isExternal === true. */}
             {c.externalSplit && c.externalSplit.isExternal && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#EDE9FE", color:"#5B21B6", fontWeight:700 }}>🤝 External</span>}
+            {/* Phase R-14 — Ambassador badge (amber). The classification is
+                internal to admin/sales_admin; the explicit role check is
+                defense-in-depth on top of the page-level admin gate. */}
+            {c.ambassadorSplit && c.ambassadorSplit.isAmbassador && (p.cu.role==="admin"||p.cu.role==="sales_admin") && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#FEF3C7", color:"#B45309", fontWeight:700 }}>🎯 Ambassador</span>}
             {/* Phase R-7 — commission status badges. Active = amber (in-progress
                 book), Fully paid = green (closed), Cancelled = gray (dead).
                 The Revert button only shows for status=fully_paid AND admin role. */}
@@ -23638,6 +24001,9 @@ var CommissionsPage = function(p) {
                 rename never rewrites this line — it preserves who actually
                 brought the deal at close. */}
             {c.externalSplit && c.externalSplit.isExternal && c.externalSplit.brokerName && <span> · External via <b style={{ color:"#5B21B6" }}>{c.externalSplit.brokerName}</b></span>}
+            {/* Phase R-14 — ambassador subtitle. Classification is internal to
+                admin/sales_admin (defense-in-depth on the admin-only page). */}
+            {c.ambassadorSplit && c.ambassadorSplit.isAmbassador && (p.cu.role==="admin"||p.cu.role==="sales_admin") && <span> · <b style={{ color:"#B45309" }}>Ambassador deal · Commission {Number(c.ambassadorSplit.commissionRate || 0)}%</b></span>}
           </div>
         </div>
         <div style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
@@ -23670,6 +24036,88 @@ var CommissionsPage = function(p) {
           recipient identifier on the payout subdoc); sum uses netPaid (gross
           minus appliedToDebt) to match the existing paidByName convention. */}
       {(function(){
+        // Phase R-14 — ambassador recipients branch. The snapshot chain is null
+        // for ambassador deals, so the standard rows below would render empty
+        // ("No recipients on snapshot"). Render the ambassadorSplit.recipients[]
+        // list instead, with a Gross/Tax/ARO-Net summary + Team Total / ARO Keep
+        // footer. The whole block lives on the admin/sales_admin-only page.
+        if (c.ambassadorSplit && c.ambassadorSplit.isAmbassador) {
+          var amb = c.ambassadorSplit;
+          var aRecips = amb.recipients || [];
+          var nAmb = function(v){ var num = Number(v||0); return (!isFinite(num)||num===0) ? "0" : Math.round(num).toLocaleString(); };
+          var teamTotal = aRecips.reduce(function(s, r){ return s + Number(r.amount || 0); }, 0);
+          var aroNetAmb = Number(amb.aroNetTotal || 0);
+          var aroKeepAmb = aroNetAmb - teamTotal;
+          var roleLbl = function(role){ return role === "team_leader" ? "Team Lead" : role === "manager" ? "Manager" : role === "director" ? "Director" : "Sales"; };
+          var expandedA = !!expandedRecipients[String(c._id)];
+          var toggleA = function(){
+            setExpandedRecipients(function(prev){
+              var next = Object.assign({}, prev);
+              if (next[String(c._id)]) delete next[String(c._id)]; else next[String(c._id)] = true;
+              return next;
+            });
+          };
+          var headerHoveredA = hoveredRecipientHeader === String(c._id);
+          return <div style={{ marginBottom:10 }}>
+            <div onClick={toggleA}
+              onMouseEnter={function(){ setHoveredRecipientHeader(String(c._id)); }}
+              onMouseLeave={function(){ setHoveredRecipientHeader(null); }}
+              style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 10px", margin:"0 -10px", borderRadius:8, cursor:"pointer", userSelect:"none", background: headerHoveredA ? "#F1F5F9" : (expandedA ? "#F9FAFB" : "transparent"), transition:"background 0.15s ease" }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.text, textTransform:"uppercase", letterSpacing:0.3 }}>
+                Recipients ({aRecips.length})
+              </div>
+              <div style={{ display:"flex", alignItems:"center", gap:6, color:C.text }}>
+                <span style={{ fontSize:11, fontWeight:600 }}>{expandedA ? "Hide" : "Show"}</span>
+                <ChevronDown size={18} style={{ transform: expandedA ? "rotate(0deg)" : "rotate(-90deg)", transition:"transform 0.2s ease" }}/>
+              </div>
+            </div>
+            <div style={{ overflow:"hidden", transition:"max-height 0.25s ease", maxHeight: expandedA ? 1800 : 0 }}>
+              <div style={{ paddingTop:6 }}>
+                {/* AMBASSADOR SPLIT summary (amber) */}
+                <div style={{ fontSize:10, fontWeight:700, color:"#B45309", textTransform:"uppercase", letterSpacing:0.3, padding:"2px 0 6px" }}>Ambassador Split</div>
+                <div style={{ border:"1px solid #FDE68A", borderRadius:10, background:"#FFFBEB", padding:"8px 12px", marginBottom:12, fontSize:11, color:"#92400E", lineHeight:1.8 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between" }}><span style={{ color:C.textLight }}>Gross Commission</span><b style={{ color:C.text }}>{nAmb(amb.grossCommission)} EGP</b></div>
+                  <div style={{ display:"flex", justifyContent:"space-between" }}><span style={{ color:C.textLight }}>Developer Tax{amb.developerTaxEnabled ? " (" + Number(amb.developerTaxRate || 0) + "%)" : ""}</span><b style={{ color:"#B45309" }}>{amb.developerTaxEnabled ? "−" : ""}{nAmb(amb.developerTaxAmount)} EGP</b></div>
+                  <div style={{ display:"flex", justifyContent:"space-between", borderTop:"1px solid #FDE68A", marginTop:4, paddingTop:4 }}><span style={{ fontWeight:700, color:"#B45309" }}>ARO Net Total</span><b style={{ color:"#B45309" }}>{nAmb(amb.aroNetTotal)} EGP</b></div>
+                </div>
+                {aRecips.length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 0" }}>No recipients yet — assign team commissions via Edit Collection.</div>}
+                {aRecips.length > 0 && <div style={{ border:"1px solid #E2E8F0", borderRadius:10, overflow:"hidden", background:"#fff" }}>
+                  {aRecips.map(function(r, idx){
+                    var owed = Number(r.amount || 0);
+                    var paid = Number(r.amountPaid || 0);
+                    var remaining = Math.max(0, owed - paid);
+                    var overpaid = paid > owed && owed > 0;
+                    var fullyPaid = !overpaid && owed > 0 && remaining === 0;
+                    var notStarted = paid === 0 && owed > 0;
+                    var rowBg = fullyPaid ? "#F0FDF4" : notStarted ? "#FFFBEB" : "#fff";
+                    var statusIcon = overpaid ? "⚠️" : fullyPaid ? "✅" : owed > 0 ? "🔴" : "—";
+                    var remColor = overpaid ? "#B91C1C" : fullyPaid ? "#15803D" : C.text;
+                    var remValue = overpaid ? ("+" + nAmb(paid - owed)) : nAmb(remaining);
+                    return <div key={String(r._id) || idx} style={{ padding:"8px 12px", borderTop: idx > 0 ? "1px solid #F1F5F9" : "none", background: rowBg }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:4, gap:8 }}>
+                        <div style={{ display:"flex", gap:8, alignItems:"baseline", minWidth:0, flexWrap:"wrap" }}>
+                          <span style={{ fontSize:10, fontWeight:700, color:C.textLight, textTransform:"uppercase", minWidth:72 }}>{roleLbl(r.userRole)}</span>
+                          <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{r.userName || "(unknown)"}</span>
+                        </div>
+                        <span style={{ fontSize:12 }}>{statusIcon}</span>
+                      </div>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, fontSize:11, marginInlineStart:80 }}>
+                        <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Owed:&nbsp;</span><span style={{ color:C.text }}>{nAmb(owed)}</span></div>
+                        <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Paid:&nbsp;</span><span style={{ color:C.text }}>{nAmb(paid)}</span></div>
+                        <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Rem:&nbsp;</span><span style={{ color:remColor, fontWeight:700 }}>{remValue}</span></div>
+                      </div>
+                    </div>;
+                  })}
+                </div>}
+                {/* Team Total / ARO Keep footer */}
+                <div style={{ marginTop:10, padding:"8px 12px", background:"#F8FAFC", borderRadius:8, fontSize:12, fontWeight:600, color:C.text, display:"flex", justifyContent:"space-between" }}>
+                  <span>Total to team: <b>{nAmb(teamTotal)} EGP</b></span>
+                  <span style={{ color: aroKeepAmb < 0 ? "#B91C1C" : "#B45309" }}>ARO keeps: <b>{nAmb(aroKeepAmb)} EGP</b></span>
+                </div>
+              </div>
+            </div>
+          </div>;
+        }
         var primarySlots = [
           ["salesAgent", "Sales",       snap.salesAgent],
           ["teamLeader", "Team Lead",   snap.teamLeader],
@@ -24061,6 +24509,14 @@ var CommissionsPage = function(p) {
         }}>
           💼 Broker Calculation
         </button>}
+        {/* Phase R-14 — Ambassador Calculation trigger. Ambassador + admin/SA only. */}
+        {c.ambassadorSplit && c.ambassadorSplit.isAmbassador && (p.cu.role==="admin"||p.cu.role==="sales_admin") && <button onClick={function(){ setAmbassadorCalcFor(c); }} style={{
+          padding:"6px 12px", borderRadius:8, border:"1px solid #FDE68A", background:"#FFFBEB",
+          cursor:"pointer", fontSize:12, fontWeight:600, color:"#B45309",
+          display:"inline-flex", alignItems:"center", gap:4
+        }}>
+          🎯 Ambassador Calculation
+        </button>}
         {/* Cancel Deal — admin path to drop a deal directly from the
             Commissions card. Hits POST /api/commissions/:id/cancel which
             handles BOTH the live-lead path (full /deal-cancel behavior:
@@ -24231,26 +24687,29 @@ var CommissionsPage = function(p) {
     </div>
 
     {/* Phase R-12 Part 4 — Deal-type filter pills (All / Internal / External).
-        Counts come from `rows` after the server-side filters. Same visual
-        style as STATUS_PILLS above. Until Part 5 wires externalSplit onto
-        Commission docs, every row reads as Internal — External will be 0. */}
+        Phase R-14 — + Ambassador (amber), counted via ambassadorSplit.isAmbassador
+        (mirror flag, parallel to externalSplit.isExternal). Counts come from
+        `rows` after the server-side filters. Internal = neither external nor
+        ambassador. */}
     {(function(){
       var rs = Array.isArray(rows) ? rows : [];
       var extCount = rs.filter(function(r){ return r && r.externalSplit && r.externalSplit.isExternal; }).length;
-      var intCount = rs.length - extCount;
+      var ambCount = rs.filter(function(r){ return r && r.ambassadorSplit && r.ambassadorSplit.isAmbassador; }).length;
+      var intCount = rs.length - extCount - ambCount;
       var DEAL_TYPE_PILLS = [
-        { id:"all",      label:"All",         count: rs.length },
-        { id:"internal", label:"🏢 Internal", count: intCount },
-        { id:"external", label:"🤝 External", count: extCount }
+        { id:"all",        label:"All",            count: rs.length,  theme: C.accent },
+        { id:"internal",   label:"🏢 Internal",    count: intCount,   theme: C.accent },
+        { id:"external",   label:"🤝 External",    count: extCount,   theme: "#7C3AED" },
+        { id:"ambassador", label:"🎯 Ambassador",  count: ambCount,   theme: "#D97706" }
       ];
       return <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
         {DEAL_TYPE_PILLS.map(function(s){
           var active = dealTypeFilter === s.id;
           return <button key={s.id} onClick={function(){ setDealTypeFilter(s.id); }} style={{
             padding:"5px 12px", borderRadius:8, border:"1px solid",
-            borderColor: active ? C.accent : "#E2E8F0",
-            background: active ? C.accent + "12" : "#fff",
-            color: active ? C.accent : C.textLight,
+            borderColor: active ? s.theme : "#E2E8F0",
+            background: active ? s.theme + "12" : "#fff",
+            color: active ? s.theme : C.textLight,
             fontSize:12, fontWeight:600, cursor:"pointer"
           }}>{s.label} ({s.count})</button>;
         })}
@@ -24294,8 +24753,14 @@ var CommissionsPage = function(p) {
       var displayRows = rows;
       if (dealTypeFilter === "external") {
         displayRows = rows.filter(function(r){ return r && r.externalSplit && r.externalSplit.isExternal; });
+      } else if (dealTypeFilter === "ambassador") {
+        // Phase R-14
+        displayRows = rows.filter(function(r){ return r && r.ambassadorSplit && r.ambassadorSplit.isAmbassador; });
       } else if (dealTypeFilter === "internal") {
-        displayRows = rows.filter(function(r){ return !(r && r.externalSplit && r.externalSplit.isExternal); });
+        displayRows = rows.filter(function(r){
+          return !(r && r.externalSplit && r.externalSplit.isExternal)
+              && !(r && r.ambassadorSplit && r.ambassadorSplit.isAmbassador);
+        });
       }
       if (displayRows.length === 0) {
         return <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight, background:"#fff", borderRadius:14, border:"1px solid #E8ECF1" }}>
@@ -24813,6 +25278,10 @@ var CommissionsPage = function(p) {
                   </th>;
                 };
                 var typeBadge = function(type){
+                  // Phase R-14 — ambassador (amber) alongside external (violet) / internal (gray).
+                  if (type === "ambassador") {
+                    return <span style={{ display:"inline-block", padding:"2px 8px", borderRadius:10, fontSize:10, fontWeight:700, background:"#FEF3C7", color:"#B45309" }}>Ambassador</span>;
+                  }
                   var ext = type === "external";
                   return <span style={{
                     display:"inline-block", padding:"2px 8px", borderRadius:10, fontSize:10, fontWeight:700,
@@ -24835,6 +25304,7 @@ var CommissionsPage = function(p) {
                       {filterChip("all", "All")}
                       {filterChip("internal", "Internal")}
                       {filterChip("external", "External")}
+                      {filterChip("ambassador", "Ambassador")}
                     </div>
                   </div>
                   {profitByDealLoading && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>Loading…</div>}
@@ -25243,6 +25713,7 @@ var CommissionsPage = function(p) {
       target={editingCollection}
       token={p.token}
       users={p.users}
+      cu={p.cu}
       savingFlag={savingFlag}
       onClose={function(){ setEditingCollection(null); }}
       onSaved={function(doc, didAnything){
@@ -25515,6 +25986,62 @@ var CommissionsPage = function(p) {
         <div style={{ display:"flex", gap:10, marginTop:18 }}>
           <Btn outline onClick={printNow} style={{ flex:1 }}>📄 Print for Broker</Btn>
           <Btn onClick={function(){ setBrokerCalcFor(null); }} style={{ flex:1 }}>✕ Close</Btn>
+        </div>
+      </Modal>;
+    })()}
+    {/* Phase R-14 — Ambassador Calculation read-only modal. Mirrors the Broker
+        Calculation modal but for ambassador deals: Gross → Developer Tax → ARO
+        Net → Team Total → ARO Keep. No print path (recipients are internal staff,
+        so there's no external party needing a printout). Reads the stored
+        ambassadorSplit computed fields (single source of truth). */}
+    {ambassadorCalcFor && (function(){
+      var c = ambassadorCalcFor;
+      var amb = c.ambassadorSplit || {};
+      var recips = amb.recipients || [];
+      var gross = Number(amb.grossCommission || 0);
+      var taxEnabled = !!amb.developerTaxEnabled;
+      var taxPct = Number(amb.developerTaxRate || 0);
+      var taxAmount = Number(amb.developerTaxAmount || 0);
+      var aroNet = Number(amb.aroNetTotal || 0);
+      var teamTotal = recips.reduce(function(s, r){ return s + Number(r.amount || 0); }, 0);
+      var aroKeep = aroNet - teamTotal;
+      var fmt = function(n){ return Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " EGP"; };
+      var leadName = (c.snapshot && c.snapshot.customerName) || "(deal)";
+      var roleLbl = function(role){ return role === "team_leader" ? "Team Lead" : role === "manager" ? "Manager" : role === "director" ? "Director" : "Sales"; };
+      return <Modal show={true} onClose={function(){ setAmbassadorCalcFor(null); }} title={"🎯 Ambassador Calculation — " + leadName} w={520}>
+        <div style={{ fontSize:13, lineHeight:1.8, color:C.text }}>
+          <div style={{ marginBottom:14, paddingBottom:10, borderBottom:"2px solid #B45309" }}>
+            <div style={{ fontSize:18, fontWeight:700, color:"#111" }}>🎯 Ambassador Calculation</div>
+            <div style={{ fontSize:12, color:"#374151", marginTop:4 }}>
+              Deal: <b>{leadName}</b> &nbsp;·&nbsp; Commission: <b>{Number(amb.commissionRate || 0)}%</b>
+            </div>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", borderBottom:"1px solid #E2E8F0" }}>
+            <span style={{ color:C.textLight }}>Gross Commission:</span><b style={{ textAlign:"right" }}>{fmt(gross)}</b>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", borderBottom:"1px solid #E2E8F0" }}>
+            <span style={{ color:C.textLight }}>Developer Tax{taxEnabled ? " (" + taxPct + "%)" : " (disabled)"}:</span><b style={{ textAlign:"right", color:"#B45309" }}>{taxEnabled ? "−" : ""}{fmt(taxAmount)}</b>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"8px 0", borderTop:"2px solid #FCD34D", borderBottom:"2px solid #FCD34D", background:"#FFFBEB" }}>
+            <span style={{ color:C.text, fontWeight:600 }}>ARO Net:</span><b style={{ textAlign:"right", color:"#B45309" }}>{fmt(aroNet)}</b>
+          </div>
+          {/* Team breakdown */}
+          {recips.length > 0 && <div style={{ marginTop:8 }}>
+            {recips.map(function(r, idx){
+              return <div key={String(r._id) || idx} style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"4px 0 4px 16px", fontSize:12, color:C.textLight }}>
+                <span>{r.userName || "(unknown)"} ({roleLbl(r.userRole)}):</span><b style={{ textAlign:"right", color:C.text }}>{fmt(r.amount)}</b>
+              </div>;
+            })}
+          </div>}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"6px 0", marginTop:4, borderTop:"1px solid #E2E8F0" }}>
+            <span style={{ color:C.text, fontWeight:600 }}>Team Total:</span><b style={{ textAlign:"right" }}>{fmt(teamTotal)}</b>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:6, padding:"10px 0 4px", borderTop:"2px solid #15803D", marginTop:4, color: aroKeep < 0 ? "#B91C1C" : "#15803D", fontWeight:700 }}>
+            <span>ARO Keep (ARO Net − Team Total):</span><span style={{ textAlign:"right" }}>{fmt(aroKeep)}</span>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:10, marginTop:18 }}>
+          <Btn onClick={function(){ setAmbassadorCalcFor(null); }} style={{ flex:1 }}>✕ Close</Btn>
         </div>
       </Modal>;
     })()}
