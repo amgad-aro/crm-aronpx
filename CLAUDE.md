@@ -153,3 +153,43 @@ Endpoints (all admin/sales_admin):
 - `PATCH /api/commissions/:id/recipients/:slot/remove` — same slot enum.
 
 The recipient list rendering in `CommissionsPage` derives the effective rows by combining `commission.snapshot.*` with `commission.recipientOverrides[]`. Snapshot.* is NEVER mutated by an override action — recompute (`computeAllRecipientShares`) computes shares as if no override exists; the override layer is applied at read time only.
+
+## Ambassador Deal Type (R-14, shipped 2026-06-01)
+
+Third deal type alongside Internal and External. Ambassador deals have a small commission rate (1–1.5%), pay **NO VAT 14%** and **NO Withholding 5%**, and instead carry an optional **Developer Tax** (a % of gross commission the developer withholds before paying ARO). Team members are paid **manual fixed EGP amounts** — NOT the per-1000 rate chain.
+
+**Canonical math** (10M deal × 1.5% example):
+```
+Gross Commission   = dealTotal × commissionRate/100      = 150,000
+Developer Tax      = Gross × developerTaxRate/100 (10%)  =  15,000   (0 if disabled)
+ARO Net Total      = Gross − Developer Tax               = 135,000
+Team Total         = Σ recipients[].amount               (admin-assigned)
+ARO Keep           = ARO Net Total − Team Total          (e.g. 135,000 − 10,000 = 125,000)
+```
+
+**Schema:**
+- `Lead.dealType` enum extended to `["internal","external","ambassador"]`.
+- `Lead.ambassadorConfig { commissionRate, developerTaxEnabled, developerTaxRate }` — `commissionRate` mirrors the canonical top-level `Lead.commissionRate` input (reused, not a separate field). Cleared by `validateAndNormalizeExternalDeal` when dealType ≠ ambassador.
+- `Commission.ambassadorSplit { isAmbassador, commissionRate, developerTaxEnabled, developerTaxRate, grossCommission, developerTaxAmount, aroNetTotal, recipients[] }`. Each recipient: `{ userId, userName (snapshot), userRole (snapshot), amount, amountPaid (derived), payouts[{date,amount,note}] }`. The per-1000 chain (`snapshot.salesAgent/teamLeader/...`) and `externalSplit` stay null for ambassador deals.
+
+**Key behaviors:**
+- `buildAmbassadorSplitForLead(leadDoc)` seeds `recipients[]` with the lead's original sales agent at `amount:0` (admin fills via Edit Collection). `buildSnapshotForLead` nulls the whole chain for ambassador (like external broker-only); recipients live only on `ambassadorSplit`.
+- `computeAllRecipientShares` has an ambassador short-circuit: `grossCommission = Σ non-cancelled cycle.claimAmount`; `developerTaxAmount`/`aroNetTotal` derived. It NEVER writes `recipients[].amount` (admin-owned). Helper `ambDevTaxFraction(doc)` returns the decimal tax rate (0 when disabled/non-ambassador).
+- `ensureCommissionForLead` handles create + revive (revive matches by `ambassadorSplit.isAmbassador`, refreshes rate/tax config from the lead, PRESERVES `recipients[]` + their payouts).
+- Commission-lock: ambassador config is frozen once an active commission exists (PUT `/api/leads/:id` returns 409, same as external).
+
+**7 admin endpoints** (all `auth, salesAdminOnly`, guard `isAmbassador` + non-cancelled):
+- `PUT /api/commissions/:id/ambassador-config` — edit developer tax only (commission rate read-only; recomputes gross/tax/net).
+- `POST · PUT · DELETE /api/commissions/:id/ambassador-recipients[/:recipientId]` — add (dedupe by userId), edit amount, remove (blocked if payouts exist).
+- `POST · PUT · DELETE /api/commissions/:id/ambassador-payouts[/:payoutId]` — per-recipient payouts, capped at owed; `amountPaid` always recomputed from `Σ payouts`.
+The Edit Collection ambassador UI uses **immediate-apply** (each action hits its endpoint and refreshes), not the batched Save-All flow.
+
+**Analytics integration:**
+- **Annual Summary cards** (`/api/commissions/annual-summary`, received.date trigger): ambassador → Total Claims `+gross`, Net of VAT `+gross` (no ÷1.14), VAT `+0`, Withholding `+0`, Net Revenue `+aroNet`. Excluded from VAT card / Monthly VAT table / Withholding-by-deal table.
+- **Annual P&L** (`/api/annual-pnl`): Revenue includes ambassador `aroNet`; "Team & Broker Commissions" folds in `ambassadorSplit.recipients[].payouts[]` dated in-year.
+- **Net Profit by Deal** (`/api/commissions/profit-by-deal`): ambassador rows = `{ type:"ambassador", revenue: aroNet, brokerPayouts: 0, teamPayouts: Σ recipient payouts, aroNet }`; orange badge + filter chip on the FE table.
+- **Payout Report** (`computePayoutsForMonth`): ambassador recipients aggregate into the regular `byAgent` (agents) section — NOT a separate brokers section — keyed by userId.
+- **Reconciliation invariants** (must hold): `Σ deals.revenue === pnl.netRevenue` AND `Σ deals.aroNet === pnl.netRevenue − teamCommissions.total`. Both `profit-by-deal` and `annual-pnl` treat ambassador identically to keep these exact.
+- Cycle received-stage pre-fill: ambassador → `claimAmount − developerTax` (or `claimAmount` if tax disabled); internal/external keep `claimAmount − 5% withholding`.
+
+**Role visibility — the Ambassador classification is INTERNAL to admin/sales_admin.** Sales/TL/manager/director must never see any Ambassador indicator. Gated: the Add-Deal "Ambassador" radio, the Deals-page deal-row badge (`isOnlyAdmin && dealType==="ambassador"`), the Commission-card badge + subtitle + Ambassador Calculation button (`(admin‖sales_admin)`), and the AMBASSADOR DETAILS section in Edit Collection. The Commissions page itself is admin/sales_admin-only at the routing level, so its recipient details need no extra per-row redaction. Any future contributor adding Ambassador UI to a surface visible to other roles MUST gate it the same way.
