@@ -2355,7 +2355,21 @@ var LeadForm = function(p) {
     ]}/>}
     <Inp label={t.project} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder=""/>
     {!isReq&&<Inp label={t.source} req type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={buildSourceOptions(form.source)}/>}
-    {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
+    {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat((function(){
+      // Agent-selector list. EOI / Deal forms ONLY also expose the admin "amgad"
+      // (so he can be set as the recipient when he personally closes a deal).
+      // Scoped here on purpose: does NOT touch the shared salesUsers (also used
+      // by the External "Second Sales Agent" dropdown) nor the Add/Edit-Lead
+      // context. Deduped by _id; only added when present + active.
+      var agentList = salesUsers;
+      if (isEOIForm || isDoneDealForm) {
+        var amgadUsers = (p.users || []).filter(function(u){ return u.username === "amgad" && u.active; });
+        amgadUsers.forEach(function(a){
+          if (!agentList.some(function(u){ return gid(u) === gid(a); })) agentList = agentList.concat([a]);
+        });
+      }
+      return agentList;
+    })().map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
     {isEOIForm&&<Inp label="📅 EOI Date" type="date" value={form.eoiDate||""} onChange={function(e){upd("eoiDate",e.target.value);}}/>}
     {isEOIForm&&<Inp label="💵 Deposit (EGP)" req value={form.eoiDeposit||""} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("eoiDeposit",r?Number(r).toLocaleString():"");}} placeholder=""/>}
     {!isEOIForm&&!isDoneDealForm&&<Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>}
