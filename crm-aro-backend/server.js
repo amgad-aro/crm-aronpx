@@ -10366,9 +10366,17 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // Phase R-13 — commissionRate + commissionAmount (canonical state-tax model).
     // FE sends commissionRate (percent); BE always recomputes commissionAmount
     // from round2(budget × rate / 100). Client-supplied commissionAmount is
-    // ignored. Non-admin roles: strip both. Admin saving a DoneDeal: require
-    // commissionRate > 0 and budget > 0; recompute. Admin saving non-DoneDeal:
+    // ignored. Non-admin roles: strip both. Admin saving a non-DoneDeal:
     // accept rate if provided but drop empty/invalid.
+    //
+    // DECOUPLED (restore pre-411f3c0 close behavior): commission rate is now
+    // OPTIONAL when closing a deal. Closing must NOT be gated on a rate —
+    // commission is calculated separately on the Commissions page. When the
+    // admin DOES supply a valid rate + budget (Edit-Deal LeadForm), we still
+    // recompute commissionAmount and pre-seed cycle 1. When the rate is
+    // absent/invalid (StatusModal quick-close), we strip the fields and let
+    // the deal transition: ensureCommissionForLead then auto-creates a zeroed
+    // commission for later calculation. We never reject for a missing rate.
     var __round2Put = function(n){ return Math.round(Number(n||0) * 100) / 100; };
     if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
       delete req.body.commissionRate;
@@ -10376,22 +10384,31 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     } else if (req.body.status === "DoneDeal") {
       var crRawPut = req.body.commissionRate;
       var crNumPut = Number(crRawPut);
-      if (crRawPut === undefined || crRawPut === null || crRawPut === "" || !isFinite(crNumPut) || crNumPut <= 0 || crNumPut > 100) {
-        return res.status(400).json({ error: "commission_rate_required", message: "Commission Rate (%) is required and must be between 0 and 100." });
-      }
-      // Budget can come from the body, OR fall back to the lead's existing budget.
-      var budgetForCalcPut;
-      if (req.body.budget !== undefined && req.body.budget !== null && req.body.budget !== "") {
-        budgetForCalcPut = parseDealTotalFromBudget(req.body.budget);
+      var crValidPut = !(crRawPut === undefined || crRawPut === null || crRawPut === "" || !isFinite(crNumPut) || crNumPut <= 0 || crNumPut > 100);
+      if (crValidPut) {
+        // Budget can come from the body, OR fall back to the lead's existing budget.
+        var budgetForCalcPut;
+        if (req.body.budget !== undefined && req.body.budget !== null && req.body.budget !== "") {
+          budgetForCalcPut = parseDealTotalFromBudget(req.body.budget);
+        } else {
+          var budgetOldLead = await Lead.findById(req.params.id).select("budget").lean();
+          budgetForCalcPut = parseDealTotalFromBudget(budgetOldLead && budgetOldLead.budget);
+        }
+        if (budgetForCalcPut > 0) {
+          req.body.commissionRate   = crNumPut;
+          req.body.commissionAmount = __round2Put(budgetForCalcPut * crNumPut / 100);
+        } else {
+          // Rate supplied but no usable budget to compute against — drop both so
+          // we never persist a rate without its matching amount. Cycle 1 seeds
+          // zeroed; admin sets the value later on the Commissions page.
+          delete req.body.commissionRate;
+          delete req.body.commissionAmount;
+        }
       } else {
-        var budgetOldLead = await Lead.findById(req.params.id).select("budget").lean();
-        budgetForCalcPut = parseDealTotalFromBudget(budgetOldLead && budgetOldLead.budget);
+        // No valid rate supplied — strip any partial values; do NOT reject.
+        delete req.body.commissionRate;
+        delete req.body.commissionAmount;
       }
-      if (!(budgetForCalcPut > 0)) {
-        return res.status(400).json({ error: "budget_required_for_commission", message: "Budget (EGP) is required and must be greater than 0 to compute the commission." });
-      }
-      req.body.commissionRate   = crNumPut;
-      req.body.commissionAmount = __round2Put(budgetForCalcPut * crNumPut / 100);
 
       // Phase R-13.1 — DoneDeal recipient guard, per-type. Mirror of the POST
       // guard. Internal: agentId required. External: broker required (validator
