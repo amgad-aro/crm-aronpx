@@ -8810,7 +8810,21 @@ app.get("/api/leads/no-contact", auth, async function(req, res) {
     // verbatim from the aging report so behavior matches exactly, including
     // the defensive $convert for legacy string-typed history timestamps.
     var staleRows = await Lead.aggregate([
-      { $match: { $and: [ scope, { archived: { $ne: true } } ] } },
+      { $match: { $and: [
+        scope,
+        { archived: { $ne: true } },
+        // Exclude EOI / Done Deal (frozen) leads — they must never surface in
+        // the bell. Mirrors isLeadFrozen() (server.js ~1719) exactly, the same
+        // predicate the rotation engine uses to block frozen leads (inline at
+        // autoRotateLead L11579-11585; isLeadFrozen() calls at L9684/12216/12467):
+        //   status ∈ {DoneDeal, EOI} OR eoiStatus ∈ {Pending, Approved}
+        //   OR globalStatus ∈ {donedeal, eoi}
+        { $nor: [
+          { status:       { $in: ["DoneDeal", "EOI"] } },
+          { eoiStatus:    { $in: ["Pending", "Approved"] } },
+          { globalStatus: { $in: ["donedeal", "eoi"] } }
+        ]}
+      ] } },
       { $lookup: {
           from: "activities",
           let: { lid: "$_id", aid: "$agentId" },
