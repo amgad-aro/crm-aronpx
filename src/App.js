@@ -6033,7 +6033,7 @@ var LeadsPage = function(p) {
             computeItemKey={function(idx, lead){ return (lead && lead._id) ? String(lead._id) : idx; }}
             endReached={function(){ if (p.loadMoreLeads) p.loadMoreLeads(); }}
             itemContent={function(idx, lead){
-              var curSt=currentStatus(lead); var curFb=currentFeedback(lead); var so=sc.find(function(s){return s.value===curSt;})||sc[0]; var isVIP=lead.isVIP;
+              var curSt=currentStatus(lead); var lf=latestFeedbackForPanel(lead); var so=sc.find(function(s){return s.value===curSt;})||sc[0]; var isVIP=lead.isVIP;
               var lastAct=lead.lastActivityTime?timeAgo(lead.lastActivityTime,t):"—";
               var actColor=lead.lastActivityTime&&(Date.now()-new Date(lead.lastActivityTime).getTime())>3*24*60*60*1000?C.danger:C.accent;
               var borderCol=isVIP?"#F59E0B":so.color||"#E8ECF1";
@@ -6062,7 +6062,7 @@ var LeadsPage = function(p) {
               <span style={{ fontSize:11, color:actColor, fontWeight:600 }}>🕐 {lastAct}</span>
             </div>
             {/* Last Feedback (slice that owns the most-recent action) */}
-            {curFb&&<div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8, padding:"6px 10px", background:"#F8FAFC", borderRadius:8, borderLeft:"3px solid "+C.accent }}>💬 {curFb}{lead._currentActionAgent&&lead._currentActionAgent.name&&p.cu.role!=="sales"&&<div style={{ fontSize:10, fontWeight:500, color:C.textLight, marginTop:3 }}>— by {lead._currentActionAgent.name}</div>}</div>}
+            {lf&&lf.text&&<div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8, padding:"6px 10px", background:"#F8FAFC", borderRadius:8, borderLeft:"3px solid "+C.accent }}>💬 {lf.text}{lf.agentName&&p.cu.role!=="sales"&&<div style={{ fontSize:10, fontWeight:500, color:C.textLight, marginTop:3 }}>— by {lf.agentName}</div>}</div>}
             {/* Callback time */}
             {lead.callbackTime&&(function(){var ci=callbackColor(lead.callbackTime);return <div style={{ fontSize:11, fontWeight:600, color:ci?ci.color:C.textLight, marginBottom:8, padding:"4px 10px", background:ci?ci.bg:"#F8FAFC", borderRadius:8 }}>📞 {lead.callbackTime.slice(0,16).replace("T"," ")}</div>;})()}
             {/* Action buttons */}
@@ -6140,7 +6140,7 @@ var LeadsPage = function(p) {
                 </tr>;
               }}
               itemContent={function(idx, lead){
-                var lid=gid(lead); var curSt=currentStatus(lead); var curFb=currentFeedback(lead); var so=sc.find(function(s){return s.value===curSt;})||sc[0];
+                var lid=gid(lead); var curSt=currentStatus(lead); var lf=latestFeedbackForPanel(lead); var so=sc.find(function(s){return s.value===curSt;})||sc[0];
                 var isChk=selected2.includes(lid);
                 return <Fragment>
                   <td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();setSelected2(function(prev){return prev.includes(lid)?prev.filter(function(x){return x!==lid;}):[...prev,lid];});}}><input type="checkbox" checked={isChk} readOnly/></td>
@@ -6191,7 +6191,7 @@ var LeadsPage = function(p) {
                     </div>
                     {(function(){if(!isOnlyAdmin||!lead.assignments||lead.assignments.length<=1)return null;var SP=["MeetingDone","HotCase","Potential","CallBack","NoAnswer","NotInterested","NewLead"];var SL={"MeetingDone":"Meeting Done","HotCase":"Hot Case","Potential":"Potential","CallBack":"Call Back","NoAnswer":"No Answer","NotInterested":"Not Interested","NewLead":"New Lead"};var curIdx=SP.indexOf(lead.status);var bestIdx=SP.length;for(var ai=0;ai<lead.assignments.length;ai++){var si=SP.indexOf(lead.assignments[ai].status);if(si>=0&&si<bestIdx)bestIdx=si;}if(bestIdx>=curIdx||bestIdx>=SP.length)return null;return <span style={{background:"#F1F5F9",color:"#64748B",padding:"2px 6px",borderRadius:8,fontSize:10,fontWeight:500,marginLeft:4,whiteSpace:"nowrap"}}>was: {SL[SP[bestIdx]]||SP[bestIdx]}</span>;})()}
                   </td>
-                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:13, fontWeight:700, color:C.text, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{curFb?<Fragment>{curFb}{lead._currentActionAgent&&lead._currentActionAgent.name&&p.cu.role!=="sales"&&<div style={{ fontSize:10, fontWeight:500, color:C.textLight, marginTop:3 }}>— by {lead._currentActionAgent.name}</div>}</Fragment>:<span style={{color:"#CBD5E1", fontWeight:400}}>-</span>}</td>}
+                  {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:13, fontWeight:700, color:C.text, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{lf&&lf.text?<Fragment>{lf.text}{lf.agentName&&p.cu.role!=="sales"&&<div style={{ fontSize:10, fontWeight:500, color:C.textLight, marginTop:3 }}>— by {lf.agentName}</div>}</Fragment>:<span style={{color:"#CBD5E1", fontWeight:400}}>-</span>}</td>}
                   {!p.isMobile&&isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
