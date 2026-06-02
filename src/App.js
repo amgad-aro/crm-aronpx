@@ -22,7 +22,7 @@ import QRCode from "qrcode";
 // scroll surface (no double scrollbars). ~25 KB gz total one-time cost.
 import { TableVirtuoso, Virtuoso } from "react-virtuoso";
 import { initPushNotifications, disposePushNotifications, removeTokenFromBackend } from "./utils/pushNotifications";
-import { isNativePlatformSync, runBiometricAuth, isBiometricAvailable, addBiometricResumeListener } from "./utils/biometric";
+import { isNativePlatformSync, runBiometricAuth, isBiometricAvailable } from "./utils/biometric";
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
@@ -618,23 +618,25 @@ var Modal = function(p) {
 };
 // Full-screen biometric lock overlay. Rendered only when the app is locked
 // (native + backgrounded ≥2 min, or cold launch with a session). Never shows
-// on web. The Unlock button re-fires the prompt — failure never logs out.
+// on web. The button re-fires the native prompt — there is NO bypass: a device
+// with a lock can only open by passing device auth. Failure never logs out.
 var BiometricLockScreen = function(p) {
   return <div style={{ position:"fixed", inset:0, zIndex:99999, background:"#0F1B2D",
       display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-      gap:22, fontFamily:"Cairo,sans-serif", color:"#fff" }}>
+      gap:18, fontFamily:"Cairo,sans-serif", color:"#fff" }}>
     <div style={{ width:72, height:72, borderRadius:20, background:"rgba(255,255,255,0.08)",
         display:"flex", alignItems:"center", justifyContent:"center" }}>
       <Lock size={34} color="#fff"/>
     </div>
     <div style={{ fontSize:18, fontWeight:700 }}>ARO CRM is locked</div>
-    <div style={{ fontSize:13, color:"rgba(255,255,255,0.6)", maxWidth:260, textAlign:"center" }}>
-      Verify your identity to continue.
+    <div style={{ fontSize:13, color:"rgba(255,255,255,0.6)", maxWidth:280, textAlign:"center" }}>
+      {p.failed ? "Couldn't verify your identity. Tap Retry to authenticate." : "Verify your identity to continue."}
     </div>
-    <button onClick={p.onUnlock} disabled={p.busy} style={{ padding:"11px 26px", borderRadius:12,
-        border:"none", background: p.busy ? "rgba(255,255,255,0.25)" : "#2F6BFF", color:"#fff",
-        fontSize:14, fontWeight:700, cursor: p.busy ? "default" : "pointer" }}>
-      {p.busy ? "Authenticating…" : "Unlock"}
+    {/* Single action — Unlock / Retry. Never permanently disabled (busy always
+        clears via the native-call timeout), so the spinner can't get stuck. */}
+    <button onClick={p.onUnlock} style={{ padding:"11px 26px", borderRadius:12, border:"none",
+        background:"#2F6BFF", color:"#fff", fontSize:14, fontWeight:700, cursor:"pointer" }}>
+      {p.busy ? "Authenticating…" : (p.failed ? "Retry" : "Unlock")}
     </button>
   </div>;
 };
@@ -26832,6 +26834,7 @@ export default function CRMApp() {
   var BIO_THRESHOLD_MS = 2 * 60 * 1000; // re-prompt only after ≥2 min backgrounded
   var [bioLocked,setBioLocked]=useState(isNativePlatformSync() && !!savedSession);
   var [bioPrompting,setBioPrompting]=useState(false);
+  var [bioFailed,setBioFailed]=useState(false); // last attempt failed/cancelled → show Retry
   var bgAtRef = useRef(null);     // ms timestamp when app last went to background
   var bioBusyRef = useRef(false); // guard against overlapping authenticate calls
   // Path-based routing for the unauthenticated reset flow. We don't pull in
@@ -27560,24 +27563,31 @@ export default function CRMApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // One funnel for every biometric unlock attempt (cold launch, resume, manual
-  // retry). NEVER logs out on failure — leaves bioLocked=true so the lock
-  // screen's retry button remains. Escape hatch: if the device has NO biometric
-  // AND no PIN/passcode (canAuth===false), auto-unlock — never trap a user on a
-  // device that has no way to authenticate.
+  // One funnel for every biometric unlock attempt (cold launch, resume, retry).
+  // SECURITY: a device WITH any lock can open ONLY by passing native auth —
+  // there is NO bypass. The app opens without auth ONLY when we positively
+  // confirm the device has no lock at all (canAuthKnown && canAuth===false).
+  // On failure/cancel/timeout we stay locked and surface a Retry button — and
+  // because every native call settles via timeout, there is no permanent spinner.
   var attemptBioUnlock = useCallback(function(){
     if (bioBusyRef.current) return;
     bioBusyRef.current = true;
+    setBioFailed(false);
     setBioPrompting(true);
     isBiometricAvailable()
       .then(function(info){
-        if (info && info.native && info.canAuth === false) {
-          setBioLocked(false);            // escape hatch — nothing can authenticate
+        // Confirmed NO lock on the device → nothing to verify → open.
+        if (info && info.canAuthKnown && info.canAuth === false) {
+          setBioLocked(false);
           return null;
         }
-        return runBiometricAuth("Unlock ARO CRM").then(function(ok){ if (ok) setBioLocked(false); });
+        // A lock exists (or we couldn't confirm) → REQUIRE device auth. No bypass.
+        return runBiometricAuth("Unlock ARO CRM").then(function(ok){
+          if (ok) { setBioLocked(false); }
+          else { setBioFailed(true); }   // cancelled/failed/timeout → Retry, stay locked
+        });
       })
-      .catch(function(){ /* stay locked; retry button remains */ })
+      .catch(function(){ setBioFailed(true); /* stay locked; Retry remains */ })
       .finally(function(){ bioBusyRef.current = false; setBioPrompting(false); });
   }, []);
 
@@ -27587,11 +27597,9 @@ export default function CRMApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-lock on resume only if backgrounded ≥2 min. Two signals:
-  //  - visibilitychange: stamps bgAt when hidden (fires in the WebView).
-  //  - plugin resume listener: native-accurate foreground signal.
-  // Both funnel into maybeRelock(); the busy ref stops the Face ID overlay's
-  // own visibility blip from causing a re-lock loop. No-op on web.
+  // Re-lock on resume only if backgrounded ≥2 min. visibilitychange stamps bgAt
+  // when hidden and fires maybeRelock when shown; the busy ref stops the auth
+  // overlay's own visibility blip from causing a re-lock loop. No-op on web.
   useEffect(function(){
     if (!isNativePlatformSync()) return; // web: never lock
     var maybeRelock = function(){
@@ -27599,7 +27607,7 @@ export default function CRMApp() {
       var bgAt = bgAtRef.current;
       if (bgAt && (Date.now() - bgAt) >= BIO_THRESHOLD_MS) {
         bgAtRef.current = null;
-        setBioLocked(true);                      // render lock; effect below re-prompts
+        setBioLocked(true);                      // render lock; cold-launch effect re-prompts
         attemptBioUnlock();
       }
     };
@@ -27609,11 +27617,8 @@ export default function CRMApp() {
       else { maybeRelock(); }
     };
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVis);
-    var cleanupResume = function(){};
-    addBiometricResumeListener(maybeRelock).then(function(fn){ cleanupResume = fn; });
     return function(){
       if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVis);
-      try { cleanupResume(); } catch (e) {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -27808,7 +27813,7 @@ export default function CRMApp() {
   // Biometric lock — only authenticated content is gated. Sits below the
   // !currentUser + loading + dataError gates so login/loading/error screens are
   // never locked, and above renderPage() so no page content renders while locked.
-  if (bioLocked) return <BiometricLockScreen onUnlock={attemptBioUnlock} busy={bioPrompting}/>;
+  if (bioLocked) return <BiometricLockScreen onUnlock={attemptBioUnlock} busy={bioPrompting} failed={bioFailed}/>;
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
