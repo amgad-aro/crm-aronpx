@@ -35,3 +35,8 @@ yarn-error.log*
 
 # Firebase config — contains API keys; keep out of git history
 android/app/google-services.json
+
+# Android release signing — NEVER commit keys or passwords
+*.jks
+*.keystore
+android/keystore.properties
