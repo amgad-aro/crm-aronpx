@@ -420,6 +420,77 @@ var getTeamScopeIds = function(currentUser, allUsers) {
   return ids;
 };
 
+// Client-side mirror of the backend sales list overlay (server.js ~7947-7998).
+// WS `lead_updated` broadcasts ship the ORIGINATING request's response body —
+// for an admin action (e.g. a rotate) that's the full admin-scoped doc with
+// EVERY assignment slice, including the previous owner's feedback. The server's
+// per-client WS filter only gates DELIVERY; it does not redact slices, so a
+// sales socket that receives such an event would upsert another agent's slice
+// into p.leads and briefly leak it in the detail panel (until the corrective
+// fetchSingleLead lands). Re-apply the same overlay the REST list endpoint
+// applies, BEFORE the doc enters local state.
+// Only role "sales" is scoped by the backend list endpoint; every other role
+// (admin / sales_admin / manager / team_leader / HR) gets the doc unchanged,
+// exactly as the backend's else-branch leaves it. NOTE: the sibling dr_updated
+// handler shares this leak pattern and is intentionally NOT touched here.
+var scopeWsLeadForViewer = function(rawLead, currentUser) {
+  if (!rawLead || !currentUser || currentUser.role !== "sales") return rawLead;
+  var uid = String(currentUser.id || currentUser._id || "");
+  var obj = Object.assign({}, rawLead);
+  // Same EOI/DoneDeal classification the FE already uses (see buildDealItems).
+  var isEoiOrDoneDeal = obj.status === "DoneDeal" || obj.status === "EOI"
+      || obj.globalStatus === "donedeal" || obj.globalStatus === "eoi"
+      || (obj.eoiStatus && obj.eoiStatus !== "EOI Cancelled" && obj.eoiStatus !== "");
+  // "Which slice is mine" — exactly the backend match: own agentId, not removed.
+  var myAssign = (obj.assignments || []).find(function(a){
+    if (!a || a.removedAt) return false;
+    var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+    return String(aid) === uid;
+  });
+  var topAgentId = obj.agentId && obj.agentId._id ? obj.agentId._id : obj.agentId;
+  var isLegacyOwner = !myAssign && String(topAgentId || "") === uid && isEoiOrDoneDeal;
+  // Wipe top-level per-agent text unless this is legacy ownership (then it's
+  // the caller's own pre-assignments[] data).
+  if (!isLegacyOwner) { obj.notes = ""; obj.lastFeedback = ""; }
+  if (myAssign) {
+    if (!isEoiOrDoneDeal) {
+      var assignStatus = myAssign.status === "New Lead" ? "NewLead" : myAssign.status;
+      obj.status = assignStatus || obj.status;
+    }
+    obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
+    obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+    obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
+    obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
+    obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
+    if (myAssign.lastActionAt) obj.lastActivityTime = myAssign.lastActionAt;
+    if (myAssign.assignedAt) obj.assignedAt = myAssign.assignedAt;
+    obj.notesAuthorId   = myAssign.notesAuthorId   || null;
+    obj.notesAuthorName = myAssign.notesAuthorName || "";
+    obj.notesAuthorRole = myAssign.notesAuthorRole || "";
+    // After rotation the top-level agentId points to the NEW owner; the old
+    // agent must see themselves as the owner so the view stays clean.
+    obj.agentId = myAssign.agentId;
+  }
+  // Strip every other agent's data + rotation metadata.
+  obj.agentHistory = (myAssign && myAssign.agentHistory && myAssign.agentHistory.length > 0) ? myAssign.agentHistory : [];
+  obj.assignments = myAssign ? [myAssign] : [];
+  obj.previousAgentIds = [];
+  obj.rotationCount = 0;
+  obj.lastRotationAt = null;
+  obj.privateNotes = [];
+  // lead.history: drop rotation/assignment events + anything not authored by
+  // the caller (mirrors the backend's salesSelfName filter).
+  var selfName = String(currentUser.name || "");
+  obj.history = (obj.history || []).filter(function(h){
+    if (!h) return false;
+    var ev = String(h.event || "");
+    if (ev === "rotated" || ev === "assigned" || ev === "reassigned") return false;
+    if (selfName && String(h.byUser || "") !== selfName) return false;
+    return true;
+  });
+  return obj;
+};
+
 // WhatsApp chooser — shows popup to pick WhatsApp or WhatsApp Business
 var WaChooser = function(p) {
   if(!p.show) return null;
@@ -27364,7 +27435,12 @@ export default function CRMApp() {
           switch(msg.type){
             case "lead_updated":
               if (data.lead && data.lead._id) {
-                var lead = data.lead;
+                // Re-apply the backend sales overlay before this doc enters
+                // local state — the broadcast payload is the originating
+                // request's (admin-scoped) body and would otherwise leak the
+                // previous owner's slice/feedback to a sales viewer. No-op for
+                // privileged roles (returns the doc unchanged).
+                var lead = scopeWsLeadForViewer(data.lead, currentUser);
                 // Defense in depth: a lead that just got archived (e.g. via
                 // PUT /api/leads/:id/archive) shouldn't be upserted back into
                 // the visible list — drop it instead so any page that filters
