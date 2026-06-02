@@ -85,7 +85,7 @@ async function sendPushNotification(userIds, title, body, data) {
     });
   }
 
-  var users = await User.find({ _id: { $in: userIds } })
+  var users = await User.find({ _id: { $in: userIds }, active: { $ne: false } })
     .select("_id pushTokens")
     .lean();
 
