@@ -22,6 +22,7 @@ import QRCode from "qrcode";
 // scroll surface (no double scrollbars). ~25 KB gz total one-time cost.
 import { TableVirtuoso, Virtuoso } from "react-virtuoso";
 import { initPushNotifications, disposePushNotifications, removeTokenFromBackend } from "./utils/pushNotifications";
+import { isNativePlatformSync, runBiometricAuth, isBiometricAvailable, addBiometricResumeListener } from "./utils/biometric";
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
@@ -613,6 +614,28 @@ var Modal = function(p) {
       </div>
       {p.children}
     </div>
+  </div>;
+};
+// Full-screen biometric lock overlay. Rendered only when the app is locked
+// (native + backgrounded ≥2 min, or cold launch with a session). Never shows
+// on web. The Unlock button re-fires the prompt — failure never logs out.
+var BiometricLockScreen = function(p) {
+  return <div style={{ position:"fixed", inset:0, zIndex:99999, background:"#0F1B2D",
+      display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+      gap:22, fontFamily:"Cairo,sans-serif", color:"#fff" }}>
+    <div style={{ width:72, height:72, borderRadius:20, background:"rgba(255,255,255,0.08)",
+        display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <Lock size={34} color="#fff"/>
+    </div>
+    <div style={{ fontSize:18, fontWeight:700 }}>ARO CRM is locked</div>
+    <div style={{ fontSize:13, color:"rgba(255,255,255,0.6)", maxWidth:260, textAlign:"center" }}>
+      Verify your identity to continue.
+    </div>
+    <button onClick={p.onUnlock} disabled={p.busy} style={{ padding:"11px 26px", borderRadius:12,
+        border:"none", background: p.busy ? "rgba(255,255,255,0.25)" : "#2F6BFF", color:"#fff",
+        fontSize:14, fontWeight:700, cursor: p.busy ? "default" : "pointer" }}>
+      {p.busy ? "Authenticating…" : "Unlock"}
+    </button>
   </div>;
 };
 var Inp = function(p) {
@@ -26804,6 +26827,13 @@ export default function CRMApp() {
   var [currentUser,setCurrentUser]=useState(savedSession ? savedSession.user : null);
   var [token,setToken]=useState(savedSession ? savedSession.token : null);
   var [csrfToken,setCsrfToken]=useState(savedSession && savedSession.csrfToken ? savedSession.csrfToken : null);
+  // Biometric app-lock. Locked on first paint when native + a session exists,
+  // so authenticated content never flashes before the prompt. Web => unlocked.
+  var BIO_THRESHOLD_MS = 2 * 60 * 1000; // re-prompt only after ≥2 min backgrounded
+  var [bioLocked,setBioLocked]=useState(isNativePlatformSync() && !!savedSession);
+  var [bioPrompting,setBioPrompting]=useState(false);
+  var bgAtRef = useRef(null);     // ms timestamp when app last went to background
+  var bioBusyRef = useRef(false); // guard against overlapping authenticate calls
   // Path-based routing for the unauthenticated reset flow. We don't pull in
   // react-router; just observe popstate + a manual dispatch from in-page nav.
   var [authPath,setAuthPath]=useState(function(){ try { return window.location.pathname; } catch(e){ return "/"; } });
@@ -27530,6 +27560,64 @@ export default function CRMApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // One funnel for every biometric unlock attempt (cold launch, resume, manual
+  // retry). NEVER logs out on failure — leaves bioLocked=true so the lock
+  // screen's retry button remains. Escape hatch: if the device has NO biometric
+  // AND no PIN/passcode (canAuth===false), auto-unlock — never trap a user on a
+  // device that has no way to authenticate.
+  var attemptBioUnlock = useCallback(function(){
+    if (bioBusyRef.current) return;
+    bioBusyRef.current = true;
+    setBioPrompting(true);
+    isBiometricAvailable()
+      .then(function(info){
+        if (info && info.native && info.canAuth === false) {
+          setBioLocked(false);            // escape hatch — nothing can authenticate
+          return null;
+        }
+        return runBiometricAuth("Unlock ARO CRM").then(function(ok){ if (ok) setBioLocked(false); });
+      })
+      .catch(function(){ /* stay locked; retry button remains */ })
+      .finally(function(){ bioBusyRef.current = false; setBioPrompting(false); });
+  }, []);
+
+  // Cold launch: if we mounted locked (native + session), prompt immediately.
+  useEffect(function(){
+    if (bioLocked) attemptBioUnlock();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Re-lock on resume only if backgrounded ≥2 min. Two signals:
+  //  - visibilitychange: stamps bgAt when hidden (fires in the WebView).
+  //  - plugin resume listener: native-accurate foreground signal.
+  // Both funnel into maybeRelock(); the busy ref stops the Face ID overlay's
+  // own visibility blip from causing a re-lock loop. No-op on web.
+  useEffect(function(){
+    if (!isNativePlatformSync()) return; // web: never lock
+    var maybeRelock = function(){
+      if (bioBusyRef.current) return;           // a prompt is already showing
+      var bgAt = bgAtRef.current;
+      if (bgAt && (Date.now() - bgAt) >= BIO_THRESHOLD_MS) {
+        bgAtRef.current = null;
+        setBioLocked(true);                      // render lock; effect below re-prompts
+        attemptBioUnlock();
+      }
+    };
+    var onVis = function(){
+      if (typeof document === "undefined") return;
+      if (document.hidden) { if (bgAtRef.current == null) bgAtRef.current = Date.now(); }
+      else { maybeRelock(); }
+    };
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVis);
+    var cleanupResume = function(){};
+    addBiometricResumeListener(maybeRelock).then(function(fn){ cleanupResume = fn; });
+    return function(){
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVis);
+      try { cleanupResume(); } catch (e) {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   var handleLogin=function(user,tok,csrfTok){
     setCurrentUser(user); setToken(tok); setCsrfToken(csrfTok); loadData(tok, user); loadNotifications(tok);
     // Honour a pending QR deep-link instead of forcing dashboard. Only admins
@@ -27716,6 +27804,11 @@ export default function CRMApp() {
   }
   if(loading) return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"#F0F2F5", fontFamily:"Cairo,sans-serif" }}><div style={{ textAlign:"center" }}><div style={{ width:40, height:40, borderRadius:"50%", border:"3px solid #E8ECF1", borderTopColor:C.accent, animation:"spin 0.8s linear infinite", margin:"0 auto 16px" }}/><div style={{ color:C.textLight, fontSize:14 }}>{t.loading}</div></div></div>;
   if(dataError) return <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", minHeight:"100vh", gap:16, fontFamily:"Cairo,sans-serif" }}><AlertCircle size={48} color={C.danger}/><div style={{ fontSize:16, color:C.danger, fontWeight:700 }}>{t.error}</div><div style={{ color:C.textLight }}>{dataError}</div><button onClick={function(){loadData(token);}} style={{ padding:"10px 24px", borderRadius:10, background:C.accent, border:"none", color:"#fff", fontWeight:700, cursor:"pointer" }}>{t.retry}</button></div>;
+
+  // Biometric lock — only authenticated content is gated. Sits below the
+  // !currentUser + loading + dataError gates so login/loading/error screens are
+  // never locked, and above renderPage() so no page content renders while locked.
+  if (bioLocked) return <BiometricLockScreen onUnlock={attemptBioUnlock} busy={bioPrompting}/>;
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
