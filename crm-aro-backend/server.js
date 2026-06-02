@@ -10831,8 +10831,24 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         broadcast("unassigned_updated", { leadId: String(req.params.id) });
       } catch(hErr) { /* non-fatal */ }
     }
-    // Sync agent's own assignments[] entry on any action
-    if (req.user.role === "sales" || req.user.role === "team_leader") {
+    // Sync the CALLER's own assignments[] slice on any action. This write is
+    // keyed to the caller's OWN slice via the $elemMatch(agentId ==
+    // req.user.id, removedAt: null) below, so it can only ever touch the
+    // caller's own slice — never another agent's.
+    //
+    // manager/director are included so that when THEY hold a lead and change
+    // its status, their own slice — the slice the Leads-list summary overlay
+    // reads (obj.status = myAssign.status; _currentStatus derives from it) —
+    // gets the new status + a status_change agentHistory entry. Without this
+    // they fell through BOTH this block (previously sales/team_leader only)
+    // AND the holder-mirror block below (which fires only for a NON-holder
+    // caller, oldLead.agentId !== req.user.id), so their slice stayed stuck at
+    // "NewLead" and the list showed a stale status. For a manager/director
+    // acting on a lead they do NOT hold, the $elemMatch matches no slice and
+    // this is a harmless no-op — the holder-mirror block below handles that
+    // case. sales_admin stays excluded (read-only on status/feedback).
+    if (req.user.role === "sales" || req.user.role === "team_leader"
+        || req.user.role === "manager" || req.user.role === "director") {
       var assignUpdate = { "assignments.$.lastActionAt": new Date(), "assignments.$.rotationTimer": new Date() };
       if (req.body.status) {
         assignUpdate["assignments.$.status"] = req.body.status;
