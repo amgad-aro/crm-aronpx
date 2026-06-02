@@ -8875,7 +8875,20 @@ app.get("/api/leads/no-contact", auth, async function(req, res) {
           }}
       }},
       { $addFields: {
-          _lastContactDate: { $convert: { input: "$lastContact", to: "date", onError: nowDate, onNull: nowDate } }
+          // No-contact semantics: an UNKNOWN/uncoercible contact clock must
+          // mean "never contacted → SHOW the lead", never "contacted now →
+          // hide it". So fall back to the epoch sentinel (1970), which always
+          // sorts oldest and is < threshold, instead of nowDate. (The aging
+          // report's own copy of this convert uses onError/onNull: nowDate on
+          // purpose — there "we don't know → assume recent" is the safe
+          // default; here it would wrongly hide genuinely-untouched leads such
+          // as legacy rows with null history timestamps and no createdAt.
+          // Aging report intentionally unchanged — flag for separate review.)
+          //
+          // Bad/missing history timestamps already drop out of the contact max
+          // above (the $map $convert uses onError/onNull: null, so they lose
+          // the $max and never look like a recent contact).
+          _lastContactDate: { $convert: { input: "$lastContact", to: "date", onError: new Date(0), onNull: new Date(0) } }
       }},
       { $match: { _lastContactDate: { $lt: threshold } } },
       { $sort: { _lastContactDate: 1 } },
