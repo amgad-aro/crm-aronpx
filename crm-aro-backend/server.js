@@ -2959,10 +2959,24 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
               (revived.cycles || []).forEach(function(cy){
                 if (cy.cycleNumber > maxN) maxN = cy.cycleNumber;
               });
+              // Seed the fresh revive cycle from the current lead (parallels the
+              // create-path cycle1 seed) so a revived/reused deal carries its
+              // deal value + rate instead of a fully-zeroed cycle. claimAmount
+              // stays 0 until a rate is set on the Commissions page.
+              var rvRound2  = function(n){ return Math.round(Number(n||0) * 100) / 100; };
+              var rvCuv     = Number(parseDealTotalFromBudget(leadDoc.budget)) || 0;
+              var rvRatePct = Number(leadDoc.commissionRate);
+              var rvRateDec = (isFinite(rvRatePct) && rvRatePct > 0) ? (rvRatePct / 100) : 0;
+              var rvAmount  = (typeof leadDoc.commissionAmount === "number" && leadDoc.commissionAmount > 0)
+                ? Number(leadDoc.commissionAmount)
+                : rvRound2(rvCuv * rvRateDec);
               revived.cycles.push({
                 cycleNumber: maxN + 1,
                 state: "pending_claim",
-                expectedAmount: 0,
+                expectedAmount: rvAmount > 0 ? rvAmount : 0,
+                claimUnitValue: rvCuv,
+                commissionRate: rvRateDec,
+                claimAmount: rvAmount > 0 ? rvAmount : 0,
                 receivedAmount: 0
               });
               revived.markModified("cycles");
@@ -3000,6 +3014,22 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
             }
             revived.ambassadorSplit = refreshedAmb;
             revived.markModified("ambassadorSplit");
+            // 2026-06-02 — refresh the snapshot from the current lead on revive.
+            // A cancelled commission may belong to a lead later REUSED for a
+            // different deal (archive → unarchive → rename/re-budget; the
+            // "Dr.walid" record reused as "ahmed mohamed nagib"). The snapshot
+            // captured at the original close is then stale (wrong customerName /
+            // dealTotal / agent chain), so the deal would resurface in
+            // Commissions under the wrong customer. Rebuild it so the revived
+            // commission reflects the CURRENT deal. Top-level payouts[] and
+            // incentive.recipients[] live outside snapshot and survive untouched.
+            // For external/ambassador leads buildSnapshotForLead nulls the chain
+            // (recipients live in their split blocks, refreshed just above).
+            try {
+              revived.snapshot = await buildSnapshotForLead(leadDoc);
+            } catch (snapErr) {
+              console.error("[ensureCommissionForLead revive snapshot]", snapErr && snapErr.message);
+            }
             await computeAllRecipientShares(revived);
             revived.markModified("snapshot");
             revived.markModified("ratesSnapshot");
@@ -14362,7 +14392,7 @@ app.get("/api/stats", auth, async function(req, res) {
 
 // ===== HEALTH CHECK =====
 app.get("/", function(req, res) {
-  res.json({ status: "CRM ARO API is running", version: "3.0.0" });
+  res.json({ status: "CRM ARO API is running", version: "3.0.1-revive-snapshot" });
 });
 
 // ===== DAILY REQUEST ROUTES =====
@@ -16169,6 +16199,18 @@ app.put("/api/leads/:id/unarchive", auth, async function(req, res) {
         var drRes = await DailyRequest.updateMany({ phone: lead.phone, archived: true }, { $set: { archived: false, lastActivityTime: new Date() } });
         if (drRes && drRes.modifiedCount > 0) { try { broadcast("dr_updated", {}); } catch(e) {} }
       } catch(drErr) { console.error("[lead-unarchive DR cascade]", drErr && drErr.message); }
+    }
+    // Commission revive — archiving a DoneDeal lead cancels its commission via
+    // cascadeCommissionCancel ("Lead archived by ..."). Unarchiving MUST be the
+    // symmetric inverse: revive that commission, else the deal reappears on the
+    // Deals page but stays hidden on the Commissions page (the "Dr.walid" /
+    // "ahmed mohamed nagib" incident, 2026-06-02 — the cancelled-commission list
+    // excludes it, so it silently vanishes from Claims). ensureCommissionForLead
+    // is idempotent: it no-ops when a non-cancelled commission already exists and
+    // only revives a cancelled one whose agent still matches the lead.
+    if (lead.status === "DoneDeal" || lead.globalStatus === "donedeal") {
+      try { await ensureCommissionForLead(lead, req.user); }
+      catch(e){ console.error("[commission hook lead-unarchive]", e && e.message); }
     }
     res.json(lead);
   } catch(e) { res.status(500).json({ error: e.message }); }
