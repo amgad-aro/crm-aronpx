@@ -8775,14 +8775,25 @@ app.get("/api/leads/counts", auth, async function(req, res) {
   }
 });
 
-// No-contact tab on CallbackBell. Returns leads with stale lastActivityTime
-// regardless of callbackTime state — the FE dedupes against the
-// /api/leads/callbacks result via the existing cbIds Set, matching today's
-// in-memory behavior (App.js L1293-1297).
+// No-contact tab on CallbackBell. Returns leads the CURRENT owner hasn't
+// taken a real action on for > stale_hours, regardless of status/callbackTime
+// — the FE dedupes against the /api/leads/callbacks result via the existing
+// cbIds Set, matching today's in-memory behavior (App.js L1293-1297).
+//
+// Staleness is computed from a faithful "lastContact" clock, NOT the
+// top-level lastActivityTime (which is polluted by rotation reassignment,
+// non-action PUT edits, and archive toggles — those wrongly reset the clock
+// and hid genuinely-untouched leads). The lastContact union is ported
+// VERBATIM from the Lead Aging report (/api/reports/overview/aging,
+// server.js ~18215-18322): max of
+//   (a) lead.history events ∈ ["status_changed","feedback_added"], and
+//   (b) the current owner's contact-type Activity docs
+//       (type ∈ ["call","meeting","followup","email","note"]),
+// with fallback to the current slice's assignedAt → createdAt. Rotation /
+// assignment events and non-action edits are deliberately excluded.
 app.get("/api/leads/no-contact", auth, async function(req, res) {
   try {
     var staleHours = Math.max(1, parseInt(req.query.stale_hours) || 24);
-    var excludeStatuses = parseExcludeStatuses(req.query.excludeStatuses);
     var limit = Math.min(parseInt(req.query.limit) || 500, 2000);
     // STRICT scope — current ownership only (see incident note in helper).
     var scope = await buildLeadCurrentOwnerScopeQuery(req);
@@ -8791,19 +8802,86 @@ app.get("/api/leads/no-contact", auth, async function(req, res) {
       return res.status(403).json({ error: "Scope unavailable for this role." });
     }
     console.log("[scope] /api/leads/no-contact role=" + req.user.role + " uid=" + req.user.id + " scope=" + JSON.stringify(scope));
-    var threshold = new Date(Date.now() - staleHours * 3600 * 1000);
-    var ands = [
-      scope,
-      { archived: { $ne: true } },
-      { lastActivityTime: { $lt: threshold } }
-    ];
-    if (excludeStatuses.length) ands.push({ status: { $nin: excludeStatuses } });
-    var rows = await Lead.find({ $and: ands })
+    var nowDate = new Date();
+    var threshold = new Date(nowDate.getTime() - staleHours * 3600 * 1000);
+
+    // Stage 1 — compute lastContact and select the stale lead ids in
+    // ascending-lastContact order. Lookup/$addFields stages are copied
+    // verbatim from the aging report so behavior matches exactly, including
+    // the defensive $convert for legacy string-typed history timestamps.
+    var staleRows = await Lead.aggregate([
+      { $match: { $and: [ scope, { archived: { $ne: true } } ] } },
+      { $lookup: {
+          from: "activities",
+          let: { lid: "$_id", aid: "$agentId" },
+          pipeline: [
+            { $match: { $expr: { $and: [
+                { $eq: ["$leadId", "$$lid"] },
+                { $eq: ["$userId", "$$aid"] },
+                { $in: ["$type", ["call","meeting","followup","email","note"]] }
+            ]}}},
+            { $sort: { createdAt: -1 } },
+            { $limit: 1 },
+            { $project: { _id: 0, t: "$createdAt" } }
+          ],
+          as: "lastContactAct"
+      }},
+      { $addFields: {
+          historyContactMax: { $max: { $map: {
+            input: { $filter: {
+              input: { $ifNull: ["$history", []] },
+              as: "h",
+              cond: { $in: ["$$h.event", ["status_changed", "feedback_added"]] }
+            }},
+            as: "h",
+            in: { $convert: { input: "$$h.timestamp", to: "date", onError: null, onNull: null } }
+          }}},
+          activityContactMax: { $arrayElemAt: ["$lastContactAct.t", 0] }
+      }},
+      { $addFields: {
+          lastContact: { $let: {
+            vars: {
+              mergedContact: { $max: ["$historyContactMax", "$activityContactMax"] },
+              curSliceAssignedAt: { $let: {
+                vars: { cs: { $arrayElemAt: [
+                  { $filter: {
+                      input: { $ifNull: ["$assignments", []] },
+                      as: "a",
+                      cond: { $eq: ["$$a.agentId", "$agentId"] }
+                  }},
+                  -1
+                ]}},
+                in: "$$cs.assignedAt"
+              }}
+            },
+            in: { $ifNull: [
+              "$$mergedContact",
+              { $ifNull: ["$$curSliceAssignedAt", "$createdAt"] }
+            ]}
+          }}
+      }},
+      { $addFields: {
+          _lastContactDate: { $convert: { input: "$lastContact", to: "date", onError: nowDate, onNull: nowDate } }
+      }},
+      { $match: { _lastContactDate: { $lt: threshold } } },
+      { $sort: { _lastContactDate: 1 } },
+      { $limit: limit },
+      { $project: { _id: 1 } }
+    ]);
+
+    var orderedIds = staleRows.map(function(r){ return r._id; });
+    if (!orderedIds.length) return res.json([]);
+
+    // Stage 2 — hydrate to the exact shape the bell already consumes
+    // (LEAD_CALLBACK_FIELDS + populated agentId). $in does not preserve order,
+    // so re-sort into the lastContact-ascending order from stage 1.
+    var docs = await Lead.find({ _id: { $in: orderedIds } })
       .select(LEAD_CALLBACK_FIELDS)
       .populate("agentId", "name title")
-      .sort({ lastActivityTime: 1 })
-      .limit(limit)
       .lean();
+    var byId = {};
+    docs.forEach(function(d){ byId[String(d._id)] = d; });
+    var rows = orderedIds.map(function(id){ return byId[String(id)]; }).filter(Boolean);
     res.json(rows);
   } catch (e) {
     console.error("[GET /api/leads/no-contact]", e && e.message);
