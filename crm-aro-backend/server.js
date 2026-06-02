@@ -124,6 +124,13 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   projectWeight:{type:Number,default:1},
   dealDate:{type:String,default:""},
   lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0},
+  // Written ONLY by sweepAutoRotation — timestamp of the last sweep tick that
+  // EVALUATED this lead (rotated OR skipped). The sweep sorts by this ascending
+  // so never-swept (null) / oldest-swept leads are batched first, guaranteeing
+  // every eligible lead is eventually evaluated across ticks without a fixed cap
+  // starving the tail. Intentionally DISTINCT from lastRotationAt (which drives
+  // cooldown / diagnostics / fairness) — never conflate the two.
+  lastSweptAt:{type:Date,default:null},
   // Rotation kill-switch — flipped true after 3 consecutive agents mark the
   // lead "Not Interested" (tracked by notInterestedStreak). Once true, every
   // rotation endpoint bails out; admin can reset it by editing the lead.
@@ -328,6 +335,20 @@ Lead.collection.createIndex(
   }
 ).catch(function(e){
   console.error("[lastRotationAt index] not created:", e && e.message ? e.message : e);
+});
+
+// Sweep batching index — sweepAutoRotation sorts by lastSweptAt asc to drain the
+// active-assigned pool across ticks (never-swept = null sorts first). Same partial
+// filter shape as the lastRotationAt index above so the planner can use it for the
+// sweep's archived:false + agentId:$ne:null candidate query.
+Lead.collection.createIndex(
+  { lastSweptAt: 1 },
+  {
+    partialFilterExpression: { archived: false, agentId: { $exists: true } },
+    name: "lastSweptAt_active_assigned"
+  }
+).catch(function(e){
+  console.error("[lastSweptAt index] not created:", e && e.message ? e.message : e);
 });
 
 // STEP 4-2 — callback migration indexes. callbackTime is a String (ISO 8601)
@@ -12588,18 +12609,39 @@ async function sweepAutoRotation() {
       return;
     }
 
-    // Coarse pre-filter — the helper still re-checks each one. limit:1000
-    // bounds per-tick work; leftovers pick up on the next tick (5 min later).
-    // Sort by lastRotationAt ascending so least-recently-rotated leads (and
-    // never-rotated leads, which sort as null/missing first) are evaluated
-    // first — guarantees fairness when the candidate set exceeds the limit.
+    // Coarse pre-filter — the helper still re-checks each one. limit:400 bounds
+    // per-tick work; the un-swept tail picks up on subsequent ticks (5 min apart)
+    // because every evaluated lead is stamped lastSweptAt at the end of the tick
+    // (see below) and the query sorts by lastSweptAt asc — so the whole active
+    // pool is covered over ceil(pool / 400) ticks with no fixed-cap starvation.
+    // Age-stopped cutoff — mirror the in-engine stopped_age gate (autoRotateLead
+    // ~L11507-11508) using the SAME settings.rotationStopAfterDays already loaded
+    // above, so leads past the cutoff are excluded from the sweep entirely (they
+    // would skip as stopped_age anyway) instead of consuming per-tick batch slots.
+    // $gte (not $gt) matches the engine's strict ">" age test; null/missing
+    // createdAt is KEPT because the engine still evaluates those (its
+    // `lead.createdAt && ...` guard skips the age check when createdAt is absent).
+    var stopDays = Number(settings.rotationStopAfterDays) || 45;
+    var ageCutoff = new Date(Date.now() - stopDays*24*60*60*1000);
+    // Sort by lastSweptAt asc (never-swept = null first) so every tick advances
+    // through the un-swept tail; combined with the end-of-tick stamp below this
+    // guarantees full coverage over ceil(activePool / batch) ticks. Batch capped
+    // at 400 to bound per-tick memory/time (no full-pool load). assignments[] is
+    // NOT selected (its agentHistory is the heavy payload) — autoRotateLead
+    // re-fetches the full doc itself; the RotationRunLog detail below uses the
+    // retained top-level fields only.
     var candidates = await Lead.find({
       agentId: { $ne: null },
       archived: false,
       locked: { $ne: true },
-      rotationStopped: { $ne: true }
-    }).select("_id name status callbackTime lastActivityTime agentId assignments lastRotationAt")
-      .populate("agentId", "name").sort({ lastRotationAt: 1 }).allowDiskUse(true).limit(1000).lean();
+      rotationStopped: { $ne: true },
+      $or: [
+        { createdAt: { $gte: ageCutoff } },
+        { createdAt: { $exists: false } },
+        { createdAt: null }
+      ]
+    }).select("_id name status callbackTime lastActivityTime agentId lastRotationAt")
+      .populate("agentId", "name").sort({ lastSweptAt: 1 }).allowDiskUse(true).limit(400).lean();
 
     if (!candidates.length) {
       await persistRotationRun(runStartedAt, 0, 0, 0, {}, [], []);
@@ -12617,12 +12659,6 @@ async function sweepAutoRotation() {
           if (rotatedLeads.length < ROT_DETAIL_CAP) {
             var body = r.body || {};
             var leadDoc = body.lead || null;
-            var curSlice = (cand.assignments || []).find(function(a){
-              var aid = a && a.agentId && a.agentId._id ? a.agentId._id : (a && a.agentId);
-              var leadAid = cand.agentId && cand.agentId._id ? cand.agentId._id : cand.agentId;
-              return String(aid || "") === String(leadAid || "");
-            });
-            var lastAct = curSlice && curSlice.lastActionAt ? curSlice.lastActionAt : cand.lastActivityTime;
             rotatedLeads.push({
               leadId:    cand._id,
               leadName:  cand.name || "",
@@ -12636,18 +12672,16 @@ async function sweepAutoRotation() {
           var reasonText = (r && (r.reason || r.error)) || "unknown";
           skippedReasons[reasonText] = (skippedReasons[reasonText] || 0) + 1;
           if (skippedLeads.length < SKIP_DETAIL_CAP) {
-            var curSliceS = (cand.assignments || []).find(function(a){
-              var aid = a && a.agentId && a.agentId._id ? a.agentId._id : (a && a.agentId);
-              var leadAidS = cand.agentId && cand.agentId._id ? cand.agentId._id : cand.agentId;
-              return String(aid || "") === String(leadAidS || "");
-            });
+            // assignments[] is no longer fetched in the batch query (memory win) —
+            // surface the top-level fields the select retains. autoRotateLead
+            // re-reads the full doc for its own decision; this is telemetry only.
             skippedLeads.push({
               leadId:       cand._id,
               leadName:     cand.name || "",
               currentAgent: (cand.agentId && cand.agentId.name) || "",
-              status:       (curSliceS && curSliceS.status) || cand.status || "",
-              lastActionAt: (curSliceS && curSliceS.lastActionAt) || cand.lastActivityTime || null,
-              callbackTime: (curSliceS && curSliceS.callbackTime) || cand.callbackTime || null,
+              status:       cand.status || "",
+              lastActionAt: cand.lastActivityTime || null,
+              callbackTime: cand.callbackTime || null,
               reason:       String(reasonText)
             });
           }
@@ -12657,6 +12691,21 @@ async function sweepAutoRotation() {
         var errText = (innerErr && innerErr.message) || "exception";
         skippedReasons[errText] = (skippedReasons[errText] || 0) + 1;
       }
+    }
+
+    // Advance the sweep cursor: stamp EVERY lead evaluated this tick (rotated OR
+    // skipped) so they sort to the back of the lastSweptAt order and the next tick
+    // picks up the un-swept tail. ONE batched write per tick — deliberately NOT
+    // inside autoRotateLead, so the engine stays pure / reusable by the manual
+    // /rotate + per-lead /auto-rotate paths. Failure is non-fatal: the same set
+    // just re-sweeps next tick (idempotent).
+    try {
+      await Lead.updateMany(
+        { _id: { $in: candidates.map(function(c){ return c._id; }) } },
+        { $set: { lastSweptAt: new Date() } }
+      );
+    } catch (stampErr) {
+      console.error("[rotation sweep] lastSweptAt stamp failed:", stampErr && stampErr.message ? stampErr.message : stampErr);
     }
 
     if (rotated > 0) {
