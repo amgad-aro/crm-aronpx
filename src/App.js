@@ -1466,15 +1466,26 @@ var CallbackBell = function(p) {
   //
   // Window: from = now - 7d (covers Delay tab — anything more than 7d overdue
   // is a "missed forever" lead and belongs on the Stale Lead surface, not the
-  // bell). to = end of today in local time (23:59:59.999) — the bell only
-  // surfaces callbacks due today; tomorrow's planning lives elsewhere.
+  // bell). to = now + 48h so the Upcoming tab actually receives the next two
+  // days of callbacks (the old end-of-today cap starved Upcoming, and Now was
+  // a thin sliver).
+  //
+  // callbackTime is stored as a NAIVE-LOCAL string (e.g. "2026-06-02T15:30",
+  // no Z — straight from the datetime-local input below) and the BE compares
+  // the from/to bounds against it lexicographically. So from/to MUST be built
+  // in that same naive-local format; using .toISOString() (UTC + Z) shifted
+  // the bounds by the tz offset and clipped late-today local rows.
   var bellQS = function(){
     var nowMs = Date.now();
-    var fromIso = new Date(nowMs - 7 * 24 * 3600 * 1000).toISOString();
-    var endOfToday = new Date();
-    endOfToday.setHours(23, 59, 59, 999);
-    var toIso = endOfToday.toISOString();
-    return "?from=" + encodeURIComponent(fromIso) + "&to=" + encodeURIComponent(toIso) + "&limit=2000";
+    // Render a Date's LOCAL wall-clock as "YYYY-MM-DDTHH:mm:ss.SSS" (no Z),
+    // matching the stored naive-local callbackTime format for string range.
+    var localNaive = function(ms){
+      var d = new Date(ms);
+      return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, -1);
+    };
+    var fromStr = localNaive(nowMs - 7 * 24 * 3600 * 1000);
+    var toStr   = localNaive(nowMs + 48 * 3600 * 1000);
+    return "?from=" + encodeURIComponent(fromStr) + "&to=" + encodeURIComponent(toStr) + "&limit=2000";
   };
 
   useEffect(function(){
@@ -1554,7 +1565,11 @@ var CallbackBell = function(p) {
   });
 
   bellNoContact.forEach(function(l){
-    if(l.callbackTime) return;
+    // Stale-24h leads (the BE already filters to those) belong here UNLESS
+    // they're an active callback already shown under Delay/Now/Upcoming.
+    // A leftover OLD/overdue callbackTime must NOT exclude the lead — the
+    // cbIds dedup is the only gate (an overdue lead lands in `overdue` and
+    // thus cbIds, so it still won't double-show).
     if(!cbIds.has(gid(l))) noContact.push(l);
   });
 
