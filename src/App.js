@@ -4644,6 +4644,14 @@ var LeadsPage = function(p) {
   // [] = loaded with no matches. The filtered memo uses this as the status
   // base, re-applying allVisible exclusions + currentStatus() for exactness.
   var [statusLeads, setStatusLeads] = useState(null);
+  // Agent-filter results — same paginated-bootstrap problem as statusLeads:
+  // before this, the "All Agents" dropdown filtered only the loaded ~100
+  // leads client-side (5270), so an agent whose leads weren't in that page
+  // showed "No data". null = no agent selected / not loaded; [] = loaded with
+  // no matches. The allVisible memo uses this as its base when an agent is
+  // selected (with the same exclusions), so every downstream filter + the tab
+  // counts operate on the agent's full set instead of the bootstrap slice.
+  var [agentLeads, setAgentLeads] = useState(null);
   // Status chip — targeted fetch when an ordinary status tab is active.
   // Mirrors the rotation_stopped / not_rotated effects above but for the
   // status tabs, and for ALL roles (those chips are visible to everyone, so
@@ -4680,6 +4688,31 @@ var LeadsPage = function(p) {
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.leadFilter, p.token, p.cbBust, lockedOnly, isReq]);
+  // Agent filter — targeted fetch when a specific agent is selected in the
+  // "All Agents" dropdown. Mirrors the statusLeads effect above exactly (same
+  // fields=summary, same limit=2000, same null/[]/cancelled handling, same
+  // cbBust refetch). The BE ANDs the agentId narrow onto the role-scope $or,
+  // so a non-admin caller can only ever NARROW within their own visibility —
+  // passing another agent's id yields nothing rather than widening. Cleared
+  // (set back to null) when no agent is selected so allVisible reverts to the
+  // normal p.leads base.
+  useEffect(function(){
+    if (!agentFilter) {
+      if (agentLeads !== null) setAgentLeads(null);
+      return;
+    }
+    if (!p.token) return;
+    var cancelled = false;
+    apiFetch("/api/leads?agentId=" + encodeURIComponent(agentFilter) + "&fields=summary&limit=2000", "GET", null, p.token)
+      .then(function(r){
+        if (cancelled) return;
+        var rows = (r && Array.isArray(r.data)) ? r.data : (Array.isArray(r) ? r : []);
+        setAgentLeads(rows);
+      })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[agentFilter, p.token, p.cbBust]);
   // Phase A4-prep (2026-05-05): Source + Campaign filters for cohort
   // identification before the bulk source editor (next slice). Admin /
   // sales_admin only — gated in the UI. Apply additively on top of the
@@ -5061,7 +5094,16 @@ var LeadsPage = function(p) {
   // prop reference stable and stops the row-remount → height-remeasure →
   // window-scroll-anchor jitter during progressive load.
   var allVisible = useMemo(function(){
-    return p.leads.filter(function(l){
+    // When a specific agent is selected, base the visible set on that agent's
+    // FULL server-fetched list (agentLeads) instead of the bootstrapped ~100
+    // (p.leads) — the agent dropdown's targeted fetch above. The SAME
+    // exclusions below (archived / Daily Request / EOI / DoneDeal) are applied
+    // to it, so deals/EOIs still don't show on the Leads page. Falls back to
+    // p.leads when no agent is selected OR during the brief load window
+    // (agentLeads === null), where the client-side intersect at 5270 still
+    // narrows the bootstrap slice correctly.
+    var src = (agentFilter && agentLeads !== null) ? agentLeads : p.leads;
+    return src.filter(function(l){
       if(l.archived) return false;
       var matchSource = isReq?l.source==="Daily Request":l.source!=="Daily Request";
       if(!matchSource) return false;
@@ -5076,7 +5118,7 @@ var LeadsPage = function(p) {
       return true;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.leads, isReq, p.cu && p.cu.role]);
+  }, [p.leads, agentLeads, agentFilter, isReq, p.cu && p.cu.role]);
   // Memoized for the same reason as `allVisible` above. Without this,
   // every parent re-render (every cbBust tick, every leadsPageCounts
   // setState) recomputed and re-sorted the array, handing Virtuoso a

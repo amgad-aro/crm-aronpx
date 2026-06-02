@@ -7867,6 +7867,21 @@ app.get("/api/leads", auth, async function(req, res) {
         ]}]);
       }
     }
+    // Agent filter — Leads-page "All Agents" dropdown. Narrows to leads whose
+    // CURRENT holder (top-level agentId) is the selected agent. ANDed with the
+    // role-scope $or above via $and, exactly like the status filter, so it can
+    // only NARROW within the caller's allowed visibility — never widen it. A
+    // sales/TL/manager/director caller still only sees leads their $or scope
+    // already permits; passing another agent's id just intersects, yielding
+    // nothing for agents outside their scope. No role gate needed (the scope
+    // $or is the access boundary; this is a pure narrowing AND). Invalid
+    // ObjectId is ignored (no error, no widening).
+    if (req.query.agentId) {
+      var agentIdVal = String(req.query.agentId).trim();
+      if (mongoose.Types.ObjectId.isValid(agentIdVal)) {
+        query.$and = (query.$and || []).concat([{ agentId: new mongoose.Types.ObjectId(agentIdVal) }]);
+      }
+    }
     // STEP 4-5 X2 — opt-in archived filter. ArchivePage uses this to fetch
     // its own list instead of scanning p.leads (which would be empty post-
     // X3 bootstrap shrink since the bootstrap sorts by createdAt desc and
