@@ -11603,16 +11603,23 @@ async function autoRotateLead(leadId, byName, opts) {
 
       switch (sliceStatus) {
         case "NoAnswer": {
-          // Count from the per-slice agentHistory[] instead of the Activity
-          // collection. The collection-scan version only saw status changes
-          // that went through the two client paths writing a "[NoAnswer] ..."
-          // prefix; agentHistory is populated server-side on every status
-          // change (see PUT /api/leads/:id ~L2444), so it's the reliable
-          // source of truth for "did this agent log a NoAnswer outcome".
-          var sliceHistory = Array.isArray(curSlice.agentHistory) ? curSlice.agentHistory : [];
-          var naEntries = sliceHistory.filter(function(h){
-            if (!h || h.type !== "status_change") return false;
-            return /no\s*answer/i.test(String(h.note || ""));
+          // Count from agentHistory[] (server-side, populated on every status
+          // change — see PUT /api/leads/:id ~L2444) instead of the Activity
+          // collection (whose "[NoAnswer]" prefix only covered two client paths).
+          // Source spans ALL non-removed assignment slices, not just the current
+          // owner's: a lead's NoAnswer marks can live across multiple slices after
+          // rotations, and the owner slice may hold 0 matching entries even when
+          // the lead is genuinely NoAnswer (the lead-level status confirms it).
+          // Same status_change filter + /no\s*answer/i regex as before — only the
+          // data source widens from curSlice to every active slice.
+          var naEntries = [];
+          (lead.assignments || []).forEach(function(a){
+            if (!a || a.removedAt) return;
+            var hist = Array.isArray(a.agentHistory) ? a.agentHistory : [];
+            hist.forEach(function(h){
+              if (!h || h.type !== "status_change") return;
+              if (/no\s*answer/i.test(String(h.note || ""))) naEntries.push(h);
+            });
           });
           if (naEntries.length < naCountThreshold) notEligibleReason = "NoAnswer: count " + naEntries.length + " below threshold " + naCountThreshold;
           else {
