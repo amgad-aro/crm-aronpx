@@ -8880,22 +8880,34 @@ app.get("/api/leads/no-contact", auth, async function(req, res) {
       { $match: { _lastContactDate: { $lt: threshold } } },
       { $sort: { _lastContactDate: 1 } },
       { $limit: limit },
-      { $project: { _id: 1 } }
+      { $project: { _id: 1, lastContactAt: "$_lastContactDate" } }
     ]);
 
     var orderedIds = staleRows.map(function(r){ return r._id; });
     if (!orderedIds.length) return res.json([]);
 
+    // Carry the faithful lastContact Date out of stage 1 (the .select() below
+    // strips it). Keyed by id so it survives the hydrate re-fetch.
+    var lastContactById = {};
+    staleRows.forEach(function(r){ lastContactById[String(r._id)] = r.lastContactAt; });
+
     // Stage 2 — hydrate to the exact shape the bell already consumes
     // (LEAD_CALLBACK_FIELDS + populated agentId). $in does not preserve order,
-    // so re-sort into the lastContact-ascending order from stage 1.
+    // so re-sort into the lastContact-ascending order from stage 1. Attach
+    // `lastContactAt` (the faithful clock) ALONGSIDE the untouched
+    // lastActivityTime so the bell can caption the true no-contact age without
+    // affecting any other reader of lastActivityTime.
     var docs = await Lead.find({ _id: { $in: orderedIds } })
       .select(LEAD_CALLBACK_FIELDS)
       .populate("agentId", "name title")
       .lean();
     var byId = {};
     docs.forEach(function(d){ byId[String(d._id)] = d; });
-    var rows = orderedIds.map(function(id){ return byId[String(id)]; }).filter(Boolean);
+    var rows = orderedIds.map(function(id){
+      var d = byId[String(id)];
+      if (d) d.lastContactAt = lastContactById[String(id)] || null;
+      return d;
+    }).filter(Boolean);
     res.json(rows);
   } catch (e) {
     console.error("[GET /api/leads/no-contact]", e && e.message);

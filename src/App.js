@@ -1697,8 +1697,14 @@ var CallbackBell = function(p) {
           // alongside future-direction siblings in the All tab.
           var timeStr;
           if(l.callbackTime){ timeStr=callbackTimeStr(l.callbackTime); }
-          else if(l.lastActivityTime){
-            var ncDays=Math.floor((Date.now()-new Date(l.lastActivityTime).getTime())/86400000);
+          else if(l.lastContactAt||l.lastActivityTime){
+            // No Contact caption: age from the faithful lastContactAt (the
+            // server's real-action clock — status change / feedback / call),
+            // NOT the polluted lastActivityTime (rotation / edits / archive
+            // reset it, causing the wrong "0 days"). Fall back to
+            // lastActivityTime for older rows / payloads without lastContactAt.
+            var ncBasis=l.lastContactAt||l.lastActivityTime;
+            var ncDays=Math.floor((Date.now()-new Date(ncBasis).getTime())/86400000);
             timeStr=ncDays+(ncDays===1?" day":" days");
           } else { timeStr=""; }
           return <div key={gid(l)} className="cb-card" onClick={function(){p.setShowNotif(false);var isDR=l._kind==="dr";setTimeout(function(){if(isDR){p.onDRClick&&p.onDRClick();return;}/* BUG #6 — /api/leads/callbacks returns only LEAD_CALLBACK_FIELDS (no project/campaign/budget). Fetch full doc before opening the panel; fail-soft to the bell's lite copy. */apiFetch("/api/leads/"+gid(l),"GET",null,p.token).then(function(fresh){p.onLeadClick((fresh&&fresh._id)?fresh:l);}).catch(function(err){console.warn("[CALLBACK_BELL_FETCH_FAILED]",{leadId:gid(l),row:l,error:err&&err.message});p.onLeadClick(l);});},50);}} style={{ background:cc.bg, borderLeft:"4px solid "+cc.border, borderRadius:12, padding:"14px 16px", marginBottom:8, cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.04)", transition:"all 0.2s", display:"flex", alignItems:"center", gap:12 }}>
