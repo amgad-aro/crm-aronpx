@@ -8236,6 +8236,130 @@ app.get("/api/leads/backfill-feedback", auth, adminOnly, async function(req, res
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== TEMPORARY ONE-TIME BACKFILL — holder-slice status =====
+// Fixes leads where a manager/director HOLDER changed status BEFORE the
+// slice-write fix (Block A role-gate extension) deployed: the old write hit
+// only top-level lead.status + lead.history, never the holder's assignments[]
+// slice. The Leads list reads the holder's own slice, so those rows still show
+// the stale "NewLead". This copies the real top-level status into the holder
+// slice and appends ONE status_change agentHistory entry — exactly what the
+// live fix now does for new changes — via a RAW updateOne (NOT the PUT path),
+// so it fires NO rotation/notification side-effects and bumps NO timers
+// (lastActionAt / lastActivityTime / statusChangedAt / rotationTimer all left
+// untouched). dryRun defaults to TRUE (writes nothing). Idempotent. Touches
+// ONLY the holder's own active slice via the positional $.
+// SAFE TO DELETE after the one-time run.
+app.post("/api/admin/backfill-holder-slice-status", auth, strictAdminOnly, async function(req, res) {
+  try {
+    // Default-safe: only an explicit ?dryRun=false (or 0) performs writes.
+    var dryRun = !(req.query.dryRun === "false" || req.query.dryRun === "0");
+    var NEWLEAD_SLICE_SET = ["NewLead", "New Lead", "", null, undefined];
+
+    // Candidate set: active, real non-frozen top-level status, has a holder.
+    var leads = await Lead.find({
+      archived: { $ne: true },
+      status: { $nin: ["NewLead", "New Lead", "EOI", "DoneDeal"] },
+      agentId: { $ne: null }
+    }).lean();
+
+    // Resolve holder roles/names in one lookup.
+    var holderIds = leads.map(function(l){ return l.agentId; }).filter(Boolean);
+    var holders = await User.find({ _id: { $in: holderIds } }).select("_id name role").lean();
+    var roleById = {}, nameById = {};
+    holders.forEach(function(u){ roleById[String(u._id)] = u.role; nameById[String(u._id)] = u.name; });
+
+    // Does the holder slice already carry a REAL (non-NewLead) status_change?
+    // If so it's not stale (and re-running must not double-append) → skip.
+    var hasRealStatusChange = function(slice){
+      var hist = (slice && Array.isArray(slice.agentHistory)) ? slice.agentHistory : [];
+      return hist.some(function(h){
+        return h && h.type === "status_change" && !/New ?Lead/i.test(String(h.note || ""));
+      });
+    };
+    // Timestamp for the backfilled history entry: prefer the top-level
+    // lead.history status_changed row that transitioned INTO the current
+    // status; else the latest status_changed row; else lead.updatedAt; else
+    // lead.createdAt. NEVER new Date() — that would falsify the action time.
+    var deriveTimestamp = function(lead){
+      var hist = Array.isArray(lead.history) ? lead.history : [];
+      var matchTs = -1, anyTs = -1;
+      hist.forEach(function(h){
+        if (!h || h.event !== "status_changed") return;
+        var ts = h.timestamp ? new Date(h.timestamp).getTime() : 0;
+        if (ts > anyTs) anyTs = ts;
+        if (String(h.description || "").indexOf("→ " + lead.status) !== -1 && ts > matchTs) matchTs = ts;
+      });
+      if (matchTs >= 0) return new Date(matchTs);
+      if (anyTs   >= 0) return new Date(anyTs);
+      if (lead.updatedAt) return new Date(lead.updatedAt);
+      if (lead.createdAt) return new Date(lead.createdAt);
+      return null;
+    };
+
+    var changes = [];
+    var skipped = { notManagerDirector: 0, frozen: 0, noHolderSlice: 0, sliceNotNewLead: 0, alreadyHasStatusChange: 0, noDerivableTimestamp: 0 };
+
+    for (var i = 0; i < leads.length; i++) {
+      var lead = leads[i];
+      // Defensive frozen exclusion (covers globalStatus/eoiStatus too).
+      if (isLeadFrozen(lead)) { skipped.frozen++; continue; }
+      var holderRole = roleById[String(lead.agentId)];
+      if (holderRole !== "manager" && holderRole !== "director") { skipped.notManagerDirector++; continue; }
+
+      // Holder's OWN active slice (agentId === lead.agentId, removedAt null).
+      var holderSlice = null;
+      (lead.assignments || []).forEach(function(a){
+        if (!a || a.removedAt != null) return;
+        var aid = String(a.agentId && a.agentId._id ? a.agentId._id : (a.agentId || ""));
+        if (aid === String(lead.agentId)) holderSlice = a;
+      });
+      if (!holderSlice) { skipped.noHolderSlice++; continue; }
+
+      var sliceStatus = holderSlice.status;
+      if (NEWLEAD_SLICE_SET.indexOf(sliceStatus) === -1) { skipped.sliceNotNewLead++; continue; }
+      if (hasRealStatusChange(holderSlice)) { skipped.alreadyHasStatusChange++; continue; }
+
+      var derivedTs = deriveTimestamp(lead);
+      if (!derivedTs) { skipped.noDerivableTimestamp++; continue; }
+
+      changes.push({
+        id: String(lead._id),
+        name: lead.name || "",
+        holderRole: holderRole,
+        holderName: nameById[String(lead.agentId)] || "",
+        fromSliceStatus: (sliceStatus === undefined || sliceStatus === null) ? null : sliceStatus,
+        toStatus: lead.status,
+        derivedTimestamp: derivedTs.toISOString()
+      });
+    }
+
+    if (dryRun) {
+      return res.json({ dryRun: true, wouldChange: changes.length, skipped: skipped, leads: changes });
+    }
+
+    // LIVE write — raw updateOne per lead, positional $ pinned to the holder's
+    // own ACTIVE slice via $elemMatch(agentId, removedAt:null). NO PUT path, NO
+    // broadcast/notification, NO timer bumps.
+    var updated = 0;
+    for (var j = 0; j < changes.length; j++) {
+      var c = changes[j];
+      var holderObjId = new mongoose.Types.ObjectId(String(leads.find(function(l){ return String(l._id) === c.id; }).agentId));
+      var r = await Lead.updateOne(
+        { _id: c.id, assignments: { $elemMatch: { agentId: holderObjId, removedAt: null } } },
+        {
+          $set: { "assignments.$.status": c.toStatus },
+          $push: { "assignments.$.agentHistory": { type: "status_change", note: "Status: " + c.toStatus, createdAt: new Date(c.derivedTimestamp) } }
+        }
+      );
+      if (r && (r.modifiedCount || r.nModified)) updated++;
+    }
+    return res.json({ dryRun: false, updated: updated, attempted: changes.length, skipped: skipped, leads: changes });
+  } catch (e) {
+    console.error("[POST /api/admin/backfill-holder-slice-status]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "backfill_failed" });
+  }
+});
+
 // ===== STEP 4-1 — SEARCH + BY-PHONE LOOKUP =====
 // Server-side replacements for the in-memory p.leads.filter scans in
 // HeaderSearch and QuickPhoneSearch. Both endpoints honor the same
