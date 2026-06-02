@@ -380,7 +380,9 @@ var Activity = mongoose.model("Activity", new mongoose.Schema({
 },{timestamps:true}));
 
 var Notification = mongoose.model("Notification", new mongoose.Schema({
-  type:{type:String,required:true}, // "deal" or "rotation"
+  type:{type:String,required:true}, // "deal" or "rotation" or "announcement"
+  title:{type:String,default:""},   // admin-broadcast announcement title
+  body:{type:String,default:""},    // admin-broadcast announcement message
   leadName:{type:String,default:""},
   leadId:{type:String,default:""},
   agentName:{type:String,default:""},
@@ -15780,6 +15782,9 @@ async function getVisibleNotifications(req, baseQuery, limit) {
       return String(n.leadId || "") === selfId;
     }
 
+    // Company-wide admin announcement — visible to every role (no scoping).
+    if (n.type === "announcement") return true;
+
     if (isFullView) return true;
 
     if (n.type === "attendance_late_5") {
@@ -15963,6 +15968,42 @@ app.put("/api/notifications/mark-seen", auth, async function(req, res) {
       { $addToSet: { seenBy: uid } }
     );
     res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin-only company-wide announcement. Creates ONE shared bell row
+// (type "announcement", visible to all roles via getVisibleNotifications)
+// and pushes to every active user. Reuses sendPushNotification, which
+// itself re-filters inactive users (active: { $ne: false }).
+app.post("/api/notifications/broadcast", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var title = String((req.body && req.body.title) || "").trim();
+    var bodyTxt = String((req.body && req.body.body) || "").trim();
+    if (!bodyTxt) return res.status(400).json({ error: "Message body required" });
+
+    // 1) One shared bell row — unread for everyone on creation (seenBy: []).
+    var row = await Notification.create({
+      type: "announcement",
+      title: title,
+      body: bodyTxt,
+      fromName: req.user.name || "Admin",
+      eventTime: new Date(),
+      seenBy: []
+    });
+    // Refresh every connected bell in real time (same as all other create sites).
+    try { broadcast("notification_updated", {}); } catch(e) {}
+
+    // 2) Push to all active users. sendPushNotification re-filters inactive.
+    var actives = await User.find({ active: { $ne: false } }).select("_id").lean();
+    var ids = actives.map(function(u){ return String(u._id); });
+    var pushResult = await sendPushNotification(
+      ids,
+      title || "Announcement",
+      bodyTxt,
+      { type: "announcement", notifId: String(row._id) }
+    );
+
+    res.json({ ok: true, recipients: ids.length, notifId: String(row._id), push: pushResult });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

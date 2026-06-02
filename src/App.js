@@ -17364,6 +17364,26 @@ var SettingsPage = function(p) {
   var [simulateOpen,setSimulateOpen]=useState(false);
   var [redistBusy,setRedistBusy]=useState(false);
   var [redistResult,setRedistResult]=useState(null); // {total,distributed,skipped,perAgent}
+  // Company Announcement (admin-only broadcast)
+  var [annOpen,setAnnOpen]=useState(false);
+  var [annTitle,setAnnTitle]=useState("");
+  var [annBody,setAnnBody]=useState("");
+  var [annBusy,setAnnBusy]=useState(false);
+  var [annResult,setAnnResult]=useState(null); // {recipients} on success
+  var sendAnnouncement=function(){
+    var msg=(annBody||"").trim();
+    if(!msg){ return; }
+    if(!window.confirm("Send this announcement as a push notification to ALL employees?")) return;
+    setAnnBusy(true); setAnnResult(null);
+    apiFetch("/api/notifications/broadcast","POST",{title:(annTitle||"").trim(),body:msg},p.token,p.csrfToken)
+      .then(function(r){
+        setAnnResult({recipients:(r&&r.recipients)||0});
+        setAnnTitle(""); setAnnBody("");
+        setTimeout(function(){ setAnnOpen(false); setAnnResult(null); },1500);
+      })
+      .catch(function(e){ window.alert("Failed to send: "+(e&&e.message||"error")); })
+      .finally(function(){ setAnnBusy(false); });
+  };
   // Audit Log tab
   var [auditEntries,setAuditEntries]=useState([]);   // populated from /api/settings/audit when endpoint ships
   var [auditLoaded,setAuditLoaded]=useState(false);
@@ -17857,6 +17877,13 @@ var SettingsPage = function(p) {
               </select>
             </div>
           </div>
+          {p.cu && p.cu.role === "admin" && <div style={{marginTop:24, paddingTop:20, borderTop:"0.5px solid rgba(0,0,0,0.1)"}}>
+            <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Company Announcement</div>
+            <div style={{fontSize:12,color:"#666",marginBottom:12}}>
+              Send a push notification to every active employee. They'll receive it as a notification on their device.
+            </div>
+            <Btn onClick={function(){ setAnnOpen(true); }}>📢 Send announcement</Btn>
+          </div>}
         </div>;
       })()}
 
@@ -19496,6 +19523,20 @@ var SettingsPage = function(p) {
           )}
         </div>;
       })()}
+
+      <Modal show={annOpen} onClose={function(){ if(!annBusy){ setAnnOpen(false); setAnnResult(null); } }} title="Send Company Announcement" w={520}>
+        <Inp label="Title (optional)" value={annTitle} placeholder="e.g. Office closed Thursday"
+             onChange={function(e){ setAnnTitle(e.target.value); }}/>
+        <Inp label="Message" type="textarea" value={annBody} placeholder="Type the announcement everyone will receive…"
+             onChange={function(e){ setAnnBody(e.target.value); }}/>
+        {annResult && <div style={{fontSize:13,color:"#0F6E56",background:"#EAF6F0",padding:"8px 12px",borderRadius:8,marginBottom:12}}>
+          ✓ Sent to {annResult.recipients} employee{annResult.recipients===1?"":"s"}.
+        </div>}
+        <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:6}}>
+          <Btn outline onClick={function(){ if(!annBusy){ setAnnOpen(false); setAnnResult(null); } }}>Cancel</Btn>
+          <Btn onClick={sendAnnouncement} loading={annBusy} disabled={!annBody.trim()}>Send to all employees</Btn>
+        </div>
+      </Modal>
 
         </div>
       </div>
