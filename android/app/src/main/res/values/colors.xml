@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- FCM notification accent/tint for the ARO small icon (ic_stat_aro). -->
+    <color name="aro_notification_color">#0F1B2D</color>
+</resources>
