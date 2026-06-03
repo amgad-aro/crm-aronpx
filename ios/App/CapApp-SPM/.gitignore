@@ -7,3 +7,6 @@ DerivedData/
 .swiftpm/config/registries.json
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
+
+# Generated per-OS by `cap sync` (path separators differ Windows vs macOS)
+Package.swift
