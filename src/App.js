@@ -23,6 +23,7 @@ import QRCode from "qrcode";
 import { TableVirtuoso, Virtuoso } from "react-virtuoso";
 import { initPushNotifications, disposePushNotifications, removeTokenFromBackend } from "./utils/pushNotifications";
 import { isNativePlatformSync, runBiometricAuth, isBiometricAvailable } from "./utils/biometric";
+import { getCurrentPosition as geoGetCurrentPosition } from "./utils/geolocation";
 
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
@@ -6831,21 +6832,14 @@ var CheckInWidget = function(p) {
     if (geofenceCount === 0) return;
     var stopped = false;
     var poll = function(){
-      if (stopped || !navigator.geolocation) {
-        if (!navigator.geolocation) setCoordsErr("Browser does not support geolocation");
-        return;
-      }
-      navigator.geolocation.getCurrentPosition(function(pos){
-        if (stopped) return;
-        setCoords({
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy
-        });
-        setCoordsErr("");
-      }, function(err){
-        setCoordsErr(err.message || "Could not get location");
-      }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
+      if (stopped) return;
+      geoGetCurrentPosition({ enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 })
+        .then(function(c){
+          if (stopped) return;
+          setCoords({ latitude: c.latitude, longitude: c.longitude, accuracy: c.accuracy });
+          setCoordsErr("");
+        })
+        .catch(function(err){ if (!stopped) setCoordsErr((err && err.message) || "Could not get location"); });
     };
     poll();
     var interval = setInterval(poll, 60000);
@@ -6941,17 +6935,9 @@ var CheckInWidget = function(p) {
   })();
 
   var requestPosition = function(){
-    return new Promise(function(resolve, reject){
-      if (!navigator.geolocation) return reject(new Error("Geolocation not supported"));
-      navigator.geolocation.getCurrentPosition(function(pos){
-        resolve({
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy
-        });
-      }, function(err){ reject(new Error(err.message || "Location denied")); },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
-    });
+    // web → navigator.geolocation; native → Capacitor Geolocation plugin.
+    // Same { latitude, longitude, accuracy } shape; always settles (timeout).
+    return geoGetCurrentPosition({ enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   };
 
   var doCheckIn = async function(){
@@ -19395,18 +19381,19 @@ var SettingsPage = function(p) {
           setAttLocs(function(prev){ return prev.filter(function(_, i){ return i !== idx; }); });
         };
         var captureGpsFor = function(idx){
-          if (!navigator.geolocation) { setAttError("Browser does not support geolocation"); return; }
           setAttError(""); setAttMsg("Getting your location…");
-          navigator.geolocation.getCurrentPosition(function(pos){
-            updateRow(idx, {
-              latitude:  String(pos.coords.latitude.toFixed(6)),
-              longitude: String(pos.coords.longitude.toFixed(6))
+          geoGetCurrentPosition({ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 })
+            .then(function(c){
+              updateRow(idx, {
+                latitude:  String(c.latitude.toFixed(6)),
+                longitude: String(c.longitude.toFixed(6))
+              });
+              setAttMsg("Captured for row " + (idx + 1) + " (" + c.accuracy.toFixed(0) + "m accuracy)");
+            })
+            .catch(function(err){
+              setAttMsg("");
+              setAttError("Could not get location: " + ((err && err.message) || ""));
             });
-            setAttMsg("Captured for row " + (idx + 1) + " (" + pos.coords.accuracy.toFixed(0) + "m accuracy)");
-          }, function(err){
-            setAttMsg("");
-            setAttError("Could not get location: " + (err.message || err.code));
-          }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
         };
 
         var doSaveLocs = async function(){

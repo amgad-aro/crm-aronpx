@@ -6,6 +6,8 @@
 	<string>$(CAPACITOR_DEBUG)</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>ARO CRM uses Face ID to unlock the app and protect your data.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>ARO CRM uses your location to verify attendance check-in and check-out at office locations.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
