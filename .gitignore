@@ -27,6 +27,8 @@ yarn-error.log*
 # Capacitor — native build artifacts
 /ios/App/Pods
 /ios/App/build
+# Xcode-generated SPM resolution state (per-machine)
+/ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
 /android/.gradle
 /android/build
 /android/app/build
