@@ -7270,11 +7270,17 @@ app.post("/api/users/push-token", auth, async function(req, res) {
     var user = await User.findById(uid);
     if (!user) return res.status(404).json({ error: "User not found" });
     user.pushTokens = user.pushTokens || [];
-    var existing = user.pushTokens.find(function(t){ return t && t.token === token; });
-    if (!existing) {
-      user.pushTokens.push({ token: token, platform: platform, deviceId: deviceId, addedAt: new Date() });
-      await user.save();
+    // One token per device: drop any prior token from THIS same device before
+    // adding the current one. Clears the stale token left behind when FCM
+    // rotates the device's token — the cause of duplicate pushes. Guard on a
+    // non-empty deviceId so an empty id never wipes a user's tokens.
+    if (deviceId) {
+      user.pushTokens = user.pushTokens.filter(function(t){ return !t || t.deviceId !== deviceId; });
     }
+    if (!user.pushTokens.some(function(t){ return t && t.token === token; })) {
+      user.pushTokens.push({ token: token, platform: platform, deviceId: deviceId, addedAt: new Date() });
+    }
+    await user.save();
     res.json({ success: true, tokenCount: user.pushTokens.length });
   } catch (e) {
     res.status(500).json({ error: e.message });

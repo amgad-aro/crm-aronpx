@@ -58,8 +58,22 @@ export async function sendTokenToBackend(token, platform) {
     if (raw) session = JSON.parse(raw);
   } catch (e) { session = null; }
   if (!session || !session.token) return; // not logged in — nothing to associate
+  // Stable per-install device id. Get-or-create so EVERY registration carries a
+  // unique, non-empty deviceId — the backend uses it to keep one token per
+  // device (dropping the stale token left by FCM rotation that caused duplicate
+  // pushes). Previously this only READ the key, which was never set => always "".
   var deviceId = "";
-  try { deviceId = (window.localStorage && localStorage.getItem("crm_device_id")) || ""; } catch (e) {}
+  try {
+    if (window.localStorage) {
+      deviceId = localStorage.getItem("crm_device_id") || "";
+      if (!deviceId) {
+        deviceId = (window.crypto && crypto.randomUUID)
+          ? crypto.randomUUID()
+          : ("dev-" + Math.random().toString(36).slice(2) + Date.now().toString(36));
+        localStorage.setItem("crm_device_id", deviceId);
+      }
+    }
+  } catch (e) { deviceId = ""; }
   try {
     await fetch(API + "/api/users/push-token", {
       method: "POST",

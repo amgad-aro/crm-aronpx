@@ -90,10 +90,17 @@ async function sendPushNotification(userIds, title, body, data) {
     .lean();
 
   // Flatten to [{userId, token}, ...] so we can prune by owner on failure.
+  // Dedupe token VALUES so a device can never get the same push twice even if a
+  // duplicate token slipped into pushTokens[] (belt-and-suspenders vs the
+  // one-token-per-device dedupe in POST /api/users/push-token).
   var entries = [];
+  var seenTokens = {};
   users.forEach(function(u) {
     (u.pushTokens || []).forEach(function(t) {
-      if (t && t.token) entries.push({ userId: String(u._id), token: t.token });
+      if (t && t.token && !seenTokens[t.token]) {
+        seenTokens[t.token] = true;
+        entries.push({ userId: String(u._id), token: t.token });
+      }
     });
   });
   if (entries.length === 0) {
