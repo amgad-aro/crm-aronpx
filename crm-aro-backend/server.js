@@ -84,6 +84,14 @@ var User = mongoose.model("User", new mongoose.Schema({
   // Rotation entries where date >= start of today. Manual /rotate ignores
   // this cap entirely (admin override).
   dailyLeadCap:{type:Number,default:null,min:0},
+  // Hidden accounts (e.g. the Play Store reviewer demo login) stay loginable
+  // (login checks active only) but are filtered out of every staff-facing user
+  // list via `hidden: { $ne: true }` — leaderboard, agent dropdowns, rotation
+  // tier picker (sourced from /api/users), attendance, KPI/payout pools. The
+  // pure-admin (owner) branch of GET /api/users intentionally does NOT filter,
+  // so the owner can still see and manage the account. { $ne: true } treats
+  // every existing user (field absent) as visible — no migration needed.
+  hidden:{type:Boolean,default:false},
   // Capacitor Push Notifications registry. One entry per (device,platform)
   // registration. token = FCM/APNs token from Capacitor's PushNotifications
   // plugin. Deduped by token value in POST /api/users/push-token. Invalid
@@ -5395,7 +5403,7 @@ async function(req, res) {
       toDate = new Date(fromDate.getTime() + 86400000);
     }
 
-    var users = await User.find({ role: { $ne: "admin" }, active: true })
+    var users = await User.find({ role: { $ne: "admin" }, active: true, hidden: { $ne: true } })
       .select("name role title teamId teamName saturdaySchedule saturdayPatternStartDate")
       .lean();
 
@@ -6820,7 +6828,7 @@ app.get("/api/dashboard/sales-ranking", auth, async function(req, res) {
     // appear in the ranking. There is intentionally no subtree scoping here:
     // every screen shows the same company-wide leaderboard so a sales agent's
     // rank means the same thing everywhere it's displayed.
-    var salesUsers = await User.find({ role: "sales", active: { $ne: false } })
+    var salesUsers = await User.find({ role: "sales", active: { $ne: false }, hidden: { $ne: true } })
       .select("_id name title")
       .sort({ name: 1 })
       .lean();
@@ -7213,9 +7221,16 @@ app.get("/api/users", auth, async function(req, res) {
     var uid = req.user.id;
     var users;
 
-    if (role === "admin" || role === "sales_admin") {
-      // Admin sees all users
+    if (role === "admin") {
+      // Owner / admin sees ALL users — intentionally NO hidden filter so the
+      // owner can still see and manage hidden accounts (e.g. the Play Store
+      // reviewer demo login). Every other branch below filters hidden out.
       users = await User.find().select("-password").sort({ createdAt: -1 });
+      users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
+
+    } else if (role === "sales_admin") {
+      // sales_admin sees all users EXCEPT hidden accounts (team-facing).
+      users = await User.find({ hidden: { $ne: true } }).select("-password").sort({ createdAt: -1 });
       users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
 
     } else if (role === "manager" || role === "director") {
@@ -7224,16 +7239,16 @@ app.get("/api/users", auth, async function(req, res) {
       //   director → self + L1 managers + L2 TLs/sales under managers + L3 sales under those TLs
       // Single source of truth — see getScopedUserIds() above for the walk.
       var scopedUsersIds = await getScopedUserIds(req.user);
-      users = await User.find({ _id: { $in: scopedUsersIds } }).select("-password").sort({ createdAt: -1 });
+      users = await User.find({ _id: { $in: scopedUsersIds }, hidden: { $ne: true } }).select("-password").sort({ createdAt: -1 });
       users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
 
     } else if (role === "team_leader") {
       // Team leader: sees themselves + their direct sales
       var tlUser = await User.findById(uid).lean();
       var tlVisibleIds = [tlUser._id];
-      var tlDirectSales = await User.find({ reportsTo: tlUser._id, role: "sales" }).lean();
+      var tlDirectSales = await User.find({ reportsTo: tlUser._id, role: "sales", hidden: { $ne: true } }).lean();
       tlDirectSales.forEach(function(s) { tlVisibleIds.push(s._id); });
-      users = await User.find({ _id: { $in: tlVisibleIds } }).select("-password").sort({ createdAt: -1 });
+      users = await User.find({ _id: { $in: tlVisibleIds }, hidden: { $ne: true } }).select("-password").sort({ createdAt: -1 });
       users = users.map(function(u){ var obj = u.toObject(); if(!obj.qTargets) obj.qTargets = {}; return obj; });
 
     } else {
@@ -15218,7 +15233,7 @@ app.get("/api/dashboard/agent-perf", auth, async function(req, res) {
     // Visible users — sales role for the rows (matches FE filter at L7367).
     // Scope: admin / sales_admin sees every active sales agent; TL/manager/
     // director sees their subtree.
-    var salesQuery = { active: { $ne: false }, role: "sales" };
+    var salesQuery = { active: { $ne: false }, role: "sales", hidden: { $ne: true } };
     if (role === "team_leader" || role === "manager" || role === "director") {
       var scopedIds = await getScopedUserIds(req.user) || [];
       if (scopedIds.length === 0) return res.status(403).json({ error: "Scope unavailable" });
@@ -16666,7 +16681,7 @@ app.get("/api/dashboard/admin", auth, async function(req, res) {
     var leads = await Lead.find({archived:false}).populate("agentId","name title").populate("assignments.agentId","name title").lean();
     var drs = await DailyRequest.find({}).lean();
     var activities = await Activity.find({}).lean();
-    var users = await User.find({active:true,role:{$in:["sales","sales_admin","team_leader","manager"]}}).lean();
+    var users = await User.find({active:true,role:{$in:["sales","sales_admin","team_leader","manager"]},hidden:{$ne:true}}).lean();
 
     // Helper: parse to ms; returns 0 if invalid
     var toMs = function(v){ if(!v) return 0; var t=new Date(v).getTime(); return isNaN(t)?0:t; };
@@ -16999,7 +17014,7 @@ app.get("/api/dashboard/sales", auth, async function(req, res) {
 
     var myLeads = await Lead.find({archived:false,agentId:new mongoose.Types.ObjectId(uid)}).lean();
     var allActs = await Activity.find({userId:uid}).lean();
-    var allUsers = await User.find({active:true,role:{$in:["sales","sales_admin"]}}).lean();
+    var allUsers = await User.find({active:true,role:{$in:["sales","sales_admin"]},hidden:{$ne:true}}).lean();
     var allLeads = await Lead.find({archived:false}).lean();
 
     // Get my assignment data for each lead
@@ -17202,7 +17217,7 @@ app.get("/api/reports/callback-compliance", auth, reportsAuth, async function(re
     // never drops an agent with zero scheduled callbacks in the window
     // (parity with FE App.js L8740-L8743).
     var roles = ["sales", "sales_admin", "team_leader", "manager"];
-    var seedUsers = await User.find({ active: { $ne: false }, role: { $in: roles } }).select("_id name").lean();
+    var seedUsers = await User.find({ active: { $ne: false }, role: { $in: roles }, hidden: { $ne: true } }).select("_id name").lean();
     var byAgent = {};
     seedUsers.forEach(function(u){
       byAgent[String(u._id)] = { uid: String(u._id), name: u.name || "Unknown", total: 0, doneOnTime: 0, missed: 0 };
@@ -18248,7 +18263,7 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
     // per-agent, so we need the roster before aggregating). Inactive agents are
     // kept — they may carry deals/leads in a historical period — and dropped
     // later only if they have zero activity.
-    var poolQuery = { role: { $in: ["sales", "team_leader", "manager"] } };
+    var poolQuery = { role: { $in: ["sales", "team_leader", "manager"] }, hidden: { $ne: true } };
     if (scopeIds) poolQuery._id = { $in: scopeIds };
     var poolUsers = await User.find(poolQuery).select("name role qTargets active").lean();
     var userMap = {};
@@ -18800,7 +18815,7 @@ app.get("/api/reports/overview/alerts", auth, reportsAuth, async function(req, r
       { $group: { _id: "$agentId", revenue: { $sum: "$budgetNum" }}}
     ]);
 
-    var userQuery = { role: { $in: ["sales", "team_leader", "manager"] }, active: true };
+    var userQuery = { role: { $in: ["sales", "team_leader", "manager"] }, active: true, hidden: { $ne: true } };
     if (scopeIds) userQuery._id = { $in: scopeIds };
     var allEligibleUsersP = User.find(userQuery).select("name role qTargets").lean();
 
@@ -19814,7 +19829,7 @@ app.get("/api/reports/agents/list", auth, reportsAuth, async function(req, res) 
     var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;
     var scopeIds = await getReportsTeamScope(req.query.team || null);
 
-    var userQuery = { active: true, role: { $in: ["sales", "team_leader", "manager"] }};
+    var userQuery = { active: true, role: { $in: ["sales", "team_leader", "manager"] }, hidden: { $ne: true }};
     if (scopeIds) userQuery._id = { $in: scopeIds };
     var users = await User.find(userQuery).select("name role title teamName").lean();
     var userIds = users.map(function(u){ return u._id; });
