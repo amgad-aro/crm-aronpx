@@ -12914,35 +12914,55 @@ setInterval(function(){
 // so it fires once per scheduled callback and re-arms when the agent reschedules.
 // Time-driven (no HTTP hook exists for "time passed"); independent of all other
 // sweepers; query is index-backed (callbackTime / agentId+callbackTime).
+// Cairo wall-clock as a naive "YYYY-MM-DDTHH:mm" string — the SAME format
+// callbackTime is stored in (FE datetime-local, no Z). DST-aware + TZ-robust
+// (reuses getCairoDateParts → Intl with Africa/Cairo), so it is correct
+// regardless of the server's own timezone (Railway runs UTC).
+function cairoNaiveMinute(date) {
+  var p = getCairoDateParts(date);
+  var pad = function(n){ return n < 10 ? "0" + n : "" + n; };
+  return p.year + "-" + pad(p.month) + "-" + pad(p.day) + "T" + pad(p.hour) + ":" + pad(p.minute);
+}
+// Deterministic dedupe KEY for a callbackTime string: parse it the same way
+// MongoDB's $convert does (no zone => UTC), independent of server TZ. Used to
+// stamp/compare callbackNotifiedAt so a callback notifies exactly once per
+// scheduled time and re-arms on any reschedule.
+function callbackKeyDate(s) {
+  var t = String(s || "");
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(t)) t += ":00";
+  return new Date(t + "Z");
+}
+
 async function sweepDueCallbacks() {
   try {
     var now = new Date();
     var soon = new Date(now.getTime() + 2 * 60 * 1000); // now + 2 min
-    var nowIso  = now.toISOString();
-    var soonIso = soon.toISOString();
+    // Build the window in the SAME naive Cairo wall-clock frame the values are
+    // stored in (NOT UTC) — otherwise the reminder fires off by the Cairo offset.
+    var nowNaive  = cairoNaiveMinute(now);
+    var soonNaive = cairoNaiveMinute(soon);
     var due = await Lead.find({
       archived: { $ne: true },
       agentId: { $ne: null },
       status: { $nin: ["DoneDeal", "NotInterested", "EOI"] },
-      callbackTime: { $type: "string", $gt: nowIso, $lte: soonIso },
+      callbackTime: { $type: "string", $gt: nowNaive, $lte: soonNaive },
       $and: [
-        // not yet actioned: lastActivityTime <= callbackTime
+        // not yet actioned: last activity (rendered in Cairo wall-clock, same
+        // frame as callbackTime) <= callbackTime. null lastActivity => epoch.
         { $expr: {
-          $let: {
-            vars: { cbDate: { $convert: { input: "$callbackTime", to: "date", onError: null, onNull: null } } },
-            in: { $and: [
-              { $ne: ["$$cbDate", null] },
-              { $lte: [{ $ifNull: ["$lastActivityTime", new Date(0)] }, "$$cbDate"] }
-            ]}
-          }
+          $lte: [
+            { $dateToString: { date: { $ifNull: ["$lastActivityTime", new Date(0)] }, format: "%Y-%m-%dT%H:%M", timezone: "Africa/Cairo" } },
+            "$callbackTime"
+          ]
         }},
-        // not yet notified for THIS callbackTime: null OR stamped before it
+        // not yet notified for THIS callbackTime: never notified, OR the stamped
+        // key differs from this callbackTime's key (i.e. it was rescheduled).
         { $expr: {
           $let: {
-            vars: { cbDate: { $convert: { input: "$callbackTime", to: "date", onError: null, onNull: null } } },
+            vars: { cbKey: { $convert: { input: "$callbackTime", to: "date", onError: null, onNull: null } } },
             in: { $or: [
               { $eq: ["$callbackNotifiedAt", null] },
-              { $lt: ["$callbackNotifiedAt", "$$cbDate"] }
+              { $ne: ["$callbackNotifiedAt", "$$cbKey"] }
             ]}
           }
         }}
@@ -12955,7 +12975,7 @@ async function sweepDueCallbacks() {
       // best-effort and must not block or revert the stamp. If the stamp fails
       // we skip the push entirely (never push without having deduped).
       try {
-        await Lead.updateOne({ _id: lead._id }, { $set: { callbackNotifiedAt: now } });
+        await Lead.updateOne({ _id: lead._id }, { $set: { callbackNotifiedAt: callbackKeyDate(lead.callbackTime) } });
       } catch (stampErr) {
         console.error("[callback sweep] stamp failed", lead._id, stampErr && stampErr.message);
         continue;
