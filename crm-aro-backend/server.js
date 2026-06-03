@@ -422,6 +422,20 @@ var Notification = mongoose.model("Notification", new mongoose.Schema({
   seenBy:[{type:String}]
 },{timestamps:true}));
 
+// Admin scheduled company-wide announcements. scheduledFor is a REAL Date (UTC):
+// the FE sends new Date(localPicker).toISOString(), the sweeper compares it
+// against new Date() — no naive-local string comparison (unlike callbackTime).
+var ScheduledBroadcast = mongoose.model("ScheduledBroadcast", new mongoose.Schema({
+  title:         { type: String, default: "" },
+  body:          { type: String, required: true },
+  scheduledFor:  { type: Date, required: true, index: true },
+  status:        { type: String, enum: ["pending","sent","cancelled"], default: "pending", index: true },
+  createdBy:     { type: String, default: "" },
+  createdByName: { type: String, default: "" },
+  sentAt:        { type: Date, default: null },
+  recipients:    { type: Number, default: 0 }
+},{timestamps:true}));
+
 // Notification indexes — added 2026-05-10 after a live audit found the
 // collection was running every query as a full _id-only scan over 8,684 rows.
 // Hottest patterns: getVisibleNotifications (.find({type:...}).sort({createdAt:-1})),
@@ -16229,37 +16243,108 @@ app.put("/api/notifications/mark-seen", auth, async function(req, res) {
 // (type "announcement", visible to all roles via getVisibleNotifications)
 // and pushes to every active user. Reuses sendPushNotification, which
 // itself re-filters inactive users (active: { $ne: false }).
+// Shared broadcast send — used by BOTH the immediate route and the scheduled
+// sweeper so delivery is identical. One shared announcement bell row + push to
+// all active users. Returns { recipients, notifId, push }.
+async function runBroadcast(title, body, fromName) {
+  var row = await Notification.create({
+    type: "announcement",
+    title: title || "",
+    body: body,
+    fromName: fromName || "Admin",
+    eventTime: new Date(),
+    seenBy: []
+  });
+  // Refresh every connected bell in real time (same as all other create sites).
+  try { broadcast("notification_updated", {}); } catch(e) {}
+  // Push to all active users. sendPushNotification re-filters inactive.
+  var actives = await User.find({ active: { $ne: false } }).select("_id").lean();
+  var ids = actives.map(function(u){ return String(u._id); });
+  var pushResult = await sendPushNotification(
+    ids,
+    title || "Announcement",
+    body,
+    { type: "announcement", notifId: String(row._id) }
+  );
+  return { recipients: ids.length, notifId: String(row._id), push: pushResult };
+}
+
 app.post("/api/notifications/broadcast", auth, strictAdminOnly, async function(req, res) {
   try {
     var title = String((req.body && req.body.title) || "").trim();
     var bodyTxt = String((req.body && req.body.body) || "").trim();
     if (!bodyTxt) return res.status(400).json({ error: "Message body required" });
-
-    // 1) One shared bell row — unread for everyone on creation (seenBy: []).
-    var row = await Notification.create({
-      type: "announcement",
-      title: title,
-      body: bodyTxt,
-      fromName: req.user.name || "Admin",
-      eventTime: new Date(),
-      seenBy: []
-    });
-    // Refresh every connected bell in real time (same as all other create sites).
-    try { broadcast("notification_updated", {}); } catch(e) {}
-
-    // 2) Push to all active users. sendPushNotification re-filters inactive.
-    var actives = await User.find({ active: { $ne: false } }).select("_id").lean();
-    var ids = actives.map(function(u){ return String(u._id); });
-    var pushResult = await sendPushNotification(
-      ids,
-      title || "Announcement",
-      bodyTxt,
-      { type: "announcement", notifId: String(row._id) }
-    );
-
-    res.json({ ok: true, recipients: ids.length, notifId: String(row._id), push: pushResult });
+    var r = await runBroadcast(title, bodyTxt, req.user.name);
+    res.json({ ok: true, recipients: r.recipients, notifId: r.notifId, push: r.push });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
+
+// ===== SCHEDULED BROADCASTS (admin-only) =====
+// Create — validates a future Date. FE sends scheduledFor as an ISO string with
+// timezone (new Date(localPicker).toISOString()); stored as a real Date.
+app.post("/api/notifications/schedule", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var title = String((req.body && req.body.title) || "").trim();
+    var body  = String((req.body && req.body.body) || "").trim();
+    var when  = (req.body && req.body.scheduledFor) ? new Date(req.body.scheduledFor) : null;
+    if (!body) return res.status(400).json({ error: "Message body required" });
+    if (!when || isNaN(when.getTime())) return res.status(400).json({ error: "Valid scheduledFor required" });
+    if (when.getTime() <= Date.now() + 30000) return res.status(400).json({ error: "scheduledFor must be in the future" });
+    var sb = await ScheduledBroadcast.create({
+      title: title, body: body, scheduledFor: when, status: "pending",
+      createdBy: String(req.user.id), createdByName: req.user.name || "Admin"
+    });
+    res.json({ ok: true, id: String(sb._id), scheduledFor: sb.scheduledFor });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// List pending (soonest first)
+app.get("/api/notifications/scheduled", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var rows = await ScheduledBroadcast.find({ status: "pending" }).sort({ scheduledFor: 1 }).limit(200).lean();
+    res.json(rows.map(function(r){
+      return { id: String(r._id), title: r.title, body: r.body, scheduledFor: r.scheduledFor, createdByName: r.createdByName };
+    }));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Soft-cancel a still-pending one (keeps an audit row; list filters status:"pending")
+app.delete("/api/notifications/scheduled/:id([0-9a-fA-F]{24})", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var r = await ScheduledBroadcast.updateOne({ _id: req.params.id, status: "pending" }, { $set: { status: "cancelled" } });
+    if (!r.matchedCount) return res.status(404).json({ error: "Not found or already sent" });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Sweeper — every 60s, fire due pending broadcasts. Date-vs-Date comparison
+// (no naive-string bug). Claim atomically BEFORE sending to prevent double-fire.
+// No auto-retry on failure (stays "sent", logged) per the approved design.
+async function sweepScheduledBroadcasts() {
+  try {
+    var due = await ScheduledBroadcast.find({ status: "pending", scheduledFor: { $lte: new Date() } })
+                .sort({ scheduledFor: 1 }).limit(50);
+    for (var i = 0; i < due.length; i++) {
+      var sb = due[i];
+      var claim = await ScheduledBroadcast.updateOne(
+        { _id: sb._id, status: "pending" }, { $set: { status: "sent", sentAt: new Date() } }
+      );
+      if (!claim.modifiedCount) continue;   // another tick already claimed it
+      try {
+        var r = await runBroadcast(sb.title, sb.body, sb.createdByName || "Admin");
+        await ScheduledBroadcast.updateOne({ _id: sb._id }, { $set: { recipients: r.recipients } });
+      } catch (sendErr) {
+        console.error("[scheduled broadcast] send failed", String(sb._id), sendErr && sendErr.message);
+        // no auto-retry — already claimed "sent"
+      }
+    }
+  } catch (e) {
+    console.error("[scheduled broadcast]", e && e.message ? e.message : e);
+  }
+}
+setInterval(function(){
+  if (mongoose.connection && mongoose.connection.readyState === 1) sweepScheduledBroadcasts();
+}, 60 * 1000);
 
 // ===== PHASE R-4 — COMMISSION NOTIFICATIONS =====
 // commission_* notifications are filtered out of /api/notifications (the bell

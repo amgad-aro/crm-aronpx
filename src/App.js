@@ -17529,6 +17529,39 @@ var SettingsPage = function(p) {
       .catch(function(e){ window.alert("Failed to send: "+(e&&e.message||"error")); })
       .finally(function(){ setAnnBusy(false); });
   };
+  // Scheduled broadcasts
+  var [annMode,setAnnMode]=useState("now");          // "now" | "later"
+  var [annWhen,setAnnWhen]=useState("");             // datetime-local value
+  var [annScheduled,setAnnScheduled]=useState([]);   // pending list
+  var loadScheduled=function(){
+    if(!(p.cu && p.cu.role==="admin")) return;
+    apiFetch("/api/notifications/scheduled","GET",null,p.token)
+      .then(function(rows){ setAnnScheduled(Array.isArray(rows)?rows:[]); })
+      .catch(function(){});
+  };
+  var scheduleAnnouncement=function(){
+    var msg=(annBody||"").trim();
+    if(!msg) return;
+    if(!annWhen){ window.alert("Pick a date and time"); return; }
+    var iso=new Date(annWhen).toISOString();          // local picker -> real UTC instant
+    if(new Date(iso).getTime() <= Date.now()){ window.alert("Pick a future time"); return; }
+    if(!window.confirm("Schedule this announcement for "+new Date(iso).toLocaleString()+"?")) return;
+    setAnnBusy(true);
+    apiFetch("/api/notifications/schedule","POST",{title:(annTitle||"").trim(),body:msg,scheduledFor:iso},p.token,p.csrfToken)
+      .then(function(){
+        setAnnTitle(""); setAnnBody(""); setAnnWhen(""); setAnnMode("now");
+        setAnnOpen(false); loadScheduled();
+      })
+      .catch(function(e){ window.alert("Failed to schedule: "+(e&&e.message||"error")); })
+      .finally(function(){ setAnnBusy(false); });
+  };
+  var deleteScheduled=function(id){
+    if(!window.confirm("Cancel this scheduled announcement?")) return;
+    apiFetch("/api/notifications/scheduled/"+id,"DELETE",null,p.token,p.csrfToken)
+      .then(function(){ loadScheduled(); })
+      .catch(function(e){ window.alert("Failed: "+(e&&e.message||"error")); });
+  };
+  useEffect(function(){ loadScheduled(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   // Audit Log tab
   var [auditEntries,setAuditEntries]=useState([]);   // populated from /api/settings/audit when endpoint ships
   var [auditLoaded,setAuditLoaded]=useState(false);
@@ -18028,6 +18061,16 @@ var SettingsPage = function(p) {
               Send a push notification to every active employee. They'll receive it as a notification on their device.
             </div>
             <Btn onClick={function(){ setAnnOpen(true); }}>📢 Send announcement</Btn>
+            {annScheduled.length > 0 && <div style={{marginTop:16}}>
+              <div style={{fontSize:12,fontWeight:600,color:"#444",marginBottom:8}}>Scheduled ({annScheduled.length})</div>
+              {annScheduled.map(function(s){ return <div key={s.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,padding:"8px 12px",background:"#F7F7F5",border:"0.5px solid rgba(0,0,0,0.08)",borderRadius:8,marginBottom:6}}>
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:600,color:"#1a1a1a",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{s.title || s.body}</div>
+                  <div style={{fontSize:11,color:"#666"}}>🕑 {new Date(s.scheduledFor).toLocaleString()}{s.createdByName?(" · "+s.createdByName):""}</div>
+                </div>
+                <button onClick={function(){ deleteScheduled(s.id); }} style={{flexShrink:0,padding:"5px 10px",borderRadius:8,border:"1px solid #FCA5A5",background:"#FEF2F2",color:"#B91C1C",fontSize:12,fontWeight:600,cursor:"pointer"}}>Cancel</button>
+              </div>; })}
+            </div>}
           </div>}
         </div>;
       })()}
@@ -19670,17 +19713,32 @@ var SettingsPage = function(p) {
         </div>;
       })()}
 
-      <Modal show={annOpen} onClose={function(){ if(!annBusy){ setAnnOpen(false); setAnnResult(null); } }} title="Send Company Announcement" w={520}>
+      <Modal show={annOpen} onClose={function(){ if(!annBusy){ setAnnOpen(false); setAnnResult(null); } }} title="Company Announcement" w={520}>
         <Inp label="Title (optional)" value={annTitle} placeholder="e.g. Office closed Thursday"
              onChange={function(e){ setAnnTitle(e.target.value); }}/>
         <Inp label="Message" type="textarea" value={annBody} placeholder="Type the announcement everyone will receive…"
              onChange={function(e){ setAnnBody(e.target.value); }}/>
+        <div style={{display:"flex",gap:14,margin:"4px 0 12px",fontSize:13}}>
+          <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
+            <input type="radio" name="annMode" checked={annMode==="now"} onChange={function(){ setAnnMode("now"); }}/> Send now
+          </label>
+          <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
+            <input type="radio" name="annMode" checked={annMode==="later"} onChange={function(){ setAnnMode("later"); }}/> Schedule for later
+          </label>
+        </div>
+        {annMode==="later" && <div style={{marginBottom:12}}>
+          <label style={{display:"block",fontSize:13,fontWeight:600,color:C.text,marginBottom:5}}>Send at</label>
+          <input type="datetime-local" value={annWhen} onChange={function(e){ setAnnWhen(e.target.value); }}
+                 style={{width:"100%",padding:"9px 12px",borderRadius:10,border:"1px solid #E2E8F0",fontSize:14,boxSizing:"border-box"}}/>
+        </div>}
         {annResult && <div style={{fontSize:13,color:"#0F6E56",background:"#EAF6F0",padding:"8px 12px",borderRadius:8,marginBottom:12}}>
           ✓ Sent to {annResult.recipients} employee{annResult.recipients===1?"":"s"}.
         </div>}
         <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:6}}>
           <Btn outline onClick={function(){ if(!annBusy){ setAnnOpen(false); setAnnResult(null); } }}>Cancel</Btn>
-          <Btn onClick={sendAnnouncement} loading={annBusy} disabled={!annBody.trim()}>Send to all employees</Btn>
+          {annMode==="now"
+            ? <Btn onClick={sendAnnouncement} loading={annBusy} disabled={!annBody.trim()}>Send to all employees</Btn>
+            : <Btn onClick={scheduleAnnouncement} loading={annBusy} disabled={!annBody.trim() || !annWhen}>Schedule</Btn>}
         </div>
       </Modal>
 
