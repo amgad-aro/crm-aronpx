@@ -1343,7 +1343,7 @@ var Sidebar = function(p) {
     width:240, height:"100vh",
     background:"rgba(28, 30, 40, 0.95)",
     borderRight:"1px solid rgba(255,255,255,0.07)",
-    padding:"24px 14px 16px",
+    padding:"calc(24px + env(safe-area-inset-top, 0px)) 14px 16px",
     fontFamily:"-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
     display:"flex", flexDirection:"column",
     position:"fixed", top:0, zIndex:150,
@@ -6307,7 +6307,7 @@ var LeadsPage = function(p) {
           the wrapper offset matches the panel's actual rendering. */}
       {hasRenderableSelected&&<Card innerRef={panelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
         {/* ─── Phase 3 redesign ─── Section 1: HEADER (dark navy, kept) ─── */}
-        <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"16px 18px", position:"sticky", top:0, zIndex:5 }}>
+        <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"calc(16px + env(safe-area-inset-top, 0px)) 18px 16px", position:"sticky", top:0, zIndex:5 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, width:30, height:30, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }} title={t.close||"Close"}><X size={14}/></button>
             <div style={{ display:"flex", gap:6 }}>
@@ -9834,7 +9834,7 @@ var DashboardPage = function(p) {
       </div>
     );
 
-    return <div className="crm-dash crm-dash-sales" style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100vw",boxSizing:"border-box",overflowX:"hidden"}}>
+    return <div className="crm-dash crm-dash-sales" style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100%",boxSizing:"border-box",overflowX:"hidden"}}>
       {/* Header — clock now sits to the RIGHT of the date on the same line. */}
       <div className="crm-dash-header" style={{display:"flex",alignItems:isMobile?"stretch":"center",justifyContent:"space-between",marginBottom:isMobile?14:20,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
         <div style={{minWidth:0,width:isMobile?"100%":"auto"}}>
@@ -10316,7 +10316,7 @@ var DashboardPage = function(p) {
   };
   var initialsOf = function(n){return (n||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();};
 
-  return <div className="crm-dash crm-dash-admin" style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100vw",boxSizing:"border-box",overflowX:"hidden"}}>
+  return <div className="crm-dash crm-dash-admin" style={{padding:isMobile?"12px 10px 32px":"16px 12px 40px",background:"#F1F5F9",width:"100%",maxWidth:"100%",boxSizing:"border-box",overflowX:"hidden"}}>
     {/* Mobile safety-net CSS lives once in the app root — see CRMApp. */}
     <div className="crm-dash-header" style={{display:"flex",alignItems:isMobile?"flex-start":"center",justifyContent:"space-between",marginBottom:isMobile?16:24,flexWrap:"wrap",gap:isMobile?10:8,flexDirection:isMobile?"column":"row"}}>
       <div style={{minWidth:0,width:isMobile?"100%":"auto"}}>
@@ -10732,7 +10732,7 @@ var DashboardPage = function(p) {
         })()}
       </>)}
     </div>
-    {seeAllOpen && <div data-overlay-above="true" onClick={function(){setSeeAllOpen(false);}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(15,23,42,0.55)",zIndex:1000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 16px",overflowY:"auto"}}>
+    {seeAllOpen && <div data-overlay-above="true" onClick={function(){setSeeAllOpen(false);}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(15,23,42,0.55)",zIndex:1000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"calc(40px + env(safe-area-inset-top, 0px)) 16px",overflowY:"auto"}}>
       <div onClick={function(e){e.stopPropagation();}} style={{background:"#fff",borderRadius:16,maxWidth:640,width:"100%",padding:"20px 22px",boxShadow:"0 10px 40px rgba(0,0,0,0.2)"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
           <div style={{fontSize:17,fontWeight:700,color:"#0F172A"}}>{activitiesTitleForFilter(filter)} ({todayActsAll.length})</div>
@@ -11172,7 +11172,7 @@ var EOIPage = function(p) {
 
     {/* EOI Side Panel */}
     {hasRenderableEOI&&<div ref={eoiPanelRef} style={ p.isMobile?{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }:{ flex:"0 0 260px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
-      <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"14px 16px" }}>
+      <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
           <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
@@ -12857,7 +12857,7 @@ var DailyRequestsPage = function(p) {
           {filtered.length===0&&<div style={{ textAlign:"center", padding:40, color:C.textLight }}>No requests</div>}
           {hasRenderableSelected&&<div ref={drPanelRef} style={{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }}>
             {/* Mobile detail panel - same as leads */}
-            <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"16px 16px 20px" }}>
+            <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"calc(16px + env(safe-area-inset-top, 0px)) 16px 20px" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                 <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, width:32, height:32, cursor:"pointer", color:"#fff", fontSize:18, display:"flex", alignItems:"center", justifyContent:"center" }}>←</button>
                 <div style={{ textAlign:"center", flex:1 }}>
@@ -13049,7 +13049,7 @@ var DailyRequestsPage = function(p) {
 
       {/* Side Panel */}
       {hasRenderableSelected&&<Card innerRef={drPanelRef} style={p.isMobile?{ position:"fixed", inset:0, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, margin:0 }:{ position:"fixed", top:0, right:0, bottom:0, width:320, zIndex:300, borderRadius:0, overflowY:"auto", padding:0, boxShadow:"-4px 0 24px rgba(0,0,0,0.12)" }}>
-        <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
+        <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
             <button onClick={function(){setSelected(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
             <div style={{ display:"flex", gap:5 }}>
@@ -28082,8 +28082,10 @@ export default function CRMApp() {
 + "::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }"
 + "input::placeholder, textarea::placeholder { color: #94A3B8; }"
 + "@keyframes spin { to { transform: rotate(360deg); } }"
++ "html, body { overflow-x: hidden; width: 100%; }"
++ ".crm-safe-top { padding-top: env(safe-area-inset-top, 0px); }"
 + "@media (max-width: 768px) {"
-+   "html, body, #root, .crm-app { max-width: 100vw; overflow-x: hidden; }"
++   "html, body, #root, .crm-app { max-width: 100%; overflow-x: hidden; }"
 +   ".crm-app, .crm-app *, .crm-app *::before, .crm-app *::after { box-sizing: border-box; }"
 +   /* Prevent iOS auto-zoom on focus and keep body text readable. */
 +   ".crm-app input, .crm-app select, .crm-app textarea { font-size: 16px !important; }"
@@ -28092,9 +28094,9 @@ export default function CRMApp() {
 +   ".crm-app button:not(.crm-btn-xs) { min-height: 40px; }"
 +   /* Modals become full-screen sheets on mobile so no content is clipped. */
 +   ".crm-modal { padding: 0 !important; align-items: stretch !important; }"
-+   ".crm-modal > .crm-modal-inner { width: 100vw !important; max-width: 100vw !important; min-height: 100vh !important; max-height: 100vh !important; border-radius: 0 !important; padding: 16px !important; box-sizing: border-box !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; }"
++   ".crm-modal > .crm-modal-inner { width: 100% !important; max-width: 100% !important; min-height: 100vh !important; max-height: 100vh !important; border-radius: 0 !important; padding: 16px !important; padding-top: calc(16px + env(safe-area-inset-top, 0px)) !important; box-sizing: border-box !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; }"
 +   /* Dashboard-specific safety net (admin + sales). */
-+   ".crm-dash { width: 100% !important; max-width: 100vw !important; overflow-x: hidden !important; padding-left: 12px !important; padding-right: 12px !important; }"
++   ".crm-dash { width: 100% !important; max-width: 100% !important; overflow-x: hidden !important; padding-left: 12px !important; padding-right: 12px !important; }"
 +   ".crm-dash .crm-dash-card { width: 100% !important; max-width: 100% !important; min-width: 0 !important; padding: 14px !important; box-sizing: border-box !important; }"
 +   ".crm-dash .crm-dash-card > * { max-width: 100%; }"
 +   ".crm-dash .crm-dash-scroll { overflow-x: auto !important; overflow-y: auto !important; max-width: 100% !important; width: 100% !important; -webkit-overflow-scrolling: touch; }"
