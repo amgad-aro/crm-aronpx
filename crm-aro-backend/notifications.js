@@ -111,6 +111,9 @@ async function sendPushNotification(userIds, title, body, data) {
   var message = {
     notification: { title: String(title || ""), body: String(body || "") },
     data: dataPayload,
+    // iOS sound: APNs only plays a sound if aps.sound is set. Android sound comes
+    // from the notification channel (unaffected by this iOS-only block).
+    apns: { payload: { aps: { sound: "default" } } },
     tokens: entries.map(function(e){ return e.token; }),
   };
 
