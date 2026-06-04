@@ -1,5 +1,5 @@
 /* ============================================================
- * Push Notifications (Capacitor) — native-only helper
+ * Push Notifications (Capacitor Firebase Messaging) — native-only helper
  * ------------------------------------------------------------
  * This module is a NO-OP on the web build. Every entry point first
  * lazy-loads @capacitor/core and bails out unless we're running inside
@@ -7,6 +7,19 @@
  *   - The web bundle never pulls the push SDK into the critical path
  *     (dynamic import() => its own chunk, only fetched on native).
  *   - Calling these from App.js on the web is completely safe.
+ *
+ * Uses @capacitor-firebase/messaging so iOS and Android BOTH register an
+ * FCM token (the backend dispatches via firebase-admin). Unlike the old
+ * @capacitor/push-notifications, the token is fetched imperatively via
+ * getToken() (no register()/registration event); addListener('tokenReceived')
+ * handles refreshes. Notification payloads are nested under event.notification.
+ *
+ * EXTERNAL CONTRACTS (kept stable so App.js needs zero changes):
+ *   - exports: initPushNotifications(), disposePushNotifications(),
+ *     removeTokenFromBackend(token)
+ *   - window CustomEvents: 'crm:push-received' (foreground) and 'crm:open-lead' (tap)
+ *   - localStorage tap keys: crm_pending_lead / crm_pending_lead_type / crm_pending_lead_status
+ *   - POST /api/users/push-token { token, platform, deviceId }
  *
  * Backend contract: POST /api/users/push-token  { token, platform, deviceId }
  * Auth: Bearer token read from localStorage 'crm_aro_session' (same shape
@@ -23,7 +36,7 @@ var API = (typeof process !== "undefined" && process.env && process.env.REACT_AP
 var _listeners = [];
 var _initialized = false;
 
-// Cache the most recent FCM/APNs token so logout can deregister it (Capacitor
+// Cache the most recent FCM token so logout can deregister it (Capacitor
 // exposes no synchronous getter). Mirrored to localStorage so a cold logout
 // after a fresh module load can still find the token.
 var _lastToken = "";
@@ -43,6 +56,12 @@ async function _getNativeCapacitor() {
     }
   } catch (e) { /* core not present (pure web build) — fall through */ }
   return null;
+}
+
+// Coerce an FCM data payload (typed `unknown` by the plugin) to a plain object
+// so reads of .type/.leadId/.status never throw on a null/string value.
+function _asObject(v) {
+  return (v && typeof v === "object") ? v : {};
 }
 
 // POST the device token to the backend. Reads auth from the saved session.
@@ -122,35 +141,37 @@ export async function initPushNotifications() {
   if (!Capacitor) return; // web or non-native — no-op
   if (_initialized) return;
 
-  var PushNotifications;
+  var FirebaseMessaging;
   try {
-    var mod = await import("@capacitor/push-notifications");
-    PushNotifications = mod && (mod.PushNotifications || (mod.default && mod.default.PushNotifications));
+    var mod = await import("@capacitor-firebase/messaging");
+    FirebaseMessaging = mod && (mod.FirebaseMessaging || (mod.default && mod.default.FirebaseMessaging));
   } catch (e) { return; }
-  if (!PushNotifications) return;
+  if (!FirebaseMessaging) return;
 
   try {
-    var perm = await PushNotifications.checkPermissions();
+    var perm = await FirebaseMessaging.checkPermissions();
     if (perm && perm.receive !== "granted") {
-      perm = await PushNotifications.requestPermissions();
+      perm = await FirebaseMessaging.requestPermissions();
     }
     if (!perm || perm.receive !== "granted") return; // user denied
 
     var platform = (typeof Capacitor.getPlatform === "function") ? Capacitor.getPlatform() : "unknown";
 
-    // registration => fires with the FCM/APNs token
-    _listeners.push(PushNotifications.addListener("registration", function (tokenData) {
-      try { sendTokenToBackend(tokenData && tokenData.value, platform); } catch (e) {}
+    // tokenReceived => fires with the FCM token (initial + on every refresh).
+    // getToken() below covers the initial fetch; this keeps a rotated token in sync.
+    _listeners.push(FirebaseMessaging.addListener("tokenReceived", function (event) {
+      try { sendTokenToBackend(event && event.token, platform); } catch (e) {}
     }));
-    _listeners.push(PushNotifications.addListener("registrationError", function () { /* silent — retried next launch */ }));
     // Foreground receipt: the OS suppresses its own banner while the app is
-    // open, so we surface an in-app banner instead. Mirror the crm:open-lead
-    // bridge — dispatch a window event App.js listens for. Native-only (this
-    // listener is only wired inside the native shell), so web never fires it.
-    _listeners.push(PushNotifications.addListener("pushNotificationReceived", function (notification) {
+    // open (presentationOptions:[] in capacitor.config.ts), so we surface an
+    // in-app banner instead. Mirror the crm:open-lead bridge — dispatch a
+    // window event App.js listens for. Native-only (this listener is only wired
+    // inside the native shell), so web never fires it. Payload is nested under
+    // event.notification (vs the old flat notification object).
+    _listeners.push(FirebaseMessaging.addListener("notificationReceived", function (event) {
       try {
-        var n    = notification || {};
-        var data = n.data || {};
+        var n    = (event && event.notification) || {};
+        var data = _asObject(n.data);
         if (typeof window !== "undefined" && window.dispatchEvent) {
           window.dispatchEvent(new CustomEvent("crm:push-received", {
             detail: {
@@ -164,9 +185,9 @@ export async function initPushNotifications() {
         }
       } catch (e) { /* never let a foreground receipt throw */ }
     }));
-    _listeners.push(PushNotifications.addListener("pushNotificationActionPerformed", function (action) {
+    _listeners.push(FirebaseMessaging.addListener("notificationActionPerformed", function (event) {
       try {
-        var data = (action && action.notification && action.notification.data) || {};
+        var data = _asObject(event && event.notification && event.notification.data);
         var lid  = data.leadId ? String(data.leadId) : "";
         if (!lid) return;
         // Durable bridge: App.js reads these on mount (cold start / resume from
@@ -187,7 +208,17 @@ export async function initPushNotifications() {
       } catch (e) { /* never let tap handling throw */ }
     }));
 
-    await PushNotifications.register();
+    // Imperative initial fetch (replaces register() + the registration event).
+    // Wrapped in its OWN try/catch — this is the error path the old
+    // registrationError listener handled. A getToken() failure is swallowed
+    // here: init still completes (_initialized becomes true below) and the
+    // tokenReceived listener remains the fallback that delivers the token if/
+    // when it later becomes available.
+    try {
+      var result = await FirebaseMessaging.getToken();
+      if (result && result.token) sendTokenToBackend(result.token, platform);
+    } catch (e) { /* token fetch failed — tokenReceived may still deliver it */ }
+
     _initialized = true;
   } catch (e) { /* registration failed — leave _initialized false so a later call retries */ }
 }

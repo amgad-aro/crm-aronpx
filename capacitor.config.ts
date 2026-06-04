@@ -13,6 +13,9 @@ const config: CapacitorConfig = {
       enable: true,
       imageName: 'Splash',
       preventScreenshots: true
+    },
+    FirebaseMessaging: {
+      presentationOptions: []
     }
   }
 };
