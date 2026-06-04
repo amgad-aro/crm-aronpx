@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, memo, Fragment } fro
 import {
   Search, Bell, Plus, Phone, Building, Users, BarChart3,
   Settings, Home, Briefcase, Target, TrendingUp, UserPlus, CheckCircle,
-  Activity, Layers, DollarSign, X, Lock, Globe, LogOut, Eye, EyeOff,
+  Activity, Layers, DollarSign, X, Lock, Globe, LogOut, Eye, EyeOff, User,
   Trash2, AlertCircle, Menu, Upload, MessageSquare, ChevronRight, ChevronDown,
   ClipboardList, Edit, Archive, Award, Zap, RotateCcw, ExternalLink, KeyRound, FileSpreadsheet, MapPin
 } from "lucide-react";
@@ -990,28 +990,34 @@ var LoginPage = function(p) {
     try { var data = await apiFetch("/api/login","POST",{username:user,password:pass}); p.onLogin(data.user,data.token,data.csrfToken); }
     catch(e) { setErr(t.loginError); } setLoading(false);
   };
-  return <div style={{ minHeight:"100vh", background:"linear-gradient(135deg,"+C.primaryDark+" 0%,"+C.primary+" 55%,"+C.primaryLight+" 100%)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Cairo','Segoe UI',sans-serif", padding:16 }}>
-    <div style={{ background:"#fff", borderRadius:24, padding:"40px 36px", width:"100%", maxWidth:420, boxShadow:"0 24px 64px rgba(0,0,0,0.28)" }}>
-      <div style={{ textAlign:"center", marginBottom:34 }}>
-        <div style={{ width:68, height:68, borderRadius:18, background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", display:"inline-flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:22, color:"#fff", boxShadow:"0 8px 24px rgba(232,168,56,0.45)", marginBottom:16 }}>ARO</div>
-        <h1 style={{ margin:0, fontSize:26, fontWeight:800, color:C.text }}>ARO CRM</h1>
-        <p style={{ margin:"6px 0 0", fontSize:13, color:C.textLight }}></p>
+  return <div style={{ position:"relative", minHeight:"100vh", background:"linear-gradient(170deg,#fbfbfd,#f4f1ec)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Cairo','Segoe UI',sans-serif", padding:16, overflow:"hidden" }}>
+    {/* Soft decorative background accents — behind the card, partially off-screen */}
+    <div style={{ position:"absolute", top:-160, left:-160, width:460, height:460, borderRadius:"50%", background:"radial-gradient(circle, rgba(205,169,104,0.15), transparent 70%)", pointerEvents:"none" }}/>
+    <div style={{ position:"absolute", bottom:-180, right:-180, width:520, height:520, borderRadius:"50%", background:"radial-gradient(circle, rgba(28,42,69,0.05), transparent 70%)", pointerEvents:"none" }}/>
+    <div style={{ position:"relative", background:"transparent", borderRadius:24, padding:"40px 36px", width:"100%", maxWidth:420, boxSizing:"border-box" }}>
+      <div style={{ textAlign:"center", marginBottom:36 }}>
+        <div style={{ fontFamily:"Georgia, 'Times New Roman', serif", fontSize:42, fontWeight:400, color:"#1a1a1a", letterSpacing:"0.38em", paddingLeft:"0.38em", lineHeight:1 }}>ARO</div>
+        <div style={{ width:60, height:2, margin:"18px auto 0", background:"linear-gradient(90deg, transparent, #c19a59, transparent)" }}/>
       </div>
       {err && <div style={{ background:"#FEE2E2", color:"#B91C1C", padding:"10px 16px", borderRadius:10, fontSize:13, marginBottom:18, textAlign:"center" }}>{err}</div>}
       <div style={{ marginBottom:14 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:6, color:C.text }}>{t.username}</label>
-        <input value={user} onChange={function(e){setUser(e.target.value);}} placeholder="" style={{ width:"100%", padding:"12px 16px", borderRadius:12, border:"1px solid #E2E8F0", fontSize:15, outline:"none", boxSizing:"border-box" }} onKeyDown={function(e){if(e.key==="Enter")go();}}/>
+        <div style={{ position:"relative" }}>
+          <span style={{ position:"absolute", top:"50%", left:16, transform:"translateY(-50%)", color:"#c4bdb0", display:"flex", pointerEvents:"none" }}><User size={18}/></span>
+          <input value={user} onChange={function(e){setUser(e.target.value);}} placeholder={t.username} style={{ width:"100%", height:52, padding:"0 16px 0 46px", borderRadius:14, border:"1px solid #ece9e2", background:"#fff", fontSize:15, outline:"none", boxSizing:"border-box", color:C.text }} onKeyDown={function(e){if(e.key==="Enter")go();}}/>
+        </div>
       </div>
       <div style={{ marginBottom:26 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:6, color:C.text }}>{t.password}</label>
         <div style={{ position:"relative" }}>
-          <input type={showPass?"text":"password"} value={pass} onChange={function(e){setPass(e.target.value);}} placeholder="" style={{ width:"100%", padding:"12px 44px 12px 16px", borderRadius:12, border:"1px solid #E2E8F0", fontSize:15, outline:"none", boxSizing:"border-box" }} onKeyDown={function(e){if(e.key==="Enter")go();}}/>
-          <button onClick={function(){setShowPass(!showPass);}} style={{ position:"absolute", top:"50%", right:14, transform:"translateY(-50%)", background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex" }}>{showPass?<EyeOff size={18}/>:<Eye size={18}/>}</button>
+          <span style={{ position:"absolute", top:"50%", left:16, transform:"translateY(-50%)", color:"#c4bdb0", display:"flex", pointerEvents:"none" }}><Lock size={18}/></span>
+          <input type={showPass?"text":"password"} value={pass} onChange={function(e){setPass(e.target.value);}} placeholder={t.password} style={{ width:"100%", height:52, padding:"0 46px 0 46px", borderRadius:14, border:"1px solid #ece9e2", background:"#fff", fontSize:15, outline:"none", boxSizing:"border-box", color:C.text }} onKeyDown={function(e){if(e.key==="Enter")go();}}/>
+          <button onClick={function(){setShowPass(!showPass);}} style={{ position:"absolute", top:"50%", right:14, transform:"translateY(-50%)", background:"none", border:"none", cursor:"pointer", color:"#c4bdb0", display:"flex" }}>{showPass?<EyeOff size={18}/>:<Eye size={18}/>}</button>
         </div>
       </div>
-      <button onClick={go} disabled={loading} style={{ width:"100%", padding:"14px", borderRadius:12, border:"none", background:"linear-gradient(135deg,"+C.accent+","+C.accentLight+")", color:"#fff", fontSize:16, fontWeight:700, cursor:"pointer", opacity:loading?0.75:1 }}>{loading?t.loading:t.loginBtn}</button>
+      <button onClick={go} disabled={loading} style={{ width:"100%", height:54, borderRadius:14, border:"none", background:"linear-gradient(135deg,#d4af6e,#c19a59,#b08842)", color:"#fff", fontSize:16, fontWeight:700, cursor:"pointer", boxShadow:"0 8px 20px rgba(193,154,89,0.32)", opacity:loading?0.75:1 }}>{loading?t.loading:t.loginBtn}</button>
       <div style={{ textAlign:"center", marginTop:16 }}>
-        <a href="/forgot-password" onClick={function(e){ e.preventDefault(); window.history.pushState({}, "", "/forgot-password"); window.dispatchEvent(new PopStateEvent("popstate")); }} style={{ color:C.textLight, fontSize:13, textDecoration:"none" }}>Forgot Password?</a>
+        <a href="/forgot-password" onClick={function(e){ e.preventDefault(); window.history.pushState({}, "", "/forgot-password"); window.dispatchEvent(new PopStateEvent("popstate")); }} style={{ color:"#b08842", fontSize:13, fontWeight:500, textDecoration:"none" }}>Forgot Password?</a>
       </div>
     </div>
   </div>;
