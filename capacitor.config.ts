@@ -16,7 +16,7 @@ const config: CapacitorConfig = {
       contentMode: 'scaleAspectFit'
     },
     FirebaseMessaging: {
-      presentationOptions: []
+      presentationOptions: ["alert", "badge", "sound"]
     }
   }
 };
