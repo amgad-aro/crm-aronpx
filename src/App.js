@@ -1896,7 +1896,7 @@ var Header = function(p) {
     setTimeout(function(){document.addEventListener("mousedown",fn);},0);
     return function(){document.removeEventListener("mousedown",fn);};
   },[p.showDealNotif,p.showRotNotif,p.showOffSiteNotif]);
-  return <div style={{ position:"sticky", top:0, zIndex:100, background:"#fff" }}>
+  return <div style={{ position:"sticky", top:0, zIndex:100, background:"#fff", paddingTop:"env(safe-area-inset-top, 0px)" }}>
   <div style={{ height:64, background:"#fff", borderBottom:"1px solid #E8ECF1", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 16px", gap:10 }}>
     <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
       {p.isMobile&&<button onClick={p.onMenu} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}><Menu size={18} color={C.text}/></button>}
