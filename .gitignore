@@ -37,6 +37,8 @@ yarn-error.log*
 
 # Firebase config — contains API keys; keep out of git history
 android/app/google-services.json
+# iOS Firebase config (FCM) — supplied per-machine like the Android json above
+ios/App/App/GoogleService-Info.plist
 
 # Android release signing — NEVER commit keys or passwords
 *.jks
