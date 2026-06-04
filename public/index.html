@@ -4,6 +4,23 @@
     <meta charset="utf-8" />
     <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <script>
+      // Native-only viewport hardening. On iOS WKWebView cold launch the page can
+      // paint before safe-area insets settle, so initial-scale resolves against a
+      // transient narrow width and the page renders ZOOMED-IN (only a force-quit
+      // clears it). Adding maximum-scale=1, user-scalable=no caps the page scale at
+      // 1x so that can't happen. Runs as early as possible (Capacitor injects
+      // window.Capacitor before app scripts) and ONLY on native — web/desktop keep
+      // pinch-zoom for accessibility.
+      (function () {
+        try {
+          if (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
+            var vp = document.querySelector('meta[name=viewport]');
+            if (vp) vp.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover');
+          }
+        } catch (e) { /* never block boot */ }
+      })();
+    </script>
     <meta name="theme-color" content="#1a2942" />
     <meta name="description" content="ARO Real Estate CRM" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
