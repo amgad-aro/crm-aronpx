@@ -27761,6 +27761,16 @@ export default function CRMApp() {
     var corrected = 0;
     var nudge = function(){
       try {
+        // Native only: re-harden the viewport meta so WebKit re-resolves
+        // initial-scale against the SETTLED width → resets a stuck cold-launch
+        // zoom. The index.html inline gate can miss if window.Capacitor isn't
+        // injected yet at parse time (remote load), so we re-apply it here on
+        // each settle signal. Idempotent (same content string). Web/desktop skip
+        // this entirely, keeping pinch-zoom for accessibility.
+        if (isNativePlatformSync()) {
+          var vp = document.querySelector("meta[name=viewport]");
+          if (vp) vp.setAttribute("content", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover");
+        }
         if (document.documentElement) document.documentElement.scrollLeft = 0;
         if (document.body) document.body.scrollLeft = 0;
         window.scrollTo(0, window.scrollY || 0);
