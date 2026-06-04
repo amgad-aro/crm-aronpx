@@ -12,7 +12,8 @@ const config: CapacitorConfig = {
     PrivacyScreen: {
       enable: true,
       imageName: 'Splash',
-      preventScreenshots: true
+      preventScreenshots: true,
+      contentMode: 'scaleAspectFit'
     },
     FirebaseMessaging: {
       presentationOptions: []
