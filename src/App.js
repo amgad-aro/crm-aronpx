@@ -27747,6 +27747,46 @@ export default function CRMApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Cold-launch reflow nudge (iOS). On a WKWebView cold launch the page often
+  // paints BEFORE the safe-area insets settle, so the first layout is computed
+  // against a wider viewport → a transient horizontal scroll offset that only
+  // clears on a force-quit (warm relaunch has insets ready). The CSS clips
+  // (overflow-x:hidden on html/body/#root/.crm-app) can't fix a layout already
+  // computed against the wrong width, so we force a re-clamp once the viewport
+  // settles: reset horizontal scroll + dispatch a synthetic resize so the
+  // existing isMobile listeners re-run and React reflows against the real width.
+  // Safe no-op on desktop/Android (nothing to correct; visualViewport guarded).
+  useEffect(function(){
+    if (typeof window === "undefined") return;
+    var corrected = 0;
+    var nudge = function(){
+      try {
+        if (document.documentElement) document.documentElement.scrollLeft = 0;
+        if (document.body) document.body.scrollLeft = 0;
+        window.scrollTo(0, window.scrollY || 0);
+        window.dispatchEvent(new Event("resize"));
+      } catch (e) { /* never let the nudge throw */ }
+    };
+    // A few early frames catch the first paints before insets settle.
+    var raf = (typeof requestAnimationFrame === "function")
+      ? requestAnimationFrame(function(){ nudge(); })
+      : null;
+    var t1 = setTimeout(nudge, 0);
+    var t2 = setTimeout(nudge, 300);
+    // visualViewport 'resize' fires exactly when iOS insets/visual viewport
+    // settle — the authoritative signal. Cap to a couple of corrections so we
+    // don't react to every keyboard/scroll-driven viewport change forever.
+    var vv = window.visualViewport || null;
+    var onVV = function(){ if (corrected < 2) { corrected++; nudge(); } };
+    if (vv && typeof vv.addEventListener === "function") vv.addEventListener("resize", onVV);
+    return function(){
+      try { if (raf && typeof cancelAnimationFrame === "function") cancelAnimationFrame(raf); } catch(e){}
+      clearTimeout(t1); clearTimeout(t2);
+      if (vv && typeof vv.removeEventListener === "function") vv.removeEventListener("resize", onVV);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // One funnel for every biometric unlock attempt (cold launch, resume, retry).
   // SECURITY: a device WITH any lock can open ONLY by passing native auth —
   // there is NO bypass. The app opens without auth ONLY when we positively
@@ -28082,7 +28122,7 @@ export default function CRMApp() {
 + "::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }"
 + "input::placeholder, textarea::placeholder { color: #94A3B8; }"
 + "@keyframes spin { to { transform: rotate(360deg); } }"
-+ "html, body { overflow-x: hidden; width: 100%; }"
++ "html, body, #root, .crm-app { overflow-x: hidden; width: 100%; max-width: 100%; }"
 + ".crm-safe-top { padding-top: env(safe-area-inset-top, 0px); }"
 + "@media (max-width: 768px) {"
 +   "html, body, #root, .crm-app { max-width: 100%; overflow-x: hidden; }"
