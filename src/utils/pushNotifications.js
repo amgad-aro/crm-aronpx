@@ -17,7 +17,9 @@
  * EXTERNAL CONTRACTS (kept stable so App.js needs zero changes):
  *   - exports: initPushNotifications(), disposePushNotifications(),
  *     removeTokenFromBackend(token)
- *   - window CustomEvents: 'crm:push-received' (foreground) and 'crm:open-lead' (tap)
+ *   - window CustomEvent: 'crm:open-lead' (tap). NOTE: 'crm:push-received' is no
+ *     longer emitted — option (b) shows the system notification only in foreground
+ *     (no in-app banner). App.js's crm:push-received listener simply never fires.
  *   - localStorage tap keys: crm_pending_lead / crm_pending_lead_type / crm_pending_lead_status
  *   - POST /api/users/push-token { token, platform, deviceId }
  *
@@ -62,6 +64,90 @@ async function _getNativeCapacitor() {
 // so reads of .type/.leadId/.status never throw on a null/string value.
 function _asObject(v) {
   return (v && typeof v === "object") ? v : {};
+}
+
+// ===== Option (b) foreground display: system notification only =====
+// iOS shows the OS banner in foreground via presentationOptions ["alert","badge",
+// "sound"] (capacitor.config.ts). Android does NOT auto-display a foreground FCM
+// notification, so we post a local notification mirroring it via
+// @capacitor/local-notifications (Android ONLY — doing it on iOS would duplicate
+// the OS banner). No in-app banner is shown in foreground on either platform.
+var CRM_PUSH_CHANNEL_ID = "crm_push";
+var _channelReady = false;
+var _localNotifSeq = 1000; // monotonic id source for scheduled local notifications
+
+// Apply a tapped notification's data to the durable open-lead bridge. Shared by
+// the FCM tap handler AND the Android local-notification tap handler so both
+// routes behave identically (App.js reads these on mount / listens for the event).
+function _routeOpenLead(rawData) {
+  try {
+    var d = _asObject(rawData);
+    var lid = d.leadId ? String(d.leadId) : "";
+    if (!lid) return;
+    try {
+      localStorage.setItem("crm_pending_lead", lid);
+      localStorage.setItem("crm_pending_lead_type", d.type ? String(d.type) : "");
+      localStorage.setItem("crm_pending_lead_status", d.status ? String(d.status) : "");
+    } catch (e) {}
+    if (typeof window !== "undefined" && window.dispatchEvent) {
+      try {
+        window.dispatchEvent(new CustomEvent("crm:open-lead", {
+          detail: { leadId: lid, type: d.type || "", status: d.status || "" }
+        }));
+      } catch (e) {}
+    }
+  } catch (e) { /* never let tap routing throw */ }
+}
+
+// Lazy-load @capacitor/local-notifications. Returns the plugin or null. Only the
+// Android path calls this; web/iOS never invoke it.
+async function _getLocalNotifications() {
+  try {
+    var mod = await import("@capacitor/local-notifications");
+    return (mod && (mod.LocalNotifications || (mod.default && mod.default.LocalNotifications))) || null;
+  } catch (e) { return null; }
+}
+
+// Create the Android notification channel once (idempotent). High importance so
+// the system shows a heads-up banner; public visibility for the lock screen.
+async function _ensureAndroidChannel(LN) {
+  if (_channelReady || !LN || typeof LN.createChannel !== "function") return;
+  try {
+    await LN.createChannel({
+      id: CRM_PUSH_CHANNEL_ID,
+      name: "ARO CRM Notifications",
+      importance: 5,   // IMPORTANCE_HIGH → heads-up banner
+      visibility: 1,   // VISIBILITY_PUBLIC → show on lock screen
+      vibration: true
+    });
+    _channelReady = true;
+  } catch (e) { /* best-effort — schedule still works without an explicit channel */ }
+}
+
+// Post a system notification on Android foreground mirroring the FCM message.
+// No-op if the plugin is unavailable. iOS must NOT call this (would duplicate).
+async function _showAndroidLocalNotification(title, body, data) {
+  try {
+    var LN = await _getLocalNotifications();
+    if (!LN || typeof LN.schedule !== "function") return;
+    await _ensureAndroidChannel(LN);
+    var d = _asObject(data);
+    _localNotifSeq = (_localNotifSeq + 1) % 2000000000;
+    await LN.schedule({
+      notifications: [{
+        id: _localNotifSeq,
+        title: title || "",
+        body: body || "",
+        channelId: CRM_PUSH_CHANNEL_ID,
+        // extra carries the open-lead routing data for the tap handler.
+        extra: {
+          type:   d.type   ? String(d.type)   : "",
+          leadId: d.leadId ? String(d.leadId) : "",
+          status: d.status ? String(d.status) : ""
+        }
+      }]
+    });
+  } catch (e) { /* never let a foreground receipt throw */ }
 }
 
 // POST the device token to the backend. Reads auth from the saved session.
@@ -162,51 +248,48 @@ export async function initPushNotifications() {
     _listeners.push(FirebaseMessaging.addListener("tokenReceived", function (event) {
       try { sendTokenToBackend(event && event.token, platform); } catch (e) {}
     }));
-    // Foreground receipt: the OS suppresses its own banner while the app is
-    // open (presentationOptions:[] in capacitor.config.ts), so we surface an
-    // in-app banner instead. Mirror the crm:open-lead bridge — dispatch a
-    // window event App.js listens for. Native-only (this listener is only wired
-    // inside the native shell), so web never fires it. Payload is nested under
-    // event.notification (vs the old flat notification object).
+    // Foreground receipt — option (b): show the SYSTEM notification only, no
+    // in-app banner. iOS surfaces the OS banner via presentationOptions
+    // ["alert","badge","sound"] (capacitor.config.ts), so there's nothing to do
+    // for iOS here. Android does NOT auto-display a foreground FCM notification,
+    // so we post a local notification mirroring it (Android ONLY — scheduling on
+    // iOS would duplicate the OS banner). Native-only listener; web never fires.
     _listeners.push(FirebaseMessaging.addListener("notificationReceived", function (event) {
       try {
-        var n    = (event && event.notification) || {};
-        var data = _asObject(n.data);
-        if (typeof window !== "undefined" && window.dispatchEvent) {
-          window.dispatchEvent(new CustomEvent("crm:push-received", {
-            detail: {
-              title:  n.title  ? String(n.title)  : "",
-              body:   n.body   ? String(n.body)   : "",
-              type:   data.type   ? String(data.type)   : "",
-              leadId: data.leadId ? String(data.leadId) : "",
-              status: data.status ? String(data.status) : ""
-            }
-          }));
+        var n = (event && event.notification) || {};
+        if (platform === "android") {
+          _showAndroidLocalNotification(
+            n.title ? String(n.title) : "",
+            n.body  ? String(n.body)  : "",
+            _asObject(n.data)
+          );
         }
       } catch (e) { /* never let a foreground receipt throw */ }
     }));
+    // Tap on the FCM/system notification (background / cold-start taps on iOS and
+    // Android) → route to the lead via the durable open-lead bridge.
     _listeners.push(FirebaseMessaging.addListener("notificationActionPerformed", function (event) {
-      try {
-        var data = _asObject(event && event.notification && event.notification.data);
-        var lid  = data.leadId ? String(data.leadId) : "";
-        if (!lid) return;
-        // Durable bridge: App.js reads these on mount (cold start / resume from
-        // a tapped notification). type + status let it route to the right page.
-        try {
-          localStorage.setItem("crm_pending_lead", lid);
-          localStorage.setItem("crm_pending_lead_type", data.type ? String(data.type) : "");
-          localStorage.setItem("crm_pending_lead_status", data.status ? String(data.status) : "");
-        } catch (e) {}
-        // Instant path when the app is already foreground: App.js listens for this.
-        if (typeof window !== "undefined" && window.dispatchEvent) {
-          try {
-            window.dispatchEvent(new CustomEvent("crm:open-lead", {
-              detail: { leadId: lid, type: data.type || "", status: data.status || "" }
-            }));
-          } catch (e) {}
-        }
-      } catch (e) { /* never let tap handling throw */ }
+      try { _routeOpenLead(event && event.notification && event.notification.data); }
+      catch (e) { /* never let tap handling throw */ }
     }));
+
+    // Android foreground notifications are posted by @capacitor/local-notifications
+    // (see notificationReceived above), so THEIR taps fire
+    // localNotificationActionPerformed — NOT the FCM handler. Wire the same
+    // open-lead routing for them, and pre-create the channel so the first
+    // foreground push displays at high importance. Android-only.
+    if (platform === "android") {
+      var LN = await _getLocalNotifications();
+      if (LN) {
+        try { await _ensureAndroidChannel(LN); } catch (e) {}
+        if (typeof LN.addListener === "function") {
+          _listeners.push(LN.addListener("localNotificationActionPerformed", function (action) {
+            try { _routeOpenLead(action && action.notification && action.notification.extra); }
+            catch (e) { /* never let tap handling throw */ }
+          }));
+        }
+      }
+    }
 
     // Imperative initial fetch (replaces register() + the registration event).
     // Wrapped in its OWN try/catch — this is the error path the old

@@ -13,6 +13,7 @@ dependencies {
     implementation project(':capacitor-community-privacy-screen')
     implementation project(':capacitor-firebase-messaging')
     implementation project(':capacitor-geolocation')
+    implementation project(':capacitor-local-notifications')
 
 }
 
