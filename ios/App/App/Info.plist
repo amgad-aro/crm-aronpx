@@ -26,6 +26,10 @@
 	<true/>
 	<key>NSFaceIDUsageDescription</key>
 	<string>ARO CRM uses Face ID to unlock the app and protect your data.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>ARO CRM uses your location to verify attendance check-in and check-out at office locations.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>ARO CRM uses your location to verify attendance check-in and check-out at office locations.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>ARO CRM uses your location to verify attendance check-in and check-out at office locations.</string>
 	<key>UIBackgroundModes</key>
