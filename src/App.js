@@ -1223,7 +1223,7 @@ var PrivacyPolicyPage = function() {
         <div style={{ fontFamily:"Georgia, 'Times New Roman', serif", fontSize:34, fontWeight:400, color:"#1a1a1a", letterSpacing:"0.38em", lineHeight:1 }}>ARO</div>
         <div style={{ width:60, height:2, margin:"14px 0 18px", background:"linear-gradient(90deg, #c19a59, transparent)" }}/>
         <h1 style={{ margin:0, fontSize:26, fontWeight:800, color:C.text }}>Privacy Policy — ARO CRM</h1>
-        <div style={{ marginTop:8, fontSize:13, color:C.textLight }}>Last updated: 31 May 2026</div>
+        <div style={{ marginTop:8, fontSize:13, color:C.textLight }}>Last updated: 3 June 2026</div>
       </div>
 
       <p style={p}>ARO CRM ("the App") is operated by AROG For Real Estate Development and Marketing ("we", "us", "our"), a limited liability company. This Privacy Policy explains what information the App collects, how we use it, and your rights.</p>
@@ -1262,10 +1262,14 @@ var PrivacyPolicyPage = function() {
       <h2 style={h2}>8. Your Rights</h2>
       <p style={p}>You may request access to, correction of, or deletion of your personal data by contacting us. Customer/lead data is managed by our organization as the data controller for business purposes.</p>
 
-      <h2 style={h2}>9. Contact</h2>
+      <h2 style={h2}>9. Account and Data Deletion</h2>
+      <p style={p}>You can request deletion of your ARO CRM account and all associated personal data — including your name, email, device/push token, location and attendance records, and activity history — by emailing <a href="mailto:amgad.mohamed@aro-investment.com" style={{ color:C.primary, fontWeight:600 }}>amgad.mohamed@aro-investment.com</a> from your registered email address with the subject "Delete my account". Because ARO CRM is an internal company tool, accounts are managed by your company administrator; employees may also request deletion directly from their administrator.</p>
+      <p style={p}>We process deletion requests within 30 days. On deletion, we remove your personal account data from the active system. Customer/lead records created for business purposes, and any records we are required to keep to meet legal, tax, or accounting obligations, may be retained by AROG For Real Estate Development and Marketing as the data controller for the period required by law.</p>
+
+      <h2 style={h2}>10. Contact</h2>
       <p style={p}>AROG For Real Estate Development and Marketing<br/>Email: <a href="mailto:amgad.mohamed@aro-investment.com" style={{ color:C.primary, fontWeight:600 }}>amgad.mohamed@aro-investment.com</a></p>
 
-      <h2 style={h2}>10. Changes</h2>
+      <h2 style={h2}>11. Changes</h2>
       <p style={p}>We may update this Policy; the "Last updated" date reflects the latest version.</p>
     </div>
   </div>;
