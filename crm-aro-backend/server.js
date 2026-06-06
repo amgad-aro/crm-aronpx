@@ -125,7 +125,7 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   preDealStatus:{type:String,default:""},
   dealStatus:{type:String,default:""}, // "" | "Deal Cancelled"
   stages:{type:mongoose.Schema.Types.Mixed,default:{}},
-  dealApproved:{type:Boolean,default:false}, dealImages:[{type:String}],
+  dealApproved:{type:Boolean,default:false}, dealImages:[{type:String}], dealDocuments:[{type:mongoose.Schema.Types.Mixed}],
   commissionClaimDate:{type:String,default:""}, commissionClaimed:{type:Boolean,default:false},
   splitAgent2Id:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
   splitAgent2Name:{type:String,default:""},
@@ -8093,6 +8093,7 @@ app.get("/api/leads", auth, async function(req, res) {
         delete obj.eoiImage;
         delete obj.eoiDocuments;
         delete obj.dealImages;
+        delete obj.dealDocuments;
         // STEP 3 — opt-in summary projection. When ?fields=summary is sent,
         // precompute the four FE helper outputs and strip agentHistory[] +
         // history[] + privateNotes[]. Backward compatible: absent param =
@@ -8134,6 +8135,7 @@ app.get("/api/leads", auth, async function(req, res) {
         delete obj.eoiImage;
         delete obj.eoiDocuments;
         delete obj.dealImages;
+        delete obj.dealDocuments;
         // STEP 3 — opt-in summary projection (see sales branch comment).
         if (summary) applySummaryProjection(obj);
         return obj;
@@ -10055,6 +10057,105 @@ app.post("/api/leads/:id/delete-eoi-document", auth, async function(req, res) {
     if (!(index >= 0 && index < docs.length)) return res.status(400).json({ error: "Invalid index" });
     docs.splice(index, 1);
     lead.eoiDocuments = docs;
+    await lead.save();
+    var populated = await Lead.findById(req.params.id).populate("agentId", "name title");
+    res.json(populated);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== DEAL DOCUMENTS (images + PDFs) =====
+app.post("/api/leads/:id/deal-documents", auth, async function(req, res) {
+  try {
+    // Scope gate (BATCH 2.7 L2): same shape as L1.
+    var roleL2 = req.user.role;
+    if (roleL2 !== "admin" && roleL2 !== "sales_admin") {
+      if (roleL2 !== "sales" && roleL2 !== "team_leader" && roleL2 !== "manager" && roleL2 !== "director") {
+        return res.status(403).json({ error: "Forbidden — read-only role" });
+      }
+      var sLeadL2 = await Lead.findById(req.params.id).select("agentId splitAgent2Id assignments").lean();
+      if (!sLeadL2) return res.status(404).json({ error: "Lead not found" });
+      var leadAidL2 = sLeadL2.agentId ? String(sLeadL2.agentId) : "";
+      var leadSidL2 = sLeadL2.splitAgent2Id ? String(sLeadL2.splitAgent2Id) : "";
+      if (roleL2 === "sales") {
+        var uidStrL2 = String(req.user.id);
+        // Soft-remove: removed slice does not grant access. See L1 above.
+        var hasSliceL2 = (sLeadL2.assignments || []).some(function(a){
+          if (!a || a.removedAt) return false;
+          var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+          return String(aid) === uidStrL2;
+        });
+        if (!hasSliceL2 && leadSidL2 !== uidStrL2) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      } else {
+        var scopedL2 = (await getScopedUserIds(req.user) || []).map(function(id){ return String(id); });
+        var inAgentL2 = leadAidL2 && scopedL2.indexOf(leadAidL2) >= 0;
+        var inSplitL2 = leadSidL2 && scopedL2.indexOf(leadSidL2) >= 0;
+        if (!inAgentL2 && !inSplitL2) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      }
+    }
+    var raw = (req.body && req.body.fileData) || "";
+    var fileName = (req.body && req.body.fileName) ? String(req.body.fileName).slice(0,200) : "";
+    if (!raw || typeof raw !== "string") return res.status(400).json({ error: "fileData is required" });
+    var m = raw.match(/^data:(application\/pdf|image\/(?:jpeg|jpg|png|webp));base64,(.+)$/i);
+    if (!m) return res.status(400).json({ error: "Only PDF/JPEG/PNG/WEBP data URLs allowed" });
+    var buf;
+    try { buf = Buffer.from(m[2], "base64"); } catch(e){ return res.status(400).json({ error: "Invalid base64 data" }); }
+    if (!buf || !buf.length) return res.status(400).json({ error: "Invalid file data" });
+    if (buf.length > 6 * 1024 * 1024) return res.status(400).json({ error: "File too large (max 6MB)" });
+    if (!fileName) {
+      // Derive a simple name from the MIME + short hash
+      var ext = m[1]==="application/pdf" ? "pdf" : (m[1].split("/")[1]||"bin");
+      fileName = "document-"+Date.now()+"."+ext;
+    }
+    var entry = { url: raw, name: fileName, uploadedAt: new Date() };
+    var lead = await Lead.findByIdAndUpdate(req.params.id, { $push: { dealDocuments: entry } }, { new: true }).populate("agentId", "name title");
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    res.json(lead);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/leads/:id/delete-deal-document", auth, async function(req, res) {
+  try {
+    // Scope gate (BATCH 2.7 L3): same shape as L1.
+    var roleL3 = req.user.role;
+    if (roleL3 !== "admin" && roleL3 !== "sales_admin") {
+      if (roleL3 !== "sales" && roleL3 !== "team_leader" && roleL3 !== "manager" && roleL3 !== "director") {
+        return res.status(403).json({ error: "Forbidden — read-only role" });
+      }
+      var sLeadL3 = await Lead.findById(req.params.id).select("agentId splitAgent2Id assignments").lean();
+      if (!sLeadL3) return res.status(404).json({ error: "Lead not found" });
+      var leadAidL3 = sLeadL3.agentId ? String(sLeadL3.agentId) : "";
+      var leadSidL3 = sLeadL3.splitAgent2Id ? String(sLeadL3.splitAgent2Id) : "";
+      if (roleL3 === "sales") {
+        var uidStrL3 = String(req.user.id);
+        // Soft-remove: removed slice does not grant access. See L1 above.
+        var hasSliceL3 = (sLeadL3.assignments || []).some(function(a){
+          if (!a || a.removedAt) return false;
+          var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+          return String(aid) === uidStrL3;
+        });
+        if (!hasSliceL3 && leadSidL3 !== uidStrL3) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      } else {
+        var scopedL3 = (await getScopedUserIds(req.user) || []).map(function(id){ return String(id); });
+        var inAgentL3 = leadAidL3 && scopedL3.indexOf(leadAidL3) >= 0;
+        var inSplitL3 = leadSidL3 && scopedL3.indexOf(leadSidL3) >= 0;
+        if (!inAgentL3 && !inSplitL3) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      }
+    }
+    var index = req.body && Number(req.body.index);
+    var lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    var docs = lead.dealDocuments || [];
+    if (!(index >= 0 && index < docs.length)) return res.status(400).json({ error: "Invalid index" });
+    docs.splice(index, 1);
+    lead.dealDocuments = docs;
     await lead.save();
     var populated = await Lead.findById(req.params.id).populate("agentId", "name title");
     res.json(populated);
