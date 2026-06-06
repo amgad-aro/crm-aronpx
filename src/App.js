@@ -11968,7 +11968,122 @@ var DealsPage = function(p) {
     </div>}
 
     <div style={{ display:"flex", gap:16, alignItems:"flex-start" }}>
-    <Card p={0} style={{ flex:1, overflow:"hidden" }}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
+    <Card p={0} style={{ flex:1, overflow:"hidden" }}>{p.isMobile?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:12 }}>
+      {filteredDeals.length===0&&<div style={{ padding:40, textAlign:"center", color:C.textLight }}>No deals yet</div>}
+      {filteredDeals.map(function(d){
+        var bv=parseBudget(d.budget);
+        var prog=stagesProgress(gid(d));
+        var stages=getStages(gid(d));
+        var isSel=selectedDeal&&gid(selectedDeal)===gid(d);
+        return <div key={gid(d)} onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ background:isSel?"#EFF6FF":"#fff", border:"2px solid "+(isSel?"#3B82F6":"#E8ECF1"), borderRadius:14, padding:14, cursor:"pointer" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, gap:8 }}>
+            <div style={{ fontSize:15, fontWeight:700 }}>
+              {d.name}
+              {isOnlyAdmin && d.dealType==="ambassador" && <span style={{ marginLeft:6, fontSize:9, padding:"1px 6px", borderRadius:9, background:"#FEF3C7", color:"#B45309", fontWeight:700, verticalAlign:"middle" }}>🎯 Ambassador</span>}
+            </div>
+            {d.dealApproved
+              ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅</span>
+              :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳</span>}
+          </div>
+          {p.cu.role==="admin"&&<div style={{ fontSize:12, color:C.textLight, marginBottom:6 }}><PhoneCell phone={d.phone}/></div>}
+          {d.project&&<div style={{ marginBottom:6 }}><span style={{ fontSize:11, color:"#6D28D9", background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>🏠 {d.project}</span></div>}
+          <div style={{ display:"flex", gap:6, alignItems:"baseline", marginBottom:6, fontSize:13, fontWeight:700, color:C.success }}>
+            <span>💰</span>
+            {(function(){
+              var split=getDealSplitFromObj(d);
+              var weight=getProjectWeight(d.project,d);
+              var splitFactor=split?0.5:1;
+              var effectiveBv=bv*weight*splitFactor;
+              var showEffective=effectiveBv!==bv&&bv>0;
+              var isSalesRole=p.cu.role==="sales"||p.cu.role==="team_leader";
+              if(isSalesRole&&showEffective){
+                var meId=String(p.cu.id||"");
+                var primaryId=String(d.agentId&&d.agentId._id?d.agentId._id:d.agentId||"");
+                var primaryName=(d.agentId&&d.agentId.name)?d.agentId.name:"";
+                var otherName=split?(primaryId===meId?(split.agent2Name||""):primaryName):"";
+                return <div>
+                  <div style={{ color:C.success }}>{effectiveBv.toLocaleString()}</div>
+                  <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>من {bv.toLocaleString()}</div>
+                  {split&&otherName&&<div style={{ fontSize:10, color:"#8B5CF6", fontWeight:600, marginTop:1 }}>🤝 +{otherName}</div>}
+                </div>;
+              }
+              return <div>
+                <div>{bv>0?bv.toLocaleString():d.budget||"-"}</div>
+                {!isSalesRole&&showEffective&&<div style={{ fontSize:10, color:"#8B5CF6", fontWeight:600, marginTop:1 }}>
+                  {split?"🤝":"📊"} {effectiveBv.toLocaleString()} {split?"50% — "+(split.agent2Name||"Shared"):weight*100+"% project"}
+                </div>}
+              </div>;
+            })()}
+          </div>
+          <div style={{ fontSize:11, color:C.textLight, marginBottom:6 }}>🗓 {(function(){var dd=getDealDate(d);return dd?new Date(dd).toLocaleDateString("en-GB")+" "+new Date(dd).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):"-";})()}</div>
+          <button onClick={function(e){e.stopPropagation();openStages(d);}} style={{ background:"none", border:"none", cursor:"pointer", width:"100%", textAlign:"left", padding:0, marginBottom:6 }}>
+            <div style={{ display:"flex", gap:4, marginBottom:3 }}>
+              {["contract","payment1","payment2"].map(function(k){return <span key={k} style={{ width:18, height:18, borderRadius:5, background:stages[k]?C.success:"#E2E8F0", display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:9, color:stages[k]?"#fff":"#94A3B8" }}>{stages[k]?"✓":"·"}</span>;})}
+              <span style={{ fontSize:10, color:C.textLight, marginLeft:4 }}>{prog}/3</span>
+            </div>
+            <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}>
+              <div style={{ height:"100%", width:(prog/3*100)+"%", background:prog===3?C.success:C.accent, borderRadius:2 }}/>
+            </div>
+          </button>
+          {isAdmin&&<div style={{ fontSize:11, color:C.accent, marginBottom:4 }}>👤 {getAg(d)}{(function(){var sp=getDealSplitFromObj(d);return sp?" 🤝 +"+sp.agent2Name:"";})()}</div>}
+          {isAdmin&&<div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>📢 {d.source||"-"}</div>}
+          {isOnlyAdmin&&<div style={{ marginTop:6, marginBottom:6 }}>
+            <div style={{ fontSize:10, color:C.textLight, marginBottom:2 }}>Commission</div>
+            {(function(){
+              var raw=parseBudget(d.budget);
+              var weight=getProjectWeight(d.project,d);
+              var split=getDealSplitFromObj(d);
+              var splitFactor=split?0.5:1;
+              var effRev=raw*weight*splitFactor;
+              var ag=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;
+              if(!isOnlyAdmin){
+                var managerComm=(effRev/1000000)*2000;
+                return <div><div style={{ fontSize:12, fontWeight:700, color:C.success }}>{managerComm>0?Math.round(managerComm).toLocaleString()+" EGP":"—"}</div><div style={{ fontSize:10, color:C.textLight }}>2,000/M</div></div>;
+              }
+              var agUser=p.users.find(function(u){return gid(u)===ag;});
+              var agRole=agUser?agUser.role:"sales";
+              var commRate=agRole==="manager"?2000:(function(){
+                if(!agUser) return 5000;
+                var agU=p.users.find(function(u){return gid(u)===ag;});var qt=(agU&&agU.qTargets&&Object.keys(agU.qTargets).length>0)?agU.qTargets:(function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+ag)||"{}");}catch(e){return {};}})();
+                var curQNow=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
+                var qNumNow=parseInt(curQNow.replace("Q",""))||1;
+                var qTarget=readQTargetClient(qt, new Date().getFullYear(), qNumNow);
+                if(!qTarget) return 5000;
+                var allDealsNow=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
+                var getQNow=function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
+                var agentRev=allDealsNow.reduce(function(s,dd){
+                  var aid=dd.agentId&&dd.agentId._id?dd.agentId._id:dd.agentId;
+                  if(aid!==ag) return s;
+                  var ddate=getDealDate(dd);
+                  if(!ddate||getQNow(ddate)!==curQNow) return s;
+                  var w=getProjectWeight(dd.project);
+                  var sp=getDealSplit(gid(dd));
+                  return s+(parseBudget(dd.budget)*w*(sp?0.5:1));
+                },0);
+                var mult=agentRev/qTarget;
+                return mult>=3?7000:mult>=2?6000:5000;
+              })();
+              var comm=(effRev/1000000)*commRate;
+              return <div>
+                <div style={{ fontSize:12, fontWeight:700, color:C.success }}>{comm>0?comm.toLocaleString()+" EGP":"—"}</div>
+                {weight<1&&<div style={{ fontSize:9, color:"#B45309" }}>⚠️ 50%</div>}
+                {split&&<div style={{ fontSize:9, color:"#8B5CF6" }}>🤝 Split</div>}
+              </div>;
+            })()}
+          </div>}
+          {isOnlyAdmin&&<div style={{ display:"flex", gap:6, marginTop:10 }}>
+            {p.navigateToCommission&&<button onClick={function(e){e.stopPropagation();p.navigateToCommission(gid(d));}} title="View Commission"
+              style={{ width:34, height:34, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 }}>💰</button>}
+            <button onClick={function(e){e.stopPropagation();setSplitModal(d);var sp=getDealSplitFromObj(d);setSplitAgent2(sp?sp.agent2Id:"");}} title="Split Deal"
+              style={{ width:34, height:34, borderRadius:8, border:"1px solid "+(getDealSplitFromObj(d)?"#8B5CF6":"#E2E8F0"), background:getDealSplitFromObj(d)?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>🤝</button>
+            <button onClick={function(e){e.stopPropagation();setEditDeal(d);}} title={t.edit}
+              style={{ width:34, height:34, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Edit size={14} color={C.info}/></button>
+            <button onClick={function(e){e.stopPropagation();archiveDeal(gid(d));}} title={t.archive}
+              style={{ width:34, height:34, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Archive size={14} color={C.warning}/></button>
+          </div>}
+        </div>;
+      })}
+    </div>:<div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,"Approved",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}      </tr></thead>
       <tbody>
@@ -12110,7 +12225,7 @@ var DealsPage = function(p) {
           </tr>;
         })}
       </tbody>
-    </table></div></Card>
+    </table></div>}</Card>
 
     {hasRenderableDeal&&(function(){
       var extra=getDealExtra(String(selectedDeal._id||gid(selectedDeal)))||{};
