@@ -11760,7 +11760,7 @@ var DealsPage = function(p) {
           <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>📅 From:</span>
           <input type="date" value={dateFrom} onChange={function(e){setDateFrom(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, width:"100%", minWidth:0, boxSizing:"border-box" }}/>
         </div>
-        <span style={{ fontSize:14, color:C.textLight, paddingBottom:6, flex:"0 0 auto" }}>→</span>
+        <span style={{ fontSize:18, color:C.text, paddingBottom:7, flex:"0 0 auto" }}>→</span>
         <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-start", gap:4, flex:1, minWidth:0 }}>
           <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>To:</span>
           <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, width:"100%", minWidth:0, boxSizing:"border-box" }}/>
