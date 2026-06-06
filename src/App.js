@@ -11735,14 +11735,14 @@ var DealsPage = function(p) {
     var downPct=extra.downPaymentPct||selectedDeal.downPaymentPct||"";
     var instYears=extra.installmentYears||selectedDeal.installmentYears||"";
     return <div ref={dealPanelRef} style={styleObj}>
-      <div style={{ border:"1px solid "+C.border, borderRadius:10, margin:"4px 8px", overflow:"hidden", contain:"content" }}>
-      <div style={{ background:"#fff", borderBottom:"1px solid "+C.border, padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
+      <div style={{ background:"#F0FDF4", border:"1px solid #BBF7D0", borderRadius:10, margin:"4px 8px", overflow:"hidden", contain:"content" }}>
+      <div style={{ background:"#F0FDF4", borderBottom:"1px solid #BBF7D0", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
           <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
-            <div style={{ width:36, height:36, borderRadius:"50%", background:C.bg, color:C.text, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, flexShrink:0 }}>{(selectedDeal.name||"?").charAt(0).toUpperCase()}</div>
+            <div style={{ width:36, height:36, borderRadius:"50%", background:"#DCFCE7", color:"#15803D", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, flexShrink:0 }}>{(selectedDeal.name||"?").charAt(0).toUpperCase()}</div>
             <div style={{ minWidth:0 }}>
-              <div style={{ color:C.text, fontSize:14, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{selectedDeal.name}</div>
-              <div style={{ color:C.textLight, fontSize:11, marginTop:2 }}><PhoneCell phone={selectedDeal.phone}/></div>
+              <div style={{ color:"#15803D", fontSize:14, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{selectedDeal.name}</div>
+              <div style={{ color:"#16A34A", fontSize:11, marginTop:2 }}><PhoneCell phone={selectedDeal.phone}/></div>
             </div>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
@@ -11807,14 +11807,14 @@ var DealsPage = function(p) {
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
           {l:"Deal Date", v:(function(){var dd=getDealDate(selectedDeal);return dd?new Date(dd).toLocaleDateString("en-GB"):"-";})(), icon:"🗓"},
           {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
-        ].map(function(f){return f.v&&f.v!=="-"?<div key={f.l} style={{ background:"#F8FAFC", borderRadius:8, padding:"8px 10px", alignSelf:"start" }}>
+        ].map(function(f){return f.v&&f.v!=="-"?<div key={f.l} style={{ background:"#fff", borderRadius:8, padding:"8px 10px", alignSelf:"start" }}>
           <div style={{ fontSize:11, color:C.textLight, marginBottom:2 }}>{f.icon} {f.l}</div>
           <div style={{ fontSize:13, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
         </div>:null;})}
         </div>
 
         {/* Commission Claim Date - sales admin only */}
-        {isOnlyAdmin&&<div style={{ marginTop:12, padding:12, background:"#F8FAFC", borderRadius:8 }}>
+        {isOnlyAdmin&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📋 Commission Claim</div>
           <input type="date" value={selectedDeal.commissionClaimDate||""} onChange={async function(e){
             try{
