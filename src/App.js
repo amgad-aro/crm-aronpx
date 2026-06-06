@@ -11735,7 +11735,7 @@ var DealsPage = function(p) {
     var downPct=extra.downPaymentPct||selectedDeal.downPaymentPct||"";
     var instYears=extra.installmentYears||selectedDeal.installmentYears||"";
     return <div ref={dealPanelRef} style={styleObj}>
-      <div style={{ border:"1px solid "+C.border, borderRadius:10, margin:"4px 8px", overflow:"hidden" }}>
+      <div style={{ border:"1px solid "+C.border, borderRadius:10, margin:"4px 8px", overflow:"hidden", contain:"content" }}>
       <div style={{ background:"#fff", borderBottom:"1px solid "+C.border, padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
           <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
@@ -11864,7 +11864,7 @@ var DealsPage = function(p) {
             return <div style={{ display:"flex", gap:10, flexWrap:"wrap", overflowX:"auto", alignItems:"flex-start" }}>
               {imgs.length>0&&<div style={{ display:"contents" }}>
                 {imgs.map(function(src,i){return <div key={i} style={{ position:"relative", width:80, height:80, flex:"0 0 auto" }}>
-                  <img src={src} onClick={function(){var w=window.open();w.document.write("<img src='"+src+"' style='max-width:100%;'>");}} style={{ width:80, height:80, objectFit:"cover", borderRadius:8, cursor:"zoom-in", display:"block" }} alt={"Contract "+(i+1)} title="Click to view full size"/>
+                  <img loading="lazy" decoding="async" src={src} onClick={function(){var w=window.open();w.document.write("<img src='"+src+"' style='max-width:100%;'>");}} style={{ width:80, height:80, objectFit:"cover", borderRadius:8, cursor:"zoom-in", display:"block" }} alt={"Contract "+(i+1)} title="Click to view full size"/>
                   <button onClick={function(){deleteHandler(i);}} style={{ position:"absolute", top:4, right:4, background:C.danger, border:"none", borderRadius:"50%", width:20, height:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:12, fontWeight:700, lineHeight:1 }} title="Delete image">×</button>
                 </div>;})}
               </div>}
