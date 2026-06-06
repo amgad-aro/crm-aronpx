@@ -12053,50 +12053,6 @@ var DealsPage = function(p) {
             <span style={{ color:C.accent }}>👤 {getAg(d)}{(function(){var sp=getDealSplitFromObj(d);return sp?" 🤝 +"+sp.agent2Name:"";})()}</span>
             <span style={{ color:C.textLight }}>📢 {d.source||"-"}</span>
           </div>}
-          {isOnlyAdmin&&<div style={{ marginTop:6, marginBottom:6, paddingTop:8, borderTop:"1px solid #E8ECF1" }}>
-            <div style={{ fontSize:10, color:C.textLight, marginBottom:2 }}>Commission</div>
-            {(function(){
-              var raw=parseBudget(d.budget);
-              var weight=getProjectWeight(d.project,d);
-              var split=getDealSplitFromObj(d);
-              var splitFactor=split?0.5:1;
-              var effRev=raw*weight*splitFactor;
-              var ag=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;
-              if(!isOnlyAdmin){
-                var managerComm=(effRev/1000000)*2000;
-                return <div><div style={{ fontSize:12, fontWeight:700, color:C.success }}>{managerComm>0?Math.round(managerComm).toLocaleString()+" EGP":"—"}</div><div style={{ fontSize:10, color:C.textLight }}>2,000/M</div></div>;
-              }
-              var agUser=p.users.find(function(u){return gid(u)===ag;});
-              var agRole=agUser?agUser.role:"sales";
-              var commRate=agRole==="manager"?2000:(function(){
-                if(!agUser) return 5000;
-                var agU=p.users.find(function(u){return gid(u)===ag;});var qt=(agU&&agU.qTargets&&Object.keys(agU.qTargets).length>0)?agU.qTargets:(function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+ag)||"{}");}catch(e){return {};}})();
-                var curQNow=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
-                var qNumNow=parseInt(curQNow.replace("Q",""))||1;
-                var qTarget=readQTargetClient(qt, new Date().getFullYear(), qNumNow);
-                if(!qTarget) return 5000;
-                var allDealsNow=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
-                var getQNow=function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
-                var agentRev=allDealsNow.reduce(function(s,dd){
-                  var aid=dd.agentId&&dd.agentId._id?dd.agentId._id:dd.agentId;
-                  if(aid!==ag) return s;
-                  var ddate=getDealDate(dd);
-                  if(!ddate||getQNow(ddate)!==curQNow) return s;
-                  var w=getProjectWeight(dd.project);
-                  var sp=getDealSplit(gid(dd));
-                  return s+(parseBudget(dd.budget)*w*(sp?0.5:1));
-                },0);
-                var mult=agentRev/qTarget;
-                return mult>=3?7000:mult>=2?6000:5000;
-              })();
-              var comm=(effRev/1000000)*commRate;
-              return <div>
-                <div style={{ fontSize:12, fontWeight:700, color:C.success }}>{comm>0?comm.toLocaleString()+" EGP":"—"}</div>
-                {weight<1&&<div style={{ fontSize:9, color:"#B45309" }}>⚠️ 50%</div>}
-                {split&&<div style={{ fontSize:9, color:"#8B5CF6" }}>🤝 Split</div>}
-              </div>;
-            })()}
-          </div>}
           {isOnlyAdmin&&<div style={{ display:"flex", gap:8, marginTop:10, paddingTop:10, borderTop:"1px solid #E8ECF1" }}>
             {p.navigateToCommission&&<button onClick={function(e){e.stopPropagation();p.navigateToCommission(gid(d));}} title="View Commission"
               style={{ flex:1, height:34, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 }}>💰</button>}
