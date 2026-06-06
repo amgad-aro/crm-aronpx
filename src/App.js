@@ -11707,6 +11707,161 @@ var DealsPage = function(p) {
     return done;
   };
 
+  // Desktop table header columns, role-filtered. Single source of truth for
+  // both the <th> render and the inline-panel row's colSpan (dealColCount), so
+  // the accordion row always spans the full table width per role and never
+  // drifts: admin=12, sales_admin=10, director/manager/team_leader=9, sales=7.
+  var dealHeaderCols=[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,"Approved",""].filter(function(h){return h!==null;});
+  var dealColCount=dealHeaderCols.length;
+
+  // Deal-detail panel. Shared renderer for the desktop inline-accordion row
+  // (full-width, directly under the selected deal row) and the mobile
+  // full-screen overlay — only the outer `style` differs (passed in by the
+  // caller). At most one mounts per render (desktop XOR mobile, gated on
+  // p.isMobile), so ref={dealPanelRef} attaches to a single node and the
+  // click-outside close keeps working. Inner content + all logic
+  // (approve/cancel→deal-cancel→auto-rotate, commission claim, image
+  // upload/delete, getDealExtra) is unchanged from the prior beside-the-table
+  // panel — only WHERE it mounts on desktop changed.
+  var renderDealPanel=function(styleObj){
+    var extra=getDealExtra(String(selectedDeal._id||gid(selectedDeal)))||{};
+    var downPct=extra.downPaymentPct||selectedDeal.downPaymentPct||"";
+    var instYears=extra.installmentYears||selectedDeal.installmentYears||"";
+    return <div ref={dealPanelRef} style={styleObj}>
+      <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+          <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
+          {(p.cu.role==="admin"||p.cu.role==="sales_admin")&&<div style={{ display:"flex", gap:6 }}>
+            {(function(){
+              var isCancelled = selectedDeal.dealStatus==="Deal Cancelled" || selectedDeal.status==="Deal Cancelled";
+              if (isCancelled) return <span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ Deal Cancelled</span>;
+              return <>
+                <button onClick={async function(){
+                  try{
+                    var upd={dealApproved:!selectedDeal.dealApproved};
+                    var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",upd,p.token);
+                    p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+                    setSelectedDeal(updated);
+                  }catch(e){}
+                }} style={{ background:selectedDeal.dealApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
+                  {selectedDeal.dealApproved?"✅ Approved":"⏳ Approve"}
+                </button>
+                <button disabled={dealCancelling} onClick={async function(){
+                  if(!window.confirm("Cancel this deal? The lead will return to Hot Case status and be rotated to another agent.")) return;
+                  setDealCancelling(true);
+                  try{
+                    var updated = await apiFetch("/api/leads/"+gid(selectedDeal)+"/deal-cancel","POST",{},p.token);
+                    // Auto-rotate via the ordered rotation list (backend skips previous agents).
+                    try {
+                      var rot = await apiFetch("/api/leads/"+gid(selectedDeal)+"/auto-rotate","POST",{reason:"manual"},p.token);
+                      if (rot && rot.lead) updated = rot.lead;
+                    } catch(rotErr){ /* deal cancelled; rotation may be exhausted */ }
+                    p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+                    setSelectedDeal(updated);
+                    setDealTab("cancelled");
+                  }catch(e){alert(e.message||"Cancel failed");}
+                  setDealCancelling(false);
+                }} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:dealCancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:dealCancelling?0.6:1 }}>
+                  {dealCancelling?"Cancelling…":"❌ Cancel"}
+                </button>
+              </>;
+            })()}
+          </div>}
+        </div>
+        <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedDeal.name}</div>
+        <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}><PhoneCell phone={selectedDeal.phone}/></div>
+      </div>
+      <div style={{ padding:"14px 16px" }}>
+        {[
+          {l:"Project", v:selectedDeal.project||"-", icon:"🏠"},
+          {l:"Budget", v:(function(){
+            var raw=parseBudget(selectedDeal.budget);
+            var weight=getProjectWeight(selectedDeal.project,selectedDeal);
+            var split=getDealSplitFromObj(selectedDeal);
+            var splitFactor=split?0.5:1;
+            var eff=raw*weight*splitFactor;
+            var isSalesRole=p.cu.role==="sales"||p.cu.role==="team_leader";
+            if(isSalesRole&&eff!==raw&&raw>0) return eff.toLocaleString()+" EGP";
+            if(!isSalesRole&&eff!==raw&&raw>0) return selectedDeal.budget+" EGP → "+eff.toLocaleString()+" EGP effective";
+            return selectedDeal.budget?selectedDeal.budget+" EGP":"-";
+          })(), icon:"💰"},
+          {l:"Down Payment %", v:downPct?downPct+"%":"-", icon:"📊"},
+          {l:"Installment Years", v:instYears?instYears+" yrs":"-", icon:"📅"},
+          {l:"Agent", v:getAg(selectedDeal), icon:"👤"},
+          {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
+          {l:"Deal Date", v:(function(){var dd=getDealDate(selectedDeal);return dd?new Date(dd).toLocaleDateString("en-GB"):"-";})(), icon:"🗓"},
+          {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
+        ].map(function(f){return f.v&&f.v!=="-"?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
+          <span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.icon} {f.l}</span>
+          <span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span>
+        </div>:null;})}
+
+        {/* Commission Claim Date - sales admin only */}
+        {isOnlyAdmin&&<div style={{ marginTop:12, padding:10, background:"#F8FAFC", borderRadius:10 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📋 Commission Claim</div>
+          <input type="date" value={selectedDeal.commissionClaimDate||""} onChange={async function(e){
+            try{
+              var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{commissionClaimDate:e.target.value},p.token);
+              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+              setSelectedDeal(updated);
+            }catch(ex){}
+          }} style={{ width:"100%", padding:"6px 8px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:6, boxSizing:"border-box" }}/>
+          <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:12 }}>
+            <input type="checkbox" checked={selectedDeal.commissionClaimed||false} onChange={async function(e){
+              try{
+                var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{commissionClaimed:e.target.checked},p.token);
+                p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+                setSelectedDeal(updated);
+              }catch(ex){}
+            }}/>
+            <span style={{ fontWeight:600, color:selectedDeal.commissionClaimed?C.success:C.textLight }}>
+              {selectedDeal.commissionClaimed?"✅ Claimed":"☐ Mark as Claimed"}
+            </span>
+          </label>
+        </div>}
+
+        {/* Deal Images */}
+        <div style={{ marginTop:12 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 Contract Images</div>
+          {!isDealHydrated
+            ? <div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
+            : (function(){
+            var imgs=selectedDeal.dealImages&&selectedDeal.dealImages.length?selectedDeal.dealImages:selectedDeal.dealImage?[selectedDeal.dealImage]:[];
+            var uploadHandler=function(e){
+              var file=e.target.files[0]; if(!file)return; e.target.value="";
+              var reader=new FileReader();
+              reader.onload=function(ev){
+                var img=new Image();img.onload=function(){
+                  var canvas=document.createElement("canvas");var maxW=1200,maxH=1200;var w=img.width,h=img.height;
+                  if(w>maxW){h=h*(maxW/w);w=maxW;}if(h>maxH){w=w*(maxH/h);h=maxH;}
+                  canvas.width=w;canvas.height=h;canvas.getContext("2d").drawImage(img,0,0,w,h);
+                  var resized=canvas.toDataURL("image/jpeg",0.7);
+                  apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:resized,imageType:"deal"},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Upload failed");});
+                };img.src=ev.target.result;
+              };reader.readAsDataURL(file);
+            };
+            var deleteHandler=function(idx){
+              if(!window.confirm("Delete this image?"))return;
+              apiFetch("/api/leads/"+gid(selectedDeal)+"/delete-deal-image","POST",{index:idx},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Delete failed");});
+            };
+            return <div>
+              {imgs.length>0&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, marginBottom:6 }}>
+                {imgs.map(function(src,i){return <div key={i} style={{ position:"relative" }}>
+                  <img src={src} onClick={function(){var w=window.open();w.document.write("<img src='"+src+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, cursor:"zoom-in", display:"block" }} alt={"Contract "+(i+1)} title="Click to view full size"/>
+                  <button onClick={function(){deleteHandler(i);}} style={{ position:"absolute", top:4, right:4, background:"rgba(239,68,68,0.85)", border:"none", borderRadius:"50%", width:20, height:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:12, fontWeight:700, lineHeight:1 }} title="Delete image">×</button>
+                </div>;})}
+              </div>}
+              <label style={{ display:"block", padding:imgs.length>0?"6px":"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:imgs.length>0?11:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+                {imgs.length>0?"➕ Add More":"📤 Upload Contract Image"}
+                <input type="file" accept="image/*" style={{ display:"none" }} onChange={uploadHandler}/>
+              </label>
+            </div>;
+          })()}
+        </div>
+      </div>
+    </div>;
+  };
+
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
@@ -12075,15 +12230,15 @@ var DealsPage = function(p) {
       })}
     </div>:<div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,"Approved",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}      </tr></thead>
+        {dealHeaderCols.map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}      </tr></thead>
       <tbody>
-        {filteredDeals.length===0&&<tr><td colSpan={9} style={{ padding:40, textAlign:"center", color:C.textLight }}>No deals yet</td></tr>}
+        {filteredDeals.length===0&&<tr><td colSpan={dealColCount} style={{ padding:40, textAlign:"center", color:C.textLight }}>No deals yet</td></tr>}
         {filteredDeals.map(function(d){
           var bv=parseBudget(d.budget);
           var prog=stagesProgress(gid(d));
           var stages=getStages(gid(d));
           var isSel=selectedDeal&&gid(selectedDeal)===gid(d);
-          return <tr key={gid(d)} onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent", transition:"background 0.1s" }}>
+          return <Fragment key={gid(d)}><tr onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent", transition:"background 0.1s" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>
               {d.name}
               {/* Phase R-14 — Ambassador badge. The classification is internal to
@@ -12212,148 +12367,19 @@ var DealsPage = function(p) {
                 </button>}
               </div>
             </td>
-          </tr>;
+          </tr>
+          {isSel && !p.isMobile && hasRenderableDeal && <tr><td colSpan={dealColCount} style={{ padding:0, background:"#F8FAFC" }}>{renderDealPanel({ width:"100%", background:"#fff", borderRadius:0 })}</td></tr>}
+          </Fragment>;
         })}
       </tbody>
     </table></div>}</Card>
 
-    {hasRenderableDeal&&(function(){
-      var extra=getDealExtra(String(selectedDeal._id||gid(selectedDeal)))||{};
-      var downPct=extra.downPaymentPct||selectedDeal.downPaymentPct||"";
-      var instYears=extra.installmentYears||selectedDeal.installmentYears||"";
-      return <div ref={dealPanelRef} style={ p.isMobile?{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }:{ flex:"0 0 280px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
-      <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-          <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
-          {(p.cu.role==="admin"||p.cu.role==="sales_admin")&&<div style={{ display:"flex", gap:6 }}>
-            {(function(){
-              var isCancelled = selectedDeal.dealStatus==="Deal Cancelled" || selectedDeal.status==="Deal Cancelled";
-              if (isCancelled) return <span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ Deal Cancelled</span>;
-              return <>
-                <button onClick={async function(){
-                  try{
-                    var upd={dealApproved:!selectedDeal.dealApproved};
-                    var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",upd,p.token);
-                    p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
-                    setSelectedDeal(updated);
-                  }catch(e){}
-                }} style={{ background:selectedDeal.dealApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
-                  {selectedDeal.dealApproved?"✅ Approved":"⏳ Approve"}
-                </button>
-                <button disabled={dealCancelling} onClick={async function(){
-                  if(!window.confirm("Cancel this deal? The lead will return to Hot Case status and be rotated to another agent.")) return;
-                  setDealCancelling(true);
-                  try{
-                    var updated = await apiFetch("/api/leads/"+gid(selectedDeal)+"/deal-cancel","POST",{},p.token);
-                    // Auto-rotate via the ordered rotation list (backend skips previous agents).
-                    try {
-                      var rot = await apiFetch("/api/leads/"+gid(selectedDeal)+"/auto-rotate","POST",{reason:"manual"},p.token);
-                      if (rot && rot.lead) updated = rot.lead;
-                    } catch(rotErr){ /* deal cancelled; rotation may be exhausted */ }
-                    p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
-                    setSelectedDeal(updated);
-                    setDealTab("cancelled");
-                  }catch(e){alert(e.message||"Cancel failed");}
-                  setDealCancelling(false);
-                }} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:dealCancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:dealCancelling?0.6:1 }}>
-                  {dealCancelling?"Cancelling…":"❌ Cancel"}
-                </button>
-              </>;
-            })()}
-          </div>}
-        </div>
-        <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedDeal.name}</div>
-        <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}><PhoneCell phone={selectedDeal.phone}/></div>
-      </div>
-      <div style={{ padding:"14px 16px" }}>
-        {[
-          {l:"Project", v:selectedDeal.project||"-", icon:"🏠"},
-          {l:"Budget", v:(function(){
-            var raw=parseBudget(selectedDeal.budget);
-            var weight=getProjectWeight(selectedDeal.project,selectedDeal);
-            var split=getDealSplitFromObj(selectedDeal);
-            var splitFactor=split?0.5:1;
-            var eff=raw*weight*splitFactor;
-            var isSalesRole=p.cu.role==="sales"||p.cu.role==="team_leader";
-            if(isSalesRole&&eff!==raw&&raw>0) return eff.toLocaleString()+" EGP";
-            if(!isSalesRole&&eff!==raw&&raw>0) return selectedDeal.budget+" EGP → "+eff.toLocaleString()+" EGP effective";
-            return selectedDeal.budget?selectedDeal.budget+" EGP":"-";
-          })(), icon:"💰"},
-          {l:"Down Payment %", v:downPct?downPct+"%":"-", icon:"📊"},
-          {l:"Installment Years", v:instYears?instYears+" yrs":"-", icon:"📅"},
-          {l:"Agent", v:getAg(selectedDeal), icon:"👤"},
-          {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
-          {l:"Deal Date", v:(function(){var dd=getDealDate(selectedDeal);return dd?new Date(dd).toLocaleDateString("en-GB"):"-";})(), icon:"🗓"},
-          {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
-        ].map(function(f){return f.v&&f.v!=="-"?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
-          <span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.icon} {f.l}</span>
-          <span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span>
-        </div>:null;})}
-
-        {/* Commission Claim Date - sales admin only */}
-        {isOnlyAdmin&&<div style={{ marginTop:12, padding:10, background:"#F8FAFC", borderRadius:10 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📋 Commission Claim</div>
-          <input type="date" value={selectedDeal.commissionClaimDate||""} onChange={async function(e){
-            try{
-              var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{commissionClaimDate:e.target.value},p.token);
-              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
-              setSelectedDeal(updated);
-            }catch(ex){}
-          }} style={{ width:"100%", padding:"6px 8px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:6, boxSizing:"border-box" }}/>
-          <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:12 }}>
-            <input type="checkbox" checked={selectedDeal.commissionClaimed||false} onChange={async function(e){
-              try{
-                var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{commissionClaimed:e.target.checked},p.token);
-                p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
-                setSelectedDeal(updated);
-              }catch(ex){}
-            }}/>
-            <span style={{ fontWeight:600, color:selectedDeal.commissionClaimed?C.success:C.textLight }}>
-              {selectedDeal.commissionClaimed?"✅ Claimed":"☐ Mark as Claimed"}
-            </span>
-          </label>
-        </div>}
-
-        {/* Deal Images */}
-        <div style={{ marginTop:12 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 Contract Images</div>
-          {!isDealHydrated
-            ? <div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
-            : (function(){
-            var imgs=selectedDeal.dealImages&&selectedDeal.dealImages.length?selectedDeal.dealImages:selectedDeal.dealImage?[selectedDeal.dealImage]:[];
-            var uploadHandler=function(e){
-              var file=e.target.files[0]; if(!file)return; e.target.value="";
-              var reader=new FileReader();
-              reader.onload=function(ev){
-                var img=new Image();img.onload=function(){
-                  var canvas=document.createElement("canvas");var maxW=1200,maxH=1200;var w=img.width,h=img.height;
-                  if(w>maxW){h=h*(maxW/w);w=maxW;}if(h>maxH){w=w*(maxH/h);h=maxH;}
-                  canvas.width=w;canvas.height=h;canvas.getContext("2d").drawImage(img,0,0,w,h);
-                  var resized=canvas.toDataURL("image/jpeg",0.7);
-                  apiFetch("/api/leads/"+gid(selectedDeal)+"/upload-image","POST",{imageData:resized,imageType:"deal"},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Upload failed");});
-                };img.src=ev.target.result;
-              };reader.readAsDataURL(file);
-            };
-            var deleteHandler=function(idx){
-              if(!window.confirm("Delete this image?"))return;
-              apiFetch("/api/leads/"+gid(selectedDeal)+"/delete-deal-image","POST",{index:idx},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Delete failed");});
-            };
-            return <div>
-              {imgs.length>0&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, marginBottom:6 }}>
-                {imgs.map(function(src,i){return <div key={i} style={{ position:"relative" }}>
-                  <img src={src} onClick={function(){var w=window.open();w.document.write("<img src='"+src+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, cursor:"zoom-in", display:"block" }} alt={"Contract "+(i+1)} title="Click to view full size"/>
-                  <button onClick={function(){deleteHandler(i);}} style={{ position:"absolute", top:4, right:4, background:"rgba(239,68,68,0.85)", border:"none", borderRadius:"50%", width:20, height:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:12, fontWeight:700, lineHeight:1 }} title="Delete image">×</button>
-                </div>;})}
-              </div>}
-              <label style={{ display:"block", padding:imgs.length>0?"6px":"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:imgs.length>0?11:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
-                {imgs.length>0?"➕ Add More":"📤 Upload Contract Image"}
-                <input type="file" accept="image/*" style={{ display:"none" }} onChange={uploadHandler}/>
-              </label>
-            </div>;
-          })()}
-        </div>
-      </div>
-    </div>;})()}
+    {/* Mobile: full-screen overlay panel (unchanged). Desktop renders the
+        panel inline as a full-width accordion row under the selected deal row
+        — see renderDealPanel() call inside the table body above. Exactly one
+        of the two mounts per render (p.isMobile gate), so dealPanelRef binds a
+        single node and click-outside close keeps working. */}
+    {hasRenderableDeal&&p.isMobile&&renderDealPanel({ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" })}
     </div>
   </div>;
 };
