@@ -11636,12 +11636,20 @@ var DealsPage = function(p) {
   var curYear=new Date().getFullYear(); var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
   var dealYears=[curYear,curYear-1,curYear-2,curYear-3];
   var [dealQ,setDealQ]=useState(curQ); var [dealYear,setDealYear]=useState(curYear);
-  // Deal-type counts on the current Active|Cancelled tab. Computed BEFORE
-  // the user's other filters so the pill badges reflect the full tab scope —
-  // matches the Active/Cancelled tab badges above which also show full counts.
-  var dealsInternalCount = deals.filter(function(d){ return (d.dealType||"internal")==="internal"; }).length;
-  var dealsExternalCount = deals.filter(function(d){ return d.dealType==="external"; }).length;
-  var dealsAmbassadorCount = deals.filter(function(d){ return d.dealType==="ambassador"; }).length; // Phase R-14
+  // Deal-type counts on the current Active|Cancelled tab, scoped to the
+  // currently-selected Quarter + year (NOT the full tab scope). Uses the SAME
+  // quarter/year predicate as filteredDeals below (lines copied verbatim) so
+  // the pill badges agree with the rendered list's period. Deliberately
+  // excludes the deal-type/date-range/search/agent filters so each pill shows
+  // its own bucket total within the period (not a self-filtered subset).
+  var dealsInPeriod = deals.filter(function(d){
+    if(dealQ!=="all"){var dd=getDealDate(d);if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
+    if(new Date(getDealDate(d)||0).getFullYear()!==dealYear) return false;
+    return true;
+  });
+  var dealsInternalCount = dealsInPeriod.filter(function(d){ return (d.dealType||"internal")==="internal"; }).length;
+  var dealsExternalCount = dealsInPeriod.filter(function(d){ return d.dealType==="external"; }).length;
+  var dealsAmbassadorCount = dealsInPeriod.filter(function(d){ return d.dealType==="ambassador"; }).length; // Phase R-14
   var filteredDeals=deals.filter(function(d){
     if(dealQ!=="all"){var dd=getDealDate(d);if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
     if(new Date(getDealDate(d)||0).getFullYear()!==dealYear) return false;
@@ -11721,7 +11729,7 @@ var DealsPage = function(p) {
         for sales/team_leader/manager/director. Each pill carries its own active
         theme color so the type accents stay consistent with the deal-type toggle. */}
     {isOnlyAdmin&&<div style={p.isMobile?{ display:"flex", gap:6, marginBottom:8 }:{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
-      {[["all","All",deals.length,C.accent],["internal","\ud83c\udfe2 Internal",dealsInternalCount,C.accent],["external","\ud83e\udd1d External",dealsExternalCount,"#7C3AED"],["ambassador","\ud83c\udfaf Ambassador",dealsAmbassadorCount,"#D97706"]].map(function(pill){
+      {[["all","All",dealsInPeriod.length,C.accent],["internal","\ud83c\udfe2 Internal",dealsInternalCount,C.accent],["external","\ud83e\udd1d External",dealsExternalCount,"#7C3AED"],["ambassador","\ud83c\udfaf Ambassador",dealsAmbassadorCount,"#D97706"]].map(function(pill){
         var active=dealTypeFilter===pill[0];
         var theme=pill[3];
         return <button key={pill[0]} onClick={function(){setDealTypeFilter(pill[0]);}} style={{
