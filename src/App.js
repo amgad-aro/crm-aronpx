@@ -11728,13 +11728,20 @@ var DealsPage = function(p) {
     var downPct=extra.downPaymentPct||selectedDeal.downPaymentPct||"";
     var instYears=extra.installmentYears||selectedDeal.installmentYears||"";
     return <div ref={dealPanelRef} style={styleObj}>
-      <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-          <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
+      <div style={{ background:"#fff", borderBottom:"1px solid "+C.border, padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
+            <div style={{ width:36, height:36, borderRadius:"50%", background:C.bg, color:C.text, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, flexShrink:0 }}>{(selectedDeal.name||"?").charAt(0).toUpperCase()}</div>
+            <div style={{ minWidth:0 }}>
+              <div style={{ color:C.text, fontSize:14, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{selectedDeal.name}</div>
+              <div style={{ color:C.textLight, fontSize:11, marginTop:2 }}><PhoneCell phone={selectedDeal.phone}/></div>
+            </div>
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
           {(p.cu.role==="admin"||p.cu.role==="sales_admin")&&<div style={{ display:"flex", gap:6 }}>
             {(function(){
               var isCancelled = selectedDeal.dealStatus==="Deal Cancelled" || selectedDeal.status==="Deal Cancelled";
-              if (isCancelled) return <span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ Deal Cancelled</span>;
+              if (isCancelled) return <span style={{ background:C.danger+"18", borderRadius:8, padding:"4px 10px", color:C.danger, fontSize:11, fontWeight:700 }}>❌ Deal Cancelled</span>;
               return <>
                 <button onClick={async function(){
                   try{
@@ -11743,7 +11750,7 @@ var DealsPage = function(p) {
                     p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
                     setSelectedDeal(updated);
                   }catch(e){}
-                }} style={{ background:selectedDeal.dealApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700 }}>
+                }} style={{ background:selectedDeal.dealApproved?C.success+"22":"transparent", border:"1px solid "+(selectedDeal.dealApproved?C.success:C.border), borderRadius:8, padding:"4px 10px", cursor:"pointer", color:selectedDeal.dealApproved?C.success:C.textLight, fontSize:11, fontWeight:700 }}>
                   {selectedDeal.dealApproved?"✅ Approved":"⏳ Approve"}
                 </button>
                 <button disabled={dealCancelling} onClick={async function(){
@@ -11761,17 +11768,18 @@ var DealsPage = function(p) {
                     setDealTab("cancelled");
                   }catch(e){alert(e.message||"Cancel failed");}
                   setDealCancelling(false);
-                }} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:dealCancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:dealCancelling?0.6:1 }}>
+                }} style={{ background:"transparent", border:"1px solid "+C.danger, borderRadius:8, padding:"4px 10px", cursor:dealCancelling?"wait":"pointer", color:C.danger, fontSize:11, fontWeight:700, opacity:dealCancelling?0.6:1 }}>
                   {dealCancelling?"Cancelling…":"❌ Cancel"}
                 </button>
               </>;
             })()}
           </div>}
+          <button onClick={function(){setSelectedDeal(null);}} style={{ background:"transparent", border:"1px solid "+C.border, borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, flexShrink:0 }}><X size={11}/></button>
+          </div>
         </div>
-        <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedDeal.name}</div>
-        <div style={{ color:"rgba(255,255,255,0.65)", fontSize:11, marginTop:2 }}><PhoneCell phone={selectedDeal.phone}/></div>
       </div>
       <div style={{ padding:"14px 16px" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))", gap:10 }}>
         {[
           {l:"Project", v:selectedDeal.project||"-", icon:"🏠"},
           {l:"Budget", v:(function(){
@@ -11791,13 +11799,14 @@ var DealsPage = function(p) {
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
           {l:"Deal Date", v:(function(){var dd=getDealDate(selectedDeal);return dd?new Date(dd).toLocaleDateString("en-GB"):"-";})(), icon:"🗓"},
           {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
-        ].map(function(f){return f.v&&f.v!=="-"?<div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
-          <span style={{ fontSize:11, color:C.textLight, flexShrink:0 }}>{f.icon} {f.l}</span>
-          <span style={{ fontSize:11, fontWeight:500, textAlign:"right", wordBreak:"break-word" }}>{f.v}</span>
+        ].map(function(f){return f.v&&f.v!=="-"?<div key={f.l} style={{ background:"#F8FAFC", borderRadius:8, padding:"10px 12px" }}>
+          <div style={{ fontSize:11, color:C.textLight, marginBottom:3 }}>{f.icon} {f.l}</div>
+          <div style={{ fontSize:13, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
         </div>:null;})}
+        </div>
 
         {/* Commission Claim Date - sales admin only */}
-        {isOnlyAdmin&&<div style={{ marginTop:12, padding:10, background:"#F8FAFC", borderRadius:10 }}>
+        {isOnlyAdmin&&<div style={{ marginTop:12, padding:12, background:"#F8FAFC", borderRadius:8 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📋 Commission Claim</div>
           <input type="date" value={selectedDeal.commissionClaimDate||""} onChange={async function(e){
             try{
@@ -11805,7 +11814,7 @@ var DealsPage = function(p) {
               p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
               setSelectedDeal(updated);
             }catch(ex){}
-          }} style={{ width:"100%", padding:"6px 8px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, marginBottom:6, boxSizing:"border-box" }}/>
+          }} style={{ width:"100%", padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, fontSize:12, marginBottom:6, boxSizing:"border-box" }}/>
           <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:12 }}>
             <input type="checkbox" checked={selectedDeal.commissionClaimed||false} onChange={async function(e){
               try{
@@ -11844,14 +11853,14 @@ var DealsPage = function(p) {
               if(!window.confirm("Delete this image?"))return;
               apiFetch("/api/leads/"+gid(selectedDeal)+"/delete-deal-image","POST",{index:idx},p.token).then(function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});setSelectedDeal(updated);}).catch(function(){alert("Delete failed");});
             };
-            return <div>
-              {imgs.length>0&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, marginBottom:6 }}>
-                {imgs.map(function(src,i){return <div key={i} style={{ position:"relative" }}>
-                  <img src={src} onClick={function(){var w=window.open();w.document.write("<img src='"+src+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, cursor:"zoom-in", display:"block" }} alt={"Contract "+(i+1)} title="Click to view full size"/>
-                  <button onClick={function(){deleteHandler(i);}} style={{ position:"absolute", top:4, right:4, background:"rgba(239,68,68,0.85)", border:"none", borderRadius:"50%", width:20, height:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:12, fontWeight:700, lineHeight:1 }} title="Delete image">×</button>
+            return <div style={{ display:"flex", gap:10, flexWrap:"wrap", overflowX:"auto", alignItems:"flex-start" }}>
+              {imgs.length>0&&<div style={{ display:"contents" }}>
+                {imgs.map(function(src,i){return <div key={i} style={{ position:"relative", width:90, height:90, flexShrink:0 }}>
+                  <img src={src} onClick={function(){var w=window.open();w.document.write("<img src='"+src+"' style='max-width:100%;'>");}} style={{ width:90, height:90, objectFit:"cover", borderRadius:8, cursor:"zoom-in", display:"block" }} alt={"Contract "+(i+1)} title="Click to view full size"/>
+                  <button onClick={function(){deleteHandler(i);}} style={{ position:"absolute", top:4, right:4, background:C.danger, border:"none", borderRadius:"50%", width:20, height:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:12, fontWeight:700, lineHeight:1 }} title="Delete image">×</button>
                 </div>;})}
               </div>}
-              <label style={{ display:"block", padding:imgs.length>0?"6px":"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:imgs.length>0?11:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+              <label style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", flex:"1 1 90px", minHeight:90, padding:imgs.length>0?"6px":"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:imgs.length>0?11:12, fontWeight:600, cursor:"pointer", textAlign:"center", boxSizing:"border-box" }}>
                 {imgs.length>0?"➕ Add More":"📤 Upload Contract Image"}
                 <input type="file" accept="image/*" style={{ display:"none" }} onChange={uploadHandler}/>
               </label>
