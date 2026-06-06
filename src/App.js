@@ -11560,6 +11560,7 @@ var DealsPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [dealTab,setDealTab]=useState("active"); // "active" | "cancelled"
   var [dealCancelling,setDealCancelling]=useState(false);
+  var [dealDocUploading,setDealDocUploading]=useState(false);
   // STEP 4-4 — paginated Deals fetch from /api/deals?status=all. Replaces the
   // in-memory p.leads.filter scan that would silently miss deals once STEP 4-5
   // shrinks the bootstrap. Falls back to the in-memory filter while the fetch
@@ -11760,6 +11761,37 @@ var DealsPage = function(p) {
   var dealHeaderCols=[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,"Approved",""].filter(function(h){return h!==null;});
   var dealColCount=dealHeaderCols.length;
 
+  // Deal Documents (images + PDFs) — mirrors EOIPage handleDocUpload/deleteDoc,
+  // pointing at the deal-documents routes. Defined before renderDealPanel so it
+  // closes over them.
+  var handleDealDocUpload=async function(e,lead){
+    var file=e.target.files[0]; if(!file) return;
+    if (file.size>6*1024*1024) { alert("File too large (max 6MB)"); return; }
+    setDealDocUploading(true);
+    try{
+      var dataUrl = await new Promise(function(resolve,reject){
+        var reader=new FileReader();
+        reader.onload=function(ev){resolve(ev.target.result);};
+        reader.onerror=function(){reject(new Error("Read failed"));};
+        reader.readAsDataURL(file);
+      });
+      var updated=await apiFetch("/api/leads/"+gid(lead)+"/deal-documents","POST",{fileData:dataUrl},p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+      if(selectedDeal&&gid(selectedDeal)===gid(lead)) setSelectedDeal(updated);
+    }catch(ex){alert("Upload failed: "+(ex.message||ex));}
+    setDealDocUploading(false);
+    try{ e.target.value=""; }catch(er){}
+  };
+
+  var deleteDealDoc=async function(lead,index){
+    if(!window.confirm("Remove this document?")) return;
+    try{
+      var updated=await apiFetch("/api/leads/"+gid(lead)+"/delete-deal-document","POST",{index:index},p.token);
+      p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
+      if(selectedDeal&&gid(selectedDeal)===gid(lead)) setSelectedDeal(updated);
+    }catch(e){alert(e.message||"Delete failed");}
+  };
+
   // Deal-detail panel. Shared renderer for the desktop inline-accordion row
   // (full-width, directly under the selected deal row) and the mobile
   // full-screen overlay — only the outer `style` differs (passed in by the
@@ -11913,6 +11945,34 @@ var DealsPage = function(p) {
               </label>
             </div>;
           })()}
+        </div>
+
+        {/* Deal Documents (images + PDFs) */}
+        <div style={{ marginTop:12 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📄 Deal Documents {isDealHydrated ? "("+(selectedDeal.dealDocuments||[]).length+")" : ""}</div>
+          {!isDealHydrated
+            ?<div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
+            :<>
+              <div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"flex-start", marginBottom:8 }}>
+              {(selectedDeal.dealDocuments||[]).length>0&&<div style={{ display:"contents" }}>
+                {(selectedDeal.dealDocuments||[]).map(function(doc,idx){
+                  var url = typeof doc==="string" ? doc : (doc && doc.url) || "";
+                  var name = typeof doc==="object" && doc && doc.name ? doc.name : ("Document "+(idx+1));
+                  var isPdf = typeof url==="string" && url.indexOf("application/pdf")>=0;
+                  return <div key={idx} style={{ position:"relative", width:80, height:80, flex:"0 0 auto", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#fff" }} title={name}>
+                    {isPdf
+                      ? <a href={url} target="_blank" rel="noreferrer" download={name} style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", textDecoration:"none", color:"#DC2626", fontSize:10, fontWeight:700, padding:4, textAlign:"center" }}><span style={{ fontSize:22 }}>📕</span><span style={{ maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name}</span></a>
+                      : <img src={url} alt={name} onClick={function(){var w=window.open();w.document.write("<img src='"+url+"' style='max-width:100%;'>");}} style={{ width:"100%", height:"100%", objectFit:"cover", cursor:"zoom-in" }}/>}
+                    {isOnlyAdmin&&<button onClick={function(){deleteDealDoc(selectedDeal,idx);}} title="Remove" style={{ position:"absolute", top:2, right:2, width:18, height:18, borderRadius:"50%", border:"none", background:"rgba(220,38,38,0.9)", color:"#fff", fontSize:10, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>×</button>}
+                  </div>;
+                })}
+              </div>}
+              <label style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", width:80, height:80, flex:"0 0 auto", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:10, fontWeight:600, cursor:"pointer", textAlign:"center", boxSizing:"border-box", padding:4 }}>
+                {dealDocUploading?"Uploading…":"📎 Upload Deal Document (image or PDF)"}
+                <input type="file" accept="image/*,application/pdf" style={{ display:"none" }} onChange={function(e){handleDealDocUpload(e,selectedDeal);}}/>
+              </label>
+              </div>
+            </>}
         </div>
       </div>
       </div>
