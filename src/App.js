@@ -11709,10 +11709,10 @@ var DealsPage = function(p) {
     </div>
 
     {/* Deals tab bar: Active vs Deal Cancelled */}
-    <div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
+    <div style={p.isMobile?{ display:"flex", gap:8, marginBottom:8 }:{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
       {[["active","\ud83d\udcbc Active",activeDeals.length,C.success,"#DCFCE7"],["cancelled","\u274c Deal Cancelled",cancelledDeals.length,"#B91C1C","#FEE2E2"]].map(function(tab){
         var active=dealTab===tab[0];
-        return <button key={tab[0]} onClick={function(){setSelectedDeal(null);setDealTab(tab[0]);}} style={{ padding:"7px 14px", borderRadius:9, border:active?"1px solid "+tab[3]:"1px solid #E8ECF1", background:active?tab[4]:"#fff", color:active?tab[3]:C.textLight, fontSize:12, fontWeight:active?700:600, cursor:"pointer" }}>{tab[1]} ({tab[2]})</button>;
+        return <button key={tab[0]} onClick={function(){setSelectedDeal(null);setDealTab(tab[0]);}} style={{ padding:"7px 14px", borderRadius:9, border:active?"1px solid "+tab[3]:"1px solid #E8ECF1", background:active?tab[4]:"#fff", color:active?tab[3]:C.textLight, fontSize:12, fontWeight:active?700:600, cursor:"pointer", ...(p.isMobile?{ flex:1, textAlign:"center" }:{}) }}>{tab[1]} ({tab[2]})</button>;
       })}
     </div>
 
@@ -11720,7 +11720,7 @@ var DealsPage = function(p) {
         Phase R-14 \u2014 + Ambassador (amber). Admin/sales_admin only \u2014 hidden
         for sales/team_leader/manager/director. Each pill carries its own active
         theme color so the type accents stay consistent with the deal-type toggle. */}
-    {isOnlyAdmin&&<div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
+    {isOnlyAdmin&&<div style={p.isMobile?{ display:"flex", gap:6, marginBottom:8 }:{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
       {[["all","All",deals.length,C.accent],["internal","\ud83c\udfe2 Internal",dealsInternalCount,C.accent],["external","\ud83e\udd1d External",dealsExternalCount,"#7C3AED"],["ambassador","\ud83c\udfaf Ambassador",dealsAmbassadorCount,"#D97706"]].map(function(pill){
         var active=dealTypeFilter===pill[0];
         var theme=pill[3];
@@ -11729,24 +11729,44 @@ var DealsPage = function(p) {
           borderColor: active ? theme : "#E2E8F0",
           background: active ? theme+"12" : "#fff",
           color: active ? theme : C.textLight,
-          fontSize:12, fontWeight:600, cursor:"pointer"
+          fontSize:12, fontWeight:600, cursor:"pointer",
+          ...(p.isMobile?{ flex:1, textAlign:"center" }:{})
         }}>{pill[1]} ({pill[2]})</button>;
       })}
     </div>}
 
     {/* Deals Search + Filter bar */}
-    <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:10, flexWrap:"wrap" }}>
-      <div style={{ display:"flex", gap:5 }}>
+    <div style={p.isMobile?{ display:"flex", gap:8, alignItems:"center", marginBottom:8 }:{ display:"flex", gap:8, alignItems:"center", marginBottom:10, flexWrap:"wrap" }}>
+      <div style={p.isMobile?{ display:"flex", gap:6, flex:1 }:{ display:"flex", gap:5 }}>
         {["all","Q1","Q2","Q3","Q4"].map(function(q){return <button key={q} onClick={function(){setDealQ(q);}}
           style={{ padding:"5px 12px", borderRadius:8, border:"1px solid", borderColor:dealQ===q?C.accent:"#E2E8F0",
             background:dealQ===q?C.accent+"12":"#fff", color:dealQ===q?C.accent:C.textLight,
-            fontSize:12, fontWeight:600, cursor:"pointer" }}>{q==="all"?"All":q}{q===curQ&&dealYear===curYear&&q!=="all"?" 🔵":""}</button>;})}
+            fontSize:12, fontWeight:600, cursor:"pointer", ...(p.isMobile?{ flex:1, textAlign:"center" }:{}) }}>{q==="all"?"All":q}{q===curQ&&dealYear===curYear&&q!=="all"?" 🔵":""}</button>;})}
       </div>
-      <select value={dealYear} onChange={function(e){setDealYear(Number(e.target.value));}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
+      <select value={dealYear} onChange={function(e){setDealYear(Number(e.target.value));}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text, ...(p.isMobile?{ flex:"0 0 76px", boxSizing:"border-box" }:{}) }}>
         {dealYears.map(function(y){return <option key={y} value={y}>{y}</option>;})}
       </select>
     </div>
-    <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
+    {p.isMobile?<div style={{ marginBottom:14 }}>
+      <div style={{ display:"flex", gap:8, marginBottom:8 }}>
+        <input placeholder="🔍 Search by name, project or phone..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, flex:1, minWidth:0, boxSizing:"border-box" }}/>
+        {isAdmin&&<select value={dealAgent} onChange={function(e){setDealAgent(e.target.value);}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", flex:1, minWidth:0, boxSizing:"border-box" }}>
+          <option value="">👤 All Agents</option>
+          {salesUsersForFilter.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}{u.active?"":" (inactive)"}</option>;})}
+        </select>}
+      </div>
+      <div style={{ display:"flex", gap:8, marginBottom:8 }}>
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-start", gap:4, flex:1, minWidth:0 }}>
+          <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>📅 From:</span>
+          <input type="date" value={dateFrom} onChange={function(e){setDateFrom(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, width:"100%", minWidth:0, boxSizing:"border-box" }}/>
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-start", gap:4, flex:1, minWidth:0 }}>
+          <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>To:</span>
+          <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, width:"100%", minWidth:0, boxSizing:"border-box" }}/>
+        </div>
+      </div>
+      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all")&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");}} style={{ width:"100%", padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
+    </div>:<div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
       <input placeholder="🔍 Search by name, project or phone..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, minWidth:220 }}/>
       {isAdmin&&<select value={dealAgent} onChange={function(e){setDealAgent(e.target.value);}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
         <option value="">👤 All Agents</option>
@@ -11761,7 +11781,7 @@ var DealsPage = function(p) {
         <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
       </div>
       {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all")&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
-    </div>
+    </div>}
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} initialStatus="DoneDeal"
         initial={{name:"",phone:"",phone2:"",email:"",budget:"",project:"",source:"",agentId:"",callbackTime:"",notes:"",status:"DoneDeal"}}
@@ -11962,13 +11982,13 @@ var DealsPage = function(p) {
     </Modal>}
 
     {/* Action buttons row */}
-    {isOnlyAdmin&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
-      <Btn outline onClick={function(){setCommModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.success, borderColor:C.success }}>💰 Commissions</Btn>
-      <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent }}>⚙️ Commission Projects</Btn>
+    {isOnlyAdmin&&<div style={p.isMobile?{ display:"flex", gap:8, marginBottom:14 }:{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
+      <Btn outline onClick={function(){setCommModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.success, borderColor:C.success, ...(p.isMobile?{ flex:1, textAlign:"center" }:{}) }}>💰 Commissions</Btn>
+      <Btn outline onClick={function(){setProjWeightModal(true);}} style={{ padding:"7px 13px", fontSize:12, color:C.accent, borderColor:C.accent, ...(p.isMobile?{ flex:1, textAlign:"center" }:{}) }}>⚙️ Commission Projects</Btn>
     </div>}
 
     <div style={{ display:"flex", gap:16, alignItems:"flex-start" }}>
-    <Card p={0} style={{ flex:1, overflow:"hidden" }}>{p.isMobile?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:12 }}>
+    <Card p={0} style={p.isMobile?{ flex:1, overflow:"hidden", border:"none", boxShadow:"none", background:"transparent", borderRadius:0 }:{ flex:1, overflow:"hidden" }}>{p.isMobile?<div style={{ display:"flex", flexDirection:"column", gap:12, padding:0 }}>
       {filteredDeals.length===0&&<div style={{ padding:40, textAlign:"center", color:C.textLight }}>No deals yet</div>}
       {filteredDeals.map(function(d){
         var bv=parseBudget(d.budget);
@@ -12025,9 +12045,11 @@ var DealsPage = function(p) {
               <div style={{ height:"100%", width:(prog/3*100)+"%", background:prog===3?C.success:C.accent, borderRadius:2 }}/>
             </div>
           </button>
-          {isAdmin&&<div style={{ fontSize:11, color:C.accent, marginBottom:4 }}>👤 {getAg(d)}{(function(){var sp=getDealSplitFromObj(d);return sp?" 🤝 +"+sp.agent2Name:"";})()}</div>}
-          {isAdmin&&<div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>📢 {d.source||"-"}</div>}
-          {isOnlyAdmin&&<div style={{ marginTop:6, marginBottom:6 }}>
+          {isAdmin&&<div style={{ display:"flex", justifyContent:"space-between", gap:8, marginBottom:4, fontSize:11 }}>
+            <span style={{ color:C.accent }}>👤 {getAg(d)}{(function(){var sp=getDealSplitFromObj(d);return sp?" 🤝 +"+sp.agent2Name:"";})()}</span>
+            <span style={{ color:C.textLight }}>📢 {d.source||"-"}</span>
+          </div>}
+          {isOnlyAdmin&&<div style={{ marginTop:6, marginBottom:6, paddingTop:8, borderTop:"1px solid #E8ECF1" }}>
             <div style={{ fontSize:10, color:C.textLight, marginBottom:2 }}>Commission</div>
             {(function(){
               var raw=parseBudget(d.budget);
@@ -12071,15 +12093,15 @@ var DealsPage = function(p) {
               </div>;
             })()}
           </div>}
-          {isOnlyAdmin&&<div style={{ display:"flex", gap:6, marginTop:10 }}>
+          {isOnlyAdmin&&<div style={{ display:"flex", gap:8, marginTop:10, paddingTop:10, borderTop:"1px solid #E8ECF1" }}>
             {p.navigateToCommission&&<button onClick={function(e){e.stopPropagation();p.navigateToCommission(gid(d));}} title="View Commission"
-              style={{ width:34, height:34, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 }}>💰</button>}
+              style={{ flex:1, height:34, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 }}>💰</button>}
             <button onClick={function(e){e.stopPropagation();setSplitModal(d);var sp=getDealSplitFromObj(d);setSplitAgent2(sp?sp.agent2Id:"");}} title="Split Deal"
-              style={{ width:34, height:34, borderRadius:8, border:"1px solid "+(getDealSplitFromObj(d)?"#8B5CF6":"#E2E8F0"), background:getDealSplitFromObj(d)?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>🤝</button>
+              style={{ flex:1, height:34, borderRadius:8, border:"1px solid "+(getDealSplitFromObj(d)?"#8B5CF6":"#E2E8F0"), background:getDealSplitFromObj(d)?"#F5F3FF":"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>🤝</button>
             <button onClick={function(e){e.stopPropagation();setEditDeal(d);}} title={t.edit}
-              style={{ width:34, height:34, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Edit size={14} color={C.info}/></button>
+              style={{ flex:1, height:34, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Edit size={14} color={C.info}/></button>
             <button onClick={function(e){e.stopPropagation();archiveDeal(gid(d));}} title={t.archive}
-              style={{ width:34, height:34, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Archive size={14} color={C.warning}/></button>
+              style={{ flex:1, height:34, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Archive size={14} color={C.warning}/></button>
           </div>}
         </div>;
       })}
