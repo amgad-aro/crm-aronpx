@@ -11728,6 +11728,7 @@ var DealsPage = function(p) {
     var downPct=extra.downPaymentPct||selectedDeal.downPaymentPct||"";
     var instYears=extra.installmentYears||selectedDeal.installmentYears||"";
     return <div ref={dealPanelRef} style={styleObj}>
+      <div style={{ border:"1px solid "+C.border, borderRadius:10, margin:"4px 8px", overflow:"hidden" }}>
       <div style={{ background:"#fff", borderBottom:"1px solid "+C.border, padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
           <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
@@ -11814,7 +11815,7 @@ var DealsPage = function(p) {
               p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
               setSelectedDeal(updated);
             }catch(ex){}
-          }} style={{ width:"100%", padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, fontSize:12, marginBottom:6, boxSizing:"border-box" }}/>
+          }} style={{ width:"100%", maxWidth:220, padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, fontSize:12, marginBottom:6, boxSizing:"border-box" }}/>
           <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:12 }}>
             <input type="checkbox" checked={selectedDeal.commissionClaimed||false} onChange={async function(e){
               try{
@@ -11867,6 +11868,7 @@ var DealsPage = function(p) {
             </div>;
           })()}
         </div>
+      </div>
       </div>
     </div>;
   };
@@ -12377,7 +12379,7 @@ var DealsPage = function(p) {
               </div>
             </td>
           </tr>
-          {isSel && !p.isMobile && hasRenderableDeal && <tr><td colSpan={dealColCount} style={{ padding:0, background:"#F8FAFC" }}>{renderDealPanel({ width:"100%", background:"#fff", borderRadius:0 })}</td></tr>}
+          {isSel && !p.isMobile && hasRenderableDeal && <tr><td colSpan={dealColCount} style={{ padding:"8px 12px", background:C.bg }}>{renderDealPanel({ width:"100%", background:"#fff", borderRadius:0 })}</td></tr>}
           </Fragment>;
         })}
       </tbody>
