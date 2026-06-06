@@ -11936,14 +11936,14 @@ var DealsPage = function(p) {
           {salesUsersForFilter.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}{u.active?"":" (inactive)"}</option>;})}
         </select>}
       </div>
-      <div style={{ display:"flex", gap:20, marginBottom:8 }}>
+      <div style={{ display:"flex", gap:12, marginBottom:8 }}>
         <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-start", gap:4, flex:1, minWidth:0 }}>
-          <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>📅 From:</span>
-          <input type="date" value={dateFrom} onChange={function(e){setDateFrom(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, width:"100%", minWidth:0, boxSizing:"border-box" }}/>
+          <span style={{ fontSize:11, color:C.textLight, fontWeight:600 }}>📅 From</span>
+          <input type="date" value={dateFrom} onChange={function(e){setDateFrom(e.target.value);}} style={{ padding:"5px 8px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:11, width:"100%", minWidth:0, boxSizing:"border-box" }}/>
         </div>
         <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-start", gap:4, flex:1, minWidth:0 }}>
-          <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>To:</span>
-          <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, width:"100%", minWidth:0, boxSizing:"border-box" }}/>
+          <span style={{ fontSize:11, color:C.textLight, fontWeight:600 }}>To</span>
+          <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 8px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:11, width:"100%", minWidth:0, boxSizing:"border-box" }}/>
         </div>
       </div>
       {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all")&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");}} style={{ width:"100%", padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
