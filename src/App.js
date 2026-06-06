@@ -12116,8 +12116,8 @@ var DealsPage = function(p) {
       var extra=getDealExtra(String(selectedDeal._id||gid(selectedDeal)))||{};
       var downPct=extra.downPaymentPct||selectedDeal.downPaymentPct||"";
       var instYears=extra.installmentYears||selectedDeal.installmentYears||"";
-      return <div ref={dealPanelRef} style={{ flex:"0 0 280px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
-      <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"14px 16px" }}>
+      return <div ref={dealPanelRef} style={ p.isMobile?{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }:{ flex:"0 0 280px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
+      <div style={{ background:"linear-gradient(135deg,"+C.primary+","+C.primaryLight+")", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <button onClick={function(){setSelectedDeal(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
           {(p.cu.role==="admin"||p.cu.role==="sales_admin")&&<div style={{ display:"flex", gap:6 }}>
