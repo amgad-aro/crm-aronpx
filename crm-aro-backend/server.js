@@ -7170,22 +7170,34 @@ app.get("/api/dashboard/admin-stats", auth, async function(req, res) {
       callbackTime: { $ne: "", $lt: now.toISOString() }
     });
 
-    // KPI 6 — deals: status=DoneDeal or globalStatus=donedeal, with dealAt in
-    // range. dealDate is a String — $toDate cast required. The range match on
-    // the computed field can't use an index, but the $match prefilter narrows
-    // to the DoneDeal subset first via { status:1, createdAt:-1 }.
-    // When dealDate is blank/null the deal is dated null (NOT updatedAt) so the
-    // rangeMatch ($gte/$lte) excludes it — a touched-but-undated deal must not
-    // leak into the current period via its last-modified time.
+    // KPI 6 — deals: matches the canonical Deals-page definition EXACTLY so the
+    // card count equals the rows the Deals page lists for the same period.
+    //   status filter (App.js DealsPage activeDeals):
+    //     (status=DoneDeal OR globalStatus=donedeal) AND not archived
+    //     AND status != "Deal Cancelled" AND dealStatus != "Deal Cancelled"
+    //   dating (App.js getDealDate): dealDate -> eoiDate -> updatedAt -> createdAt.
+    // dealDate/eoiDate are String fields; cast via $convert with onError/onNull:null
+    // (NOT $toDate, which throws on a malformed string) and fall through the chain.
+    // Using the fallback chain is deliberate: dealDate was introduced recently and
+    // is empty on historical deals, so dating by dealDate alone returned 0 for all
+    // periods. The fallback dates undated deals by their effective date, matching
+    // what the Deals page renders.
     var dealsPipeline = [
-      { $match: { archived: { $ne: true }, $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] } },
+      { $match: {
+          archived: { $ne: true },
+          status: { $ne: "Deal Cancelled" },
+          dealStatus: { $ne: "Deal Cancelled" },
+          $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }]
+      } },
       { $addFields: {
           dealAt: {
-            $cond: [
-              { $and: [{ $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] }] },
-              { $toDate: "$dealDate" },
-              null
-            ]
+            $let: {
+              vars: {
+                dd: { $convert: { input: "$dealDate", to: "date", onError: null, onNull: null } },
+                ed: { $convert: { input: "$eoiDate",  to: "date", onError: null, onNull: null } }
+              },
+              in: { $ifNull: ["$$dd", { $ifNull: ["$$ed", { $ifNull: ["$updatedAt", "$createdAt"] }] }] }
+            }
           }
         } }
     ];
