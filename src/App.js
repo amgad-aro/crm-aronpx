@@ -11169,14 +11169,16 @@ var EOIPage = function(p) {
           {!isEoiHydrated
             ?<div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
             :selectedEOI.eoiImage
-            ?<div>
-              <img src={selectedEOI.eoiImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedEOI.eoiImage+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, marginBottom:6, cursor:"zoom-in" }} alt="EOI" title="Click to view full size"/>
-              <label style={{ display:"block", padding:"6px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+            ?<div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"flex-start" }}>
+              <div style={{ position:"relative", width:80, height:80, flex:"0 0 auto" }}>
+                <img src={selectedEOI.eoiImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedEOI.eoiImage+"' style='max-width:100%;'>");}} style={{ width:80, height:80, objectFit:"cover", borderRadius:8, cursor:"zoom-in", display:"block" }} alt="EOI" title="Click to view full size"/>
+              </div>
+              <label style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", width:80, height:80, flex:"0 0 auto", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:10, fontWeight:600, cursor:"pointer", textAlign:"center", boxSizing:"border-box" }}>
                 🔄 Replace Image
                 <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
               </label>
             </div>
-            :<label style={{ display:"block", padding:"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+            :<label style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", width:80, height:80, flex:"0 0 auto", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:10, fontWeight:600, cursor:"pointer", textAlign:"center", boxSizing:"border-box" }}>
               {imgUploading?"Uploading...":"📤 Upload EOI Image"}
               <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
             </label>}
@@ -11188,12 +11190,13 @@ var EOIPage = function(p) {
           {!isEoiHydrated
             ?<div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
             :<>
-              {(selectedEOI.eoiDocuments||[]).length>0&&<div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:6, marginBottom:8 }}>
+              <div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"flex-start", marginBottom:8 }}>
+              {(selectedEOI.eoiDocuments||[]).length>0&&<div style={{ display:"contents" }}>
                 {(selectedEOI.eoiDocuments||[]).map(function(doc,idx){
                   var url = typeof doc==="string" ? doc : (doc && doc.url) || "";
                   var name = typeof doc==="object" && doc && doc.name ? doc.name : ("Document "+(idx+1));
                   var isPdf = typeof url==="string" && url.indexOf("application/pdf")>=0;
-                  return <div key={idx} style={{ position:"relative", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#fff", aspectRatio:"1/1" }} title={name}>
+                  return <div key={idx} style={{ position:"relative", width:80, height:80, flex:"0 0 auto", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#fff" }} title={name}>
                     {isPdf
                       ? <a href={url} target="_blank" rel="noreferrer" download={name} style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", textDecoration:"none", color:"#DC2626", fontSize:10, fontWeight:700, padding:4, textAlign:"center" }}><span style={{ fontSize:22 }}>📕</span><span style={{ maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name}</span></a>
                       : <img src={url} alt={name} onClick={function(){var w=window.open();w.document.write("<img src='"+url+"' style='max-width:100%;'>");}} style={{ width:"100%", height:"100%", objectFit:"cover", cursor:"zoom-in" }}/>}
@@ -11201,10 +11204,11 @@ var EOIPage = function(p) {
                   </div>;
                 })}
               </div>}
-              <label style={{ display:"block", padding:"8px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+              <label style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", width:80, height:80, flex:"0 0 auto", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:10, fontWeight:600, cursor:"pointer", textAlign:"center", boxSizing:"border-box", padding:4 }}>
                 {docUploading?"Uploading…":"📎 Upload EOI Document (image or PDF)"}
                 <input type="file" accept="image/*,application/pdf" style={{ display:"none" }} onChange={function(e){handleDocUpload(e,selectedEOI);}}/>
               </label>
+              </div>
             </>}
         </div>
       </div>
