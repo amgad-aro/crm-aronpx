@@ -629,7 +629,7 @@ var Card = function(p) { return <div ref={p.innerRef} style={Object.assign({ bac
 // than the panel itself — this keeps the Edit Modal, status picker, and
 // confirm dialogs from accidentally closing the panel underneath. Esc also
 // closes. Pair this with ref={outsideCloseRef} on the panel's outermost node.
-function useOutsideClose(open, onClose){
+function useOutsideClose(open, onClose, ignoreSelector){
   var ref = useRef(null);
   var cbRef = useRef(onClose);
   cbRef.current = onClose;
@@ -653,6 +653,13 @@ function useOutsideClose(open, onClose){
       if (!panel) return;
       if (panel.contains(e.target)) return;
       if (isInOverlayAbove(e.target, panel)) return;
+      // Opt-in (2026-06-06): ignore mousedowns on the panel's own trigger
+      // element(s). Without this, a re-click on the trigger closes here on
+      // mousedown, then the trigger's React onClick re-opens on click (the
+      // mousedown-driven re-render flipped its isSel) — a close-then-reopen
+      // double-toggle. Backward-compatible: no-op when ignoreSelector is
+      // undefined (the existing two-arg call sites behave exactly as before).
+      if (ignoreSelector && e.target.closest && e.target.closest(ignoreSelector)) return;
       cbRef.current && cbRef.current();
     }
     function onKey(e){ if (e.key === "Escape") { cbRef.current && cbRef.current(); } }
@@ -11578,7 +11585,7 @@ var DealsPage = function(p) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[selectedDeal, hasRenderableDeal]);
   // Click-outside closes the Deal side panel (docked drawer).
-  var dealPanelRef = useOutsideClose(hasRenderableDeal, function(){ setSelectedDeal(null); });
+  var dealPanelRef = useOutsideClose(hasRenderableDeal, function(){ setSelectedDeal(null); }, "[data-deal-row]");
   // Side-panel hydration tracker. The /api/leads bootstrap strips dealImages
   // to keep the payload small; we refetch the full doc when the panel opens.
   // panelHydratedDealId === selectedDeal._id once the refetch has populated
@@ -12249,7 +12256,7 @@ var DealsPage = function(p) {
           var prog=stagesProgress(gid(d));
           var stages=getStages(gid(d));
           var isSel=selectedDeal&&gid(selectedDeal)===gid(d);
-          return <Fragment key={gid(d)}><tr onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent", transition:"background 0.1s" }}>
+          return <Fragment key={gid(d)}><tr data-deal-row="1" onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent", transition:"background 0.1s" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>
               {d.name}
               {/* Phase R-14 — Ambassador badge. The classification is internal to
