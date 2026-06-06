@@ -11116,20 +11116,28 @@ var EOIPage = function(p) {
   // only WHERE it mounts on desktop changed.
   var renderEoiPanel=function(styleObj){
     return <div ref={eoiPanelRef} style={styleObj}>
-      <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-          <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
-          <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
+      <div style={{ background:"#F5F3FF", border:"1px solid #DDD6FE", borderRadius:10, margin:"4px 8px", overflow:"hidden", contain:"content" }}>
+      <div style={{ background:"#F5F3FF", borderBottom:"1px solid #DDD6FE", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
+            <button onClick={function(){setSelectedEOI(null);}} style={{ background:"#fff", border:"1px solid #DDD6FE", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#6D28D9", flexShrink:0 }}><X size={11}/></button>
+            <div style={{ width:36, height:36, borderRadius:"50%", background:"#EDE9FE", color:"#6D28D9", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, flexShrink:0 }}>{(selectedEOI.name||"?").charAt(0).toUpperCase()}</div>
+            <div style={{ minWidth:0 }}>
+              <div style={{ color:"#4C1D95", fontSize:14, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{selectedEOI.name}</div>
+              <div style={{ color:"#6D28D9", fontSize:11, marginTop:2 }}><PhoneCell phone={selectedEOI.phone}/></div>
+            </div>
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
             {(function(){
               var isCancelled = selectedEOI.eoiStatus==="EOI Cancelled" || selectedEOI.eoiStatus==="Deal Cancelled" || selectedEOI.status==="Deal Cancelled";
-              if (isCancelled) return <span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ EOI Cancelled</span>;
+              if (isCancelled) return <span style={{ background:C.danger+"18", borderRadius:8, padding:"4px 10px", color:C.danger, fontSize:11, fontWeight:700 }}>❌ EOI Cancelled</span>;
               var isDoneDeal = selectedEOI.status==="DoneDeal";
               return <>
                 {(p.cu.role==="admin"||p.cu.role==="sales_admin")&&<div style={{ display:"flex", gap:6 }}>
-                  <button onClick={function(){if(!isDoneDeal) toggleApproved(selectedEOI,"eoiApproved");}} disabled={isDoneDeal} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:isDoneDeal?"default":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:isDoneDeal?0.7:1 }}>
+                  <button onClick={function(){if(!isDoneDeal) toggleApproved(selectedEOI,"eoiApproved");}} disabled={isDoneDeal} style={{ background:selectedEOI.eoiApproved?C.success+"22":"transparent", border:"1px solid "+(selectedEOI.eoiApproved?C.success:C.border), borderRadius:8, padding:"4px 10px", cursor:isDoneDeal?"default":"pointer", color:selectedEOI.eoiApproved?C.success:C.textLight, fontSize:11, fontWeight:700, opacity:isDoneDeal?0.7:1 }}>
                     {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
                   </button>
-                  {!isDoneDeal&&<button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
+                  {!isDoneDeal&&<button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"transparent", border:"1px solid "+C.danger, borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:C.danger, fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
                     {cancelling?"Cancelling…":"❌ Cancel"}
                   </button>}
                 </div>}
@@ -11140,20 +11148,20 @@ var EOIPage = function(p) {
             })()}
           </div>
         </div>
-        <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedEOI.name}</div>
-        <div style={{ color:"rgba(255,255,255,0.7)", fontSize:11, marginTop:2 }}><PhoneCell phone={selectedEOI.phone}/></div>
       </div>
       <div style={{ padding:"12px 14px" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))", gap:10 }}>
         {[
           {l:"Project",v:selectedEOI.project||"-",icon:"🏠"},
           {l:"Budget",v:selectedEOI.budget?selectedEOI.budget+" EGP":"-",icon:"💰"},
           {l:"Deposit",v:selectedEOI.eoiDeposit||"-",icon:"💵"},
           {l:"Agent",v:getAg(selectedEOI),icon:"👤"},
           {l:"Notes",v:selectedEOI.notes||"-",icon:"📝"},
-        ].map(function(f){return <div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
-          <span style={{ fontSize:11, color:C.textLight }}>{f.icon} {f.l}</span>
-          <span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span>
+        ].map(function(f){return <div key={f.l} style={{ background:"#fff", borderRadius:8, padding:"8px 10px", alignSelf:"start" }}>
+          <div style={{ fontSize:11, color:C.textLight, marginBottom:2 }}>{f.icon} {f.l}</div>
+          <div style={{ fontSize:13, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
         </div>;})}
+        </div>
 
         {/* EOI Image */}
         <div style={{ marginTop:12 }}>
@@ -11185,7 +11193,7 @@ var EOIPage = function(p) {
                   var url = typeof doc==="string" ? doc : (doc && doc.url) || "";
                   var name = typeof doc==="object" && doc && doc.name ? doc.name : ("Document "+(idx+1));
                   var isPdf = typeof url==="string" && url.indexOf("application/pdf")>=0;
-                  return <div key={idx} style={{ position:"relative", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#F8FAFC", aspectRatio:"1/1" }} title={name}>
+                  return <div key={idx} style={{ position:"relative", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#fff", aspectRatio:"1/1" }} title={name}>
                     {isPdf
                       ? <a href={url} target="_blank" rel="noreferrer" download={name} style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", textDecoration:"none", color:"#DC2626", fontSize:10, fontWeight:700, padding:4, textAlign:"center" }}><span style={{ fontSize:22 }}>📕</span><span style={{ maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name}</span></a>
                       : <img src={url} alt={name} onClick={function(){var w=window.open();w.document.write("<img src='"+url+"' style='max-width:100%;'>");}} style={{ width:"100%", height:"100%", objectFit:"cover", cursor:"zoom-in" }}/>}
@@ -11199,6 +11207,7 @@ var EOIPage = function(p) {
               </label>
             </>}
         </div>
+      </div>
       </div>
     </div>;
   };
