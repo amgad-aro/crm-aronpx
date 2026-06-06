@@ -11739,6 +11739,7 @@ var DealsPage = function(p) {
       <div style={{ background:"#F0FDF4", borderBottom:"1px solid #BBF7D0", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
           <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
+            <button onClick={function(){setSelectedDeal(null);}} style={{ background:"transparent", border:"1px solid "+C.border, borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, flexShrink:0 }}><X size={11}/></button>
             <div style={{ width:36, height:36, borderRadius:"50%", background:"#DCFCE7", color:"#15803D", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, flexShrink:0 }}>{(selectedDeal.name||"?").charAt(0).toUpperCase()}</div>
             <div style={{ minWidth:0 }}>
               <div style={{ color:"#15803D", fontSize:14, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{selectedDeal.name}</div>
@@ -11782,7 +11783,6 @@ var DealsPage = function(p) {
               </>;
             })()}
           </div>}
-          <button onClick={function(){setSelectedDeal(null);}} style={{ background:"transparent", border:"1px solid "+C.border, borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, flexShrink:0 }}><X size={11}/></button>
           </div>
         </div>
       </div>
