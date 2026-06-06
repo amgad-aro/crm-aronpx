@@ -11127,7 +11127,7 @@ var EOIPage = function(p) {
               <div style={{ color:"#6D28D9", fontSize:11, marginTop:2, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}><PhoneCell phone={selectedEOI.phone}/></div>
             </div>
           </div>
-          <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0, marginLeft:"auto" }}>
             {(function(){
               var isCancelled = selectedEOI.eoiStatus==="EOI Cancelled" || selectedEOI.eoiStatus==="Deal Cancelled" || selectedEOI.status==="Deal Cancelled";
               if (isCancelled) return <span style={{ background:C.danger+"18", borderRadius:8, padding:"4px 10px", color:C.danger, fontSize:11, fontWeight:700 }}>❌ EOI Cancelled</span>;
