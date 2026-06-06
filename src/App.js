@@ -10909,7 +10909,7 @@ var EOIPage = function(p) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[selectedEOI, hasRenderableEOI]);
   // Click-outside closes the EOI side panel (docked drawer).
-  var eoiPanelRef = useOutsideClose(hasRenderableEOI, function(){ setSelectedEOI(null); });
+  var eoiPanelRef = useOutsideClose(hasRenderableEOI, function(){ setSelectedEOI(null); }, "[data-eoi-row]");
   var [imgUploading,setImgUploading]=useState(false);
   var [docUploading,setDocUploading]=useState(false);
   var [cancelling,setCancelling]=useState(false);
@@ -11279,7 +11279,7 @@ var EOIPage = function(p) {
           var bv=parseBudget(d.budget);
           var eoiDateStr=d.eoiDate?new Date(d.eoiDate).toLocaleDateString("en-GB"):d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB"):"-";
           var isSel=selectedEOI&&gid(selectedEOI)===gid(d);
-          return <Fragment key={gid(d)}><tr onClick={function(){setSelectedEOI(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#F0FDF4":"transparent" }}>
+          return <Fragment key={gid(d)}><tr data-eoi-row="1" onClick={function(){setSelectedEOI(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#F0FDF4":"transparent" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}</td>
             {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}><PhoneCell phone={d.phone}/></td>}
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
