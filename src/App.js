@@ -11099,6 +11099,110 @@ var EOIPage = function(p) {
     }catch(e){alert(e.message||"Delete failed");}
   };
 
+  // EOI table header columns, role-filtered. Single source of truth for both
+  // the <th> render and the inline-panel row's colSpan (eoiColCount): admin/
+  // director/manager/team_leader = 10, sales_admin/sales = 9. Not hardcoded.
+  var eoiHeaderCols=[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date","Approved",""].filter(function(h){return h!==null;});
+  var eoiColCount=eoiHeaderCols.length;
+
+  // EOI detail panel. Shared renderer for the desktop inline-accordion row
+  // (full-width, directly under the selected EOI row) and the mobile
+  // full-screen overlay — only the outer `style` differs (passed in by the
+  // caller). At most one mounts per render (desktop XOR mobile, gated on
+  // p.isMobile), so ref={eoiPanelRef} attaches to a single node and the
+  // click-outside close keeps working. Inner content + all logic
+  // (toggleApproved/cancelEOI/convertToDeal, image+doc upload/delete,
+  // isEoiHydrated gates) is unchanged from the prior beside-the-table panel —
+  // only WHERE it mounts on desktop changed.
+  var renderEoiPanel=function(styleObj){
+    return <div ref={eoiPanelRef} style={styleObj}>
+      <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+          <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
+          <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
+            {(function(){
+              var isCancelled = selectedEOI.eoiStatus==="EOI Cancelled" || selectedEOI.eoiStatus==="Deal Cancelled" || selectedEOI.status==="Deal Cancelled";
+              if (isCancelled) return <span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ EOI Cancelled</span>;
+              var isDoneDeal = selectedEOI.status==="DoneDeal";
+              return <>
+                {(p.cu.role==="admin"||p.cu.role==="sales_admin")&&<div style={{ display:"flex", gap:6 }}>
+                  <button onClick={function(){if(!isDoneDeal) toggleApproved(selectedEOI,"eoiApproved");}} disabled={isDoneDeal} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:isDoneDeal?"default":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:isDoneDeal?0.7:1 }}>
+                    {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
+                  </button>
+                  {!isDoneDeal&&<button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
+                    {cancelling?"Cancelling…":"❌ Cancel"}
+                  </button>}
+                </div>}
+                {isOnlyAdmin&&<button disabled={convertingDeal} onClick={function(){convertToDeal(selectedEOI);}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"5px 12px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
+                  {convertingDeal?"Converting…":"✅ Done Deal"}
+                </button>}
+              </>;
+            })()}
+          </div>
+        </div>
+        <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedEOI.name}</div>
+        <div style={{ color:"rgba(255,255,255,0.7)", fontSize:11, marginTop:2 }}><PhoneCell phone={selectedEOI.phone}/></div>
+      </div>
+      <div style={{ padding:"12px 14px" }}>
+        {[
+          {l:"Project",v:selectedEOI.project||"-",icon:"🏠"},
+          {l:"Budget",v:selectedEOI.budget?selectedEOI.budget+" EGP":"-",icon:"💰"},
+          {l:"Deposit",v:selectedEOI.eoiDeposit||"-",icon:"💵"},
+          {l:"Agent",v:getAg(selectedEOI),icon:"👤"},
+          {l:"Notes",v:selectedEOI.notes||"-",icon:"📝"},
+        ].map(function(f){return <div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
+          <span style={{ fontSize:11, color:C.textLight }}>{f.icon} {f.l}</span>
+          <span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span>
+        </div>;})}
+
+        {/* EOI Image */}
+        <div style={{ marginTop:12 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 EOI Image</div>
+          {!isEoiHydrated
+            ?<div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
+            :selectedEOI.eoiImage
+            ?<div>
+              <img src={selectedEOI.eoiImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedEOI.eoiImage+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, marginBottom:6, cursor:"zoom-in" }} alt="EOI" title="Click to view full size"/>
+              <label style={{ display:"block", padding:"6px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+                🔄 Replace Image
+                <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
+              </label>
+            </div>
+            :<label style={{ display:"block", padding:"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+              {imgUploading?"Uploading...":"📤 Upload EOI Image"}
+              <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
+            </label>}
+        </div>
+
+        {/* EOI Documents (images + PDFs) */}
+        <div style={{ marginTop:12 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📄 EOI Documents {isEoiHydrated ? "("+(selectedEOI.eoiDocuments||[]).length+")" : ""}</div>
+          {!isEoiHydrated
+            ?<div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
+            :<>
+              {(selectedEOI.eoiDocuments||[]).length>0&&<div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:6, marginBottom:8 }}>
+                {(selectedEOI.eoiDocuments||[]).map(function(doc,idx){
+                  var url = typeof doc==="string" ? doc : (doc && doc.url) || "";
+                  var name = typeof doc==="object" && doc && doc.name ? doc.name : ("Document "+(idx+1));
+                  var isPdf = typeof url==="string" && url.indexOf("application/pdf")>=0;
+                  return <div key={idx} style={{ position:"relative", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#F8FAFC", aspectRatio:"1/1" }} title={name}>
+                    {isPdf
+                      ? <a href={url} target="_blank" rel="noreferrer" download={name} style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", textDecoration:"none", color:"#DC2626", fontSize:10, fontWeight:700, padding:4, textAlign:"center" }}><span style={{ fontSize:22 }}>📕</span><span style={{ maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name}</span></a>
+                      : <img src={url} alt={name} onClick={function(){var w=window.open();w.document.write("<img src='"+url+"' style='max-width:100%;'>");}} style={{ width:"100%", height:"100%", objectFit:"cover", cursor:"zoom-in" }}/>}
+                    {isOnlyAdmin&&<button onClick={function(){deleteDoc(selectedEOI,idx);}} title="Remove" style={{ position:"absolute", top:2, right:2, width:18, height:18, borderRadius:"50%", border:"none", background:"rgba(220,38,38,0.9)", color:"#fff", fontSize:10, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>×</button>}
+                  </div>;
+                })}
+              </div>}
+              <label style={{ display:"block", padding:"8px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+                {docUploading?"Uploading…":"📎 Upload EOI Document (image or PDF)"}
+                <input type="file" accept="image/*,application/pdf" style={{ display:"none" }} onChange={function(e){handleDocUpload(e,selectedEOI);}}/>
+              </label>
+            </>}
+        </div>
+      </div>
+    </div>;
+  };
+
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
@@ -11168,14 +11272,14 @@ var EOIPage = function(p) {
       })}
     </div>:<div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:700 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-        {[t.name,p.cu.role!=="sales_admin"?t.phone:null,t.project,"Unit Type",t.budget,"Deposit",isAdmin?t.agent:null,"EOI Date","Approved",""].filter(function(h){return h!==null;}).map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
+        {eoiHeaderCols.map(function(h,i){return <th key={i} style={{ textAlign:"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
       <tbody>
         {eoiLeads.map(function(d){
           var bv=parseBudget(d.budget);
           var eoiDateStr=d.eoiDate?new Date(d.eoiDate).toLocaleDateString("en-GB"):d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB"):"-";
           var isSel=selectedEOI&&gid(selectedEOI)===gid(d);
-          return <tr key={gid(d)} onClick={function(){setSelectedEOI(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#F0FDF4":"transparent" }}>
+          return <Fragment key={gid(d)}><tr onClick={function(){setSelectedEOI(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#F0FDF4":"transparent" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}</td>
             {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}><PhoneCell phone={d.phone}/></td>}
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
@@ -11204,99 +11308,21 @@ var EOIPage = function(p) {
                 {isOnlyAdmin&&<button onClick={function(){archiveLead(gid(d));}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Archive size={13} color={C.warning}/></button>}
               </div>
             </td>
-          </tr>;
+          </tr>
+          {isSel && !p.isMobile && hasRenderableEOI && <tr><td colSpan={eoiColCount} style={{ padding:"8px 12px", background:C.bg }}>{renderEoiPanel({ width:"100%", background:"#fff", borderRadius:0 })}</td></tr>}
+          </Fragment>;
         })}
       </tbody>
     </table></div>}
     </Card>}
 
     {/* EOI Side Panel */}
-    {hasRenderableEOI&&<div ref={eoiPanelRef} style={ p.isMobile?{ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" }:{ flex:"0 0 260px", background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", boxShadow:"0 1px 4px rgba(0,0,0,0.07)", overflow:"hidden", maxHeight:"80vh", overflowY:"auto" }}>
-      <div style={{ background:"linear-gradient(135deg,#9333EA,#7C3AED)", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-          <button onClick={function(){setSelectedEOI(null);}} style={{ background:"rgba(255,255,255,0.15)", border:"none", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" }}><X size={11}/></button>
-          <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
-            {(function(){
-              var isCancelled = selectedEOI.eoiStatus==="EOI Cancelled" || selectedEOI.eoiStatus==="Deal Cancelled" || selectedEOI.status==="Deal Cancelled";
-              if (isCancelled) return <span style={{ background:"rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", color:"#fff", fontSize:11, fontWeight:700 }}>❌ EOI Cancelled</span>;
-              var isDoneDeal = selectedEOI.status==="DoneDeal";
-              return <>
-                {(p.cu.role==="admin"||p.cu.role==="sales_admin")&&<div style={{ display:"flex", gap:6 }}>
-                  <button onClick={function(){if(!isDoneDeal) toggleApproved(selectedEOI,"eoiApproved");}} disabled={isDoneDeal} style={{ background:selectedEOI.eoiApproved?"rgba(34,197,94,0.3)":"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"4px 10px", cursor:isDoneDeal?"default":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:isDoneDeal?0.7:1 }}>
-                    {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
-                  </button>
-                  {!isDoneDeal&&<button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"rgba(239,68,68,0.25)", border:"none", borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
-                    {cancelling?"Cancelling…":"❌ Cancel"}
-                  </button>}
-                </div>}
-                {isOnlyAdmin&&<button disabled={convertingDeal} onClick={function(){convertToDeal(selectedEOI);}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"5px 12px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
-                  {convertingDeal?"Converting…":"✅ Done Deal"}
-                </button>}
-              </>;
-            })()}
-          </div>
-        </div>
-        <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{selectedEOI.name}</div>
-        <div style={{ color:"rgba(255,255,255,0.7)", fontSize:11, marginTop:2 }}><PhoneCell phone={selectedEOI.phone}/></div>
-      </div>
-      <div style={{ padding:"12px 14px" }}>
-        {[
-          {l:"Project",v:selectedEOI.project||"-",icon:"🏠"},
-          {l:"Budget",v:selectedEOI.budget?selectedEOI.budget+" EGP":"-",icon:"💰"},
-          {l:"Deposit",v:selectedEOI.eoiDeposit||"-",icon:"💵"},
-          {l:"Agent",v:getAg(selectedEOI),icon:"👤"},
-          {l:"Notes",v:selectedEOI.notes||"-",icon:"📝"},
-        ].map(function(f){return <div key={f.l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #F1F5F9", gap:8 }}>
-          <span style={{ fontSize:11, color:C.textLight }}>{f.icon} {f.l}</span>
-          <span style={{ fontSize:11, fontWeight:500, textAlign:"right" }}>{f.v}</span>
-        </div>;})}
-        
-        {/* EOI Image */}
-        <div style={{ marginTop:12 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 EOI Image</div>
-          {!isEoiHydrated
-            ?<div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
-            :selectedEOI.eoiImage
-            ?<div>
-              <img src={selectedEOI.eoiImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedEOI.eoiImage+"' style='max-width:100%;'>");}} style={{ width:"100%", borderRadius:8, marginBottom:6, cursor:"zoom-in" }} alt="EOI" title="Click to view full size"/>
-              <label style={{ display:"block", padding:"6px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
-                🔄 Replace Image
-                <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
-              </label>
-            </div>
-            :<label style={{ display:"block", padding:"10px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:12, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
-              {imgUploading?"Uploading...":"📤 Upload EOI Image"}
-              <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
-            </label>}
-        </div>
-
-        {/* EOI Documents (images + PDFs) */}
-        <div style={{ marginTop:12 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📄 EOI Documents {isEoiHydrated ? "("+(selectedEOI.eoiDocuments||[]).length+")" : ""}</div>
-          {!isEoiHydrated
-            ?<div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
-            :<>
-              {(selectedEOI.eoiDocuments||[]).length>0&&<div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:6, marginBottom:8 }}>
-                {(selectedEOI.eoiDocuments||[]).map(function(doc,idx){
-                  var url = typeof doc==="string" ? doc : (doc && doc.url) || "";
-                  var name = typeof doc==="object" && doc && doc.name ? doc.name : ("Document "+(idx+1));
-                  var isPdf = typeof url==="string" && url.indexOf("application/pdf")>=0;
-                  return <div key={idx} style={{ position:"relative", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#F8FAFC", aspectRatio:"1/1" }} title={name}>
-                    {isPdf
-                      ? <a href={url} target="_blank" rel="noreferrer" download={name} style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", textDecoration:"none", color:"#DC2626", fontSize:10, fontWeight:700, padding:4, textAlign:"center" }}><span style={{ fontSize:22 }}>📕</span><span style={{ maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name}</span></a>
-                      : <img src={url} alt={name} onClick={function(){var w=window.open();w.document.write("<img src='"+url+"' style='max-width:100%;'>");}} style={{ width:"100%", height:"100%", objectFit:"cover", cursor:"zoom-in" }}/>}
-                    {isOnlyAdmin&&<button onClick={function(){deleteDoc(selectedEOI,idx);}} title="Remove" style={{ position:"absolute", top:2, right:2, width:18, height:18, borderRadius:"50%", border:"none", background:"rgba(220,38,38,0.9)", color:"#fff", fontSize:10, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>×</button>}
-                  </div>;
-                })}
-              </div>}
-              <label style={{ display:"block", padding:"8px", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
-                {docUploading?"Uploading…":"📎 Upload EOI Document (image or PDF)"}
-                <input type="file" accept="image/*,application/pdf" style={{ display:"none" }} onChange={function(e){handleDocUpload(e,selectedEOI);}}/>
-              </label>
-            </>}
-        </div>
-      </div>
-    </div>}
+    {/* Mobile: full-screen overlay panel (unchanged). Desktop renders the
+        panel inline as a full-width accordion row under the selected EOI row
+        — see renderEoiPanel() call inside the table body above. Exactly one
+        of the two mounts per render (p.isMobile gate), so eoiPanelRef binds a
+        single node and click-outside close keeps working. */}
+    {hasRenderableEOI&&p.isMobile&&renderEoiPanel({ position:"fixed", inset:0, zIndex:300, background:"#fff", overflowY:"auto" })}
     </div>
   </div>;
 };
