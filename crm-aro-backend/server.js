@@ -10875,6 +10875,13 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       update.globalStatus = "donedeal";
       // Phase R-13.2 — same window-expiry kill as the EOI transition above.
       update.manualWindowExpiresAt = null;
+      // Stamp the real occurrence date on first close so it is persisted
+      // regardless of who closes the deal. The PUT strips req.body.dealDate for
+      // non-admin/SA roles (see ~10605), and this transition block never re-fires
+      // once the lead is already DoneDeal — so this only ever AUTO-stamps the
+      // initial close, and the !update.dealDate guard preserves any explicit
+      // admin/SA-supplied date. Full ISO mirrors the DR-mirror path (~15878).
+      if (!update.dealDate && !oldLead.dealDate) update.dealDate = new Date().toISOString();
     }
     // Permanent meeting marker. Stamp hadMeeting + meetingDoneAt the first
     // time a lead reaches MeetingDone. Never re-stamp on subsequent visits —
