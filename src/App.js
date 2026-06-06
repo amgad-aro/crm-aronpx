@@ -12006,9 +12006,10 @@ var DealsPage = function(p) {
               :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳</span>}
           </div>
           {p.cu.role==="admin"&&<div style={{ fontSize:12, color:C.textLight, marginBottom:6 }}><PhoneCell phone={d.phone}/></div>}
-          {d.project&&<div style={{ marginBottom:6 }}><span style={{ fontSize:11, color:"#6D28D9", background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>🏠 {d.project}</span></div>}
-          <div style={{ display:"flex", gap:6, alignItems:"baseline", marginBottom:6, fontSize:13, fontWeight:700, color:C.success }}>
-            <span>💰</span>
+          <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", marginBottom:6 }}>
+            {d.project&&<span style={{ fontSize:11, color:"#6D28D9", background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>🏠 {d.project}</span>}
+            <div style={{ display:"flex", gap:6, alignItems:"baseline", fontSize:13, fontWeight:700, color:C.success }}>
+              <span>💰</span>
             {(function(){
               var split=getDealSplitFromObj(d);
               var weight=getProjectWeight(d.project,d);
@@ -12034,9 +12035,11 @@ var DealsPage = function(p) {
                 </div>}
               </div>;
             })()}
+            </div>
           </div>
-          <div style={{ fontSize:11, color:C.textLight, marginBottom:6 }}>🗓 {(function(){var dd=getDealDate(d);return dd?new Date(dd).toLocaleDateString("en-GB")+" "+new Date(dd).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):"-";})()}</div>
-          <button onClick={function(e){e.stopPropagation();openStages(d);}} style={{ background:"none", border:"none", cursor:"pointer", width:"100%", textAlign:"left", padding:0, marginBottom:6 }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, marginBottom:6 }}>
+            <span style={{ fontSize:11, color:C.textLight }}>🗓 {(function(){var dd=getDealDate(d);return dd?new Date(dd).toLocaleDateString("en-GB")+" "+new Date(dd).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):"-";})()}</span>
+            <button onClick={function(e){e.stopPropagation();openStages(d);}} style={{ background:"none", border:"none", cursor:"pointer", width:"auto", padding:0 }}>
             <div style={{ display:"flex", gap:4, marginBottom:3 }}>
               {["contract","payment1","payment2"].map(function(k){return <span key={k} style={{ width:18, height:18, borderRadius:5, background:stages[k]?C.success:"#E2E8F0", display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:9, color:stages[k]?"#fff":"#94A3B8" }}>{stages[k]?"✓":"·"}</span>;})}
               <span style={{ fontSize:10, color:C.textLight, marginLeft:4 }}>{prog}/3</span>
@@ -12044,7 +12047,8 @@ var DealsPage = function(p) {
             <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}>
               <div style={{ height:"100%", width:(prog/3*100)+"%", background:prog===3?C.success:C.accent, borderRadius:2 }}/>
             </div>
-          </button>
+            </button>
+          </div>
           {isAdmin&&<div style={{ display:"flex", justifyContent:"space-between", gap:8, marginBottom:4, fontSize:11 }}>
             <span style={{ color:C.accent }}>👤 {getAg(d)}{(function(){var sp=getDealSplitFromObj(d);return sp?" 🤝 +"+sp.agent2Name:"";})()}</span>
             <span style={{ color:C.textLight }}>📢 {d.source||"-"}</span>
