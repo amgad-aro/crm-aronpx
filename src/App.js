@@ -11118,13 +11118,13 @@ var EOIPage = function(p) {
     return <div ref={eoiPanelRef} style={styleObj}>
       <div style={{ background:"#F5F3FF", border:"1px solid #DDD6FE", borderRadius:10, margin:"4px 8px", overflow:"hidden", contain:"content" }}>
       <div style={{ background:"#F5F3FF", borderBottom:"1px solid #DDD6FE", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:"8px 10px", flexWrap:"wrap" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0, flex:"1 1 auto" }}>
             <button onClick={function(){setSelectedEOI(null);}} style={{ background:"#fff", border:"1px solid #DDD6FE", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#6D28D9", flexShrink:0 }}><X size={11}/></button>
             <div style={{ width:36, height:36, borderRadius:"50%", background:"#EDE9FE", color:"#6D28D9", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, flexShrink:0 }}>{(selectedEOI.name||"?").charAt(0).toUpperCase()}</div>
             <div style={{ minWidth:0 }}>
               <div style={{ color:"#4C1D95", fontSize:14, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{selectedEOI.name}</div>
-              <div style={{ color:"#6D28D9", fontSize:11, marginTop:2 }}><PhoneCell phone={selectedEOI.phone}/></div>
+              <div style={{ color:"#6D28D9", fontSize:11, marginTop:2, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}><PhoneCell phone={selectedEOI.phone}/></div>
             </div>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
