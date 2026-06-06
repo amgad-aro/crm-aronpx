@@ -7035,7 +7035,7 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
             $cond: [
               { $and: [ { $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] } ] },
               { $toDate: "$dealDate" },
-              "$updatedAt"
+              null
             ]
           }
         } }
@@ -7157,16 +7157,16 @@ app.get("/api/dashboard/admin-stats", auth, async function(req, res) {
     meetPipeline.push({ $count: "c" });
     var meetP = Lead.aggregate(meetPipeline);
 
-    // KPI 5 — overdue: callbackTime < now and status NOT in {DoneDeal, EOI,
-    // NotInterested}. callbackTime is a String field; ISO 8601 strings sort
-    // lexicographically the same as their Date order so $lt with a string
-    // comparator works for the common case. Non-ISO legacy values that fall
-    // outside this ordering will be misclassified — acceptable for a dashboard
-    // KPI; the LeadsPage view still hydrates the full date semantics.
-    // Per spec — NOT range-bounded ("as of now" state count).
+    // KPI 5 — overdue: leads genuinely awaiting a callback (status="CallBack")
+    // whose callbackTime is in the past. Restricting to status="CallBack"
+    // excludes leads that moved on to another status but still carry a stale
+    // past callbackTime that was never cleared (these inflated the count).
+    // callbackTime is a String field; ISO 8601 strings sort lexicographically
+    // the same as their Date order so $lt with a string comparator works for the
+    // common case. Per spec — NOT range-bounded ("as of now" state count).
     var overdueP = Lead.countDocuments({
       archived: { $ne: true },
-      status: { $nin: ["DoneDeal", "EOI", "NotInterested"] },
+      status: "CallBack",
       callbackTime: { $ne: "", $lt: now.toISOString() }
     });
 
@@ -7174,6 +7174,9 @@ app.get("/api/dashboard/admin-stats", auth, async function(req, res) {
     // range. dealDate is a String — $toDate cast required. The range match on
     // the computed field can't use an index, but the $match prefilter narrows
     // to the DoneDeal subset first via { status:1, createdAt:-1 }.
+    // When dealDate is blank/null the deal is dated null (NOT updatedAt) so the
+    // rangeMatch ($gte/$lte) excludes it — a touched-but-undated deal must not
+    // leak into the current period via its last-modified time.
     var dealsPipeline = [
       { $match: { archived: { $ne: true }, $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] } },
       { $addFields: {
@@ -7181,7 +7184,7 @@ app.get("/api/dashboard/admin-stats", auth, async function(req, res) {
             $cond: [
               { $and: [{ $ne: ["$dealDate", ""] }, { $ne: ["$dealDate", null] }] },
               { $toDate: "$dealDate" },
-              "$updatedAt"
+              null
             ]
           }
         } }
