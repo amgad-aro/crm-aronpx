@@ -2008,7 +2008,7 @@ var Header = function(p) {
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontSize:13, fontWeight:700, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}{n.leadName?" — "+n.leadName:""}</div>
                   <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{n.agentName?"By "+n.agentName:""}{n.budget?" · "+n.budget+" EGP":""}</div>
-                  <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{absoluteDateTime(n.eventTime||n.createdAt)}</div>
+                  <div style={{ fontSize:10, color:C.textLight, marginTop:1 }}>{absoluteDateTime(n.dealDate||n.eventTime||n.createdAt)}</div>
                 </div>
                 {!n.seen&&<div style={{ width:8, height:8, borderRadius:"50%", background:"#15803D", flexShrink:0 }}/>}
               </div>;
@@ -11589,8 +11589,8 @@ var DealsPage = function(p) {
   // only globalStatus="donedeal" (or vice-versa) depending on which path
   // stamped them. Mirroring the admin dashboard's rule here ensures existing
   // EOI records with Done Deal status show up alongside new ones.
-  var activeDeals=dealsSource.filter(function(l){return (l.status==="DoneDeal"||l.globalStatus==="donedeal")&&!l.archived&&!(l.dealStatus==="Deal Cancelled"||l.status==="Deal Cancelled");}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
-  var cancelledDeals=dealsSource.filter(function(l){return (l.dealStatus==="Deal Cancelled" || l.status==="Deal Cancelled") && !l.archived && !(l.eoiStatus==="EOI Cancelled");}).slice().sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
+  var activeDeals=dealsSource.filter(function(l){return (l.status==="DoneDeal"||l.globalStatus==="donedeal")&&!l.archived&&!(l.dealStatus==="Deal Cancelled"||l.status==="Deal Cancelled");}).slice().sort(function(a,b){return getDealDate(b)-getDealDate(a);});
+  var cancelledDeals=dealsSource.filter(function(l){return (l.dealStatus==="Deal Cancelled" || l.status==="Deal Cancelled") && !l.archived && !(l.eoiStatus==="EOI Cancelled");}).slice().sort(function(a,b){return getDealDate(b)-getDealDate(a);});
   var deals = dealTab==="cancelled" ? cancelledDeals : activeDeals;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};

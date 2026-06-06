@@ -16132,6 +16132,7 @@ async function getVisibleNotifications(req, baseQuery, limit) {
   // the dead-lead filter (existing behavior — drop notifications whose
   // referenced lead is gone or archived).
   var leadAgentMap = new Map();
+  var leadDealDateMap = new Map(); // live Lead.dealDate so the deal bell matches the Deals table
   var aliveLeadIds = new Set();
   var dealRotIds = notifs
     .filter(function(n){ return (n.type === "deal" || n.type === "rotation") && n.leadId; })
@@ -16143,17 +16144,18 @@ async function getVisibleNotifications(req, baseQuery, limit) {
     if (objectIds.length > 0) {
       var leadRows = await Lead.find(
         { _id: { $in: objectIds }, archived: { $ne: true } },
-        { _id: 1, agentId: 1 }
+        { _id: 1, agentId: 1, dealDate: 1 }
       ).lean();
       leadRows.forEach(function(l){
         var lid = String(l._id);
         aliveLeadIds.add(lid);
         if (l.agentId) leadAgentMap.set(lid, String(l.agentId));
+        if (l.dealDate) leadDealDateMap.set(lid, l.dealDate);
       });
     }
   }
 
-  return notifs.filter(function(n){
+  var visibleNotifs = notifs.filter(function(n){
     // Drop deal/rotation rows whose lead is gone or archived.
     if ((n.type === "deal" || n.type === "rotation") && n.leadId && !aliveLeadIds.has(String(n.leadId))) {
       return false;
@@ -16203,6 +16205,17 @@ async function getVisibleNotifications(req, baseQuery, limit) {
     // Unknown type — drop for non-full view.
     return false;
   });
+
+  // Stamp the live Lead.dealDate onto each deal notification so the deal bell
+  // renders the SAME date as the Deals table (which reads dealDate). The row's
+  // frozen eventTime is left intact as a fallback for legacy/unresolved rows.
+  visibleNotifs.forEach(function(n){
+    if (n.type === "deal" && n.leadId && leadDealDateMap.has(String(n.leadId))) {
+      n.dealDate = leadDealDateMap.get(String(n.leadId));
+    }
+  });
+
+  return visibleNotifs;
 }
 
 app.post("/api/notifications", auth, async function(req, res) {
