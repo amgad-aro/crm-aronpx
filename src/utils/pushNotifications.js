@@ -300,7 +300,7 @@ export async function initPushNotifications() {
     try {
       var result = await FirebaseMessaging.getToken();
       if (result && result.token) sendTokenToBackend(result.token, platform);
-    } catch (e) { /* token fetch failed — tokenReceived may still deliver it */ }
+    } catch (e) { console.error('[push] getToken failed on', platform || 'unknown', '-', (e && e.message) || e); }
 
     _initialized = true;
   } catch (e) { /* registration failed — leave _initialized false so a later call retries */ }
