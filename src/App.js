@@ -17761,7 +17761,7 @@ var SettingsPage = function(p) {
   var [rotNoAnswerCount,setRotNoAnswerCount]=useState(2);
   var [rotNoAnswerHours,setRotNoAnswerHours]=useState(1);
   var [rotNotIntDays,setRotNotIntDays]=useState(1);
-  var [rotNoActDays,setRotNoActDays]=useState(2);
+  var [rotNewLeadHours,setRotNewLeadHours]=useState(2);
   var [rotCbHours,setRotCbHours]=useState("");
   var [rotHotDays,setRotHotDays]=useState(2);
   var [rotStopDays,setRotStopDays]=useState(45);
@@ -17994,7 +17994,7 @@ var SettingsPage = function(p) {
       setRotNoAnswerCount(Number(s.naCount)||2);
       setRotNoAnswerHours(Number(s.naHours)||1);
       setRotNotIntDays(Number(s.niDays)||1);
-      setRotNoActDays(Number(s.noActDays)||2);
+      setRotNewLeadHours(Number(s.newLeadHours)||2);
       setRotCbHours(s.cbHours!=null && s.cbHours!==""?Number(s.cbHours):"");
       setRotHotDays(Number(s.hotDays)||2);
       setRotStopDays(Number(s.rotationStopAfterDays)||45);
@@ -18209,7 +18209,7 @@ var SettingsPage = function(p) {
         naCount: Number(rotNoAnswerCount),
         naHours: Number(rotNoAnswerHours),
         niDays:  Number(rotNotIntDays),
-        noActDays: Number(rotNoActDays),
+        newLeadHours: Number(rotNewLeadHours),
         cbHours: rotCbHours===""||rotCbHours==null?undefined:Number(rotCbHours),
         hotDays: Number(rotHotDays),
         rotationStopAfterDays: Number(rotStopDays),
@@ -18686,7 +18686,7 @@ var SettingsPage = function(p) {
 
                   <div style={sectionTitle}>Eligible by rule</div>
                   <div style={kvBox}>
-                    {kvRow("NewLead (noActDays)", diag.eligible.byRule.newLead, 0)}
+                    {kvRow("NewLead (newLeadHours)", diag.eligible.byRule.newLead, 0)}
                     {kvRow("NotInterested (niDays)", diag.eligible.byRule.notInt, 1)}
                     {kvRow("CallBack (cbHours)", diag.eligible.byRule.callBack, 1)}
                     {kvRow("Hot/Potential/MeetingDone (hotDays)", diag.eligible.byRule.hot, 1)}
@@ -18888,13 +18888,13 @@ var SettingsPage = function(p) {
           {/* ══ Rotation durations ══ */}
           <div style={{marginBottom:20}}>
             <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Rotation durations</div>
-            <div style={{fontSize:12,color:"#666",marginBottom:10}}>Applies to Hot Case, Potential, Meeting, CallBack, No Answer, No Contact, and Not Interested</div>
+            <div style={{fontSize:12,color:"#666",marginBottom:10}}>Applies to Hot Case, Potential, Meeting, CallBack, No Answer, New Lead, and Not Interested</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
               {[
                 {label:"No Answer — times before rotation",val:rotNoAnswerCount,set:setRotNoAnswerCount,max:100},
                 {label:"No Answer — wait after last (hrs)",val:rotNoAnswerHours,set:setRotNoAnswerHours,max:720},
                 {label:"Not Interested — return after (days)",val:rotNotIntDays,set:setRotNotIntDays,max:365},
-                {label:"No Contact — rotate after (days)",val:rotNoActDays,set:setRotNoActDays,max:365},
+                {label:"NewLead — rotate after (hrs)",val:rotNewLeadHours,set:setRotNewLeadHours,max:8760},
                 {label:"CallBack overdue — rotate after (hrs)",val:rotCbHours,set:setRotCbHours,max:8760,emptyOk:true},
                 {label:"Hot / Potential / Meeting no action (days)",val:rotHotDays,set:setRotHotDays,max:365,bold:true}
               ].map(function(row){return <div key={row.label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"#F7F7F5",padding:"8px 10px",borderRadius:8,color:"#666",gap:8,fontSize:12}}>
