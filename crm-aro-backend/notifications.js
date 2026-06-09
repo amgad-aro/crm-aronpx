@@ -129,10 +129,15 @@ async function sendPushNotification(userIds, title, body, data) {
   // Group permanently-dead tokens by userId for $pull.
   var deadByUser = {};
   resp.responses.forEach(function(r, i) {
-    if (!r.success && r.error && PERMANENT_ERROR_CODES[r.error.code]) {
-      var e = entries[i];
-      if (!deadByUser[e.userId]) deadByUser[e.userId] = [];
-      deadByUser[e.userId].push(e.token);
+    if (!r.success) {
+      var e0 = entries[i];
+      var code = (r.error && r.error.code) || "unknown";
+      var maskedTok = e0 && e0.token ? ("…" + String(e0.token).slice(-6)) : "(none)";
+      console.warn("[notifications] token failed:", code, "user", e0 && e0.userId, "token", maskedTok);
+      if (r.error && PERMANENT_ERROR_CODES[r.error.code]) {
+        if (!deadByUser[e0.userId]) deadByUser[e0.userId] = [];
+        deadByUser[e0.userId].push(e0.token);
+      }
     }
   });
 
@@ -151,6 +156,7 @@ async function sendPushNotification(userIds, title, body, data) {
       console.error("[notifications] failed to prune dead tokens for user", uid, e.message);
     }
   }
+  if (pruned > 0) console.log("[notifications] pruned", pruned, "dead token(s)");
 
   return {
     sent: resp.successCount,

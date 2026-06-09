@@ -236,9 +236,11 @@ export async function initPushNotifications() {
 
   try {
     var perm = await FirebaseMessaging.checkPermissions();
+    var checkResult = perm && perm.receive;
     if (perm && perm.receive !== "granted") {
       perm = await FirebaseMessaging.requestPermissions();
     }
+    console.log('[push] permission check:', checkResult || 'unknown', 'after request:', (perm && perm.receive) || 'unknown');
     if (!perm || perm.receive !== "granted") return; // user denied
 
     var platform = (typeof Capacitor.getPlatform === "function") ? Capacitor.getPlatform() : "unknown";
