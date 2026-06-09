@@ -11624,16 +11624,19 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
         by: req.user.name || "System",
         date: nowR
       };
-      // Positional update on the matching removed slice. Filter requires
-      // removedAt non-null to guarantee we only touch a removed slice; the
-      // $set clears it and refreshes the four timers + status/noRotation.
+      // Positional update on the matching removed slice. $elemMatch pins
+      // agentId + removedAt:$ne:null to the SAME array element so the positional
+      // `$` can only ever bind to THIS agent's removed slice. (Dot-notation
+      // siblings would match across different elements — the anti-pattern
+      // documented at 7797–7801 — and could clear removedAt on a DIFFERENT
+      // agent's removed slice when the lead carries more than one.) The $set
+      // clears removedAt and refreshes the four timers + status/noRotation.
       // Existing notes / budget / callbackTime / lastFeedback / notesAuthor*
       // / agentHistory[] all remain untouched — that's the feature.
-      await Lead.updateOne(
+      var reactResult = await Lead.updateOne(
         {
           _id: req.params.id,
-          "assignments.agentId": targetObjIdR,
-          "assignments.removedAt": { $ne: null }
+          assignments: { $elemMatch: { agentId: targetObjIdR, removedAt: { $ne: null } } }
         },
         {
           $set: {
@@ -11652,6 +11655,12 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
           $push: { agentHistory: rotationLogR }
         }
       );
+      // Never report a phantom re-add: if no removed slice actually matched
+      // (e.g. a concurrent write already reactivated/changed it), bail with a
+      // clear error instead of returning a "success" the agent never receives.
+      if (!reactResult || reactResult.matchedCount === 0) {
+        return res.status(409).json({ error: "reactivation_failed", message: "No removed slice found to reactivate for this agent — retry" });
+      }
       var reactMsg = "Reactivated previous assignment to " + (targetUser.name || "Unknown") +
         " by " + (req.user.name || "System") + " (" + rotationReasonR + ")";
       if (isAdminForce) reactMsg += " [admin force override]";
@@ -11662,6 +11671,10 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
         targetUser.name || ""
       ));
       var reactPopulated = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
+      // Live-refresh other connected sessions (incl. the re-added agent's open
+      // web session) — mirrors the auto-rotate paths (12203 / 12335). Bare
+      // event name + empty payload; best-effort, never blocks the response.
+      try { broadcast("notification_updated", {}); } catch(e) {}
       // Native push to the newly-assigned owner. Fire-and-forget; no-op if no tokens.
       sendPushNotification(
         [String(targetAgentId)],
@@ -12009,10 +12022,29 @@ async function autoRotateLead(leadId, byName, opts) {
     var exclusion = new Set();
     if (currentAid) exclusion.add(currentAid);
     (lead.assignments || []).forEach(function(a){
+      // Step 1 — Soft-removed slices (removedAt set) must NOT exclude their
+      // agent: admin removal is reversible by design, so rotation may route the
+      // lead back. The active holder is still excluded via currentAid above;
+      // other active (removedAt:null) slices are still excluded below.
+      if (!a || a.removedAt) return;
       var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
       if (aid) exclusion.add(String(aid));
     });
-    (lead.previousAgentIds || []).forEach(function(id){ if (id) exclusion.add(String(id)); });
+    // Option 3A — agents with a soft-removed slice were deliberately taken off
+    // by an admin and are eligible to be routed back. Don't let a stale
+    // previousAgentIds entry (from an earlier rotation-away) re-exclude them.
+    // previousAgentIds itself is left intact — bulk-reassign (9797), the PUT
+    // fallback (10965), wasPreviouslyAssigned (3841) and notif-access (16289)
+    // still read it unchanged. This carve-out is rotation-only.
+    var removedSliceAgentIds = new Set();
+    (lead.assignments || []).forEach(function(a){
+      if (!a || !a.removedAt) return;
+      var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+      if (aid) removedSliceAgentIds.add(String(aid));
+    });
+    (lead.previousAgentIds || []).forEach(function(id){
+      if (id && !removedSliceAgentIds.has(String(id))) exclusion.add(String(id));
+    });
 
     // All candidate ids across tiers (one query).
     var allTierIds = [].concat(settings.tiers.tier1.agents, settings.tiers.tier2.agents, settings.tiers.tier3.agents);
@@ -12261,41 +12293,70 @@ async function autoRotateLead(leadId, byName, opts) {
       return { ok: false, status: 409, error: "rotation_stopped", message: "Rotation permanently stopped on this lead (3 consecutive Not Interested)" };
     }
 
-    var newAssignment = {
-      agentId: new mongoose.Types.ObjectId(targetAgentId),
-      status: "NewLead",
-      assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(),
-      statusChangedAt: new Date(),
-      noRotation: false,
-      notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null,
-      agentHistory: []
-    };
+    var targetObjId = new mongoose.Types.ObjectId(targetAgentId);
+    var nowRot = new Date();
+    // Reactivation parity with /rotate (11607–11673): if the target already
+    // owns a soft-removed slice on this lead (now possible to land on, post
+    // Step 1), clear removedAt + reset the four timers IN PLACE instead of
+    // pushing a duplicate active slice (which would orphan the old slice's
+    // preserved notes/feedback and split the agent's history across two rows).
+    var removedSliceForTarget = (lead.assignments || []).find(function(a){
+      if (!a || !a.removedAt) return false;
+      var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+      return String(aid) === String(targetAgentId);
+    });
     var rotationLog = {
       action: "Rotation",
       fromAgent: oldAgentName,
       toAgent: targetUser.name,
       // agentId is the rotation TARGET (receiver). Added for the per-agent
       // daily cap aggregation — counts incoming rotations per user/day.
-      agentId: new mongoose.Types.ObjectId(targetAgentId),
+      agentId: targetObjId,
       reason: reason,
       by: byName,
-      date: new Date()
+      date: nowRot
     };
-    var pushOps = { assignments: newAssignment, agentHistory: rotationLog };
+    var pushOps = { agentHistory: rotationLog };
     if (oldAgentId && String(oldAgentId) !== "null" && String(oldAgentId) !== "undefined" && String(oldAgentId) !== "") {
       pushOps.previousAgentIds = oldAgentId;
     }
+    var setOps = {
+      agentId: targetObjId,
+      lastRotationAt: nowRot,
+      notInterestedStreak: nextStreak
+    };
+    // Concurrency guard pins on the lead's CURRENT agentId — a competing
+    // rotation that already moved the lead makes this a no-op → 409.
+    var guardFilter = { _id: leadId, agentId: oldAgentId };
+    if (removedSliceForTarget) {
+      // $elemMatch pins agentId + removedAt:$ne:null to the SAME array element
+      // so the positional `$` below only ever touches the target's removed
+      // slice (correct pattern — does NOT have the Part A dot-notation bug).
+      guardFilter.assignments = { $elemMatch: { agentId: targetObjId, removedAt: { $ne: null } } };
+      setOps["assignments.$.removedAt"]       = null;
+      setOps["assignments.$.assignedAt"]      = nowRot;
+      setOps["assignments.$.lastActionAt"]    = nowRot;
+      setOps["assignments.$.rotationTimer"]   = nowRot;
+      setOps["assignments.$.statusChangedAt"] = nowRot;
+      setOps["assignments.$.status"]          = "NewLead";
+      setOps["assignments.$.noRotation"]      = false;
+      setOps["assignments.$.hiddenManually"]  = false;
+      // Existing notes / budget / lastFeedback / agentHistory[] on the slice are
+      // intentionally preserved — same as the /rotate reactivation.
+    } else {
+      pushOps.assignments = {
+        agentId: targetObjId,
+        status: "NewLead",
+        assignedAt: nowRot, lastActionAt: nowRot, rotationTimer: nowRot,
+        statusChangedAt: nowRot,
+        noRotation: false,
+        notes: "", budget: "", callbackTime: "", lastFeedback: "", nextCallAt: null,
+        agentHistory: []
+      };
+    }
     var guardedResult = await Lead.findOneAndUpdate(
-      { _id: leadId, agentId: oldAgentId },
-      {
-        $set: {
-          agentId: new mongoose.Types.ObjectId(targetAgentId),
-          lastRotationAt: new Date(),
-          notInterestedStreak: nextStreak
-        },
-        $inc: { rotationCount: 1 },
-        $push: pushOps
-      },
+      guardFilter,
+      { $set: setOps, $inc: { rotationCount: 1 }, $push: pushOps },
       { new: true }
     );
     if (!guardedResult) {
