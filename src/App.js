@@ -4986,6 +4986,17 @@ var LeadsPage = function(p) {
       var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
       if (ts >= bestTs) { bestTs = ts; best = parsed; }
     }
+    // Reactivation/reset override (mirrors currentStatus 4837-4843): when the
+    // slice's raw status was set by a genuine status transition MORE RECENTLY
+    // than the latest worked status_change, the raw status is authoritative —
+    // surfaces a soft-remove reactivation reset (status→NewLead, statusChangedAt→now)
+    // instead of the preserved older worked status. statusChangedAt is only ever
+    // advanced alongside a co-written assignments[].status (BE invariant), so the
+    // raw value is never stale here. The NewLead-skip in the scan above is kept.
+    if (slice.statusChangedAt) {
+      var scTs = new Date(slice.statusChangedAt).getTime();
+      if (!isNaN(scTs) && scTs > bestTs && slice.status) return slice.status;
+    }
     return best || (feedbacksForSlice(slice)[0] || {}).status || slice.status || "NewLead";
   };
   // Phase 3: pick the lead's single most-recent feedback entry across every

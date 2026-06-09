@@ -7670,6 +7670,22 @@ function summaryComputeCurrentStatus(lead) {
     var ts = new Date(h.createdAt || h.at || h.timestamp || 0).getTime();
     if (ts >= bestTs) { bestTs = ts; bestStatus = s; }
   }
+  // Reactivation/reset override (parity with FE currentStatus 4837-4843 +
+  // shownSliceStatus): if ANY slice's status was set by a genuine transition
+  // MORE RECENTLY than the latest worked status_change (e.g. a soft-remove
+  // reactivation stamping status→NewLead, statusChangedAt→now), that raw status
+  // is authoritative. Scanned across all slices — not just the action slice —
+  // because reactivation does NOT add a slice-level history entry, so the
+  // reactivated slice never wins summaryComputeActionSlice. statusChangedAt is
+  // only advanced alongside a co-written assignments[].status (BE invariant),
+  // so the raw value is never stale.
+  var resetStatus = null, resetTs = bestTs;
+  (lead.assignments || []).forEach(function(a){
+    if (!a || !a.statusChangedAt || !a.status) return;
+    var t = new Date(a.statusChangedAt).getTime();
+    if (!isNaN(t) && t > resetTs) { resetTs = t; resetStatus = a.status; }
+  });
+  if (resetStatus) return resetStatus;
   if (bestStatus) return pollCanon(bestStatus);
   if (slice.status) return slice.status;
   return lead.status || "NewLead";
