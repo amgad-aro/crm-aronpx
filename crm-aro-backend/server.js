@@ -11658,12 +11658,20 @@ app.post("/api/leads/:id/rotate", auth, async function(req, res) {
           $set: {
             agentId: targetObjIdR,
             lastRotationAt: nowR,
+            // A deliberate re-add is a fresh chance — clear the consecutive
+            // Not-Interested streak so a re-added lead doesn't carry prior
+            // strikes toward the permanent rotationStopped halt.
+            notInterestedStreak: 0,
             "assignments.$.removedAt":       null,
             "assignments.$.assignedAt":      nowR,
             "assignments.$.lastActionAt":    nowR,
             "assignments.$.rotationTimer":   nowR,
             "assignments.$.statusChangedAt": nowR,
-            "assignments.$.status":          "NewLead",
+            // PART 1 — KEEP the slice's preserved last worked status (e.g.
+            // NotInterested). The four timers above are reset to give a fresh
+            // working window; statusChangedAt is bumped so status-clocked states
+            // (CallBack) get a fresh clock and the display stays consistent with
+            // the 14f6403 override (raw status == derived status here).
             "assignments.$.noRotation":      false,
             "assignments.$.hiddenManually":  false
           },
@@ -11973,6 +11981,14 @@ async function autoRotateLead(leadId, byName, opts) {
               var fb = new Date(curSlice.lastActionAt || curSlice.assignedAt || 0).getTime();
               if (fb) latestNa = fb;
             }
+            // PART 3 — fresh NoAnswer window for a (re)assigned holder: clamp the
+            // reference clock to the current holder slice's assignedAt. A reactivated
+            // slice has assignedAt = now (preserved status=NoAnswer), so it gets a
+            // full naHours window instead of being rotated off on stale preserved NA
+            // marks. Normal NoAnswer leads are UNAFFECTED: their NA marks are written
+            // AFTER assignment, so latestNa > assignedAt and max() returns latestNa.
+            var naAssignedTs = (curSlice && curSlice.assignedAt) ? new Date(curSlice.assignedAt).getTime() : 0;
+            if (naAssignedTs && naAssignedTs > latestNa) latestNa = naAssignedTs;
             if (!latestNa)                                                   notEligibleReason = "NoAnswer: no valid timestamp";
             else if ((nowTs.getTime() - latestNa) < naHoursThreshold*HOUR_MS) notEligibleReason = "NoAnswer: latest entry too recent";
             else { eligible = true; firedRule = "no_answer_streak"; }
@@ -12349,12 +12365,18 @@ async function autoRotateLead(leadId, byName, opts) {
       // so the positional `$` below only ever touches the target's removed
       // slice (correct pattern — does NOT have the Part A dot-notation bug).
       guardFilter.assignments = { $elemMatch: { agentId: targetObjId, removedAt: { $ne: null } } };
+      // A deliberate re-add is a fresh chance — clear the consecutive
+      // Not-Interested streak (override the nextStreak set above) so a re-added
+      // lead doesn't carry prior strikes toward the permanent rotationStopped halt.
+      setOps.notInterestedStreak = 0;
       setOps["assignments.$.removedAt"]       = null;
       setOps["assignments.$.assignedAt"]      = nowRot;
       setOps["assignments.$.lastActionAt"]    = nowRot;
       setOps["assignments.$.rotationTimer"]   = nowRot;
       setOps["assignments.$.statusChangedAt"] = nowRot;
-      setOps["assignments.$.status"]          = "NewLead";
+      // PART 1 — KEEP the slice's preserved last worked status (e.g. NotInterested).
+      // Timers reset for a fresh window; statusChangedAt bumped for status-clocked
+      // states + display consistency with the 14f6403 override (raw == derived here).
       setOps["assignments.$.noRotation"]      = false;
       setOps["assignments.$.hiddenManually"]  = false;
       // Existing notes / budget / lastFeedback / agentHistory[] on the slice are
