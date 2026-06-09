@@ -1700,7 +1700,7 @@ var CallbackBell = function(p) {
       <Bell size={16} color={totalCount>0?C.danger:C.textLight} className={totalCount>0?"cb-bell-shake":""}/>
       {totalCount>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.danger, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{totalCount>99?"99+":totalCount}</span>}
     </button>
-    {p.showNotif&&<div className="cb-dropdown-enter" style={{ position:"absolute", top:46, right:0, width:440,maxWidth:"95vw", background:"#fff", borderRadius:16, boxShadow:"0 8px 32px rgba(0,0,0,0.15)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
+    {p.showNotif&&<div className="cb-dropdown-enter crm-notif-panel" style={{ position:"absolute", top:46, right:0, width:440,maxWidth:"95vw", background:"#fff", borderRadius:16, boxShadow:"0 8px 32px rgba(0,0,0,0.15)", zIndex:200, maxHeight:520, display:"flex", flexDirection:"column" }}>
       <div style={{ padding:"16px 20px 12px", borderBottom:"1px solid #F1F5F9", flexShrink:0 }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
@@ -1712,7 +1712,7 @@ var CallbackBell = function(p) {
             <button onClick={function(){p.setShowNotif(false);}} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
           </div>
         </div>
-        <div style={{ display:"flex", gap:3, overflow:"hidden" }}>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:3, rowGap:4 }}>
           {tabs.map(function(t2){var active=tab===t2.key;return <button key={t2.key} onClick={function(){setTab(t2.key);}} style={{ padding:"4px 6px", borderRadius:6, border:"none", background:active?"#111827":"#F8FAFC", color:active?"#fff":"#374151", fontSize:10, fontWeight:active?700:600, cursor:"pointer", whiteSpace:"nowrap", transition:"all 0.15s", display:"flex", alignItems:"center", gap:3, flexShrink:0 }}>
             {t2.label}
             {t2.count>0&&<span style={{ background:active?"rgba(255,255,255,0.25)":"#E5E7EB", color:active?"#fff":"#374151", padding:"0 4px", borderRadius:4, fontSize:8, fontWeight:700, lineHeight:"14px" }}>{t2.count}</span>}
@@ -1951,7 +1951,7 @@ var Header = function(p) {
           <DollarSign size={16} color={p.unseenDeals>0?"#15803D":C.textLight}/>
           {p.unseenDeals>0&&!p.showDealNotif&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:"#15803D", color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{p.unseenDeals>9?"9+":p.unseenDeals}</span>}
         </button>
-        {p.showDealNotif&&<div style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
+        {p.showDealNotif&&<div className="crm-notif-panel" style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
           <div style={{ padding:"14px 18px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span style={{ fontSize:16 }}>💰</span>
@@ -2023,7 +2023,7 @@ var Header = function(p) {
           <RotateCcw size={15} color={p.unseenRot>0?"#EA580C":C.textLight}/>
           {p.unseenRot>0&&!p.showRotNotif&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:"#EA580C", color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{p.unseenRot>9?"9+":p.unseenRot}</span>}
         </button>
-        {p.showRotNotif&&<div style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
+        {p.showRotNotif&&<div className="crm-notif-panel" style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
           <div style={{ padding:"14px 18px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <RotateCcw size={16} color="#EA580C"/>
@@ -2085,7 +2085,7 @@ var Header = function(p) {
           <MapPin size={15} color={p.unseenOffSite>0?"#1D4ED8":C.textLight}/>
           {p.unseenOffSite>0&&!p.showOffSiteNotif&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:"#1D4ED8", color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{p.unseenOffSite>9?"9+":p.unseenOffSite}</span>}
         </button>
-        {p.showOffSiteNotif&&<div style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
+        {p.showOffSiteNotif&&<div className="crm-notif-panel" style={{ position:"absolute", top:46, right:0, width:340, background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:440, display:"flex", flexDirection:"column" }}>
           <div style={{ padding:"14px 18px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <MapPin size={16} color="#1D4ED8"/>
@@ -28417,6 +28417,8 @@ export default function CRMApp() {
 + ".crm-safe-top { padding-top: env(safe-area-inset-top, 0px); }"
 + "@media (max-width: 768px) {"
 +   "html, body, #root, .crm-app { max-width: 100%; overflow-x: hidden; }"
++   /* Notification bell dropdowns: anchor to the viewport (centered card) instead of right:0 against a mid-header bell, which clips off-screen on phones. */
++   ".crm-notif-panel { position: fixed !important; top: calc(env(safe-area-inset-top, 0px) + 60px) !important; left: 50% !important; right: auto !important; transform: translateX(-50%) !important; width: calc(100vw - 24px) !important; max-width: 420px !important; max-height: calc(100vh - env(safe-area-inset-top, 0px) - 76px) !important; overflow-y: auto !important; }"
 +   ".crm-app, .crm-app *, .crm-app *::before, .crm-app *::after { box-sizing: border-box; }"
 +   /* Prevent iOS auto-zoom on focus and keep body text readable. */
 +   ".crm-app input, .crm-app select, .crm-app textarea { font-size: 16px !important; }"
