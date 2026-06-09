@@ -1395,7 +1395,7 @@ var Sidebar = function(p) {
   var renderItem = function(item){
     var act = p.active===item.id;
     var onClick = function(){ p.setActive(item.id); try{localStorage.setItem("crm_page",item.id);}catch(e){} if(p.isMobile) p.onClose(); };
-    return <button key={item.id} onClick={onClick}
+    return <button key={item.id} className="crm-nav-item" onClick={onClick}
       onMouseEnter={function(e){ if(!act) e.currentTarget.style.background="rgba(255,255,255,0.05)"; }}
       onMouseLeave={function(e){ if(!act) e.currentTarget.style.background="transparent"; }}
       style={{ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"7px 12px", borderRadius:12, border:"none", cursor:"pointer",
@@ -28419,6 +28419,8 @@ export default function CRMApp() {
 +   "html, body, #root, .crm-app { max-width: 100%; overflow-x: hidden; }"
 +   "/* Notification bell dropdowns: anchor to the viewport (centered card) instead of right:0 against a mid-header bell, which clips off-screen on phones. */"
 +   ".crm-notif-panel { position: fixed !important; top: calc(env(safe-area-inset-top, 0px) + 60px) !important; left: 50% !important; right: auto !important; transform: translateX(-50%) !important; width: calc(100vw - 24px) !important; max-width: 420px !important; max-height: calc(100vh - env(safe-area-inset-top, 0px) - 76px) !important; overflow-y: auto !important; }"
++   "/* Sidebar drawer nav items: trim the global 40px button floor a touch so the list fits without scrolling on shorter (Android) viewports; still a usable ~36px tap target. */"
++   ".crm-nav-item { min-height: 36px !important; margin-bottom: 1px !important; }"
 +   ".crm-app, .crm-app *, .crm-app *::before, .crm-app *::after { box-sizing: border-box; }"
 +   "/* Prevent iOS auto-zoom on focus and keep body text readable. */"
 +   ".crm-app input, .crm-app select, .crm-app textarea { font-size: 16px !important; }"
