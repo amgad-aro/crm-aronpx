@@ -28417,18 +28417,17 @@ export default function CRMApp() {
 + ".crm-safe-top { padding-top: env(safe-area-inset-top, 0px); }"
 + "@media (max-width: 768px) {"
 +   "html, body, #root, .crm-app { max-width: 100%; overflow-x: hidden; }"
-+   /* Notification bell dropdowns: anchor to the viewport (centered card) instead of right:0 against a mid-header bell, which clips off-screen on phones. */
++   "/* Notification bell dropdowns: anchor to the viewport (centered card) instead of right:0 against a mid-header bell, which clips off-screen on phones. */"
 +   ".crm-notif-panel { position: fixed !important; top: calc(env(safe-area-inset-top, 0px) + 60px) !important; left: 50% !important; right: auto !important; transform: translateX(-50%) !important; width: calc(100vw - 24px) !important; max-width: 420px !important; max-height: calc(100vh - env(safe-area-inset-top, 0px) - 76px) !important; overflow-y: auto !important; }"
 +   ".crm-app, .crm-app *, .crm-app *::before, .crm-app *::after { box-sizing: border-box; }"
-+   /* Prevent iOS auto-zoom on focus and keep body text readable. */
++   "/* Prevent iOS auto-zoom on focus and keep body text readable. */"
 +   ".crm-app input, .crm-app select, .crm-app textarea { font-size: 16px !important; }"
-+   /* Touch targets: buttons need at least a 40 px tap area on phones. Icon
-+      buttons and filter chips opt out with .crm-btn-xs. */
++   "/* Touch targets: buttons need at least a 40 px tap area on phones. Icon buttons and filter chips opt out with .crm-btn-xs. */"
 +   ".crm-app button:not(.crm-btn-xs) { min-height: 40px; }"
-+   /* Modals become full-screen sheets on mobile so no content is clipped. */
++   "/* Modals become full-screen sheets on mobile so no content is clipped. */"
 +   ".crm-modal { padding: 0 !important; align-items: stretch !important; }"
 +   ".crm-modal > .crm-modal-inner { width: 100% !important; max-width: 100% !important; min-height: 100vh !important; max-height: 100vh !important; border-radius: 0 !important; padding: 16px !important; padding-top: calc(16px + env(safe-area-inset-top, 0px)) !important; box-sizing: border-box !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; }"
-+   /* Dashboard-specific safety net (admin + sales). */
++   "/* Dashboard-specific safety net (admin + sales). */"
 +   ".crm-dash { width: 100% !important; max-width: 100% !important; overflow-x: hidden !important; padding-left: 12px !important; padding-right: 12px !important; }"
 +   ".crm-dash .crm-dash-card { width: 100% !important; max-width: 100% !important; min-width: 0 !important; padding: 14px !important; box-sizing: border-box !important; }"
 +   ".crm-dash .crm-dash-card > * { max-width: 100%; }"
@@ -28441,7 +28440,7 @@ export default function CRMApp() {
 +   ".crm-dash .crm-dash-filters > .crm-dash-quarter-wrap { flex: 0 0 auto !important; }"
 +   ".crm-dash .crm-dash-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; }"
 +   ".crm-dash .crm-dash-row { grid-template-columns: minmax(0, 1fr) !important; gap: 10px !important; }"
-+   /* Long Arabic / English text should wrap instead of stretching a parent. */
++   "/* Long Arabic / English text should wrap instead of stretching a parent. */"
 +   ".crm-dash h1, .crm-dash h2, .crm-dash h3 { max-width: 100%; overflow-wrap: anywhere; }"
 + "}"
 }</style>
