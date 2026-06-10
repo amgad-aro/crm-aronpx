@@ -334,6 +334,35 @@ Lead.collection.createIndex(
   console.error("[externalId index] not created:", e && e.message ? e.message : e);
 });
 
+// File-storage stopgap (see offload-ahmed-attia.js). Holds base64 eoiDocuments[]
+// moved off oversized Lead docs to stay under Mongo's 16MB/doc limit. One sidecar
+// doc per lead (unique leadId). The full file-storage migration will supersede
+// this with object storage + signed URLs.
+var LeadArtifactArchive = mongoose.model("LeadArtifactArchive", new mongoose.Schema({
+  leadId:       { type: mongoose.Schema.Types.ObjectId, ref: "Lead", required: true, unique: true, index: true },
+  eoiDocuments: [{ type: mongoose.Schema.Types.Mixed }],
+  reason:       { type: String, default: "" },
+}, { timestamps: true }));
+
+// Merge a lead's offloaded eoiDocuments back into the object so the EOI side panel
+// renders unchanged. Archived docs first, then any newly-uploaded live docs still
+// on the Lead. Accepts a lean/plain object OR a Mongoose doc (converted via
+// toObject) — ALWAYS use the return value. No-op (one indexed lookup) for the
+// leads with no sidecar. EVERY endpoint that returns a Lead the EOI panel may
+// render must funnel through this: res.json(await mergeEoiArchive(lead)).
+async function mergeEoiArchive(leadObj) {
+  if (!leadObj) return leadObj;
+  if (typeof leadObj.toObject === "function") leadObj = leadObj.toObject();
+  if (!leadObj._id) return leadObj;
+  try {
+    var arch = await LeadArtifactArchive.findOne({ leadId: leadObj._id }).select("eoiDocuments").lean();
+    if (arch && Array.isArray(arch.eoiDocuments) && arch.eoiDocuments.length) {
+      leadObj.eoiDocuments = arch.eoiDocuments.concat(leadObj.eoiDocuments || []);
+    }
+  } catch (e) { console.error("[mergeEoiArchive]", e && e.message); }
+  return leadObj;
+}
+
 // Phase II indexes — User.reportsTo + Lead.splitAgent2Id (Activity + DailyRequest
 // indexes registered further down once those models are declared).
 User.collection.createIndex({ reportsTo: 1 }).catch(function(){});
@@ -9224,6 +9253,9 @@ app.get("/api/leads/:id", auth, async function(req, res) {
   try {
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").lean();
     if (!lead) return res.status(404).json({ error: "Not found" });
+    // Hydrate offloaded EOI documents (file-storage stopgap). lead is lean, so
+    // both the sales `obj` copy and the admin return path inherit the merge.
+    await mergeEoiArchive(lead);
     var role = req.user.role;
     var uid = String(req.user.id);
     var STALE_LEAD_MS = await getStaleLeadMs(role);
@@ -10013,7 +10045,7 @@ app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async f
     var field = "eoiImage";
     var update = {}; update[field] = imageData;
     var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
-    res.json(lead);
+    res.json(await mergeEoiArchive(lead));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -10067,7 +10099,7 @@ app.post("/api/leads/:id/eoi-documents", auth, async function(req, res) {
     var entry = { url: raw, name: fileName, uploadedAt: new Date() };
     var lead = await Lead.findByIdAndUpdate(req.params.id, { $push: { eoiDocuments: entry } }, { new: true }).populate("agentId", "name title");
     if (!lead) return res.status(404).json({ error: "Lead not found" });
-    res.json(lead);
+    res.json(await mergeEoiArchive(lead));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -10106,13 +10138,24 @@ app.post("/api/leads/:id/delete-eoi-document", auth, async function(req, res) {
     var index = req.body && Number(req.body.index);
     var lead = await Lead.findById(req.params.id);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
-    var docs = lead.eoiDocuments || [];
-    if (!(index >= 0 && index < docs.length)) return res.status(400).json({ error: "Invalid index" });
-    docs.splice(index, 1);
-    lead.eoiDocuments = docs;
-    await lead.save();
-    var populated = await Lead.findById(req.params.id).populate("agentId", "name title");
-    res.json(populated);
+    // The FE indexes into the MERGED list (archived ++ live), so resolve the
+    // index across both stores before splicing — otherwise deleting a live doc
+    // could remove the wrong item once an archive exists.
+    var arch = await LeadArtifactArchive.findOne({ leadId: lead._id });
+    var archDocs = (arch && arch.eoiDocuments) || [];
+    var liveDocs = lead.eoiDocuments || [];
+    if (!(index >= 0 && index < archDocs.length + liveDocs.length)) return res.status(400).json({ error: "Invalid index" });
+    if (index < archDocs.length) {
+      archDocs.splice(index, 1);
+      if (archDocs.length) { arch.eoiDocuments = archDocs; await arch.save(); }
+      else { await LeadArtifactArchive.deleteOne({ _id: arch._id }); } // last one removed → drop the sidecar
+    } else {
+      liveDocs.splice(index - archDocs.length, 1);
+      lead.eoiDocuments = liveDocs;
+      await lead.save();
+    }
+    var populated = await Lead.findById(req.params.id).populate("agentId", "name title").lean();
+    res.json(await mergeEoiArchive(populated));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -10435,7 +10478,7 @@ app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
       ).catch(function(){});
     }
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
-    res.json(lead);
+    res.json(await mergeEoiArchive(lead));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -10891,7 +10934,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     }
     // Guard: never downgrade EOI or DoneDeal back to NewLead (prevents stale rotation overwrites)
     if (oldLead && (oldLead.status === "EOI" || oldLead.status === "DoneDeal") && req.body.status === "NewLead") {
-      return res.json(oldLead);
+      return res.json(await mergeEoiArchive(oldLead));
     }
     // Capture previous status when transitioning INTO EOI, so EOI cancel can restore it.
     if (req.body.status === "EOI" && oldLead && oldLead.status && oldLead.status !== "EOI") {
@@ -11376,7 +11419,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         }).catch(function(){});
       }
     }
-    res.json(lead);
+    res.json(await mergeEoiArchive(lead));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -12474,7 +12517,14 @@ async function autoRotateLead(leadId, byName, opts) {
 app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
   var reason = (req.body && req.body.reason) || "auto_timeout";
   var r = await autoRotateLead(req.params.id, req.user.name || "System", { reason: reason, role: req.user.role });
-  if (r.ok) return res.status(r.status || 200).json(r.body);
+  if (r.ok) {
+    // Hydrate offloaded eoiDocuments on the returned lead — cancelEOI overwrites
+    // its merged eoi-cancel response with this one, so an un-merged lead here
+    // would blank an offloaded lead's docs in the open EOI panel. Endpoint-only
+    // (not inside autoRotateLead) so rotation sweeps don't pay the lookup.
+    if (r.body && r.body.lead) { r.body.lead = await mergeEoiArchive(r.body.lead); }
+    return res.status(r.status || 200).json(r.body);
+  }
   // Soft-skip keys are EXPECTED outcomes (cooldown, exhausted, race lost,
   // settings off, per-lead guards) — every per-browser sweep at App.js:15945
   // hits some subset of these on every cycle. Returning 4xx for them
