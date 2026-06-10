@@ -6132,7 +6132,7 @@ var LeadsPage = function(p) {
             />
           )}
         </div>
-      </Card>:p.isMobile&&!selected?<div style={{ padding:"4px 16px", maxWidth:480, margin:"0 auto", width:"100%", boxSizing:"border-box" }}>
+      </Card>:p.isMobile?<div style={{ padding:"4px 16px", maxWidth:480, margin:"0 auto", width:"100%", boxSizing:"border-box" }}>
         {/* STEP 2b — mobile cards virtualized via Virtuoso (not TableVirtuoso,
             since these are divs not <tr>). useWindowScroll keeps page-level
             scroll. The 12px vertical gap previously provided by flex `gap:12`
@@ -13197,7 +13197,7 @@ var DailyRequestsPage = function(p) {
               var lastAct=r.lastActivityTime?timeAgo(r.lastActivityTime,t):"—";
               var actColor=(Date.now()-new Date(r.lastActivityTime||0).getTime())>3*24*60*60*1000?C.danger:C.accent;
               var borderCol=so.color||"#E8ECF1";
-              return <div onClick={function(){setSelected(r);loadDrHistory(rid);window.scrollTo({top:0,behavior:"smooth"});}}
+              return <div onClick={function(){setSelected(r);loadDrHistory(rid);}}
                 style={{ background:"#fff", borderRadius:16, padding:"16px", border:"2px solid "+borderCol, cursor:"pointer", boxShadow:"0 3px 12px "+borderCol+"35", marginBottom:12 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
                 <div style={{ flex:1 }}>
@@ -18510,7 +18510,7 @@ var SettingsPage = function(p) {
             onDragLeave={function(){ if(dropOn&&dropOn.tier===tierKey&&dropOn.idx===idx) setDropOn(null); }}
             onDrop={function(e){ e.preventDefault(); e.stopPropagation(); moveAgent(dragFrom,{tier:tierKey,idx:idx}); setDragFrom(null); setDropOn(null); }}
             onDragEnd={function(){ setDragFrom(null); setDropOn(null); }}
-            style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",background:"#fff",borderRadius:8,marginBottom:4,cursor:"grab",userSelect:"none",
+            style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",background:"#fff",borderRadius:8,marginBottom:4,cursor:"grab",userSelect:"none",flexWrap:p.isMobile?"wrap":"nowrap",
               border: hover ? "1.5px solid "+meta.num : "0.5px solid rgba(0,0,0,0.05)",
               opacity: dragging?0.5:1}}>
             <span style={{color:"#999",cursor:"grab",fontSize:13,flexShrink:0}}>⋮⋮</span>
@@ -18598,7 +18598,7 @@ var SettingsPage = function(p) {
             background:masterOn?"#EAF6F0":"#FCEBEB",
             border:"0.5px solid "+(masterOn?"rgba(15,110,86,0.3)":"rgba(163,45,45,0.3)"),
             borderRadius:12,padding:"14px 16px",marginBottom:14,
-            display:"flex",justifyContent:"space-between",alignItems:"center",gap:12
+            display:"flex",flexDirection:p.isMobile?"column":"row",justifyContent:"space-between",alignItems:p.isMobile?"stretch":"center",gap:12
           }}>
             <div style={{display:"flex",alignItems:"center",gap:12,flex:1,minWidth:0}}>
               <div onClick={function(){setAutoRotEnabled(!autoRotEnabled); if(!autoRotEnabled) setPausedUntil(null);}}
@@ -18622,7 +18622,7 @@ var SettingsPage = function(p) {
                 </div>
               </div>
             </div>
-            <div style={{display:"flex",gap:6,flexShrink:0}}>
+            <div style={{display:"flex",gap:6,flexShrink:0,flexWrap:"wrap"}}>
               <button type="button" onClick={function(){setAutoRotEnabled(true); setPausedUntil(new Date(Date.now()+2*60*60*1000).toISOString());}}
                 style={{fontSize:12,padding:"6px 12px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:8,cursor:"pointer",color:"#1a1a1a",fontFamily:"inherit"}}>Pause 2h</button>
               <button type="button" onClick={function(){setAutoRotEnabled(false); setPausedUntil(null);}}
@@ -18760,7 +18760,7 @@ var SettingsPage = function(p) {
           </div>
 
           {/* ══ Two-column: priority tiers (2fr) + live feed/metrics (1fr) ══ */}
-          <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:20,marginBottom:24}}>
+          <div style={{display:"grid",gridTemplateColumns:p.isMobile?"1fr":"2fr 1fr",gap:p.isMobile?14:20,marginBottom:24}}>
             <div>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:10}}>
                 <div style={{fontSize:14,fontWeight:500}}>Priority tiers</div>
