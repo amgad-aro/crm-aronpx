@@ -24158,6 +24158,69 @@ app.delete("/api/commissions/:id/cycles/:cycleId", auth, salesAdminOnly, async f
   }
 });
 
+// POST restore cycle — revive a cancelled cycle back to its last meaningful
+// stage. Use case: a deal was archived (cascadeCommissionCancel flips both the
+// commission AND its cycles to "cancelled"); on unarchive the commission is
+// revived to "active" and a fresh pending_claim cycle is seeded, but the
+// original cancelled cycle (with its claim/invoice data) is left behind. This
+// endpoint lets admin restore that cycle instead of re-entering everything on
+// the new one. The auto-seeded cycle is left untouched (admin deletes it
+// manually if it's a duplicate). Target stage is inferred from which stage
+// dates were captured before cancellation.
+app.post("/api/commissions/:id/cycles/:cycleId/restore", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    // Restoring a cycle inside a cancelled commission would create an
+    // inconsistent active-cycle-in-cancelled-commission shape. Revive the
+    // commission (via deal unarchive) first.
+    if (c.status === "cancelled") return res.status(400).json({ error: "cannot restore a cycle on a cancelled commission — revive the commission first" });
+
+    var cyc = c.cycles.id(req.params.cycleId);
+    if (!cyc) return res.status(404).json({ error: "Cycle not found" });
+    if (cyc.state !== "cancelled") return res.status(400).json({ error: "cycle is not cancelled (state='" + cyc.state + "')" });
+
+    // Infer the last meaningful stage from captured dates. received implies
+    // both prior stages happened; invoice implies claim happened; etc.
+    var hasDate = function(stage){ return !!(cyc[stage] && cyc[stage].date); };
+    var target = "pending_claim";
+    if (hasDate("received")) target = "received";
+    else if (hasDate("invoice_submitted")) target = "invoice_submitted";
+    else if (hasDate("claim_submitted")) target = "claim_submitted";
+
+    cyc.state = target;
+    cyc.closedAt = null; // only paid_to_team sets this; clear defensively
+
+    // Recompute recipient shares now that this cycle's claimAmount counts
+    // toward gross again. No sibling fan-out (consistent with stage-advance).
+    try {
+      await computeAllRecipientShares(c);
+    } catch(rcErr) {
+      console.error("[cycle restore recompute]", rcErr && rcErr.message);
+    }
+
+    // If the commission had rolled to fully_paid (all cycles terminal), a
+    // restored non-terminal cycle means there's work left — flip back to
+    // active. Mirror of the cycle-DELETE status revert.
+    if (c.status === "fully_paid") {
+      var hasNonTerminal = (c.cycles || []).some(function(x){ return x.state !== "paid_to_team" && x.state !== "cancelled"; });
+      if (hasNonTerminal) c.status = "active";
+    }
+
+    c.markModified("cycles");
+    await c.save();
+
+    await logCommissionActivity(req.user, c.leadId, "commission_cycle_restore",
+      "[Commission] cycle " + cyc.cycleNumber + " restored → " + target);
+
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[POST cycle restore]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "cycle_restore_failed" });
+  }
+});
+
 // PUT incentive — full replacement of recipients[].
 app.put("/api/commissions/:id/incentive", auth, salesAdminOnly, async function(req, res) {
   try {

@@ -24508,6 +24508,15 @@ var CommissionsPage = function(p) {
     try { await writeCommission("DELETE", "/api/commissions/" + c._id + "/cycles/" + cycle._id, { confirmCycleNumber: n }, "Cycle deleted"); } catch(_e){}
   };
 
+  // Restore a cancelled cycle back to its last meaningful stage. Backend
+  // infers the target stage from captured dates (received → invoice → claim →
+  // pending_claim) and recomputes recipient shares.
+  var handleRestoreCycle = async function(c, cycle){
+    if (!c || !cycle) return;
+    if (!window.confirm("Restore this cycle? It will return to its previous stage.")) return;
+    try { await writeCommission("POST", "/api/commissions/" + c._id + "/cycles/" + cycle._id + "/restore", null, "Cycle restored"); } catch(_e){}
+  };
+
   var renderCycle = function(c, cycle, isActiveCycle){
     var pillBg = "#F1F5F9", pillFg = C.textLight;
     if (cycle.state === "paid_to_team") { pillBg = "#DCFCE7"; pillFg = "#15803D"; }
@@ -24520,6 +24529,9 @@ var CommissionsPage = function(p) {
     var passedClaim = ["claim_submitted","invoice_submitted","received","paid_to_team"].indexOf(cycle.state) >= 0;
     var missingClaimData = Number(cycle.claimAmount || 0) === 0 || Number(cycle.claimUnitValue || 0) === 0 || Number(cycle.commissionRate || 0) === 0;
     var canBackfill = !isCancelledCommission && passedClaim && missingClaimData;
+    // Restore — only a cancelled cycle inside a still-active/fully_paid
+    // commission. (Page is already admin/sales_admin-gated at the route level.)
+    var canRestore = !isCancelledCommission && cycle.state === "cancelled";
     return <div key={String(cycle._id || cycle.cycleNumber)} style={{ border:"1px solid #E2E8F0", borderRadius:10, padding:"10px 12px", marginBottom:8, background: isActiveCycle ? "#FAFBFF" : "#fff" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: 12 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
@@ -24534,6 +24546,10 @@ var CommissionsPage = function(p) {
             title="Add unit value & rate (pre-R-5 cycle)"
             style={{ padding:"3px 8px", borderRadius:6, border:"1px solid " + C.accent, background: C.accent + "12", color: C.accent, fontSize:10, fontWeight:600, cursor: savingFlag ? "wait" : "pointer" }}>
             + Add claim data
+          </button>}
+          {canRestore && <button onClick={function(){ handleRestoreCycle(c, cycle); }} disabled={savingFlag} title={"Restore cycle " + cycle.cycleNumber}
+            style={{ padding:"3px 8px", borderRadius:6, border:"1px solid #86EFAC", background:"#fff", color:"#15803D", fontSize:10, fontWeight:600, cursor: savingFlag ? "wait" : "pointer" }}>
+            ↻ Restore
           </button>}
           {canDelete && <button onClick={function(){ handleDeleteCycle(c, cycle); }} disabled={savingFlag} title={"Delete cycle " + cycle.cycleNumber}
             style={{ padding:"3px 8px", borderRadius:6, border:"1px solid #FCA5A5", background:"#fff", color:"#B91C1C", fontSize:10, fontWeight:600, cursor: savingFlag ? "wait" : "pointer" }}>
