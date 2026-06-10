@@ -311,6 +311,19 @@ Lead.collection.createIndex({ source: 1, status: 1 }).catch(function(){});
 // Non-unique; safe to add hot.
 Lead.collection.createIndex({ archived: 1, createdAt: -1 }).catch(function(){});
 
+// Deals/EOIs list-sort support. GET /api/deals and GET /api/eois both
+// .sort({ updatedAt: -1, createdAt: -1 }). With NO index providing that order,
+// MongoDB ran a BLOCKING in-memory sort over the full matched documents. Because
+// deal/EOI Lead docs embed base64 images/PDFs (eoiImage, dealImage(s),
+// eoiDocuments, dealDocuments), the 29-doc deal set reached ~31 MB and blew the
+// 32 MB sort cap → 500 → the Deals page silently fell back to the shrunk
+// bootstrap and showed "Active (3)" instead of 29. This compound index lets the
+// sort be served straight from the index (NON-blocking, independent of document
+// size, scales as the collection grows) — the proper fix rather than
+// allowDiskUse:true, which only spills the same heavy docs to disk and gets
+// slower over time. Serves /api/deals AND /api/eois (the only two updatedAt sorts).
+Lead.collection.createIndex({ updatedAt: -1, createdAt: -1 }).catch(function(){});
+
 // Inbound dedupe — sparse so manually-created leads (no externalId) don't share
 // the index. Compound (externalId, source) matches the inbound dedupe query and
 // allows the same external id across different platforms.
@@ -9111,6 +9124,8 @@ app.get("/api/eois", auth, async function(req, res) {
     var rows = await Lead.find(q)
       .select(EOI_LIST_FIELDS)
       .populate("agentId", "name title")
+      // Non-blocking sort: served by the { updatedAt:-1, createdAt:-1 } index
+      // (server.js index block). EOI docs embed base64 — must never block-sort.
       .sort({ updatedAt: -1, createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -9182,8 +9197,11 @@ app.get("/api/deals", auth, async function(req, res) {
 
     var total = await Lead.countDocuments(q);
     var rows = await Lead.find(q)
-      .select(DEAL_LIST_FIELDS)
+      .select(DEAL_LIST_FIELDS)            // already excludes base64 image/doc fields
       .populate("agentId", "name title")
+      // Non-blocking sort: served by the { updatedAt:-1, createdAt:-1 } index
+      // (server.js index block). Deal docs embed base64 (up to ~15 MB each), so a
+      // blocking sort over the matched set trips the 32 MB cap — see that comment.
       .sort({ updatedAt: -1, createdAt: -1 })
       .skip(skip)
       .limit(limit)

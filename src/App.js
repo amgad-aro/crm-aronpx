@@ -11578,23 +11578,43 @@ var DealsPage = function(p) {
   // is in flight so first paint shows the legacy data unchanged. Same overlay
   // pattern as EOIPage — p.leads mutations show through before the WS refetch.
   var [dealAllData, setDealAllData] = useState(null);
+  var [dealLoadErr, setDealLoadErr] = useState(null);
+  var [dealReloadKey, setDealReloadKey] = useState(0);
   useEffect(function(){
     if (!p.token) return;
     var cancelled = false;
+    setDealLoadErr(null);
     apiFetch("/api/deals?status=all&limit=1000","GET",null,p.token)
-      .then(function(r){ if (!cancelled && r && Array.isArray(r.data)) setDealAllData(r.data); })
-      .catch(function(){});
+      .then(function(r){
+        if (cancelled) return;
+        if (r && Array.isArray(r.data)) { setDealAllData(r.data); }
+        // 200 but wrong shape (e.g. backend/FE version skew) must NOT pass
+        // silently — it would leave dealAllData null and fall back to the
+        // shrunk p.leads bootstrap (the "Active (3)" undercount incident).
+        else { setDealLoadErr("Unexpected response from /api/deals (missing data[] array)."); }
+      })
+      .catch(function(err){
+        if (cancelled) return;
+        // No silent swallow: surface the failure instead of rendering a
+        // partial count from the first-100-leads bootstrap.
+        setDealLoadErr((err && err.message) ? err.message : "Failed to load deals.");
+      });
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[p.token, p.cbBust]);
+  },[p.token, p.cbBust, dealReloadKey]);
   var pLeadsMapD = useMemo(function(){
     var m = {}; (p.leads||[]).forEach(function(l){ m[gid(l)] = l; }); return m;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.leads]);
-  // Resolved source — server-fetched once available, in-memory fallback otherwise.
-  var dealsSource = dealAllData
+  // Server-fetched ONLY. The previous `: p.leads` fallback silently undercounted
+  // once STEP 4-5 shrank the bootstrap to the 100 newest-created leads — older
+  // deals dropped out and the page showed e.g. "Active (3)" instead of 29. When
+  // the fetch hasn't resolved or has errored, render nothing and let the
+  // loading / error banner below own the UI.
+  var dealsLoaded = Array.isArray(dealAllData);
+  var dealsSource = dealsLoaded
     ? dealAllData.map(function(l){return pLeadsMapD[gid(l)]||l;}).filter(function(l){return l && !l.archived;})
-    : p.leads;
+    : [];
   // Include every record that the rest of the CRM already treats as a deal:
   // newly-converted EOIs have status="DoneDeal", but older records may carry
   // only globalStatus="donedeal" (or vice-versa) depending on which path
@@ -11998,6 +12018,16 @@ var DealsPage = function(p) {
       </div>
       {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><Plus size={14}/> Add Deal</Btn>}
     </div>
+
+    {/* Deal load state — never silently render a partial count from the
+        shrunk bootstrap. Error → loud banner + Retry; loading → spinner text. */}
+    {dealLoadErr
+      ? <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, flexWrap:"wrap", background:"#FEE2E2", border:"1px solid #FCA5A5", color:"#B91C1C", borderRadius:10, padding:"10px 14px", marginBottom:12, fontSize:13, fontWeight:600 }}>
+          <span>⚠️ Couldn’t load deals: {dealLoadErr} The list below is NOT complete — please retry.</span>
+          <button onClick={function(){ setDealReloadKey(function(k){ return k+1; }); }} style={{ padding:"6px 14px", borderRadius:8, border:"1px solid #B91C1C", background:"#fff", color:"#B91C1C", fontSize:12, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>↻ Retry</button>
+        </div>
+      : (!dealsLoaded && <div style={{ background:"#F1F5F9", border:"1px solid #E2E8F0", color:C.textLight, borderRadius:10, padding:"10px 14px", marginBottom:12, fontSize:13, fontWeight:600 }}>⏳ Loading deals…</div>)
+    }
 
     {/* Deals tab bar: Active vs Deal Cancelled */}
     <div style={p.isMobile?{ display:"flex", gap:8, marginBottom:8 }:{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
