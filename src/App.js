@@ -9583,11 +9583,10 @@ var DashboardPage = function(p) {
 
   var isHR = p.cu.role === "hr";
   if (isHR) {
-    var t = p.t || {};
     return <div className="crm-dash" style={{ padding:isMobile?16:32, maxWidth:1200, margin:"0 auto", width:"100%", boxSizing:"border-box" }}>
       <div style={{ marginBottom:20 }}>
-        <h1 style={{ fontSize:isMobile?20:26, fontWeight:800, color:C.text, margin:0 }}>{(t.welcome||"Welcome")}{p.cu.name?(", "+p.cu.name):""}</h1>
-        <div style={{ fontSize:14, color:C.textLight, marginTop:6 }}>HR Dashboard</div>
+        <div style={{fontSize:isMobile?16:22,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{greeting+" "+p.cu.name}</div>
+        <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,fontVariantNumeric:"tabular-nums",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><DashboardClock variant="admin" isMobile={isMobile}/></div>
       </div>
       <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:16, padding:isMobile?18:24, maxWidth:420 }}>
         <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:6 }}>Attendance</div>
