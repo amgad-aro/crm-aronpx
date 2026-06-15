@@ -1327,12 +1327,13 @@ var Sidebar = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var isSales = p.cu.role==="sales";
   var isSalesOrTL = p.cu.role==="sales"||p.cu.role==="team_leader";
+  var isHR = p.cu.role==="hr";
   var items = [
     {id:"dashboard",label:t.dashboard},
-    {id:"leads",label:t.leads},
-    {id:"dailyReq",label:t.dailyReq},
-    {id:"eoi",label:"EOI"},
-    {id:"deals",label:t.deals},
+    !isHR&&{id:"leads",label:t.leads},
+    !isHR&&{id:"dailyReq",label:t.dailyReq},
+    !isHR&&{id:"eoi",label:"EOI"},
+    !isHR&&{id:"deals",label:t.deals},
     isSalesOrTL&&{id:"kpis",label:"KPIs"},
     isOnlyAdmin&&{id:"reports",label:t.reports,adminSection:true},
     isOnlyAdmin&&{id:"commissions",label:"Commissions",adminSection:true},
@@ -2135,8 +2136,8 @@ var Header = function(p) {
         </div>}
       </div>}
 
-      {/* BELL 1 — Callbacks (isolated component) */}
-      <CallbackBell t={p.t} token={p.token} cbBust={p.cbBust} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>
+      {/* BELL 1 — Callbacks (isolated component). Not rendered for HR — never mounts, so no callbacks fetch/poll. */}
+      {p.cu.role!=="hr" && <CallbackBell t={p.t} token={p.token} cbBust={p.cbBust} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>}
     </div>
   </div>
   {p.isMobile&&<div style={{ padding:"8px", background:"#fff", borderBottom:"1px solid #E5E7EB" }}>
@@ -8734,6 +8735,7 @@ var DashboardPage = function(p) {
   // (admin renders the CallbackCompliance card instead — separate fetch
   // below).
   useEffect(function(){
+    if (p.cu.role === "hr") return;
     if (!p.token) return;
     if (isOnlyAdmin) return;
     var cancelled = false;
@@ -8828,6 +8830,7 @@ var DashboardPage = function(p) {
   // in-memory derivations). Fetch is keyed on cbBust so lead/DR WS events
   // refresh the tiles in real time.
   useEffect(function(){
+    if (p.cu.role === "hr") return; // redundant with !isOnlyAdmin below; explicit HR guard for consistency
     if (!p.token) return;
     if (!isOnlyAdmin) return;
     var cancelled = false;
@@ -8940,6 +8943,7 @@ var DashboardPage = function(p) {
   // null = loading (show skeleton), {} = fetch failed or non-admin.
   var [adminStats, setAdminStats] = useState(null);
   useEffect(function(){
+    if (p.cu.role === "hr") return;
     if (!p.token) return;
     // Re-derive the active range here so the effect only depends on `filter`.
     var nd = new Date(); var cY = nd.getFullYear(); var cM = nd.getMonth(); var cD = nd.getDate();
@@ -9576,6 +9580,25 @@ var DashboardPage = function(p) {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[leads, p.dailyReqs, filter, isOnlyAdmin]);
+
+  var isHR = p.cu.role === "hr";
+  if (isHR) {
+    var t = p.t || {};
+    return <div className="crm-dash" style={{ padding:isMobile?16:32, maxWidth:1200, margin:"0 auto", width:"100%", boxSizing:"border-box" }}>
+      <div style={{ marginBottom:20 }}>
+        <h1 style={{ fontSize:isMobile?20:26, fontWeight:800, color:C.text, margin:0 }}>{(t.welcome||"Welcome")}{p.cu.name?(", "+p.cu.name):""}</h1>
+        <div style={{ fontSize:14, color:C.textLight, marginTop:6 }}>HR Dashboard</div>
+      </div>
+      <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:16, padding:isMobile?18:24, maxWidth:420 }}>
+        <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:6 }}>Attendance</div>
+        <div style={{ fontSize:13, color:C.textLight, marginBottom:16 }}>View check-ins, attendance records, and team logs.</div>
+        <button onClick={function(){ if(p.nav){p.nav("attendance");}else if(p.setActive){p.setActive("attendance");} }}
+          style={{ background:"#1565C0", color:"#fff", border:"none", borderRadius:10, padding:"10px 18px", fontSize:14, fontWeight:700, cursor:"pointer" }}>
+          Go to Attendance
+        </button>
+      </div>
+    </div>;
+  }
 
   if(!isOnlyAdmin) {
     // ============ DATE RANGE (calendar-based) ============
@@ -28428,10 +28451,10 @@ export default function CRMApp() {
         ? <div><CheckInWidget token={token} cu={currentUser} csrfToken={csrfToken} mode="compact" onNavigate={setPage}/><DashboardPage {...sp}/></div>
         : <DashboardPage {...sp}/>;
       case "kpis": return <KPIsPage {...sp}/>
-      case "leads": return <LeadsPage {...sp} isRequest={false}/>;
-      case "dailyReq": return <DailyRequestsPage {...sp}/>;
-      case "deals": return <DealsPage {...sp}/>;
-      case "eoi": return <EOIPage {...sp}/>;
+      case "leads": return currentUser.role==="hr" ? <DashboardPage {...sp}/> : <LeadsPage {...sp} isRequest={false}/>;
+      case "dailyReq": return currentUser.role==="hr" ? <DashboardPage {...sp}/> : <DailyRequestsPage {...sp}/>;
+      case "deals": return currentUser.role==="hr" ? <DashboardPage {...sp}/> : <DealsPage {...sp}/>;
+      case "eoi": return currentUser.role==="hr" ? <DashboardPage {...sp}/> : <EOIPage {...sp}/>;
       case "commissions": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <CommissionsPage {...sp}/> : <DashboardPage {...sp}/>;
       case "projects": return <ProjectsPage {...sp}/>;
       case "reports": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <ReportsPage {...sp}/> : <DashboardPage {...sp}/>;
