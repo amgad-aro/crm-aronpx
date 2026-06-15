@@ -7934,6 +7934,9 @@ app.get("/api/leads", auth, async function(req, res) {
         { agentId: { $in: dirScopedIds } },
         { splitAgent2Id: { $in: dirScopedIds } }
       ];
+    } else if (role === "hr") {
+      // HR: no customer data — match nothing -> empty result (not 403).
+      query._id = null;
     }
     // admin / sales_admin: no filter
 
@@ -8484,7 +8487,9 @@ async function buildLeadSearchScopeQuery(req) {
       { splitAgent2Id: { $in: ids } }
     ]};
   }
-  return {}; // admin / sales_admin: unrestricted
+  if (role === "admin" || role === "sales_admin") return {}; // unrestricted (unchanged)
+  if (role === "hr") return { _id: null };                   // HR: match nothing -> empty
+  return {}; // viewer + any other role: unchanged (see security report §viewer)
 }
 
 app.get("/api/leads/search", auth, async function(req, res) {
@@ -9345,6 +9350,10 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       });
       return res.json(obj);
     }
+    // HR: no customer data — single resource has no empty-array form, so 404
+    // (not 403, to avoid HR UI console noise; search returns empty so no id is
+    // reachable from the HR UI anyway). viewer unchanged (see report §viewer).
+    if (role === "hr") return res.status(404).json({ error: "Not found" });
     // Scope gate (BATCH 2.6) for subtree-bounded roles (manager / team_leader /
     // director). Lead must have its CURRENT owner OR split agent inside the
     // caller's reportsTo subtree, else 403. Existence is intentionally not
@@ -15014,6 +15023,9 @@ app.get("/api/daily-requests", auth, async function(req, res) {
       // helper call — no parallel walk to maintain.
       var dirScopedDrIds = await getScopedUserIds(req.user);
       query.agentId = { $in: dirScopedDrIds };
+    } else if (req.user.role === "hr") {
+      // HR: no customer data — match nothing -> empty result (not 403).
+      query._id = null;
     }
     // Pagination — STEP 1 of the leads/DR scalability work. Backward
     // compatible by design: when no ?page/?limit/?all param is sent, returns
@@ -15150,7 +15162,9 @@ async function buildDRSearchScopeQuery(req) {
     if (!ids || ids.length === 0) return { _id: null };
     return { agentId: { $in: ids } };
   }
-  return {}; // admin / sales_admin: unrestricted
+  if (role === "admin" || role === "sales_admin") return {}; // unrestricted (unchanged)
+  if (role === "hr") return { _id: null };                   // HR: match nothing -> empty
+  return {}; // viewer + any other role: unchanged (see security report §viewer)
 }
 
 app.get("/api/daily-requests/search", auth, async function(req, res) {
