@@ -1944,7 +1944,7 @@ var Header = function(p) {
       <h1 style={{ fontSize:p.isMobile?15:19, fontWeight:700, color:C.text, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.title}</h1>
     </div>
     <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
-      {!p.isMobile&&<HeaderSearch t={t} token={p.token} search={p.search} setSearch={p.setSearch} leads={p.leads} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRItemClick||p.onDRClick}/>}
+      {!p.isMobile&&p.cu.role!=="hr"&&<HeaderSearch t={t} token={p.token} search={p.search} setSearch={p.setSearch} leads={p.leads} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRItemClick||p.onDRClick}/>}
       
       {/* BELL 3 — Deal notifications: admin + sales_admin + team_leader */}
       {(p.isAdmin||p.cu&&(p.cu.role==="sales_admin"||p.cu.role==="team_leader"))&&<div ref={dealNotifRef} style={{ position:"relative" }}>
@@ -2140,7 +2140,7 @@ var Header = function(p) {
       {p.cu.role!=="hr" && <CallbackBell t={p.t} token={p.token} cbBust={p.cbBust} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>}
     </div>
   </div>
-  {p.isMobile&&<div style={{ padding:"8px", background:"#fff", borderBottom:"1px solid #E5E7EB" }}>
+  {p.isMobile&&p.cu.role!=="hr"&&<div style={{ padding:"8px", background:"#fff", borderBottom:"1px solid #E5E7EB" }}>
     <HeaderSearch width="100%" t={t} token={p.token} search={p.search} setSearch={p.setSearch} leads={p.leads} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRItemClick||p.onDRClick}/>
   </div>}
   </div>;
@@ -28528,7 +28528,7 @@ export default function CRMApp() {
 }</style>
     <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads} leadsTotal={leadsTotal} sidebarLeadsTotal={sidebarLeadsTotal} attendanceSettings={attendanceSettings}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
-      <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} token={token} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>
+      {currentUser.role!=="hr" && <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} token={token} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>}
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
