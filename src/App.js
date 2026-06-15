@@ -7165,8 +7165,54 @@ var CheckInWidget = function(p) {
     btn = null;
   }
 
+  // Card variant (HR dashboard): a richer navy "Total working hours" card that
+  // REUSES all the check-in/out logic + today's-hours computation above — only
+  // the layout + button colors differ. Non-actionable states (loading / off-day
+  // / done / office-not-configured) degrade to a graceful status note.
+  var cardEl = null;
+  if (p.variant === "card") {
+    var cCiTs = hasCheckIn ? data.attendance.checkIn.timestamp : null;
+    var cCoTs = hasCheckOut ? data.attendance.checkOut.timestamp : null;
+    var cHours = (hasCheckIn && hasCheckOut)
+      ? ((new Date(cCoTs) - new Date(cCiTs)) / 3600000).toFixed(1) + "h"
+      : (hasCheckIn ? fmtDuration(Date.now() - new Date(cCiTs).getTime()) : "—");
+    // Per-state colors mirror the default banner exactly: btnPrimary(bg) is
+    // {bg, #fff text, no border}; btnGhost is {transparent, #1a1a1a text,
+    // 0.5px rgba(0,0,0,0.15) border}. Card keeps its own geometry — only colors match.
+    var cPrimary = function(bg){ return { background:bg, color:"#fff", border:"none", borderRadius:10, padding:"11px 22px", fontSize:14, fontWeight:700, cursor:"pointer", fontFamily:"inherit", minHeight:44, whiteSpace:"nowrap" }; };
+    var cGhost = { background:"transparent", color:"#1a1a1a", border:"0.5px solid rgba(0,0,0,0.15)", borderRadius:10, padding:"10px 18px", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"inherit", minHeight:44, whiteSpace:"nowrap" };
+    var cBtn = null, cNote = null;
+    if (data && geofences.length === 0 && widgetState !== "off_day" && widgetState !== "in_progress" && widgetState !== "done") {
+      cNote = "Office not configured";
+    } else if (widgetState === "in_progress")    { cBtn = <button type="button" onClick={doCheckOut} disabled={busy} style={cPrimary("#EA580C")}>{busy?"…":"Check out"}</button>; }
+    else if (widgetState === "ready_inside")      { cBtn = <button type="button" onClick={doCheckIn}  disabled={busy} style={cPrimary("#0F766E")}>{busy?"…":"Check in"}</button>; }
+    else if (widgetState === "ready_outside")     { cBtn = <button type="button" onClick={function(){openOffSiteModal("check_in");}} disabled={busy} style={cGhost}>Request off-site</button>; }
+    else if (widgetState === "pending_offsite")   { cBtn = <button type="button" onClick={doCancelOffSite} disabled={busy} style={cGhost}>{busy?"…":"Cancel request"}</button>; }
+    else if (widgetState === "no_coords")         { cBtn = <button type="button" onClick={refetch} style={cGhost}>Retry</button>; }
+    else if (widgetState === "done")              { cNote = "Done for today"; }
+    else                                          { cNote = sub || headline; }
+    cardEl = <div style={{ background:"#fff", borderRadius:14, border:"1px solid #E8ECF1", overflow:"hidden", marginBottom:16, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+      <div style={{ background:"#1C2A47", color:"#fff", padding:"12px 18px", display:"flex", alignItems:"center", gap:10 }}>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <div style={{ fontSize:15, fontWeight:700 }}>Total working hours</div>
+      </div>
+      <div style={{ padding:"20px 22px", display:"flex", flexWrap:"wrap", alignItems:"center", gap:24 }}>
+        <div style={{ flex:"1 1 120px", minWidth:120 }}>
+          <div style={{ fontSize:12, color:C.textLight, marginBottom:4 }}>Total hours</div>
+          <div style={{ fontSize:24, fontWeight:800, color:"#1C2A47" }}>{cHours}</div>
+        </div>
+        <div style={{ flex:"1 1 160px", minWidth:160 }}>
+          <div style={{ fontSize:12, color:C.textLight, marginBottom:4 }}>Check in &amp; out</div>
+          <div style={{ fontSize:16, fontWeight:700, color:C.text }}>{hasCheckIn ? fmtCairoTime(cCiTs) : "—"} <span style={{ color:C.textLight, fontWeight:500 }}>→</span> {hasCheckOut ? fmtCairoTime(cCoTs) : "—"}</div>
+        </div>
+        <div style={{ flexShrink:0 }}>{cBtn || (cNote && <span style={{ fontSize:13, color:C.textLight, fontWeight:600 }}>{cNote}</span>)}</div>
+      </div>
+      {error && <div style={{ padding:"0 22px 14px", fontSize:12, color:C.danger }}>{error}</div>}
+    </div>;
+  }
+
   return <>
-    <div style={{
+    {cardEl || (<div style={{
       background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)",
       borderLeft:"3px solid "+accent, padding:pad, display:"flex", alignItems:"center",
       gap:14, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
@@ -7178,7 +7224,7 @@ var CheckInWidget = function(p) {
         {error && <div style={{fontSize:11, color:C.danger, marginTop:4}}>{error}</div>}
       </div>
       {btn}
-    </div>
+    </div>)}
 
     {modalOpen && <div className="crm-modal" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:20 }}>
       <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:12, maxWidth:480, width:"100%", padding:24, fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
@@ -7202,6 +7248,87 @@ var CheckInWidget = function(p) {
       </div>
     </div>}
   </>;
+};
+
+// Standalone monthly attendance log — extracted from AttendancePage's "My
+// Attendance" tab so the HR dashboard can reuse the exact same markup. Owns its
+// own month navigation + /api/attendance/my-month fetch. Props: { token }.
+var MonthlyAttendanceLog = function(p) {
+  var now = new Date();
+  var [year,setYear]   = useState(now.getFullYear());
+  var [month,setMonth] = useState(now.getMonth() + 1);
+  var [rows,setRows]   = useState([]);
+  var [loading,setLoading] = useState(false);
+
+  useEffect(function(){
+    var cancelled = false;
+    setLoading(true);
+    apiFetch("/api/attendance/my-month?year="+year+"&month="+month, "GET", null, p.token).then(function(r){
+      if (!cancelled) setRows(Array.isArray(r) ? r : []);
+    }).catch(function(){ if (!cancelled) setRows([]); })
+      .finally(function(){ if (!cancelled) setLoading(false); });
+    return function(){ cancelled = true; };
+  }, [year, month, p.token]);
+
+  // Generate every Cairo day in the selected month to render absent rows for
+  // workdays that have no Attendance doc (visual completeness — server doesn't
+  // create absent rows until salary calc in Phase 5).
+  var monthLabel = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+  var daysInMonth = new Date(year, month, 0).getDate();
+  var rowsByDate = {};
+  rows.forEach(function(r){
+    var dd = new Date(r.date);
+    rowsByDate[dd.getUTCFullYear()+"-"+(dd.getUTCMonth()+1)+"-"+dd.getUTCDate()] = r;
+  });
+  var monthDays = [];
+  for (var di = 1; di <= daysInMonth; di++) {
+    var iso = year+"-"+month+"-"+di;
+    monthDays.push({ date: new Date(Date.UTC(year, month-1, di)), attendance: rowsByDate[iso] || null });
+  }
+  var prevMonth = function(){ if (month === 1) { setMonth(12); setYear(year - 1); } else setMonth(month - 1); };
+  var nextMonth = function(){ if (month === 12) { setMonth(1); setYear(year + 1); } else setMonth(month + 1); };
+
+  return <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
+    <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10}}>
+      <div style={{fontSize:14, fontWeight:600, color:C.text}}>Monthly log</div>
+      <div style={{display:"flex", alignItems:"center", gap:8}}>
+        <button type="button" onClick={prevMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>‹</button>
+        <div style={{fontSize:13, fontWeight:500, color:C.text, minWidth:120, textAlign:"center"}}>{monthLabel}</div>
+        <button type="button" onClick={nextMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>›</button>
+      </div>
+    </div>
+
+    {loading ? <div style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
+      : <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
+          <thead>
+            <tr style={{background:"#F7F7F5"}}>
+              <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Date</th>
+              <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Day</th>
+              <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-in</th>
+              <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-out</th>
+              <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {monthDays.map(function(d){
+              var weekday = d.date.toLocaleDateString("en-GB", { weekday:"short", timeZone:"UTC" });
+              var a = d.attendance;
+              var badge = attStatusBadge(a && a.status, !a && weekday === "Fri" ? "friday" : null);
+              return <tr key={d.date.toISOString()} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
+                <td style={{padding:"10px 16px"}}>{d.date.toLocaleDateString("en-GB", { day:"2-digit", month:"short", timeZone:"UTC" })}</td>
+                <td style={{padding:"10px 16px", color:C.textLight}}>{weekday}</td>
+                <td style={{padding:"10px 16px"}}>{a && a.checkIn ? fmtCairoTime(a.checkIn.timestamp) : "—"}</td>
+                <td style={{padding:"10px 16px"}}>{a && a.checkOut ? fmtCairoTime(a.checkOut.timestamp) : "—"}</td>
+                <td style={{padding:"10px 16px"}}>
+                  <span style={{display:"inline-block", padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:500, background:badge.bg, color:badge.color}}>{badge.label}</span>
+                </td>
+              </tr>;
+            })}
+          </tbody>
+        </table>
+      </div>}
+  </div>;
 };
 
 var AttendancePage = function(p) {
@@ -7249,23 +7376,9 @@ var AttendancePage = function(p) {
     if (!isOwner)          { setActiveTab("mine");            return; }
   }, [activeTab, isOwner, canManage, canViewSalaries, canApproveOffSite, canManageOffDays]);
 
-  // ----- "My" tab: monthly history below the widget -----
-  var now = new Date();
-  var [year,setYear]   = useState(now.getFullYear());
-  var [month,setMonth] = useState(now.getMonth() + 1);
-  var [rows,setRows]   = useState([]);
-  var [loadingMine,setLoadingMine] = useState(false);
-
-  useEffect(function(){
-    if (activeTab !== "mine" || isOwner) return;
-    var cancelled = false;
-    setLoadingMine(true);
-    apiFetch("/api/attendance/my-month?year="+year+"&month="+month, "GET", null, p.token).then(function(r){
-      if (!cancelled) setRows(Array.isArray(r) ? r : []);
-    }).catch(function(){ if (!cancelled) setRows([]); })
-      .finally(function(){ if (!cancelled) setLoadingMine(false); });
-    return function(){ cancelled = true; };
-  }, [activeTab, year, month, p.token, isOwner]);
+  // ----- "My" tab: monthly history now lives in <MonthlyAttendanceLog/>
+  // (extracted so the HR dashboard can reuse it). It owns its own month nav +
+  // /api/attendance/my-month fetch, so AttendancePage no longer holds that state.
 
   // ----- "Team" tab: roster — Phase R-attendance: now date-picker driven.
   // dateMode = "single" (default, today) or "range" (from + to).
@@ -7359,35 +7472,6 @@ var AttendancePage = function(p) {
         border:"0.5px solid "+(act?"rgba(0,0,0,0.1)":"transparent")}}>{label}</div>;
   };
 
-  // Generate every Cairo day in the selected month to render absent rows for
-  // workdays that have no Attendance doc (visual completeness — server doesn't
-  // create absent rows until salary calc in Phase 5).
-  var monthLabel = new Date(year, month-1, 1).toLocaleDateString("en-GB", { month:"long", year:"numeric" });
-  var daysInMonth = new Date(year, month, 0).getDate();
-  var rowsByDate = {};
-  rows.forEach(function(r){
-    var d = new Date(r.date);
-    rowsByDate[d.getUTCFullYear()+"-"+(d.getUTCMonth()+1)+"-"+d.getUTCDate()] = r;
-  });
-
-  var monthDays = [];
-  for (var d = 1; d <= daysInMonth; d++) {
-    var iso = year+"-"+month+"-"+d;
-    monthDays.push({
-      date: new Date(Date.UTC(year, month-1, d)),
-      attendance: rowsByDate[iso] || null
-    });
-  }
-
-  var prevMonth = function(){
-    if (month === 1) { setMonth(12); setYear(year - 1); }
-    else setMonth(month - 1);
-  };
-  var nextMonth = function(){
-    if (month === 12) { setMonth(1); setYear(year + 1); }
-    else setMonth(month + 1);
-  };
-
   return <div style={{padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
     <div style={{maxWidth:1200, margin:"0 auto"}}>
 
@@ -7403,47 +7487,7 @@ var AttendancePage = function(p) {
       {activeTab === "mine" && !isOwner && <div>
         <CheckInWidget token={p.token} cu={p.cu} csrfToken={p.csrfToken} mode="full"/>
 
-        <div style={{background:"#fff", borderRadius:12, border:"0.5px solid rgba(0,0,0,0.1)", overflow:"hidden"}}>
-          <div style={{padding:"14px 20px", borderBottom:"0.5px solid rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10}}>
-            <div style={{fontSize:14, fontWeight:600, color:C.text}}>Monthly log</div>
-            <div style={{display:"flex", alignItems:"center", gap:8}}>
-              <button type="button" onClick={prevMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>‹</button>
-              <div style={{fontSize:13, fontWeight:500, color:C.text, minWidth:120, textAlign:"center"}}>{monthLabel}</div>
-              <button type="button" onClick={nextMonth} style={{border:"0.5px solid rgba(0,0,0,0.1)", background:"transparent", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontFamily:"inherit"}}>›</button>
-            </div>
-          </div>
-
-          {loadingMine ? <div style={{padding:24, textAlign:"center", color:C.textLight, fontSize:13}}>Loading…</div>
-            : <div style={{overflowX:"auto"}}>
-              <table style={{width:"100%", borderCollapse:"collapse", fontSize:13}}>
-                <thead>
-                  <tr style={{background:"#F7F7F5"}}>
-                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Date</th>
-                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Day</th>
-                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-in</th>
-                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Check-out</th>
-                    <th style={{textAlign:"left", padding:"10px 16px", fontWeight:500, color:C.textLight, fontSize:11, textTransform:"uppercase", letterSpacing:"0.3px"}}>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {monthDays.map(function(d){
-                    var weekday = d.date.toLocaleDateString("en-GB", { weekday:"short", timeZone:"UTC" });
-                    var a = d.attendance;
-                    var badge = attStatusBadge(a && a.status, !a && weekday === "Fri" ? "friday" : null);
-                    return <tr key={d.date.toISOString()} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
-                      <td style={{padding:"10px 16px"}}>{d.date.toLocaleDateString("en-GB", { day:"2-digit", month:"short", timeZone:"UTC" })}</td>
-                      <td style={{padding:"10px 16px", color:C.textLight}}>{weekday}</td>
-                      <td style={{padding:"10px 16px"}}>{a && a.checkIn ? fmtCairoTime(a.checkIn.timestamp) : "—"}</td>
-                      <td style={{padding:"10px 16px"}}>{a && a.checkOut ? fmtCairoTime(a.checkOut.timestamp) : "—"}</td>
-                      <td style={{padding:"10px 16px"}}>
-                        <span style={{display:"inline-block", padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:500, background:badge.bg, color:badge.color}}>{badge.label}</span>
-                      </td>
-                    </tr>;
-                  })}
-                </tbody>
-              </table>
-            </div>}
-        </div>
+        <MonthlyAttendanceLog token={p.token}/>
       </div>}
 
       {activeTab === "team" && canManage && <>
@@ -9588,14 +9632,8 @@ var DashboardPage = function(p) {
         <div style={{fontSize:isMobile?16:22,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{greeting+" "+p.cu.name}</div>
         <div style={{fontSize:isMobile?11:12,color:"#94A3B8",marginTop:2,fontVariantNumeric:"tabular-nums",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><DashboardClock variant="admin" isMobile={isMobile}/></div>
       </div>
-      <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:16, padding:isMobile?18:24, maxWidth:420 }}>
-        <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:6 }}>Attendance</div>
-        <div style={{ fontSize:13, color:C.textLight, marginBottom:16 }}>View check-ins, attendance records, and team logs.</div>
-        <button onClick={function(){ if(p.nav){p.nav("attendance");}else if(p.setActive){p.setActive("attendance");} }}
-          style={{ background:"#1565C0", color:"#fff", border:"none", borderRadius:10, padding:"10px 18px", fontSize:14, fontWeight:700, cursor:"pointer" }}>
-          Go to Attendance
-        </button>
-      </div>
+      <CheckInWidget variant="card" token={p.token} cu={p.cu} csrfToken={p.csrfToken}/>
+      <MonthlyAttendanceLog token={p.token}/>
     </div>;
   }
 
@@ -28446,7 +28484,7 @@ export default function CRMApp() {
 
   var renderPage=function(){
     switch(currentPage){
-      case "dashboard": return currentUser.role !== "admin"
+      case "dashboard": return (currentUser.role !== "admin" && currentUser.role !== "hr")
         ? <div><CheckInWidget token={token} cu={currentUser} csrfToken={csrfToken} mode="compact" onNavigate={setPage}/><DashboardPage {...sp}/></div>
         : <DashboardPage {...sp}/>;
       case "kpis": return <KPIsPage {...sp}/>
