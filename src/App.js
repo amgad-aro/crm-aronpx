@@ -1328,12 +1328,13 @@ var Sidebar = function(p) {
   var isSales = p.cu.role==="sales";
   var isSalesOrTL = p.cu.role==="sales"||p.cu.role==="team_leader";
   var isHR = p.cu.role==="hr";
+  var isOfficeBoy = p.cu.role==="office_boy";
   var items = [
     {id:"dashboard",label:t.dashboard},
-    !isHR&&{id:"leads",label:t.leads},
-    !isHR&&{id:"dailyReq",label:t.dailyReq},
-    !isHR&&{id:"eoi",label:"EOI"},
-    !isHR&&{id:"deals",label:t.deals},
+    !isHR&&!isOfficeBoy&&{id:"leads",label:t.leads},
+    !isHR&&!isOfficeBoy&&{id:"dailyReq",label:t.dailyReq},
+    !isHR&&!isOfficeBoy&&{id:"eoi",label:"EOI"},
+    !isHR&&!isOfficeBoy&&{id:"deals",label:t.deals},
     isSalesOrTL&&{id:"kpis",label:"KPIs"},
     isOnlyAdmin&&{id:"reports",label:t.reports,adminSection:true},
     isOnlyAdmin&&{id:"commissions",label:"Commissions",adminSection:true},
@@ -1380,7 +1381,7 @@ var Sidebar = function(p) {
       : (Array.isArray(p.leads) ? p.leads.filter(function(l){return !l.archived;}).length : 0);
   var userName = p.cu.username==="amgad" ? "Amgad Mohamed" : p.cu.name;
   var userInitial = (userName||"?")[0];
-  var userRole = p.cu.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer"}[p.cu.role]||"");
+  var userRole = p.cu.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer",office_boy:"Office Boy"}[p.cu.role]||"");
   var st = {
     width:240, height:"100vh",
     background:"rgba(28, 30, 40, 0.95)",
@@ -1945,7 +1946,7 @@ var Header = function(p) {
       <h1 style={{ fontSize:p.isMobile?15:19, fontWeight:700, color:C.text, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.title}</h1>
     </div>
     <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
-      {!p.isMobile&&p.cu.role!=="hr"&&<HeaderSearch t={t} token={p.token} search={p.search} setSearch={p.setSearch} leads={p.leads} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRItemClick||p.onDRClick}/>}
+      {!p.isMobile&&p.cu.role!=="hr"&&p.cu.role!=="office_boy"&&<HeaderSearch t={t} token={p.token} search={p.search} setSearch={p.setSearch} leads={p.leads} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRItemClick||p.onDRClick}/>}
       
       {/* BELL 3 — Deal notifications: admin + sales_admin + team_leader */}
       {(p.isAdmin||p.cu&&(p.cu.role==="sales_admin"||p.cu.role==="team_leader"))&&<div ref={dealNotifRef} style={{ position:"relative" }}>
@@ -2138,10 +2139,10 @@ var Header = function(p) {
       </div>}
 
       {/* BELL 1 — Callbacks (isolated component). Not rendered for HR — never mounts, so no callbacks fetch/poll. */}
-      {p.cu.role!=="hr" && <CallbackBell t={p.t} token={p.token} cbBust={p.cbBust} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>}
+      {p.cu.role!=="hr" && p.cu.role!=="office_boy" && <CallbackBell t={p.t} token={p.token} cbBust={p.cbBust} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>}
     </div>
   </div>
-  {p.isMobile&&p.cu.role!=="hr"&&<div style={{ padding:"8px", background:"#fff", borderBottom:"1px solid #E5E7EB" }}>
+  {p.isMobile&&p.cu.role!=="hr"&&p.cu.role!=="office_boy"&&<div style={{ padding:"8px", background:"#fff", borderBottom:"1px solid #E5E7EB" }}>
     <HeaderSearch width="100%" t={t} token={p.token} search={p.search} setSearch={p.setSearch} leads={p.leads} dailyRequests={p.dailyRequests} onLeadClick={p.onLeadClick} onDRClick={p.onDRItemClick||p.onDRClick}/>
   </div>}
   </div>;
@@ -9631,7 +9632,10 @@ var DashboardPage = function(p) {
   },[leads, p.dailyReqs, filter, isOnlyAdmin]);
 
   var isHR = p.cu.role === "hr";
-  if (isHR) {
+  var isOfficeBoy = p.cu.role === "office_boy";
+  // office_boy is maximally restricted to attendance only — render the exact
+  // same attendance-only dashboard as HR (check-in card + own monthly log).
+  if (isHR || isOfficeBoy) {
     return <div className="crm-dash" style={{ padding:isMobile?16:32, maxWidth:1200, margin:"0 auto", width:"100%", boxSizing:"border-box" }}>
       <div style={{ marginBottom:20 }}>
         <div style={{fontSize:isMobile?16:22,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{greeting+" "+p.cu.name}</div>
@@ -28489,29 +28493,29 @@ export default function CRMApp() {
 
   var renderPage=function(){
     switch(currentPage){
-      case "dashboard": return (currentUser.role !== "admin" && currentUser.role !== "hr")
+      case "dashboard": return (currentUser.role !== "admin" && currentUser.role !== "hr" && currentUser.role !== "office_boy")
         ? <div><CheckInWidget token={token} cu={currentUser} csrfToken={csrfToken} mode="compact" onNavigate={setPage}/><DashboardPage {...sp}/></div>
         : <DashboardPage {...sp}/>;
-      case "kpis": return <KPIsPage {...sp}/>
-      case "leads": return currentUser.role==="hr" ? <DashboardPage {...sp}/> : <LeadsPage {...sp} isRequest={false}/>;
-      case "dailyReq": return currentUser.role==="hr" ? <DashboardPage {...sp}/> : <DailyRequestsPage {...sp}/>;
-      case "deals": return currentUser.role==="hr" ? <DashboardPage {...sp}/> : <DealsPage {...sp}/>;
-      case "eoi": return currentUser.role==="hr" ? <DashboardPage {...sp}/> : <EOIPage {...sp}/>;
+      case "kpis": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <KPIsPage {...sp}/>
+      case "leads": return (currentUser.role==="hr"||currentUser.role==="office_boy") ? <DashboardPage {...sp}/> : <LeadsPage {...sp} isRequest={false}/>;
+      case "dailyReq": return (currentUser.role==="hr"||currentUser.role==="office_boy") ? <DashboardPage {...sp}/> : <DailyRequestsPage {...sp}/>;
+      case "deals": return (currentUser.role==="hr"||currentUser.role==="office_boy") ? <DashboardPage {...sp}/> : <DealsPage {...sp}/>;
+      case "eoi": return (currentUser.role==="hr"||currentUser.role==="office_boy") ? <DashboardPage {...sp}/> : <EOIPage {...sp}/>;
       case "commissions": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <CommissionsPage {...sp}/> : <DashboardPage {...sp}/>;
-      case "projects": return <ProjectsPage {...sp}/>;
+      case "projects": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <ProjectsPage {...sp}/>;
       case "reports": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <ReportsPage {...sp}/> : <DashboardPage {...sp}/>;
-      case "team": return <TeamPage {...sp}/>;
-      case "users": return <UsersPage {...sp}/>;
+      case "team": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <TeamPage {...sp}/>;
+      case "users": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <UsersPage {...sp}/>;
       case "brokers": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <BrokersPage {...sp}/> : <DashboardPage {...sp}/>;
-      case "archive": return <ArchivePage {...sp}/>;
-      case "attendance": return currentUser.role==="hr" ? <DashboardPage {...sp}/> : <AttendancePage {...sp}/>;
+      case "archive": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <ArchivePage {...sp}/>;
+      case "attendance": return (currentUser.role==="hr"||currentUser.role==="office_boy") ? <DashboardPage {...sp}/> : <AttendancePage {...sp}/>;
       // Legacy page ids (salaries / offsiteRequests / companyOffDays) used to
       // be standalone sidebar entries — they're now tabs inside AttendancePage.
       // We keep these cases as deep-link migrations for users whose
       // localStorage crm_page still points to one of them.
-      case "salaries":        return <AttendancePage {...sp} initTab="salaries"/>;
-      case "offsiteRequests": return <AttendancePage {...sp} initTab="offsiteRequests"/>;
-      case "companyOffDays":  return <AttendancePage {...sp} initTab="companyOffDays"/>;
+      case "salaries":        return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <AttendancePage {...sp} initTab="salaries"/>;
+      case "offsiteRequests": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <AttendancePage {...sp} initTab="offsiteRequests"/>;
+      case "companyOffDays":  return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <AttendancePage {...sp} initTab="companyOffDays"/>;
       case "settings": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <SettingsPage {...sp} users={users}/> : <DashboardPage {...sp}/>;
       case "assets":   return (currentUser.role==="admin"||currentUser.role==="sales_admin"||currentUser.isOwner===true)
         ? <AssetTrackerPage {...sp} users={users} initialAssetCode={deepLinkAssetCode} onInitialConsumed={function(){ setDeepLinkAssetCode(null); }}/>
@@ -28570,7 +28574,7 @@ export default function CRMApp() {
 }</style>
     <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads} leadsTotal={leadsTotal} sidebarLeadsTotal={sidebarLeadsTotal} attendanceSettings={attendanceSettings}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
-      {currentUser.role!=="hr" && <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} token={token} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>}
+      {currentUser.role!=="hr" && currentUser.role!=="office_boy" && <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} token={token} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>}
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}

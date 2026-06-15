@@ -58,7 +58,7 @@ delete mongoose.models["DailyRequest"];
 var User = mongoose.model("User", new mongoose.Schema({
   name:{type:String,required:true}, username:{type:String,required:true,unique:true},
   password:{type:String,required:true}, email:{type:String,default:""}, phone:{type:String,default:""},
-  role:{type:String,enum:["admin","sales_admin","hr","director","manager","team_leader","sales","viewer"],default:"sales"},
+  role:{type:String,enum:["admin","sales_admin","hr","director","manager","team_leader","sales","viewer","office_boy"],default:"sales"},
   title:{type:String,default:""}, active:{type:Boolean,default:true},
   monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, lastActive:{type:Date,default:null}, qTargets:{type:Object,default:{}}, reportsTo:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
   startingDate:{type:Date,default:null},
@@ -1709,7 +1709,7 @@ function ownerProtected(target, requesterId) {
 }
 // Roles permitted on POST /api/users — schema enum minus "admin". Keep this
 // in sync with the User schema enum at the top of the file.
-var ALLOWED_CREATE_ROLES = ["sales_admin","hr","director","manager","team_leader","sales","viewer"];
+var ALLOWED_CREATE_ROLES = ["sales_admin","hr","director","manager","team_leader","sales","viewer","office_boy"];
 
 // ===== qTargets year-aware key helpers (Phase R-0) =====
 // User.qTargets keys are now "<YYYY>-Q<n>" (e.g. "2026-Q2"). Old data may
@@ -5120,6 +5120,9 @@ function getRoleWorkShift(role) {
   if (role === "sales_admin" || role === "hr") {
     return { startTime: "10:00", endTime: "18:00" };
   }
+  if (role === "office_boy") {
+    return { startTime: "10:00", endTime: "19:00" };
+  }
   return null;
 }
 
@@ -6895,6 +6898,8 @@ app.delete("/api/vacations/:id", auth, vacationAdmin, async function(req, res) {
 // — deals are intentionally excluded per the dashboard spec.
 app.get("/api/dashboard/sales-ranking", auth, async function(req, res) {
   try {
+    // office_boy: attendance-only role — never sees the company sales leaderboard.
+    if (req.user.role === "office_boy") return res.json([]);
     var parseDate = function(s){ if(!s) return null; var d = new Date(String(s)); return isNaN(d.getTime()) ? null : d; };
     var from = parseDate(req.query.from);
     var to   = parseDate(req.query.to);
@@ -7980,8 +7985,8 @@ app.get("/api/leads", auth, async function(req, res) {
         { agentId: { $in: dirScopedIds } },
         { splitAgent2Id: { $in: dirScopedIds } }
       ];
-    } else if (role === "hr") {
-      // HR: no customer data — match nothing -> empty result (not 403).
+    } else if (role === "hr" || role === "office_boy") {
+      // HR + office_boy: no customer data — match nothing -> empty result (not 403).
       query._id = null;
     }
     // admin / sales_admin: no filter
@@ -8547,7 +8552,8 @@ async function buildLeadSearchScopeQuery(req) {
   }
   if (role === "admin" || role === "sales_admin") return {}; // unrestricted (unchanged)
   if (role === "hr") return { _id: null };                   // HR: match nothing -> empty
-  return {}; // viewer + any other role: unchanged (see security report §viewer)
+  if (role === "viewer") return {};                          // viewer: see-all (unchanged)
+  return { _id: null }; // office_boy + any other unknown role: fail-closed (match nothing)
 }
 
 app.get("/api/leads/search", auth, async function(req, res) {
@@ -9440,7 +9446,7 @@ app.get("/api/leads/:id", auth, async function(req, res) {
     // HR: no customer data — single resource has no empty-array form, so 404
     // (not 403, to avoid HR UI console noise; search returns empty so no id is
     // reachable from the HR UI anyway). viewer unchanged (see report §viewer).
-    if (role === "hr") return res.status(404).json({ error: "Not found" });
+    if (role === "hr" || role === "office_boy") return res.status(404).json({ error: "Not found" });
     // Scope gate (BATCH 2.6) for subtree-bounded roles (manager / team_leader /
     // director). Lead must have its CURRENT owner OR split agent inside the
     // caller's reportsTo subtree, else 403. Existence is intentionally not
@@ -9496,6 +9502,8 @@ app.get("/api/leads/check-duplicate/:phone", auth, async function(req, res) {
   try {
     var phone = decodeURIComponent(req.params.phone);
     var dupQuery = { $or: [{ phone: phone }, { phone2: phone }], archived: false };
+    // office_boy: attendance-only role — never learns whether a phone exists.
+    if (req.user.role === "office_boy") return res.json({ exists: false });
     if (req.user.role === "sales") {
       // Match the visibility rule used by GET /api/leads: sales can only learn
       // about duplicates on leads they hold ACTIVELY (removedAt: null). Phase 1
@@ -14033,6 +14041,8 @@ app.get("/api/leads/:id/full-history", auth, async function(req, res) {
     var oid = new mongoose.Types.ObjectId(req.params.id);
     var uid = String(req.user.id);
     var role = req.user.role;
+    // office_boy: attendance-only role — no lead history.
+    if (role === "office_boy") return res.status(404).json({ error: "Not found" });
     var isSales = role === "sales";
 
     // Sales: confirm the caller has an ACTIVE assignments[] entry for this
@@ -15018,6 +15028,10 @@ app.get("/api/stats", auth, async function(req, res) {
       // still show up in their stats — same visibility rule as GET /api/leads.
       leadQuery["assignments.agentId"] = new mongoose.Types.ObjectId(req.user.id);
       actQuery.userId = req.user.id;
+    } else if (req.user.role === "office_boy") {
+      // office_boy: attendance-only role — force every count to zero (match nothing).
+      leadQuery._id = null;
+      actQuery._id = null;
     }
     var totalLeads = await Lead.countDocuments(leadQuery);
     var potential = await Lead.countDocuments(Object.assign({ status: "Potential" }, leadQuery));
@@ -15110,8 +15124,8 @@ app.get("/api/daily-requests", auth, async function(req, res) {
       // helper call — no parallel walk to maintain.
       var dirScopedDrIds = await getScopedUserIds(req.user);
       query.agentId = { $in: dirScopedDrIds };
-    } else if (req.user.role === "hr") {
-      // HR: no customer data — match nothing -> empty result (not 403).
+    } else if (req.user.role === "hr" || req.user.role === "office_boy") {
+      // HR + office_boy: no customer data — match nothing -> empty result (not 403).
       query._id = null;
     }
     // Pagination — STEP 1 of the leads/DR scalability work. Backward
@@ -15251,7 +15265,8 @@ async function buildDRSearchScopeQuery(req) {
   }
   if (role === "admin" || role === "sales_admin") return {}; // unrestricted (unchanged)
   if (role === "hr") return { _id: null };                   // HR: match nothing -> empty
-  return {}; // viewer + any other role: unchanged (see security report §viewer)
+  if (role === "viewer") return {};                          // viewer: see-all (unchanged)
+  return { _id: null }; // office_boy + any other unknown role: fail-closed (match nothing)
 }
 
 app.get("/api/daily-requests/search", auth, async function(req, res) {
@@ -15619,7 +15634,7 @@ app.get("/api/team/member-stats", auth, async function(req, res) {
 app.get("/api/dashboard/agent-perf", auth, async function(req, res) {
   try {
     var role = req.user.role;
-    if (role === "sales" || role === "viewer" || role === "hr") {
+    if (role === "sales" || role === "viewer" || role === "hr" || role === "office_boy") {
       return res.status(403).json({ error: "AgentPerf not available for this role" });
     }
     var rsA = parseInt(req.query.from) || 0;
@@ -16045,6 +16060,8 @@ app.get("/api/daily-requests/:id", auth, async function(req, res) {
     var r = await DailyRequest.findById(req.params.id).populate("agentId", "name title").lean();
     if (!r) return res.status(404).json({ error: "Not found" });
     var role = req.user.role;
+    // office_boy: attendance-only role — no daily-request access.
+    if (role === "office_boy") return res.status(404).json({ error: "Not found" });
     var aid = r.agentId && r.agentId._id ? String(r.agentId._id) : String(r.agentId || "");
     if (role === "sales") {
       if (aid !== String(req.user.id)) return res.status(404).json({ error: "Not found" });
@@ -16366,6 +16383,8 @@ app.put("/api/daily-requests/:id/unarchive", auth, adminOnly, async function(req
 // ===== DR HISTORY =====
 app.get("/api/daily-requests/:id/history", auth, async function(req, res) {
   try {
+    // office_boy: attendance-only role — no daily-request history.
+    if (req.user.role === "office_boy") return res.json([]);
     var oid = new mongoose.Types.ObjectId(req.params.id);
     var acts = await Activity.find({ leadId: oid })
       .populate("userId", "name")
