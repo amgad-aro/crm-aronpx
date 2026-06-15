@@ -1342,7 +1342,7 @@ var Sidebar = function(p) {
     // Single Attendance entry — visible to anyone who can use any attendance
     // tab. Inside the page, tabs are gated by the same per-action permissions.
     // HR is excluded: their dashboard already embeds the check-in card + log.
-    p.cu.role!=="hr" && (p.cu.role!=="admin"
+    p.cu.role!=="hr" && !isOfficeBoy && (p.cu.role!=="admin"
       || hasAttendancePerm(p.cu.role, "manageAttendance",       p.attendanceSettings)
       || hasAttendancePerm(p.cu.role, "manageSalaries",         p.attendanceSettings)
       || hasAttendancePerm(p.cu.role, "approveOffSiteRequests", p.attendanceSettings)
@@ -1455,7 +1455,7 @@ var Sidebar = function(p) {
           <div style={{ width:32, height:32, borderRadius:10, background:"rgba(255,255,255,0.1)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:600, fontSize:13, flexShrink:0 }}>{userInitial}</div>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ color:"rgba(255,255,255,0.8)", fontSize:11, fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{userName}</div>
-            <div style={{ color:"rgba(255,255,255,0.25)", fontSize:9, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{userRole}</div>
+            {!isOfficeBoy && <div style={{ color:"rgba(255,255,255,0.25)", fontSize:9, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{userRole}</div>}
           </div>
           <div style={{ width:7, height:7, borderRadius:"50%", background:"#22C55E", flexShrink:0 }}/>
         </div>
