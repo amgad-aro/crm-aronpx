@@ -5395,6 +5395,39 @@ app.get("/api/attendance/my-month", auth, async function(req, res) {
       userId: req.user.id,
       date: { $gte: start, $lt: end }
     }).sort({ date: 1 }).lean();
+
+    // Day-key on the UTC calendar day — mirrors MonthlyAttendanceLog's keying so
+    // synthetic rows align with the days the frontend renders.
+    var dayKey = function(d){ var x = new Date(d); return x.getUTCFullYear() + "-" + (x.getUTCMonth() + 1) + "-" + x.getUTCDate(); };
+    var existing = {};
+    rows.forEach(function(r){ existing[dayKey(r.date)] = true; });
+
+    // PART 2 — display only: a manually forced-off day (override action
+    // "mark_off_day") should read "Off"/"Saturday off" in the log instead of the
+    // generic "Override". We only attach offReason for rendering; the stored
+    // override and the salary working-day logic are untouched.
+    rows.forEach(function(r){
+      if (r.override && r.override.action === "mark_off_day") {
+        r.offReason = (new Date(r.date).getUTCDay() === 6) ? "saturday" : "off";
+      }
+    });
+
+    // PART 1 — surface per-user off-Saturdays that have no Attendance record as
+    // synthetic off rows so the monthly log can show "Saturday off". Reuses the
+    // existing alternating logic (isSaturdayWorkday) — no duplicated math — and
+    // rides as extra elements in the same top-level array (backward-compatible).
+    var u = await User.findById(req.user.id).select("role saturdaySchedule saturdayPatternStartDate").lean();
+    if (u) {
+      var daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+      for (var day = 1; day <= daysInMonth; day++) {
+        var dUTC = new Date(Date.UTC(year, month - 1, day));
+        if (dUTC.getUTCDay() !== 6) continue;                                   // Saturdays only
+        if (existing[dayKey(dUTC)]) continue;                                   // real row wins
+        if (isSaturdayWorkday(u, { year: year, month: month, day: day })) continue; // a working Saturday
+        rows.push({ date: dUTC, off: true, offReason: "saturday" });
+      }
+    }
+
     res.json(rows);
   } catch (e) {
     console.error("[GET /attendance/my-month]", e);
