@@ -14085,7 +14085,7 @@ var UsersPage = function(p) {
           options={[{value:"",label:"- Select Job Title -"}].concat(JOB_TITLES.map(function(j){return {value:j.label,label:j.label};}))}/>
         <Inp label={t.email} value={nU.email} onChange={function(e){setNU(Object.assign({},nU,{email:e.target.value}));}}/>
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.phone} value={nU.phone} onChange={function(e){setNU(Object.assign({},nU,{phone:e.target.value}));}}/></div>
-        <Inp label={t.monthlyTarget} type="number" value={nU.monthlyTarget} onChange={function(e){setNU(Object.assign({},nU,{monthlyTarget:Number(e.target.value)}));}}/>
+        {nU.role==="sales" && <Inp label={t.monthlyTarget} type="number" value={nU.monthlyTarget} onChange={function(e){setNU(Object.assign({},nU,{monthlyTarget:Number(e.target.value)}));}}/>}
         <div style={{ marginBottom:12 }}>
           <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:5 }}>Starting Date</label>
           <input type="date" value={nU.startingDate||""} onChange={function(e){setNU(Object.assign({},nU,{startingDate:e.target.value}));}}
