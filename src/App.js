@@ -7315,7 +7315,11 @@ var MonthlyAttendanceLog = function(p) {
             {monthDays.map(function(d){
               var weekday = d.date.toLocaleDateString("en-GB", { weekday:"short", timeZone:"UTC" });
               var a = d.attendance;
-              var badge = attStatusBadge(a && a.status, !a && weekday === "Fri" ? "friday" : null);
+              // Off reason: backend off rows (synthetic off-Saturdays, or real
+              // mark_off_day rows tagged offReason) → "Saturday off"/"Off";
+              // Friday stays frontend-derived (no row); worked days use a.status.
+              var off = (a && a.offReason) ? a.offReason : (!a && weekday === "Fri" ? "friday" : null);
+              var badge = attStatusBadge(a && a.status, off);
               return <tr key={d.date.toISOString()} style={{borderTop:"0.5px solid rgba(0,0,0,0.05)"}}>
                 <td style={{padding:"10px 16px"}}>{d.date.toLocaleDateString("en-GB", { day:"2-digit", month:"short", timeZone:"UTC" })}</td>
                 <td style={{padding:"10px 16px", color:C.textLight}}>{weekday}</td>
