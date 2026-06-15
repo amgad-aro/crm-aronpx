@@ -1340,7 +1340,8 @@ var Sidebar = function(p) {
     isAdmin&&{id:"team",label:t.team,adminSection:true},
     // Single Attendance entry — visible to anyone who can use any attendance
     // tab. Inside the page, tabs are gated by the same per-action permissions.
-    (p.cu.role!=="admin"
+    // HR is excluded: their dashboard already embeds the check-in card + log.
+    p.cu.role!=="hr" && (p.cu.role!=="admin"
       || hasAttendancePerm(p.cu.role, "manageAttendance",       p.attendanceSettings)
       || hasAttendancePerm(p.cu.role, "manageSalaries",         p.attendanceSettings)
       || hasAttendancePerm(p.cu.role, "approveOffSiteRequests", p.attendanceSettings)
@@ -28499,7 +28500,7 @@ export default function CRMApp() {
       case "users": return <UsersPage {...sp}/>;
       case "brokers": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <BrokersPage {...sp}/> : <DashboardPage {...sp}/>;
       case "archive": return <ArchivePage {...sp}/>;
-      case "attendance": return <AttendancePage {...sp}/>;
+      case "attendance": return currentUser.role==="hr" ? <DashboardPage {...sp}/> : <AttendancePage {...sp}/>;
       // Legacy page ids (salaries / offsiteRequests / companyOffDays) used to
       // be standalone sidebar entries — they're now tabs inside AttendancePage.
       // We keep these cases as deep-link migrations for users whose
