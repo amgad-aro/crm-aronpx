@@ -7896,7 +7896,20 @@ app.get("/api/leads", auth, async function(req, res) {
       // commission attribution is independent of this filter (commission rows
       // live in the Commission collection and read snapshots, not slices).
       query.$or = [
-        { assignments: { $elemMatch: { agentId: saleUid, removedAt: null } } },
+        // Branch 1 — ACTIVE slice (current OR prior agent). Guarded NOT-frozen so
+        // a historical slice can no longer surface an EOI/DoneDeal lead to a prior
+        // agent; the current owner / split agent still match via Branch 2/3 below.
+        // Frozen set mirrors isLeadFrozen / the rotation guard (autoRotateLead
+        // L11951-11957): globalStatus eoi|donedeal, status EOI|DoneDeal,
+        // eoiStatus Pending|Approved.
+        { $and: [
+          { assignments: { $elemMatch: { agentId: saleUid, removedAt: null } } },
+          { $nor: [
+            { globalStatus: { $in: ["eoi", "donedeal"] } },
+            { status:       { $in: ["EOI", "DoneDeal"] } },
+            { eoiStatus:    { $in: ["Pending", "Approved"] } }
+          ]}
+        ]},
         { splitAgent2Id: saleUid },
         { $and: [
           { agentId: saleUid },
@@ -8488,7 +8501,19 @@ async function buildLeadSearchScopeQuery(req) {
     // unchanged — that path is for leads with no slice at all, not a removed
     // slice; the soft-remove rule has nothing to act on there.
     return { $or: [
-      { assignments: { $elemMatch: { agentId: saleUid, removedAt: null } } },
+      // Branch 1 — ACTIVE slice (current OR prior agent), guarded NOT-frozen for
+      // the search / by-phone surfaces: a historical slice no longer surfaces an
+      // EOI/DoneDeal lead to a prior agent; the current owner / split agent still
+      // match via Branch 2/3 below. Frozen set mirrors isLeadFrozen / the rotation
+      // guard (autoRotateLead L11951-11957).
+      { $and: [
+        { assignments: { $elemMatch: { agentId: saleUid, removedAt: null } } },
+        { $nor: [
+          { globalStatus: { $in: ["eoi", "donedeal"] } },
+          { status:       { $in: ["EOI", "DoneDeal"] } },
+          { eoiStatus:    { $in: ["Pending", "Approved"] } }
+        ]}
+      ]},
       { splitAgent2Id: saleUid },
       { $and: [
         { agentId: saleUid },
@@ -9129,7 +9154,17 @@ app.get("/api/eois", auth, async function(req, res) {
     // ?page=... so the cap is a sanity guard, not a silent truncation point.
     var limit  = Math.min(Math.max(1, parseInt(req.query.limit) || 100), 5000);
     var skip   = (page - 1) * limit;
-    var scope  = await buildLeadSearchScopeQuery(req);
+    // Sales: the EOI list only ever returns frozen (EOI/DoneDeal) leads, so a
+    // prior agent's historical assignments[] slice must NOT grant visibility —
+    // scope strictly to CURRENT ownership (agentId / splitAgent2Id). Every other
+    // role keeps buildLeadSearchScopeQuery unchanged (byte-for-byte).
+    var scope;
+    if (req.user.role === "sales") {
+      var meScopeId = new mongoose.Types.ObjectId(req.user.id);
+      scope = { $or: [ { agentId: meScopeId }, { splitAgent2Id: meScopeId } ] };
+    } else {
+      scope = await buildLeadSearchScopeQuery(req);
+    }
     console.log("[scope] /api/eois role=" + req.user.role + " uid=" + req.user.id + " status=" + status + " page=" + page + " limit=" + limit + " scope=" + JSON.stringify(scope));
 
     // wasEOI check expressed as a Mongo $or (any artifact present).
@@ -9243,7 +9278,17 @@ app.get("/api/deals", auth, async function(req, res) {
     // truncation). Default 100/page; FE paginates via ?page=...
     var limit  = Math.min(Math.max(1, parseInt(req.query.limit) || 100), 5000);
     var skip   = (page - 1) * limit;
-    var scope  = await buildLeadSearchScopeQuery(req);
+    // Sales: the Deals list only ever returns frozen (EOI/DoneDeal) leads, so a
+    // prior agent's historical assignments[] slice must NOT grant visibility —
+    // scope strictly to CURRENT ownership (agentId / splitAgent2Id). Every other
+    // role keeps buildLeadSearchScopeQuery unchanged (byte-for-byte).
+    var scope;
+    if (req.user.role === "sales") {
+      var meScopeId = new mongoose.Types.ObjectId(req.user.id);
+      scope = { $or: [ { agentId: meScopeId }, { splitAgent2Id: meScopeId } ] };
+    } else {
+      scope = await buildLeadSearchScopeQuery(req);
+    }
     console.log("[scope] /api/deals role=" + req.user.role + " uid=" + req.user.id + " status=" + status + " page=" + page + " limit=" + limit + " scope=" + JSON.stringify(scope));
 
     var dealActive = { $and: [
@@ -9320,6 +9365,15 @@ app.get("/api/leads/:id", auth, async function(req, res) {
       // Deals/EOI detail view.
       var topAgentIdD = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
       var isLegacyOwner = !myAssign && !isSplitAgent && String(topAgentIdD || "") === uid && isEoiOrDoneDeal(lead);
+      // Frozen (EOI/DoneDeal) leads open ONLY for their current owner (top-level
+      // agentId) or split agent — never for a prior agent reaching them through a
+      // historical assignments[] slice. Mirrors the list scope's NOT-frozen guard
+      // on Branch 1 (frozen set = isLeadFrozen / rotation guard). Current owner +
+      // split agent are unaffected; legacy-owner access is unaffected too (it
+      // requires agentId === caller, i.e. they ARE the current owner).
+      if (isLeadFrozen(lead) && String(topAgentIdD || "") !== uid && !isSplitAgent) {
+        return res.status(404).json({ error: "Not found" });
+      }
       if (!myAssign && !isSplitAgent && !isLegacyOwner) return res.status(404).json({ error: "Not found" });
       // Phase P — caller's own slice is stale or manually hidden: hide.
       // Split-only access and legacy-owner access bypass (no slice to
