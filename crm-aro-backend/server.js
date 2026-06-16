@@ -1036,6 +1036,46 @@ AuditLog.collection.createIndex({ type: 1, timestamp: -1 }).catch(function(){});
 // (first server boot). Office is empty so the Owner must configure it before
 // anyone can check in. All permission toggles default ON for sales_admin + hr
 // per the doc's mockup; Owner can switch them off in /settings/permissions.
+// Phase A — per-role attendance work shift + late-tier table. The roles below
+// are the ONLY attendance-tracked roles; admin (Owner) and viewer are
+// intentionally excluded (no entry = null shift = untracked), preserving the
+// historical getRoleWorkShift null fallback exactly.
+var ATTENDANCE_TRACKED_ROLES = ["sales", "team_leader", "manager", "director", "sales_admin", "hr", "office_boy"];
+
+// Default 3-tier late table — reproduces the historical computeLateTier
+// thresholds EXACTLY: <=30 min → ¼ day, <=60 min → ½ day, else (3rd tier,
+// maxLateMinutes:null = "and above") → 1 day. deductionFraction is a FRACTION
+// OF A DAY (0–1), never EGP; the salary formula (fraction × dailyRate) is
+// unchanged.
+var DEFAULT_LATE_TIERS = [
+  { maxLateMinutes: 30,   deductionFraction: 0.25 },
+  { maxLateMinutes: 60,   deductionFraction: 0.5  },
+  { maxLateMinutes: null, deductionFraction: 1    }
+];
+// Build a fresh shift object (deep-copies the tier table so per-role configs
+// never alias the shared DEFAULT_LATE_TIERS array). graceMinutes 15 matches
+// the historical 15-minute grace for every role.
+function defaultShift(startTime, endTime) {
+  return {
+    startTime: startTime,
+    endTime: endTime,
+    graceMinutes: 15,
+    tiers: DEFAULT_LATE_TIERS.map(function(t){ return { maxLateMinutes: t.maxLateMinutes, deductionFraction: t.deductionFraction }; })
+  };
+}
+// Per-role defaults — reproduce the historical hardcoded getRoleWorkShift
+// start/end times EXACTLY so an attendance_settings doc with no stored
+// roleShifts behaves byte-for-byte like before this change.
+var DEFAULT_ROLE_SHIFTS = {
+  sales:       defaultShift("11:00", "21:00"),
+  team_leader: defaultShift("11:00", "21:00"),
+  manager:     defaultShift("11:00", "21:00"),
+  director:    defaultShift("11:00", "21:00"),
+  sales_admin: defaultShift("10:00", "18:00"),
+  hr:          defaultShift("10:00", "18:00"),
+  office_boy:  defaultShift("10:00", "19:00")
+};
+
 var DEFAULT_ATTENDANCE_SETTINGS = {
   companyLocations: [],
   permissions: {
@@ -1043,8 +1083,39 @@ var DEFAULT_ATTENDANCE_SETTINGS = {
     manageAttendance:       { salesAdmin: true, hr: true },
     approveOffSiteRequests: { salesAdmin: true, hr: true },
     manageCompanyOffDays:   { salesAdmin: true, hr: true }
-  }
+  },
+  roleShifts: DEFAULT_ROLE_SHIFTS
 };
+
+// Merge stored roleShifts over DEFAULT_ROLE_SHIFTS, per-role AND per-field, so
+// a partially-configured doc (or a missing role/field) always falls back to
+// the historical default. Always returns a complete object with all tracked
+// roles populated. Tiers fall back as a whole block unless the stored value is
+// a length-3 array, in which case each tier merges field-by-field.
+function mergeRoleShifts(storedShifts) {
+  var ss = (storedShifts && typeof storedShifts === "object") ? storedShifts : {};
+  var out = {};
+  Object.keys(DEFAULT_ROLE_SHIFTS).forEach(function(role){
+    var def = DEFAULT_ROLE_SHIFTS[role];
+    var s   = (ss[role] && typeof ss[role] === "object") ? ss[role] : {};
+    var tiers = (Array.isArray(s.tiers) && s.tiers.length === 3)
+      ? s.tiers.map(function(t, i){
+          var dt = def.tiers[i];
+          return {
+            maxLateMinutes:    (t && t.maxLateMinutes !== undefined)        ? t.maxLateMinutes    : dt.maxLateMinutes,
+            deductionFraction: (t && typeof t.deductionFraction === "number") ? t.deductionFraction : dt.deductionFraction
+          };
+        })
+      : def.tiers.map(function(t){ return { maxLateMinutes: t.maxLateMinutes, deductionFraction: t.deductionFraction }; });
+    out[role] = {
+      startTime:    (typeof s.startTime === "string")    ? s.startTime    : def.startTime,
+      endTime:      (typeof s.endTime === "string")      ? s.endTime      : def.endTime,
+      graceMinutes: (typeof s.graceMinutes === "number") ? s.graceMinutes : def.graceMinutes,
+      tiers:        tiers
+    };
+  });
+  return out;
+}
 
 // Read attendance_settings from AppSetting, merging the stored value over the
 // defaults so missing keys don't crash callers. Always returns a plain object.
@@ -1058,7 +1129,8 @@ async function getAttendanceSettings() {
       manageAttendance:       Object.assign({}, DEFAULT_ATTENDANCE_SETTINGS.permissions.manageAttendance,       (stored.permissions || {}).manageAttendance       || {}),
       approveOffSiteRequests: Object.assign({}, DEFAULT_ATTENDANCE_SETTINGS.permissions.approveOffSiteRequests, (stored.permissions || {}).approveOffSiteRequests || {}),
       manageCompanyOffDays:   Object.assign({}, DEFAULT_ATTENDANCE_SETTINGS.permissions.manageCompanyOffDays,   (stored.permissions || {}).manageCompanyOffDays   || {})
-    }
+    },
+    roleShifts: mergeRoleShifts(stored.roleShifts)
   };
 }
 
@@ -5018,7 +5090,9 @@ app.patch("/api/settings/office-location", auth, ownerOnly, async function(req, 
     }
 
     var prev = await getAttendanceSettings();
-    var next = { companyLocations: normalized, permissions: prev.permissions };
+    // Carry roleShifts through unchanged — saveAttendanceSettings replaces the
+    // whole value, so omitting it here would wipe the per-role shift config.
+    var next = { companyLocations: normalized, permissions: prev.permissions, roleShifts: prev.roleShifts };
     await saveAttendanceSettings(next, req.user.id, { companyLocations: prev.companyLocations },
       "OFFICE_LOCATION_CHANGED", req.ip);
     res.json(next);
@@ -5037,12 +5111,101 @@ app.patch("/api/settings/permissions", auth, ownerOnly, async function(req, res)
       });
     }
     var prev = await getAttendanceSettings();
-    var next = { companyLocations: prev.companyLocations, permissions: permissions };
+    // Carry roleShifts through unchanged (see office-location handler note).
+    var next = { companyLocations: prev.companyLocations, permissions: permissions, roleShifts: prev.roleShifts };
     await saveAttendanceSettings(next, req.user.id, { permissions: prev.permissions },
       "PERMISSION_CHANGED", req.ip);
     res.json(next);
   } catch (e) {
     console.error("[PATCH /settings/permissions]", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Validate ONE role's shift config (Phase A). Returns null on success or an
+// error string. Rules: startTime/endTime must be HH:MM in [00:00, 23:59];
+// graceMinutes a non-negative integer (<= 1440 sanity cap); exactly 3 tiers;
+// tier 1/2 maxLateMinutes positive integers, strictly increasing (t1 < t2);
+// tier 3 maxLateMinutes must be null ("and above"); every deductionFraction a
+// number in [0, 1]. Validates the FULL object — the PATCH endpoint requires
+// each submitted role to be completely specified.
+function validateRoleShift(sh) {
+  function validTime(t){
+    if (typeof t !== "string") return false;
+    var m = /^([0-9]{2}):([0-9]{2})$/.exec(t);
+    if (!m) return false;
+    var h = parseInt(m[1], 10), mi = parseInt(m[2], 10);
+    return h >= 0 && h <= 23 && mi >= 0 && mi <= 59;
+  }
+  function isInt(n){ return typeof n === "number" && isFinite(n) && Math.floor(n) === n; }
+  function validFraction(f){ return typeof f === "number" && isFinite(f) && f >= 0 && f <= 1; }
+  if (!sh || typeof sh !== "object" || Array.isArray(sh)) return "shift must be an object";
+  if (!validTime(sh.startTime)) return "startTime must be HH:MM (00:00–23:59)";
+  if (!validTime(sh.endTime))   return "endTime must be HH:MM (00:00–23:59)";
+  if (!isInt(sh.graceMinutes) || sh.graceMinutes < 0 || sh.graceMinutes > 1440) return "graceMinutes must be an integer in [0, 1440]";
+  if (!Array.isArray(sh.tiers) || sh.tiers.length !== 3) return "tiers must be an array of exactly 3 entries";
+  var t1 = sh.tiers[0] || {}, t2 = sh.tiers[1] || {}, t3 = sh.tiers[2] || {};
+  if (!isInt(t1.maxLateMinutes) || t1.maxLateMinutes <= 0) return "tier 1 maxLateMinutes must be a positive integer";
+  if (!isInt(t2.maxLateMinutes) || t2.maxLateMinutes <= 0) return "tier 2 maxLateMinutes must be a positive integer";
+  if (t3.maxLateMinutes !== null) return "tier 3 maxLateMinutes must be null (\"and above\")";
+  if (!(t1.maxLateMinutes < t2.maxLateMinutes)) return "tier thresholds must be strictly increasing (tier1 < tier2)";
+  if (!validFraction(t1.deductionFraction)) return "tier 1 deductionFraction must be a number in [0, 1]";
+  if (!validFraction(t2.deductionFraction)) return "tier 2 deductionFraction must be a number in [0, 1]";
+  if (!validFraction(t3.deductionFraction)) return "tier 3 deductionFraction must be a number in [0, 1]";
+  return null;
+}
+
+// Owner-only — configure per-role attendance shifts (start/end, grace, 3 late
+// tiers). Accepts a partial { roleShifts: { <role>: {...} } } map: only the
+// submitted roles are updated, the rest keep their stored/default values.
+// Validates EVERY submitted role before writing (never partial-writes), then
+// persists the complete attendance_settings doc via saveAttendanceSettings so
+// companyLocations/permissions are preserved. Rotation settings are untouched.
+app.patch("/api/settings/role-shifts", auth, ownerOnly, async function(req, res) {
+  try {
+    var incoming = req.body && req.body.roleShifts;
+    if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
+      return res.status(400).json({ error: "roleShifts object required" });
+    }
+    var roles = Object.keys(incoming);
+    if (roles.length === 0) return res.status(400).json({ error: "roleShifts must include at least one role" });
+
+    // Reject any non-tracked role key up front (admin/viewer/unknown are never
+    // attendance-tracked and must not get a shift).
+    for (var i = 0; i < roles.length; i++) {
+      if (ATTENDANCE_TRACKED_ROLES.indexOf(roles[i]) < 0) {
+        return res.status(400).json({ error: "Role not allowed for shifts: " + roles[i] + ". Tracked roles: " + ATTENDANCE_TRACKED_ROLES.join(", ") });
+      }
+    }
+
+    // Validate + normalize every submitted role BEFORE any write.
+    var normalized = {};
+    for (var j = 0; j < roles.length; j++) {
+      var role = roles[j];
+      var sh = incoming[role];
+      var err = validateRoleShift(sh);
+      if (err) return res.status(400).json({ error: "Role " + role + ": " + err });
+      normalized[role] = {
+        startTime:    String(sh.startTime),
+        endTime:      String(sh.endTime),
+        graceMinutes: Number(sh.graceMinutes),
+        tiers: [
+          { maxLateMinutes: Number(sh.tiers[0].maxLateMinutes), deductionFraction: Number(sh.tiers[0].deductionFraction) },
+          { maxLateMinutes: Number(sh.tiers[1].maxLateMinutes), deductionFraction: Number(sh.tiers[1].deductionFraction) },
+          { maxLateMinutes: null,                               deductionFraction: Number(sh.tiers[2].deductionFraction) }
+        ]
+      };
+    }
+
+    // Merge validated roles over the current full settings; write the complete
+    // doc so nothing (companyLocations, permissions, other roles) is wiped.
+    var prev = await getAttendanceSettings();
+    var nextRoleShifts = Object.assign({}, prev.roleShifts, normalized);
+    var next = { companyLocations: prev.companyLocations, permissions: prev.permissions, roleShifts: nextRoleShifts };
+    await saveAttendanceSettings(next, req.user.id, { roleShifts: prev.roleShifts }, "ROLE_SHIFTS_CHANGED", req.ip);
+    res.json(next);
+  } catch (e) {
+    console.error("[PATCH /settings/role-shifts]", e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -5124,38 +5287,53 @@ function resolveOfficeMatch(lat, lng, settings) {
   };
 }
 
-// Doc §2 — work shift by role. Returns null for roles with no attendance
-// tracking (admin/Owner, viewer). End time is informational only — there's
-// no early-checkout deduction (doc §5).
-function getRoleWorkShift(role) {
-  if (role === "sales" || role === "team_leader" || role === "manager" || role === "director") {
-    return { startTime: "11:00", endTime: "21:00" };
-  }
-  if (role === "sales_admin" || role === "hr") {
-    return { startTime: "10:00", endTime: "18:00" };
-  }
-  if (role === "office_boy") {
-    return { startTime: "10:00", endTime: "19:00" };
-  }
-  return null;
+// Doc §2 — work shift by role, now read from attendance_settings.roleShifts
+// (Phase A). `settings` is the already-loaded getAttendanceSettings() object —
+// callers pass it in so this stays SYNC and adds no DB read in hot paths.
+// Returns null for roles with no attendance tracking (admin/Owner, viewer, or
+// any unknown role) — roleShifts only contains the tracked roles, so an absent
+// entry yields null, preserving the historical null fallback exactly. End time
+// is informational only — there's no early-checkout deduction (doc §5).
+function getRoleWorkShift(role, settings) {
+  var shifts = (settings && settings.roleShifts) || {};
+  var sh = shifts[role];
+  if (!sh) return null;
+  return { startTime: sh.startTime, endTime: sh.endTime };
 }
 
-// Doc §7 — late tier from check-in time. Granularity is whole minutes. The
-// boundaries are inclusive on the lower tier (e.g. 11:15:30 = 15 minutes late
-// = no deduction; 11:16:00 = 16 minutes late = ¼ day).
-function computeLateTier(checkInTime, role) {
-  var shift = getRoleWorkShift(role);
+// Doc §7 — late tier from check-in time, now driven by the per-role grace +
+// 3-tier table in attendance_settings.roleShifts (Phase A). `settings` is the
+// already-loaded getAttendanceSettings() object passed by the caller (no DB
+// read here — stays sync). Granularity is whole minutes; boundaries are
+// inclusive on the lower tier (e.g. grace 15 → 15 min late = no deduction;
+// 16 min late = first tier). Status strings are positionally fixed to the
+// historical present / late_quarter / late_half / late_full labels so the
+// Attendance.status enum and FE badges are unaffected. No shift
+// (admin/viewer/unknown) → present / 0, exactly as before.
+function computeLateTier(checkInTime, role, settings) {
+  var shift = getRoleWorkShift(role, settings);
   if (!shift) return { status: "present", deductionFraction: 0 };
+  var roleShift = ((settings && settings.roleShifts) || {})[role] || {};
+  var grace = (typeof roleShift.graceMinutes === "number") ? roleShift.graceMinutes : 15;
+  var tiers = (Array.isArray(roleShift.tiers) && roleShift.tiers.length === 3) ? roleShift.tiers : DEFAULT_LATE_TIERS;
   var hh = parseInt(shift.startTime.split(":")[0], 10);
   var mm = parseInt(shift.startTime.split(":")[1], 10);
   var startMin = hh * 60 + mm;
   var ci = getCairoDateParts(checkInTime);
   var ciMin = ci.hour * 60 + ci.minute;
   var lateMin = ciMin - startMin;
-  if (lateMin <= 15) return { status: "present",      deductionFraction: 0    };
-  if (lateMin <= 30) return { status: "late_quarter", deductionFraction: 0.25 };
-  if (lateMin <= 60) return { status: "late_half",    deductionFraction: 0.5  };
-  return                    { status: "late_full",    deductionFraction: 1    };
+  if (lateMin <= grace) return { status: "present", deductionFraction: 0 };
+  // Walk the 3 tiers in order; the 3rd tier's maxLateMinutes is null ("and
+  // above") so it always matches. Status label is fixed by tier position.
+  var STATUS = ["late_quarter", "late_half", "late_full"];
+  for (var i = 0; i < tiers.length; i++) {
+    var t = tiers[i];
+    if (t.maxLateMinutes === null || t.maxLateMinutes === undefined || lateMin <= t.maxLateMinutes) {
+      var frac = Number(t.deductionFraction);
+      return { status: STATUS[i] || "late_full", deductionFraction: isFinite(frac) ? frac : 0 };
+    }
+  }
+  return { status: "late_full", deductionFraction: 1 };
 }
 
 // Doc §3 — Saturday alternating logic. saturdayPatternStartDate must be a
@@ -5211,7 +5389,7 @@ async function buildTodayPayload(user) {
     attendance: attendance || null,
     isOffDay: offStatus.off,
     offReason: offStatus.reason,
-    workShift: getRoleWorkShift(user.role),
+    workShift: getRoleWorkShift(user.role, settings),
     pendingOffSite: pendingOff || null,
     // Multi-branch: full list of active locations. The widget picks the
     // closest one by distance for display.
@@ -5281,7 +5459,7 @@ app.post("/api/attendance/check-in", auth, async function(req, res) {
       return res.status(409).json({ error: "Already checked in today", code: "already_checked_in", attendance: existing });
     }
 
-    var tier = computeLateTier(now, user.role);
+    var tier = computeLateTier(now, user.role, settings);
 
     var att = await Attendance.findOneAndUpdate(
       { userId: user._id, date: dateKey },
@@ -5534,6 +5712,11 @@ async function(req, res) {
       return { off: false, reason: null };
     }
 
+    // Load attendance_settings ONCE for the whole (user × day) matrix below —
+    // reuses the copy the requireAttendancePermission middleware already
+    // attached; never read per-row inside the nested loop.
+    var shiftSettings = req.attendanceSettings || await getAttendanceSettings();
+
     var ROW_CAP = 500;
     var rows = [];
     var totalRows = 0;
@@ -5552,7 +5735,7 @@ async function(req, res) {
           attendance: attByKey[String(u._id) + "|" + dayIso] || null,
           isOffDay: off.off,
           offReason: off.reason,
-          workShift: getRoleWorkShift(u.role)
+          workShift: getRoleWorkShift(u.role, shiftSettings)
         });
       }
     }
@@ -5691,7 +5874,8 @@ app.delete("/api/offsite/:id", auth, async function(req, res) {
         // the late tier originally set at check-in.
         att.checkOut = undefined;
         if (user && att.checkIn && att.checkIn.timestamp) {
-          var tier = computeLateTier(att.checkIn.timestamp, user.role);
+          var settings = await getAttendanceSettings();
+          var tier = computeLateTier(att.checkIn.timestamp, user.role, settings);
           att.deductionFraction = tier.deductionFraction;
         }
         att.status = "in_progress";
@@ -5736,7 +5920,7 @@ async function(req, res) {
     // check-out is set, we move to the late-tier status; otherwise we leave
     // status as in_progress until check-out happens.
     var tier = att.checkIn && att.checkIn.timestamp
-      ? computeLateTier(att.checkIn.timestamp, user.role)
+      ? computeLateTier(att.checkIn.timestamp, user.role, req.attendanceSettings)
       : { status: "present", deductionFraction: 0 };
     att.deductionFraction = tier.deductionFraction;
     att.status = (att.checkOut && att.checkOut.timestamp) ? tier.status : "in_progress";
@@ -5804,7 +5988,7 @@ async function(req, res) {
         // tier so the user can try checking out again from inside the office.
         att.checkOut = undefined;
         if (requesterUser && att.checkIn && att.checkIn.timestamp) {
-          var tier = computeLateTier(att.checkIn.timestamp, requesterUser.role);
+          var tier = computeLateTier(att.checkIn.timestamp, requesterUser.role, req.attendanceSettings);
           att.deductionFraction = tier.deductionFraction;
         }
         att.status = "in_progress";
