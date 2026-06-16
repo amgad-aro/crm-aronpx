@@ -18019,8 +18019,49 @@ var SettingsPage = function(p) {
   var [attSaving,setAttSaving] = useState(false);
   var [attMsg,setAttMsg] = useState("");
   var [attError,setAttError] = useState("");
+
+  // Work Shifts tab (Phase B) — per-role attendance shift editor. Owner-only.
+  // Hydrated from the SAME GET /api/settings/attendance as Office Location /
+  // Permissions (the backend returns roleShifts merged over defaults, so a
+  // never-configured doc renders today's values). The 7 tracked roles below
+  // are the only ones the backend accepts; admin/viewer are never shown.
+  var [roleShifts,setRoleShifts] = useState(null);
+  var SHIFT_ROLES = [
+    { role:"sales",       label:"Sales" },
+    { role:"team_leader", label:"Team Leader" },
+    { role:"manager",     label:"Manager" },
+    { role:"director",    label:"Sales Director" },
+    { role:"sales_admin", label:"Sales Admin" },
+    { role:"hr",          label:"HR" },
+    { role:"office_boy",  label:"Office Boy" }
+  ];
+  // Map the server's roleShifts (numbers) into an editable string-keyed form so
+  // partial typing never produces NaN. Tier 3's maxLateMinutes is always null
+  // ("and above"). Always returns all 7 roles populated.
+  var shiftsToEditable = function(rs){
+    var src = (rs && typeof rs === "object") ? rs : {};
+    var out = {};
+    SHIFT_ROLES.forEach(function(sr){
+      var r = (src[sr.role] && typeof src[sr.role] === "object") ? src[sr.role] : {};
+      var t = (Array.isArray(r.tiers) && r.tiers.length === 3) ? r.tiers : [{},{},{}];
+      var mkTier = function(tier, fixedNull){
+        return {
+          maxLateMinutes: fixedNull ? null : (tier && tier.maxLateMinutes != null ? String(tier.maxLateMinutes) : ""),
+          deductionFraction: (tier && tier.deductionFraction != null) ? String(tier.deductionFraction) : ""
+        };
+      };
+      out[sr.role] = {
+        startTime:    r.startTime || "",
+        endTime:      r.endTime   || "",
+        graceMinutes: (r.graceMinutes != null) ? String(r.graceMinutes) : "",
+        tiers: [ mkTier(t[0], false), mkTier(t[1], false), mkTier(t[2], true) ]
+      };
+    });
+    return out;
+  };
+
   useEffect(function(){
-    if (activeTab !== "officeLocation" && activeTab !== "permissions") return;
+    if (activeTab !== "officeLocation" && activeTab !== "permissions" && activeTab !== "workShifts") return;
     if (attLoaded) return;
     var cancelled = false;
     apiFetch("/api/settings/attendance","GET",null,p.token).then(function(s){
@@ -18036,6 +18077,7 @@ var SettingsPage = function(p) {
         };
       }));
       if (s.permissions) setAttPerms(s.permissions);
+      setRoleShifts(shiftsToEditable(s.roleShifts));
       setAttLoaded(true);
     }).catch(function(err){
       // Endpoint is Owner-only; non-Owner users won't see the tabs anyway.
@@ -18359,7 +18401,8 @@ var SettingsPage = function(p) {
     {id:"audit",       label:"Audit Log"},
     canManageBranches && {id:"branches", label:"Branches"},
     isOwner && {id:"officeLocation", label:"Office Location"},
-    isOwner && {id:"permissions",    label:"Permissions"}
+    isOwner && {id:"permissions",    label:"Permissions"},
+    isOwner && {id:"workShifts",     label:"Work Shifts"}
   ].filter(Boolean);
   // Tab chip: white-on-gray, active = white bg with 0.5px border. Matches mockup .tab.
   var tabBtn=function(tab){
@@ -19985,6 +20028,166 @@ var SettingsPage = function(p) {
             <button type="button" onClick={doSavePerms} disabled={attSaving||!attLoaded} style={Object.assign({},btnPrimary,{opacity:attSaving?0.6:1,cursor:attSaving?"not-allowed":"pointer"})}>
               {attSaving?"Saving…":"Save permissions"}
             </button>
+            {attMsg   && <span style={{fontSize:12,color:"#0F6E56",background:"#EAF6F0",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attMsg}</span>}
+            {attError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attError}</span>}
+          </div>
+        </div>;
+      })()}
+
+      {activeTab==="workShifts" && isOwner && (function(){
+        var fieldLabel = {fontSize:11,color:"#666",display:"block",marginBottom:4};
+        var inputStyle = {padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",fontFamily:"inherit",width:"100%",boxSizing:"border-box"};
+        var btnPrimary = {fontSize:12,padding:"8px 16px",border:"0.5px solid rgba(24,95,165,0.3)",background:"#185FA5",color:"#fff",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+
+        var updateShift = function(role, patch){
+          setRoleShifts(function(prev){
+            var next = Object.assign({}, prev);
+            next[role] = Object.assign({}, prev[role], patch);
+            return next;
+          });
+        };
+        var updateTier = function(role, idx, patch){
+          setRoleShifts(function(prev){
+            var next = Object.assign({}, prev);
+            var r = Object.assign({}, prev[role]);
+            r.tiers = prev[role].tiers.map(function(t,i){ return i===idx ? Object.assign({},t,patch) : t; });
+            next[role] = r;
+            return next;
+          });
+        };
+
+        // Client-side validation mirroring the backend (server stays the source
+        // of truth). Returns an error string or null for one role's editable shift.
+        var isTime = function(v){ return /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(String(v||"")); };
+        var isPosInt = function(v){ var n=Number(v); return v!=="" && isFinite(n) && n>0 && Math.floor(n)===n; };
+        var isFrac = function(v){ var n=Number(v); return v!=="" && isFinite(n) && n>=0 && n<=1; };
+        var validateRole = function(e){
+          if (!e) return "missing";
+          if (!isTime(e.startTime)) return "Start time must be HH:MM";
+          if (!isTime(e.endTime))   return "End time must be HH:MM";
+          var g = Number(e.graceMinutes);
+          if (e.graceMinutes==="" || !isFinite(g) || g<0 || g>1440 || Math.floor(g)!==g) return "Grace must be an integer 0–1440";
+          if (!isPosInt(e.tiers[0].maxLateMinutes)) return "Tier 1 minutes must be a positive integer";
+          if (!isPosInt(e.tiers[1].maxLateMinutes)) return "Tier 2 minutes must be a positive integer";
+          if (!(Number(e.tiers[0].maxLateMinutes) < Number(e.tiers[1].maxLateMinutes))) return "Tier 1 minutes must be less than Tier 2";
+          for (var i=0;i<3;i++){ if (!isFrac(e.tiers[i].deductionFraction)) return "Tier "+(i+1)+" deduction must be 0–1"; }
+          return null;
+        };
+        var fracHint = function(v){
+          var n = Number(v);
+          if (v==="" || !isFinite(n)) return "";
+          if (n===0)    return "no deduction";
+          if (n===0.25) return "¼ day";
+          if (n===0.5)  return "½ day";
+          if (n===0.75) return "¾ day";
+          if (n===1)    return "full day";
+          if (n>0 && n<1) return Math.round(n*100)+"% of a day";
+          return "";
+        };
+
+        var errors = {};
+        var hasErrors = false;
+        SHIFT_ROLES.forEach(function(sr){
+          var er = validateRole(roleShifts && roleShifts[sr.role]);
+          if (er){ errors[sr.role] = er; hasErrors = true; }
+        });
+
+        var doSaveShifts = async function(){
+          setAttError(""); setAttMsg("");
+          var bad = null;
+          SHIFT_ROLES.forEach(function(sr){ if (!bad){ var er = validateRole(roleShifts[sr.role]); if (er) bad = sr.label + ": " + er; } });
+          if (bad){ setAttError(bad); return; }
+          setAttSaving(true);
+          try {
+            var payloadShifts = {};
+            SHIFT_ROLES.forEach(function(sr){
+              var e = roleShifts[sr.role];
+              payloadShifts[sr.role] = {
+                startTime: e.startTime,
+                endTime: e.endTime,
+                graceMinutes: Number(e.graceMinutes),
+                tiers: [
+                  { maxLateMinutes: Number(e.tiers[0].maxLateMinutes), deductionFraction: Number(e.tiers[0].deductionFraction) },
+                  { maxLateMinutes: Number(e.tiers[1].maxLateMinutes), deductionFraction: Number(e.tiers[1].deductionFraction) },
+                  { maxLateMinutes: null,                              deductionFraction: Number(e.tiers[2].deductionFraction) }
+                ]
+              };
+            });
+            await apiFetch("/api/settings/role-shifts","PATCH",{ roleShifts: payloadShifts },p.token,p.csrfToken);
+            // Refetch the GET to reflect stored state — saveAttendanceSettings'
+            // broadcast doesn't carry roleShifts, so we don't rely on the socket.
+            var fresh = await apiFetch("/api/settings/attendance","GET",null,p.token);
+            if (fresh && fresh.roleShifts) setRoleShifts(shiftsToEditable(fresh.roleShifts));
+            setAttMsg("Work shifts saved");
+          } catch (err) {
+            setAttError((err && err.message) || "Save failed");
+          } finally {
+            setAttSaving(false);
+          }
+        };
+
+        var renderTier = function(role, idx, tier){
+          var fixed = (idx === 2); // 3rd tier = "and above" (maxLateMinutes null, not editable)
+          return <div key={idx} style={{display:"grid",gridTemplateColumns:"70px 1fr 90px 1.4fr",gap:10,alignItems:"center",padding:"6px 0"}}>
+            <div style={{fontSize:12,color:"#1a1a1a",fontWeight:500}}>Tier {idx+1}</div>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              {fixed
+                ? <span style={{fontSize:12,color:"#666"}}>and above</span>
+                : <span style={{display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:11,color:"#666"}}>up to</span>
+                    <input type="number" min="1" step="1" value={tier.maxLateMinutes} onChange={function(ev){updateTier(role,idx,{maxLateMinutes:ev.target.value});}} style={Object.assign({},inputStyle,{width:72})}/>
+                    <span style={{fontSize:11,color:"#666"}}>min late</span>
+                  </span>}
+            </div>
+            <div style={{fontSize:11,color:"#666",textAlign:"right"}}>→ deduct</div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <input type="number" min="0" max="1" step="0.05" value={tier.deductionFraction} onChange={function(ev){updateTier(role,idx,{deductionFraction:ev.target.value});}} style={Object.assign({},inputStyle,{width:80})}/>
+              <span style={{fontSize:11,color:"#0F6E56"}}>{fracHint(tier.deductionFraction)}</span>
+            </div>
+          </div>;
+        };
+
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Work Shifts</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:18}}>Per-role attendance shift: start/end time, grace period, and 3 late tiers. <b>Grace</b> = minutes after shift start with no deduction. Each tier's deduction is a <b>fraction of one day's salary</b> (e.g. 0.25 = ¼ day). Affects future check-ins only — already-recorded days keep their saved deduction. Separate from rotation working hours.</div>
+
+          {!attLoaded ? <div style={{fontSize:12,color:"#666"}}>Loading…</div>
+            : !roleShifts ? <div style={{fontSize:12,color:"#A32D2D"}}>Could not load work shifts.</div>
+            : <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              {SHIFT_ROLES.map(function(sr){
+                var e = roleShifts[sr.role];
+                if (!e) return null;
+                var err = errors[sr.role];
+                return <div key={sr.role} style={{padding:"14px 16px",border:"0.5px solid "+(err?"rgba(163,45,45,0.4)":"rgba(0,0,0,0.1)"),borderRadius:10,background:"#fff"}}>
+                  <div style={{fontSize:13,fontWeight:600,color:"#1a1a1a",marginBottom:12}}>{sr.label}</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:10}}>
+                    <div>
+                      <label style={fieldLabel}>Shift start</label>
+                      <input type="time" value={e.startTime} onChange={function(ev){updateShift(sr.role,{startTime:ev.target.value});}} style={inputStyle}/>
+                    </div>
+                    <div>
+                      <label style={fieldLabel}>Shift end</label>
+                      <input type="time" value={e.endTime} onChange={function(ev){updateShift(sr.role,{endTime:ev.target.value});}} style={inputStyle}/>
+                    </div>
+                    <div>
+                      <label style={fieldLabel}>Grace (min)</label>
+                      <input type="number" min="0" max="1440" step="1" value={e.graceMinutes} onChange={function(ev){updateShift(sr.role,{graceMinutes:ev.target.value});}} style={inputStyle}/>
+                    </div>
+                  </div>
+                  <div style={{borderTop:"0.5px solid rgba(0,0,0,0.06)",paddingTop:8}}>
+                    <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px",marginBottom:2}}>Late tiers</div>
+                    {e.tiers.map(function(tier, idx){ return renderTier(sr.role, idx, tier); })}
+                  </div>
+                  {err && <div style={{fontSize:11,color:"#A32D2D",marginTop:8}}>{err}</div>}
+                </div>;
+              })}
+            </div>}
+
+          <div style={{display:"flex",gap:8,marginTop:18,flexWrap:"wrap",alignItems:"center"}}>
+            <button type="button" onClick={doSaveShifts} disabled={attSaving||!attLoaded||!roleShifts||hasErrors} style={Object.assign({},btnPrimary,{opacity:(attSaving||hasErrors)?0.6:1,cursor:(attSaving||hasErrors)?"not-allowed":"pointer"})}>
+              {attSaving?"Saving…":"Save work shifts"}
+            </button>
+            {hasErrors && !!roleShifts && <span style={{fontSize:12,color:"#A32D2D"}}>Fix the highlighted role(s) before saving.</span>}
             {attMsg   && <span style={{fontSize:12,color:"#0F6E56",background:"#EAF6F0",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attMsg}</span>}
             {attError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{attError}</span>}
           </div>
