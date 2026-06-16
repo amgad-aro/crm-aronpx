@@ -4240,15 +4240,29 @@ async function getRotationSettings() {
 // Empty from/to = always open; overnight windows (22:00→06:00) supported.
 function isWithinWorkingHours(wh, d) {
   if (!wh) return true;
-  var dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-  var today = dayNames[d.getDay()];
+  // Cairo wall-clock via getCairoDateParts (DST-aware) — NEVER server-local /
+  // UTC. Railway runs UTC, so d.getDay()/d.getHours() would be hours off and
+  // mis-gate rotation; the company window is defined in Cairo local time.
+  var cp = getCairoDateParts(d || new Date());
+  var today = cp.weekday; // "Sun".."Sat" — same 3-letter form as wh.days
   if (Array.isArray(wh.days) && wh.days.length && wh.days.indexOf(today) < 0) return false;
   var toMin = function(hhmm){ var p = String(hhmm||"").split(":"); return (Number(p[0])||0)*60 + (Number(p[1])||0); };
-  var cur = d.getHours()*60 + d.getMinutes();
+  var cur = cp.hour*60 + cp.minute;
   var from = toMin(wh.from), to = toMin(wh.to);
   if (from === 0 && to === 0) return true;
   if (from <= to) return cur >= from && cur <= to;
   return cur >= from || cur <= to;
+}
+
+// Master working-hours gate for ALL automatic rotation/assignment. Honors the
+// "Respect working hours" toggle (smartSkipRules.respectWorkingHours): when the
+// toggle is OFF (or absent), rotation runs 24/7 (legacy behavior). When ON,
+// rotation is allowed only inside the Cairo working-hours window
+// (workingHours.from/.to/.days). Manual admin force is exempted at the call
+// sites — this helper is intentionally NOT consulted for that path.
+function rotationAllowedNow(settings) {
+  if (!settings || !settings.smartSkipRules || settings.smartSkipRules.respectWorkingHours !== true) return true;
+  return isWithinWorkingHours(settings.workingHours, new Date());
 }
 
 // Any authenticated user can READ rotation settings — the rotation loop runs
@@ -12027,6 +12041,15 @@ async function autoRotateLead(leadId, byName, opts) {
     if (settings.autoRotationPausedUntil && new Date(settings.autoRotationPausedUntil) > new Date()) {
       return { ok: false, status: 409, error: "rotation_paused", message: "Auto-rotation is paused until " + settings.autoRotationPausedUntil };
     }
+    // Working-hours gate — composes with the disabled/paused guards above (all
+    // must pass). Admin-explicit manual force (reason==="manual" by admin/
+    // sales_admin) is EXEMPT, mirroring the eligibility/cooldown bypass below,
+    // so an admin can assign at any hour. Cairo wall-clock via rotationAllowedNow
+    // (no UTC). Covers every reason-based trigger + the browser /auto-rotate.
+    var adminManual = (role === "admin" || role === "sales_admin") && reason === "manual";
+    if (!adminManual && !rotationAllowedNow(settings)) {
+      return { ok: false, status: 409, error: "outside_working_hours", message: "Auto-rotation paused outside working hours" };
+    }
 
     // Admin-configurable cap on total rotation events per lead. Modelled after
     // rotationStopAfterDays — sticky exclusion enforced inline (no separate
@@ -12972,6 +12995,11 @@ async function autoAssignQueuedLead(leadId) {
 
     var settings = await getRotationSettings();
     // Manual window sweeper is first-assignment only (agentId=null), independent of master rotation switch and pause — those only gate agent-to-agent rotation.
+    // Working-hours gate: a queued NEW lead must not be auto-assigned outside
+    // working hours. Returning here leaves it agentId=null with its (now-past)
+    // manualWindowExpiresAt, so sweepExpiredQueue re-picks it on the first
+    // in-hours tick — "queue until next shift" with no new data structure.
+    if (!rotationAllowedNow(settings)) return { ok: false, error: "outside_working_hours" };
 
     var allTierIds = [].concat(settings.tiers.tier1.agents, settings.tiers.tier2.agents, settings.tiers.tier3.agents);
     if (!allTierIds.length) return { ok: false, error: "no_rotation_order" };
@@ -13126,6 +13154,13 @@ async function autoAssignQueuedLead(leadId) {
 // One lead failing (no agent, paused rotation, etc.) never stops the loop.
 async function sweepExpiredQueue() {
   try {
+    // Working-hours bail (belt-and-suspenders; autoAssignQueuedLead also gates).
+    // Outside working hours, skip the whole sweep so queued new leads stay
+    // agentId=null and release on the first in-hours tick. Cairo wall-clock
+    // via rotationAllowedNow (no UTC). Settings-read failure falls through to
+    // the outer try/catch and retries next tick.
+    var qSettings = await getRotationSettings();
+    if (!rotationAllowedNow(qSettings)) return;
     // Phase R-13.2 — exclude frozen leads (DoneDeal / EOI / Pending EOI /
     // Approved EOI) at query time. The original filter didn't, and a frozen
     // lead created without an agent + a positive manualAssignmentWindow got
@@ -13195,6 +13230,13 @@ async function sweepAutoRotation() {
     }
     if (settings.autoRotationPausedUntil && new Date(settings.autoRotationPausedUntil) > new Date()) {
       await persistRotationRun(runStartedAt, 0, 0, 0, { "rotation_paused": 1 }, [], []);
+      return;
+    }
+    // Working-hours bail (belt-and-suspenders; autoRotateLead also gates each
+    // lead). Persist the reason so the Rotation Diagnostics page shows WHY the
+    // tick did nothing. Cairo wall-clock via rotationAllowedNow (no UTC).
+    if (!rotationAllowedNow(settings)) {
+      await persistRotationRun(runStartedAt, 0, 0, 0, { "outside_working_hours": 1 }, [], []);
       return;
     }
 
