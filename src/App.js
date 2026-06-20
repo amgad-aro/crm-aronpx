@@ -22993,6 +22993,9 @@ var CommissionEditCollectionModal = function(p) {
   var [showAddRecip, setShowAddRecip] = useState(false);
   var [addRecipUserId, setAddRecipUserId] = useState("");
   var [addRecipAmount, setAddRecipAmount] = useState("");
+  // Manual-recipient fields (free-text name + role when no User is picked).
+  var [addRecipName, setAddRecipName] = useState("");
+  var [addRecipRole, setAddRecipRole] = useState("sales");
   // Inline recipient amount edit (recipientId being edited + draft amount).
   var [editRecipId, setEditRecipId] = useState("");
   var [editRecipAmount, setEditRecipAmount] = useState("");
@@ -23245,12 +23248,19 @@ var CommissionEditCollectionModal = function(p) {
     }
     await ambCall("PUT", "/ambassador-config", body);
   };
+  var resetAddRecip = function(){ setShowAddRecip(false); setAddRecipUserId(""); setAddRecipAmount(""); setAddRecipName(""); setAddRecipRole("sales"); };
   var addRecipient = async function(){
-    if (!addRecipUserId) { alert("Select a staff member"); return; }
+    var nm = String(addRecipName || "").trim();
+    // One of (User, typed name) is required. Picking a User takes precedence.
+    if (!addRecipUserId && !nm) { alert("Pick a User or type a name"); return; }
     var a = ambParse(addRecipAmount);
     if (addRecipAmount !== "" && (!isFinite(a) || a < 0)) { alert("Amount must be ≥ 0"); return; }
-    var ok = await ambCall("POST", "/ambassador-recipients", { userId: addRecipUserId, amount: isFinite(a) ? a : 0 });
-    if (ok) { setShowAddRecip(false); setAddRecipUserId(""); setAddRecipAmount(""); }
+    var amt = isFinite(a) ? a : 0;
+    var body = addRecipUserId
+      ? { userId: addRecipUserId, amount: amt }
+      : { name: nm, role: addRecipRole, amount: amt, isManual: true };
+    var ok = await ambCall("POST", "/ambassador-recipients", body);
+    if (ok) resetAddRecip();
   };
   var startEditRecip = function(r){ setEditRecipId(String(r._id)); setEditRecipAmount(Number(r.amount||0) > 0 ? Number(r.amount).toLocaleString() : ""); };
   var saveEditRecip = async function(rid){
@@ -23285,7 +23295,7 @@ var CommissionEditCollectionModal = function(p) {
     var ambStaff = users.filter(function(u){ return u && u.active && ["sales","team_leader","manager","director"].indexOf(u.role) >= 0; });
     var amberHeader = Object.assign({}, sectionHeaderStyle, { color:"#B45309" });
     var roleLabel = function(role){ return role === "team_leader" ? "Team Lead" : role === "manager" ? "Manager" : role === "director" ? "Director" : "Sales"; };
-    return <Modal show={true} onClose={p.onClose} title={"Edit Collection — " + (snap.customerName || "(unknown)")} w={720}>
+    return <><Modal show={true} onClose={p.onClose} title={"Edit Collection — " + (snap.customerName || "(unknown)")} w={720}>
       {/* SECTION 1 — Snapshot (read-only for ambassador: gross derives from the
           cycle's claimAmount, so editing dealTotal here would be inert). */}
       <div style={sectionHeaderStyle}>Deal Snapshot</div>
@@ -23335,20 +23345,9 @@ var CommissionEditCollectionModal = function(p) {
       <div style={dividerStyle}/>
       <div style={Object.assign({}, amberHeader, { display:"flex", justifyContent:"space-between", alignItems:"center" })}>
         <span>Recipients ({recips.length})</span>
-        {isOnlyAdmin && <button onClick={function(){ setShowAddRecip(function(v){ return !v; }); }} disabled={ambBusy}
-          style={{ padding:"3px 10px", borderRadius:6, border:"1px solid #D97706", background:"#FEF3C7", color:"#B45309", fontSize:11, fontWeight:600, cursor: ambBusy ? "wait" : "pointer", textTransform:"none", letterSpacing:0 }}>+ Add Recipient</button>}
+        {isOnlyAdmin && <button onClick={function(){ resetAddRecip(); setShowAddRecip(true); }} disabled={ambBusy}
+          style={{ padding:"3px 10px", borderRadius:6, border:"1px solid #D97706", background:"#FEF3C7", color:"#B45309", fontSize:11, fontWeight:600, cursor: ambBusy ? "wait" : "pointer", textTransform:"none", letterSpacing:0 }}>+ Add Manual Recipient</button>}
       </div>
-      {showAddRecip && isOnlyAdmin && <div style={{ display:"flex", gap:6, alignItems:"center", marginBottom:8, padding:"8px 10px", background:"#FFFBEB", borderRadius:6, border:"1px dashed #FDE68A" }}>
-        <select value={addRecipUserId} onChange={function(e){ setAddRecipUserId(e.target.value); }}
-          style={{ flex:1, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}>
-          <option value="">— Select staff —</option>
-          {ambStaff.map(function(u){ return <option key={gid(u)} value={gid(u)}>{u.name} ({roleLabel(u.role)})</option>; })}
-        </select>
-        <input type="text" inputMode="numeric" placeholder="Amount EGP" value={addRecipAmount}
-          onChange={function(e){ var raw = e.target.value.replace(/,/g,"").replace(/[^0-9]/g,""); setAddRecipAmount(raw === "" ? "" : Number(raw).toLocaleString()); }}
-          style={{ width:120, padding:"5px 8px", borderRadius:6, border:"1px solid #E2E8F0", fontSize:12 }}/>
-        <button onClick={addRecipient} disabled={ambBusy} style={{ padding:"5px 10px", borderRadius:6, border:"none", background:"#D97706", color:"#fff", fontSize:11, fontWeight:600, cursor: ambBusy ? "wait" : "pointer" }}>Add</button>
-      </div>}
       {recips.length === 0 && <div style={{ fontSize:12, color:C.textLight, fontStyle:"italic", padding:"6px 10px" }}>No recipients yet.</div>}
       {recips.length > 0 && <div style={{ border:"1px solid #F1F5F9", borderRadius:8, overflow:"hidden" }}>
         <div style={{ display:"flex", padding:"6px 10px", background:"#F8FAFC", fontSize:10, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.3 }}>
@@ -23361,7 +23360,10 @@ var CommissionEditCollectionModal = function(p) {
           var editing = editRecipId === rid;
           return <div key={rid} style={{ borderTop:"1px solid #F1F5F9", padding:"7px 10px", fontSize:12 }}>
             <div style={{ display:"flex", alignItems:"center" }}>
-              <div style={{ flex:2, fontWeight:600, color:C.text }}>{r.userName || "(unknown)"}</div>
+              <div style={{ flex:2, fontWeight:600, color:C.text, display:"flex", alignItems:"center", gap:6 }}>
+                <span>{r.userName || "(unknown)"}</span>
+                {r.isManual && <span title="Added by name with no linked User account" style={{ fontSize:9, padding:"1px 5px", borderRadius:6, background:"#EDE9FE", color:"#5B21B6", fontWeight:700, whiteSpace:"nowrap" }}>manually added</span>}
+              </div>
               <div style={{ flex:1, color:C.textLight, textTransform:"capitalize" }}>{roleLabel(r.userRole)}</div>
               <div style={{ flex:1, textAlign:"right", fontWeight:600 }}>
                 {editing
@@ -23415,7 +23417,43 @@ var CommissionEditCollectionModal = function(p) {
         <button onClick={p.onClose} disabled={ambBusy}
           style={{ padding:"7px 16px", borderRadius:8, border:"none", background: C.accent, color:"#fff", cursor: ambBusy ? "wait" : "pointer", fontSize:13, fontWeight:600 }}>Done</button>
       </div>
-    </Modal>;
+    </Modal>
+
+    {/* ADD MANUAL RECIPIENT — mirrors the internal CommissionsPage modal: User
+        dropdown (recommended) → "or" → free-text Name + Role + Amount. Picking a
+        User links the payout (userId path); a typed name posts isManual:true. */}
+    {showAddRecip && isOnlyAdmin && <Modal show={true} onClose={resetAddRecip} title={"➕ Add Manual Recipient — " + (snap.customerName || "Commission")} w={460}>
+      <div style={{ fontSize:11, color:C.textLight, marginBottom:12, lineHeight:1.5 }}>
+        Add a recipient to this ambassador deal with a manual EGP amount.
+        <br/><b>Tip:</b> picking an existing User links the payout to their profile (so it shows on the Payout Report). Use the manual-name field below only for off-system recipients.
+      </div>
+      <Inp label="User (recommended)" type="select" value={addRecipUserId} onChange={function(e){
+        setAddRecipUserId(e.target.value);
+        if (e.target.value) {
+          var u = ambStaff.find(function(x){ return String(gid(x)) === String(e.target.value); });
+          if (u && u.name) setAddRecipName(u.name);
+        }
+      }} options={[{ value:"", label:"— Pick a User (recommended) —" }].concat(
+        ambStaff.map(function(u){ return { value: String(gid(u)), label: (u.name || "(unnamed)") + " · " + roleLabel(u.role) }; })
+      )}/>
+      <div style={{ fontSize:10, color:C.textLight, margin:"-6px 0 8px 4px" }}>— or enter a name manually below (no User link; appears on Payout Report under the typed name) —</div>
+      <Inp label="Name" req value={addRecipName} onChange={function(e){ setAddRecipName(e.target.value); }} placeholder="Full name"/>
+      <Inp label="Role" type="select" value={addRecipRole} onChange={function(e){ setAddRecipRole(e.target.value); }} options={[
+        { value:"sales", label:"Sales" },
+        { value:"team_leader", label:"Team Leader" },
+        { value:"manager", label:"Manager" },
+        { value:"director", label:"Director" }
+      ]}/>
+      <Inp label="Amount (EGP)" value={addRecipAmount} onChange={function(e){
+        var raw = e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");
+        setAddRecipAmount(raw === "" ? "" : Number(raw).toLocaleString());
+      }} placeholder="e.g. 25,000 (0 allowed)"/>
+      <div style={{ display:"flex", gap:10, marginTop:6 }}>
+        <Btn outline onClick={resetAddRecip} style={{ flex:1 }}>Cancel</Btn>
+        <Btn onClick={addRecipient} style={{ flex:1 }} loading={ambBusy}>Add</Btn>
+      </div>
+    </Modal>}
+    </>;
   }
 
   return <Modal show={true} onClose={p.onClose} title={"Edit Collection — " + (snap.customerName || "(unknown)")} w={720}>

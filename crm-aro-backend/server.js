@@ -742,8 +742,13 @@ var commissionSchema = new mongoose.Schema({
     aroNetTotal:         { type: Number, default: 0 },   // gross − developerTaxAmount
     recipients: [{
       userId:    { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
-      userName:  { type: String, default: "" },          // SNAPSHOT
+      userName:  { type: String, default: "" },          // SNAPSHOT (required at route level)
       userRole:  { type: String, default: "" },          // SNAPSHOT ("sales","team_leader",...)
+      // isManual — recipient added by free-text name with no User link. When
+      // true, userId is null, userName/userRole carry the typed values, and the
+      // Payout Report buckets the recipient under name:<userName> (see
+      // computePayoutsForMonth). userId-picked recipients keep isManual:false.
+      isManual:  { type: Boolean, default: false },
       amount:    { type: Number, default: 0 },           // fixed EGP owed
       amountPaid:{ type: Number, default: 0 },           // running sum of payouts (derived/cached)
       payouts: [{
@@ -25158,27 +25163,66 @@ app.put("/api/commissions/:id/ambassador-config", auth, salesAdminOnly, async fu
   }
 });
 
+// Accepts two shapes:
+//   { userId, amount }                       — link to a User (snapshot name/role), dedupe by userId.
+//   { name, role, amount, isManual:true }    — free-text recipient (no User link), dedupe by name+role.
+// userId presence is the discriminator; isManual is also stamped server-side.
 app.post("/api/commissions/:id/ambassador-recipients", auth, salesAdminOnly, async function(req, res) {
   try {
     var c = await loadAmbassadorCommission(req, res); if (!c) return;
     var body = req.body || {};
     var amount = Number(body.amount);
     if (!isFinite(amount) || amount < 0) return res.status(400).json({ error: "amount must be ≥ 0" });
-    if (!body.userId || !mongoose.Types.ObjectId.isValid(body.userId)) {
-      return res.status(400).json({ error: "userId required" });
-    }
-    var uDoc = await User.findById(body.userId).select("name role active").lean();
-    if (!uDoc) return res.status(400).json({ error: "User not found", code: "user_not_found" });
-    if (uDoc.active === false) return res.status(400).json({ error: "User is inactive", code: "user_inactive" });
     if (!Array.isArray(c.ambassadorSplit.recipients)) c.ambassadorSplit.recipients = [];
-    // Dedupe by userId — the original sales agent is pre-seeded, and a manual
-    // duplicate would split one person's owed across two confusing rows.
-    var dup = c.ambassadorSplit.recipients.find(function(r){ return r.userId && String(r.userId) === String(body.userId); });
-    if (dup) return res.status(400).json({ error: "recipient_exists", message: (uDoc.name || "This user") + " is already a recipient on this deal" });
+
+    var hasUserId = body.userId && mongoose.Types.ObjectId.isValid(body.userId);
+    if (hasUserId) {
+      // ----- User-pick path — link recipient to a User, snapshot name/role. -----
+      var uDoc = await User.findById(body.userId).select("name role active").lean();
+      if (!uDoc) return res.status(400).json({ error: "User not found", code: "user_not_found" });
+      if (uDoc.active === false) return res.status(400).json({ error: "User is inactive", code: "user_inactive" });
+      // Dedupe by userId — the original sales agent is pre-seeded, and a manual
+      // duplicate would split one person's owed across two confusing rows.
+      var dup = c.ambassadorSplit.recipients.find(function(r){ return r.userId && String(r.userId) === String(body.userId); });
+      if (dup) return res.status(400).json({ error: "recipient_exists", message: (uDoc.name || "This user") + " is already a recipient on this deal" });
+      c.ambassadorSplit.recipients.push({
+        userId:     new mongoose.Types.ObjectId(body.userId),
+        userName:   uDoc.name || "(unknown)",
+        userRole:   uDoc.role || "",
+        isManual:   false,
+        amount:     Math.round(amount * 100) / 100,
+        amountPaid: 0,
+        payouts:    []
+      });
+      c.markModified("ambassadorSplit");
+      await c.save();
+      await logCommissionActivity(req.user, c.leadId, "commission_ambassador_recipient_add",
+        "[Commission] ambassador recipient '" + (uDoc.name || "") + "' (" + (uDoc.role || "") + ") added with " + Math.round(amount).toLocaleString() + " EGP");
+      return res.json(c.toObject());
+    }
+
+    // ----- Manual path — free-text name, no User link. The typed name/role are
+    // snapshotted directly; the Payout Report buckets under name:<userName>. -----
+    var name = String(body.name || "").trim();
+    var roleIn = String(body.role || "sales");
+    if (!name) return res.status(400).json({ error: "name required", message: "Pick a User or type a name" });
+    if (["sales","team_leader","manager","director"].indexOf(roleIn) < 0) {
+      return res.status(400).json({ error: "role must be one of sales/team_leader/manager/director" });
+    }
+    // Dedupe manual entries by name+role (case-insensitive). User-linked rows are
+    // skipped here (they dedupe by userId above); a same name+different role is OK.
+    var nameKey = name.toLowerCase();
+    var manualDup = c.ambassadorSplit.recipients.find(function(r){
+      return r.isManual && !r.userId
+        && String(r.userName || "").trim().toLowerCase() === nameKey
+        && String(r.userRole || "") === roleIn;
+    });
+    if (manualDup) return res.status(400).json({ error: "recipient_exists", message: "'" + name + "' (" + roleIn + ") is already a recipient on this deal" });
     c.ambassadorSplit.recipients.push({
-      userId:     new mongoose.Types.ObjectId(body.userId),
-      userName:   uDoc.name || "(unknown)",
-      userRole:   uDoc.role || "",
+      userId:     null,
+      userName:   name,
+      userRole:   roleIn,
+      isManual:   true,
       amount:     Math.round(amount * 100) / 100,
       amountPaid: 0,
       payouts:    []
@@ -25186,7 +25230,7 @@ app.post("/api/commissions/:id/ambassador-recipients", auth, salesAdminOnly, asy
     c.markModified("ambassadorSplit");
     await c.save();
     await logCommissionActivity(req.user, c.leadId, "commission_ambassador_recipient_add",
-      "[Commission] ambassador recipient '" + (uDoc.name || "") + "' (" + (uDoc.role || "") + ") added with " + Math.round(amount).toLocaleString() + " EGP");
+      "[Commission] ambassador manual recipient '" + name + "' (" + roleIn + ") added with " + Math.round(amount).toLocaleString() + " EGP");
     res.json(c.toObject());
   } catch(e) {
     console.error("[POST /api/commissions/:id/ambassador-recipients]", e && e.message);
