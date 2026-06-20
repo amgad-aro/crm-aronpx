@@ -9943,6 +9943,21 @@ app.post("/api/leads", auth, async function(req, res) {
       externalSalesAgentManualAmount: (typeof req.body.externalSalesAgentManualAmount === "number") ? req.body.externalSalesAgentManualAmount : null,
       externalSalesAgentPaidBy:       req.body.externalSalesAgentPaidBy || "company",
       assignments:      agentId ? [{ agentId: agentId, status: req.body.status || "New Lead", assignedAt: new Date(), lastActionAt: new Date(), rotationTimer: new Date(), statusChangedAt: new Date(), noRotation: false, notes: req.body.notes || "", budget: req.body.budget || "", callbackTime: req.body.callbackTime || "", lastFeedback: "", nextCallAt: null, agentHistory: [] }] : [],
+      // Counted rotation receipt — create-with-agent is a real (manual) inbound
+      // assignment, so stamp the same {action:"Rotation"} entry the engine writes
+      // on first_assignment. Feeds the daily-cap aggregation (~12488) + the
+      // Settings "N/cap today" counter. SEPARATE array from lead.history (the
+      // first_assigned audit row pushed below stays untouched); fromAgent:""
+      // registers this as inbound-only so "rotated OUT" dashboards (~17440) skip it.
+      agentHistory:     agentId ? [{
+        action:    "Rotation",
+        fromAgent: "",
+        toAgent:   (targetOnCreate && targetOnCreate.name) ? targetOnCreate.name : "",
+        agentId:   new mongoose.Types.ObjectId(String(agentId)),
+        reason:    "first_assignment",
+        by:        (req.user && req.user.name) ? req.user.name : "System",
+        date:      new Date()
+      }] : [],
       expiresAt:        new Date(Date.now() + 30*24*60*60*1000),
       // Phase R-13.1 — globalStatus must mirror the initialStatus, otherwise a
       // POST creating a lead directly with status="DoneDeal" leaves
@@ -10199,6 +10214,20 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
       } else {
         var newAgUser2 = await User.findById(agentId).lean();
         newAgentName = newAgUser2 ? newAgUser2.name : "Unknown";
+        // Unassigned-lead reassign — the if(oldAgentId) branch above already
+        // stamps a counted Rotation entry; mirror it here so the daily-cap
+        // aggregation (~12488) + Settings counter see receipts on leads that
+        // had no prior owner. fromAgent:"" (no prior holder) → inbound-only,
+        // matching the engine's first_assignment entries (~17440 OUT counts skip it).
+        updateOps.$push.agentHistory = {
+          action: "Rotation",
+          fromAgent: "",
+          toAgent: newAgentName,
+          agentId: agentObjId,
+          reason: "manual",
+          by: byName,
+          date: new Date()
+        };
       }
       await Lead.findByIdAndUpdate(leadIds[i], updateOps);
       // Admin timeline: one entry per lead so bulk ops are audit-able.
@@ -13722,7 +13751,63 @@ app.get("/api/rotation/diagnostics", auth, async function(req, res) {
     // ANY tier, ranked by current lead count ascending. The cron's tryPool()
     // walks Tier 1 first then Tier 2+3 combined; this list mirrors that
     // intent so admin can see who's next in line.
-    var allTierOids = [].concat(tier1Oids, tier2Oids, tier3Oids);
+    //
+    // Dedupe tier ids (an agent can sit in >1 tier) so per-agent counts and the
+    // today-receipts aggregation key cleanly by id.
+    var allTierIdStrs = [];
+    var seenTierId = {};
+    [].concat(tier1Ids, tier2Ids, tier3Ids).forEach(function(id){
+      var s = String(id);
+      if (s && !seenTierId[s]) { seenTierId[s] = true; allTierIdStrs.push(s); }
+    });
+    var allTierOids = allTierIdStrs.map(toOid).filter(Boolean);
+
+    // Today's rotation receipts per tier agent — SAME aggregation the daily-cap
+    // uses (~12488) so the Settings "N/cap today" counter shows exactly what cap
+    // enforcement counts. Day boundary = 00:00 server time. Fail-open to an empty
+    // map (the FE counter then falls back to its client-side estimate) so a bad
+    // aggregation never blocks the diagnostics response.
+    var startOfTodayDiag = new Date(); startOfTodayDiag.setHours(0,0,0,0);
+    var todayReceivedMap = {};
+    if (allTierOids.length) {
+      try {
+        var diagCounts = await Lead.aggregate([
+          { $match: { "agentHistory.date": { $gte: startOfTodayDiag } } },
+          { $unwind: "$agentHistory" },
+          { $match: {
+              "agentHistory.action": "Rotation",
+              "agentHistory.date": { $gte: startOfTodayDiag },
+              "agentHistory.agentId": { $in: allTierOids }
+          } },
+          { $group: { _id: "$agentHistory.agentId", count: { $sum: 1 } } }
+        ]);
+        diagCounts.forEach(function(c){ todayReceivedMap[String(c._id)] = c.count; });
+      } catch (diagAggErr) {
+        console.error("[rotation diagnostics today aggregation]", diagAggErr && diagAggErr.message ? diagAggErr.message : diagAggErr);
+      }
+    }
+
+    // Active (currently-held, non-archived) lead count per tier agent — covers
+    // EVERY tier member (any role / active state) so the Settings tab can render
+    // a real count for all of them; availableForRotation below reuses it.
+    var activeCountMap = {};
+    if (allTierOids.length) {
+      var activeCounts = await Promise.all(allTierOids.map(function(oid){
+        return Lead.countDocuments({ archived: false, agentId: oid });
+      }));
+      allTierOids.forEach(function(oid, i){ activeCountMap[String(oid)] = activeCounts[i] || 0; });
+    }
+
+    // Per-tier-member stats the Settings counter reads (id → {active, todayReceived}),
+    // keyed for every configured tier member so no agent is dropped.
+    var tierAgentStats = {};
+    allTierIdStrs.forEach(function(s){
+      tierAgentStats[s] = {
+        active:        activeCountMap[s] || 0,
+        todayReceived: todayReceivedMap[s] || 0
+      };
+    });
+
     var availableForRotation = [];
     if (allTierOids.length) {
       var tierUsers = await User.find({
@@ -13730,20 +13815,19 @@ app.get("/api/rotation/diagnostics", auth, async function(req, res) {
         active: { $ne: false },
         role: { $in: ["sales", "team_leader"] }
       }).select("_id name role title").lean();
-      var counts = await Promise.all(tierUsers.map(function(u){
-        return Lead.countDocuments({ archived: false, agentId: u._id });
-      }));
-      tierUsers.forEach(function(u, i){
-        var tier = tier1Ids.map(String).indexOf(String(u._id)) >= 0 ? 1
-          : tier2Ids.map(String).indexOf(String(u._id)) >= 0 ? 2
-          : tier3Ids.map(String).indexOf(String(u._id)) >= 0 ? 3 : null;
+      tierUsers.forEach(function(u){
+        var idStr = String(u._id);
+        var tier = tier1Ids.map(String).indexOf(idStr) >= 0 ? 1
+          : tier2Ids.map(String).indexOf(idStr) >= 0 ? 2
+          : tier3Ids.map(String).indexOf(idStr) >= 0 ? 3 : null;
         availableForRotation.push({
-          userId:    String(u._id),
-          userName:  u.name || "(unnamed)",
-          title:     u.title || "",
-          role:      u.role,
-          tier:      tier,
-          leadCount: counts[i] || 0
+          userId:        idStr,
+          userName:      u.name || "(unnamed)",
+          title:         u.title || "",
+          role:          u.role,
+          tier:          tier,
+          leadCount:     activeCountMap[idStr] || 0,
+          todayReceived: todayReceivedMap[idStr] || 0
         });
       });
       availableForRotation.sort(function(a, b){ return a.leadCount - b.leadCount; });
@@ -13775,6 +13859,10 @@ app.get("/api/rotation/diagnostics", auth, async function(req, res) {
       lastRun:    lastRun,
       tierDistribution: tierDistribution,
       availableForRotation: availableForRotation,
+      // Per-tier-member counts for the rotation Settings "N active" + "N/cap
+      // today" badges — server-side truth (matches cap enforcement), so the
+      // counter no longer depends on the paginated p.leads bootstrap slice.
+      tierAgentStats: tierAgentStats,
       lockedLeads: lockedLeadsOut,
       // Surface the master switch + pause state so the FE can show a banner
       // ("rotation is disabled" / "paused until X") when nothing is rotating.

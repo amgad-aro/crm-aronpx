@@ -17878,6 +17878,11 @@ var SettingsPage = function(p) {
   // Master switch + pause
   var [autoRotEnabled,setAutoRotEnabled]=useState(true);
   var [pausedUntil,setPausedUntil]=useState(null);
+  // Server-side per-agent rotation stats (id -> {active, todayReceived}) from
+  // /api/rotation/diagnostics. Source of truth for the tier "N active" + "N/cap
+  // today" badges so they don't depend on the paginated p.leads bootstrap slice.
+  // null = not loaded / fetch failed -> the badges fall back to the p.leads estimate.
+  var [rotDiagStats,setRotDiagStats]=useState(null);
   // Working hours (company default)
   var [whDays,setWhDays]=useState(["Sun","Mon","Tue","Wed","Thu"]);
   var [whFrom,setWhFrom]=useState("10:00");
@@ -18132,6 +18137,19 @@ var SettingsPage = function(p) {
       .finally(function(){ if (!cancelled) setBranchesLoaded(true); });
     return function(){ cancelled = true; };
   },[activeTab,canManageBranches,p.token]);
+
+  // Rotation tab — pull server-side per-agent active + today-received counts so
+  // the tier badges reflect ALL of an agent's leads (incl. re-rotated older ones
+  // outside the paginated p.leads slice). admin/sales_admin only; on any failure
+  // we leave rotDiagStats null and the badges fall back to the p.leads estimate.
+  useEffect(function(){
+    if (activeTab !== "rotation") return;
+    var cancelled = false;
+    apiFetch("/api/rotation/diagnostics","GET",null,p.token)
+      .then(function(d){ if (!cancelled && d && d.tierAgentStats) setRotDiagStats(d.tierAgentStats); })
+      .catch(function(){ /* leave rotDiagStats as-is -> p.leads fallback */ });
+    return function(){ cancelled = true; };
+  },[activeTab,p.token]);
 
   useEffect(function(){
     var cancelled=false;
@@ -18547,7 +18565,16 @@ var SettingsPage = function(p) {
           return {label:String(role||"").toUpperCase(), bg:"#EEEEEA", fg:"#666"};
         };
         var initialsOf = function(n){return String(n||"?").split(" ").slice(0,2).map(function(s){return (s[0]||"").toUpperCase();}).join("");};
-        var activeFor  = function(uid){return allLeads.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return String(a)===String(uid)&&!l.archived;}).length;};
+        // Fallback "currently held" count from the paginated p.leads slice —
+        // undercounts agents whose leads aren't in the bootstrap window.
+        var activeForFallback = function(uid){return allLeads.filter(function(l){var a=l.agentId&&l.agentId._id?l.agentId._id:l.agentId;return String(a)===String(uid)&&!l.archived;}).length;};
+        // Prefer server-side truth (rotDiagStats) when loaded; fall back to the
+        // p.leads estimate on fetch failure so the tab never blanks out.
+        var activeFor  = function(uid){
+          var s = rotDiagStats && rotDiagStats[String(uid)];
+          if (s && typeof s.active === "number") return s.active;
+          return activeForFallback(uid);
+        };
         var isOnlineNow = function(u){return u && u.lastSeen && (nowMs-new Date(u.lastSeen).getTime()) < 3*60*1000;};
 
         // Per-agent rotations received today — derived client-side from
@@ -18575,9 +18602,15 @@ var SettingsPage = function(p) {
         });
         var todayRotFor = function(u){
           if (!u) return 0;
-          // Prefer id-keyed count (post-deploy entries). Name-keyed count
-          // covers legacy entries from earlier today that pre-date the
-          // schema change — used only when there's no id-keyed match.
+          // Prefer server-side truth (same aggregation cap enforcement uses), so
+          // "N/cap today" matches what the cap actually counts and isn't limited
+          // to the paginated p.leads slice.
+          var s = rotDiagStats && rotDiagStats[String(u._id || u.id || "")];
+          if (s && typeof s.todayReceived === "number") return s.todayReceived;
+          // Fallback (diagnostics not loaded / failed): client-side estimate from
+          // p.leads. Prefer id-keyed count (post-deploy entries). Name-keyed count
+          // covers legacy entries from earlier today that pre-date the schema
+          // change — used only when there's no id-keyed match.
           var byId = todayRotById[String(u._id || u.id || "")] || 0;
           var byName = todayRotByName[u.name || ""] || 0;
           return byId > 0 ? byId : byName;
