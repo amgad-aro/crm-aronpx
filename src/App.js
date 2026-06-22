@@ -18128,6 +18128,16 @@ var SettingsPage = function(p) {
   var [branchSaving,setBranchSaving] = useState(false);
   var [branchError,setBranchError] = useState("");
   var [branchMsg,setBranchMsg] = useState("");
+  // Closing Companies (Feature B) — admin-only lookup CRUD. Mirrors the branch
+  // state shape; add-new uses ccName, inline rename uses ccEditId/ccEditName.
+  var [closingCompanies,setClosingCompanies] = useState([]);
+  var [ccLoaded,setCcLoaded] = useState(false);
+  var [ccName,setCcName] = useState("");
+  var [ccEditId,setCcEditId] = useState(null);
+  var [ccEditName,setCcEditName] = useState("");
+  var [ccSaving,setCcSaving] = useState(false);
+  var [ccError,setCcError] = useState("");
+  var [ccMsg,setCcMsg] = useState("");
   useEffect(function(){
     if (activeTab !== "branches" || !canManageBranches) return;
     var cancelled = false;
@@ -18137,6 +18147,25 @@ var SettingsPage = function(p) {
       .finally(function(){ if (!cancelled) setBranchesLoaded(true); });
     return function(){ cancelled = true; };
   },[activeTab,canManageBranches,p.token]);
+  // Load closing companies when the tab opens (admin-only). Uses a local
+  // primitive flag (isOwner is defined further down the component, after this
+  // effect) so the dependency array captures a real value, mirroring the
+  // canManageBranches pattern above. GET returns { data: rows }; tolerate a
+  // bare array too for safety.
+  var ccCanManage = !!(p.cu && p.cu.role === "admin");
+  useEffect(function(){
+    if (activeTab !== "closingCompanies" || !ccCanManage) return;
+    var cancelled = false;
+    apiFetch("/api/closing-companies","GET",null,p.token)
+      .then(function(data){
+        if (cancelled) return;
+        var rows = (data && Array.isArray(data.data)) ? data.data : (Array.isArray(data) ? data : []);
+        setClosingCompanies(rows);
+      })
+      .catch(function(err){ if (!cancelled) setCcError((err && err.message) || "Failed to load closing companies"); })
+      .finally(function(){ if (!cancelled) setCcLoaded(true); });
+    return function(){ cancelled = true; };
+  },[activeTab,ccCanManage,p.token]);
 
   // Rotation tab — pull server-side per-agent active + today-received counts so
   // the tier badges reflect ALL of an agent's leads (incl. re-rotated older ones
@@ -18418,6 +18447,7 @@ var SettingsPage = function(p) {
     {id:"campaigns",   label:"Campaigns"},
     {id:"audit",       label:"Audit Log"},
     canManageBranches && {id:"branches", label:"Branches"},
+    isOwner && {id:"closingCompanies", label:"Closing Companies"},
     isOwner && {id:"officeLocation", label:"Office Location"},
     isOwner && {id:"permissions",    label:"Permissions"},
     isOwner && {id:"workShifts",     label:"Work Shifts"}
@@ -20332,6 +20362,109 @@ var SettingsPage = function(p) {
                       </div>
                       <div style={{textAlign:"right"}}>
                         <button type="button" onClick={function(){startEdit(b);}} style={Object.assign({},btnGhost,{padding:"4px 10px"})}>Edit</button>
+                      </div>
+                    </div>;
+                  })}
+                </div>
+          )}
+        </div>;
+      })()}
+
+      {activeTab==="closingCompanies" && isOwner && (function(){
+        var inputStyle = {padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",fontFamily:"inherit",width:"100%",boxSizing:"border-box"};
+        var btnPrimary = {fontSize:12,padding:"8px 16px",border:"0.5px solid rgba(24,95,165,0.3)",background:"#185FA5",color:"#fff",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+        var btnGhost = {fontSize:12,padding:"8px 14px",border:"0.5px solid rgba(0,0,0,0.1)",background:"#fff",color:"#1a1a1a",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+        var btnDanger = {fontSize:12,padding:"4px 10px",border:"0.5px solid rgba(163,45,45,0.3)",background:"#fff",color:"#A32D2D",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+        var sortCC = function(list){ return list.slice().sort(function(a,b){ return (b.isDefault?1:0)-(a.isDefault?1:0) || String(a.name||"").localeCompare(String(b.name||"")); }); };
+        var addCompany = async function(){
+          setCcError(""); setCcMsg("");
+          var nm = (ccName||"").trim();
+          if (!nm) { setCcError("Name is required"); return; }
+          setCcSaving(true);
+          try {
+            var saved = await apiFetch("/api/closing-companies","POST",{name:nm},p.token,p.csrfToken);
+            setClosingCompanies(sortCC([saved].concat(closingCompanies)));
+            setCcName(""); setCcMsg("Company added");
+            setTimeout(function(){ setCcMsg(""); }, 2500);
+          } catch(err){ setCcError((err&&err.message)||"Add failed"); }
+          finally { setCcSaving(false); }
+        };
+        var startEdit = function(c){ setCcEditId(c._id); setCcEditName(c.name||""); setCcError(""); setCcMsg(""); };
+        var cancelEdit = function(){ setCcEditId(null); setCcEditName(""); };
+        var saveEdit = async function(c){
+          setCcError(""); setCcMsg("");
+          var nm = (ccEditName||"").trim();
+          if (!nm) { setCcError("Name cannot be empty"); return; }
+          setCcSaving(true);
+          try {
+            var saved = await apiFetch("/api/closing-companies/"+c._id,"PATCH",{name:nm},p.token,p.csrfToken);
+            setClosingCompanies(sortCC(closingCompanies.map(function(x){ return String(x._id)===String(saved._id)?saved:x; })));
+            cancelEdit(); setCcMsg("Company renamed");
+            setTimeout(function(){ setCcMsg(""); }, 2500);
+          } catch(err){ setCcError((err&&err.message)||"Rename failed"); }
+          finally { setCcSaving(false); }
+        };
+        var removeCompany = async function(c){
+          setCcError(""); setCcMsg("");
+          if (!window.confirm("Delete closing company \""+(c.name||"")+"\"? This cannot be undone.")) return;
+          setCcSaving(true);
+          try {
+            await apiFetch("/api/closing-companies/"+c._id,"DELETE",null,p.token,p.csrfToken);
+            setClosingCompanies(closingCompanies.filter(function(x){ return String(x._id)!==String(c._id); }));
+            setCcMsg("Company deleted");
+            setTimeout(function(){ setCcMsg(""); }, 2500);
+          } catch(err){
+            var m = (err&&err.message)||"Delete failed";
+            if (m === "in_use") m = "Cannot delete — this company is used by one or more deals. Reassign them to another company first.";
+            setCcError(m);
+          }
+          finally { setCcSaving(false); }
+        };
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Closing Companies</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:18}}>Companies a deal can be closed under — ARO directly, or a partner company for developers ARO has no direct contract with. This is purely a label on deals; it has no effect on commission, tax, or payouts. ARO is the default and cannot be renamed or deleted.</div>
+
+          {/* Add form */}
+          <div style={{background:"#F7F7F5",border:"0.5px solid rgba(0,0,0,0.08)",borderRadius:10,padding:14,marginBottom:18}}>
+            <div style={{fontSize:13,fontWeight:500,marginBottom:10}}>Add company</div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+              <div style={{flex:"1 1 240px",minWidth:200}}>
+                <input style={inputStyle} value={ccName} onChange={function(e){setCcName(e.target.value);}} placeholder="e.g. Partner Co."
+                  onKeyDown={function(e){ if(e.key==="Enter"){ e.preventDefault(); addCompany(); } }}/>
+              </div>
+              <button type="button" onClick={addCompany} disabled={ccSaving} style={Object.assign({},btnPrimary,{opacity:ccSaving?0.6:1,cursor:ccSaving?"not-allowed":"pointer"})}>
+                {ccSaving ? "Saving…" : "Add company"}
+              </button>
+              {ccMsg   && <span style={{fontSize:12,color:"#0F6E56",background:"#EAF6F0",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{ccMsg}</span>}
+              {ccError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{ccError}</span>}
+            </div>
+          </div>
+
+          {/* List */}
+          {!ccLoaded ? <div style={{fontSize:12,color:"#666"}}>Loading…</div> : (
+            closingCompanies.length === 0
+              ? <div style={{fontSize:12,color:"#666",padding:"12px 0"}}>No closing companies yet.</div>
+              : <div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 200px",gap:10,padding:"10px 0",borderBottom:"0.5px solid rgba(0,0,0,0.1)",fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px"}}>
+                    <div>Name</div>
+                    <div style={{textAlign:"right"}}>Action</div>
+                  </div>
+                  {closingCompanies.map(function(c){
+                    var editing = String(ccEditId||"")===String(c._id);
+                    return <div key={c._id} style={{display:"grid",gridTemplateColumns:"1fr 200px",gap:10,padding:"12px 0",borderBottom:"0.5px solid rgba(0,0,0,0.06)",alignItems:"center",fontSize:13}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        {editing
+                          ? <input style={Object.assign({},inputStyle,{maxWidth:280})} value={ccEditName} onChange={function(e){setCcEditName(e.target.value);}}
+                              onKeyDown={function(e){ if(e.key==="Enter"){ e.preventDefault(); saveEdit(c); } if(e.key==="Escape"){ cancelEdit(); } }} autoFocus/>
+                          : <span style={{fontWeight:500,color:"#1a1a1a"}}>{c.name}</span>}
+                        {c.isDefault && <span style={{fontSize:11,padding:"3px 8px",borderRadius:6,fontWeight:500,background:"#EEF2F7",color:"#185FA5"}}>Default</span>}
+                      </div>
+                      <div style={{textAlign:"right",display:"flex",gap:6,justifyContent:"flex-end",alignItems:"center"}}>
+                        {c.isDefault && <span title="Default — cannot be renamed or deleted" style={{fontSize:12,color:"#999"}}>Locked</span>}
+                        {!c.isDefault && editing && <button type="button" onClick={function(){saveEdit(c);}} disabled={ccSaving} style={Object.assign({},btnPrimary,{padding:"4px 12px",opacity:ccSaving?0.6:1})}>Save</button>}
+                        {!c.isDefault && editing && <button type="button" onClick={cancelEdit} style={Object.assign({},btnGhost,{padding:"4px 10px"})}>Cancel</button>}
+                        {!c.isDefault && !editing && <button type="button" onClick={function(){startEdit(c);}} style={Object.assign({},btnGhost,{padding:"4px 10px"})}>Edit</button>}
+                        {!c.isDefault && !editing && <button type="button" onClick={function(){removeCompany(c);}} disabled={ccSaving} style={btnDanger}>Delete</button>}
                       </div>
                     </div>;
                   })}
