@@ -2965,7 +2965,7 @@ var fillTemplate = function(template, lead, agentName) {
 };
 
 // ===== EXPORT EXCEL =====
-var exportLeadsToExcel = async function(leads, users, filename, includeClosingCompany) {
+var exportLeadsToExcel = async function(leads, users, filename, includeClosingCompany, includeLeadId) {
   var XLSX = await new Promise(function(resolve) {
     if (window.XLSX) { resolve(window.XLSX); return; }
     var s = document.createElement("script");
@@ -3000,6 +3000,10 @@ var exportLeadsToExcel = async function(leads, users, filename, includeClosingCo
       "Date Added": l.createdAt ? new Date(l.createdAt).toLocaleDateString("en-GB") : "",
     };
     // Admin/SA only (caller passes the gate); skipped for the daily-requests export.
+    // Feature A — ID column (admin/SA only). Populated for leads that have a
+    // permanent id (EOI/DoneDeal); blank for the rest (the blank is meaningful:
+    // those leads were never EOI/DoneDeal). Matches the on-screen "ID #01000".
+    if (includeLeadId) row["ID"] = (l.leadId != null ? formatLeadId(l.leadId) : "");
     if (includeClosingCompany) row["Closing Company"] = ccName(l);
     return row;
   });
@@ -6039,7 +6043,7 @@ var LeadsPage = function(p) {
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
         {isOnlyAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
         {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 11px", fontSize:12 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
-        {p.cu&&p.cu.role==="admin"&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads",canSeeClosingCompany(p.cu)&&!isReq);}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
+        {p.cu&&p.cu.role==="admin"&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads",canSeeClosingCompany(p.cu)&&!isReq,canSeeLeadIds(p.cu)&&!isReq);}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
         {!p.isMobile&&isOnlyAdmin&&<Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>}
       </div>
       </div>
