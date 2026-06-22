@@ -8321,7 +8321,7 @@ app.get("/api/leads", auth, async function(req, res) {
     var limit = hasLimit ? parseInt(req.query.limit) : 0;
     var skip = hasLimit ? (page - 1) * limit : 0;
 
-    var leadsQuery = Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").sort({ createdAt: -1 });
+    var leadsQuery = Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").populate("closingCompanyId", "name").sort({ createdAt: -1 });
     if (hasLimit) leadsQuery = leadsQuery.skip(skip).limit(limit);
     var leads = await leadsQuery.lean();
     // Skip the second round-trip when the page already contains the entire
@@ -9584,7 +9584,7 @@ app.get("/api/deals", auth, async function(req, res) {
 // ===== SINGLE LEAD GET (with per-agent overlay) =====
 app.get("/api/leads/:id", auth, async function(req, res) {
   try {
-    var lead = await Lead.findById(req.params.id).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").lean();
+    var lead = await Lead.findById(req.params.id).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").populate("closingCompanyId", "name").lean();
     if (!lead) return res.status(404).json({ error: "Not found" });
     // Hydrate offloaded EOI documents (file-storage stopgap). lead is lean, so
     // both the sales `obj` copy and the admin return path inherit the merge.
@@ -10027,6 +10027,24 @@ app.post("/api/leads", auth, async function(req, res) {
     await pushHistory(lead._id, initEntry);
     lead = await Lead.findById(lead._id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     if (initialStatus === "DoneDeal") {
+      // Closing Company default (Feature B) — a deal created directly in
+      // DoneDeal status also gets the ARO default so every closed deal carries
+      // a company (mirror of the PUT DoneDeal default). Only fills when the
+      // create didn't already set one. Uses the boot-cached ARO id, falling
+      // back to a live lookup if the cache isn't warm yet.
+      try {
+        if (lead && !lead.closingCompanyId) {
+          var aroIdCreate = ARO_CLOSING_COMPANY_ID;
+          if (!aroIdCreate) {
+            var aroDocCreate = await ClosingCompany.findOne({ name: "ARO" }).select("_id").lean();
+            if (aroDocCreate) { aroIdCreate = aroDocCreate._id; ARO_CLOSING_COMPANY_ID = aroDocCreate._id; }
+          }
+          if (aroIdCreate) {
+            await Lead.updateOne({ _id: lead._id }, { $set: { closingCompanyId: aroIdCreate } });
+            lead.closingCompanyId = aroIdCreate;
+          }
+        }
+      } catch(e){ console.error("[closing-company default post-leads]", e && e.message); }
       try { await ensureCommissionForLead(lead, req.user); } catch(e){ console.error("[commission hook post-leads]", e && e.message); }
     }
     res.json(lead);
@@ -11076,6 +11094,18 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         req.user.role !== "admin" && req.user.role !== "sales_admin") {
       delete req.body.dealDate;
     }
+    // Closing Company (Feature B) — admin/sales_admin only. Same defense-in-depth
+    // pattern as `dealDate`/`locked`: the Add/Edit Deal form + side-panel dropdown
+    // are admin/SA-gated on the FE, so strip the field from any other role. For
+    // admin/SA, normId turns a populated object / empty string into a clean
+    // id-or-null (invalid ids → null, so no CastError / dangling ref).
+    if (req.body.closingCompanyId !== undefined) {
+      if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+        delete req.body.closingCompanyId;
+      } else {
+        req.body.closingCompanyId = normId(req.body.closingCompanyId);
+      }
+    }
     // Phase R-12 Part 3 — external-deal field gate. Same defense-in-depth
     // pattern as `locked` above: the Add/Edit Deal modal is admin-only on
     // the FE, so any sales/TL/manager attempting to mutate these fields is
@@ -11265,6 +11295,24 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     delete update.lastFeedback;
     // Control flag — never persist on the lead doc.
     delete update.force;
+    // Closing Company default (Feature B) — every closed deal must carry a
+    // closing company so DealsPage / Commissions / Reports always have a value.
+    // Applies on ANY transition to DoneDeal regardless of who closes it (the
+    // field is otherwise admin/SA-only; this is a system default, not user
+    // input). Fills only when neither the body (update) nor the existing lead
+    // already has one. Uses the boot-cached ARO id, falling back to a live
+    // lookup if the cache isn't warm yet (e.g. first request after a restart).
+    if (req.body.status === "DoneDeal" && !update.closingCompanyId) {
+      var ccExisting = await Lead.findById(req.params.id).select("closingCompanyId").lean();
+      if (!ccExisting || !ccExisting.closingCompanyId) {
+        var aroIdPut = ARO_CLOSING_COMPANY_ID;
+        if (!aroIdPut) {
+          var aroDocPut = await ClosingCompany.findOne({ name: "ARO" }).select("_id").lean();
+          if (aroDocPut) { aroIdPut = aroDocPut._id; ARO_CLOSING_COMPANY_ID = aroDocPut._id; }
+        }
+        if (aroIdPut) update.closingCompanyId = aroIdPut;
+      }
+    }
     // Load the existing lead if any tracked field could change — needed both
     // for status/rotation logic AND to log accurate admin audit entries.
     var oldLead = null;
@@ -23355,6 +23403,90 @@ app.delete("/api/expense-categories/:id", auth, strictAdminOnly, async function(
   } catch(e) {
     console.error("[DELETE /api/expense-categories/:id]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "category_delete_failed" });
+  }
+});
+
+// ===== CLOSING COMPANIES (Feature B) =====
+// Admin-managed lookup of companies a deal can be closed under (ARO directly or
+// a partner). The seeded "ARO" row (isDefault:true) is the non-deletable,
+// non-renamable default. GET is open to any authenticated user so DealsPage /
+// Commissions / Reports / the side-panel dropdown can resolve company names;
+// all mutations are strictAdminOnly. Name uniqueness is enforced
+// case-insensitively at the app layer (the DB unique index is exact-match only),
+// with an E11000 backstop for the rename/insert race.
+function ccEscapeRegex(s){ return String(s||"").replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+app.get("/api/closing-companies", auth, async function(req, res) {
+  try {
+    var rows = await ClosingCompany.find({}).sort({ isDefault: -1, name: 1 }).lean();
+    res.json({ data: rows });
+  } catch(e) {
+    console.error("[GET /api/closing-companies]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "closing_companies_list_failed" });
+  }
+});
+
+app.post("/api/closing-companies", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var name = String((req.body && req.body.name) || "").trim();
+    if (!name) return res.status(400).json({ error: "name required" });
+    var clash = await ClosingCompany.findOne({ name: { $regex: "^" + ccEscapeRegex(name) + "$", $options: "i" } }).lean();
+    if (clash) return res.status(400).json({ error: "A closing company with that name already exists" });
+    var doc = await ClosingCompany.create({ name: name });
+    res.json(doc.toObject());
+  } catch(e) {
+    if (e && e.code === 11000) return res.status(400).json({ error: "A closing company with that name already exists" });
+    console.error("[POST /api/closing-companies]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "closing_company_create_failed" });
+  }
+});
+
+app.patch("/api/closing-companies/:id", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var company = await ClosingCompany.findById(req.params.id);
+    if (!company) return res.status(404).json({ error: "not found" });
+    if (company.isDefault) return res.status(400).json({ error: "The default \"ARO\" company cannot be renamed" });
+    var name = String((req.body && req.body.name) || "").trim();
+    if (!name) return res.status(400).json({ error: "name cannot be empty" });
+    var clash = await ClosingCompany.findOne({
+      _id: { $ne: req.params.id },
+      name: { $regex: "^" + ccEscapeRegex(name) + "$", $options: "i" }
+    }).lean();
+    if (clash) return res.status(400).json({ error: "A closing company with that name already exists" });
+    company.name = name;
+    await company.save();
+    res.json(company.toObject());
+  } catch(e) {
+    if (e && e.code === 11000) return res.status(400).json({ error: "A closing company with that name already exists" });
+    console.error("[PATCH /api/closing-companies/:id]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "closing_company_update_failed" });
+  }
+});
+
+// Hard delete ONLY when no Lead references the company. Unlike expense
+// categories (which soft-delete on reference), a referenced closing company is
+// REFUSED (409, with the deal count) so the admin reassigns those deals first.
+// The seeded ARO default can never be deleted.
+app.delete("/api/closing-companies/:id", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var company = await ClosingCompany.findById(req.params.id).lean();
+    if (!company) return res.status(404).json({ error: "not found" });
+    if (company.isDefault) return res.status(400).json({ error: "The default \"ARO\" company cannot be deleted" });
+    var dealCount = await Lead.countDocuments({ closingCompanyId: req.params.id });
+    if (dealCount > 0) {
+      return res.status(409).json({
+        error: "in_use",
+        dealCount: dealCount,
+        message: "Cannot delete — " + dealCount + " deal(s) are closed under this company. Reassign them to another company first."
+      });
+    }
+    await ClosingCompany.findByIdAndDelete(req.params.id);
+    res.json({ action: "deleted" });
+  } catch(e) {
+    console.error("[DELETE /api/closing-companies/:id]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "closing_company_delete_failed" });
   }
 });
 
