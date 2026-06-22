@@ -289,7 +289,13 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // Callback-reminder dedupe: timestamp of the last "callback due in 2 min"
   // push for the lead's CURRENT callbackTime. sweepDueCallbacks fires only
   // when this is null OR older than callbackTime, so rescheduling re-arms it.
-  callbackNotifiedAt:{type:Date,default:null}
+  callbackNotifiedAt:{type:Date,default:null},
+  // Closing Company (Feature B) — which company a deal was closed under: ARO
+  // directly, or a partner company for developers ARO has no direct contract
+  // with. Optional; set when status→DoneDeal (defaults to ARO). Purely an
+  // informational tag — NO impact on commission/tax/payout math. Visible/
+  // editable to admin + sales_admin only. Indexed for DealsPage/Reports filters.
+  closingCompanyId:{type:mongoose.Schema.Types.ObjectId,ref:"ClosingCompany",default:null,index:true}
 },{timestamps:true}));
 
 // Indexes for query performance
@@ -1268,6 +1274,23 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   dealStatus:{type:String,default:""}
 },{timestamps:true}));
 
+// ===== CLOSING COMPANY (Feature B) =====
+// Admin-managed lookup identifying which company a deal was closed under: ARO
+// directly, or a partner company for developers ARO has no direct contract
+// with. Mirrors the Branch model (simple name list). The seeded "ARO" row is
+// the non-deletable default (isDefault:true) — see seedClosingCompany() below.
+// Referenced by Lead.closingCompanyId. Purely informational; no math impact.
+var ClosingCompany = mongoose.model("ClosingCompany", new mongoose.Schema({
+  name:      { type: String, required: true },
+  isDefault: { type: Boolean, default: false }
+}, { timestamps: true }));
+ClosingCompany.collection.createIndex({ name: 1 }, { unique: true }).catch(function(){});
+
+// Cached _id of the seeded non-deletable "ARO" closing company. Populated by
+// seedClosingCompany() at boot; used as the DoneDeal default for
+// Lead.closingCompanyId (Phase 2).
+var ARO_CLOSING_COMPANY_ID = null;
+
 // ===== ASSET TRACKER MODELS =====
 // Admin/owner-only feature. Routes live in the "/api/assets" block further
 // down and are gated by requireAssetAccess (defined below adminOnly). The
@@ -1462,6 +1485,7 @@ mongoose.connect(process.env.MONGODB_URI).then(function() {
   seedFirstBranch().catch(function(e){ console.error("[seed branch]", e && e.message); });
   seedAssetCategories().catch(function(e){ console.error("[seed asset categories]", e && e.message); });
   seedExpenseCategories().catch(function(e){ console.error("[seed expense categories]", e && e.message); });
+  seedClosingCompany().catch(function(e){ console.error("[seed closing company]", e && e.message); });
   // Phase R-7 polish — one-shot cleanup of fields that were briefly added
   // then reverted (bankAccountNumber on User, invoiceNumber on Expense).
   // Idempotent: countDocuments first; skip the updateMany when no docs
@@ -1650,6 +1674,23 @@ async function seedExpenseCategories() {
     } catch(_e){ /* dup unique — ignore */ }
   }
   if (created > 0) console.log("[seed] expense categories: " + created + " created (idempotent)");
+}
+
+// Feature B — seed the non-deletable default "ARO" closing company on first
+// boot and cache its _id for the DoneDeal default (Phase 2). Idempotent:
+// upserts by name and always (re)asserts isDefault:true, then reads the id back
+// every boot so ARO_CLOSING_COMPANY_ID is populated even when ARO already exists.
+async function seedClosingCompany() {
+  await ClosingCompany.updateOne(
+    { name: "ARO" },
+    { $setOnInsert: { name: "ARO" }, $set: { isDefault: true } },
+    { upsert: true }
+  );
+  var aro = await ClosingCompany.findOne({ name: "ARO" }).lean();
+  if (aro) {
+    ARO_CLOSING_COMPANY_ID = aro._id;
+    console.log("[seed] Closing company ARO ready (" + String(aro._id) + ")");
+  }
 }
 
 // ===== CREATE DEFAULT ADMIN =====
