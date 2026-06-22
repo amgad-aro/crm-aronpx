@@ -295,10 +295,23 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // with. Optional; set when status→DoneDeal (defaults to ARO). Purely an
   // informational tag — NO impact on commission/tax/payout math. Visible/
   // editable to admin + sales_admin only. Indexed for DealsPage/Reports filters.
-  closingCompanyId:{type:mongoose.Schema.Types.ObjectId,ref:"ClosingCompany",default:null,index:true}
+  closingCompanyId:{type:mongoose.Schema.Types.ObjectId,ref:"ClosingCompany",default:null,index:true},
+  // Permanent sequential Lead ID (Feature A) — minted on creation via
+  // nextLeadId() (atomic Counter). Displayed as "ID #" + 5-digit zero-pad to
+  // admin/sales_admin only. Never changes; gaps are fine; ids are never reused.
+  // Pre-backfill leads stay null — the PARTIAL unique index below (not sparse,
+  // because default:null means the field is always present) allows unlimited
+  // nulls and enforces uniqueness only across assigned numeric ids.
+  leadId:{type:Number,default:null}
 },{timestamps:true}));
 
 // Indexes for query performance
+// Feature A — Lead ID uniqueness. PARTIAL, not sparse: because leadId has
+// default:null the field is ALWAYS present, so a sparse unique index would
+// still include every null doc and reject the 2nd null lead. A partial index
+// scoped to numeric leadId allows unlimited null/absent leads (pre-backfill)
+// while guaranteeing no two leads share an assigned numeric id.
+Lead.collection.createIndex({ leadId: 1 }, { unique: true, partialFilterExpression: { leadId: { $type: "number" } } }).catch(function(){});
 Lead.collection.createIndex({ "assignments.agentId": 1 }).catch(function(){});
 Lead.collection.createIndex({ agentId: 1 }).catch(function(){});
 Lead.collection.createIndex({ createdAt: -1 }).catch(function(){});
@@ -1291,6 +1304,28 @@ ClosingCompany.collection.createIndex({ name: 1 }, { unique: true }).catch(funct
 // Lead.closingCompanyId (Phase 2).
 var ARO_CLOSING_COMPANY_ID = null;
 
+// ===== COUNTER (Feature A — atomic sequence for permanent Lead IDs) =====
+// Generic named-counter collection. _id is the counter name (e.g. "leadId");
+// seq is bumped atomically via $inc so concurrent Lead creates (e.g. Facebook
+// Ads bursts) can never collide on the same number.
+var Counter = mongoose.model("Counter", new mongoose.Schema({
+  _id: { type: String },
+  seq: { type: Number, default: 0 }
+}, { versionKey: false }));
+
+// Mint the next permanent Lead ID. Atomic findOneAndUpdate($inc) returns the
+// post-increment value. upsert is a safety net; seedLeadIdCounter() floors the
+// counter at 50000 at boot (before any request) so live mints start at 50001
+// and never overlap the 1000..N range the backfill assigns to existing leads.
+async function nextLeadId() {
+  var c = await Counter.findOneAndUpdate(
+    { _id: "leadId" },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  return c.seq;
+}
+
 // ===== ASSET TRACKER MODELS =====
 // Admin/owner-only feature. Routes live in the "/api/assets" block further
 // down and are gated by requireAssetAccess (defined below adminOnly). The
@@ -1486,6 +1521,7 @@ mongoose.connect(process.env.MONGODB_URI).then(function() {
   seedAssetCategories().catch(function(e){ console.error("[seed asset categories]", e && e.message); });
   seedExpenseCategories().catch(function(e){ console.error("[seed expense categories]", e && e.message); });
   seedClosingCompany().catch(function(e){ console.error("[seed closing company]", e && e.message); });
+  seedLeadIdCounter().catch(function(e){ console.error("[seed leadId counter]", e && e.message); });
   // Phase R-7 polish — one-shot cleanup of fields that were briefly added
   // then reverted (bankAccountNumber on User, invoiceNumber on Expense).
   // Idempotent: countDocuments first; skip the updateMany when no docs
@@ -1691,6 +1727,20 @@ async function seedClosingCompany() {
     ARO_CLOSING_COMPANY_ID = aro._id;
     console.log("[seed] Closing company ARO ready (" + String(aro._id) + ")");
   }
+}
+
+// Feature A — floor the Lead ID counter at 50000 on first boot so live mints
+// start at 50001. $setOnInsert fires only on first creation, so reboots never
+// reset it. The backfill assigns 1000..N to pre-existing leads (a separate,
+// lower range), giving a clean collision-proof split from live-minted ids.
+async function seedLeadIdCounter() {
+  await Counter.updateOne(
+    { _id: "leadId" },
+    { $setOnInsert: { seq: 50000 } },
+    { upsert: true }
+  );
+  var c = await Counter.findOne({ _id: "leadId" }).lean();
+  if (c) console.log("[seed] Lead ID counter ready (seq=" + c.seq + ")");
 }
 
 // ===== CREATE DEFAULT ADMIN =====
