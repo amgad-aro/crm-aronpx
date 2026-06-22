@@ -22299,11 +22299,20 @@ app.get("/api/commissions", auth, salesAdminOnly, async function(req, res) {
     try {
       var commLeadIds = rows.map(function(r){ return r.leadId; }).filter(Boolean);
       if (commLeadIds.length) {
+        // Also pull the lead's NUMERIC leadId (Feature A) — note l.leadId here is
+        // the numeric display id, while r.leadId on the commission is the lead's
+        // _id (ObjectId). Attached as r.leadDisplayId to avoid that name clash.
         var ccLeads = await Lead.find({ _id: { $in: commLeadIds } })
-          .select("closingCompanyId").populate("closingCompanyId", "name").lean();
-        var ccByLead = {};
-        ccLeads.forEach(function(l){ ccByLead[String(l._id)] = l.closingCompanyId || null; });
-        rows.forEach(function(r){ r.closingCompany = r.leadId ? (ccByLead[String(r.leadId)] || null) : null; });
+          .select("closingCompanyId leadId").populate("closingCompanyId", "name").lean();
+        var ccByLead = {}, ldByLead = {};
+        ccLeads.forEach(function(l){
+          ccByLead[String(l._id)] = l.closingCompanyId || null;
+          ldByLead[String(l._id)] = (typeof l.leadId === "number") ? l.leadId : null;
+        });
+        rows.forEach(function(r){
+          r.closingCompany = r.leadId ? (ccByLead[String(r.leadId)] || null) : null;
+          r.leadDisplayId  = r.leadId ? (ldByLead[String(r.leadId)] != null ? ldByLead[String(r.leadId)] : null) : null;
+        });
       }
     } catch(ccErr){ console.error("[commissions closing-company join]", ccErr && ccErr.message); }
     res.json({ data: rows });

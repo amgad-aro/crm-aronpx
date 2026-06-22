@@ -6144,7 +6144,7 @@ var LeadsPage = function(p) {
                 var firstDate=first.date?new Date(first.date).toLocaleDateString("en-GB"):"—";
                 var curAgentName=lead.agentId&&lead.agentId.name?lead.agentId.name:(function(){var u=p.users.find(function(x){return gid(x)===lead.agentId;});return u?u.name:"—";})();
                 return <Fragment>
-                  <td style={{ padding:"10px 12px", fontSize:13, fontWeight:600, color:C.text, textAlign:"left", whiteSpace:"nowrap" }}>{lead.name}</td>
+                  <td style={{ padding:"10px 12px", fontSize:13, fontWeight:600, color:C.text, textAlign:"left", whiteSpace:"nowrap" }}>{lead.name}{canSeeLeadIds(p.cu) && <div style={{ fontSize:10, fontWeight:400, color:C.textLight }}>{formatLeadId(lead.leadId)}</div>}</td>
                   <td style={{ padding:"10px 12px", fontSize:13, fontWeight:600, textAlign:"left", whiteSpace:"nowrap", direction:"ltr" }}><PhoneCell phone={lead.phone}/></td>
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.text, textAlign:"left", whiteSpace:"nowrap" }}>{first.agentName||"—"}</td>
                   <td style={{ padding:"10px 12px", fontSize:12, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{firstDate}</td>
@@ -6190,6 +6190,7 @@ var LeadsPage = function(p) {
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:16, fontWeight:700, color:isVIP?C.accent:C.text, marginBottom:3 }}>{isVIP?"⭐ ":""}{lead.name}</div>
+                {canSeeLeadIds(p.cu) && <div style={{ fontSize:11, color:C.textLight, marginBottom:2 }}>{formatLeadId(lead.leadId)}</div>}
                 <div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr" }}><PhoneCell phone={lead.phone}/></div>
                 {(function(){var agName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";return agName?<div style={{ fontSize:11, color:C.accent, fontWeight:600, marginTop:2 }}>👤 {agName}</div>:null;})()}
               </div>
@@ -6296,6 +6297,7 @@ var LeadsPage = function(p) {
                       <div style={{ fontSize:13, fontWeight:600, color:lead.isVIP?C.accent:C.text, whiteSpace:"nowrap" }}>{lead.name}</div>
                     </div>
                     <div style={{ fontSize:10, color:C.textLight }}>{lead.email}</div>
+                    {canSeeLeadIds(p.cu) && <div style={{ fontSize:10, color:C.textLight }}>{formatLeadId(lead.leadId)}</div>}
                   </td>
                   <td style={{ padding:"10px 12px", whiteSpace:"nowrap", textAlign:"left" }}>
                     <div style={{ fontSize:14, fontWeight:600, direction:"ltr", display:"inline-block" }}><PhoneCell phone={lead.phone}/></div>
@@ -6396,6 +6398,7 @@ var LeadsPage = function(p) {
             </div>
           </div>
           <div style={{ color:"#fff", fontSize:17, fontWeight:700, lineHeight:1.25, wordBreak:"break-word" }}>{selected.name}</div>
+          {canSeeLeadIds(p.cu) && <div style={{ color:"rgba(255,255,255,0.75)", fontSize:11, fontWeight:600, marginTop:2 }}>{formatLeadId(selected.leadId)}</div>}
           {isOnlyAdmin&&selected.rotationStopped&&<div style={{ marginTop:6, display:"inline-block", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:5, background:"rgba(255,255,255,0.95)", color:"#991B1B" }} title="Rotation permanently stopped — 3 consecutive Not Interested">🛑 Rotation Stopped</div>}
           <div style={{ color:"rgba(255,255,255,0.75)", fontSize:12, marginTop:4, direction:"ltr" }}>
             <PhoneCell phone={selected.phone}/>{selected.phone2?<>{" / "}<PhoneCell phone={selected.phone2}/></>:""}
@@ -11230,6 +11233,7 @@ var EOIPage = function(p) {
             <div style={{ width:36, height:36, borderRadius:"50%", background:"#EDE9FE", color:"#6D28D9", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, flexShrink:0 }}>{(selectedEOI.name||"?").charAt(0).toUpperCase()}</div>
             <div style={{ minWidth:0 }}>
               <div style={{ color:"#4C1D95", fontSize:14, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{selectedEOI.name}</div>
+              {canSeeLeadIds(p.cu) && <div style={{ color:C.textLight, fontSize:11, marginTop:2 }}>{formatLeadId(selectedEOI.leadId)}</div>}
               <div style={{ color:"#6D28D9", fontSize:11, marginTop:2, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}><PhoneCell phone={selectedEOI.phone}/></div>
             </div>
           </div>
@@ -11366,7 +11370,7 @@ var EOIPage = function(p) {
         var isSel=selectedEOI&&gid(selectedEOI)===gid(d);
         return <div key={gid(d)} onClick={function(){setSelectedEOI(isSel?null:d);}} style={{ background:isSel?"#F0FDF4":"#fff", borderRadius:14, padding:14, border:"2px solid "+(isSel?"#22C55E":"#E8ECF1"), cursor:"pointer" }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
-            <div style={{ fontSize:15, fontWeight:700 }}>{d.name}</div>
+            <div style={{ fontSize:15, fontWeight:700 }}>{d.name}{canSeeLeadIds(p.cu) && <div style={{ fontSize:10, fontWeight:400, color:C.textLight, marginTop:1 }}>{formatLeadId(d.leadId)}</div>}</div>
             {d.eoiApproved
               ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅</span>
               :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳</span>}
@@ -11399,7 +11403,7 @@ var EOIPage = function(p) {
           var eoiDateStr=d.eoiDate?new Date(d.eoiDate).toLocaleDateString("en-GB"):d.updatedAt?new Date(d.updatedAt).toLocaleDateString("en-GB"):"-";
           var isSel=selectedEOI&&gid(selectedEOI)===gid(d);
           return <Fragment key={gid(d)}><tr data-eoi-row="1" onClick={function(){setSelectedEOI(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#F0FDF4":"transparent" }}>
-            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}</td>
+            <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}{canSeeLeadIds(p.cu) && <div style={{ fontSize:10, fontWeight:400, color:C.textLight }}>{formatLeadId(d.leadId)}</div>}</td>
             {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}><PhoneCell phone={d.phone}/></td>}
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.unitType||d.notes||"-"}</td>
@@ -11963,6 +11967,7 @@ var DealsPage = function(p) {
             <div style={{ width:36, height:36, borderRadius:"50%", background:"#DCFCE7", color:"#15803D", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, flexShrink:0 }}>{(selectedDeal.name||"?").charAt(0).toUpperCase()}</div>
             <div style={{ minWidth:0 }}>
               <div style={{ color:"#15803D", fontSize:14, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{selectedDeal.name}</div>
+              {canSeeLeadIds(p.cu) && <div style={{ color:C.textLight, fontSize:11, marginTop:2 }}>{formatLeadId(selectedDeal.leadId)}</div>}
               <div style={{ color:"#16A34A", fontSize:11, marginTop:2 }}><PhoneCell phone={selectedDeal.phone}/></div>
             </div>
           </div>
@@ -12458,6 +12463,7 @@ var DealsPage = function(p) {
             <div style={{ fontSize:15, fontWeight:700 }}>
               {d.name}
               {isOnlyAdmin && d.dealType==="ambassador" && <span style={{ marginLeft:6, fontSize:9, padding:"1px 6px", borderRadius:9, background:"#FEF3C7", color:"#B45309", fontWeight:700, verticalAlign:"middle" }}>🎯 Ambassador</span>}
+              {canSeeLeadIds(p.cu) && <div style={{ fontSize:10, fontWeight:400, color:C.textLight, marginTop:1 }}>{formatLeadId(d.leadId)}</div>}
             </div>
             {d.dealApproved
               ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅</span>
@@ -12541,6 +12547,7 @@ var DealsPage = function(p) {
                   admin/sales_admin: gated by isOnlyAdmin so sales/TL/manager/
                   director see a plain deal row with no Ambassador indicator. */}
               {isOnlyAdmin && d.dealType==="ambassador" && <span style={{ marginLeft:6, fontSize:9, padding:"1px 6px", borderRadius:9, background:"#FEF3C7", color:"#B45309", fontWeight:700, verticalAlign:"middle" }}>🎯 Ambassador</span>}
+              {canSeeLeadIds(p.cu) && <div style={{ fontSize:10, fontWeight:400, color:C.textLight, marginTop:1 }}>{formatLeadId(d.leadId)}</div>}
             </td>
             {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}><PhoneCell phone={d.phone}/></td>}
             {p.cu.role==="admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", color:C.textLight, textAlign:"left" }}>
@@ -25247,6 +25254,7 @@ var CommissionsPage = function(p) {
             {imminent && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#FEE2E2", color:"#B91C1C", fontWeight:700 }}>⏰ collection due</span>}
           </div>
           <div style={{ fontSize:12, color:C.textLight }}>
+            {canSeeLeadIds(p.cu) && <span>{formatLeadId(c.leadDisplayId)} · </span>}
             {snap.projectName || "—"}
             {snap.unitDetails && <span> · {snap.unitDetails}</span>}
             <span> · closed {fmtDate(snap.dealDate)}</span>
