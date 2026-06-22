@@ -1326,6 +1326,18 @@ async function nextLeadId() {
   return c.seq;
 }
 
+// Feature A (redesign) — return a freshly minted Lead ID when a lead is ENTERING
+// EOI or DoneDeal for the first time (new status is EOI/DoneDeal AND it has no id
+// yet), otherwise null. The ID is assigned on first "freeze" and is permanent —
+// it survives later status changes/cancels. Centralizes the rule across all
+// transition write-points (PUT, eoi-to-deal, DR mirror, create-as-EOI/DoneDeal).
+async function mintLeadIdIfEntering(newStatus, currentLeadId) {
+  if ((newStatus === "EOI" || newStatus === "DoneDeal") && (currentLeadId === null || currentLeadId === undefined)) {
+    return await nextLeadId();
+  }
+  return null;
+}
+
 // ===== ASSET TRACKER MODELS =====
 // Admin/owner-only feature. Routes live in the "/api/assets" block further
 // down and are gated by requireAssetAccess (defined below adminOnly). The
@@ -9996,8 +10008,9 @@ app.post("/api/leads", auth, async function(req, res) {
         return res.status(400).json({ error: "deal_date_future", message: "Deal date cannot be in the future" });
       }
     }
+    var createLeadId = await mintLeadIdIfEntering(initialStatus, null);   // Feature A — mint only if creating directly as EOI/DoneDeal
     var lead = await Lead.create({
-      leadId:           await nextLeadId(),   // Feature A — permanent sequential id
+      leadId:           createLeadId,
       name:             req.body.name,
       phone:            req.body.phone,
       phone2:           req.body.phone2 || "",
@@ -10192,7 +10205,6 @@ app.post("/api/leads/inbound", async function(req, res) {
     var windowMins = rotSettings ? Number(rotSettings.manualAssignmentWindowMinutes || 0) : 0;
 
     var lead = await Lead.create({
-      leadId: await nextLeadId(),   // Feature A — minted after the dedup checks above
       name: String(body.name || "").trim() || phoneRaw || "Unknown",
       phone: phoneRaw,
       email: body.email || "",
@@ -10984,6 +10996,10 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       globalStatus: "donedeal",
       lastActivityTime: new Date()
     };
+    // Feature A — safety mint: a converted EOI normally already has an id (minted
+    // at the EOI transition); heal any pre-backfill EOI being converted here.
+    var midE2D = await mintLeadIdIfEntering("DoneDeal", existing.leadId);
+    if (midE2D != null) update.leadId = midE2D;
     await Lead.findByIdAndUpdate(req.params.id, { $set: update });
     // Sync current agent's assignment.status so per-agent views reflect the new state
     if (existing.agentId) {
@@ -11453,6 +11469,15 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       // initial close, and the !update.dealDate guard preserves any explicit
       // admin/SA-supplied date. Full ISO mirrors the DR-mirror path (~15878).
       if (!update.dealDate && !oldLead.dealDate) update.dealDate = new Date().toISOString();
+    }
+    // Feature A — mint the permanent Lead ID the first time the lead enters EOI
+    // or DoneDeal (whichever first) and only if it has none yet. oldLead is the
+    // full pre-update doc (loaded above whenever status changes); the helper
+    // no-ops for any other status or if an id already exists, so this is safe to
+    // run on every status-changing PUT and preserves an existing id forever.
+    if (oldLead) {
+      var midPut = await mintLeadIdIfEntering(req.body.status, oldLead.leadId);
+      if (midPut != null) update.leadId = midPut;
     }
     // Permanent meeting marker. Stamp hadMeeting + meetingDoneAt the first
     // time a lead reaches MeetingDone. Never re-stamp on subsequent visits —
@@ -16674,6 +16699,8 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             eoiDeposit: req.body.eoiDeposit || existingLead.eoiDeposit || "",
           }, mirrorExtra);
           if (resolvedDrWeight !== null) existingMirrorPayload.projectWeight = resolvedDrWeight;
+          var midDRu = await mintLeadIdIfEntering(req.body.status, existingLead.leadId);   // Feature A — self-heal if an existing mirror enters EOI/DoneDeal without an id
+          if (midDRu != null) existingMirrorPayload.leadId = midDRu;
           await Lead.findByIdAndUpdate(existingLead._id, existingMirrorPayload);
           // If the existing mirror has no assignment for the current agent,
           // add one so the sales-role leads filter accepts it. Use $addToSet
@@ -16731,7 +16758,8 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             assignments: seedAssignments,
           }, mirrorExtra);
           if (resolvedDrWeight !== null) newMirrorPayload.projectWeight = resolvedDrWeight;
-          newMirrorPayload.leadId = await nextLeadId();   // Feature A — permanent sequential id
+          var midDRc = await mintLeadIdIfEntering(req.body.status, null);   // Feature A — only if the mirror is created as EOI/DoneDeal
+          if (midDRc != null) newMirrorPayload.leadId = midDRc;
           await Lead.create(newMirrorPayload);
         }
         // Real-time broadcast for the Lead mirror. The auto-broadcast
@@ -17492,7 +17520,6 @@ app.post("/api/fb-webhook", async function(req, res) {
                       }
                     }
                     var newLead = await Lead.create({
-                      leadId: await nextLeadId(),   // Feature A — permanent sequential id
                       name: leadData.name || "Facebook Lead",
                       phone: fbPhone,
                       email: leadData.email || "",
