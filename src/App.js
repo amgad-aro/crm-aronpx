@@ -234,6 +234,19 @@ var visibleStatuses = function(list, role){ return (list||[]).filter(function(s)
 // ship to other roles in API payloads; UI hides it).
 var canSeeClosingCompany = function(u){ return !!(u && (u.role === "admin" || u.role === "sales_admin")); };
 
+// Permanent Lead ID (Feature A) — visible to admin + sales_admin only (display-
+// only gate; the value may ship to other roles in payloads, UI hides it).
+var canSeeLeadIds = function(u){ return !!(u && (u.role === "admin" || u.role === "sales_admin")); };
+// Format a numeric leadId as "ID #01000" (5-digit zero-padded). Returns
+// "ID pending" for leads minted before the backfill (leadId still null) so the
+// admin/SA UI shows a clear placeholder instead of a blank.
+var formatLeadId = function(n){
+  if (n === null || n === undefined || n === "") return "ID pending";
+  var num = Number(n);
+  if (!isFinite(num)) return "ID pending";
+  return "ID #" + String(Math.trunc(num)).padStart(5, "0");
+};
+
 var PROJECTS = [
   "العاصمة الإدارية", "المستقبل سيتي", "التجمع الخامس", "الشروق", "6 أكتوبر",
   "بالم هيلز", "ماونتن فيو", "سوديك ايست", "الرحاب", "مدينتي"
