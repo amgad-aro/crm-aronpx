@@ -229,6 +229,11 @@ var DR_STATUSES = function(t) { return STATUSES(t).filter(function(s){return s.v
 // Filter out statuses flagged adminOnly (e.g. "Deal Cancelled") for non-admin users.
 var visibleStatuses = function(list, role){ return (list||[]).filter(function(s){ return !s.adminOnly || role==="admin"; }); };
 
+// Closing Company (Feature B) — the company a deal was closed under is visible
+// and editable to admin + sales_admin only. Display-only gate (the field may
+// ship to other roles in API payloads; UI hides it).
+var canSeeClosingCompany = function(u){ return !!(u && (u.role === "admin" || u.role === "sales_admin")); };
+
 var PROJECTS = [
   "العاصمة الإدارية", "المستقبل سيتي", "التجمع الخامس", "الشروق", "6 أكتوبر",
   "بالم هيلز", "ماونتن فيو", "سوديك ايست", "الرحاب", "مدينتي"
@@ -11649,6 +11654,9 @@ var DealsPage = function(p) {
   var [dealAllData, setDealAllData] = useState(null);
   var [dealLoadErr, setDealLoadErr] = useState(null);
   var [dealReloadKey, setDealReloadKey] = useState(0);
+  // Closing Companies (Feature B) — list for the side-panel dropdown + name
+  // resolution on cards/table. Admin/SA only; non-fatal if it fails to load.
+  var [dealClosingCompanies,setDealClosingCompanies] = useState([]);
   useEffect(function(){
     if (!p.token) return;
     var cancelled = false;
@@ -11671,6 +11679,20 @@ var DealsPage = function(p) {
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token, p.cbBust, dealReloadKey]);
+  // Closing Companies — fetch once for the dropdown + name map (admin/SA only).
+  useEffect(function(){
+    if (!p.token || !canSeeClosingCompany(p.cu)) return;
+    var cancelled = false;
+    apiFetch("/api/closing-companies","GET",null,p.token)
+      .then(function(data){
+        if (cancelled) return;
+        var rows = (data && Array.isArray(data.data)) ? data.data : (Array.isArray(data) ? data : []);
+        setDealClosingCompanies(rows);
+      })
+      .catch(function(){ /* non-fatal: cards fall back to populated name or — */ });
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token]);
   var pLeadsMapD = useMemo(function(){
     var m = {}; (p.leads||[]).forEach(function(l){ m[gid(l)] = l; }); return m;
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -11694,6 +11716,11 @@ var DealsPage = function(p) {
   var deals = dealTab==="cancelled" ? cancelledDeals : activeDeals;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
+  // Closing Company (Feature B) — closingCompanyId may arrive populated ({_id,name})
+  // from the list/deals endpoints or as a raw id from a PUT response; resolve the
+  // display name via the fetched companies map, falling back to the populated name.
+  var ccIdOf=function(d){ var cc=d&&d.closingCompanyId; return cc?String(cc._id||cc):""; };
+  var ccNameOf=function(d){ var cc=d&&d.closingCompanyId; if(cc&&typeof cc==="object"&&cc.name) return cc.name; var id=ccIdOf(d); if(!id) return ""; var hit=(dealClosingCompanies||[]).find(function(x){return String(x._id)===id;}); return hit?hit.name:""; };
   // Split-deal credit rule mirrors the backend my-stats reducer: for any
   // non-admin caller, a split deal counts as FULL (1.0) when both agents are
   // visible in p.users (server-scoped subtree), else 0.5. Sales p.users is
@@ -11857,8 +11884,9 @@ var DealsPage = function(p) {
   // Desktop table header columns, role-filtered. Single source of truth for
   // both the <th> render and the inline-panel row's colSpan (dealColCount), so
   // the accordion row always spans the full table width per role and never
-  // drifts: admin=12, sales_admin=10, director/manager/team_leader=9, sales=7.
-  var dealHeaderCols=[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,isAdmin?t.agent:null,isAdmin?t.source:null,"Approved",""].filter(function(h){return h!==null;});
+  // drifts. After Feature B's "Closing Company" column (admin/sales_admin only):
+  // admin=13, sales_admin=11, director/manager/team_leader=9, sales=7.
+  var dealHeaderCols=[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,canSeeClosingCompany(p.cu)?"Closing Company":null,isAdmin?t.agent:null,isAdmin?t.source:null,"Approved",""].filter(function(h){return h!==null;});
   var dealColCount=dealHeaderCols.length;
 
   // Deal Documents (images + PDFs) — mirrors EOIPage handleDocUpload/deleteDoc,
@@ -11983,6 +12011,25 @@ var DealsPage = function(p) {
           <div style={{ fontSize:13, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
         </div>:null;})}
         </div>
+
+        {/* Closing Company (Feature B) — admin/SA can set/change which company
+            the deal was closed under. The PUT response isn't populated, so the
+            <select> value + label resolve via ccIdOf / the companies map. */}
+        {canSeeClosingCompany(p.cu)&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🏢 Closed via</div>
+          <select value={ccIdOf(selectedDeal)} onChange={async function(e){
+            var val=e.target.value;
+            try{
+              var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{closingCompanyId:val||null},p.token);
+              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+              setSelectedDeal(updated);
+              setDealAllData(function(prev){return Array.isArray(prev)?prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;}):prev;});
+            }catch(ex){ alert((ex&&ex.message)||"Update failed"); }
+          }} style={{ width:"100%", maxWidth:260, padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, fontSize:12, boxSizing:"border-box" }}>
+            {(dealClosingCompanies||[]).length===0 && <option value={ccIdOf(selectedDeal)}>{ccNameOf(selectedDeal)||"ARO"}</option>}
+            {(dealClosingCompanies||[]).map(function(co){ return <option key={co._id} value={String(co._id)}>{co.name}</option>; })}
+          </select>
+        </div>}
 
         {/* Commission Claim Date - sales admin only */}
         {isOnlyAdmin&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
@@ -12443,6 +12490,7 @@ var DealsPage = function(p) {
             <span style={{ color:C.accent }}>👤 {getAg(d)}{(function(){var sp=getDealSplitFromObj(d);return sp?" 🤝 +"+sp.agent2Name:"";})()}</span>
             <span style={{ color:C.textLight }}>📢 {d.source||"-"}</span>
           </div>}
+          {canSeeClosingCompany(p.cu)&&<div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>🏢 Closed via: <span style={{ fontWeight:600, color:C.text }}>{ccNameOf(d)||"—"}</span></div>}
           {isOnlyAdmin&&<div style={{ display:"flex", gap:8, marginTop:10, paddingTop:10, borderTop:"1px solid #E8ECF1" }}>
             {p.navigateToCommission&&<button onClick={function(e){e.stopPropagation();p.navigateToCommission(gid(d));}} title="View Commission"
               style={{ flex:1, height:34, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 }}>💰</button>}
@@ -12566,6 +12614,7 @@ var DealsPage = function(p) {
                 </div>;
               })()}
             </td>}
+            {canSeeClosingCompany(p.cu)&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{ccNameOf(d)||"—"}</td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>
               <div>{getAg(d)}</div>
               {(function(){var sp=getDealSplitFromObj(d);return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
@@ -25167,6 +25216,9 @@ var CommissionsPage = function(p) {
             {snap.projectName || "—"}
             {snap.unitDetails && <span> · {snap.unitDetails}</span>}
             <span> · closed {fmtDate(snap.dealDate)}</span>
+            {/* Feature B — closing company (admin/SA only; data attached by the
+                /api/commissions leadId→closingCompany join). */}
+            {canSeeClosingCompany(p.cu) && c.closingCompany && c.closingCompany.name && <span> · Closed via <b style={{ color:C.text }}>{c.closingCompany.name}</b></span>}
             {/* Phase R-12 Part 6 — broker subtitle. brokerName is a snapshot
                 from commission-creation time (Part 5), so a later Broker
                 rename never rewrites this line — it preserves who actually

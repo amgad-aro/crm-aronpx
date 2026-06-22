@@ -9394,7 +9394,7 @@ app.get("/api/leads/no-contact", auth, async function(req, res) {
 // Field projection — same heavy-strip as the bootstrap (eoiImage,
 // eoiDocuments, dealImages); the side-panel hydrates the full doc via
 // /api/leads/:id (existing endpoint) when a row opens.
-var EOI_LIST_FIELDS = "_id name phone phone2 email status eoiStatus eoiDate eoiApproved eoiDeposit dealStatus dealApproved dealDate dealType externalBrokerId externalDealConfig agentId splitAgent2Id splitAgent2Name budget project source campaign notes archived createdAt updatedAt lastActivityTime callbackTime commissionRate commissionAmount commissionClaimDate commissionClaimed";
+var EOI_LIST_FIELDS = "_id name phone phone2 email status eoiStatus eoiDate eoiApproved eoiDeposit dealStatus dealApproved dealDate dealType externalBrokerId externalDealConfig agentId splitAgent2Id splitAgent2Name budget project source campaign notes archived createdAt updatedAt lastActivityTime callbackTime commissionRate commissionAmount commissionClaimDate commissionClaimed closingCompanyId";
 
 app.get("/api/eois", auth, async function(req, res) {
   try {
@@ -9561,6 +9561,7 @@ app.get("/api/deals", auth, async function(req, res) {
     var rows = await Lead.find(q)
       .select(DEAL_LIST_FIELDS)            // already excludes base64 image/doc fields
       .populate("agentId", "name title")
+      .populate("closingCompanyId", "name")   // Feature B — for the "Closed via" display
       // Non-blocking sort: served by the { updatedAt:-1, createdAt:-1 } index
       // (server.js index block). Deal docs embed base64 (up to ~15 MB each), so a
       // blocking sort over the matched set trips the 32 MB cap — see that comment.
@@ -22237,6 +22238,20 @@ app.get("/api/commissions", auth, salesAdminOnly, async function(req, res) {
       q.cycles = { $elemMatch: { "received.date": { $regex: "^" + year } } };
     }
     var rows = await Commission.find(q).sort({ createdAt: -1 }).limit(100).lean();
+    // Feature B — attach each deal's closing company for the card's "Closed via"
+    // line. The company lives on the Lead (not the commission snapshot); resolve
+    // in one batched query and map by leadId. Non-fatal: on error, cards simply
+    // omit the line.
+    try {
+      var commLeadIds = rows.map(function(r){ return r.leadId; }).filter(Boolean);
+      if (commLeadIds.length) {
+        var ccLeads = await Lead.find({ _id: { $in: commLeadIds } })
+          .select("closingCompanyId").populate("closingCompanyId", "name").lean();
+        var ccByLead = {};
+        ccLeads.forEach(function(l){ ccByLead[String(l._id)] = l.closingCompanyId || null; });
+        rows.forEach(function(r){ r.closingCompany = r.leadId ? (ccByLead[String(r.leadId)] || null) : null; });
+      }
+    } catch(ccErr){ console.error("[commissions closing-company join]", ccErr && ccErr.message); }
     res.json({ data: rows });
   } catch (e) {
     console.error("[GET /api/commissions]", e && e.message);
