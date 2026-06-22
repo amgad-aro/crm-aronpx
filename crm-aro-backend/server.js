@@ -8726,7 +8726,7 @@ app.get("/api/leads/backfill-feedback", auth, adminOnly, async function(req, res
 // detail view. Side panels still hydrate via /api/leads/:id when a
 // search result is clicked.
 
-var LEAD_SEARCH_FIELDS = "_id name phone phone2 email status eoiStatus dealStatus globalStatus agentId archived source project";
+var LEAD_SEARCH_FIELDS = "_id name phone phone2 email status eoiStatus dealStatus globalStatus agentId archived source project leadId";
 
 // Shared role-scoping helper for the two search endpoints. Returns a
 // MongoDB query object that the caller AND-merges with their own match.
@@ -8912,7 +8912,7 @@ app.get("/api/leads/by-phone", auth, async function(req, res) {
 // Field projection mirrors what the bell + cards actually render — narrow
 // payload so the bell's 60s poll stays cheap.
 
-var LEAD_CALLBACK_FIELDS = "_id name phone phone2 status agentId archived callbackTime lastActivityTime";
+var LEAD_CALLBACK_FIELDS = "_id name phone phone2 status agentId archived callbackTime lastActivityTime leadId";
 
 var DEFAULT_CB_EXCLUDE = ["DoneDeal", "NotInterested", "EOI"];
 
@@ -9444,7 +9444,7 @@ app.get("/api/leads/no-contact", auth, async function(req, res) {
 // Field projection — same heavy-strip as the bootstrap (eoiImage,
 // eoiDocuments, dealImages); the side-panel hydrates the full doc via
 // /api/leads/:id (existing endpoint) when a row opens.
-var EOI_LIST_FIELDS = "_id name phone phone2 email status eoiStatus eoiDate eoiApproved eoiDeposit dealStatus dealApproved dealDate dealType externalBrokerId externalDealConfig agentId splitAgent2Id splitAgent2Name budget project source campaign notes archived createdAt updatedAt lastActivityTime callbackTime commissionRate commissionAmount commissionClaimDate commissionClaimed closingCompanyId";
+var EOI_LIST_FIELDS = "_id name phone phone2 email status eoiStatus eoiDate eoiApproved eoiDeposit dealStatus dealApproved dealDate dealType externalBrokerId externalDealConfig agentId splitAgent2Id splitAgent2Name budget project source campaign notes archived createdAt updatedAt lastActivityTime callbackTime commissionRate commissionAmount commissionClaimDate commissionClaimed closingCompanyId leadId";
 
 app.get("/api/eois", auth, async function(req, res) {
   try {
@@ -9997,6 +9997,7 @@ app.post("/api/leads", auth, async function(req, res) {
       }
     }
     var lead = await Lead.create({
+      leadId:           await nextLeadId(),   // Feature A — permanent sequential id
       name:             req.body.name,
       phone:            req.body.phone,
       phone2:           req.body.phone2 || "",
@@ -10191,6 +10192,7 @@ app.post("/api/leads/inbound", async function(req, res) {
     var windowMins = rotSettings ? Number(rotSettings.manualAssignmentWindowMinutes || 0) : 0;
 
     var lead = await Lead.create({
+      leadId: await nextLeadId(),   // Feature A — minted after the dedup checks above
       name: String(body.name || "").trim() || phoneRaw || "Unknown",
       phone: phoneRaw,
       email: body.email || "",
@@ -16729,6 +16731,7 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             assignments: seedAssignments,
           }, mirrorExtra);
           if (resolvedDrWeight !== null) newMirrorPayload.projectWeight = resolvedDrWeight;
+          newMirrorPayload.leadId = await nextLeadId();   // Feature A — permanent sequential id
           await Lead.create(newMirrorPayload);
         }
         // Real-time broadcast for the Lead mirror. The auto-broadcast
@@ -17489,6 +17492,7 @@ app.post("/api/fb-webhook", async function(req, res) {
                       }
                     }
                     var newLead = await Lead.create({
+                      leadId: await nextLeadId(),   // Feature A — permanent sequential id
                       name: leadData.name || "Facebook Lead",
                       phone: fbPhone,
                       email: leadData.email || "",
