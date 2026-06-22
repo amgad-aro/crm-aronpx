@@ -2952,7 +2952,7 @@ var fillTemplate = function(template, lead, agentName) {
 };
 
 // ===== EXPORT EXCEL =====
-var exportLeadsToExcel = async function(leads, users, filename) {
+var exportLeadsToExcel = async function(leads, users, filename, includeClosingCompany) {
   var XLSX = await new Promise(function(resolve) {
     if (window.XLSX) { resolve(window.XLSX); return; }
     var s = document.createElement("script");
@@ -2966,22 +2966,30 @@ var exportLeadsToExcel = async function(leads, users, filename) {
     var u = users.find(function(x) { return gid(x) === lead.agentId; });
     return u ? u.name : "";
   };
-  var rows = leads.map(function(l) { return {
-    "Name": l.name,
-    "Phone": l.phone,
-    "Alt. Phone": l.phone2 || "",
-    "Email": l.email || "",
-    "Project": l.project || "",
-    "Status": l.status || "",
-    "Source": l.source || "",
-    "Budget": l.budget || "",
-    "Agent": getAgentName(l),
-    "VIP": l.isVIP ? "Yes" : "",
-    "Notes": l.notes || "",
-    "Callback": l.callbackTime ? l.callbackTime.slice(0,16).replace("T"," ") : "",
-    "Last Activity": l.lastActivityTime ? new Date(l.lastActivityTime).toLocaleDateString("en-GB") : "",
-    "Date Added": l.createdAt ? new Date(l.createdAt).toLocaleDateString("en-GB") : "",
-  };});
+  // Feature B — resolve a lead's closing company name from the populated
+  // closingCompanyId ({_id,name}); empty for non-deal leads / unpopulated ids.
+  var ccName = function(l){ var cc=l&&l.closingCompanyId; return (cc&&typeof cc==="object"&&cc.name)?cc.name:""; };
+  var rows = leads.map(function(l) {
+    var row = {
+      "Name": l.name,
+      "Phone": l.phone,
+      "Alt. Phone": l.phone2 || "",
+      "Email": l.email || "",
+      "Project": l.project || "",
+      "Status": l.status || "",
+      "Source": l.source || "",
+      "Budget": l.budget || "",
+      "Agent": getAgentName(l),
+      "VIP": l.isVIP ? "Yes" : "",
+      "Notes": l.notes || "",
+      "Callback": l.callbackTime ? l.callbackTime.slice(0,16).replace("T"," ") : "",
+      "Last Activity": l.lastActivityTime ? new Date(l.lastActivityTime).toLocaleDateString("en-GB") : "",
+      "Date Added": l.createdAt ? new Date(l.createdAt).toLocaleDateString("en-GB") : "",
+    };
+    // Admin/SA only (caller passes the gate); skipped for the daily-requests export.
+    if (includeClosingCompany) row["Closing Company"] = ccName(l);
+    return row;
+  });
   var ws = XLSX.utils.json_to_sheet(rows);
   var wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Leads");
@@ -6018,7 +6026,7 @@ var LeadsPage = function(p) {
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
         {isOnlyAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
         {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 11px", fontSize:12 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
-        {p.cu&&p.cu.role==="admin"&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads");}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
+        {p.cu&&p.cu.role==="admin"&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads",canSeeClosingCompany(p.cu)&&!isReq);}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
         {!p.isMobile&&isOnlyAdmin&&<Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>}
       </div>
       </div>
@@ -24648,6 +24656,10 @@ var CommissionsPage = function(p) {
   var [profitByDealLoading, setProfitByDealLoading] = useState(false);
   var [pbdSort, setPbdSort] = useState({ col: "aroNet", dir: "desc" });
   var [pbdFilter, setPbdFilter] = useState("all"); // all | internal | external
+  // Feature B — Net Profit by Deal closing-company filter ("" = all) + the
+  // company list that feeds its dropdown.
+  var [pbdCcFilter, setPbdCcFilter] = useState("");
+  var [commClosingCompanies, setCommClosingCompanies] = useState([]);
   var [expenseCategories, setExpenseCategories] = useState([]);
   var [addingExpense, setAddingExpense] = useState(false);
   var [editingExpense, setEditingExpense] = useState(null); // expense row or null
@@ -24780,14 +24792,23 @@ var CommissionsPage = function(p) {
       .catch(function(){ if (!cancelled) { setPnl(null); setPnlLoading(false); pnlSilentReloadRef.current = false; } });
     // Phase R-15 — Net Profit by Deal feed (admin-only, same year scope).
     if (!silent) setProfitByDealLoading(true);
-    apiFetch("/api/commissions/profit-by-deal?year=" + encodeURIComponent(effYear), "GET", null, p.token)
+    apiFetch("/api/commissions/profit-by-deal?year=" + encodeURIComponent(effYear) + (pbdCcFilter ? "&closingCompanyId=" + encodeURIComponent(pbdCcFilter) : ""), "GET", null, p.token)
       .then(function(d){ if (!cancelled) { setProfitByDeal(d || null); setProfitByDealLoading(false); } })
       .catch(function(){ if (!cancelled) { setProfitByDeal(null); setProfitByDealLoading(false); } });
     apiFetch("/api/expense-categories", "GET", null, p.token)
       .then(function(d){ if (!cancelled) setExpenseCategories((d && d.data) || []); })
       .catch(function(){ if (!cancelled) setExpenseCategories([]); });
     return function(){ cancelled = true; };
-  }, [activeTab, annualYear, p.cu, p.token, pnlReloadTick]);
+  }, [activeTab, annualYear, p.cu, p.token, pnlReloadTick, pbdCcFilter]);
+  // Feature B — load closing companies for the Net Profit by Deal filter dropdown.
+  useEffect(function(){
+    if (activeTab !== "annual" || !p.cu || p.cu.role !== "admin" || !p.token) return;
+    var cancelled = false;
+    apiFetch("/api/closing-companies", "GET", null, p.token)
+      .then(function(d){ if (!cancelled) { var rows=(d&&Array.isArray(d.data))?d.data:(Array.isArray(d)?d:[]); setCommClosingCompanies(rows); } })
+      .catch(function(){ /* non-fatal: dropdown just shows "All companies" */ });
+    return function(){ cancelled = true; };
+  }, [activeTab, p.cu, p.token]);
 
   // Phase R-7 — Payout Report fetcher. payoutMonth is "YYYY-MM"; backend
   // accepts year/month numeric params.
@@ -26529,6 +26550,14 @@ var CommissionsPage = function(p) {
                       {filterChip("external", "External")}
                       {filterChip("ambassador", "Ambassador")}
                     </div>
+                    {/* Feature B — closing company filter (server-side via
+                        profit-by-deal?closingCompanyId=...). */}
+                    <select value={pbdCcFilter} onChange={function(e){ setPbdCcFilter(e.target.value); }}
+                      title="Filter by closing company"
+                      style={{ padding:"4px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:11, fontWeight:600, color:C.textLight, background:"#fff", cursor:"pointer" }}>
+                      <option value="">All companies</option>
+                      {(commClosingCompanies||[]).map(function(co){ return <option key={co._id} value={String(co._id)}>{co.name}</option>; })}
+                    </select>
                   </div>
                   {profitByDealLoading && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>Loading…</div>}
                   {!profitByDealLoading && allDeals.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>No deals for this year</div>}
@@ -26538,6 +26567,7 @@ var CommissionsPage = function(p) {
                         <tr>
                           <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Customer</th>
                           <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Type</th>
+                          <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Closing Company</th>
                           {sortTh("Revenue", "revenue")}
                           {sortTh("Broker", "brokerPayouts")}
                           {sortTh("Team", "teamPayouts")}
@@ -26550,17 +26580,18 @@ var CommissionsPage = function(p) {
                           return <tr key={d.commissionId} style={{ borderTop:"1px solid #F1F5F9" }}>
                             <td style={{ padding:"8px 12px", fontWeight:600, color:C.text }}>{d.customerName}</td>
                             <td style={{ padding:"8px 12px" }}>{typeBadge(d.type)}</td>
+                            <td style={{ padding:"8px 12px", color:C.textLight }}>{d.closingCompany || "—"}</td>
                             <td style={{ padding:"8px 12px", textAlign:"end" }}>{fmtMoneyAr(d.revenue)}</td>
                             <td style={{ padding:"8px 12px", textAlign:"end", color: Number(d.brokerPayouts || 0) > 0 ? "#5B21B6" : C.textLight }}>{fmtMoneyAr(d.brokerPayouts)}</td>
                             <td style={{ padding:"8px 12px", textAlign:"end", color: Number(d.teamPayouts || 0) > 0 ? "#B45309" : C.textLight }}>{fmtMoneyAr(d.teamPayouts)}</td>
                             <td style={{ padding:"8px 12px", textAlign:"end", fontWeight:700, color: neg ? "#B91C1C" : C.success }}>{fmtMoneyAr(d.aroNet)}</td>
                           </tr>;
                         })}
-                        {sorted.length === 0 && <tr><td colSpan={6} style={{ padding:"16px 12px", textAlign:"center", color:C.textLight }}>No {pbdFilter} deals for this year</td></tr>}
+                        {sorted.length === 0 && <tr><td colSpan={7} style={{ padding:"16px 12px", textAlign:"center", color:C.textLight }}>No {pbdFilter} deals for this year</td></tr>}
                       </tbody>
                       <tfoot>
                         <tr>
-                          <td colSpan={2} style={Object.assign({}, stickyFoot, { padding:"10px 12px", fontWeight:700, color:C.text })}>Total</td>
+                          <td colSpan={3} style={Object.assign({}, stickyFoot, { padding:"10px 12px", fontWeight:700, color:C.text })}>Total</td>
                           <td style={Object.assign({}, stickyFoot, { padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text })}>{fmtMoneyAr(foot.revenue)}</td>
                           <td style={Object.assign({}, stickyFoot, { padding:"10px 12px", textAlign:"end", fontWeight:700, color:"#5B21B6" })}>{fmtMoneyAr(foot.brokerPayouts)}</td>
                           <td style={Object.assign({}, stickyFoot, { padding:"10px 12px", textAlign:"end", fontWeight:700, color:"#B45309" })}>{fmtMoneyAr(foot.teamPayouts)}</td>

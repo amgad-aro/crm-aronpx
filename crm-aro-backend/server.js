@@ -23246,7 +23246,19 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
         // recipient payout still need a row so the totals reconcile to the P&L.
         { "ambassadorSplit.recipients.payouts": { $elemMatch: { date: yRegex } } }
       ]
-    }).select("snapshot.customerName externalSplit ambassadorSplit cycles payouts").lean();
+    }).select("snapshot.customerName externalSplit ambassadorSplit cycles payouts leadId").lean();
+
+    // Feature B — resolve each commission's closing company (via its lead) for
+    // the row + the optional filter. Batched single query; mapped by leadId.
+    var ccFilter = String(req.query.closingCompanyId || "").trim();
+    var ccFilterValid = mongoose.Types.ObjectId.isValid(ccFilter);
+    var pbdLeadIds = docs.map(function(x){ return x.leadId; }).filter(Boolean);
+    var ccByLeadPBD = {};
+    if (pbdLeadIds.length) {
+      var ccLeadsPBD = await Lead.find({ _id: { $in: pbdLeadIds } })
+        .select("closingCompanyId").populate("closingCompanyId", "name").lean();
+      ccLeadsPBD.forEach(function(l){ ccByLeadPBD[String(l._id)] = l.closingCompanyId || null; });
+    }
 
     var deals = [];
     var tRev = 0, tBroker = 0, tTeam = 0;
@@ -23316,12 +23328,22 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
         if (ba > 0) brokerPayouts += ba;
       }
 
+      // Feature B — closing company for this deal (via its lead). When the
+      // closingCompanyId filter is active, skip non-matching deals BEFORE
+      // accumulating totals so both the rows and the totals reflect the filter.
+      var ccDocPBD = d.leadId ? (ccByLeadPBD[String(d.leadId)] || null) : null;
+      if (ccFilterValid) {
+        var ccIdPBD = ccDocPBD ? String(ccDocPBD._id) : "";
+        if (ccIdPBD !== ccFilter) continue;
+      }
+
       tRev += revenue; tBroker += brokerPayouts; tTeam += teamPayouts;
 
       deals.push({
         commissionId:  String(d._id),
         customerName:  snap.customerName || "(unknown)",
         type:          isAmbD ? "ambassador" : (es.isExternal ? "external" : "internal"),
+        closingCompany: ccDocPBD ? (ccDocPBD.name || "") : "",
         revenue:       round2(revenue),
         brokerPayouts: round2(brokerPayouts),
         teamPayouts:   round2(teamPayouts),
