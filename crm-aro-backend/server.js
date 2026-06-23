@@ -8339,8 +8339,10 @@ app.get("/api/leads", auth, async function(req, res) {
         ]}]);
       }
     }
-    // Agent filter — Leads-page "All Agents" dropdown. Narrows to leads whose
-    // CURRENT holder (top-level agentId) is the selected agent. ANDed with the
+    // Agent filter — Leads-page "All Agents" dropdown. Narrows to leads where
+    // the selected agent is EITHER the current holder (top-level agentId) OR
+    // the split partner (splitAgent2Id), so split deals surface when filtering
+    // by either agent. ANDed with the
     // role-scope $or above via $and, exactly like the status filter, so it can
     // only NARROW within the caller's allowed visibility — never widen it. A
     // sales/TL/manager/director caller still only sees leads their $or scope
@@ -8351,7 +8353,11 @@ app.get("/api/leads", auth, async function(req, res) {
     if (req.query.agentId) {
       var agentIdVal = String(req.query.agentId).trim();
       if (mongoose.Types.ObjectId.isValid(agentIdVal)) {
-        query.$and = (query.$and || []).concat([{ agentId: new mongoose.Types.ObjectId(agentIdVal) }]);
+        var agentFilterOid = new mongoose.Types.ObjectId(agentIdVal);
+        query.$and = (query.$and || []).concat([{ $or: [
+          { agentId: agentFilterOid },
+          { splitAgent2Id: agentFilterOid }
+        ]}]);
       }
     }
     // STEP 4-5 X2 — opt-in archived filter. ArchivePage uses this to fetch
@@ -15524,9 +15530,16 @@ app.get("/api/stats", auth, async function(req, res) {
     var leadQuery = {};
     var actQuery = {};
     if (req.user.role === "sales") {
-      // Count against the caller's own assignments[] slice so rotated leads
-      // still show up in their stats — same visibility rule as GET /api/leads.
-      leadQuery["assignments.agentId"] = new mongoose.Types.ObjectId(req.user.id);
+      // Count against the caller's own assignments[] slice OR split-partner
+      // deals (splitAgent2Id) so rotated leads AND deals where they're only the
+      // second agent show up — same visibility rule as GET /api/leads. Wrapped
+      // in $and so it composes with the meetingDone count's own $or (a bare
+      // $or key here would be clobbered by Object.assign on each count below).
+      var statsUid = new mongoose.Types.ObjectId(req.user.id);
+      leadQuery.$and = [{ $or: [
+        { "assignments.agentId": statsUid },
+        { splitAgent2Id: statsUid }
+      ]}];
       actQuery.userId = req.user.id;
     } else if (req.user.role === "office_boy") {
       // office_boy: attendance-only role — force every count to zero (match nothing).

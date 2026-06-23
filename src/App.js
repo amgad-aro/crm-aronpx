@@ -5394,7 +5394,7 @@ var LeadsPage = function(p) {
     filtered = filtered.filter(function(l){return matchSearch(l,p.search);});
     if (vipFilter) filtered = filtered.filter(function(l){return l.isVIP;});
     if (noAgentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return !aid; });
-    if (agentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; return aid===agentFilter; });
+    if (agentFilter) filtered = filtered.filter(function(l){ var aid=l.agentId&&l.agentId._id?l.agentId._id:l.agentId; var sid=l.splitAgent2Id&&l.splitAgent2Id._id?l.splitAgent2Id._id:l.splitAgent2Id; return String(aid||"")===agentFilter||String(sid||"")===agentFilter; });
     // Phase A4-prep filters. Source matches exactly against the lead's
     // stored source value (legacy values like "Snap Chat" / lowercase
     // "facebook" remain selectable from the dropdown). Campaign supports
@@ -11856,7 +11856,7 @@ var DealsPage = function(p) {
     if(dateFrom&&new Date(d.updatedAt||d.createdAt)<new Date(dateFrom)) return false;
     if(dateTo&&new Date(d.updatedAt||d.createdAt)>new Date(dateTo+"T23:59:59")) return false;
     if(dealSearch){var q2=dealSearch.toLowerCase();var nm=d.name?d.name.toLowerCase():"";var pr=d.project?d.project.toLowerCase():"";var ph=d.phone||"";if(!nm.includes(q2)&&!pr.includes(q2)&&!ph.includes(q2))return false;}
-    if(dealAgent){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;if(aid!==dealAgent)return false;}
+    if(dealAgent){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;var sid=d.splitAgent2Id&&d.splitAgent2Id._id?d.splitAgent2Id._id:d.splitAgent2Id;if(String(aid||"")!==dealAgent&&String(sid||"")!==dealAgent)return false;}
     if(dealTypeFilter==="internal" && (d.dealType||"internal")!=="internal") return false;
     if(dealTypeFilter==="external" && d.dealType!=="external") return false;
     if(dealTypeFilter==="ambassador" && d.dealType!=="ambassador") return false; // Phase R-14
