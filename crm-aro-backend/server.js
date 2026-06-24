@@ -8876,18 +8876,17 @@ app.get("/api/leads/search", auth, async function(req, res) {
     var rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     var scope = await buildLeadSearchScopeQuery(req);
     var orClauses = [{ name: rx }, { phone: rx }, { phone2: rx }, { email: rx }];
-    // Feature A — admin/sales_admin can search by the permanent Lead ID. Accept
-    // "01000", "1000", "ID #01000", "#01000": strip all non-digits, drop leading
-    // zeros (parseInt), and match leadId by EXACT numeric equality — never regex,
-    // so "1000" can't match inside "10000". A long numeric (e.g. a phone) simply
-    // yields an out-of-range number that matches no leadId, while the name/phone
-    // regex clauses above still handle the phone search.
-    if (req.user.role === "admin" || req.user.role === "sales_admin") {
-      var idDigits = q.replace(/\D/g, "");
-      if (idDigits.length > 0) {
-        var idNum = parseInt(idDigits, 10);
-        if (isFinite(idNum) && idNum > 0) orClauses.push({ leadId: idNum });
-      }
+    // Feature A — search by the permanent Lead ID, available to ANY role: the
+    // query already AND's in the per-role `scope` below, so a sales user only ever
+    // matches their own lead. Accept "01000", "1000", "ID #01000", "#01000": strip
+    // non-digits, drop leading zeros (parseInt), and match leadId by EXACT numeric
+    // equality — never regex, so "1000" can't match inside "10000". A long numeric
+    // (e.g. a phone) yields an out-of-range number matching no leadId, while the
+    // name/phone regex clauses above still handle phone search.
+    var idDigits = q.replace(/\D/g, "");
+    if (idDigits.length > 0) {
+      var idNum = parseInt(idDigits, 10);
+      if (isFinite(idNum) && idNum > 0) orClauses.push({ leadId: idNum });
     }
     var query = { $and: [
       scope,

@@ -234,9 +234,11 @@ var visibleStatuses = function(list, role){ return (list||[]).filter(function(s)
 // ship to other roles in API payloads; UI hides it).
 var canSeeClosingCompany = function(u){ return !!(u && (u.role === "admin" || u.role === "sales_admin")); };
 
-// Permanent Lead ID (Feature A) — visible to admin + sales_admin only (display-
-// only gate; the value may ship to other roles in payloads, UI hides it).
-var canSeeLeadIds = function(u){ return !!(u && (u.role === "admin" || u.role === "sales_admin")); };
+// Permanent Lead ID (Feature A) — the ID is just an attribute of a Deal/EOI/
+// Commission row the viewer is already authorized to see (page routing + per-role
+// server-side scope enforce access upstream). So any authenticated user who can
+// render such a row may see its ID; no need to re-gate by role here.
+var canSeeLeadIds = function(u){ return !!u; };
 // Format a numeric leadId as "ID #01000" (5-digit zero-padded). Returns
 // "ID pending" for leads minted before the backfill (leadId still null) so the
 // admin/SA UI shows a clear placeholder instead of a blank.
