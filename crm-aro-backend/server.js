@@ -12725,10 +12725,14 @@ async function autoRotateLead(leadId, byName, opts) {
     // round-robin pointer. Skip rules are applied per-candidate; "skipped"
     // agents leave the pointer untouched.
     var sr = settings.smartSkipRules || {};
-    // Count-based tier selection:
-    //   rotationCount < 2 (first 2 rotations)  → Tier 1 preferred, combined T2+T3 fallback
-    //   rotationCount >= 2 (third rotation+)   → combined T2+T3 only, no fallback to Tier 1
-    var rotCount = Number(lead.rotationCount || 0);
+    // Unconditional Tier-1-first selection: always try Tier 1, and fall through
+    // to the combined T2+T3 pool only when every eligible Tier 1 agent is already
+    // in this lead's exclusion set (handled it before) or is otherwise skipped
+    // (inactive / wrong role / on vacation / at daily cap). A lead thus rotates
+    // through ALL eligible Tier 1 agents before reaching T2+T3.
+    // NOTE: lead.rotationCount is still incremented on every rotation and consumed
+    // elsewhere (maxRotationsPerLead cap, the "Not Rotated" filter, reporting) —
+    // it just no longer gates tier selection.
     var tryPool = function(ids, lastIdx){
       if (!Array.isArray(ids) || !ids.length) return null;
       var n = ids.length;
@@ -12763,14 +12767,9 @@ async function autoRotateLead(leadId, byName, opts) {
     });
     var pick = null;
     var poolKey = null;
-    if (rotCount < 2) {
-      pick = tryPool(settings.tiers.tier1.agents, settings.tiers.tier1.lastIdx);
-      if (pick) { poolKey = "tier1"; }
-      else {
-        pick = tryPool(combined23, settings.combined23LastIdx);
-        if (pick) poolKey = "combined23";
-      }
-    } else {
+    pick = tryPool(settings.tiers.tier1.agents, settings.tiers.tier1.lastIdx);
+    if (pick) { poolKey = "tier1"; }
+    else {
       pick = tryPool(combined23, settings.combined23LastIdx);
       if (pick) poolKey = "combined23";
     }
